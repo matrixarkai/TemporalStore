@@ -56,8 +56,10 @@ pub struct LoadShardRequest {
     #[serde(default)]
     pub local_node_id: Option<u64>,
     pub shard_uri: String,
-    pub start_routing_slot: u32,
-    pub end_routing_slot: u32,
+    #[serde(rename = "start_routing_slot")]
+    pub start_routing_bucket: u32,
+    #[serde(rename = "end_routing_slot")]
+    pub end_routing_bucket: u32,
     pub readonly: bool,
     pub table_name: String,
 }
@@ -106,8 +108,10 @@ pub struct ShardInfo {
     pub loaded: bool,
     pub table_name: String,
     pub shard_uri: String,
-    pub start_routing_slot: u32,
-    pub end_routing_slot: u32,
+    #[serde(rename = "start_routing_slot")]
+    pub start_routing_bucket: u32,
+    #[serde(rename = "end_routing_slot")]
+    pub end_routing_bucket: u32,
     pub readonly: bool,
     pub load_version: u64,
     #[serde(default)]
@@ -137,8 +141,10 @@ pub struct ObjectManagerStats {
     pub object_count: usize,
     pub page_ref_count: usize,
     pub dirty_object_count: usize,
-    pub dirty_slot_count: usize,
-    pub routing_slot_count: u32,
+    #[serde(rename = "dirty_slot_count")]
+    pub dirty_bucket_count: usize,
+    #[serde(rename = "routing_slot_count")]
+    pub routing_bucket_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -149,8 +155,10 @@ pub struct ShardStatInfo {
     pub load_version: u64,
     pub table_name: String,
     pub shard_uri: String,
-    pub start_routing_slot: u32,
-    pub end_routing_slot: u32,
+    #[serde(rename = "start_routing_slot")]
+    pub start_routing_bucket: u32,
+    #[serde(rename = "end_routing_slot")]
+    pub end_routing_bucket: u32,
     pub total_records: usize,
     pub storage_bytes: u64,
     pub object_manager: ObjectManagerStats,
@@ -161,7 +169,8 @@ pub struct ShardCanonicalStorageStats {
     pub page_index_entries: u64,
     pub block_index_entries: u64,
     pub object_index_entries: u64,
-    pub slot_entries: u64,
+    #[serde(rename = "slot_entries")]
+    pub bucket_entries: u64,
     pub storage_zone_count: u64,
     pub active_storage_zones: u64,
     pub sealed_storage_zones: u64,

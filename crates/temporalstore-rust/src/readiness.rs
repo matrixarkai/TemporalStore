@@ -98,7 +98,8 @@ pub struct StorageSsdCachePressureReadinessReport {
     pub memory_read_through_ready: bool,
     pub disk_block_cache_ready: bool,
     pub admission_eviction_counters_ready: bool,
-    pub slot_warmup_ready: bool,
+    #[serde(rename = "slot_warmup_ready")]
+    pub bucket_warmup_ready: bool,
     pub cache_invalidation_ready: bool,
     pub local_tiny_cache_pressure_harness_ready: bool,
     pub production_ssd_tiering_ready: bool,
@@ -163,17 +164,21 @@ pub struct StorageProductionPostureReport {
     pub cache_pressure_and_refill_ready: bool,
     pub shared_store_sync_async_replay_ready: bool,
     pub unified_storage_corpus_ready: bool,
-    pub first_class_slot_object_page_index_ready: bool,
+    #[serde(rename = "first_class_slot_object_page_index_ready")]
+    pub first_class_bucket_object_page_index_ready: bool,
     #[serde(default)]
-    pub first_class_slot_object_page_index_evidence: Vec<String>,
+    #[serde(rename = "first_class_slot_object_page_index_evidence")]
+    pub first_class_bucket_object_page_index_evidence: Vec<String>,
     pub native_object_manager_runtime_ready: bool,
     #[serde(default)]
     pub native_object_manager_runtime_evidence: Vec<String>,
     #[serde(default)]
     pub native_object_manager_runtime_blockers: Vec<String>,
-    pub native_slot_store_layout_transition_ready: bool,
+    #[serde(rename = "native_slot_store_layout_transition_ready")]
+    pub native_bucket_store_layout_transition_ready: bool,
     #[serde(default)]
-    pub native_slot_store_layout_transition_evidence: Vec<String>,
+    #[serde(rename = "native_slot_store_layout_transition_evidence")]
+    pub native_bucket_store_layout_transition_evidence: Vec<String>,
     pub stream_backed_band_runtime_ready: bool,
     #[serde(default)]
     pub stream_backed_band_runtime_evidence: Vec<String>,
@@ -1132,7 +1137,7 @@ mod tests {
         assert!(report.memory_read_through_ready);
         assert!(report.disk_block_cache_ready);
         assert!(report.admission_eviction_counters_ready);
-        assert!(report.slot_warmup_ready);
+        assert!(report.bucket_warmup_ready);
         assert!(report.cache_invalidation_ready);
         assert!(report.local_tiny_cache_pressure_harness_ready);
         assert!(report.local_pressure_ready);
@@ -1302,13 +1307,13 @@ mod tests {
         assert!(report.cache_pressure_and_refill_ready);
         assert!(report.shared_store_sync_async_replay_ready);
         assert!(report.unified_storage_corpus_ready);
-        assert!(report.first_class_slot_object_page_index_ready);
+        assert!(report.first_class_bucket_object_page_index_ready);
         assert!(report
-            .first_class_slot_object_page_index_evidence
+            .first_class_bucket_object_page_index_evidence
             .iter()
             .any(|item| item.contains("ShardState owns slot_objects")));
         assert!(report
-            .first_class_slot_object_page_index_evidence
+            .first_class_bucket_object_page_index_evidence
             .iter()
             .any(|item| item.contains("BlockAddress carries segment/offset/length")));
         assert!(report.native_object_manager_runtime_ready);
@@ -1320,9 +1325,9 @@ mod tests {
             .native_object_manager_runtime_blockers
             .iter()
             .any(|item| item.contains("byte-for-byte hot-object memory layout")));
-        assert!(report.native_slot_store_layout_transition_ready);
+        assert!(report.native_bucket_store_layout_transition_ready);
         assert!(report
-            .native_slot_store_layout_transition_evidence
+            .native_bucket_store_layout_transition_evidence
             .iter()
             .any(|item| item.contains("slot objects track layout state transitions")));
         assert!(report.stream_backed_band_runtime_ready);

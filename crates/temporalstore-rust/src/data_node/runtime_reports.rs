@@ -339,18 +339,18 @@ impl DataNodeRuntime {
                         .to_string(),
                 });
             }
-            if u64::from(state.start_routing_slot) != partition.start_slot
-                || u64::from(state.end_routing_slot) != partition.end_slot
+            if u64::from(state.start_routing_bucket) != partition.start_bucket
+                || u64::from(state.end_routing_bucket) != partition.end_bucket
             {
                 mismatches.push(DataNodeTopologyMismatch {
                     shard_id: state.shard_id,
                     kind: "routing_slot_mismatch".to_string(),
                     detail: format!(
                         "local={}..{}, meta={}..{}",
-                        state.start_routing_slot,
-                        state.end_routing_slot,
-                        partition.start_slot,
-                        partition.end_slot
+                        state.start_routing_bucket,
+                        state.end_routing_bucket,
+                        partition.start_bucket,
+                        partition.end_bucket
                     ),
                 });
             }
@@ -477,8 +477,8 @@ impl DataNodeRuntime {
                     load_version: stats.load_version,
                     table_name: stats.shard_stat_info.table_name,
                     shard_uri: stats.shard_stat_info.shard_uri,
-                    start_routing_slot: stats.shard_stat_info.start_routing_slot,
-                    end_routing_slot: stats.shard_stat_info.end_routing_slot,
+                    start_routing_bucket: stats.shard_stat_info.start_routing_bucket,
+                    end_routing_bucket: stats.shard_stat_info.end_routing_bucket,
                     total_records: stats.total_records,
                     storage_bytes: stats.storage_bytes,
                     cache_memory_bytes: stats.cache.memory_bytes,
@@ -489,7 +489,7 @@ impl DataNodeRuntime {
                         .get(&stats.shard_id)
                         .copied()
                         .unwrap_or_default() as u64,
-                    dirty_slot_count: stats.object_manager.dirty_slot_count as u64,
+                    dirty_bucket_count: stats.object_manager.dirty_bucket_count as u64,
                 }
             })
             .collect()

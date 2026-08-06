@@ -2,14 +2,14 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
-use temporalstore_rust::{Command, ExecuteRequest, SlotDumpFaultMatrixReport, TemporalEngine};
+use temporalstore_rust::{Command, ExecuteRequest, BucketDumpFaultMatrixReport, TemporalEngine};
 
 #[derive(Debug, Serialize)]
 struct StorageFaultMatrixHarnessReport {
     root: String,
     shard_id: u64,
     production_ready_slice: bool,
-    report: SlotDumpFaultMatrixReport,
+    report: BucketDumpFaultMatrixReport,
 }
 
 fn main() {
@@ -41,7 +41,7 @@ fn main() {
         );
     }
 
-    let report = engine.slot_dump_fault_matrix_report(shard_id);
+    let report = engine.bucket_dump_fault_matrix_report(shard_id);
     let harness = StorageFaultMatrixHarnessReport {
         root: root.display().to_string(),
         shard_id,

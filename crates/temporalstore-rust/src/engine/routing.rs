@@ -1,19 +1,19 @@
 use crate::types::ShardId;
 
-pub(super) fn routing_slot_count(start_routing_slot: u32, end_routing_slot: u32) -> u32 {
-    if end_routing_slot < start_routing_slot {
+pub(super) fn routing_bucket_count(start_routing_bucket: u32, end_routing_bucket: u32) -> u32 {
+    if end_routing_bucket < start_routing_bucket {
         return 0;
     }
-    end_routing_slot
-        .saturating_sub(start_routing_slot)
+    end_routing_bucket
+        .saturating_sub(start_routing_bucket)
         .saturating_add(1)
 }
 
-pub(super) fn slot_for_object(key: &str, start_routing_slot: u32, routing_slot_count: u32) -> u32 {
-    if routing_slot_count == 0 {
-        return start_routing_slot;
+pub(super) fn bucket_for_object(key: &str, start_routing_bucket: u32, routing_bucket_count: u32) -> u32 {
+    if routing_bucket_count == 0 {
+        return start_routing_bucket;
     }
-    start_routing_slot + (stable_object_hash(key) % routing_slot_count as u64) as u32
+    start_routing_bucket + (stable_object_hash(key) % routing_bucket_count as u64) as u32
 }
 
 const FNV1A64_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
@@ -79,10 +79,10 @@ pub(super) fn stable_page_object_id_from_prefix(mut hash: u64, component: Option
     hash
 }
 
-pub(super) fn page_routing_slot(key: &str, start_routing_slot: u32, end_routing_slot: u32) -> u32 {
-    slot_for_object(
+pub(super) fn page_routing_bucket(key: &str, start_routing_bucket: u32, end_routing_bucket: u32) -> u32 {
+    bucket_for_object(
         key,
-        start_routing_slot,
-        routing_slot_count(start_routing_slot, end_routing_slot),
+        start_routing_bucket,
+        routing_bucket_count(start_routing_bucket, end_routing_bucket),
     )
 }

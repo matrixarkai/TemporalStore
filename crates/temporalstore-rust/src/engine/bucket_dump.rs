@@ -7,49 +7,49 @@ use sha2::{Digest, Sha256};
 use super::reports::*;
 use crate::types::{ShardId, Status};
 
-pub(super) fn slot_dump_manifest_dir(index_dir: &std::path::Path, shard_id: ShardId) -> PathBuf {
+pub(super) fn bucket_dump_manifest_dir(index_dir: &std::path::Path, shard_id: ShardId) -> PathBuf {
     index_dir
         .join("slot-dumps")
         .join(format!("shard-{shard_id}"))
 }
 
-pub(super) fn slot_dump_manifest_path(
+pub(super) fn bucket_dump_manifest_path(
     index_dir: &std::path::Path,
     shard_id: ShardId,
     manifest_id: &str,
 ) -> PathBuf {
-    slot_dump_manifest_dir(index_dir, shard_id).join(format!("{manifest_id}.json"))
+    bucket_dump_manifest_dir(index_dir, shard_id).join(format!("{manifest_id}.json"))
 }
 
-pub(super) fn slot_dump_manifest_at(
+pub(super) fn bucket_dump_manifest_at(
     index_dir: &std::path::Path,
     shard_id: ShardId,
     manifest_id: &str,
-) -> Result<Option<SlotDumpManifest>, std::io::Error> {
-    let path = slot_dump_manifest_path(index_dir, shard_id, manifest_id);
+) -> Result<Option<BucketDumpManifest>, std::io::Error> {
+    let path = bucket_dump_manifest_path(index_dir, shard_id, manifest_id);
     if !path.exists() {
         return Ok(None);
     }
-    serde_json::from_slice::<SlotDumpManifest>(&fs::read(path)?)
+    serde_json::from_slice::<BucketDumpManifest>(&fs::read(path)?)
         .map(Some)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))
 }
 
-pub(super) fn slot_dump_install_marker_path(
+pub(super) fn bucket_dump_install_marker_path(
     index_dir: &std::path::Path,
-    marker: &SlotDumpInstallMarker,
+    marker: &BucketDumpInstallMarker,
 ) -> PathBuf {
-    slot_dump_manifest_dir(index_dir, marker.shard_id).join(format!(
+    bucket_dump_manifest_dir(index_dir, marker.shard_id).join(format!(
         "{}.{}.{}.marker",
         marker.manifest_id, marker.phase, marker.created_unix_ms
     ))
 }
 
-pub(super) fn write_slot_dump_install_marker(
+pub(super) fn write_bucket_dump_install_marker(
     index_dir: &std::path::Path,
-    marker: &SlotDumpInstallMarker,
+    marker: &BucketDumpInstallMarker,
 ) -> Result<(), std::io::Error> {
-    let path = slot_dump_install_marker_path(index_dir, marker);
+    let path = bucket_dump_install_marker_path(index_dir, marker);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -58,11 +58,11 @@ pub(super) fn write_slot_dump_install_marker(
     fs::write(path, bytes)
 }
 
-pub(super) fn slot_dump_install_marker_files_at(
+pub(super) fn bucket_dump_install_marker_files_at(
     index_dir: &std::path::Path,
     shard_id: ShardId,
-) -> Result<Vec<(SlotDumpInstallMarker, PathBuf)>, std::io::Error> {
-    let dir = slot_dump_manifest_dir(index_dir, shard_id);
+) -> Result<Vec<(BucketDumpInstallMarker, PathBuf)>, std::io::Error> {
+    let dir = bucket_dump_manifest_dir(index_dir, shard_id);
     let mut markers = Vec::new();
     if !dir.exists() {
         return Ok(markers);
@@ -79,7 +79,7 @@ pub(super) fn slot_dump_install_marker_files_at(
             continue;
         }
         let path = entry.path();
-        let marker = serde_json::from_slice::<SlotDumpInstallMarker>(&fs::read(&path)?)
+        let marker = serde_json::from_slice::<BucketDumpInstallMarker>(&fs::read(&path)?)
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
         markers.push((marker, path));
     }
@@ -87,35 +87,35 @@ pub(super) fn slot_dump_install_marker_files_at(
         (
             marker.index_log_sequence,
             marker.created_unix_ms,
-            slot_dump_install_phase_rank(&marker.phase),
+            bucket_dump_install_phase_rank(&marker.phase),
         )
     });
     Ok(markers)
 }
 
-pub(super) fn list_slot_dump_install_markers_at(
+pub(super) fn list_bucket_dump_install_markers_at(
     index_dir: &std::path::Path,
     shard_id: ShardId,
-) -> Result<Vec<SlotDumpInstallMarker>, std::io::Error> {
-    Ok(slot_dump_install_marker_files_at(index_dir, shard_id)?
+) -> Result<Vec<BucketDumpInstallMarker>, std::io::Error> {
+    Ok(bucket_dump_install_marker_files_at(index_dir, shard_id)?
         .into_iter()
         .map(|(marker, _)| marker)
         .collect())
 }
 
-pub(super) fn interrupted_slot_dump_installs_at(
+pub(super) fn interrupted_bucket_dump_installs_at(
     index_dir: &std::path::Path,
     shard_id: ShardId,
-) -> Result<Vec<SlotDumpInstallMarker>, std::io::Error> {
-    let mut latest_by_manifest = BTreeMap::<String, SlotDumpInstallMarker>::new();
-    for marker in list_slot_dump_install_markers_at(index_dir, shard_id)? {
+) -> Result<Vec<BucketDumpInstallMarker>, std::io::Error> {
+    let mut latest_by_manifest = BTreeMap::<String, BucketDumpInstallMarker>::new();
+    for marker in list_bucket_dump_install_markers_at(index_dir, shard_id)? {
         let replace = latest_by_manifest
             .get(&marker.manifest_id)
             .map(|existing| {
-                slot_dump_install_phase_rank(&marker.phase)
-                    > slot_dump_install_phase_rank(&existing.phase)
-                    || (slot_dump_install_phase_rank(&marker.phase)
-                        == slot_dump_install_phase_rank(&existing.phase)
+                bucket_dump_install_phase_rank(&marker.phase)
+                    > bucket_dump_install_phase_rank(&existing.phase)
+                    || (bucket_dump_install_phase_rank(&marker.phase)
+                        == bucket_dump_install_phase_rank(&existing.phase)
                         && marker.created_unix_ms > existing.created_unix_ms)
             })
             .unwrap_or(true);
@@ -129,13 +129,13 @@ pub(super) fn interrupted_slot_dump_installs_at(
         .collect())
 }
 
-pub(super) fn remove_obsolete_slot_dump_install_markers(
+pub(super) fn remove_obsolete_bucket_dump_install_markers(
     index_dir: &std::path::Path,
     shard_id: ShardId,
     manifest_id: &str,
 ) -> Result<usize, std::io::Error> {
     let mut removed = 0usize;
-    for (marker, path) in slot_dump_install_marker_files_at(index_dir, shard_id)? {
+    for (marker, path) in bucket_dump_install_marker_files_at(index_dir, shard_id)? {
         if marker.manifest_id == manifest_id
             && (marker.phase == "prepare" || marker.phase == "install")
             && fs::remove_file(path).is_ok()
@@ -146,8 +146,8 @@ pub(super) fn remove_obsolete_slot_dump_install_markers(
     Ok(removed)
 }
 
-pub(super) fn slot_dump_install_phase_counts(
-    markers: &[SlotDumpInstallMarker],
+pub(super) fn bucket_dump_install_phase_counts(
+    markers: &[BucketDumpInstallMarker],
 ) -> (usize, usize, usize) {
     let mut prepared = 0usize;
     let mut installed = 0usize;
@@ -162,7 +162,7 @@ pub(super) fn slot_dump_install_phase_counts(
     (prepared, installed, unknown)
 }
 
-pub(super) fn slot_dump_install_phase_rank(phase: &str) -> u8 {
+pub(super) fn bucket_dump_install_phase_rank(phase: &str) -> u8 {
     match phase {
         "prepare" => 1,
         "install" => 2,
@@ -171,9 +171,9 @@ pub(super) fn slot_dump_install_phase_rank(phase: &str) -> u8 {
     }
 }
 
-pub(super) fn slot_dump_manifest_chain_issues(
-    manifests: &[SlotDumpManifest],
-) -> Vec<SlotDumpManifestChainIssue> {
+pub(super) fn bucket_dump_manifest_chain_issues(
+    manifests: &[BucketDumpManifest],
+) -> Vec<BucketDumpManifestChainIssue> {
     let manifest_ids = manifests
         .iter()
         .map(|manifest| manifest.manifest_id.clone())
@@ -182,7 +182,7 @@ pub(super) fn slot_dump_manifest_chain_issues(
         .iter()
         .filter_map(|manifest| {
             let parent = manifest.parent_manifest_id.as_ref()?;
-            (!manifest_ids.contains(parent)).then(|| SlotDumpManifestChainIssue {
+            (!manifest_ids.contains(parent)).then(|| BucketDumpManifestChainIssue {
                 manifest_id: manifest.manifest_id.clone(),
                 parent_manifest_id: Some(parent.clone()),
                 reason: "missing_parent_manifest".to_string(),
@@ -191,7 +191,7 @@ pub(super) fn slot_dump_manifest_chain_issues(
         .collect()
 }
 
-pub(super) fn retained_slot_dump_manifest_ids(manifests: &[SlotDumpManifest]) -> BTreeSet<String> {
+pub(super) fn retained_bucket_dump_manifest_ids(manifests: &[BucketDumpManifest]) -> BTreeSet<String> {
     let by_id = manifests
         .iter()
         .map(|manifest| (manifest.manifest_id.clone(), manifest))
@@ -212,14 +212,14 @@ pub(super) fn retained_slot_dump_manifest_ids(manifests: &[SlotDumpManifest]) ->
     retained
 }
 
-pub(super) fn slot_dump_manifest_prune_plan_at(
+pub(super) fn bucket_dump_manifest_prune_plan_at(
     index_dir: &std::path::Path,
     shard_id: ShardId,
-    follower_cursors: &[SlotDumpFollowerReplayCursor],
-    raft_snapshot_refs: &[SlotDumpRaftSnapshotRef],
-) -> Result<SlotDumpManifestPrunePlan, std::io::Error> {
-    let manifests = list_slot_dump_manifests_at(index_dir, shard_id)?;
-    let mut retained = retained_slot_dump_manifest_ids(&manifests);
+    follower_cursors: &[BucketDumpFollowerReplayCursor],
+    raft_snapshot_refs: &[BucketDumpRaftSnapshotRef],
+) -> Result<BucketDumpManifestPrunePlan, std::io::Error> {
+    let manifests = list_bucket_dump_manifests_at(index_dir, shard_id)?;
+    let mut retained = retained_bucket_dump_manifest_ids(&manifests);
     let mut follower_blocks = Vec::new();
     let mut raft_snapshot_blocks = Vec::new();
     for cursor in follower_cursors
@@ -233,7 +233,7 @@ pub(super) fn slot_dump_manifest_prune_plan_at(
             continue;
         };
         if retained.insert(anchor.manifest_id.clone()) {
-            follower_blocks.push(SlotDumpFollowerRetentionBlock {
+            follower_blocks.push(BucketDumpFollowerRetentionBlock {
                 follower_id: cursor.follower_id.clone(),
                 manifest_id: anchor.manifest_id.clone(),
                 manifest_oplog_sequence: anchor.oplog_sequence,
@@ -255,7 +255,7 @@ pub(super) fn slot_dump_manifest_prune_plan_at(
             continue;
         };
         if retained.insert(anchor.manifest_id.clone()) {
-            raft_snapshot_blocks.push(SlotDumpRaftSnapshotRetentionBlock {
+            raft_snapshot_blocks.push(BucketDumpRaftSnapshotRetentionBlock {
                 snapshot_id: snapshot.snapshot_id.clone(),
                 manifest_id: anchor.manifest_id.clone(),
                 manifest_oplog_sequence: anchor.oplog_sequence,
@@ -268,7 +268,7 @@ pub(super) fn slot_dump_manifest_prune_plan_at(
             });
         }
     }
-    let interrupted = interrupted_slot_dump_installs_at(index_dir, shard_id)?
+    let interrupted = interrupted_bucket_dump_installs_at(index_dir, shard_id)?
         .into_iter()
         .map(|marker| marker.manifest_id)
         .collect::<BTreeSet<_>>();
@@ -288,7 +288,7 @@ pub(super) fn slot_dump_manifest_prune_plan_at(
             prunable_manifest_ids.push(manifest.manifest_id.clone());
         }
     }
-    let prunable_marker_manifest_ids = list_slot_dump_install_markers_at(index_dir, shard_id)?
+    let prunable_marker_manifest_ids = list_bucket_dump_install_markers_at(index_dir, shard_id)?
         .into_iter()
         .map(|marker| marker.manifest_id)
         .filter(|manifest_id| {
@@ -316,7 +316,7 @@ pub(super) fn slot_dump_manifest_prune_plan_at(
     if !raft_snapshot_blocks.is_empty() {
         reasons.push("raft_snapshot_blocks_prune".to_string());
     }
-    Ok(SlotDumpManifestPrunePlan {
+    Ok(BucketDumpManifestPrunePlan {
         shard_id,
         retained_manifest_ids: retained.into_iter().collect(),
         prunable_manifest_ids,
@@ -328,11 +328,11 @@ pub(super) fn slot_dump_manifest_prune_plan_at(
     })
 }
 
-pub(super) fn list_slot_dump_manifests_at(
+pub(super) fn list_bucket_dump_manifests_at(
     index_dir: &std::path::Path,
     shard_id: ShardId,
-) -> Result<Vec<SlotDumpManifest>, std::io::Error> {
-    let dir = slot_dump_manifest_dir(index_dir, shard_id);
+) -> Result<Vec<BucketDumpManifest>, std::io::Error> {
+    let dir = bucket_dump_manifest_dir(index_dir, shard_id);
     let mut manifests = Vec::new();
     if !dir.exists() {
         return Ok(manifests);
@@ -348,7 +348,7 @@ pub(super) fn list_slot_dump_manifests_at(
         {
             continue;
         }
-        let manifest = serde_json::from_slice::<SlotDumpManifest>(&fs::read(entry.path())?)
+        let manifest = serde_json::from_slice::<BucketDumpManifest>(&fs::read(entry.path())?)
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
         manifests.push(manifest);
     }
@@ -356,17 +356,17 @@ pub(super) fn list_slot_dump_manifests_at(
     Ok(manifests)
 }
 
-pub(super) fn latest_slot_dump_manifest_at(
+pub(super) fn latest_bucket_dump_manifest_at(
     index_dir: &std::path::Path,
     shard_id: ShardId,
-) -> Option<SlotDumpManifest> {
-    list_slot_dump_manifests_at(index_dir, shard_id)
+) -> Option<BucketDumpManifest> {
+    list_bucket_dump_manifests_at(index_dir, shard_id)
         .ok()?
         .into_iter()
         .last()
 }
 
-pub(super) fn slot_dump_manifest_checksum(manifest: &SlotDumpManifest) -> Result<String, Status> {
+pub(super) fn bucket_dump_manifest_checksum(manifest: &BucketDumpManifest) -> Result<String, Status> {
     let mut payload = manifest.clone();
     payload.checksum.clear();
     serde_json::to_vec(&payload)
@@ -374,16 +374,16 @@ pub(super) fn slot_dump_manifest_checksum(manifest: &SlotDumpManifest) -> Result
         .map_err(|err| Status::error("slot_dump_checksum_failed", err.to_string()))
 }
 
-pub(super) fn slot_dump_fault_scenario(
+pub(super) fn bucket_dump_fault_scenario(
     scenario: impl Into<String>,
     expected_code: impl Into<String>,
     actual_code: impl Into<String>,
     blockers: Vec<String>,
     install_safe: bool,
-) -> SlotDumpFaultScenarioReport {
+) -> BucketDumpFaultScenarioReport {
     let expected_code = expected_code.into();
     let actual_code = actual_code.into();
-    SlotDumpFaultScenarioReport {
+    BucketDumpFaultScenarioReport {
         scenario: scenario.into(),
         passed: actual_code == expected_code,
         expected_code,
@@ -393,13 +393,13 @@ pub(super) fn slot_dump_fault_scenario(
     }
 }
 
-pub(super) fn slot_dump_generation_id(manifest: &SlotDumpManifest) -> String {
+pub(super) fn bucket_dump_generation_id(manifest: &BucketDumpManifest) -> String {
     let mut digest = Sha256::new();
     digest.update(manifest.shard_id.to_le_bytes());
     digest.update(manifest.oplog_sequence.to_le_bytes());
     digest.update(manifest.index_log_sequence.to_le_bytes());
-    for slot_id in &manifest.slot_ids {
-        digest.update(slot_id.to_le_bytes());
+    for bucket_id in &manifest.bucket_ids {
+        digest.update(bucket_id.to_le_bytes());
     }
     for page_segment_id in &manifest.page_segment_ids {
         digest.update(page_segment_id.to_le_bytes());

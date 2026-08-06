@@ -1,14 +1,14 @@
-//! Slot-dump manifest lifecycle methods for TemporalEngine, split from engine.rs.
+//! Bucket-dump manifest lifecycle methods for TemporalEngine, split from engine.rs.
 use super::*;
 
 impl TemporalEngine {
-    pub fn create_slot_dump_manifest(
+    pub fn create_bucket_dump_manifest(
         &self,
         shard_id: ShardId,
-        selected_slots: impl IntoIterator<Item = u32>,
-    ) -> Result<SlotDumpManifest, Status> {
-        let selected_slots = selected_slots.into_iter().collect::<BTreeSet<_>>();
-        let summaries = self.slot_storage_summaries(shard_id);
+        selected_buckets: impl IntoIterator<Item = u32>,
+    ) -> Result<BucketDumpManifest, Status> {
+        let selected_buckets = selected_buckets.into_iter().collect::<BTreeSet<_>>();
+        let summaries = self.bucket_storage_summaries(shard_id);
         if summaries.is_empty()
             && !self
                 .shards
@@ -18,14 +18,14 @@ impl TemporalEngine {
         {
             return Err(Status::error("shard_not_loaded", "shard is not loaded"));
         }
-        let mut slot_summaries = summaries
+        let mut bucket_summaries = summaries
             .into_iter()
             .filter(|summary| {
-                selected_slots.is_empty() || selected_slots.contains(&summary.routing_slot)
+                selected_buckets.is_empty() || selected_buckets.contains(&summary.routing_bucket)
             })
             .collect::<Vec<_>>();
-        slot_summaries.sort_by_key(|summary| summary.routing_slot);
-        let mut page_segment_ids = slot_summaries
+        bucket_summaries.sort_by_key(|summary| summary.routing_bucket);
+        let mut page_segment_ids = bucket_summaries
             .iter()
             .flat_map(|summary| summary.page_segment_ids.iter().copied())
             .collect::<BTreeSet<_>>()
@@ -42,15 +42,15 @@ impl TemporalEngine {
             .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
         let created_unix_ms = now_ms();
         let manifest_id = format!("{shard_id}-{index_log_sequence}-{created_unix_ms}");
-        let parent_manifest_id = latest_slot_dump_manifest_at(&self.index_dir, shard_id)
+        let parent_manifest_id = latest_bucket_dump_manifest_at(&self.index_dir, shard_id)
             .map(|manifest| manifest.manifest_id);
-        let object_lifecycle = storage_object_lifecycle_report_for_slots(
+        let object_lifecycle = storage_object_lifecycle_report_for_buckets(
             shard_id,
             &dump_index_state,
-            &selected_slots,
-            |key| self.routing_slot_for_key(shard_id, key),
+            &selected_buckets,
+            |key| self.routing_bucket_for_key(shard_id, key),
         );
-        let mut manifest = SlotDumpManifest {
+        let mut manifest = BucketDumpManifest {
             version: 3,
             shard_id,
             manifest_id,
@@ -60,46 +60,46 @@ impl TemporalEngine {
             parent_manifest_id,
             load_version_handoff: None,
             created_unix_ms,
-            slot_ids: slot_summaries
+            bucket_ids: bucket_summaries
                 .iter()
-                .map(|summary| summary.routing_slot)
+                .map(|summary| summary.routing_bucket)
                 .collect(),
             page_segment_ids,
             oplog_sequence,
             index_log_sequence,
-            live_page_refs: slot_summaries
+            live_page_refs: bucket_summaries
                 .iter()
                 .map(|summary| summary.page_ref_count)
                 .sum(),
-            logical_bytes: slot_summaries
+            logical_bytes: bucket_summaries
                 .iter()
                 .map(|summary| summary.logical_bytes)
                 .sum(),
-            physical_bytes: slot_summaries
+            physical_bytes: bucket_summaries
                 .iter()
                 .map(|summary| summary.physical_bytes)
                 .sum(),
-            slot_summaries,
+            bucket_summaries,
             object_lifecycle,
             index_bytes,
             index_sha256,
             checksum: String::new(),
         };
-        manifest.dump_generation_id = slot_dump_generation_id(&manifest);
-        manifest.checksum = slot_dump_manifest_checksum(&manifest)?;
-        self.persist_slot_dump_manifest(&manifest)
+        manifest.dump_generation_id = bucket_dump_generation_id(&manifest);
+        manifest.checksum = bucket_dump_manifest_checksum(&manifest)?;
+        self.persist_bucket_dump_manifest(&manifest)
             .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
         Ok(manifest)
     }
 
-    pub fn create_merged_slot_dump_manifest(
+    pub fn create_merged_bucket_dump_manifest(
         &self,
         shard_id: ShardId,
-        selected_slots: impl IntoIterator<Item = u32>,
+        selected_buckets: impl IntoIterator<Item = u32>,
         source_manifest_ids: impl IntoIterator<Item = String>,
         next_load_version: Option<u64>,
-    ) -> Result<SlotDumpManifest, Status> {
-        let selected_slots = selected_slots.into_iter().collect::<BTreeSet<_>>();
+    ) -> Result<BucketDumpManifest, Status> {
+        let selected_buckets = selected_buckets.into_iter().collect::<BTreeSet<_>>();
         let mut source_manifest_ids = source_manifest_ids.into_iter().collect::<Vec<_>>();
         source_manifest_ids.sort();
         source_manifest_ids.dedup();
@@ -109,8 +109,8 @@ impl TemporalEngine {
                 "merged slot dump requires at least one source manifest",
             ));
         }
-        let (source_manifest_count, missing_source_manifest_ids, source_manifest_slot_ids) =
-            self.slot_dump_source_manifest_coverage(shard_id, &source_manifest_ids);
+        let (source_manifest_count, missing_source_manifest_ids, source_manifest_bucket_ids) =
+            self.bucket_dump_source_manifest_coverage(shard_id, &source_manifest_ids);
         if !missing_source_manifest_ids.is_empty() {
             return Err(Status::error(
                 "merged_slot_dump_missing_sources",
@@ -120,22 +120,22 @@ impl TemporalEngine {
                 ),
             ));
         }
-        let source_slot_set = source_manifest_slot_ids
+        let source_bucket_set = source_manifest_bucket_ids
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
-        let target_slots = self
-            .slot_storage_summaries(shard_id)
+        let target_buckets = self
+            .bucket_storage_summaries(shard_id)
             .into_iter()
             .filter(|summary| {
-                selected_slots.is_empty() || selected_slots.contains(&summary.routing_slot)
+                selected_buckets.is_empty() || selected_buckets.contains(&summary.routing_bucket)
             })
-            .map(|summary| summary.routing_slot)
+            .map(|summary| summary.routing_bucket)
             .collect::<Vec<_>>();
-        let missing_coverage = target_slots
+        let missing_coverage = target_buckets
             .iter()
             .copied()
-            .filter(|slot| !source_slot_set.contains(slot))
+            .filter(|bucket| !source_bucket_set.contains(bucket))
             .collect::<Vec<_>>();
         if !missing_coverage.is_empty() {
             return Err(Status::error(
@@ -146,7 +146,7 @@ impl TemporalEngine {
                 ),
             ));
         }
-        let mut manifest = self.create_slot_dump_manifest(shard_id, target_slots)?;
+        let mut manifest = self.create_bucket_dump_manifest(shard_id, target_buckets)?;
         manifest.manifest_kind = "merged_slot_dump".to_string();
         manifest.source_manifest_ids = source_manifest_ids;
         if let Some(next_load_version) = next_load_version {
@@ -157,95 +157,95 @@ impl TemporalEngine {
                 .get(&shard_id)
                 .map(|info| info.load_version)
                 .unwrap_or_default();
-            manifest.load_version_handoff = Some(SlotDumpLoadVersionHandoff {
+            manifest.load_version_handoff = Some(BucketDumpLoadVersionHandoff {
                 previous_load_version,
                 next_load_version,
                 applied: false,
             });
         }
-        manifest.checksum = slot_dump_manifest_checksum(&manifest)?;
-        let (_, missing_source_manifest_ids, _, missing_slot_ids) =
-            self.slot_dump_merged_source_preflight(&manifest);
-        if !missing_source_manifest_ids.is_empty() || !missing_slot_ids.is_empty() {
+        manifest.checksum = bucket_dump_manifest_checksum(&manifest)?;
+        let (_, missing_source_manifest_ids, _, missing_bucket_ids) =
+            self.bucket_dump_merged_source_preflight(&manifest);
+        if !missing_source_manifest_ids.is_empty() || !missing_bucket_ids.is_empty() {
             return Err(Status::error(
                 "merged_slot_dump_source_preflight",
                 format!(
                     "merged source preflight failed sources={:?} missing_slots={:?}",
-                    missing_source_manifest_ids, missing_slot_ids
+                    missing_source_manifest_ids, missing_bucket_ids
                 ),
             ));
         }
         debug_assert!(source_manifest_count >= 1);
-        self.persist_slot_dump_manifest(&manifest)
+        self.persist_bucket_dump_manifest(&manifest)
             .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
         Ok(manifest)
     }
 
-    pub fn list_slot_dump_manifests(&self, shard_id: ShardId) -> Vec<SlotDumpManifest> {
-        list_slot_dump_manifests_at(&self.index_dir, shard_id).unwrap_or_default()
+    pub fn list_bucket_dump_manifests(&self, shard_id: ShardId) -> Vec<BucketDumpManifest> {
+        list_bucket_dump_manifests_at(&self.index_dir, shard_id).unwrap_or_default()
     }
 
-    pub fn interrupted_slot_dump_installs(&self, shard_id: ShardId) -> Vec<SlotDumpInstallMarker> {
-        interrupted_slot_dump_installs_at(&self.index_dir, shard_id).unwrap_or_default()
+    pub fn interrupted_bucket_dump_installs(&self, shard_id: ShardId) -> Vec<BucketDumpInstallMarker> {
+        interrupted_bucket_dump_installs_at(&self.index_dir, shard_id).unwrap_or_default()
     }
 
-    pub fn slot_dump_manifest_prune_plan(&self, shard_id: ShardId) -> SlotDumpManifestPrunePlan {
-        self.slot_dump_manifest_prune_plan_with_follower_cursors(shard_id, Vec::new())
+    pub fn bucket_dump_manifest_prune_plan(&self, shard_id: ShardId) -> BucketDumpManifestPrunePlan {
+        self.bucket_dump_manifest_prune_plan_with_follower_cursors(shard_id, Vec::new())
     }
 
-    pub fn slot_dump_manifest_prune_plan_with_follower_cursors(
+    pub fn bucket_dump_manifest_prune_plan_with_follower_cursors(
         &self,
         shard_id: ShardId,
-        follower_cursors: impl IntoIterator<Item = SlotDumpFollowerReplayCursor>,
-    ) -> SlotDumpManifestPrunePlan {
-        self.slot_dump_manifest_prune_plan_with_retention_refs(
+        follower_cursors: impl IntoIterator<Item = BucketDumpFollowerReplayCursor>,
+    ) -> BucketDumpManifestPrunePlan {
+        self.bucket_dump_manifest_prune_plan_with_retention_refs(
             shard_id,
             follower_cursors,
             Vec::new(),
         )
     }
 
-    pub fn slot_dump_manifest_prune_plan_with_retention_refs(
+    pub fn bucket_dump_manifest_prune_plan_with_retention_refs(
         &self,
         shard_id: ShardId,
-        follower_cursors: impl IntoIterator<Item = SlotDumpFollowerReplayCursor>,
-        raft_snapshot_refs: impl IntoIterator<Item = SlotDumpRaftSnapshotRef>,
-    ) -> SlotDumpManifestPrunePlan {
+        follower_cursors: impl IntoIterator<Item = BucketDumpFollowerReplayCursor>,
+        raft_snapshot_refs: impl IntoIterator<Item = BucketDumpRaftSnapshotRef>,
+    ) -> BucketDumpManifestPrunePlan {
         let follower_cursors = follower_cursors.into_iter().collect::<Vec<_>>();
         let raft_snapshot_refs = raft_snapshot_refs.into_iter().collect::<Vec<_>>();
-        slot_dump_manifest_prune_plan_at(
+        bucket_dump_manifest_prune_plan_at(
             &self.index_dir,
             shard_id,
             &follower_cursors,
             &raft_snapshot_refs,
         )
-        .unwrap_or_else(|err| SlotDumpManifestPrunePlan {
+        .unwrap_or_else(|err| BucketDumpManifestPrunePlan {
             shard_id,
             reasons: vec![format!("slot_dump_prune_plan_failed:{err}")],
-            ..SlotDumpManifestPrunePlan::default()
+            ..BucketDumpManifestPrunePlan::default()
         })
     }
 
-    pub fn slot_dump_install_roll_forward_reports(
+    pub fn bucket_dump_install_roll_forward_reports(
         &self,
         shard_id: ShardId,
-    ) -> Vec<SlotDumpInstallRollForwardReport> {
-        self.interrupted_slot_dump_installs(shard_id)
+    ) -> Vec<BucketDumpInstallRollForwardReport> {
+        self.interrupted_bucket_dump_installs(shard_id)
             .into_iter()
-            .map(|marker| self.slot_dump_install_roll_forward_report(&marker))
+            .map(|marker| self.bucket_dump_install_roll_forward_report(&marker))
             .collect()
     }
 
-    pub fn roll_forward_slot_dump_installs(
+    pub fn roll_forward_bucket_dump_installs(
         &self,
         shard_id: ShardId,
-    ) -> Vec<SlotDumpInstallRollForwardReport> {
-        self.interrupted_slot_dump_installs(shard_id)
+    ) -> Vec<BucketDumpInstallRollForwardReport> {
+        self.interrupted_bucket_dump_installs(shard_id)
             .into_iter()
             .map(|marker| {
-                let mut report = self.slot_dump_install_roll_forward_report(&marker);
+                let mut report = self.bucket_dump_install_roll_forward_report(&marker);
                 if report.can_retry_install {
-                    match slot_dump_manifest_at(
+                    match bucket_dump_manifest_at(
                         &self.index_dir,
                         marker.shard_id,
                         &marker.manifest_id,
@@ -254,7 +254,7 @@ impl TemporalEngine {
                     .flatten()
                     .map(|manifest| {
                         if manifest.manifest_kind == "merged_slot_dump" {
-                            let merged_report = self.install_merged_slot_dump_manifest(&manifest);
+                            let merged_report = self.install_merged_bucket_dump_manifest(&manifest);
                             if merged_report.installed {
                                 Ok(())
                             } else {
@@ -264,14 +264,14 @@ impl TemporalEngine {
                                 ))
                             }
                         } else {
-                            self.install_slot_dump_manifest(&manifest)
+                            self.install_bucket_dump_manifest(&manifest)
                         }
                     }) {
                         Some(Ok(())) => {
                             report.completed_install = true;
                             report.completed_commit = true;
                             report.obsolete_marker_files_removed =
-                                remove_obsolete_slot_dump_install_markers(
+                                remove_obsolete_bucket_dump_install_markers(
                                     &self.index_dir,
                                     marker.shard_id,
                                     &marker.manifest_id,
@@ -289,7 +289,7 @@ impl TemporalEngine {
                         }
                     }
                 } else if report.can_roll_forward {
-                    match self.persist_slot_dump_install_marker_by_fields(
+                    match self.persist_bucket_dump_install_marker_by_fields(
                         marker.shard_id,
                         &marker.manifest_id,
                         "commit",
@@ -299,7 +299,7 @@ impl TemporalEngine {
                         Ok(()) => {
                             report.completed_commit = true;
                             report.obsolete_marker_files_removed =
-                                remove_obsolete_slot_dump_install_markers(
+                                remove_obsolete_bucket_dump_install_markers(
                                     &self.index_dir,
                                     marker.shard_id,
                                     &marker.manifest_id,
@@ -318,42 +318,42 @@ impl TemporalEngine {
             .collect()
     }
 
-    pub fn apply_slot_dump_manifest_prune(&self, shard_id: ShardId) -> SlotDumpManifestPruneReport {
-        self.apply_slot_dump_manifest_prune_with_follower_cursors(shard_id, Vec::new())
+    pub fn apply_bucket_dump_manifest_prune(&self, shard_id: ShardId) -> BucketDumpManifestPruneReport {
+        self.apply_bucket_dump_manifest_prune_with_follower_cursors(shard_id, Vec::new())
     }
 
-    pub fn apply_slot_dump_manifest_prune_with_follower_cursors(
+    pub fn apply_bucket_dump_manifest_prune_with_follower_cursors(
         &self,
         shard_id: ShardId,
-        follower_cursors: impl IntoIterator<Item = SlotDumpFollowerReplayCursor>,
-    ) -> SlotDumpManifestPruneReport {
-        self.apply_slot_dump_manifest_prune_with_retention_refs(
+        follower_cursors: impl IntoIterator<Item = BucketDumpFollowerReplayCursor>,
+    ) -> BucketDumpManifestPruneReport {
+        self.apply_bucket_dump_manifest_prune_with_retention_refs(
             shard_id,
             follower_cursors,
             Vec::new(),
         )
     }
 
-    pub fn apply_slot_dump_manifest_prune_with_retention_refs(
+    pub fn apply_bucket_dump_manifest_prune_with_retention_refs(
         &self,
         shard_id: ShardId,
-        follower_cursors: impl IntoIterator<Item = SlotDumpFollowerReplayCursor>,
-        raft_snapshot_refs: impl IntoIterator<Item = SlotDumpRaftSnapshotRef>,
-    ) -> SlotDumpManifestPruneReport {
-        let plan = self.slot_dump_manifest_prune_plan_with_retention_refs(
+        follower_cursors: impl IntoIterator<Item = BucketDumpFollowerReplayCursor>,
+        raft_snapshot_refs: impl IntoIterator<Item = BucketDumpRaftSnapshotRef>,
+    ) -> BucketDumpManifestPruneReport {
+        let plan = self.bucket_dump_manifest_prune_plan_with_retention_refs(
             shard_id,
             follower_cursors,
             raft_snapshot_refs,
         );
         let mut removed_manifest_ids = Vec::new();
         for manifest_id in &plan.prunable_manifest_ids {
-            let path = slot_dump_manifest_path(&self.index_dir, shard_id, manifest_id);
+            let path = bucket_dump_manifest_path(&self.index_dir, shard_id, manifest_id);
             if fs::remove_file(path).is_ok() {
                 removed_manifest_ids.push(manifest_id.clone());
             }
         }
         let mut removed_marker_files = 0usize;
-        if let Ok(marker_files) = slot_dump_install_marker_files_at(&self.index_dir, shard_id) {
+        if let Ok(marker_files) = bucket_dump_install_marker_files_at(&self.index_dir, shard_id) {
             let prunable_marker_manifest_ids = plan
                 .prunable_marker_manifest_ids
                 .iter()
@@ -367,7 +367,7 @@ impl TemporalEngine {
                 }
             }
         }
-        SlotDumpManifestPruneReport {
+        BucketDumpManifestPruneReport {
             shard_id,
             plan,
             removed_manifest_ids,
@@ -375,12 +375,12 @@ impl TemporalEngine {
         }
     }
 
-    pub(super) fn slot_dump_install_roll_forward_report(
+    pub(super) fn bucket_dump_install_roll_forward_report(
         &self,
-        marker: &SlotDumpInstallMarker,
-    ) -> SlotDumpInstallRollForwardReport {
+        marker: &BucketDumpInstallMarker,
+    ) -> BucketDumpInstallRollForwardReport {
         if marker.phase != "install" && marker.phase != "prepare" {
-            return SlotDumpInstallRollForwardReport {
+            return BucketDumpInstallRollForwardReport {
                 shard_id: marker.shard_id,
                 manifest_id: marker.manifest_id.clone(),
                 interrupted_phase: marker.phase.clone(),
@@ -393,11 +393,11 @@ impl TemporalEngine {
             };
         }
         let Some(manifest) =
-            slot_dump_manifest_at(&self.index_dir, marker.shard_id, &marker.manifest_id)
+            bucket_dump_manifest_at(&self.index_dir, marker.shard_id, &marker.manifest_id)
                 .ok()
                 .flatten()
         else {
-            return SlotDumpInstallRollForwardReport {
+            return BucketDumpInstallRollForwardReport {
                 shard_id: marker.shard_id,
                 manifest_id: marker.manifest_id.clone(),
                 interrupted_phase: marker.phase.clone(),
@@ -409,12 +409,12 @@ impl TemporalEngine {
                 reason: "missing_manifest".to_string(),
             };
         };
-        let reason = match self.validate_slot_dump_manifest(&manifest) {
+        let reason = match self.validate_bucket_dump_manifest(&manifest) {
             Ok(()) if marker.phase == "install" => "commit_ready".to_string(),
             Ok(()) => "install_retry_ready".to_string(),
             Err(status) => format!("manifest_invalid:{}", status.code),
         };
-        SlotDumpInstallRollForwardReport {
+        BucketDumpInstallRollForwardReport {
             shard_id: marker.shard_id,
             manifest_id: marker.manifest_id.clone(),
             interrupted_phase: marker.phase.clone(),
@@ -427,8 +427,8 @@ impl TemporalEngine {
         }
     }
 
-    pub fn validate_slot_dump_manifest(&self, manifest: &SlotDumpManifest) -> Result<(), Status> {
-        let expected = slot_dump_manifest_checksum(manifest)
+    pub fn validate_bucket_dump_manifest(&self, manifest: &BucketDumpManifest) -> Result<(), Status> {
+        let expected = bucket_dump_manifest_checksum(manifest)
             .map_err(|_| Status::error("slot_dump_corrupt", "slot dump manifest is corrupt"))?;
         if manifest.checksum != expected {
             return Err(Status::error(
@@ -475,9 +475,9 @@ impl TemporalEngine {
         }
         let restored = serde_json::from_slice::<ShardState>(&manifest.index_bytes)
             .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
-        let manifest_slots = manifest.slot_ids.iter().copied().collect::<BTreeSet<_>>();
-        if manifest_slots.len() != manifest.slot_ids.len()
-            || manifest.slot_ids != manifest_slots.iter().copied().collect::<Vec<_>>()
+        let manifest_buckets = manifest.bucket_ids.iter().copied().collect::<BTreeSet<_>>();
+        if manifest_buckets.len() != manifest.bucket_ids.len()
+            || manifest.bucket_ids != manifest_buckets.iter().copied().collect::<Vec<_>>()
         {
             return Err(Status::error(
                 "slot_dump_slot_ids_not_canonical",
@@ -500,10 +500,10 @@ impl TemporalEngine {
         let live_page_entries = collect_live_page_entries(&restored)
             .into_iter()
             .filter(|entry| {
-                let routing_slot = entry.address.routing_slot.unwrap_or_else(|| {
-                    self.routing_slot_for_key(manifest.shard_id, &entry.object_key)
+                let routing_bucket = entry.address.routing_bucket.unwrap_or_else(|| {
+                    self.routing_bucket_for_key(manifest.shard_id, &entry.object_key)
                 });
-                manifest_slots.is_empty() || manifest_slots.contains(&routing_slot)
+                manifest_buckets.is_empty() || manifest_buckets.contains(&routing_bucket)
             })
             .collect::<Vec<_>>();
         if live_page_entries.len() as u64 != manifest.live_page_refs {
@@ -516,22 +516,22 @@ impl TemporalEngine {
                 ),
             ));
         }
-        let expected_slot_summaries =
-            slot_dump_manifest_comparable_summaries(&restored, &manifest_slots);
-        let actual_slot_summaries = comparable_slot_dump_summaries(manifest.slot_summaries.clone());
-        if actual_slot_summaries != expected_slot_summaries {
+        let expected_bucket_summaries =
+            bucket_dump_manifest_comparable_summaries(&restored, &manifest_buckets);
+        let actual_bucket_summaries = comparable_bucket_dump_summaries(manifest.bucket_summaries.clone());
+        if actual_bucket_summaries != expected_bucket_summaries {
             return Err(Status::error(
                 "slot_dump_slot_summary_mismatch",
                 format!(
-                    "slot dump slot summaries do not match restored index page ownership: manifest={actual_slot_summaries:?} restored={expected_slot_summaries:?}"
+                    "slot dump slot summaries do not match restored index page ownership: manifest={actual_bucket_summaries:?} restored={expected_bucket_summaries:?}"
                 ),
             ));
         }
-        let expected_logical_bytes = expected_slot_summaries
+        let expected_logical_bytes = expected_bucket_summaries
             .iter()
             .map(|summary| summary.logical_bytes)
             .sum::<u64>();
-        let expected_physical_bytes = expected_slot_summaries
+        let expected_physical_bytes = expected_bucket_summaries
             .iter()
             .map(|summary| summary.physical_bytes)
             .sum::<u64>();
@@ -550,11 +550,11 @@ impl TemporalEngine {
             ));
         }
         if manifest.version >= 3 {
-            let expected_object_lifecycle = storage_object_lifecycle_report_for_slots(
+            let expected_object_lifecycle = storage_object_lifecycle_report_for_buckets(
                 manifest.shard_id,
                 &restored,
-                &manifest_slots,
-                |key| self.routing_slot_for_key(manifest.shard_id, key),
+                &manifest_buckets,
+                |key| self.routing_bucket_for_key(manifest.shard_id, key),
             );
             if manifest.object_lifecycle != expected_object_lifecycle {
                 return Err(Status::error(
@@ -581,7 +581,7 @@ impl TemporalEngine {
             ));
         }
         if !manifest.dump_generation_id.is_empty()
-            && manifest.dump_generation_id != slot_dump_generation_id(manifest)
+            && manifest.dump_generation_id != bucket_dump_generation_id(manifest)
         {
             return Err(Status::error(
                 "slot_dump_generation_mismatch",
@@ -607,10 +607,10 @@ impl TemporalEngine {
         Ok(())
     }
 
-    pub fn slot_dump_install_preflight_report(
+    pub fn bucket_dump_install_preflight_report(
         &self,
-        manifest: &SlotDumpManifest,
-    ) -> SlotDumpInstallPreflightReport {
+        manifest: &BucketDumpManifest,
+    ) -> BucketDumpInstallPreflightReport {
         let current_oplog_sequence = self.wal_store.stats(manifest.shard_id).last_sequence;
         let current_index_log_sequence =
             self.index_log_store.stats(manifest.shard_id).last_sequence;
@@ -653,12 +653,12 @@ impl TemporalEngine {
         let mut restored_index = None;
         if !manifest.index_bytes.is_empty() && missing_page_segment_ids.is_empty() {
             if let Ok(restored) = serde_json::from_slice::<ShardState>(&manifest.index_bytes) {
-                let manifest_slots = manifest.slot_ids.iter().copied().collect::<BTreeSet<_>>();
+                let manifest_buckets = manifest.bucket_ids.iter().copied().collect::<BTreeSet<_>>();
                 for entry in collect_live_page_entries(&restored) {
-                    let routing_slot = entry.address.routing_slot.unwrap_or_else(|| {
-                        self.routing_slot_for_key(manifest.shard_id, &entry.object_key)
+                    let routing_bucket = entry.address.routing_bucket.unwrap_or_else(|| {
+                        self.routing_bucket_for_key(manifest.shard_id, &entry.object_key)
                     });
-                    if manifest_slots.is_empty() || manifest_slots.contains(&routing_slot) {
+                    if manifest_buckets.is_empty() || manifest_buckets.contains(&routing_bucket) {
                         if self.page_store.read(&entry.address).is_err() {
                             unreadable_page_ref_count = unreadable_page_ref_count.saturating_add(1);
                             unreadable_page_bytes =
@@ -673,18 +673,18 @@ impl TemporalEngine {
         }
         let (stale_object_conflicts, mut stale_page_conflicts) = restored_index
             .as_ref()
-            .map(|restored| self.slot_dump_stale_conflict_report(manifest, restored))
+            .map(|restored| self.bucket_dump_stale_conflict_report(manifest, restored))
             .unwrap_or_default();
         let (
             source_manifest_count,
             missing_source_manifest_ids,
-            source_manifest_slot_ids,
-            source_slot_coverage_missing_slot_ids,
-        ) = self.slot_dump_merged_source_preflight(manifest);
+            source_manifest_bucket_ids,
+            source_bucket_coverage_missing_bucket_ids,
+        ) = self.bucket_dump_merged_source_preflight(manifest);
         if !missing_source_manifest_ids.is_empty() {
             blockers.push("missing_source_manifests".to_string());
         }
-        if !source_slot_coverage_missing_slot_ids.is_empty() {
+        if !source_bucket_coverage_missing_bucket_ids.is_empty() {
             blockers.push("source_manifest_slot_coverage".to_string());
         }
         if stale_manifest && stale_page_conflicts.is_empty() {
@@ -717,7 +717,7 @@ impl TemporalEngine {
         blockers.sort();
         blockers.dedup();
 
-        SlotDumpInstallPreflightReport {
+        BucketDumpInstallPreflightReport {
             shard_id: manifest.shard_id,
             manifest_id: manifest.manifest_id.clone(),
             install_safe: blockers.is_empty(),
@@ -737,56 +737,56 @@ impl TemporalEngine {
             stale_page_conflicts,
             source_manifest_count,
             missing_source_manifest_ids,
-            source_manifest_slot_ids,
-            source_slot_coverage_missing_slot_ids,
+            source_manifest_bucket_ids,
+            source_bucket_coverage_missing_bucket_ids,
         }
     }
 
-    pub(super) fn slot_dump_merged_source_preflight(
+    pub(super) fn bucket_dump_merged_source_preflight(
         &self,
-        manifest: &SlotDumpManifest,
+        manifest: &BucketDumpManifest,
     ) -> (usize, Vec<String>, Vec<u32>, Vec<u32>) {
         if manifest.manifest_kind != "merged_slot_dump" && manifest.source_manifest_ids.is_empty() {
             return (0, Vec::new(), Vec::new(), Vec::new());
         }
-        let (source_manifest_count, missing_source_manifest_ids, source_manifest_slot_ids) = self
-            .slot_dump_source_manifest_coverage(manifest.shard_id, &manifest.source_manifest_ids);
-        let source_slots = source_manifest_slot_ids
+        let (source_manifest_count, missing_source_manifest_ids, source_manifest_bucket_ids) = self
+            .bucket_dump_source_manifest_coverage(manifest.shard_id, &manifest.source_manifest_ids);
+        let source_buckets = source_manifest_bucket_ids
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
-        let missing_slot_ids = manifest
-            .slot_ids
+        let missing_bucket_ids = manifest
+            .bucket_ids
             .iter()
             .copied()
-            .filter(|slot| !source_slots.contains(slot))
+            .filter(|bucket| !source_buckets.contains(bucket))
             .collect::<Vec<_>>();
         (
             source_manifest_count,
             missing_source_manifest_ids,
-            source_manifest_slot_ids,
-            missing_slot_ids,
+            source_manifest_bucket_ids,
+            missing_bucket_ids,
         )
     }
 
-    pub(super) fn slot_dump_source_manifest_coverage(
+    pub(super) fn bucket_dump_source_manifest_coverage(
         &self,
         shard_id: ShardId,
         source_manifest_ids: &[String],
     ) -> (usize, Vec<String>, Vec<u32>) {
         let mut source_manifest_count = 0usize;
         let mut missing_source_manifest_ids = Vec::new();
-        let mut source_manifest_slot_ids = BTreeSet::new();
+        let mut source_manifest_bucket_ids = BTreeSet::new();
         for manifest_id in source_manifest_ids {
-            match slot_dump_manifest_at(&self.index_dir, shard_id, manifest_id) {
+            match bucket_dump_manifest_at(&self.index_dir, shard_id, manifest_id) {
                 Ok(Some(source))
                     if source.shard_id == shard_id
-                        && slot_dump_manifest_checksum(&source)
+                        && bucket_dump_manifest_checksum(&source)
                             .map(|checksum| checksum == source.checksum)
                             .unwrap_or(false) =>
                 {
                     source_manifest_count = source_manifest_count.saturating_add(1);
-                    source_manifest_slot_ids.extend(source.slot_ids);
+                    source_manifest_bucket_ids.extend(source.bucket_ids);
                 }
                 _ => missing_source_manifest_ids.push(manifest_id.clone()),
             }
@@ -794,27 +794,27 @@ impl TemporalEngine {
         (
             source_manifest_count,
             missing_source_manifest_ids,
-            source_manifest_slot_ids.into_iter().collect(),
+            source_manifest_bucket_ids.into_iter().collect(),
         )
     }
 
-    pub(super) fn slot_dump_stale_conflict_report(
+    pub(super) fn bucket_dump_stale_conflict_report(
         &self,
-        manifest: &SlotDumpManifest,
+        manifest: &BucketDumpManifest,
         restored: &ShardState,
     ) -> (Vec<String>, Vec<String>) {
-        let manifest_slots = manifest.slot_ids.iter().copied().collect::<BTreeSet<_>>();
+        let manifest_buckets = manifest.bucket_ids.iter().copied().collect::<BTreeSet<_>>();
         let manifest_entries =
-            slot_dump_entries_by_key(manifest.shard_id, restored, &manifest_slots, |key| {
-                self.routing_slot_for_key(manifest.shard_id, key)
+            bucket_dump_entries_by_key(manifest.shard_id, restored, &manifest_buckets, |key| {
+                self.routing_bucket_for_key(manifest.shard_id, key)
             });
         let current_entries = {
             let shards = self.shards.read().expect("engine lock poisoned");
             let Some(current) = shards.get(&manifest.shard_id) else {
                 return (Vec::new(), Vec::new());
             };
-            slot_dump_entries_by_key(manifest.shard_id, current, &manifest_slots, |key| {
-                self.routing_slot_for_key(manifest.shard_id, key)
+            bucket_dump_entries_by_key(manifest.shard_id, current, &manifest_buckets, |key| {
+                self.routing_bucket_for_key(manifest.shard_id, key)
             })
         };
         let mut stale_object_conflicts = Vec::new();
@@ -838,11 +838,11 @@ impl TemporalEngine {
         (stale_object_conflicts, stale_page_conflicts)
     }
 
-    pub fn slot_dump_fault_matrix_report(&self, shard_id: ShardId) -> SlotDumpFaultMatrixReport {
-        let manifest = match self.create_slot_dump_manifest(shard_id, Vec::new()) {
+    pub fn bucket_dump_fault_matrix_report(&self, shard_id: ShardId) -> BucketDumpFaultMatrixReport {
+        let manifest = match self.create_bucket_dump_manifest(shard_id, Vec::new()) {
             Ok(manifest) => manifest,
             Err(status) => {
-                let scenario = SlotDumpFaultScenarioReport {
+                let scenario = BucketDumpFaultScenarioReport {
                     scenario: "create_manifest".to_string(),
                     passed: false,
                     expected_code: "ok".to_string(),
@@ -850,7 +850,7 @@ impl TemporalEngine {
                     blockers: Vec::new(),
                     install_safe: false,
                 };
-                return SlotDumpFaultMatrixReport {
+                return BucketDumpFaultMatrixReport {
                     shard_id,
                     manifest_id: String::new(),
                     production_ready_slice: false,
@@ -867,11 +867,11 @@ impl TemporalEngine {
         let mut checksum_mismatch = manifest.clone();
         checksum_mismatch.logical_bytes = checksum_mismatch.logical_bytes.saturating_add(1);
         let checksum_code = self
-            .validate_slot_dump_manifest(&checksum_mismatch)
+            .validate_bucket_dump_manifest(&checksum_mismatch)
             .err()
             .map(|status| status.code)
             .unwrap_or_else(|| "ok".to_string());
-        scenarios.push(slot_dump_fault_scenario(
+        scenarios.push(bucket_dump_fault_scenario(
             "checksum_mismatch",
             "slot_dump_checksum_mismatch",
             checksum_code,
@@ -882,13 +882,13 @@ impl TemporalEngine {
         let mut partial = manifest.clone();
         partial.index_bytes.clear();
         partial.checksum =
-            slot_dump_manifest_checksum(&partial).unwrap_or_else(|err| err.code.clone());
+            bucket_dump_manifest_checksum(&partial).unwrap_or_else(|err| err.code.clone());
         let partial_code = self
-            .install_slot_dump_manifest(&partial)
+            .install_bucket_dump_manifest(&partial)
             .err()
             .map(|status| status.code)
             .unwrap_or_else(|| "ok".to_string());
-        scenarios.push(slot_dump_fault_scenario(
+        scenarios.push(bucket_dump_fault_scenario(
             "partial_manifest",
             "slot_dump_partial_manifest",
             partial_code,
@@ -907,14 +907,14 @@ impl TemporalEngine {
         missing.page_segment_ids.push(missing_segment_id);
         missing.page_segment_ids.sort_unstable();
         missing.checksum =
-            slot_dump_manifest_checksum(&missing).unwrap_or_else(|err| err.code.clone());
-        let missing_preflight = self.slot_dump_install_preflight_report(&missing);
+            bucket_dump_manifest_checksum(&missing).unwrap_or_else(|err| err.code.clone());
+        let missing_preflight = self.bucket_dump_install_preflight_report(&missing);
         let missing_code = self
-            .validate_slot_dump_manifest(&missing)
+            .validate_bucket_dump_manifest(&missing)
             .err()
             .map(|status| status.code)
             .unwrap_or_else(|| "ok".to_string());
-        scenarios.push(slot_dump_fault_scenario(
+        scenarios.push(bucket_dump_fault_scenario(
             "missing_page_segment",
             "slot_dump_missing_page_segments",
             missing_code,
@@ -933,16 +933,16 @@ impl TemporalEngine {
             },
         });
         if stale_write.status.ok {
-            let stale_preflight = self.slot_dump_install_preflight_report(&manifest);
+            let stale_preflight = self.bucket_dump_install_preflight_report(&manifest);
             stale_install_safe = stale_preflight.install_safe;
             stale_blockers = stale_preflight.blockers;
             stale_code = self
-                .install_slot_dump_manifest(&manifest)
+                .install_bucket_dump_manifest(&manifest)
                 .err()
                 .map(|status| status.code)
                 .unwrap_or_else(|| "ok".to_string());
         }
-        scenarios.push(slot_dump_fault_scenario(
+        scenarios.push(bucket_dump_fault_scenario(
             "stale_manifest",
             "slot_dump_stale_manifest",
             stale_code,
@@ -953,9 +953,9 @@ impl TemporalEngine {
         let restart_code;
         let mut restart_blockers = Vec::new();
         let mut restart_install_safe = false;
-        match self.create_slot_dump_manifest(shard_id, Vec::new()) {
+        match self.create_bucket_dump_manifest(shard_id, Vec::new()) {
             Ok(restart_manifest) => {
-                match self.persist_slot_dump_install_marker_by_fields(
+                match self.persist_bucket_dump_install_marker_by_fields(
                     restart_manifest.shard_id,
                     &restart_manifest.manifest_id,
                     "prepare",
@@ -963,9 +963,9 @@ impl TemporalEngine {
                     restart_manifest.index_log_sequence,
                 ) {
                     Ok(()) => {
-                        let before = self.slot_dump_install_roll_forward_reports(shard_id);
-                        let applied = self.roll_forward_slot_dump_installs(shard_id);
-                        let interrupted_after = self.interrupted_slot_dump_installs(shard_id);
+                        let before = self.bucket_dump_install_roll_forward_reports(shard_id);
+                        let applied = self.roll_forward_bucket_dump_installs(shard_id);
+                        let interrupted_after = self.interrupted_bucket_dump_installs(shard_id);
                         restart_install_safe = before.iter().any(|report| report.can_retry_install);
                         if !restart_install_safe {
                             restart_blockers.push("roll_forward_not_retryable".to_string());
@@ -990,7 +990,7 @@ impl TemporalEngine {
             }
             Err(status) => restart_code = status.code,
         }
-        scenarios.push(slot_dump_fault_scenario(
+        scenarios.push(bucket_dump_fault_scenario(
             "restart_during_install_roll_forward",
             "slot_dump_restart_roll_forward",
             restart_code,
@@ -1010,7 +1010,7 @@ impl TemporalEngine {
                     match self.page_store.install_segment(segment_id, &segment) {
                         Ok(()) => {
                             let corrupt_preflight =
-                                self.slot_dump_install_preflight_report(&manifest);
+                                self.bucket_dump_install_preflight_report(&manifest);
                             corrupt_install_safe = corrupt_preflight.install_safe;
                             corrupt_blockers = corrupt_preflight.blockers;
                             corrupt_code = if corrupt_blockers
@@ -1019,7 +1019,7 @@ impl TemporalEngine {
                             {
                                 "corrupt_page_segments".to_string()
                             } else {
-                                self.validate_slot_dump_manifest(&manifest)
+                                self.validate_bucket_dump_manifest(&manifest)
                                     .err()
                                     .map(|status| status.code)
                                     .unwrap_or_else(|| "ok".to_string())
@@ -1032,7 +1032,7 @@ impl TemporalEngine {
                 Err(err) => corrupt_code = format!("read_segment_failed:{err}"),
             }
         }
-        scenarios.push(slot_dump_fault_scenario(
+        scenarios.push(bucket_dump_fault_scenario(
             "corrupt_page_segment",
             "corrupt_page_segments",
             corrupt_code,
@@ -1046,7 +1046,7 @@ impl TemporalEngine {
             .filter(|scenario| !scenario.passed)
             .cloned()
             .collect::<Vec<_>>();
-        SlotDumpFaultMatrixReport {
+        BucketDumpFaultMatrixReport {
             shard_id,
             manifest_id: manifest.manifest_id,
             production_ready_slice: failed_scenarios.is_empty(),
@@ -1057,9 +1057,9 @@ impl TemporalEngine {
         }
     }
 
-    pub fn install_slot_dump_manifest(&self, manifest: &SlotDumpManifest) -> Result<(), Status> {
-        self.validate_slot_dump_manifest(manifest)?;
-        let preflight = self.slot_dump_install_preflight_report(manifest);
+    pub fn install_bucket_dump_manifest(&self, manifest: &BucketDumpManifest) -> Result<(), Status> {
+        self.validate_bucket_dump_manifest(manifest)?;
+        let preflight = self.bucket_dump_install_preflight_report(manifest);
         if !preflight.install_safe {
             if preflight.stale_manifest {
                 return Err(Status::error(
@@ -1087,7 +1087,7 @@ impl TemporalEngine {
                 ),
             ));
         }
-        self.validate_slot_dump_generation_for_install(manifest)?;
+        self.validate_bucket_dump_generation_for_install(manifest)?;
         let current_index_sequence = self.index_log_store.stats(manifest.shard_id).last_sequence;
         if current_index_sequence > manifest.index_log_sequence {
             return Err(Status::error(
@@ -1100,13 +1100,13 @@ impl TemporalEngine {
         }
         let mut restored = serde_json::from_slice::<ShardState>(&manifest.index_bytes)
             .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
-        rebuild_slot_page_ownership(manifest.shard_id, &mut restored, 0, u32::MAX);
+        rebuild_bucket_page_ownership(manifest.shard_id, &mut restored, 0, u32::MAX);
         let restored_index_bytes = serialize_index(&restored);
-        self.persist_slot_dump_install_marker(manifest, "prepare")
+        self.persist_bucket_dump_install_marker(manifest, "prepare")
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
         self.persist_index_bytes(manifest.shard_id, &restored_index_bytes)
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
-        self.persist_slot_dump_install_marker(manifest, "install")
+        self.persist_bucket_dump_install_marker(manifest, "install")
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
         if self
             .shards
@@ -1119,31 +1119,31 @@ impl TemporalEngine {
                 .expect("engine lock poisoned")
                 .insert(manifest.shard_id, restored);
         }
-        self.persist_slot_dump_manifest(manifest)
+        self.persist_bucket_dump_manifest(manifest)
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
-        self.persist_slot_dump_install_marker(manifest, "commit")
+        self.persist_bucket_dump_install_marker(manifest, "commit")
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
         Ok(())
     }
 
-    pub fn install_merged_slot_dump_manifest(
+    pub fn install_merged_bucket_dump_manifest(
         &self,
-        manifest: &SlotDumpManifest,
-    ) -> SlotDumpMergedInstallReport {
-        let preflight = self.slot_dump_install_preflight_report(manifest);
+        manifest: &BucketDumpManifest,
+    ) -> BucketDumpMergedInstallReport {
+        let preflight = self.bucket_dump_install_preflight_report(manifest);
         let rollback_marker_written = self
-            .persist_slot_dump_install_marker(manifest, "rollback")
+            .persist_bucket_dump_install_marker(manifest, "rollback")
             .is_ok();
         if !preflight.install_safe {
-            return SlotDumpMergedInstallReport {
+            return BucketDumpMergedInstallReport {
                 shard_id: manifest.shard_id,
                 manifest_id: manifest.manifest_id.clone(),
                 source_manifest_ids: manifest.source_manifest_ids.clone(),
-                slot_ids: manifest.slot_ids.clone(),
+                bucket_ids: manifest.bucket_ids.clone(),
                 source_manifest_count: preflight.source_manifest_count,
                 missing_source_manifest_ids: preflight.missing_source_manifest_ids.clone(),
-                source_slot_coverage_missing_slot_ids: preflight
-                    .source_slot_coverage_missing_slot_ids
+                source_bucket_coverage_missing_bucket_ids: preflight
+                    .source_bucket_coverage_missing_bucket_ids
                     .clone(),
                 stale_object_conflict_count: preflight.stale_object_conflict_count,
                 stale_page_conflict_count: preflight.stale_page_conflict_count,
@@ -1157,7 +1157,7 @@ impl TemporalEngine {
                 status_code: "slot_dump_install_preflight_failed".to_string(),
             };
         }
-        match self.install_slot_dump_manifest(manifest) {
+        match self.install_bucket_dump_manifest(manifest) {
             Ok(()) => {
                 let mut load_version_handoff = manifest.load_version_handoff.clone();
                 if let Some(handoff) = load_version_handoff.as_mut() {
@@ -1171,15 +1171,15 @@ impl TemporalEngine {
                         handoff.applied = true;
                     }
                 }
-                SlotDumpMergedInstallReport {
+                BucketDumpMergedInstallReport {
                     shard_id: manifest.shard_id,
                     manifest_id: manifest.manifest_id.clone(),
                     source_manifest_ids: manifest.source_manifest_ids.clone(),
-                    slot_ids: manifest.slot_ids.clone(),
+                    bucket_ids: manifest.bucket_ids.clone(),
                     source_manifest_count: preflight.source_manifest_count,
                     missing_source_manifest_ids: preflight.missing_source_manifest_ids.clone(),
-                    source_slot_coverage_missing_slot_ids: preflight
-                        .source_slot_coverage_missing_slot_ids
+                    source_bucket_coverage_missing_bucket_ids: preflight
+                        .source_bucket_coverage_missing_bucket_ids
                         .clone(),
                     stale_object_conflict_count: preflight.stale_object_conflict_count,
                     stale_page_conflict_count: preflight.stale_page_conflict_count,
@@ -1193,15 +1193,15 @@ impl TemporalEngine {
                     status_code: "ok".to_string(),
                 }
             }
-            Err(status) => SlotDumpMergedInstallReport {
+            Err(status) => BucketDumpMergedInstallReport {
                 shard_id: manifest.shard_id,
                 manifest_id: manifest.manifest_id.clone(),
                 source_manifest_ids: manifest.source_manifest_ids.clone(),
-                slot_ids: manifest.slot_ids.clone(),
+                bucket_ids: manifest.bucket_ids.clone(),
                 source_manifest_count: preflight.source_manifest_count,
                 missing_source_manifest_ids: preflight.missing_source_manifest_ids.clone(),
-                source_slot_coverage_missing_slot_ids: preflight
-                    .source_slot_coverage_missing_slot_ids
+                source_bucket_coverage_missing_bucket_ids: preflight
+                    .source_bucket_coverage_missing_bucket_ids
                     .clone(),
                 stale_object_conflict_count: preflight.stale_object_conflict_count,
                 stale_page_conflict_count: preflight.stale_page_conflict_count,

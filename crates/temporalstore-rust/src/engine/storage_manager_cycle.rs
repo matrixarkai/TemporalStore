@@ -22,16 +22,16 @@ impl TemporalEngine {
         .collect::<Vec<_>>();
         let plan_request = StorageLifecycleRequest {
             shard_id: request.shard_id,
-            selected_dump_slots: Vec::new(),
-            max_dump_slots_per_round: request.max_dump_slots_per_round,
+            selected_dump_buckets: Vec::new(),
+            max_dump_buckets_per_round: request.max_dump_buckets_per_round,
             min_undumped_oplog_records: if request.enable_oplog_reclaim {
                 request.min_undumped_oplog_records
             } else {
                 u64::MAX
             },
             purge_delayed_destroy: request.enable_page_reclaim,
-            prune_slot_dump_manifests: request.enable_index_gc,
-            roll_forward_slot_dump_installs: request.enable_index_gc,
+            prune_bucket_dump_manifests: request.enable_index_gc,
+            roll_forward_bucket_dump_installs: request.enable_index_gc,
             follower_replay_cursors: request.follower_replay_cursors.clone(),
             page_gc_shared_store_cursors: request.page_gc_shared_store_cursors.clone(),
             page_gc_raft_snapshot_refs: request.raft_snapshot_refs.clone(),
@@ -53,13 +53,13 @@ impl TemporalEngine {
             request.page_gc_raft_install_floor_segment_id,
             request.page_gc_delayed_destroy_grace_ms,
         );
-        let slot_logical_bytes = plan
-            .slot_summaries
+        let bucket_logical_bytes = plan
+            .bucket_summaries
             .iter()
             .map(|summary| summary.logical_bytes)
             .sum::<u64>();
-        let slot_physical_bytes = plan
-            .slot_summaries
+        let bucket_physical_bytes = plan
+            .bucket_summaries
             .iter()
             .map(|summary| summary.physical_bytes)
             .sum::<u64>();
@@ -93,7 +93,7 @@ impl TemporalEngine {
             .filter(|candidate| candidate.reason == "delayed_destroy")
             .map(|candidate| candidate.physical_bytes)
             .sum::<u64>();
-        let expired_slot_object_scan_debt = self
+        let expired_bucket_object_scan_debt = self
             .shards
             .read()
             .expect("shards lock poisoned")
@@ -130,7 +130,7 @@ impl TemporalEngine {
             .saturating_add(compaction_utility.stale_page_estimate)
             .saturating_add(reclaim_stale_bytes)
             .saturating_add(page_segment_stale_density_basis_points);
-        let retention_prune_plan = self.slot_dump_manifest_prune_plan_with_retention_refs(
+        let retention_prune_plan = self.bucket_dump_manifest_prune_plan_with_retention_refs(
             request.shard_id,
             request.follower_replay_cursors.clone(),
             request.raft_snapshot_refs.clone(),
@@ -146,9 +146,9 @@ impl TemporalEngine {
             .saturating_add(cache_pressure.stats.async_writeback_queue_bytes)
             .saturating_add(cache_pressure.stats.async_writeback_queue_depth);
         let total_pressure_score = plan
-            .dirty_slots
+            .dirty_buckets
             .len()
-            .saturating_add(expired_slot_object_scan_debt)
+            .saturating_add(expired_bucket_object_scan_debt)
             .saturating_add(delayed_destroy_segment_count)
             .saturating_add(compaction_debt_model_count) as u64
             + plan.undumped_oplog_records
@@ -161,7 +161,7 @@ impl TemporalEngine {
             + manifest_retention_blockers as u64
             + compaction_debt_score;
         let pressure_signals = StorageManagerPressureSignals {
-            dirty_slot_count: plan.dirty_slots.len(),
+            dirty_bucket_count: plan.dirty_buckets.len(),
             undumped_wal_records: plan.undumped_oplog_records,
             wal_bytes: log_pressure.oplog_bytes,
             index_log_bytes: log_pressure.index_log_bytes,
@@ -171,7 +171,7 @@ impl TemporalEngine {
             memory_cache_bytes: cache_pressure.stats.memory_bytes,
             disk_cache_bytes: cache_pressure.stats.disk_bytes,
             memory_cache_pressure_score,
-            expired_slot_object_scan_debt,
+            expired_bucket_object_scan_debt,
             delayed_destroy_segment_count,
             delayed_destroy_bytes,
             follower_cursor_retention_blockers: retention_prune_plan.follower_blocks.len(),
@@ -201,15 +201,15 @@ impl TemporalEngine {
             pressure_triggered: pressure_signals.total_pressure_score > 0,
             candidate_count: reclaim_candidate_count,
             skipped_count: reclaim_skipped_count,
-            before_bytes: slot_physical_bytes,
-            after_bytes: slot_physical_bytes,
+            before_bytes: bucket_physical_bytes,
+            after_bytes: bucket_physical_bytes,
             live_bytes: reclaim_live_bytes,
             stale_bytes: reclaim_stale_bytes,
-            dirty_slot_count: plan.dirty_slots.len(),
+            dirty_bucket_count: plan.dirty_buckets.len(),
             undumped_oplog_records: plan.undumped_oplog_records,
-            metrics_slot_count: plan.slot_summaries.len(),
+            metrics_bucket_count: plan.bucket_summaries.len(),
             metrics_page_ref_count: plan
-                .slot_summaries
+                .bucket_summaries
                 .iter()
                 .map(|summary| summary.page_ref_count)
                 .sum(),
@@ -222,9 +222,9 @@ impl TemporalEngine {
                 shard_id: request.shard_id,
                 hot_cursor: request.expire_hot_cursor.clone(),
                 cold_cursor: request.expire_cold_cursor.clone(),
-                max_hot_slots_per_round: request.max_expire_hot_slots_per_round,
-                max_cold_slots_per_round: request.max_expire_cold_slots_per_round,
-                load_cold_slots: request.load_cold_slots_for_expire,
+                max_hot_buckets_per_round: request.max_expire_hot_buckets_per_round,
+                max_cold_buckets_per_round: request.max_expire_cold_buckets_per_round,
+                load_cold_buckets: request.load_cold_buckets_for_expire,
             }) {
                 Ok(report) => expiry_report = Some(report),
                 Err(err) => errors.push(format!("expire: {}", err.message)),
@@ -365,7 +365,7 @@ impl TemporalEngine {
                 "reclaimed WAL/index-log through the slot-generation durable dump frontier"
                     .to_string()
             },
-            selected_slots: plan.selected_dump_slots.clone(),
+            selected_buckets: plan.selected_dump_buckets.clone(),
             pressure_signal:
                 "durable_slot_generation_frontier+follower_snapshot_retention+wal_bytes+index_log_bytes"
                     .to_string(),
@@ -382,20 +382,20 @@ impl TemporalEngine {
                     .as_ref()
                     .map(|report| report.plan.safe_to_reclaim)
                     .unwrap_or(false),
-            candidate_count: plan.dirty_slots.len(),
+            candidate_count: plan.dirty_buckets.len(),
             skipped_count: plan
-                .dirty_slots
+                .dirty_buckets
                 .len()
-                .saturating_sub(plan.selected_dump_slots.len()),
-            before_bytes: slot_logical_bytes,
-            after_bytes: slot_logical_bytes,
-            live_bytes: slot_logical_bytes,
-            dirty_slot_count: plan.dirty_slots.len(),
+                .saturating_sub(plan.selected_dump_buckets.len()),
+            before_bytes: bucket_logical_bytes,
+            after_bytes: bucket_logical_bytes,
+            live_bytes: bucket_logical_bytes,
+            dirty_bucket_count: plan.dirty_buckets.len(),
             undumped_oplog_records: plan.undumped_oplog_records,
-            dumped_slot_count: lifecycle_report
+            dumped_bucket_count: lifecycle_report
                 .as_ref()
                 .and_then(|report| report.dump_manifest.as_ref())
-                .map(|manifest| manifest.slot_ids.len())
+                .map(|manifest| manifest.bucket_ids.len())
                 .unwrap_or_default(),
             wal_records_removed: wal_reclaim_report
                 .as_ref()
@@ -440,15 +440,15 @@ impl TemporalEngine {
             pressure_score: expiry_report
                 .as_ref()
                 .map(|report| report.expired_records_removed as u64)
-                .unwrap_or(pressure_signals.expired_slot_object_scan_debt as u64),
+                .unwrap_or(pressure_signals.expired_bucket_object_scan_debt as u64),
             pressure_threshold: 1,
-            pressure_triggered: pressure_signals.expired_slot_object_scan_debt > 0
+            pressure_triggered: pressure_signals.expired_bucket_object_scan_debt > 0
                 || expiry_report
                     .as_ref()
                     .map(|report| report.expired_records_removed > 0)
                     .unwrap_or(false),
-            before_bytes: slot_logical_bytes,
-            after_bytes: slot_logical_bytes,
+            before_bytes: bucket_logical_bytes,
+            after_bytes: bucket_logical_bytes,
             expired_records_removed: expiry_report
                 .as_ref()
                 .map(|report| report.expired_records_removed)
@@ -456,7 +456,7 @@ impl TemporalEngine {
             candidate_count: expiry_report
                 .as_ref()
                 .map(|report| report.scanned_records)
-                .unwrap_or(pressure_signals.expired_slot_object_scan_debt),
+                .unwrap_or(pressure_signals.expired_bucket_object_scan_debt),
             skipped_count: expiry_report
                 .as_ref()
                 .map(|report| report.skipped_records)
@@ -535,13 +535,13 @@ impl TemporalEngine {
                 .as_ref()
                 .map(|report| report.cache_disk_bytes_removed)
                 .unwrap_or_default(),
-            selected_slots: eviction_report
+            selected_buckets: eviction_report
                 .as_ref()
                 .map(|report| {
                     report
                         .selected_victims
                         .iter()
-                        .map(|victim| victim.routing_slot)
+                        .map(|victim| victim.routing_bucket)
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -792,12 +792,12 @@ impl TemporalEngine {
                     .map(|report| report.stale_page_segment_ids.len())
                     .unwrap_or_default(),
             ),
-            before_bytes: slot_physical_bytes,
+            before_bytes: bucket_physical_bytes,
             after_bytes: compaction_report
                 .as_ref()
-                .map(|_| slot_logical_bytes)
-                .unwrap_or(slot_physical_bytes),
-            live_bytes: slot_logical_bytes,
+                .map(|_| bucket_logical_bytes)
+                .unwrap_or(bucket_physical_bytes),
+            live_bytes: bucket_logical_bytes,
             stale_bytes: reclaim_stale_bytes,
             selected_page_segment_ids: compaction_report
                 .as_ref()
@@ -837,21 +837,21 @@ impl TemporalEngine {
             skipped: false,
             reason: "reported slot/page/cache pressure metrics for the completed cycle".to_string(),
             pressure_signal: "slot_page_cache_metrics".to_string(),
-            pressure_score: plan.slot_summaries.len() as u64
+            pressure_score: plan.bucket_summaries.len() as u64
                 + plan
-                    .slot_summaries
+                    .bucket_summaries
                     .iter()
                     .map(|summary| summary.page_ref_count)
                     .sum::<u64>(),
             pressure_threshold: 1,
-            pressure_triggered: !plan.slot_summaries.is_empty(),
-            before_bytes: slot_physical_bytes,
-            after_bytes: slot_physical_bytes,
-            live_bytes: slot_logical_bytes,
+            pressure_triggered: !plan.bucket_summaries.is_empty(),
+            before_bytes: bucket_physical_bytes,
+            after_bytes: bucket_physical_bytes,
+            live_bytes: bucket_logical_bytes,
             stale_bytes: reclaim_stale_bytes,
-            metrics_slot_count: plan.slot_summaries.len(),
+            metrics_bucket_count: plan.bucket_summaries.len(),
             metrics_page_ref_count: plan
-                .slot_summaries
+                .bucket_summaries
                 .iter()
                 .map(|summary| summary.page_ref_count)
                 .sum(),
@@ -898,12 +898,12 @@ impl TemporalEngine {
         request: StorageMergedDumpLoadPolicyRequest,
     ) -> StorageMergedDumpLoadPolicyReport {
         let mut lifecycle_request = request.lifecycle.clone();
-        lifecycle_request.roll_forward_slot_dump_installs = true;
+        lifecycle_request.roll_forward_bucket_dump_installs = true;
         let lifecycle = if request.create_dump_manifest {
             self.apply_storage_lifecycle(lifecycle_request.clone())
         } else {
             let plan = self.storage_lifecycle_plan(lifecycle_request.clone());
-            let manifest_prune_plan = self.slot_dump_manifest_prune_plan_with_follower_cursors(
+            let manifest_prune_plan = self.bucket_dump_manifest_prune_plan_with_follower_cursors(
                 lifecycle_request.shard_id,
                 lifecycle_request.follower_replay_cursors.clone(),
             );
@@ -912,7 +912,7 @@ impl TemporalEngine {
                 plan,
                 manifest_prune_plan,
                 install_roll_forward_reports: self
-                    .slot_dump_install_roll_forward_reports(lifecycle_request.shard_id),
+                    .bucket_dump_install_roll_forward_reports(lifecycle_request.shard_id),
                 object_lifecycle: self
                     .storage_recovery_report_without_boundary(lifecycle_request.shard_id)
                     .object_lifecycle,
@@ -922,21 +922,21 @@ impl TemporalEngine {
         let manifest = lifecycle
             .dump_manifest
             .clone()
-            .or_else(|| latest_slot_dump_manifest_at(&self.index_dir, lifecycle_request.shard_id));
+            .or_else(|| latest_bucket_dump_manifest_at(&self.index_dir, lifecycle_request.shard_id));
         let boundary = self.storage_recovery_boundary_report(lifecycle_request.shard_id);
-        let manifest_prune_plan = self.slot_dump_manifest_prune_plan_with_follower_cursors(
+        let manifest_prune_plan = self.bucket_dump_manifest_prune_plan_with_follower_cursors(
             lifecycle_request.shard_id,
             lifecycle_request.follower_replay_cursors.clone(),
         );
         let install_roll_forward_reports =
-            self.slot_dump_install_roll_forward_reports(lifecycle_request.shard_id);
+            self.bucket_dump_install_roll_forward_reports(lifecycle_request.shard_id);
         let load_preflight = manifest
             .as_ref()
-            .map(|manifest| self.slot_dump_install_preflight_report(manifest));
+            .map(|manifest| self.bucket_dump_install_preflight_report(manifest));
         let install_status = if request.install_dump_manifest {
             manifest
                 .as_ref()
-                .map(|manifest| match self.install_slot_dump_manifest(manifest) {
+                .map(|manifest| match self.install_bucket_dump_manifest(manifest) {
                     Ok(()) => Status::ok(),
                     Err(status) => status,
                 })
@@ -990,7 +990,7 @@ impl TemporalEngine {
         let policy_ready = blockers.is_empty();
         let (
             manifest_id,
-            manifest_slot_ids,
+            manifest_bucket_ids,
             manifest_page_segment_ids,
             manifest_oplog_sequence,
             manifest_index_log_sequence,
@@ -999,7 +999,7 @@ impl TemporalEngine {
             .map(|manifest| {
                 (
                     Some(manifest.manifest_id.clone()),
-                    manifest.slot_ids.clone(),
+                    manifest.bucket_ids.clone(),
                     manifest.page_segment_ids.clone(),
                     manifest.oplog_sequence,
                     manifest.index_log_sequence,
@@ -1018,7 +1018,7 @@ impl TemporalEngine {
             follower_retention_safe,
             index_gc_ready,
             manifest_id,
-            manifest_slot_ids,
+            manifest_bucket_ids,
             manifest_page_segment_ids,
             manifest_oplog_sequence,
             manifest_index_log_sequence,

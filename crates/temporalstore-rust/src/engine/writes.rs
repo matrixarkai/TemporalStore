@@ -6,11 +6,11 @@ pub(super) fn append_value(
     shard_id: ShardId,
     bytes: &[u8],
     object_id: Option<u64>,
-    routing_slot: Option<u32>,
+    routing_bucket: Option<u32>,
     async_storage: bool,
 ) -> Result<BlockAddress, BlockStoreError> {
     if !async_storage {
-        return page_store.append_with_page_metadata(bytes, object_id, routing_slot);
+        return page_store.append_with_page_metadata(bytes, object_id, routing_bucket);
     }
     let address = BlockAddress {
         page_segment_id: HOT_PAGE_SEGMENT_ID,
@@ -18,7 +18,7 @@ pub(super) fn append_value(
         length: bytes.len() as u64,
         page_id: None,
         object_id,
-        routing_slot,
+        routing_bucket,
         generation: object_id,
         band_id: None,
         sha256: None,
@@ -30,7 +30,7 @@ pub(super) fn append_value(
             address.page_segment_id,
             address.offset,
             address.length,
-            address.routing_slot,
+            address.routing_bucket,
             address.generation,
         ),
         bytes,
@@ -54,7 +54,7 @@ pub(super) fn append_timestamped_single_pages_batch(
         let packed = encode_single_feature_page(write.timestamp_ms, &write.value);
         if !async_storage {
             return page_store
-                .append_with_page_metadata(&packed, Some(object_id), Some(write.routing_slot))
+                .append_with_page_metadata(&packed, Some(object_id), Some(write.routing_bucket))
                 .ok()
                 .map(|address| vec![address]);
         }
@@ -64,7 +64,7 @@ pub(super) fn append_timestamped_single_pages_batch(
             length: packed.len() as u64,
             page_id: None,
             object_id: Some(object_id),
-            routing_slot: Some(write.routing_slot),
+            routing_bucket: Some(write.routing_bucket),
             generation: Some(object_id),
             band_id: None,
             sha256: None,
@@ -75,7 +75,7 @@ pub(super) fn append_timestamped_single_pages_batch(
                 address.page_segment_id,
                 address.offset,
                 address.length,
-                address.routing_slot,
+                address.routing_bucket,
                 address.generation,
             ),
             packed,
@@ -89,7 +89,7 @@ pub(super) fn append_timestamped_single_pages_batch(
             append_records.push((
                 encode_single_feature_page(write.timestamp_ms, &write.value),
                 Some(object_id),
-                Some(write.routing_slot),
+                Some(write.routing_bucket),
             ));
         }
         return page_store
@@ -108,7 +108,7 @@ pub(super) fn append_timestamped_single_pages_batch(
             length: packed.len() as u64,
             page_id: None,
             object_id: Some(object_id),
-            routing_slot: Some(write.routing_slot),
+            routing_bucket: Some(write.routing_bucket),
             generation: Some(object_id),
             band_id: None,
             sha256: None,
@@ -119,7 +119,7 @@ pub(super) fn append_timestamped_single_pages_batch(
                 address.page_segment_id,
                 address.offset,
                 address.length,
-                address.routing_slot,
+                address.routing_bucket,
                 address.generation,
             ),
             packed,
@@ -146,8 +146,8 @@ pub(super) fn persist_control_state_page(
     shard_id: ShardId,
     shard: &mut ShardState,
     key: &str,
-    start_routing_slot: u32,
-    end_routing_slot: u32,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
     async_storage: bool,
 ) -> bool {
     let Some(series) = shard.control_state.get(key) else {
@@ -158,17 +158,17 @@ pub(super) fn persist_control_state_page(
         return false;
     };
     let object_id = stable_page_object_id(shard_id, "control_state", key, None);
-    let routing_slot = page_routing_slot(key, start_routing_slot, end_routing_slot);
+    let routing_bucket = page_routing_bucket(key, start_routing_bucket, end_routing_bucket);
     if let Ok(address) = append_value(
         cache,
         page_store,
         shard_id,
         &bytes,
         Some(object_id),
-        Some(routing_slot),
+        Some(routing_bucket),
         async_storage,
     ) {
-        upsert_slot_index_page(
+        upsert_bucket_index_page(
             cache,
             shard,
             shard_id,
@@ -177,8 +177,8 @@ pub(super) fn persist_control_state_page(
             None,
             address.clone(),
             true,
-            start_routing_slot,
-            end_routing_slot,
+            start_routing_bucket,
+            end_routing_bucket,
         );
         shard.control_state_pages.insert(key.to_string(), address);
         true

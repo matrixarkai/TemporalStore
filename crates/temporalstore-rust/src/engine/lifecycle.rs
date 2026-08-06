@@ -107,8 +107,8 @@ impl TemporalEngine {
             load_version: 0,
             local_node_id: None,
             shard_uri: String::new(),
-            start_routing_slot: 0,
-            end_routing_slot: u32::MAX,
+            start_routing_bucket: 0,
+            end_routing_bucket: u32::MAX,
             readonly: false,
             table_name: String::new(),
         };
@@ -129,11 +129,11 @@ impl TemporalEngine {
             };
         }
         let mut state = self.load_index(request.shard_id).unwrap_or_default();
-        promote_model_maps_to_slot_index_authority(
+        promote_model_maps_to_bucket_index_authority(
             request.shard_id,
             &mut state,
-            request.start_routing_slot,
-            request.end_routing_slot,
+            request.start_routing_bucket,
+            request.end_routing_bucket,
         );
         self.shards
             .write()
@@ -156,8 +156,8 @@ impl TemporalEngine {
                 loaded: true,
                 table_name: request.table_name,
                 shard_uri: request.shard_uri,
-                start_routing_slot: request.start_routing_slot,
-                end_routing_slot: request.end_routing_slot,
+                start_routing_bucket: request.start_routing_bucket,
+                end_routing_bucket: request.end_routing_bucket,
                 readonly: request.readonly,
                 load_version: request.load_version,
                 local_node_id: request.local_node_id,
@@ -239,8 +239,8 @@ impl TemporalEngine {
                 loaded: true,
                 table_name: request.table_name,
                 shard_uri: request.shard_uri,
-                start_routing_slot: request.start_routing_slot,
-                end_routing_slot: request.end_routing_slot,
+                start_routing_bucket: request.start_routing_bucket,
+                end_routing_bucket: request.end_routing_bucket,
                 readonly: request.readonly,
                 load_version: request.load_version,
                 local_node_id: request.local_node_id,

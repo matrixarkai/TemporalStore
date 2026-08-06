@@ -69,7 +69,8 @@ pub struct BlockAddress {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub routing_slot: Option<u32>,
+    #[serde(rename = "routing_slot")]
+    pub routing_bucket: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation: Option<u64>,
     #[serde(default, alias = "extent_id", alias = "zone_id", skip_serializing_if = "Option::is_none")]
@@ -98,7 +99,7 @@ impl BlockAddress {
             length,
             page_id: None,
             object_id: None,
-            routing_slot: None,
+            routing_bucket: None,
             generation: None,
             band_id: None,
             sha256: None,
@@ -447,16 +448,19 @@ pub struct BlockStoreSegmentReport {
     #[serde(default)]
     pub object_count: u64,
     #[serde(default)]
-    pub routing_slot_count: u64,
+    #[serde(rename = "routing_slot_count")]
+    pub routing_bucket_count: u64,
     pub compressed_records: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_page_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_page_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub first_routing_slot: Option<u32>,
+    #[serde(rename = "first_routing_slot")]
+    pub first_routing_bucket: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_routing_slot: Option<u32>,
+    #[serde(rename = "last_routing_slot")]
+    pub last_routing_bucket: Option<u32>,
     #[serde(default, alias = "page_index_count")]
     pub block_index_count: u64,
     #[serde(default, alias = "page_index_entries")]
@@ -498,7 +502,8 @@ pub struct BlockStoreBlockIndexReport {
     #[serde(alias = "page_in_log")]
     pub block_in_log: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub routing_slot: Option<u32>,
+    #[serde(rename = "routing_slot")]
+    pub routing_bucket: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checksum: Option<String>,
 }
@@ -1084,7 +1089,7 @@ mod tests {
         assert!(matches!(err, BlockStoreError::ChecksumMismatch { .. }));
     }
 
-    // shared-corpus: storage_object_page_slot_parity_surfaces;
+    // shared-corpus: storage_object_page_bucket_parity_surfaces;
     #[test]
     fn page_address_matches_compact_segment_metadata_contract_and_checksum_alias() {
         let dir = tempfile::tempdir().unwrap();
@@ -1098,7 +1103,7 @@ mod tests {
         assert!(address.length > b"address-contract".len() as u64);
         assert_eq!(address.page_id, Some(0));
         assert_eq!(address.object_id, Some(4242));
-        assert_eq!(address.routing_slot, Some(17));
+        assert_eq!(address.routing_bucket, Some(17));
         assert_eq!(address.band_id, Some(0));
         assert_eq!(address.sha256, Some(sha256_hex(b"address-contract")));
         assert_eq!(address.compact_segment_id(), Some(0));
@@ -1122,7 +1127,7 @@ mod tests {
             "length": address.length,
             "page_id": address.page_id,
             "object_id": address.object_id,
-            "routing_slot": address.routing_slot,
+            "routing_slot": address.routing_bucket,
             // generation is a canonical, always-present field on write (append sets
             // Some(page_id)) and on read (record decode derives it), so the legacy
             // alias JSON must carry it or the round-trip deserializes to None.
@@ -1204,7 +1209,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(address.object_id, Some(42));
-        assert_eq!(address.routing_slot, Some(7));
+        assert_eq!(address.routing_bucket, Some(7));
         assert_eq!(address.band_id, Some(0));
         assert_eq!(store.read(&address).unwrap(), b"object-page");
 
@@ -1213,11 +1218,11 @@ mod tests {
         assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
 
         address.object_id = Some(42);
-        address.routing_slot = Some(8);
+        address.routing_bucket = Some(8);
         let err = store.read(&address).unwrap_err();
         assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
 
-        address.routing_slot = Some(7);
+        address.routing_bucket = Some(7);
         address.band_id = Some(1);
         let err = store.read(&address).unwrap_err();
         assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
@@ -1767,7 +1772,7 @@ mod tests {
     }
 
     #[test]
-    fn segment_reports_describe_object_and_routing_slot_ownership() {
+    fn segment_reports_describe_object_and_routing_bucket_ownership() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         store
@@ -1785,9 +1790,9 @@ mod tests {
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].page_count, 3);
         assert_eq!(reports[0].object_count, 2);
-        assert_eq!(reports[0].routing_slot_count, 2);
-        assert_eq!(reports[0].first_routing_slot, Some(7));
-        assert_eq!(reports[0].last_routing_slot, Some(11));
+        assert_eq!(reports[0].routing_bucket_count, 2);
+        assert_eq!(reports[0].first_routing_bucket, Some(7));
+        assert_eq!(reports[0].last_routing_bucket, Some(11));
         assert_eq!(reports[0].block_index_count, 3);
         assert_eq!(
             reports[0]
@@ -1801,7 +1806,7 @@ mod tests {
             reports[0]
                 .block_index_entries
                 .iter()
-                .filter_map(|entry| entry.routing_slot)
+                .filter_map(|entry| entry.routing_bucket)
                 .collect::<Vec<_>>(),
             vec![7, 11, 7]
         );
@@ -1936,7 +1941,7 @@ mod tests {
             length: b"alteredpage".len() as u64,
             page_id: None,
             object_id: None,
-            routing_slot: None,
+            routing_bucket: None,
             generation: None,
             band_id: None,
             sha256: None,

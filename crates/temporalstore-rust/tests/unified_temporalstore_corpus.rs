@@ -27,7 +27,7 @@ use temporalstore_rust::{
     ProxyServingMode, ProxyTableBatchExecuteRequest, RaftCluster, RaftConfig, RaftError,
     RegisterServerRequest, RegisterShardRequest, RespValue, ScanStreamRequest, ServerEndpoint,
     ServerHeartbeatRequest, ServerRuntimeLoad, ServerShardServingState, SharedStoreReplicator,
-    SharedStoreStorageMode, SingleNodeMeta, SlotDumpFollowerReplayCursor, SlotDumpRaftSnapshotRef,
+    SharedStoreStorageMode, SingleNodeMeta, BucketDumpFollowerReplayCursor, BucketDumpRaftSnapshotRef,
     Status, StorageLifecycleRequest, StreamKind, StreamReadRequest, StreamReadResponse,
     TableMetaInfo, TableOptions, TableShard, TableTopologyResponse, TemporalEngine,
     TemporalStoreClient, TemporalStoreTable,
@@ -220,8 +220,8 @@ fn rust_executes_storage_raft_gc_cases() {
 }
 
 // shared-corpus: storage_cache_replacement_policy_soak storage_matrixraft_cache_refill_pressure storage_cache_cold_read_after_eviction_shared
-// shared-corpus: storage_slot_first_physical_index storage_object_manager_slotstore_runtime_authority storage_model_layout_compaction_policies storage_merged_dump_load_lifecycle storage_object_manager_cold_hot_reload storage_page_address_disk_cache_shared_store_fallback
-// shared-corpus: storage_stale_page_density_compaction storage_merged_dump_load_restart_interruption storage_gc_eviction_cold_reads storage_manager_real_pressure_signals storage_manager_wal_reclaim_slot_generation_retention storage_manager_expire_cursor_scan_limits
+// shared-corpus: storage_bucket_first_physical_index storage_object_manager_bucketstore_runtime_authority storage_model_layout_compaction_policies storage_merged_dump_load_lifecycle storage_object_manager_cold_hot_reload storage_page_address_disk_cache_shared_store_fallback
+// shared-corpus: storage_stale_page_density_compaction storage_merged_dump_load_restart_interruption storage_gc_eviction_cold_reads storage_manager_real_pressure_signals storage_manager_wal_reclaim_bucket_generation_retention storage_manager_expire_cursor_scan_limits
 // shared-corpus: storage_manager_active_eviction_runtime storage_manager_page_gc_dependency_refusal storage_manager_index_gc_thresholds_recovery storage_risk_context_page_backed_parity
 #[test]
 fn rust_executes_storage_eviction_cases() {
@@ -1002,7 +1002,7 @@ fn maybe_run_shared_harness_command(case: &UnifiedCase, step: &UnifiedStep) -> b
                 case.name,
                 step.name
             );
-            verify_redis_slot_hash_cpp_crc64();
+            verify_redis_bucket_hash_cpp_crc64();
             true
         }
         "proxy_topology_churn_convergence" => {
@@ -1607,7 +1607,7 @@ fn verify_redis_operational_admin_commands() {
     );
 }
 
-fn verify_redis_slot_hash_cpp_crc64() {
+fn verify_redis_bucket_hash_cpp_crc64() {
     let mut state = RedisCommandState::default();
     let mut run = |args: Vec<&str>| {
         execute_redis_command_with_state(
@@ -2149,8 +2149,8 @@ fn verify_client_cpp_partition_set_route_cache() {
                         shards: vec![
                             TableShard {
                                 shard_id: PartitionId::new(42, 0, 0, 17).unwrap().id(),
-                                start_slot: 0,
-                                end_slot: 536_870_911,
+                                start_bucket: 0,
+                                end_bucket: 536_870_911,
                                 primary: Some(primary_for_meta.clone()),
                                 replicas: vec![primary_for_meta.clone(), replica_for_meta.clone()],
                                 primary_endpoint: Some(ServerEndpoint {
@@ -2164,8 +2164,8 @@ fn verify_client_cpp_partition_set_route_cache() {
                             },
                             TableShard {
                                 shard_id: PartitionId::new(42, 1, 0, 17).unwrap().id(),
-                                start_slot: 536_870_912,
-                                end_slot: 1_073_741_823,
+                                start_bucket: 536_870_912,
+                                end_bucket: 1_073_741_823,
                                 primary: Some(replica_for_meta.clone()),
                                 replicas: vec![replica_for_meta.clone()],
                                 primary_endpoint: Some(ServerEndpoint {
@@ -2231,10 +2231,10 @@ fn verify_client_cpp_partition_set_route_cache() {
     assert_eq!(partition_set.topology_version, 12);
     assert_eq!(partition_set.partition_count, 2);
     assert_eq!(partition_set.missing_route_count, 0);
-    assert_eq!(partition_set.members[0].start_slot, 0);
-    assert_eq!(partition_set.members[0].end_slot, 536_870_911);
-    assert_eq!(partition_set.members[1].start_slot, 536_870_912);
-    assert_eq!(partition_set.members[1].end_slot, 1_073_741_823);
+    assert_eq!(partition_set.members[0].start_bucket, 0);
+    assert_eq!(partition_set.members[0].end_bucket, 536_870_911);
+    assert_eq!(partition_set.members[1].start_bucket, 536_870_912);
+    assert_eq!(partition_set.members[1].end_bucket, 1_073_741_823);
     assert_eq!(
         partition_set.members[0].primary_addr.as_deref(),
         Some(primary_addr.as_str())
@@ -2413,8 +2413,8 @@ fn verify_client_metasync_outage_churn() {
                             }),
                             shards: vec![TableShard {
                                 shard_id: 40,
-                                start_slot: 0,
-                                end_slot: 1_073_741_823,
+                                start_bucket: 0,
+                                end_bucket: 1_073_741_823,
                                 primary: Some("127.0.0.1:27440".to_string()),
                                 replicas: vec!["127.0.0.1:27440".to_string()],
                                 primary_endpoint: None,
@@ -2641,8 +2641,8 @@ fn verify_client_deployment_placement_routing() {
                         }),
                         shards: vec![TableShard {
                             shard_id: 81,
-                            start_slot: 0,
-                            end_slot: u64::MAX,
+                            start_bucket: 0,
+                            end_bucket: u64::MAX,
                             primary: Some(primary_for_meta.clone()),
                             replicas: vec![primary_for_meta.clone(), replica_for_meta.clone()],
                             primary_endpoint: Some(ServerEndpoint {
@@ -2772,8 +2772,8 @@ fn verify_metaserver_scheduler_control_plane() {
         .replicas
         .contains(&"127.0.0.1:27112".to_string()));
     assert_eq!(topology.shards[1].shard_id, second);
-    assert_eq!(topology.shards[1].start_slot, 536_870_912);
-    assert_eq!(topology.shards[1].end_slot, 1_073_741_823);
+    assert_eq!(topology.shards[1].start_bucket, 536_870_912);
+    assert_eq!(topology.shards[1].end_bucket, 1_073_741_823);
 
     meta.server_heartbeat(ServerHeartbeatRequest {
         server_addr: "127.0.0.1:27111".to_string(),
@@ -3345,11 +3345,11 @@ fn maybe_run_storage_parity_command(case: &UnifiedCase, step: &UnifiedStep) -> b
         }
         "storage_slot_layout_transitions" | "storage_slot_object_block_index_authority" => {
             let storage_case = load_storage_migration_case(&command.migration_case_or_default());
-            verify_storage_recovery_reconciles_slot_index_to_model_views(&storage_case);
+            verify_storage_recovery_reconciles_bucket_index_to_model_views(&storage_case);
         }
         "storage_recovery_reconciles_slot_index_to_model_views" => {
             let storage_case = load_storage_migration_case(&command.required_migration_case());
-            verify_storage_recovery_reconciles_slot_index_to_model_views(&storage_case);
+            verify_storage_recovery_reconciles_bucket_index_to_model_views(&storage_case);
         }
         "storage_stream_backed_band_runtime" => verify_storage_stream_backed_band_runtime(),
         "storage_stream_partial_band_rebuild" => verify_storage_stream_backed_band_runtime(),
@@ -3418,7 +3418,7 @@ fn verify_storage_dump_load_recovery(case: &StorageMigrationCase) {
 
     execute_storage_steps(&engine, case.shard_id, &case.operations, &case.name);
 
-    let summaries = engine.slot_storage_summaries(case.shard_id);
+    let summaries = engine.bucket_storage_summaries(case.shard_id);
     assert!(
         !summaries.is_empty(),
         "case={} should create slot summaries",
@@ -3431,23 +3431,23 @@ fn verify_storage_dump_load_recovery(case: &StorageMigrationCase) {
         "case={} should track dirty generations and page refs",
         case.name
     );
-    let dirty_slots = summaries
+    let dirty_buckets = summaries
         .iter()
         .filter(|summary| summary.dirty_generation > 0)
-        .map(|summary| summary.routing_slot)
+        .map(|summary| summary.routing_bucket)
         .collect::<Vec<_>>();
     let manifest = engine
-        .create_slot_dump_manifest(case.shard_id, dirty_slots.clone())
+        .create_bucket_dump_manifest(case.shard_id, dirty_buckets.clone())
         .expect("slot dump manifest should be created");
     assert!(!manifest.checksum.is_empty());
     assert!(!manifest.index_bytes.is_empty());
-    assert!(!manifest.slot_summaries.is_empty());
+    assert!(!manifest.bucket_summaries.is_empty());
     assert_clean_storage_recovery(&engine, case.shard_id, &case.name);
 
     drop(engine);
     engine = new_engine(dir.path(), &page_dir, &index_dir, case.shard_id);
     engine
-        .install_slot_dump_manifest(&manifest)
+        .install_bucket_dump_manifest(&manifest)
         .unwrap_or_else(|status| {
             panic!("case={} slot dump install failed: {:?}", case.name, status)
         });
@@ -3455,7 +3455,7 @@ fn verify_storage_dump_load_recovery(case: &StorageMigrationCase) {
     execute_storage_steps(&engine, case.shard_id, &case.expected_reads, &case.name);
 }
 
-fn verify_storage_recovery_reconciles_slot_index_to_model_views(case: &StorageMigrationCase) {
+fn verify_storage_recovery_reconciles_bucket_index_to_model_views(case: &StorageMigrationCase) {
     let dir = tempfile::tempdir().unwrap();
     let page_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
@@ -3478,7 +3478,7 @@ fn verify_storage_fault_matrix(case: &StorageMigrationCase) {
         case.shard_id,
     );
     execute_storage_steps(&engine, case.shard_id, &case.operations, &case.name);
-    let report = engine.slot_dump_fault_matrix_report(case.shard_id);
+    let report = engine.bucket_dump_fault_matrix_report(case.shard_id);
     assert!(
         report.production_ready_slice,
         "case={} storage fault matrix failed: {:?}",
@@ -3515,22 +3515,22 @@ fn verify_storage_follower_safe_gc(case: &StorageMigrationCase) {
         case.shard_id,
     );
     execute_storage_steps(&engine, case.shard_id, &case.operations, &case.name);
-    let dirty_slots = engine
-        .slot_storage_summaries(case.shard_id)
+    let dirty_buckets = engine
+        .bucket_storage_summaries(case.shard_id)
         .into_iter()
         .filter(|summary| summary.dirty_generation > 0)
-        .map(|summary| summary.routing_slot)
+        .map(|summary| summary.routing_bucket)
         .collect::<Vec<_>>();
-    assert!(!dirty_slots.is_empty());
+    assert!(!dirty_buckets.is_empty());
     let lifecycle = engine.apply_storage_lifecycle(StorageLifecycleRequest {
         shard_id: case.shard_id,
-        selected_dump_slots: dirty_slots,
-        max_dump_slots_per_round: 64,
+        selected_dump_buckets: dirty_buckets,
+        max_dump_buckets_per_round: 64,
         min_undumped_oplog_records: 0,
         purge_delayed_destroy: true,
-        prune_slot_dump_manifests: true,
-        roll_forward_slot_dump_installs: true,
-        follower_replay_cursors: vec![SlotDumpFollowerReplayCursor {
+        prune_bucket_dump_manifests: true,
+        roll_forward_bucket_dump_installs: true,
+        follower_replay_cursors: vec![BucketDumpFollowerReplayCursor {
             follower_id: "unified-storage-lagging-follower".to_string(),
             shard_id: case.shard_id,
             oplog_sequence: 0,
@@ -3572,7 +3572,7 @@ fn verify_storage_wal_index_gc_generation_retention(shard_id: u64) {
         },
     });
     let parent = engine
-        .create_slot_dump_manifest(shard_id, Vec::new())
+        .create_bucket_dump_manifest(shard_id, Vec::new())
         .unwrap();
     engine.execute(ExecuteRequest {
         shard_id,
@@ -3582,18 +3582,18 @@ fn verify_storage_wal_index_gc_generation_retention(shard_id: u64) {
         },
     });
     let child = engine
-        .create_slot_dump_manifest(shard_id, Vec::new())
+        .create_bucket_dump_manifest(shard_id, Vec::new())
         .unwrap();
     assert!(child.oplog_sequence > parent.oplog_sequence);
     assert!(child.index_log_sequence > parent.index_log_sequence);
 
-    let lagging_cursor = SlotDumpFollowerReplayCursor {
+    let lagging_cursor = BucketDumpFollowerReplayCursor {
         follower_id: "unified-lagging-follower".to_string(),
         shard_id,
         oplog_sequence: parent.oplog_sequence,
         index_log_sequence: parent.index_log_sequence,
     };
-    let lagging_snapshot = SlotDumpRaftSnapshotRef {
+    let lagging_snapshot = BucketDumpRaftSnapshotRef {
         snapshot_id: "unified-raft-snapshot-lagging".to_string(),
         shard_id,
         last_included_index: 11,
@@ -3610,11 +3610,11 @@ fn verify_storage_wal_index_gc_generation_retention(shard_id: u64) {
     assert_eq!(blocked.follower_cursor_block_count, 1);
     assert_eq!(blocked.raft_snapshot_block_count, 1);
     assert_eq!(
-        blocked.durable_slot_generation_frontier_oplog_sequence,
+        blocked.durable_bucket_generation_frontier_oplog_sequence,
         child.oplog_sequence
     );
     assert_eq!(
-        blocked.durable_slot_generation_frontier_index_log_sequence,
+        blocked.durable_bucket_generation_frontier_index_log_sequence,
         child.index_log_sequence
     );
     assert_eq!(blocked.retain_from_oplog_sequence, 0);
@@ -3647,15 +3647,15 @@ fn verify_storage_wal_index_gc_generation_retention(shard_id: u64) {
     );
 
     let released_anchor = engine
-        .create_slot_dump_manifest(shard_id, Vec::new())
+        .create_bucket_dump_manifest(shard_id, Vec::new())
         .unwrap();
-    let released_cursor = SlotDumpFollowerReplayCursor {
+    let released_cursor = BucketDumpFollowerReplayCursor {
         follower_id: "unified-follower-caught-up".to_string(),
         shard_id,
         oplog_sequence: released_anchor.oplog_sequence,
         index_log_sequence: released_anchor.index_log_sequence,
     };
-    let released_snapshot = SlotDumpRaftSnapshotRef {
+    let released_snapshot = BucketDumpRaftSnapshotRef {
         snapshot_id: "unified-raft-snapshot-caught-up".to_string(),
         shard_id,
         last_included_index: 12,
@@ -3724,7 +3724,7 @@ fn verify_storage_gc_dependency_retention_matrix(shard_id: u64) {
         },
     });
     let manifest = engine
-        .create_slot_dump_manifest(shard_id, Vec::new())
+        .create_bucket_dump_manifest(shard_id, Vec::new())
         .unwrap();
     engine.block_store().roll_segment().unwrap();
     engine.execute(ExecuteRequest {
@@ -3753,7 +3753,7 @@ fn verify_storage_gc_dependency_retention_matrix(shard_id: u64) {
             retain_from_page_segment_id: 0,
             reason: "shared-store follower is behind segment zero".to_string(),
         }],
-        vec![SlotDumpRaftSnapshotRef {
+        vec![BucketDumpRaftSnapshotRef {
             snapshot_id: "unified-raft-page-snapshot".to_string(),
             shard_id,
             last_included_index: 7,
@@ -3768,7 +3768,7 @@ fn verify_storage_gc_dependency_retention_matrix(shard_id: u64) {
     assert!(!matrix.safe_to_reclaim, "{matrix:?}");
     assert_eq!(matrix.candidate_page_segment_ids, vec![0, 1]);
     assert_eq!(matrix.live_ref_block_count, 1);
-    assert_eq!(matrix.slot_dump_manifest_block_count, 1);
+    assert_eq!(matrix.bucket_dump_manifest_block_count, 1);
     assert_eq!(matrix.shared_store_cursor_block_count, 2);
     assert_eq!(matrix.raft_snapshot_ref_block_count, 2);
     assert_eq!(matrix.checkpoint_snapshot_floor_block_count, 2);
@@ -4158,20 +4158,20 @@ fn verify_storage_cache_refill(case: &StorageMigrationCase) {
     engine.cache().invalidate_shard(case.shard_id).unwrap();
     let before = engine.storage_cache_inspection_report(case.shard_id);
     assert_eq!(before.entries.len(), 0);
-    let selected_slots = engine
-        .slot_storage_summaries(case.shard_id)
+    let selected_buckets = engine
+        .bucket_storage_summaries(case.shard_id)
         .into_iter()
         .filter(|summary| summary.page_ref_count > 0)
-        .map(|summary| summary.routing_slot)
+        .map(|summary| summary.routing_bucket)
         .collect::<Vec<_>>();
-    let report = engine.storage_cache_warmup_report(case.shard_id, selected_slots);
+    let report = engine.storage_cache_warmup_report(case.shard_id, selected_buckets);
     assert!(report.considered_page_refs > 0);
     assert!(report.page_store_reads > 0);
     assert_eq!(report.failed_page_refs, 0);
     assert_eq!(report.warmed_page_refs, report.considered_page_refs);
     let after = engine.storage_cache_inspection_report(case.shard_id);
     assert!(!after.entries.is_empty());
-    assert!(!after.slot_summaries.is_empty());
+    assert!(!after.bucket_summaries.is_empty());
 }
 
 async fn verify_storage_shared_store_replay(

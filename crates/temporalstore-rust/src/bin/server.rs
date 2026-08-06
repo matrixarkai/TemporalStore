@@ -37,7 +37,7 @@ use temporalstore_rust::{
     ProductionRaftRuntime, ProductionRaftRuntimeOptions, RaftConfig, RaftControlLeadershipRequest,
     RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions,
     RequestController, ScanStreamRequest, SchedulerLifecycleToken, SetConfigRequest,
-    SlotDumpManifest, StorageCacheInvalidateSlotRequest, StorageLifecycleRequest,
+    BucketDumpManifest, StorageCacheInvalidateBucketRequest, StorageLifecycleRequest,
     StorageProductionReadinessRequest, StreamReadRequest, UnloadShardRequest,
 };
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
@@ -265,14 +265,14 @@ fn main() {
                     .trim_start_matches("/server/storage/slots/")
                     .parse()
                     .unwrap_or_default();
-                json_response(200, &engine.slot_storage_summaries(shard_id))
+                json_response(200, &engine.bucket_storage_summaries(shard_id))
             }
             ("GET", path) if path.starts_with("/server/storage/dumps/") => {
                 let shard_id = path
                     .trim_start_matches("/server/storage/dumps/")
                     .parse()
                     .unwrap_or_default();
-                json_response(200, &engine.list_slot_dump_manifests(shard_id))
+                json_response(200, &engine.list_bucket_dump_manifests(shard_id))
             }
             ("GET", path) if path.starts_with("/server/storage/recovery_boundary/") => {
                 let shard_id = path
@@ -296,8 +296,8 @@ fn main() {
                 json_response(200, &engine.storage_cache_inspection_report(shard_id))
             }
             ("POST", "/server/storage/cache/invalidate_slot") => {
-                match parse_json::<StorageCacheInvalidateSlotRequest>(&request.body) {
-                    Ok(req) => match engine.invalidate_storage_cache_slot(req) {
+                match parse_json::<StorageCacheInvalidateBucketRequest>(&request.body) {
+                    Ok(req) => match engine.invalidate_storage_cache_bucket(req) {
                         Ok(report) => json_response(200, &report),
                         Err(status) => json_response(500, &status),
                     },
@@ -338,8 +338,8 @@ fn main() {
                 }
             }
             ("POST", "/server/storage/dumps/install") => {
-                match parse_json::<SlotDumpManifest>(&request.body) {
-                    Ok(manifest) => match engine.install_slot_dump_manifest(&manifest) {
+                match parse_json::<BucketDumpManifest>(&request.body) {
+                    Ok(manifest) => match engine.install_bucket_dump_manifest(&manifest) {
                         Ok(()) => json_response(200, &Status::ok()),
                         Err(status) => json_response(409, &status),
                     },
@@ -879,8 +879,8 @@ fn handle_cpp_server_service_route(
             }
         }
         ("POST", "/ServerService/InvalidateStorageCacheSlot") => {
-            match parse_json::<StorageCacheInvalidateSlotRequest>(&request.body) {
-                Ok(req) => match engine.invalidate_storage_cache_slot(req) {
+            match parse_json::<StorageCacheInvalidateBucketRequest>(&request.body) {
+                Ok(req) => match engine.invalidate_storage_cache_bucket(req) {
                     Ok(report) => json_response(200, &report),
                     Err(status) => json_response(500, &status),
                 },
@@ -1077,6 +1077,7 @@ struct RaftAdminBootstrapExternalSnapshotRequest {
     #[serde(default = "default_snapshot_cluster_id")]
     cluster_id: String,
     #[serde(default = "default_snapshot_bucket")]
+    #[serde(rename = "slot")]
     bucket: String,
 }
 
@@ -1087,6 +1088,7 @@ struct RaftAdminPublishExternalSnapshotRequest {
     #[serde(default = "default_snapshot_cluster_id")]
     cluster_id: String,
     #[serde(default = "default_snapshot_bucket")]
+    #[serde(rename = "slot")]
     bucket: String,
 }
 
@@ -1397,7 +1399,7 @@ mod tests {
 
         let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
             shard_id: 73,
-            max_dump_slots_per_round: 4,
+            max_dump_buckets_per_round: 4,
             warm_cache: true,
             ..StorageManagerCycleRequest::default()
         });
@@ -1458,8 +1460,8 @@ mod tests {
         assert_eq!(request.load_version, 42);
         assert_eq!(request.local_node_id, Some(7));
         assert_eq!(request.shard_uri, "local://table/shard-31");
-        assert_eq!(request.start_routing_slot, 100);
-        assert_eq!(request.end_routing_slot, 199);
+        assert_eq!(request.start_routing_bucket, 100);
+        assert_eq!(request.end_routing_bucket, 199);
         assert!(request.readonly);
         assert_eq!(request.table_name, "events");
 
@@ -1489,8 +1491,8 @@ mod tests {
                     shard_id: 9,
                     table_name: "orders".to_string(),
                     shard_uri: "local://orders/9".to_string(),
-                    start_routing_slot: 90,
-                    end_routing_slot: 99,
+                    start_routing_bucket: 90,
+                    end_routing_bucket: 99,
                     readonly: false,
                     load_version: 7,
                     local_node_id: Some(1),
@@ -1536,8 +1538,8 @@ mod tests {
                                 }),
                                 shards: vec![temporalstore_rust::meta::TableShard {
                                     shard_id: 9,
-                                    start_slot: 90,
-                                    end_slot: 99,
+                                    start_bucket: 90,
+                                    end_bucket: 99,
                                     primary: Some("server-a".to_string()),
                                     replicas: vec!["server-a".to_string()],
                                     primary_endpoint: None,
@@ -1628,8 +1630,8 @@ mod tests {
                     load_version: 99,
                     local_node_id: Some(7),
                     shard_uri: "local://table/shard-41".to_string(),
-                    start_routing_slot: 0,
-                    end_routing_slot: 999,
+                    start_routing_bucket: 0,
+                    end_routing_bucket: 999,
                     readonly: false,
                     table_name: "events".to_string(),
                 })
@@ -1849,8 +1851,8 @@ mod tests {
                 load_version: 7,
                 local_node_id: Some(1),
                 shard_uri: "local://cpp-alias/shard-44".to_string(),
-                start_routing_slot: 0,
-                end_routing_slot: u32::MAX,
+                start_routing_bucket: 0,
+                end_routing_bucket: u32::MAX,
                 readonly: false,
                 table_name: "cpp_alias".to_string(),
             })
@@ -1881,8 +1883,8 @@ mod tests {
                 load_version: 6,
                 local_node_id: Some(2),
                 shard_uri: "local://cpp-alias/stale-shard-44".to_string(),
-                start_routing_slot: 10,
-                end_routing_slot: 20,
+                start_routing_bucket: 10,
+                end_routing_bucket: 20,
                 readonly: true,
                 table_name: "stale_cpp_alias".to_string(),
             })
@@ -1910,8 +1912,8 @@ mod tests {
                 load_version: 8,
                 local_node_id: Some(2),
                 shard_uri: "local://cpp-alias/reloaded-shard-44".to_string(),
-                start_routing_slot: 10,
-                end_routing_slot: 20,
+                start_routing_bucket: 10,
+                end_routing_bucket: 20,
                 readonly: false,
                 table_name: "cpp_alias_reloaded".to_string(),
             })
@@ -2189,8 +2191,8 @@ mod tests {
             load_version: 9,
             local_node_id: Some(4),
             shard_uri: "local://snapshot/shard-55".to_string(),
-            start_routing_slot: 100,
-            end_routing_slot: 199,
+            start_routing_bucket: 100,
+            end_routing_bucket: 199,
             readonly: false,
             table_name: "snapshot_table".to_string(),
         };
@@ -2383,8 +2385,8 @@ mod tests {
                 load_version: 11,
                 local_node_id: Some(7),
                 shard_uri: "local://restart/source-77".to_string(),
-                start_routing_slot: 700,
-                end_routing_slot: 799,
+                start_routing_bucket: 700,
+                end_routing_bucket: 799,
                 readonly: false,
                 table_name: "restart_table".to_string(),
             },
@@ -2455,8 +2457,8 @@ mod tests {
                 load_version: 12,
                 local_node_id: Some(8),
                 shard_uri: "local://restart/reloaded-77".to_string(),
-                start_routing_slot: 800,
-                end_routing_slot: 899,
+                start_routing_bucket: 800,
+                end_routing_bucket: 899,
                 readonly: true,
                 table_name: "restart_table_reloaded".to_string(),
             },
@@ -2502,8 +2504,8 @@ mod tests {
                 load_version: 1,
                 local_node_id: Some(1),
                 shard_uri: "local://cpp-alias/shard-45".to_string(),
-                start_routing_slot: 0,
-                end_routing_slot: u32::MAX,
+                start_routing_bucket: 0,
+                end_routing_bucket: u32::MAX,
                 readonly: true,
                 table_name: "cpp_alias_async".to_string(),
             })

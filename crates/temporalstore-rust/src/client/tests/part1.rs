@@ -259,8 +259,8 @@ fn client_route_cache_preserves_cpp_partition_set_member_version_hierarchy() {
                                 shard_id: crate::partition_id::PartitionId::new(42, 0, 0, 17)
                                     .unwrap()
                                     .id(),
-                                start_slot: 0,
-                                end_slot: 536_870_911,
+                                start_bucket: 0,
+                                end_bucket: 536_870_911,
                                 primary: Some(primary_for_meta.clone()),
                                 replicas: vec![primary_for_meta.clone(), replica_for_meta.clone()],
                                 primary_endpoint: Some(crate::meta::ServerEndpoint {
@@ -276,8 +276,8 @@ fn client_route_cache_preserves_cpp_partition_set_member_version_hierarchy() {
                                 shard_id: crate::partition_id::PartitionId::new(42, 1, 0, 17)
                                     .unwrap()
                                     .id(),
-                                start_slot: 536_870_912,
-                                end_slot: 1_073_741_823,
+                                start_bucket: 536_870_912,
+                                end_bucket: 1_073_741_823,
                                 primary: Some(replica_for_meta.clone()),
                                 replicas: vec![replica_for_meta.clone()],
                                 primary_endpoint: Some(crate::meta::ServerEndpoint {
@@ -343,10 +343,10 @@ fn client_route_cache_preserves_cpp_partition_set_member_version_hierarchy() {
     assert_eq!(partition_set.topology_version, 12);
     assert_eq!(partition_set.partition_count, 2);
     assert_eq!(partition_set.missing_route_count, 0);
-    assert_eq!(partition_set.members[0].start_slot, 0);
-    assert_eq!(partition_set.members[0].end_slot, 536_870_911);
-    assert_eq!(partition_set.members[1].start_slot, 536_870_912);
-    assert_eq!(partition_set.members[1].end_slot, 1_073_741_823);
+    assert_eq!(partition_set.members[0].start_bucket, 0);
+    assert_eq!(partition_set.members[0].end_bucket, 536_870_911);
+    assert_eq!(partition_set.members[1].start_bucket, 536_870_912);
+    assert_eq!(partition_set.members[1].end_bucket, 1_073_741_823);
     assert_eq!(
         partition_set.members[0].primary_addr.as_deref(),
         Some(primary_addr.as_str())
@@ -924,8 +924,8 @@ fn table_write_refreshes_topology_after_meta_changed_without_write_retry_budget(
                         }),
                         shards: vec![TableShard {
                             shard_id: 1,
-                            start_slot: 0,
-                            end_slot: u64::MAX,
+                            start_bucket: 0,
+                            end_bucket: u64::MAX,
                             primary: Some(live_addr_for_meta.clone()),
                             replicas: vec![live_addr_for_meta.clone()],
                             primary_endpoint: None,

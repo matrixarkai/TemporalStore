@@ -9,10 +9,10 @@ pub fn shard_id_for_key(
     if shard_count == 0 {
         return default_shard_id;
     }
-    first_shard_id + slot_id_for_key(key) % shard_count
+    first_shard_id + bucket_id_for_key(key) % shard_count
 }
 
-pub fn slot_id_for_key(key: &str) -> u64 {
+pub fn bucket_id_for_key(key: &str) -> u64 {
     crc64_jones(key.as_bytes()) >> 34
 }
 

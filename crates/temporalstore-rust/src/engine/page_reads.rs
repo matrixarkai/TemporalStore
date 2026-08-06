@@ -132,7 +132,7 @@ pub(super) fn page_address_cache_key(shard_id: ShardId, address: &BlockAddress) 
         address.page_segment_id,
         address.offset,
         address.length,
-        address.routing_slot,
+        address.routing_bucket,
         address.generation,
     )
 }
@@ -394,7 +394,7 @@ pub(super) fn dedupe_nonzero_u64_preserve_order(values: Vec<u64>) -> Vec<u64> {
         .collect()
 }
 
-pub(super) fn cache_entry_routing_slot(entry: &CacheEntryInfo) -> Option<u32> {
+pub(super) fn cache_entry_routing_bucket(entry: &CacheEntryInfo) -> Option<u32> {
     entry
         .selector
         .strip_prefix("slot-")?

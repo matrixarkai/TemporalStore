@@ -181,8 +181,10 @@ pub struct ServerShardServingState {
     pub load_version: u64,
     pub table_name: String,
     pub shard_uri: String,
-    pub start_routing_slot: u32,
-    pub end_routing_slot: u32,
+    #[serde(rename = "start_routing_slot")]
+    pub start_routing_bucket: u32,
+    #[serde(rename = "end_routing_slot")]
+    pub end_routing_bucket: u32,
     pub total_records: usize,
     pub storage_bytes: u64,
     pub cache_memory_bytes: u64,
@@ -192,7 +194,8 @@ pub struct ServerShardServingState {
     pub block_store_bytes_written: u64,
     pub oplog_sequence: u64,
     pub dirty_object_count: u64,
-    pub dirty_slot_count: u64,
+    #[serde(rename = "dirty_slot_count")]
+    pub dirty_bucket_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -454,8 +457,10 @@ pub struct TableMetaInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TableShard {
     pub shard_id: ShardId,
-    pub start_slot: u64,
-    pub end_slot: u64,
+    #[serde(rename = "start_slot")]
+    pub start_bucket: u64,
+    #[serde(rename = "end_slot")]
+    pub end_bucket: u64,
     pub primary: Option<String>,
     pub replicas: Vec<String>,
     #[serde(default)]
@@ -1069,16 +1074,16 @@ mod tests {
                     load_version: 11,
                     table_name: "tbl".to_string(),
                     shard_uri: "local://tbl/7".to_string(),
-                    start_routing_slot: 1,
-                    end_routing_slot: 2,
+                    start_routing_bucket: 1,
+                    end_routing_bucket: 2,
                     total_records: 10,
                     storage_bytes: 100,
                     object_manager: crate::control::ObjectManagerStats {
                         object_count: 10,
                         page_ref_count: 10,
                         dirty_object_count: 1,
-                        dirty_slot_count: 1,
-                        routing_slot_count: 2,
+                        dirty_bucket_count: 1,
+                        routing_bucket_count: 2,
                     },
                 },
             }],
@@ -1110,8 +1115,8 @@ mod tests {
                 load_version: 11,
                 table_name: "tbl".to_string(),
                 shard_uri: "local://tbl/7".to_string(),
-                start_routing_slot: 1,
-                end_routing_slot: 2,
+                start_routing_bucket: 1,
+                end_routing_bucket: 2,
                 total_records: 10,
                 storage_bytes: 100,
                 cache_memory_bytes: 64,
@@ -1119,7 +1124,7 @@ mod tests {
                 block_store_bytes_written: 100,
                 oplog_sequence: 9,
                 dirty_object_count: 1,
-                dirty_slot_count: 1,
+                dirty_bucket_count: 1,
             }],
         });
         assert!(heartbeat.status.ok);
@@ -2238,8 +2243,8 @@ mod tests {
                 load_version: 9,
                 table_name: "tbl".to_string(),
                 shard_uri: "file:///tmp/shard-42".to_string(),
-                start_routing_slot: 0,
-                end_routing_slot: 1024,
+                start_routing_bucket: 0,
+                end_routing_bucket: 1024,
                 total_records: 1,
                 storage_bytes: 10,
                 cache_memory_bytes: 1,
@@ -2247,7 +2252,7 @@ mod tests {
                 block_store_bytes_written: 10,
                 oplog_sequence: 1,
                 dirty_object_count: 0,
-                dirty_slot_count: 0,
+                dirty_bucket_count: 0,
             }],
         });
         meta.add_namespace(AddNamespaceRequest {
@@ -2378,8 +2383,8 @@ mod tests {
                 load_version: 5,
                 table_name: "tbl".to_string(),
                 shard_uri: "file:///tmp/shard-77".to_string(),
-                start_routing_slot: 0,
-                end_routing_slot: 2048,
+                start_routing_bucket: 0,
+                end_routing_bucket: 2048,
                 total_records: 2,
                 storage_bytes: 20,
                 cache_memory_bytes: 2,
@@ -2387,7 +2392,7 @@ mod tests {
                 block_store_bytes_written: 20,
                 oplog_sequence: 2,
                 dirty_object_count: 0,
-                dirty_slot_count: 0,
+                dirty_bucket_count: 0,
             }],
         });
         meta.add_namespace(AddNamespaceRequest {

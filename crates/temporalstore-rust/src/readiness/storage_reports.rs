@@ -65,7 +65,7 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
     let memory_read_through_ready = true;
     let disk_block_cache_ready = true;
     let admission_eviction_counters_ready = true;
-    let slot_warmup_ready = true;
+    let bucket_warmup_ready = true;
     let cache_invalidation_ready = true;
     let local_tiny_cache_pressure_harness_ready = true;
     let production_ssd_tiering_ready = true;
@@ -83,7 +83,7 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
     let local_pressure_ready = memory_read_through_ready
         && disk_block_cache_ready
         && admission_eviction_counters_ready
-        && slot_warmup_ready
+        && bucket_warmup_ready
         && cache_invalidation_ready
         && local_tiny_cache_pressure_harness_ready;
     let rust_native_production_ready = local_pressure_ready
@@ -155,7 +155,7 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
         memory_read_through_ready,
         disk_block_cache_ready,
         admission_eviction_counters_ready,
-        slot_warmup_ready,
+        bucket_warmup_ready,
         cache_invalidation_ready,
         local_tiny_cache_pressure_harness_ready,
         production_ssd_tiering_ready,
@@ -252,8 +252,8 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         migration.shared_store_sync_replay_ready && migration.shared_store_async_replay_ready;
     let unified_storage_corpus_ready =
         migration.unified_runner_ready && migration.external_cpp_binary_exporter_ready;
-    let first_class_slot_object_page_index_ready = true;
-    let first_class_slot_object_page_index_evidence = vec![
+    let first_class_bucket_object_page_index_ready = true;
+    let first_class_bucket_object_page_index_evidence = vec![
         "ShardState owns slot_objects as the canonical routing-slot -> object -> page-ref index"
             .to_string(),
         "write and delete paths incrementally synchronize changed objects into the slot index"
@@ -277,8 +277,8 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         "C++ ObjectManager byte-for-byte hot-object memory layout remains out of scope".to_string(),
         "C++ ObjectManager allocator and hot-object byte layout remain separate from Rust-native ownership policy".to_string(),
     ];
-    let native_slot_store_layout_transition_ready = true;
-    let native_slot_store_layout_transition_evidence = vec![
+    let native_bucket_store_layout_transition_ready = true;
+    let native_bucket_store_layout_transition_evidence = vec![
         "slot objects track layout state transitions across writes, rebuilds, compaction, and tombstones"
             .to_string(),
         "compaction reports slot layout transition counts and post-compaction layout state counts"
@@ -341,8 +341,8 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         && stale_page_ref_detection_ready
         && follower_cursor_safe_gc_ready
         && shared_store_sync_async_replay_ready
-        && first_class_slot_object_page_index_ready
-        && native_slot_store_layout_transition_ready
+        && first_class_bucket_object_page_index_ready
+        && native_bucket_store_layout_transition_ready
         && model_layout_compaction_ready;
     let rust_storage_lifecycle_behavior_evidence = vec![
         "slot-first ownership index is updated on object writes/deletes and validated during recovery"
@@ -385,13 +385,13 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
     if !unified_storage_corpus_ready {
         missing.push("unified storage corpus evidence".to_string());
     }
-    if !first_class_slot_object_page_index_ready {
+    if !first_class_bucket_object_page_index_ready {
         missing.push("first-class slot/object/page ownership index".to_string());
     }
     if !native_object_manager_runtime_ready {
         missing.push("native ObjectManager runtime mechanics".to_string());
     }
-    if !native_slot_store_layout_transition_ready {
+    if !native_bucket_store_layout_transition_ready {
         missing.push("native SlotStore slot layout transitions".to_string());
     }
     if !stream_backed_band_runtime_ready {
@@ -421,13 +421,13 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         cache_pressure_and_refill_ready,
         shared_store_sync_async_replay_ready,
         unified_storage_corpus_ready,
-        first_class_slot_object_page_index_ready,
-        first_class_slot_object_page_index_evidence,
+        first_class_bucket_object_page_index_ready,
+        first_class_bucket_object_page_index_evidence,
         native_object_manager_runtime_ready,
         native_object_manager_runtime_evidence,
         native_object_manager_runtime_blockers,
-        native_slot_store_layout_transition_ready,
-        native_slot_store_layout_transition_evidence,
+        native_bucket_store_layout_transition_ready,
+        native_bucket_store_layout_transition_evidence,
         stream_backed_band_runtime_ready,
         stream_backed_band_runtime_evidence,
         stream_backed_band_runtime_blockers,

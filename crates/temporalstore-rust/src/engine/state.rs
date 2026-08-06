@@ -78,7 +78,8 @@ pub(super) struct ShardState {
     #[serde(default)]
     pub(super) context_compressions: HashMap<String, BTreeMap<u64, BlockAddress>>,
     #[serde(default)]
-    pub(super) slot_index: CoreIndex,
+    #[serde(rename = "slot_index")]
+    pub(super) bucket_index: CoreIndex,
     #[serde(skip)]
     pub(super) dirty_objects: BTreeSet<String>,
 }
@@ -86,14 +87,15 @@ pub(super) struct ShardState {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub(super) struct CoreIndex {
     #[serde(default, alias = "slots")]
-    pub(super) slot_map: SlotMap,
+    #[serde(rename = "slot_map")]
+    pub(super) bucket_map: BucketMap,
     #[serde(default)]
     pub(super) object_page_lookup: ObjectPageLookup,
     #[serde(default)]
     pub(super) object_component_lookup: ObjectComponentLookup,
 }
 
-pub(super) type SlotMap = BTreeMap<u32, SlotNode>;
+pub(super) type BucketMap = BTreeMap<u32, BucketNode>;
 pub(super) type ObjectIndex = BTreeSet<u64>;
 pub(super) type PageIndexMap = BTreeMap<String, PageIndex>;
 pub(super) type ObjectPageLookup = BTreeMap<String, BTreeSet<PageLookupRef>>;
@@ -101,7 +103,8 @@ pub(super) type ObjectComponentLookup = BTreeMap<String, BTreeSet<ComponentPageL
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(super) struct PageLookupRef {
-    pub(super) routing_slot: u32,
+    #[serde(rename = "routing_slot")]
+    pub(super) routing_bucket: u32,
     pub(super) page_ref_key: String,
 }
 
@@ -109,17 +112,19 @@ pub(super) struct PageLookupRef {
 pub(super) struct ComponentPageLookupRef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) component: Option<String>,
-    pub(super) routing_slot: u32,
+    #[serde(rename = "routing_slot")]
+    pub(super) routing_bucket: u32,
     pub(super) page_ref_key: String,
 }
 
 /// Rust-native core index mirroring the C++ shape:
-/// Index -> SlotMap -> SlotNode -> PageIndex/ObjectIndex.
+/// Index -> BucketMap -> BucketNode -> PageIndex/ObjectIndex.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub(super) struct SlotNode {
-    pub(super) routing_slot: u32,
+pub(super) struct BucketNode {
+    #[serde(rename = "routing_slot")]
+    pub(super) routing_bucket: u32,
     #[serde(default)]
-    pub(super) layout: SlotLayoutState,
+    pub(super) layout: BucketLayoutState,
     pub(super) dirty: bool,
     #[serde(default)]
     pub(super) deleted: bool,
@@ -138,7 +143,7 @@ pub(super) struct SlotNode {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) enum SlotLayoutState {
+pub(super) enum BucketLayoutState {
     #[default]
     Empty,
     SingleObject,
@@ -165,22 +170,22 @@ impl CoreIndex {
         self.object_page_lookup.clear();
         self.object_component_lookup.clear();
         let refs = self
-            .slot_map
+            .bucket_map
             .iter()
-            .flat_map(|(routing_slot, slot)| {
-                slot.page_index.iter().map(move |(page_ref_key, page)| {
-                    (*routing_slot, page_ref_key.clone(), page.clone())
+            .flat_map(|(routing_bucket, bucket)| {
+                bucket.page_index.iter().map(move |(page_ref_key, page)| {
+                    (*routing_bucket, page_ref_key.clone(), page.clone())
                 })
             })
             .collect::<Vec<_>>();
-        for (routing_slot, page_ref_key, page) in refs {
-            self.insert_object_page_lookup(routing_slot, page_ref_key, &page);
+        for (routing_bucket, page_ref_key, page) in refs {
+            self.insert_object_page_lookup(routing_bucket, page_ref_key, &page);
         }
     }
 
     pub(super) fn insert_object_page_lookup(
         &mut self,
-        routing_slot: u32,
+        routing_bucket: u32,
         page_ref_key: String,
         page: &PageIndex,
     ) {
@@ -195,7 +200,7 @@ impl CoreIndex {
             ))
             .or_default()
             .insert(PageLookupRef {
-                routing_slot,
+                routing_bucket,
                 page_ref_key: page_ref_key.clone(),
             });
         self.object_component_lookup
@@ -206,7 +211,7 @@ impl CoreIndex {
             .or_default()
             .insert(ComponentPageLookupRef {
                 component: page.component.clone(),
-                routing_slot,
+                routing_bucket,
                 page_ref_key,
             });
     }
@@ -238,9 +243,9 @@ impl CoreIndex {
         let lookup_key = object_page_lookup_key(model_id, object_key, component);
         if let Some(page_refs) = self.object_page_lookup.get(&lookup_key) {
             return page_refs.iter().any(|page_ref| {
-                self.slot_map
-                    .get(&page_ref.routing_slot)
-                    .and_then(|slot| slot.page_index.get(&page_ref.page_ref_key))
+                self.bucket_map
+                    .get(&page_ref.routing_bucket)
+                    .and_then(|bucket| bucket.page_index.get(&page_ref.page_ref_key))
                     .map(|page| {
                         !page.deleted
                             && page.model_id == model_id
@@ -256,8 +261,8 @@ impl CoreIndex {
             return false;
         }
 
-        self.slot_map.values().any(|slot| {
-            slot.page_index.values().any(|page| {
+        self.bucket_map.values().any(|bucket| {
+            bucket.page_index.values().any(|page| {
                 !page.deleted
                     && page.model_id == model_id
                     && page.object_key == object_key
@@ -306,7 +311,7 @@ fn same_page_address(left: &BlockAddress, right: &BlockAddress) -> bool {
         && left.length == right.length
         && left.page_id == right.page_id
         && left.object_id == right.object_id
-        && left.routing_slot == right.routing_slot
+        && left.routing_bucket == right.routing_bucket
         && left.generation == right.generation
 }
 

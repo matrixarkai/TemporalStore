@@ -16,8 +16,8 @@ fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {
         load_version: 0,
         local_node_id: None,
         shard_uri: String::new(),
-        start_routing_slot: 10,
-        end_routing_slot: 12,
+        start_routing_bucket: 10,
+        end_routing_bucket: 12,
         readonly: false,
         table_name: String::new(),
     });
@@ -58,13 +58,13 @@ fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {
 
     let report = engine.object_manager_runtime_report(1);
     assert!(report.runtime_ready, "{report:?}");
-    assert!(report.routing_slot_count >= 1);
+    assert!(report.routing_bucket_count >= 1);
     assert!(report.object_count >= 4);
     assert!(report.page_ref_count >= 3);
     assert!(report.cold_object_count >= 3);
     assert!(report.tombstone_object_count >= 1);
     assert!(report.dirty_object_count >= 4);
-    assert!(report.dirty_slot_count >= 1);
+    assert!(report.dirty_bucket_count >= 1);
     assert!(report.max_dirty_generation >= 1);
     assert!(report.object_page_count >= 2);
     assert_eq!(report.missing_owner_page_ref_count, 0);
@@ -86,10 +86,10 @@ fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {
     assert!(after_compaction.object_page_count >= 1);
 
     let manifest = engine
-        .create_slot_dump_manifest(1, Vec::new())
+        .create_bucket_dump_manifest(1, Vec::new())
         .expect("slot dump manifest should persist");
     engine
-        .install_slot_dump_manifest(&manifest)
+        .install_bucket_dump_manifest(&manifest)
         .expect("slot dump manifest should install");
     let after_dump_load = engine.object_manager_runtime_report(1);
     assert!(after_dump_load.runtime_ready, "{after_dump_load:?}");
@@ -105,8 +105,8 @@ fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {
         load_version: 1,
         local_node_id: None,
         shard_uri: String::new(),
-        start_routing_slot: 10,
-        end_routing_slot: 12,
+        start_routing_bucket: 10,
+        end_routing_bucket: 12,
         readonly: false,
         table_name: String::new(),
     });
@@ -124,7 +124,7 @@ fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {
     );
 }
 
-// shared-corpus: cpp_storage_object_page_slot_parity_surfaces;
+// shared-corpus: cpp_storage_object_page_bucket_parity_surfaces;
 #[test]
 fn object_manager_runtime_report_tracks_residency_layout_and_tombstones_cpp_parity() {
     let dir = tempfile::tempdir().unwrap();
@@ -139,8 +139,8 @@ fn object_manager_runtime_report_tracks_residency_layout_and_tombstones_cpp_pari
         load_version: 0,
         local_node_id: None,
         shard_uri: String::new(),
-        start_routing_slot: 10,
-        end_routing_slot: 12,
+        start_routing_bucket: 10,
+        end_routing_bucket: 12,
         readonly: false,
         table_name: String::new(),
     });
@@ -181,13 +181,13 @@ fn object_manager_runtime_report_tracks_residency_layout_and_tombstones_cpp_pari
 
     let report = engine.object_manager_runtime_report(1);
     assert!(report.runtime_ready, "{report:?}");
-    assert!(report.routing_slot_count >= 1);
+    assert!(report.routing_bucket_count >= 1);
     assert!(report.object_count >= 4);
     assert!(report.page_ref_count >= 3);
     assert!(report.cold_object_count >= 3);
     assert!(report.tombstone_object_count >= 1);
     assert!(report.dirty_object_count >= 4);
-    assert!(report.dirty_slot_count >= 1);
+    assert!(report.dirty_bucket_count >= 1);
     assert!(report.max_dirty_generation >= 1);
     assert!(report.object_page_count >= 2);
     assert!(report.packed_timestamped_page_count >= 1);
@@ -206,8 +206,8 @@ fn object_manager_runtime_report_tracks_residency_layout_and_tombstones_cpp_pari
         load_version: 1,
         local_node_id: None,
         shard_uri: String::new(),
-        start_routing_slot: 10,
-        end_routing_slot: 12,
+        start_routing_bucket: 10,
+        end_routing_bucket: 12,
         readonly: false,
         table_name: String::new(),
     });
@@ -226,7 +226,7 @@ fn object_manager_runtime_report_tracks_residency_layout_and_tombstones_cpp_pari
 }
 
 #[test]
-fn slot_dump_manifest_validation_rejects_checksum_and_missing_segments() {
+fn bucket_dump_manifest_validation_rejects_checksum_and_missing_segments() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -243,50 +243,50 @@ fn slot_dump_manifest_validation_rejects_checksum_and_missing_segments() {
         },
     });
     let mut manifest = engine
-        .create_slot_dump_manifest(1, Vec::new())
+        .create_bucket_dump_manifest(1, Vec::new())
         .expect("manifest should persist");
     manifest.logical_bytes = manifest.logical_bytes.saturating_add(1);
     assert!(
         !engine
-            .validate_slot_dump_manifest(&manifest)
+            .validate_bucket_dump_manifest(&manifest)
             .unwrap_err()
             .ok
     );
 
     let mut missing = engine
-        .create_slot_dump_manifest(1, Vec::new())
+        .create_bucket_dump_manifest(1, Vec::new())
         .expect("manifest should persist");
     missing.page_segment_ids.push(999_999);
-    missing.checksum = slot_dump_manifest_checksum(&missing).unwrap();
-    let missing_preflight = engine.slot_dump_install_preflight_report(&missing);
+    missing.checksum = bucket_dump_manifest_checksum(&missing).unwrap();
+    let missing_preflight = engine.bucket_dump_install_preflight_report(&missing);
     assert!(!missing_preflight.install_safe);
     assert_eq!(missing_preflight.missing_page_segment_ids, vec![999_999]);
     assert!(missing_preflight
         .blockers
         .contains(&"missing_page_segments".to_string()));
-    assert!(!engine.validate_slot_dump_manifest(&missing).unwrap_err().ok);
+    assert!(!engine.validate_bucket_dump_manifest(&missing).unwrap_err().ok);
 
     let mut incomplete = engine
-        .create_slot_dump_manifest(1, Vec::new())
+        .create_bucket_dump_manifest(1, Vec::new())
         .expect("manifest should persist");
     incomplete.page_segment_ids.clear();
-    incomplete.checksum = slot_dump_manifest_checksum(&incomplete).unwrap();
+    incomplete.checksum = bucket_dump_manifest_checksum(&incomplete).unwrap();
     assert_eq!(
         engine
-            .validate_slot_dump_manifest(&incomplete)
+            .validate_bucket_dump_manifest(&incomplete)
             .unwrap_err()
             .code,
         "slot_dump_page_segment_mismatch"
     );
 
     let corrupt = engine
-        .create_slot_dump_manifest(1, Vec::new())
+        .create_bucket_dump_manifest(1, Vec::new())
         .expect("manifest should persist");
     let segment_id = corrupt.page_segment_ids[0];
     let mut segment = engine.block_store().read_segment(segment_id).unwrap();
     *segment.last_mut().unwrap() ^= 0xff;
     let _ = engine.block_store().install_segment(segment_id, &segment);
-    let corrupt_preflight = engine.slot_dump_install_preflight_report(&corrupt);
+    let corrupt_preflight = engine.bucket_dump_install_preflight_report(&corrupt);
     assert!(!corrupt_preflight.install_safe);
     assert!(corrupt_preflight
         .corrupt_page_segment_ids
@@ -298,7 +298,7 @@ fn slot_dump_manifest_validation_rejects_checksum_and_missing_segments() {
         .contains(&"unreadable_page_refs".to_string()));
     assert_eq!(
         engine
-            .validate_slot_dump_manifest(&corrupt)
+            .validate_bucket_dump_manifest(&corrupt)
             .unwrap_err()
             .code,
         "slot_dump_unreadable_page_refs"
@@ -306,7 +306,7 @@ fn slot_dump_manifest_validation_rejects_checksum_and_missing_segments() {
 }
 
 #[test]
-fn slot_dump_manifest_install_restores_index_and_rejects_partial_or_stale() {
+fn bucket_dump_manifest_install_restores_index_and_rejects_partial_or_stale() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -323,7 +323,7 @@ fn slot_dump_manifest_install_restores_index_and_rejects_partial_or_stale() {
         },
     });
     let manifest = engine
-        .create_slot_dump_manifest(1, Vec::new())
+        .create_bucket_dump_manifest(1, Vec::new())
         .expect("manifest should persist");
 
     let restore_engine = TemporalEngine::with_local_dirs(
@@ -333,7 +333,7 @@ fn slot_dump_manifest_install_restores_index_and_rejects_partial_or_stale() {
         dir.path().join("restore-indexes"),
     );
     restore_engine.load_shard(1);
-    let safe_preflight = restore_engine.slot_dump_install_preflight_report(&manifest);
+    let safe_preflight = restore_engine.bucket_dump_install_preflight_report(&manifest);
     assert!(safe_preflight.install_safe, "{safe_preflight:?}");
     assert!(safe_preflight.blockers.is_empty());
     assert_eq!(
@@ -341,7 +341,7 @@ fn slot_dump_manifest_install_restores_index_and_rejects_partial_or_stale() {
         manifest.index_log_sequence
     );
     restore_engine
-        .install_slot_dump_manifest(&manifest)
+        .install_bucket_dump_manifest(&manifest)
         .expect("manifest should install");
     assert!(
         fs::read_dir(dir.path().join("restore-indexes"))
@@ -350,8 +350,8 @@ fn slot_dump_manifest_install_restores_index_and_rejects_partial_or_stale() {
             .all(|entry| !entry.file_name().to_string_lossy().contains(".tmp-")),
         "slot dump install should not leave atomic index temp files"
     );
-    assert!(restore_engine.interrupted_slot_dump_installs(1).is_empty());
-    let markers = list_slot_dump_install_markers_at(&restore_engine.index_dir, 1).unwrap();
+    assert!(restore_engine.interrupted_bucket_dump_installs(1).is_empty());
+    let markers = list_bucket_dump_install_markers_at(&restore_engine.index_dir, 1).unwrap();
     assert!(markers.iter().any(|marker| marker.phase == "prepare"));
     assert!(markers.iter().any(|marker| marker.phase == "install"));
     assert!(markers.iter().any(|marker| marker.phase == "commit"));
@@ -370,10 +370,10 @@ fn slot_dump_manifest_install_restores_index_and_rejects_partial_or_stale() {
 
     let mut partial = manifest.clone();
     partial.index_bytes.clear();
-    partial.checksum = slot_dump_manifest_checksum(&partial).unwrap();
+    partial.checksum = bucket_dump_manifest_checksum(&partial).unwrap();
     assert_eq!(
         restore_engine
-            .install_slot_dump_manifest(&partial)
+            .install_bucket_dump_manifest(&partial)
             .unwrap_err()
             .code,
         "slot_dump_partial_manifest"
@@ -386,7 +386,7 @@ fn slot_dump_manifest_install_restores_index_and_rejects_partial_or_stale() {
             value: b"v2".to_vec(),
         },
     });
-    let stale_preflight = engine.slot_dump_install_preflight_report(&manifest);
+    let stale_preflight = engine.bucket_dump_install_preflight_report(&manifest);
     assert!(!stale_preflight.install_safe);
     assert!(stale_preflight.stale_manifest);
     assert!(stale_preflight
@@ -394,7 +394,7 @@ fn slot_dump_manifest_install_restores_index_and_rejects_partial_or_stale() {
         .contains(&"stale_manifest_sequence".to_string()));
     assert_eq!(
         engine
-            .install_slot_dump_manifest(&manifest)
+            .install_bucket_dump_manifest(&manifest)
             .unwrap_err()
             .code,
         "slot_dump_stale_manifest"
@@ -434,9 +434,9 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
         engine.storage_merged_dump_load_policy_report(StorageMergedDumpLoadPolicyRequest {
             lifecycle: StorageLifecycleRequest {
                 shard_id: 1,
-                max_dump_slots_per_round: 16,
-                prune_slot_dump_manifests: true,
-                roll_forward_slot_dump_installs: true,
+                max_dump_buckets_per_round: 16,
+                prune_bucket_dump_manifests: true,
+                roll_forward_bucket_dump_installs: true,
                 invalidate_cache: true,
                 warm_cache: true,
                 ..StorageLifecycleRequest::default()
@@ -452,17 +452,17 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
     assert!(report.follower_retention_safe);
     assert!(report.index_gc_ready);
     assert!(report.manifest_id.is_some());
-    assert!(!report.manifest_slot_ids.is_empty());
+    assert!(!report.manifest_bucket_ids.is_empty());
     // The merged dump/load policy report was restructured: the granular
     // `*_validated` booleans and conflict/interruption counters are now
     // expressed through `blockers` (empty == all validations passed) and the
     // recovery `boundary`. On this clean path there are no blockers, no
     // interrupted installs, and no roll-forward recoveries.
     assert!(report.blockers.is_empty(), "{report:?}");
-    assert!(report.boundary.interrupted_slot_dump_installs.is_empty());
+    assert!(report.boundary.interrupted_bucket_dump_installs.is_empty());
     assert!(report.install_roll_forward_reports.is_empty());
 
-    let manifest = latest_slot_dump_manifest_at(&engine.index_dir, 1).unwrap();
+    let manifest = latest_bucket_dump_manifest_at(&engine.index_dir, 1).unwrap();
     let restore_engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("restore-cache"),
@@ -476,8 +476,8 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
                 load_version: 0,
                 local_node_id: Some(10),
                 shard_uri: "local://restore/1".to_string(),
-                start_routing_slot: 0,
-                end_routing_slot: 16_383,
+                start_routing_bucket: 0,
+                end_routing_bucket: 16_383,
                 readonly: false,
                 table_name: "restore".to_string(),
             })
@@ -485,14 +485,14 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
             .ok
     );
     let merged_manifest = engine
-        .create_merged_slot_dump_manifest(
+        .create_merged_bucket_dump_manifest(
             1,
-            manifest.slot_ids.clone(),
+            manifest.bucket_ids.clone(),
             vec![manifest.manifest_id.clone()],
             Some(1),
         )
         .expect("merged manifest with load-version handoff");
-    let install_report = restore_engine.install_merged_slot_dump_manifest(&merged_manifest);
+    let install_report = restore_engine.install_merged_bucket_dump_manifest(&merged_manifest);
     assert!(install_report.installed, "{install_report:?}");
     assert!(install_report.rollback_marker_written);
     assert!(install_report.prepare_marker_written);
@@ -541,7 +541,7 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
             value: b"v2".to_vec(),
         },
     });
-    let stale_preflight = engine.slot_dump_install_preflight_report(&manifest);
+    let stale_preflight = engine.bucket_dump_install_preflight_report(&manifest);
     assert!(!stale_preflight.install_safe, "{stale_preflight:?}");
     assert!(stale_preflight
         .blockers
@@ -549,14 +549,14 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
     assert!(stale_preflight.stale_page_conflict_count > 0);
     assert_eq!(stale_preflight.stale_object_conflict_count, 0);
     assert!(!engine
-        .install_slot_dump_manifest(&manifest)
+        .install_bucket_dump_manifest(&manifest)
         .unwrap_err()
         .code
         .is_empty());
 
-    write_slot_dump_install_marker(
+    write_bucket_dump_install_marker(
         &engine.index_dir,
-        &SlotDumpInstallMarker {
+        &BucketDumpInstallMarker {
             shard_id: manifest.shard_id,
             manifest_id: manifest.manifest_id.clone(),
             phase: "install".to_string(),
@@ -573,9 +573,9 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
         dir.path().join("indexes"),
     );
     restarted.load_shard(1);
-    assert_eq!(restarted.interrupted_slot_dump_installs(1).len(), 1);
+    assert_eq!(restarted.interrupted_bucket_dump_installs(1).len(), 1);
     let restart_boundary = restarted.storage_recovery_boundary_report(1);
-    assert_eq!(restart_boundary.interrupted_slot_dump_installs.len(), 1);
+    assert_eq!(restart_boundary.interrupted_bucket_dump_installs.len(), 1);
     engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringSet {
@@ -587,9 +587,9 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
         engine.storage_merged_dump_load_policy_report(StorageMergedDumpLoadPolicyRequest {
             lifecycle: StorageLifecycleRequest {
                 shard_id: 1,
-                max_dump_slots_per_round: 16,
-                prune_slot_dump_manifests: true,
-                roll_forward_slot_dump_installs: true,
+                max_dump_buckets_per_round: 16,
+                prune_bucket_dump_manifests: true,
+                roll_forward_bucket_dump_installs: true,
                 invalidate_cache: true,
                 warm_cache: true,
                 ..StorageLifecycleRequest::default()
@@ -602,9 +602,9 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
     // interrupted installs remain in the boundary and at least one roll-forward
     // report was produced (was: interrupted_install_count==0,
     // roll_forward_recovery_count>=1, rollback_marker_count>=1).
-    assert!(recovered.boundary.interrupted_slot_dump_installs.is_empty());
+    assert!(recovered.boundary.interrupted_bucket_dump_installs.is_empty());
     assert!(!recovered.install_roll_forward_reports.is_empty());
-    assert!(engine.interrupted_slot_dump_installs(1).is_empty());
+    assert!(engine.interrupted_bucket_dump_installs(1).is_empty());
 
     let mismatch_restore = TemporalEngine::with_local_dirs(
         1024,
@@ -619,15 +619,15 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
                 load_version: 2,
                 local_node_id: Some(11),
                 shard_uri: "local://mismatch/1".to_string(),
-                start_routing_slot: 0,
-                end_routing_slot: 16_383,
+                start_routing_bucket: 0,
+                end_routing_bucket: 16_383,
                 readonly: false,
                 table_name: "mismatch".to_string(),
             })
             .status
             .ok
     );
-    let mismatch = mismatch_restore.slot_dump_install_preflight_report(&merged_manifest);
+    let mismatch = mismatch_restore.bucket_dump_install_preflight_report(&merged_manifest);
     assert!(!mismatch.install_safe, "{mismatch:?}");
     assert!(mismatch
         .blockers
@@ -635,7 +635,7 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
 }
 
 #[test]
-fn slot_dump_install_markers_report_interrupted_prepare() {
+fn bucket_dump_install_markers_report_interrupted_prepare() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -652,11 +652,11 @@ fn slot_dump_install_markers_report_interrupted_prepare() {
         },
     });
     let manifest = engine
-        .create_slot_dump_manifest(1, Vec::new())
+        .create_bucket_dump_manifest(1, Vec::new())
         .expect("manifest should persist");
-    write_slot_dump_install_marker(
+    write_bucket_dump_install_marker(
         &engine.index_dir,
-        &SlotDumpInstallMarker {
+        &BucketDumpInstallMarker {
             shard_id: manifest.shard_id,
             manifest_id: "interrupted".to_string(),
             phase: "prepare".to_string(),
@@ -667,23 +667,23 @@ fn slot_dump_install_markers_report_interrupted_prepare() {
     )
     .unwrap();
 
-    let interrupted = engine.interrupted_slot_dump_installs(1);
+    let interrupted = engine.interrupted_bucket_dump_installs(1);
     assert_eq!(interrupted.len(), 1);
     assert_eq!(interrupted[0].phase, "prepare");
     let boundary = engine.storage_recovery_boundary_report(1);
-    assert_eq!(boundary.interrupted_slot_dump_installs, interrupted);
-    assert_eq!(boundary.prepared_slot_dump_install_count, 1);
-    assert_eq!(boundary.installed_slot_dump_install_count, 0);
-    assert_eq!(boundary.unknown_slot_dump_install_count, 0);
+    assert_eq!(boundary.interrupted_bucket_dump_installs, interrupted);
+    assert_eq!(boundary.prepared_bucket_dump_install_count, 1);
+    assert_eq!(boundary.installed_bucket_dump_install_count, 0);
+    assert_eq!(boundary.unknown_bucket_dump_install_count, 0);
     let readiness = engine.storage_production_readiness_report(1);
-    assert_eq!(readiness.interrupted_slot_dump_install_count, 1);
-    assert_eq!(readiness.prepared_slot_dump_install_count, 1);
-    assert_eq!(readiness.installed_slot_dump_install_count, 0);
-    assert_eq!(readiness.unknown_slot_dump_install_count, 0);
+    assert_eq!(readiness.interrupted_bucket_dump_install_count, 1);
+    assert_eq!(readiness.prepared_bucket_dump_install_count, 1);
+    assert_eq!(readiness.installed_bucket_dump_install_count, 0);
+    assert_eq!(readiness.unknown_bucket_dump_install_count, 0);
 }
 
 #[test]
-fn slot_dump_install_roll_forward_completes_safe_installed_marker() {
+fn bucket_dump_install_roll_forward_completes_safe_installed_marker() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -700,11 +700,11 @@ fn slot_dump_install_roll_forward_completes_safe_installed_marker() {
         },
     });
     let manifest = engine
-        .create_slot_dump_manifest(1, Vec::new())
+        .create_bucket_dump_manifest(1, Vec::new())
         .expect("manifest should persist");
-    write_slot_dump_install_marker(
+    write_bucket_dump_install_marker(
         &engine.index_dir,
-        &SlotDumpInstallMarker {
+        &BucketDumpInstallMarker {
             shard_id: manifest.shard_id,
             manifest_id: manifest.manifest_id.clone(),
             phase: "install".to_string(),
@@ -715,25 +715,25 @@ fn slot_dump_install_roll_forward_completes_safe_installed_marker() {
     )
     .unwrap();
 
-    let dry_run = engine.slot_dump_install_roll_forward_reports(1);
+    let dry_run = engine.bucket_dump_install_roll_forward_reports(1);
     assert_eq!(dry_run.len(), 1);
     assert!(dry_run[0].can_roll_forward);
     assert_eq!(dry_run[0].reason, "commit_ready");
 
-    let applied = engine.roll_forward_slot_dump_installs(1);
+    let applied = engine.roll_forward_bucket_dump_installs(1);
     assert_eq!(applied.len(), 1);
     assert!(applied[0].completed_commit);
     assert!(applied[0].obsolete_marker_files_removed > 0);
-    assert!(engine.interrupted_slot_dump_installs(1).is_empty());
+    assert!(engine.interrupted_bucket_dump_installs(1).is_empty());
     let marker_files =
-        slot_dump_install_marker_files_at(&engine.index_dir, 1).expect("marker files");
+        bucket_dump_install_marker_files_at(&engine.index_dir, 1).expect("marker files");
     assert!(marker_files
         .iter()
         .all(|(marker, _)| marker.phase == "commit"));
 }
 
 #[test]
-fn slot_dump_install_roll_forward_retries_safe_prepare_marker() {
+fn bucket_dump_install_roll_forward_retries_safe_prepare_marker() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -750,11 +750,11 @@ fn slot_dump_install_roll_forward_retries_safe_prepare_marker() {
         },
     });
     let manifest = engine
-        .create_slot_dump_manifest(1, Vec::new())
+        .create_bucket_dump_manifest(1, Vec::new())
         .expect("manifest should persist");
-    write_slot_dump_install_marker(
+    write_bucket_dump_install_marker(
         &engine.index_dir,
-        &SlotDumpInstallMarker {
+        &BucketDumpInstallMarker {
             shard_id: manifest.shard_id,
             manifest_id: manifest.manifest_id.clone(),
             phase: "prepare".to_string(),
@@ -765,27 +765,27 @@ fn slot_dump_install_roll_forward_retries_safe_prepare_marker() {
     )
     .unwrap();
 
-    let dry_run = engine.slot_dump_install_roll_forward_reports(1);
+    let dry_run = engine.bucket_dump_install_roll_forward_reports(1);
     assert_eq!(dry_run.len(), 1);
     assert!(dry_run[0].can_retry_install);
     assert!(!dry_run[0].can_roll_forward);
     assert_eq!(dry_run[0].reason, "install_retry_ready");
 
-    let applied = engine.roll_forward_slot_dump_installs(1);
+    let applied = engine.roll_forward_bucket_dump_installs(1);
     assert_eq!(applied.len(), 1);
     assert!(applied[0].completed_install);
     assert!(applied[0].completed_commit);
     assert!(applied[0].obsolete_marker_files_removed > 0);
-    assert!(engine.interrupted_slot_dump_installs(1).is_empty());
+    assert!(engine.interrupted_bucket_dump_installs(1).is_empty());
     let marker_files =
-        slot_dump_install_marker_files_at(&engine.index_dir, 1).expect("marker files");
+        bucket_dump_install_marker_files_at(&engine.index_dir, 1).expect("marker files");
     assert!(marker_files
         .iter()
         .all(|(marker, _)| marker.phase == "commit"));
 }
 
 #[test]
-fn slot_dump_recovery_reports_broken_manifest_parent_chain() {
+fn bucket_dump_recovery_reports_broken_manifest_parent_chain() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -802,7 +802,7 @@ fn slot_dump_recovery_reports_broken_manifest_parent_chain() {
         },
     });
     let parent = engine
-        .create_slot_dump_manifest(1, Vec::new())
+        .create_bucket_dump_manifest(1, Vec::new())
         .expect("parent manifest should persist");
     engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -812,11 +812,11 @@ fn slot_dump_recovery_reports_broken_manifest_parent_chain() {
         },
     });
     let child = engine
-        .create_slot_dump_manifest(1, Vec::new())
+        .create_bucket_dump_manifest(1, Vec::new())
         .expect("child manifest should persist");
     assert_eq!(child.parent_manifest_id, Some(parent.manifest_id.clone()));
 
-    fs::remove_file(slot_dump_manifest_path(
+    fs::remove_file(bucket_dump_manifest_path(
         &engine.index_dir,
         1,
         &parent.manifest_id,
@@ -835,7 +835,7 @@ fn slot_dump_recovery_reports_broken_manifest_parent_chain() {
 }
 
 #[test]
-fn slot_dump_manifest_prune_keeps_latest_parent_chain_and_removes_obsolete_fork() {
+fn bucket_dump_manifest_prune_keeps_latest_parent_chain_and_removes_obsolete_fork() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -851,7 +851,7 @@ fn slot_dump_manifest_prune_keeps_latest_parent_chain_and_removes_obsolete_fork(
             value: b"v1".to_vec(),
         },
     });
-    let parent = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+    let parent = engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
     engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringSet {
@@ -859,16 +859,16 @@ fn slot_dump_manifest_prune_keeps_latest_parent_chain_and_removes_obsolete_fork(
             value: b"v2".to_vec(),
         },
     });
-    let child = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+    let child = engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
     let mut fork = parent.clone();
     fork.manifest_id = format!("{}-fork", fork.manifest_id);
     fork.parent_manifest_id = None;
-    fork.dump_generation_id = slot_dump_generation_id(&fork);
-    fork.checksum = slot_dump_manifest_checksum(&fork).unwrap();
-    engine.persist_slot_dump_manifest(&fork).unwrap();
-    write_slot_dump_install_marker(
+    fork.dump_generation_id = bucket_dump_generation_id(&fork);
+    fork.checksum = bucket_dump_manifest_checksum(&fork).unwrap();
+    engine.persist_bucket_dump_manifest(&fork).unwrap();
+    write_bucket_dump_install_marker(
         &engine.index_dir,
-        &SlotDumpInstallMarker {
+        &BucketDumpInstallMarker {
             shard_id: 1,
             manifest_id: fork.manifest_id.clone(),
             phase: "commit".to_string(),
@@ -879,7 +879,7 @@ fn slot_dump_manifest_prune_keeps_latest_parent_chain_and_removes_obsolete_fork(
     )
     .unwrap();
 
-    let plan = engine.slot_dump_manifest_prune_plan(1);
+    let plan = engine.bucket_dump_manifest_prune_plan(1);
     assert!(plan.retained_manifest_ids.contains(&parent.manifest_id));
     assert!(plan.retained_manifest_ids.contains(&child.manifest_id));
     assert_eq!(plan.prunable_manifest_ids, vec![fork.manifest_id.clone()]);
@@ -890,12 +890,12 @@ fn slot_dump_manifest_prune_keeps_latest_parent_chain_and_removes_obsolete_fork(
 
     let lifecycle = engine.apply_storage_lifecycle(StorageLifecycleRequest {
         shard_id: 1,
-        selected_dump_slots: Vec::new(),
-        max_dump_slots_per_round: 0,
+        selected_dump_buckets: Vec::new(),
+        max_dump_buckets_per_round: 0,
         min_undumped_oplog_records: 0,
         purge_delayed_destroy: false,
-        prune_slot_dump_manifests: true,
-        roll_forward_slot_dump_installs: false,
+        prune_bucket_dump_manifests: true,
+        roll_forward_bucket_dump_installs: false,
         follower_replay_cursors: Vec::new(),
         invalidate_cache: false,
         warm_cache: false,
@@ -910,13 +910,13 @@ fn slot_dump_manifest_prune_keeps_latest_parent_chain_and_removes_obsolete_fork(
         lifecycle.manifest_prune_plan.prunable_manifest_ids,
         vec![fork.manifest_id.clone()]
     );
-    assert!(slot_dump_manifest_path(&engine.index_dir, 1, &parent.manifest_id).exists());
-    assert!(slot_dump_manifest_path(&engine.index_dir, 1, &child.manifest_id).exists());
-    assert!(!slot_dump_manifest_path(&engine.index_dir, 1, &fork.manifest_id).exists());
+    assert!(bucket_dump_manifest_path(&engine.index_dir, 1, &parent.manifest_id).exists());
+    assert!(bucket_dump_manifest_path(&engine.index_dir, 1, &child.manifest_id).exists());
+    assert!(!bucket_dump_manifest_path(&engine.index_dir, 1, &fork.manifest_id).exists());
 }
 
 #[test]
-fn slot_dump_manifest_prune_is_blocked_by_lagging_follower_cursor() {
+fn bucket_dump_manifest_prune_is_blocked_by_lagging_follower_cursor() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -932,7 +932,7 @@ fn slot_dump_manifest_prune_is_blocked_by_lagging_follower_cursor() {
             value: b"v1".to_vec(),
         },
     });
-    let parent = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+    let parent = engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
     engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringSet {
@@ -940,29 +940,29 @@ fn slot_dump_manifest_prune_is_blocked_by_lagging_follower_cursor() {
             value: b"v2".to_vec(),
         },
     });
-    let child = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+    let child = engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
     let mut fork = parent.clone();
     fork.manifest_id = format!("{}-follower-anchor", fork.manifest_id);
     fork.parent_manifest_id = None;
     fork.created_unix_ms = parent.created_unix_ms.saturating_add(1);
-    fork.dump_generation_id = slot_dump_generation_id(&fork);
-    fork.checksum = slot_dump_manifest_checksum(&fork).unwrap();
-    engine.persist_slot_dump_manifest(&fork).unwrap();
+    fork.dump_generation_id = bucket_dump_generation_id(&fork);
+    fork.checksum = bucket_dump_manifest_checksum(&fork).unwrap();
+    engine.persist_bucket_dump_manifest(&fork).unwrap();
 
-    let no_cursor = engine.slot_dump_manifest_prune_plan(1);
+    let no_cursor = engine.bucket_dump_manifest_prune_plan(1);
     assert_eq!(
         no_cursor.prunable_manifest_ids,
         vec![fork.manifest_id.clone()]
     );
 
-    let lagging_cursor = SlotDumpFollowerReplayCursor {
+    let lagging_cursor = BucketDumpFollowerReplayCursor {
         follower_id: "follower-a".to_string(),
         shard_id: 1,
         oplog_sequence: fork.oplog_sequence,
         index_log_sequence: fork.index_log_sequence,
     };
     let blocked =
-        engine.slot_dump_manifest_prune_plan_with_follower_cursors(1, vec![lagging_cursor.clone()]);
+        engine.bucket_dump_manifest_prune_plan_with_follower_cursors(1, vec![lagging_cursor.clone()]);
     assert!(blocked.prunable_manifest_ids.is_empty());
     assert!(blocked.retained_manifest_ids.contains(&fork.manifest_id));
     assert_eq!(blocked.follower_blocks.len(), 1);
@@ -972,9 +972,9 @@ fn slot_dump_manifest_prune_is_blocked_by_lagging_follower_cursor() {
         .reasons
         .contains(&"follower_cursor_blocks_prune".to_string()));
 
-    let caught_up = engine.slot_dump_manifest_prune_plan_with_follower_cursors(
+    let caught_up = engine.bucket_dump_manifest_prune_plan_with_follower_cursors(
         1,
-        vec![SlotDumpFollowerReplayCursor {
+        vec![BucketDumpFollowerReplayCursor {
             oplog_sequence: child.oplog_sequence,
             index_log_sequence: child.index_log_sequence,
             ..lagging_cursor
@@ -987,7 +987,7 @@ fn slot_dump_manifest_prune_is_blocked_by_lagging_follower_cursor() {
 }
 
 #[test]
-fn slot_dump_manifest_prune_is_blocked_by_raft_snapshot_reference() {
+fn bucket_dump_manifest_prune_is_blocked_by_raft_snapshot_reference() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -1003,7 +1003,7 @@ fn slot_dump_manifest_prune_is_blocked_by_raft_snapshot_reference() {
             value: b"v1".to_vec(),
         },
     });
-    let parent = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+    let parent = engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
     engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringSet {
@@ -1011,22 +1011,22 @@ fn slot_dump_manifest_prune_is_blocked_by_raft_snapshot_reference() {
             value: b"v2".to_vec(),
         },
     });
-    let child = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+    let child = engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
     let mut fork = parent.clone();
     fork.manifest_id = format!("{}-snapshot-anchor", fork.manifest_id);
     fork.parent_manifest_id = None;
     fork.created_unix_ms = parent.created_unix_ms.saturating_add(1);
-    fork.dump_generation_id = slot_dump_generation_id(&fork);
-    fork.checksum = slot_dump_manifest_checksum(&fork).unwrap();
-    engine.persist_slot_dump_manifest(&fork).unwrap();
+    fork.dump_generation_id = bucket_dump_generation_id(&fork);
+    fork.checksum = bucket_dump_manifest_checksum(&fork).unwrap();
+    engine.persist_bucket_dump_manifest(&fork).unwrap();
 
-    let no_snapshot = engine.slot_dump_manifest_prune_plan(1);
+    let no_snapshot = engine.bucket_dump_manifest_prune_plan(1);
     assert_eq!(
         no_snapshot.prunable_manifest_ids,
         vec![fork.manifest_id.clone()]
     );
 
-    let snapshot_ref = SlotDumpRaftSnapshotRef {
+    let snapshot_ref = BucketDumpRaftSnapshotRef {
         snapshot_id: "raft-snapshot-0007".to_string(),
         shard_id: 1,
         last_included_index: 7,
@@ -1034,9 +1034,9 @@ fn slot_dump_manifest_prune_is_blocked_by_raft_snapshot_reference() {
         oplog_sequence: fork.oplog_sequence,
         index_log_sequence: fork.index_log_sequence,
     };
-    let blocked = engine.slot_dump_manifest_prune_plan_with_retention_refs(
+    let blocked = engine.bucket_dump_manifest_prune_plan_with_retention_refs(
         1,
-        Vec::<SlotDumpFollowerReplayCursor>::new(),
+        Vec::<BucketDumpFollowerReplayCursor>::new(),
         vec![snapshot_ref.clone()],
     );
     assert!(blocked.prunable_manifest_ids.is_empty());
@@ -1054,10 +1054,10 @@ fn slot_dump_manifest_prune_is_blocked_by_raft_snapshot_reference() {
         .reasons
         .contains(&"raft_snapshot_blocks_prune".to_string()));
 
-    let advanced = engine.slot_dump_manifest_prune_plan_with_retention_refs(
+    let advanced = engine.bucket_dump_manifest_prune_plan_with_retention_refs(
         1,
-        Vec::<SlotDumpFollowerReplayCursor>::new(),
-        vec![SlotDumpRaftSnapshotRef {
+        Vec::<BucketDumpFollowerReplayCursor>::new(),
+        vec![BucketDumpRaftSnapshotRef {
             oplog_sequence: child.oplog_sequence,
             index_log_sequence: child.index_log_sequence,
             ..snapshot_ref
@@ -1087,7 +1087,7 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
             value: b"v1".to_vec(),
         },
     });
-    let parent = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+    let parent = engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
     engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringSet {
@@ -1095,17 +1095,17 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
             value: b"v2".to_vec(),
         },
     });
-    let child = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+    let child = engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
     assert!(child.oplog_sequence > parent.oplog_sequence);
     assert!(child.index_log_sequence > parent.index_log_sequence);
 
-    let lagging_cursor = SlotDumpFollowerReplayCursor {
+    let lagging_cursor = BucketDumpFollowerReplayCursor {
         follower_id: "follower-lagging".to_string(),
         shard_id: 1,
         oplog_sequence: parent.oplog_sequence,
         index_log_sequence: parent.index_log_sequence,
     };
-    let lagging_snapshot = SlotDumpRaftSnapshotRef {
+    let lagging_snapshot = BucketDumpRaftSnapshotRef {
         snapshot_id: "raft-snapshot-lagging".to_string(),
         shard_id: 1,
         last_included_index: 11,
@@ -1122,11 +1122,11 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
     assert_eq!(blocked.follower_cursor_block_count, 1);
     assert_eq!(blocked.raft_snapshot_block_count, 1);
     assert_eq!(
-        blocked.durable_slot_generation_frontier_oplog_sequence,
+        blocked.durable_bucket_generation_frontier_oplog_sequence,
         child.oplog_sequence
     );
     assert_eq!(
-        blocked.durable_slot_generation_frontier_index_log_sequence,
+        blocked.durable_bucket_generation_frontier_index_log_sequence,
         child.index_log_sequence
     );
     assert_eq!(blocked.retain_from_oplog_sequence, 0);
@@ -1170,16 +1170,16 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
             >= 2
     );
 
-    let released_anchor = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+    let released_anchor = engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
     assert!(released_anchor.oplog_sequence >= child.oplog_sequence);
     assert!(released_anchor.index_log_sequence >= child.index_log_sequence);
-    let released_cursor = SlotDumpFollowerReplayCursor {
+    let released_cursor = BucketDumpFollowerReplayCursor {
         follower_id: "follower-caught-up".to_string(),
         shard_id: 1,
         oplog_sequence: released_anchor.oplog_sequence,
         index_log_sequence: released_anchor.index_log_sequence,
     };
-    let released_snapshot = SlotDumpRaftSnapshotRef {
+    let released_snapshot = BucketDumpRaftSnapshotRef {
         snapshot_id: "raft-snapshot-caught-up".to_string(),
         shard_id: 1,
         last_included_index: 12,
@@ -1222,14 +1222,14 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
         "index-log byte threshold not reached"
     );
 
-    let final_anchor = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
-    let final_cursor = SlotDumpFollowerReplayCursor {
+    let final_anchor = engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
+    let final_cursor = BucketDumpFollowerReplayCursor {
         follower_id: "follower-final".to_string(),
         shard_id: 1,
         oplog_sequence: final_anchor.oplog_sequence,
         index_log_sequence: final_anchor.index_log_sequence,
     };
-    let final_snapshot = SlotDumpRaftSnapshotRef {
+    let final_snapshot = BucketDumpRaftSnapshotRef {
         snapshot_id: "raft-snapshot-final".to_string(),
         shard_id: 1,
         last_included_index: 13,
@@ -1300,7 +1300,7 @@ fn storage_page_gc_blocks_all_retention_dependencies_before_reclaim() {
             value: b"v1".to_vec(),
         },
     });
-    let parent = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+    let parent = engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
     engine.block_store().roll_segment().unwrap();
     engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -1325,7 +1325,7 @@ fn storage_page_gc_blocks_all_retention_dependencies_before_reclaim() {
             retain_from_page_segment_id: 0,
             reason: "shared-store follower is behind segment zero".to_string(),
         }],
-        vec![SlotDumpRaftSnapshotRef {
+        vec![BucketDumpRaftSnapshotRef {
             snapshot_id: "raft-snapshot-a".to_string(),
             shard_id: 1,
             last_included_index: 7,
@@ -1340,7 +1340,7 @@ fn storage_page_gc_blocks_all_retention_dependencies_before_reclaim() {
     assert!(!matrix.safe_to_reclaim, "{matrix:?}");
     assert_eq!(matrix.candidate_page_segment_ids, vec![0, 1]);
     assert_eq!(matrix.live_ref_block_count, 1);
-    assert_eq!(matrix.slot_dump_manifest_block_count, 1);
+    assert_eq!(matrix.bucket_dump_manifest_block_count, 1);
     assert_eq!(matrix.shared_store_cursor_block_count, 2);
     assert_eq!(matrix.raft_snapshot_ref_block_count, 2);
     assert_eq!(matrix.checkpoint_snapshot_floor_block_count, 2);
@@ -1365,13 +1365,13 @@ fn storage_page_gc_blocks_all_retention_dependencies_before_reclaim() {
         1,
         vec![0],
         Vec::<StoragePageGcReplayCursor>::new(),
-        Vec::<SlotDumpRaftSnapshotRef>::new(),
+        Vec::<BucketDumpRaftSnapshotRef>::new(),
         None,
         None,
         0,
     );
     assert!(!released.safe_to_reclaim, "{released:?}");
-    assert_eq!(released.slot_dump_manifest_block_count, 1);
+    assert_eq!(released.bucket_dump_manifest_block_count, 1);
     assert_eq!(released.delayed_destroy_grace_block_count, 0);
     assert!(released
         .blocker_reasons
@@ -1379,7 +1379,7 @@ fn storage_page_gc_blocks_all_retention_dependencies_before_reclaim() {
 }
 
 #[test]
-fn slot_dump_manifest_rejects_generation_mismatch_and_conflicts() {
+fn bucket_dump_manifest_rejects_generation_mismatch_and_conflicts() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -1396,7 +1396,7 @@ fn slot_dump_manifest_rejects_generation_mismatch_and_conflicts() {
         },
     });
     let manifest = engine
-        .create_slot_dump_manifest(1, Vec::new())
+        .create_bucket_dump_manifest(1, Vec::new())
         .expect("manifest should persist");
     assert_eq!(manifest.version, 3);
     assert!(!manifest.dump_generation_id.is_empty());
@@ -1406,16 +1406,16 @@ fn slot_dump_manifest_rejects_generation_mismatch_and_conflicts() {
     let mut legacy_v2 = manifest.clone();
     legacy_v2.version = 2;
     legacy_v2.object_lifecycle = StorageObjectLifecycleReport::default();
-    let legacy_generation_id = slot_dump_generation_id(&legacy_v2);
+    let legacy_generation_id = bucket_dump_generation_id(&legacy_v2);
     legacy_v2.object_lifecycle.live_object_ids = 99;
-    assert_eq!(slot_dump_generation_id(&legacy_v2), legacy_generation_id);
+    assert_eq!(bucket_dump_generation_id(&legacy_v2), legacy_generation_id);
 
     let mut mismatched = manifest.clone();
     mismatched.dump_generation_id = "wrong-generation".to_string();
-    mismatched.checksum = slot_dump_manifest_checksum(&mismatched).unwrap();
+    mismatched.checksum = bucket_dump_manifest_checksum(&mismatched).unwrap();
     assert_eq!(
         engine
-            .validate_slot_dump_manifest(&mismatched)
+            .validate_bucket_dump_manifest(&mismatched)
             .unwrap_err()
             .code,
         "slot_dump_generation_mismatch"
@@ -1429,24 +1429,24 @@ fn slot_dump_manifest_rejects_generation_mismatch_and_conflicts() {
     );
     restore_engine.load_shard(1);
     restore_engine
-        .install_slot_dump_manifest(&manifest)
+        .install_bucket_dump_manifest(&manifest)
         .expect("first generation should install");
 
     let mut fork = manifest.clone();
-    let extra_slot = fork
-        .slot_ids
+    let extra_bucket = fork
+        .bucket_ids
         .iter()
         .copied()
         .max()
         .unwrap_or_default()
         .saturating_add(1);
-    fork.slot_ids.push(extra_slot);
-    fork.dump_generation_id = slot_dump_generation_id(&fork);
+    fork.bucket_ids.push(extra_bucket);
+    fork.dump_generation_id = bucket_dump_generation_id(&fork);
     fork.manifest_id = format!("{}-fork", fork.manifest_id);
-    fork.checksum = slot_dump_manifest_checksum(&fork).unwrap();
+    fork.checksum = bucket_dump_manifest_checksum(&fork).unwrap();
     assert_eq!(
         restore_engine
-            .install_slot_dump_manifest(&fork)
+            .install_bucket_dump_manifest(&fork)
             .unwrap_err()
             .code,
         "slot_dump_generation_conflict"
@@ -1454,7 +1454,7 @@ fn slot_dump_manifest_rejects_generation_mismatch_and_conflicts() {
 }
 
 #[test]
-fn slot_dump_manifest_rejects_object_lifecycle_mismatch() {
+fn bucket_dump_manifest_rejects_object_lifecycle_mismatch() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -1471,10 +1471,10 @@ fn slot_dump_manifest_rejects_object_lifecycle_mismatch() {
         },
     });
     let manifest = engine
-        .create_slot_dump_manifest(1, Vec::new())
+        .create_bucket_dump_manifest(1, Vec::new())
         .expect("manifest should persist");
     engine
-        .validate_slot_dump_manifest(&manifest)
+        .validate_bucket_dump_manifest(&manifest)
         .expect("fresh manifest should validate");
 
     let mut stale_lifecycle = manifest.clone();
@@ -1482,11 +1482,11 @@ fn slot_dump_manifest_rejects_object_lifecycle_mismatch() {
         .object_lifecycle
         .live_object_ids
         .saturating_add(1);
-    stale_lifecycle.dump_generation_id = slot_dump_generation_id(&stale_lifecycle);
-    stale_lifecycle.checksum = slot_dump_manifest_checksum(&stale_lifecycle).unwrap();
+    stale_lifecycle.dump_generation_id = bucket_dump_generation_id(&stale_lifecycle);
+    stale_lifecycle.checksum = bucket_dump_manifest_checksum(&stale_lifecycle).unwrap();
     assert_eq!(
         engine
-            .validate_slot_dump_manifest(&stale_lifecycle)
+            .validate_bucket_dump_manifest(&stale_lifecycle)
             .unwrap_err()
             .code,
         "slot_dump_object_lifecycle_mismatch"
@@ -1503,12 +1503,12 @@ fn slot_dump_manifest_rejects_object_lifecycle_mismatch() {
         address.object_id = Some(address.object_id.unwrap_or_default().wrapping_add(1));
         reused_owner.index_bytes = serde_json::to_vec(&restored).unwrap();
         reused_owner.index_sha256 = sha256_hex_bytes(&reused_owner.index_bytes);
-        reused_owner.dump_generation_id = slot_dump_generation_id(&reused_owner);
-        reused_owner.checksum = slot_dump_manifest_checksum(&reused_owner).unwrap();
+        reused_owner.dump_generation_id = bucket_dump_generation_id(&reused_owner);
+        reused_owner.checksum = bucket_dump_manifest_checksum(&reused_owner).unwrap();
     }
     assert_eq!(
         engine
-            .validate_slot_dump_manifest(&reused_owner)
+            .validate_bucket_dump_manifest(&reused_owner)
             .unwrap_err()
             .code,
         "slot_dump_object_lifecycle_mismatch"
@@ -1516,7 +1516,7 @@ fn slot_dump_manifest_rejects_object_lifecycle_mismatch() {
 }
 
 #[test]
-fn slot_dump_manifest_rejects_slot_summary_mismatch() {
+fn bucket_dump_manifest_rejects_bucket_summary_mismatch() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -1533,24 +1533,24 @@ fn slot_dump_manifest_rejects_slot_summary_mismatch() {
         },
     });
     let manifest = engine
-        .create_slot_dump_manifest(1, Vec::new())
+        .create_bucket_dump_manifest(1, Vec::new())
         .expect("manifest should persist");
     engine
-        .validate_slot_dump_manifest(&manifest)
+        .validate_bucket_dump_manifest(&manifest)
         .expect("fresh manifest should validate");
 
     let mut stale_summary = manifest.clone();
     let summary = stale_summary
-        .slot_summaries
+        .bucket_summaries
         .first_mut()
         .expect("slot summary should exist");
     summary.page_ref_count = summary.page_ref_count.saturating_add(1);
-    stale_summary.dump_generation_id = slot_dump_generation_id(&stale_summary);
-    stale_summary.checksum = slot_dump_manifest_checksum(&stale_summary).unwrap();
+    stale_summary.dump_generation_id = bucket_dump_generation_id(&stale_summary);
+    stale_summary.checksum = bucket_dump_manifest_checksum(&stale_summary).unwrap();
 
     assert_eq!(
         engine
-            .validate_slot_dump_manifest(&stale_summary)
+            .validate_bucket_dump_manifest(&stale_summary)
             .unwrap_err()
             .code,
         "slot_dump_slot_summary_mismatch"
@@ -1558,7 +1558,7 @@ fn slot_dump_manifest_rejects_slot_summary_mismatch() {
 }
 
 #[test]
-fn slot_dump_manifest_rejects_byte_accounting_mismatch() {
+fn bucket_dump_manifest_rejects_byte_accounting_mismatch() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -1575,19 +1575,19 @@ fn slot_dump_manifest_rejects_byte_accounting_mismatch() {
         },
     });
     let manifest = engine
-        .create_slot_dump_manifest(1, Vec::new())
+        .create_bucket_dump_manifest(1, Vec::new())
         .expect("manifest should persist");
     engine
-        .validate_slot_dump_manifest(&manifest)
+        .validate_bucket_dump_manifest(&manifest)
         .expect("fresh manifest should validate");
 
     let mut stale_bytes = manifest.clone();
     stale_bytes.logical_bytes = stale_bytes.logical_bytes.saturating_add(1);
-    stale_bytes.checksum = slot_dump_manifest_checksum(&stale_bytes).unwrap();
+    stale_bytes.checksum = bucket_dump_manifest_checksum(&stale_bytes).unwrap();
 
     assert_eq!(
         engine
-            .validate_slot_dump_manifest(&stale_bytes)
+            .validate_bucket_dump_manifest(&stale_bytes)
             .unwrap_err()
             .code,
         "slot_dump_byte_accounting_mismatch"
@@ -1595,7 +1595,7 @@ fn slot_dump_manifest_rejects_byte_accounting_mismatch() {
 }
 
 #[test]
-fn slot_dump_manifest_rejects_non_canonical_slot_and_page_segment_ids() {
+fn bucket_dump_manifest_rejects_non_canonical_bucket_and_page_segment_ids() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -1612,25 +1612,25 @@ fn slot_dump_manifest_rejects_non_canonical_slot_and_page_segment_ids() {
         },
     });
     let manifest = engine
-        .create_slot_dump_manifest(1, Vec::new())
+        .create_bucket_dump_manifest(1, Vec::new())
         .expect("manifest should persist");
     engine
-        .validate_slot_dump_manifest(&manifest)
+        .validate_bucket_dump_manifest(&manifest)
         .expect("fresh manifest should validate");
 
-    let mut duplicate_slot = manifest.clone();
-    duplicate_slot.slot_ids.push(
-        duplicate_slot
-            .slot_ids
+    let mut duplicate_bucket = manifest.clone();
+    duplicate_bucket.bucket_ids.push(
+        duplicate_bucket
+            .bucket_ids
             .first()
             .copied()
             .expect("slot id should exist"),
     );
-    duplicate_slot.dump_generation_id = slot_dump_generation_id(&duplicate_slot);
-    duplicate_slot.checksum = slot_dump_manifest_checksum(&duplicate_slot).unwrap();
+    duplicate_bucket.dump_generation_id = bucket_dump_generation_id(&duplicate_bucket);
+    duplicate_bucket.checksum = bucket_dump_manifest_checksum(&duplicate_bucket).unwrap();
     assert_eq!(
         engine
-            .validate_slot_dump_manifest(&duplicate_slot)
+            .validate_bucket_dump_manifest(&duplicate_bucket)
             .unwrap_err()
             .code,
         "slot_dump_slot_ids_not_canonical"
@@ -1644,11 +1644,11 @@ fn slot_dump_manifest_rejects_non_canonical_slot_and_page_segment_ids() {
             .copied()
             .expect("page segment id should exist"),
     );
-    duplicate_page_segment.dump_generation_id = slot_dump_generation_id(&duplicate_page_segment);
-    duplicate_page_segment.checksum = slot_dump_manifest_checksum(&duplicate_page_segment).unwrap();
+    duplicate_page_segment.dump_generation_id = bucket_dump_generation_id(&duplicate_page_segment);
+    duplicate_page_segment.checksum = bucket_dump_manifest_checksum(&duplicate_page_segment).unwrap();
     assert_eq!(
         engine
-            .validate_slot_dump_manifest(&duplicate_page_segment)
+            .validate_bucket_dump_manifest(&duplicate_page_segment)
             .unwrap_err()
             .code,
         "slot_dump_page_segment_ids_not_canonical"
@@ -1683,19 +1683,19 @@ fn storage_lifecycle_plan_and_boundary_report_cover_dirty_and_orphan_segments() 
 
     let plan = engine.storage_lifecycle_plan(StorageLifecycleRequest {
         shard_id: 1,
-        selected_dump_slots: Vec::new(),
-        max_dump_slots_per_round: 0,
+        selected_dump_buckets: Vec::new(),
+        max_dump_buckets_per_round: 0,
         min_undumped_oplog_records: 0,
         purge_delayed_destroy: false,
-        prune_slot_dump_manifests: false,
-        roll_forward_slot_dump_installs: false,
+        prune_bucket_dump_manifests: false,
+        roll_forward_bucket_dump_installs: false,
         follower_replay_cursors: Vec::new(),
         invalidate_cache: false,
         warm_cache: false,
         ..StorageLifecycleRequest::default()
     });
-    assert!(!plan.dirty_slots.is_empty());
-    assert_eq!(plan.selected_dump_slots, plan.dirty_slots);
+    assert!(!plan.dirty_buckets.is_empty());
+    assert_eq!(plan.selected_dump_buckets, plan.dirty_buckets);
     assert!(plan.reasons.contains(&"dirty_slot_dump".to_string()));
     assert!(plan.stale_page_segment_ids.contains(&0));
     assert!(plan
@@ -1709,12 +1709,12 @@ fn storage_lifecycle_plan_and_boundary_report_cover_dirty_and_orphan_segments() 
 
     let report = engine.apply_storage_lifecycle(StorageLifecycleRequest {
         shard_id: 1,
-        selected_dump_slots: plan.selected_dump_slots.clone(),
-        max_dump_slots_per_round: 0,
+        selected_dump_buckets: plan.selected_dump_buckets.clone(),
+        max_dump_buckets_per_round: 0,
         min_undumped_oplog_records: 0,
         purge_delayed_destroy: false,
-        prune_slot_dump_manifests: false,
-        roll_forward_slot_dump_installs: false,
+        prune_bucket_dump_manifests: false,
+        roll_forward_bucket_dump_installs: false,
         follower_replay_cursors: Vec::new(),
         invalidate_cache: true,
         warm_cache: false,
@@ -1756,7 +1756,7 @@ fn storage_production_readiness_reports_warnings_without_blocking_dirty_shard() 
     let report = engine.storage_production_readiness_report(1);
     assert!(report.production_ready, "{report:?}");
     assert!(report.blockers.is_empty());
-    assert_eq!(report.dirty_slot_count, 1);
+    assert_eq!(report.dirty_bucket_count, 1);
     assert!(report
         .warnings
         .contains(&"dirty_slots_pending_dump".to_string()));
@@ -1900,7 +1900,7 @@ fn storage_page_format_compatibility_report_counts_zones_and_header_gaps() {
     assert!(!report.cxx_page_header_compatible);
     assert!(report.checksum_protected);
     assert!(report.object_ids_embedded);
-    assert!(report.routing_slots_embedded);
+    assert!(report.routing_buckets_embedded);
     assert!(report.compression_supported);
     assert_eq!(report.sealed_bands, 1);
     assert_eq!(report.active_bands, 1);
@@ -1949,16 +1949,16 @@ fn storage_production_readiness_policy_can_block_dirty_dump_lag_and_missing_mani
     let report = engine.storage_production_readiness_report_with_policy(
         1,
         StorageProductionReadinessPolicy {
-            max_dirty_slots: Some(0),
+            max_dirty_buckets: Some(0),
             max_undumped_oplog_records: Some(0),
-            require_slot_dump_manifest: true,
+            require_bucket_dump_manifest: true,
             ..StorageProductionReadinessPolicy::default()
         },
     );
 
     assert!(!report.production_ready, "{report:?}");
-    assert_eq!(report.policy.max_dirty_slots, Some(0));
-    assert_eq!(report.dirty_slot_count, 1);
+    assert_eq!(report.policy.max_dirty_buckets, Some(0));
+    assert_eq!(report.dirty_bucket_count, 1);
     assert!(report.undumped_oplog_records > 0);
     assert!(report
         .blockers
@@ -2080,12 +2080,12 @@ fn storage_lifecycle_apply_warms_cache_from_page_index() {
     engine.cache().invalidate_shard(1).unwrap();
     let plan = engine.storage_lifecycle_plan(StorageLifecycleRequest {
         shard_id: 1,
-        selected_dump_slots: Vec::new(),
-        max_dump_slots_per_round: 0,
+        selected_dump_buckets: Vec::new(),
+        max_dump_buckets_per_round: 0,
         min_undumped_oplog_records: 0,
         purge_delayed_destroy: false,
-        prune_slot_dump_manifests: false,
-        roll_forward_slot_dump_installs: false,
+        prune_bucket_dump_manifests: false,
+        roll_forward_bucket_dump_installs: false,
         follower_replay_cursors: Vec::new(),
         invalidate_cache: false,
         warm_cache: false,
@@ -2093,12 +2093,12 @@ fn storage_lifecycle_apply_warms_cache_from_page_index() {
     });
     let report = engine.apply_storage_lifecycle(StorageLifecycleRequest {
         shard_id: 1,
-        selected_dump_slots: plan.selected_dump_slots,
-        max_dump_slots_per_round: 0,
+        selected_dump_buckets: plan.selected_dump_buckets,
+        max_dump_buckets_per_round: 0,
         min_undumped_oplog_records: 0,
         purge_delayed_destroy: false,
-        prune_slot_dump_manifests: false,
-        roll_forward_slot_dump_installs: false,
+        prune_bucket_dump_manifests: false,
+        roll_forward_bucket_dump_installs: false,
         follower_replay_cursors: Vec::new(),
         invalidate_cache: false,
         warm_cache: true,
@@ -2117,7 +2117,7 @@ fn storage_lifecycle_apply_warms_cache_from_page_index() {
 }
 
 #[test]
-fn storage_cache_warmup_report_filters_slots_and_counts_cache_hits() {
+fn storage_cache_warmup_report_filters_buckets_and_counts_cache_hits() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -2127,10 +2127,10 @@ fn storage_cache_warmup_report_filters_slots_and_counts_cache_hits() {
     );
     engine.load_shard(1);
     let first_key = "warm-slot-a";
-    let first_slot = engine.routing_slot_for_key(1, first_key);
+    let first_bucket = engine.routing_bucket_for_key(1, first_key);
     let second_key = (0..100)
         .map(|index| format!("warm-slot-b-{index}"))
-        .find(|key| engine.routing_slot_for_key(1, key) != first_slot)
+        .find(|key| engine.routing_bucket_for_key(1, key) != first_bucket)
         .expect("test should find a key in another slot");
     engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -2148,9 +2148,9 @@ fn storage_cache_warmup_report_filters_slots_and_counts_cache_hits() {
     });
     engine.cache().invalidate_shard(1).unwrap();
 
-    let slot = first_slot;
-    let first = engine.storage_cache_warmup_report(1, [slot]);
-    assert_eq!(first.selected_slots, vec![slot]);
+    let bucket = first_bucket;
+    let first = engine.storage_cache_warmup_report(1, [bucket]);
+    assert_eq!(first.selected_buckets, vec![bucket]);
     assert_eq!(first.considered_page_refs, 1);
     assert_eq!(first.skipped_page_refs, 1);
     assert_eq!(first.block_store_reads, 1);
@@ -2158,7 +2158,7 @@ fn storage_cache_warmup_report_filters_slots_and_counts_cache_hits() {
     assert_eq!(first.failed_page_refs, 0);
     assert!(first.warmed_bytes > 0);
 
-    let second = engine.storage_cache_warmup_report(1, [slot]);
+    let second = engine.storage_cache_warmup_report(1, [bucket]);
     assert_eq!(second.considered_page_refs, 1);
     assert_eq!(second.skipped_page_refs, 1);
     assert_eq!(second.block_store_reads, 0);
@@ -2167,7 +2167,7 @@ fn storage_cache_warmup_report_filters_slots_and_counts_cache_hits() {
 }
 
 #[test]
-fn storage_cache_inspection_reports_slot_entries_and_invalidates_slot() {
+fn storage_cache_inspection_reports_bucket_entries_and_invalidates_bucket() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -2202,22 +2202,22 @@ fn storage_cache_inspection_reports_slot_entries_and_invalidates_slot() {
             .ok
     );
 
-    let slot = engine.routing_slot_for_key(1, key);
+    let bucket = engine.routing_bucket_for_key(1, key);
     let report = engine.storage_cache_inspection_report(1);
     assert!(report.stats.disk_fills >= 1);
     assert!(report
         .entries
         .iter()
-        .any(|entry| entry.selector.starts_with(&format!("slot-{slot}:"))));
+        .any(|entry| entry.selector.starts_with(&format!("slot-{bucket}:"))));
     assert!(report
-        .slot_summaries
+        .bucket_summaries
         .iter()
-        .any(|summary| summary.routing_slot == slot && summary.entry_count >= 1));
+        .any(|summary| summary.routing_bucket == bucket && summary.entry_count >= 1));
 
     let invalidated = engine
-        .invalidate_storage_cache_slot(StorageCacheInvalidateSlotRequest {
+        .invalidate_storage_cache_bucket(StorageCacheInvalidateBucketRequest {
             shard_id: 1,
-            routing_slot: slot,
+            routing_bucket: bucket,
         })
         .unwrap();
     assert!(invalidated.memory_entries_removed >= 1);
@@ -2225,7 +2225,7 @@ fn storage_cache_inspection_reports_slot_entries_and_invalidates_slot() {
     assert!(!after
         .entries
         .iter()
-        .any(|entry| entry.selector.starts_with(&format!("slot-{slot}:"))));
+        .any(|entry| entry.selector.starts_with(&format!("slot-{bucket}:"))));
 }
 
 #[test]
@@ -2270,7 +2270,7 @@ fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
             address.page_segment_id,
             address.offset,
             address.length,
-            address.routing_slot,
+            address.routing_bucket,
         )
     };
 
@@ -2304,14 +2304,14 @@ fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
     assert!(engine.cache().stats().disk_bytes > 0);
     assert_eq!(engine.cache().get_memory(&target_page_key), None);
     let manifest = engine
-        .create_slot_dump_manifest(1, Vec::new())
+        .create_bucket_dump_manifest(1, Vec::new())
         .expect("slot dump manifest should persist");
-    engine.validate_slot_dump_manifest(&manifest).unwrap();
+    engine.validate_bucket_dump_manifest(&manifest).unwrap();
 
     let restored = TemporalEngine::with_local_dirs(32, &cache_dir, &page_dir, &restore_index_dir);
     restored.load_shard(1);
     restored
-        .install_slot_dump_manifest(&manifest)
+        .install_bucket_dump_manifest(&manifest)
         .expect("slot dump should install after restart");
     let page_reads_before = restored.block_store().stats().reads;
     let disk_hits_before = restored.cache().stats().disk_hits;
@@ -2334,16 +2334,16 @@ fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
     );
     assert!(restored.cache().stats().disk_hits > disk_hits_before);
 
-    let slot = restored.routing_slot_for_key(1, "target");
+    let bucket = restored.routing_bucket_for_key(1, "target");
     let cache_report = restored.storage_cache_inspection_report(1);
     assert!(cache_report
-        .slot_summaries
+        .bucket_summaries
         .iter()
-        .any(|summary| summary.routing_slot == slot && summary.entry_count >= 1));
+        .any(|summary| summary.routing_bucket == bucket && summary.entry_count >= 1));
     let invalidated = restored
-        .invalidate_storage_cache_slot(StorageCacheInvalidateSlotRequest {
+        .invalidate_storage_cache_bucket(StorageCacheInvalidateBucketRequest {
             shard_id: 1,
-            routing_slot: slot,
+            routing_bucket: bucket,
         })
         .unwrap();
     assert!(invalidated.memory_entries_removed >= 1);
@@ -2354,7 +2354,7 @@ fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
 }
 
 #[test]
-fn storage_lifecycle_plan_matches_cpp_delayed_and_limited_dirty_slot_dump_policy() {
+fn storage_lifecycle_plan_matches_cpp_delayed_and_limited_dirty_bucket_dump_policy() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -2374,49 +2374,49 @@ fn storage_lifecycle_plan_matches_cpp_delayed_and_limited_dirty_slot_dump_policy
         });
         let observed = engine.storage_lifecycle_plan(StorageLifecycleRequest {
             shard_id: 1,
-            selected_dump_slots: Vec::new(),
-            max_dump_slots_per_round: 0,
+            selected_dump_buckets: Vec::new(),
+            max_dump_buckets_per_round: 0,
             min_undumped_oplog_records: 0,
             purge_delayed_destroy: false,
-            prune_slot_dump_manifests: false,
-            roll_forward_slot_dump_installs: false,
+            prune_bucket_dump_manifests: false,
+            roll_forward_bucket_dump_installs: false,
             follower_replay_cursors: Vec::new(),
             invalidate_cache: false,
             warm_cache: false,
             ..StorageLifecycleRequest::default()
         });
-        if observed.dirty_slots.len() >= 3 {
+        if observed.dirty_buckets.len() >= 3 {
             break;
         }
     }
 
     let delayed = engine.storage_lifecycle_plan(StorageLifecycleRequest {
         shard_id: 1,
-        selected_dump_slots: Vec::new(),
-        max_dump_slots_per_round: 0,
+        selected_dump_buckets: Vec::new(),
+        max_dump_buckets_per_round: 0,
         min_undumped_oplog_records: 99,
         purge_delayed_destroy: false,
-        prune_slot_dump_manifests: false,
-        roll_forward_slot_dump_installs: false,
+        prune_bucket_dump_manifests: false,
+        roll_forward_bucket_dump_installs: false,
         follower_replay_cursors: Vec::new(),
         invalidate_cache: false,
         warm_cache: false,
         ..StorageLifecycleRequest::default()
     });
     assert!(delayed.dump_delayed);
-    assert!(delayed.selected_dump_slots.is_empty());
+    assert!(delayed.selected_dump_buckets.is_empty());
     assert!(delayed
         .reasons
         .contains(&"dirty_slot_dump_delayed".to_string()));
 
     let limited = engine.storage_lifecycle_plan(StorageLifecycleRequest {
         shard_id: 1,
-        selected_dump_slots: Vec::new(),
-        max_dump_slots_per_round: 2,
+        selected_dump_buckets: Vec::new(),
+        max_dump_buckets_per_round: 2,
         min_undumped_oplog_records: 1,
         purge_delayed_destroy: false,
-        prune_slot_dump_manifests: false,
-        roll_forward_slot_dump_installs: false,
+        prune_bucket_dump_manifests: false,
+        roll_forward_bucket_dump_installs: false,
         follower_replay_cursors: Vec::new(),
         invalidate_cache: false,
         warm_cache: false,
@@ -2424,22 +2424,22 @@ fn storage_lifecycle_plan_matches_cpp_delayed_and_limited_dirty_slot_dump_policy
     });
     assert!(!limited.dump_delayed);
     assert!(limited.undumped_oplog_records >= 3);
-    assert_eq!(limited.selected_dump_slots.len(), 2);
-    assert!(limited.dirty_slots.len() >= limited.selected_dump_slots.len());
+    assert_eq!(limited.selected_dump_buckets.len(), 2);
+    assert!(limited.dirty_buckets.len() >= limited.selected_dump_buckets.len());
 
     let explicit = engine.storage_lifecycle_plan(StorageLifecycleRequest {
         shard_id: 1,
-        selected_dump_slots: vec![delayed.dirty_slots[0]],
-        max_dump_slots_per_round: 0,
+        selected_dump_buckets: vec![delayed.dirty_buckets[0]],
+        max_dump_buckets_per_round: 0,
         min_undumped_oplog_records: 99,
         purge_delayed_destroy: false,
-        prune_slot_dump_manifests: false,
-        roll_forward_slot_dump_installs: false,
+        prune_bucket_dump_manifests: false,
+        roll_forward_bucket_dump_installs: false,
         follower_replay_cursors: Vec::new(),
         invalidate_cache: false,
         warm_cache: false,
         ..StorageLifecycleRequest::default()
     });
     assert!(!explicit.dump_delayed);
-    assert_eq!(explicit.selected_dump_slots, vec![delayed.dirty_slots[0]]);
+    assert_eq!(explicit.selected_dump_buckets, vec![delayed.dirty_buckets[0]]);
 }

@@ -1,4 +1,4 @@
-//! Storage snapshot/sample reporting + slot-index maintenance internals, split from engine.rs.
+//! Storage snapshot/sample reporting + bucket-index maintenance internals, split from engine.rs.
 use super::*;
 
 pub(super) fn storage_segment_integrity_report(
@@ -348,29 +348,29 @@ pub(super) fn storage_watermark_snapshot_with_samples(
 ) -> StorageWatermarkSnapshot {
     const MAX_STORAGE_WATERMARK_SAMPLES: usize = 8;
     let timestamp_ms = now_ms();
-    let mut slot_watermarks = BTreeMap::<u32, u64>::new();
+    let mut bucket_watermarks = BTreeMap::<u32, u64>::new();
 
-    for (slot_id, runtime_slot) in &shard.slot_index.slot_map {
-        slot_watermarks.insert(*slot_id, runtime_slot.dirty_generation);
+    for (bucket_id, runtime_bucket) in &shard.bucket_index.bucket_map {
+        bucket_watermarks.insert(*bucket_id, runtime_bucket.dirty_generation);
     }
     for entry in collect_live_page_entries(shard) {
-        let slot_id = entry
+        let bucket_id = entry
             .address
-            .routing_slot
-            .unwrap_or_else(|| slot_for_object(&entry.object_key, 0, u32::MAX));
+            .routing_bucket
+            .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
         let generation = entry.address.object_id.unwrap_or(0);
-        slot_watermarks
-            .entry(slot_id)
+        bucket_watermarks
+            .entry(bucket_id)
             .and_modify(|current| *current = (*current).max(generation))
             .or_insert(generation);
     }
 
-    snapshot.append_watermark_samples = slot_watermarks
+    snapshot.append_watermark_samples = bucket_watermarks
         .iter()
         .take(MAX_STORAGE_WATERMARK_SAMPLES)
-        .map(|(slot_id, generation)| StorageAppendWatermarkSample {
+        .map(|(bucket_id, generation)| StorageAppendWatermarkSample {
             shard_id,
-            slot_id: *slot_id,
+            bucket_id: *bucket_id,
             log_index: (*generation).max(snapshot.append_watermark),
             timestamp_ms,
         })
@@ -380,7 +380,7 @@ pub(super) fn storage_watermark_snapshot_with_samples(
             .append_watermark_samples
             .push(StorageAppendWatermarkSample {
                 shard_id,
-                slot_id: 0,
+                bucket_id: 0,
                 log_index: snapshot.append_watermark,
                 timestamp_ms,
             });
@@ -543,7 +543,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
         live_refs: u64,
     }
     #[derive(Default)]
-    struct SlotAcc {
+    struct BucketAcc {
         dirty_generation: u64,
         object_refs: BTreeSet<u64>,
         page_refs: Vec<StoragePageAddressSample>,
@@ -553,7 +553,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
     let mut zones = BTreeMap::<u64, ZoneAcc>::new();
     let mut segments = BTreeMap::<u64, SegmentAcc>::new();
     let mut bands = BTreeMap::<u64, BandAcc>::new();
-    let mut slots = BTreeMap::<u32, SlotAcc>::new();
+    let mut buckets = BTreeMap::<u32, BucketAcc>::new();
 
     for entry in &entries {
         let zone_id = entry
@@ -600,35 +600,35 @@ pub(super) fn storage_topology_snapshot_with_samples(
             band.live_refs = band.live_refs.saturating_add(1);
         }
 
-        let slot_id = entry
+        let bucket_id = entry
             .address
-            .routing_slot
-            .unwrap_or_else(|| slot_for_object(&entry.object_key, 0, u32::MAX));
-        let slot = slots.entry(slot_id).or_default();
-        slot.dirty_generation = slot.dirty_generation.max(generation);
-        slot.object_refs.insert(generation);
-        if slot.page_refs.len() < MAX_STORAGE_TOPOLOGY_SAMPLES {
-            slot.page_refs
+            .routing_bucket
+            .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
+        let bucket = buckets.entry(bucket_id).or_default();
+        bucket.dirty_generation = bucket.dirty_generation.max(generation);
+        bucket.object_refs.insert(generation);
+        if bucket.page_refs.len() < MAX_STORAGE_TOPOLOGY_SAMPLES {
+            bucket.page_refs
                 .push(storage_page_address_sample(shard_id, &entry.address));
         }
         if entry.deleted {
-            slot.tombstones.insert(storage_gc_ref(entry));
+            bucket.tombstones.insert(storage_gc_ref(entry));
         }
     }
 
-    for (slot_id, runtime_slot) in &shard.slot_index.slot_map {
-        let slot = slots.entry(*slot_id).or_default();
-        slot.dirty_generation = slot.dirty_generation.max(runtime_slot.dirty_generation);
-        slot.object_refs
-            .extend(runtime_slot.object_index.iter().copied());
-        for page in runtime_slot.page_index.values() {
-            if slot.page_refs.len() >= MAX_STORAGE_TOPOLOGY_SAMPLES {
+    for (bucket_id, runtime_bucket) in &shard.bucket_index.bucket_map {
+        let bucket = buckets.entry(*bucket_id).or_default();
+        bucket.dirty_generation = bucket.dirty_generation.max(runtime_bucket.dirty_generation);
+        bucket.object_refs
+            .extend(runtime_bucket.object_index.iter().copied());
+        for page in runtime_bucket.page_index.values() {
+            if bucket.page_refs.len() >= MAX_STORAGE_TOPOLOGY_SAMPLES {
                 break;
             }
-            slot.page_refs
+            bucket.page_refs
                 .push(storage_page_address_sample(shard_id, &page.address));
             if page.deleted {
-                slot.tombstones
+                bucket.tombstones
                     .insert(format!("{}:{}", page.model_id, page.object_key));
             }
         }
@@ -686,23 +686,23 @@ pub(super) fn storage_topology_snapshot_with_samples(
             generation: band.generation,
         })
         .collect();
-    snapshot.slot_samples = slots
+    snapshot.bucket_samples = buckets
         .into_iter()
         .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
-        .map(|(slot_id, slot)| StorageSlotSample {
-            slot_id,
-            dirty_generation: slot.dirty_generation,
-            object_refs: slot
+        .map(|(bucket_id, bucket)| StorageBucketSample {
+            bucket_id,
+            dirty_generation: bucket.dirty_generation,
+            object_refs: bucket
                 .object_refs
                 .into_iter()
                 .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
                 .collect(),
-            page_refs: slot
+            page_refs: bucket
                 .page_refs
                 .into_iter()
                 .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
                 .collect(),
-            tombstones: slot
+            tombstones: bucket
                 .tombstones
                 .into_iter()
                 .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
@@ -714,8 +714,8 @@ pub(super) fn storage_topology_snapshot_with_samples(
 }
 
 pub(super) fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
-    if !shard.slot_index.slot_map.is_empty() {
-        return collect_slot_index_live_page_entries(shard);
+    if !shard.bucket_index.bucket_map.is_empty() {
+        return collect_bucket_index_live_page_entries(shard);
     }
     collect_model_live_page_entries(shard)
 }
@@ -744,36 +744,36 @@ pub(super) fn model_id_for_kind(kind: &str) -> u16 {
 pub(super) fn mark_async_dirty_object(
     shard: &mut ShardState,
     object_key: &str,
-    start_routing_slot: u32,
-    end_routing_slot: u32,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
 ) {
-    let routing_slot = page_routing_slot(object_key, start_routing_slot, end_routing_slot);
+    let routing_bucket = page_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
     shard.dirty_objects.insert(object_key.to_string());
-    let slot = shard
-        .slot_index
-        .slot_map
-        .entry(routing_slot)
-        .or_insert_with(|| SlotNode {
-            routing_slot,
+    let bucket = shard
+        .bucket_index
+        .bucket_map
+        .entry(routing_bucket)
+        .or_insert_with(|| BucketNode {
+            routing_bucket,
             meta_loaded: true,
-            ..SlotNode::default()
+            ..BucketNode::default()
         });
-    slot.dirty = true;
-    slot.dirty_generation = slot.dirty_generation.saturating_add(1).max(1);
+    bucket.dirty = true;
+    bucket.dirty_generation = bucket.dirty_generation.saturating_add(1).max(1);
 }
 
-pub(super) fn rebuild_slot_page_ownership(
+pub(super) fn rebuild_bucket_page_ownership(
     shard_id: ShardId,
     shard: &mut ShardState,
-    start_routing_slot: u32,
-    end_routing_slot: u32,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
 ) {
-    shard.slot_index.slot_map.clear();
+    shard.bucket_index.bucket_map.clear();
     for entry in collect_model_live_page_entries(shard) {
-        let routing_slot = entry.address.routing_slot.unwrap_or_else(|| {
-            page_routing_slot(&entry.object_key, start_routing_slot, end_routing_slot)
+        let routing_bucket = entry.address.routing_bucket.unwrap_or_else(|| {
+            page_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket)
         });
-        if routing_slot < start_routing_slot || routing_slot > end_routing_slot {
+        if routing_bucket < start_routing_bucket || routing_bucket > end_routing_bucket {
             continue;
         }
         let object_id = entry.address.object_id.unwrap_or_else(|| {
@@ -784,18 +784,18 @@ pub(super) fn rebuild_slot_page_ownership(
                 entry.component.as_deref(),
             )
         });
-        let slot = shard
-            .slot_index
-            .slot_map
-            .entry(routing_slot)
-            .or_insert_with(|| SlotNode {
-                routing_slot,
+        let bucket = shard
+            .bucket_index
+            .bucket_map
+            .entry(routing_bucket)
+            .or_insert_with(|| BucketNode {
+                routing_bucket,
                 meta_loaded: true,
                 in_memory: true,
-                ..SlotNode::default()
+                ..BucketNode::default()
             });
-        slot.object_index.insert(object_id);
-        slot.page_index.insert(
+        bucket.object_index.insert(object_id);
+        bucket.page_index.insert(
             format!(
                 "{}:{}:{}:{}:{}",
                 entry.kind,
@@ -816,48 +816,48 @@ pub(super) fn rebuild_slot_page_ownership(
             },
         );
     }
-    shard.slot_index.rebuild_object_page_lookup();
-    for slot in shard.slot_index.slot_map.values_mut() {
-        slot.meta_loaded = true;
-        slot.loading = false;
-        slot.in_memory = !slot.page_index.is_empty();
-        slot.deleted =
-            !slot.page_index.is_empty() && slot.page_index.values().all(|page| page.deleted);
-        update_slot_layout(slot);
+    shard.bucket_index.rebuild_object_page_lookup();
+    for bucket in shard.bucket_index.bucket_map.values_mut() {
+        bucket.meta_loaded = true;
+        bucket.loading = false;
+        bucket.in_memory = !bucket.page_index.is_empty();
+        bucket.deleted =
+            !bucket.page_index.is_empty() && bucket.page_index.values().all(|page| page.deleted);
+        update_bucket_layout(bucket);
     }
 }
 
-pub(super) fn promote_model_maps_to_slot_index_authority(
+pub(super) fn promote_model_maps_to_bucket_index_authority(
     shard_id: ShardId,
     shard: &mut ShardState,
-    start_routing_slot: u32,
-    end_routing_slot: u32,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
 ) -> bool {
     let model_entries = collect_model_live_page_entries(shard);
     if model_entries.is_empty() {
         return false;
     }
-    let slot_index_missing_entry = shard.slot_index.slot_map.is_empty()
+    let bucket_index_missing_entry = shard.bucket_index.bucket_map.is_empty()
         || model_entries.iter().any(|entry| {
-            !shard.slot_index.contains_object_page_address(
+            !shard.bucket_index.contains_object_page_address(
                 &entry.kind,
                 &entry.object_key,
                 entry.component.as_deref(),
                 &entry.address,
             )
         });
-    if !slot_index_missing_entry {
+    if !bucket_index_missing_entry {
         return false;
     }
-    rebuild_slot_page_ownership(shard_id, shard, start_routing_slot, end_routing_slot);
-    refresh_slot_runtime_flags(shard);
+    rebuild_bucket_page_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
+    refresh_bucket_runtime_flags(shard);
     true
 }
 
-pub(super) fn collect_slot_index_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
+pub(super) fn collect_bucket_index_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
     let mut entries = Vec::new();
-    for slot in shard.slot_index.slot_map.values() {
-        for page in slot.page_index.values() {
+    for bucket in shard.bucket_index.bucket_map.values() {
+        for page in bucket.page_index.values() {
             entries.push(LivePageEntry {
                 object_key: page.object_key.clone(),
                 kind: page.model_id.clone(),
@@ -1009,12 +1009,12 @@ pub(super) fn page_physical_identity_key(
         address.length,
         address.page_id,
         address.object_id,
-        address.routing_slot,
+        address.routing_bucket,
         address.generation,
     )
 }
 
-pub(super) fn upsert_slot_index_page(
+pub(super) fn upsert_bucket_index_page(
     shard: &mut ShardState,
     shard_id: ShardId,
     kind: &str,
@@ -1023,9 +1023,9 @@ pub(super) fn upsert_slot_index_page(
     address: BlockAddress,
     dirty: bool,
 ) {
-    let routing_slot = address
-        .routing_slot
-        .unwrap_or_else(|| page_routing_slot(object_key, 0, u32::MAX));
+    let routing_bucket = address
+        .routing_bucket
+        .unwrap_or_else(|| page_routing_bucket(object_key, 0, u32::MAX));
     let object_id = address
         .object_id
         .unwrap_or_else(|| stable_page_object_id(shard_id, kind, object_key, component.as_deref()));
@@ -1038,10 +1038,10 @@ pub(super) fn upsert_slot_index_page(
         deleted: false,
         log_backed: true,
     };
-    let lookup_enabled = !shard.slot_index.object_page_lookup.is_empty();
+    let lookup_enabled = !shard.bucket_index.object_page_lookup.is_empty();
     let direct_page_refs = if lookup_enabled {
         shard
-            .slot_index
+            .bucket_index
             .object_page_lookup
             .get(&object_page_lookup_key(
                 &entry.kind,
@@ -1052,46 +1052,46 @@ pub(super) fn upsert_slot_index_page(
     } else {
         None
     };
-    shard.slot_index.remove_object_page_lookup_entry(
+    shard.bucket_index.remove_object_page_lookup_entry(
         &entry.kind,
         &entry.object_key,
         entry.component.as_deref(),
     );
     if let Some(page_refs) = direct_page_refs {
         for page_ref in page_refs {
-            let Some(slot) = shard.slot_index.slot_map.get_mut(&page_ref.routing_slot) else {
+            let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&page_ref.routing_bucket) else {
                 continue;
             };
-            let removed_object_id = slot
+            let removed_object_id = bucket
                 .page_index
                 .remove(&page_ref.page_ref_key)
                 .map(|page| page.object_id);
             if let Some(removed_object_id) = removed_object_id {
-                if !slot
+                if !bucket
                     .page_index
                     .values()
                     .any(|page| page.object_id == removed_object_id)
                 {
-                    slot.object_index.remove(&removed_object_id);
+                    bucket.object_index.remove(&removed_object_id);
                 }
-                update_slot_layout(slot);
+                update_bucket_layout(bucket);
             }
         }
     } else if !lookup_enabled {
-        for slot in shard.slot_index.slot_map.values_mut() {
-            slot.page_index.retain(|_, page| {
+        for bucket in shard.bucket_index.bucket_map.values_mut() {
+            bucket.page_index.retain(|_, page| {
                 !(page.object_key == entry.object_key
                     && page.model_id == entry.kind
                     && page.component == entry.component)
             });
-            if !slot
+            if !bucket
                 .page_index
                 .values()
                 .any(|page| page.object_id == object_id)
             {
-                slot.object_index.remove(&object_id);
+                bucket.object_index.remove(&object_id);
             }
-            update_slot_layout(slot);
+            update_bucket_layout(bucket);
         }
     }
     let page_ref_key = page_index_ref_key(&entry);
@@ -1106,33 +1106,33 @@ pub(super) fn upsert_slot_index_page(
         log_backed: entry.log_backed,
     };
     {
-        let slot = shard
-            .slot_index
-            .slot_map
-            .entry(routing_slot)
-            .or_insert_with(|| SlotNode {
-                routing_slot,
+        let bucket = shard
+            .bucket_index
+            .bucket_map
+            .entry(routing_bucket)
+            .or_insert_with(|| BucketNode {
+                routing_bucket,
                 meta_loaded: true,
                 in_memory: true,
-                ..SlotNode::default()
+                ..BucketNode::default()
             });
-        slot.dirty |= dirty;
-        slot.deleted = false;
+        bucket.dirty |= dirty;
+        bucket.deleted = false;
         if dirty {
-            slot.dirty_generation = slot.dirty_generation.saturating_add(1);
+            bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
         }
-        slot.in_memory = true;
-        slot.object_index.insert(object_id);
-        slot.page_index
+        bucket.in_memory = true;
+        bucket.object_index.insert(object_id);
+        bucket.page_index
             .insert(page_ref_key.clone(), page_index.clone());
-        update_slot_layout(slot);
+        update_bucket_layout(bucket);
     }
     shard
-        .slot_index
-        .insert_object_page_lookup(routing_slot, page_ref_key, &page_index);
+        .bucket_index
+        .insert_object_page_lookup(routing_bucket, page_ref_key, &page_index);
 }
 
-pub(super) fn sync_slot_index_object_pages(
+pub(super) fn sync_bucket_index_object_pages(
     shard: &mut ShardState,
     shard_id: ShardId,
     kind: &str,
@@ -1140,45 +1140,45 @@ pub(super) fn sync_slot_index_object_pages(
     addresses: Vec<BlockAddress>,
     dirty: bool,
 ) {
-    let mut touched_slots = BTreeSet::new();
+    let mut touched_buckets = BTreeSet::new();
     let mut removed_any = false;
-    let target_slots = if shard.slot_index.object_component_lookup.is_empty() {
+    let target_buckets = if shard.bucket_index.object_component_lookup.is_empty() {
         shard
-            .slot_index
-            .slot_map
+            .bucket_index
+            .bucket_map
             .keys()
             .copied()
             .collect::<BTreeSet<_>>()
     } else {
         shard
-            .slot_index
+            .bucket_index
             .object_component_lookup
             .get(&object_component_lookup_key(kind, object_key))
             .map(|page_refs| {
                 page_refs
                     .iter()
-                    .map(|page_ref| page_ref.routing_slot)
+                    .map(|page_ref| page_ref.routing_bucket)
                     .collect::<BTreeSet<_>>()
             })
             .unwrap_or_default()
     };
-    for routing_slot in target_slots {
-        let Some(slot) = shard.slot_index.slot_map.get_mut(&routing_slot) else {
+    for routing_bucket in target_buckets {
+        let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
             continue;
         };
-        let before = slot.page_index.len();
-        slot.page_index
+        let before = bucket.page_index.len();
+        bucket.page_index
             .retain(|_, page| !(page.model_id == kind && page.object_key == object_key));
-        if slot.page_index.len() != before {
+        if bucket.page_index.len() != before {
             removed_any = true;
-            touched_slots.insert(routing_slot);
-            slot.dirty |= dirty;
-            slot.deleted = slot.page_index.is_empty();
+            touched_buckets.insert(routing_bucket);
+            bucket.dirty |= dirty;
+            bucket.deleted = bucket.page_index.is_empty();
             if dirty {
-                slot.dirty_generation = slot.dirty_generation.saturating_add(1);
+                bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
             }
-            slot.in_memory = !slot.page_index.is_empty();
-            update_slot_layout(slot);
+            bucket.in_memory = !bucket.page_index.is_empty();
+            update_bucket_layout(bucket);
         }
     }
 
@@ -1199,9 +1199,9 @@ pub(super) fn sync_slot_index_object_pages(
     }
 
     for address in unique_addresses.into_values() {
-        let routing_slot = address
-            .routing_slot
-            .unwrap_or_else(|| page_routing_slot(object_key, 0, u32::MAX));
+        let routing_bucket = address
+            .routing_bucket
+            .unwrap_or_else(|| page_routing_bucket(object_key, 0, u32::MAX));
         let object_id = address
             .object_id
             .unwrap_or_else(|| stable_page_object_id(shard_id, kind, object_key, None));
@@ -1214,27 +1214,27 @@ pub(super) fn sync_slot_index_object_pages(
             deleted: false,
             log_backed: true,
         };
-        let slot = shard
-            .slot_index
-            .slot_map
-            .entry(routing_slot)
-            .or_insert_with(|| SlotNode {
-                routing_slot,
+        let bucket = shard
+            .bucket_index
+            .bucket_map
+            .entry(routing_bucket)
+            .or_insert_with(|| BucketNode {
+                routing_bucket,
                 meta_loaded: true,
                 in_memory: true,
-                ..SlotNode::default()
+                ..BucketNode::default()
             });
-        slot.dirty |= dirty;
-        slot.deleted = false;
-        if dirty || touched_slots.insert(routing_slot) {
-            slot.dirty_generation = slot.dirty_generation.saturating_add(1);
+        bucket.dirty |= dirty;
+        bucket.deleted = false;
+        if dirty || touched_buckets.insert(routing_bucket) {
+            bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
         }
-        slot.meta_loaded = true;
-        slot.loading = false;
-        slot.in_memory = true;
-        slot.object_index.insert(object_id);
-        slot.deleted_object_index.remove(&object_id);
-        slot.page_index.insert(
+        bucket.meta_loaded = true;
+        bucket.loading = false;
+        bucket.in_memory = true;
+        bucket.object_index.insert(object_id);
+        bucket.deleted_object_index.remove(&object_id);
+        bucket.page_index.insert(
             page_index_ref_key(&entry),
             PageIndex {
                 object_key: entry.object_key,
@@ -1247,73 +1247,73 @@ pub(super) fn sync_slot_index_object_pages(
                 log_backed: entry.log_backed,
             },
         );
-        update_slot_layout(slot);
+        update_bucket_layout(bucket);
     }
 
     if removed_any || dirty {
         shard
-            .slot_index
-            .slot_map
-            .retain(|_, slot| !slot.page_index.is_empty() || !slot.object_index.is_empty());
+            .bucket_index
+            .bucket_map
+            .retain(|_, bucket| !bucket.page_index.is_empty() || !bucket.object_index.is_empty());
     }
-    shard.slot_index.rebuild_object_page_lookup();
+    shard.bucket_index.rebuild_object_page_lookup();
 }
 
-pub(super) fn classify_slot_layout(object_count: usize, page_ref_count: usize) -> SlotLayoutState {
+pub(super) fn classify_bucket_layout(object_count: usize, page_ref_count: usize) -> BucketLayoutState {
     match (object_count, page_ref_count) {
-        (0, _) => SlotLayoutState::Empty,
-        (1, 0) => SlotLayoutState::SingleObject,
-        (_, 0) => SlotLayoutState::Empty,
-        (1, 1) => SlotLayoutState::SinglePageObject,
-        (1, _) => SlotLayoutState::MultiPageObject,
-        _ => SlotLayoutState::MultiObject,
+        (0, _) => BucketLayoutState::Empty,
+        (1, 0) => BucketLayoutState::SingleObject,
+        (_, 0) => BucketLayoutState::Empty,
+        (1, 1) => BucketLayoutState::SinglePageObject,
+        (1, _) => BucketLayoutState::MultiPageObject,
+        _ => BucketLayoutState::MultiObject,
     }
 }
 
-pub(super) fn slot_layout_name(layout: SlotLayoutState) -> &'static str {
+pub(super) fn bucket_layout_name(layout: BucketLayoutState) -> &'static str {
     match layout {
-        SlotLayoutState::Empty => "empty",
-        SlotLayoutState::SingleObject => "single_object",
-        SlotLayoutState::SinglePageObject => "single_page_object",
-        SlotLayoutState::MultiPageObject => "multi_page_object",
-        SlotLayoutState::MultiObject => "multi_object",
+        BucketLayoutState::Empty => "empty",
+        BucketLayoutState::SingleObject => "single_object",
+        BucketLayoutState::SinglePageObject => "single_page_object",
+        BucketLayoutState::MultiPageObject => "multi_page_object",
+        BucketLayoutState::MultiObject => "multi_object",
     }
 }
 
-pub(super) fn update_slot_layout(slot: &mut SlotNode) {
-    let live_object_ids: BTreeSet<u64> = slot
+pub(super) fn update_bucket_layout(bucket: &mut BucketNode) {
+    let live_object_ids: BTreeSet<u64> = bucket
         .page_index
         .values()
         .filter(|page| !page.deleted)
         .map(|page| page.object_id)
         .collect();
     if !live_object_ids.is_empty() {
-        slot.object_index = live_object_ids;
-    } else if !slot.page_index.is_empty() {
-        slot.object_index.clear();
+        bucket.object_index = live_object_ids;
+    } else if !bucket.page_index.is_empty() {
+        bucket.object_index.clear();
     }
-    slot.layout = classify_slot_layout(slot.object_index.len(), slot.page_index.len());
+    bucket.layout = classify_bucket_layout(bucket.object_index.len(), bucket.page_index.len());
 }
 
-pub(super) fn refresh_slot_runtime_flags(shard: &mut ShardState) {
+pub(super) fn refresh_bucket_runtime_flags(shard: &mut ShardState) {
     let now = now_ms();
-    for slot in shard.slot_index.slot_map.values_mut() {
-        slot.meta_loaded = true;
-        slot.loading = false;
-        slot.in_memory = !slot.page_index.is_empty();
-        slot.deleted =
-            !slot.page_index.is_empty() && slot.page_index.values().all(|page| page.deleted);
-        slot.dirty |= slot
+    for bucket in shard.bucket_index.bucket_map.values_mut() {
+        bucket.meta_loaded = true;
+        bucket.loading = false;
+        bucket.in_memory = !bucket.page_index.is_empty();
+        bucket.deleted =
+            !bucket.page_index.is_empty() && bucket.page_index.values().all(|page| page.deleted);
+        bucket.dirty |= bucket
             .page_index
             .values()
             .any(|page| page.dirty || shard.dirty_objects.contains(&page.object_key));
-        slot.ttl_ms = slot
+        bucket.ttl_ms = bucket
             .page_index
             .values()
             .filter_map(|page| shard.expires_at_ms.get(&page.object_key).copied())
             .map(|expires_at| expires_at.saturating_sub(now))
             .min();
-        update_slot_layout(slot);
+        update_bucket_layout(bucket);
     }
 }
 
@@ -1339,34 +1339,34 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
         return;
     }
     shard.dirty_objects.remove(object_key);
-    for slot in shard.slot_index.slot_map.values_mut() {
+    for bucket in shard.bucket_index.bucket_map.values_mut() {
         let mut touched = false;
-        for page in slot.page_index.values_mut() {
+        for page in bucket.page_index.values_mut() {
             if page.object_key == object_key {
                 page.dirty = false;
                 touched = true;
             }
         }
         if touched {
-            slot.dirty = slot
+            bucket.dirty = bucket
                 .page_index
                 .values()
                 .any(|page| page.dirty || shard.dirty_objects.contains(&page.object_key));
-            update_slot_layout(slot);
+            update_bucket_layout(bucket);
         }
     }
 }
 
-pub(super) fn rebuild_slot_first_index(
+pub(super) fn rebuild_bucket_first_index(
     shard_id: ShardId,
     shard: &mut ShardState,
-    start_routing_slot: u32,
-    end_routing_slot: u32,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
 ) {
-    let mut slot_index = CoreIndex::default();
+    let mut bucket_index = CoreIndex::default();
     for entry in collect_model_live_page_entries(shard) {
-        let routing_slot = entry.address.routing_slot.unwrap_or_else(|| {
-            page_routing_slot(&entry.object_key, start_routing_slot, end_routing_slot)
+        let routing_bucket = entry.address.routing_bucket.unwrap_or_else(|| {
+            page_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket)
         });
         let object_id = entry.address.object_id.unwrap_or_else(|| {
             stable_page_object_id(
@@ -1376,23 +1376,23 @@ pub(super) fn rebuild_slot_first_index(
                 entry.component.as_deref(),
             )
         });
-        let slot = slot_index
-            .slot_map
-            .entry(routing_slot)
-            .or_insert_with(|| SlotNode {
-                routing_slot,
+        let bucket = bucket_index
+            .bucket_map
+            .entry(routing_bucket)
+            .or_insert_with(|| BucketNode {
+                routing_bucket,
                 meta_loaded: true,
                 in_memory: true,
-                ..SlotNode::default()
+                ..BucketNode::default()
             });
         let page_dirty = shard.dirty_objects.contains(&entry.object_key) || entry.dirty;
-        slot.dirty |= page_dirty;
+        bucket.dirty |= page_dirty;
         if page_dirty {
-            slot.dirty_generation = slot.dirty_generation.saturating_add(1);
+            bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
         }
-        slot.in_memory |= true;
-        slot.object_index.insert(object_id);
-        slot.page_index.insert(
+        bucket.in_memory |= true;
+        bucket.object_index.insert(object_id);
+        bucket.page_index.insert(
             page_index_ref_key(&entry),
             PageIndex {
                 object_key: entry.object_key,
@@ -1405,18 +1405,18 @@ pub(super) fn rebuild_slot_first_index(
                 log_backed: entry.log_backed,
             },
         );
-        update_slot_layout(slot);
+        update_bucket_layout(bucket);
     }
-    slot_index.rebuild_object_page_lookup();
-    shard.slot_index = slot_index;
+    bucket_index.rebuild_object_page_lookup();
+    shard.bucket_index = bucket_index;
 }
 
-pub(super) fn reconcile_secondary_views_from_slot_index(page_store: &LocalBlockStore, shard: &mut ShardState) {
-    if shard.slot_index.slot_map.is_empty() {
+pub(super) fn reconcile_secondary_views_from_bucket_index(page_store: &LocalBlockStore, shard: &mut ShardState) {
+    if shard.bucket_index.bucket_map.is_empty() {
         return;
     }
 
-    let entries = collect_slot_index_live_page_entries(shard)
+    let entries = collect_bucket_index_live_page_entries(shard)
         .into_iter()
         .filter(|entry| !entry.deleted)
         .collect::<Vec<_>>();
@@ -1630,8 +1630,8 @@ pub(super) fn reconcile_secondary_views_from_slot_index(page_store: &LocalBlockS
         shard.context_compressions = context_compressions;
     }
 
-    for slot in shard.slot_index.slot_map.values_mut() {
-        update_slot_layout(slot);
+    for bucket in shard.bucket_index.bucket_map.values_mut() {
+        update_bucket_layout(bucket);
     }
 }
 
@@ -1669,37 +1669,37 @@ pub(super) fn expected_live_page_object_id(shard_id: ShardId, entry: &LivePageEn
     )
 }
 
-pub(super) fn validate_slot_ownership_index(
+pub(super) fn validate_bucket_ownership_index(
     shard_id: ShardId,
     shard: &ShardState,
-    start_routing_slot: u32,
-    end_routing_slot: u32,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
 ) -> StoragePageOwnershipValidation {
     let mut validation = StoragePageOwnershipValidation::default();
     for entry in collect_live_page_entries(shard) {
         let expected_object_id = expected_live_page_object_id(shard_id, &entry);
-        let expected_routing_slot =
-            page_routing_slot(&entry.object_key, start_routing_slot, end_routing_slot);
+        let expected_routing_bucket =
+            page_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket);
         let expected_page_id = entry.address.page_id;
         let object_mismatch = entry
             .address
             .object_id
             .is_some_and(|actual| actual != expected_object_id);
-        let slot_mismatch = entry
+        let bucket_mismatch = entry
             .address
-            .routing_slot
-            .is_some_and(|actual| actual != expected_routing_slot);
-        if entry.address.object_id.is_none() || entry.address.routing_slot.is_none() {
+            .routing_bucket
+            .is_some_and(|actual| actual != expected_routing_bucket);
+        if entry.address.object_id.is_none() || entry.address.routing_bucket.is_none() {
             validation.missing_owner_page_refs =
                 validation.missing_owner_page_refs.saturating_add(1);
         }
-        let slot_page_present = shard
-            .slot_index
-            .slot_map
-            .get(&expected_routing_slot)
-            .is_some_and(|slot| {
-                slot.object_index.contains(&expected_object_id)
-                    && slot.page_index.values().any(|page| {
+        let bucket_page_present = shard
+            .bucket_index
+            .bucket_map
+            .get(&expected_routing_bucket)
+            .is_some_and(|bucket| {
+                bucket.object_index.contains(&expected_object_id)
+                    && bucket.page_index.values().any(|page| {
                         page.address.page_segment_id == entry.address.page_segment_id
                             && page.address.offset == entry.address.offset
                             && page.address.length == entry.address.length
@@ -1707,11 +1707,11 @@ pub(super) fn validate_slot_ownership_index(
                             && page.model_id == entry.kind
                     })
             });
-        if !slot_page_present {
+        if !bucket_page_present {
             validation.missing_owner_page_refs =
                 validation.missing_owner_page_refs.saturating_add(1);
         }
-        if object_mismatch || slot_mismatch {
+        if object_mismatch || bucket_mismatch {
             validation
                 .mismatches
                 .push(StorageRecoveryPageOwnerMismatch {
@@ -1720,8 +1720,8 @@ pub(super) fn validate_slot_ownership_index(
                     offset: entry.address.offset,
                     expected_object_id,
                     actual_object_id: entry.address.object_id,
-                    expected_routing_slot,
-                    actual_routing_slot: entry.address.routing_slot,
+                    expected_routing_bucket,
+                    actual_routing_bucket: entry.address.routing_bucket,
                 });
         }
     }

@@ -189,8 +189,8 @@ fn readonly_shard_rejects_writes_but_allows_reads() {
                 load_version: 1,
                 local_node_id: None,
                 shard_uri: "file:///tmp/readonly".to_string(),
-                start_routing_slot: 0,
-                end_routing_slot: 99,
+                start_routing_bucket: 0,
+                end_routing_bucket: 99,
                 readonly: true,
                 table_name: "table".to_string(),
             })
@@ -228,8 +228,8 @@ fn checked_execute_rejects_stale_load_version() {
                 load_version: 7,
                 local_node_id: None,
                 shard_uri: "file:///tmp/versioned".to_string(),
-                start_routing_slot: 0,
-                end_routing_slot: 99,
+                start_routing_bucket: 0,
+                end_routing_bucket: 99,
                 readonly: false,
                 table_name: "table".to_string(),
             })
@@ -1362,8 +1362,8 @@ fn table_write_qps_config_is_shared_across_loaded_table_shards() {
                     load_version: 1,
                     local_node_id: Some(1),
                     shard_uri: format!("local://feature_table/{shard_id}"),
-                    start_routing_slot: 0,
-                    end_routing_slot: u32::MAX,
+                    start_routing_bucket: 0,
+                    end_routing_bucket: u32::MAX,
                     readonly: false,
                     table_name: "feature_table".to_string(),
                 })
@@ -1415,8 +1415,8 @@ fn tenant_read_qps_config_is_shared_across_tables() {
                     load_version: 1,
                     local_node_id: Some(1),
                     shard_uri: format!("local://{table_name}/{shard_id}"),
-                    start_routing_slot: 0,
-                    end_routing_slot: u32::MAX,
+                    start_routing_bucket: 0,
+                    end_routing_bucket: u32::MAX,
                     readonly: false,
                     table_name: table_name.to_string(),
                 })
@@ -1478,8 +1478,8 @@ fn stats_include_cpp_style_partition_and_object_manager_accounting() {
                 load_version: 77,
                 local_node_id: Some(3),
                 shard_uri: "local://table/shard-9".to_string(),
-                start_routing_slot: 10,
-                end_routing_slot: 20,
+                start_routing_bucket: 10,
+                end_routing_bucket: 20,
                 readonly: false,
                 table_name: "feature_table".to_string(),
             })
@@ -1569,13 +1569,13 @@ fn stats_include_cpp_style_partition_and_object_manager_accounting() {
     assert_eq!(stats.object_manager.object_count, 7);
     assert_eq!(stats.object_manager.page_ref_count, 10);
     assert_eq!(stats.object_manager.dirty_object_count, 7);
-    assert!(stats.object_manager.dirty_slot_count > 0);
-    assert!(stats.object_manager.dirty_slot_count <= 7);
-    assert_eq!(stats.object_manager.routing_slot_count, 11);
+    assert!(stats.object_manager.dirty_bucket_count > 0);
+    assert!(stats.object_manager.dirty_bucket_count <= 7);
+    assert_eq!(stats.object_manager.routing_bucket_count, 11);
     assert_eq!(stats.shard_stat_info.table_name, "feature_table");
     assert_eq!(stats.shard_stat_info.shard_uri, "local://table/shard-9");
-    assert_eq!(stats.shard_stat_info.start_routing_slot, 10);
-    assert_eq!(stats.shard_stat_info.end_routing_slot, 20);
+    assert_eq!(stats.shard_stat_info.start_routing_bucket, 10);
+    assert_eq!(stats.shard_stat_info.end_routing_bucket, 20);
     assert_eq!(stats.shard_stat_info.object_manager, stats.object_manager);
     assert!(stats.block_store_bands.active_bands >= 1);
     assert!(stats.block_store_bands.active_physical_bytes > 0);
@@ -1642,7 +1642,7 @@ fn prometheus_metrics_include_records_cache_page_and_wal() {
 }
 
 #[test]
-fn slot_storage_summaries_track_live_refs_dirty_slots_and_manifest_sequence() {
+fn bucket_storage_summaries_track_live_refs_dirty_buckets_and_manifest_sequence() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -1655,8 +1655,8 @@ fn slot_storage_summaries_track_live_refs_dirty_slots_and_manifest_sequence() {
         load_version: 0,
         local_node_id: None,
         shard_uri: String::new(),
-        start_routing_slot: 10,
-        end_routing_slot: 12,
+        start_routing_bucket: 10,
+        end_routing_bucket: 12,
         readonly: false,
         table_name: String::new(),
     });
@@ -1675,7 +1675,7 @@ fn slot_storage_summaries_track_live_refs_dirty_slots_and_manifest_sequence() {
         );
     }
 
-    let summaries = engine.slot_storage_summaries(1);
+    let summaries = engine.bucket_storage_summaries(1);
     assert!(!summaries.is_empty());
     assert_eq!(
         summaries
@@ -1691,25 +1691,25 @@ fn slot_storage_summaries_track_live_refs_dirty_slots_and_manifest_sequence() {
             .sum::<u64>(),
         3
     );
-    let dirty_slot = summaries
+    let dirty_bucket = summaries
         .iter()
         .find(|summary| summary.dirty_object_count > 0)
         .unwrap()
-        .routing_slot;
+        .routing_bucket;
     let manifest = engine
-        .create_slot_dump_manifest(1, [dirty_slot])
+        .create_bucket_dump_manifest(1, [dirty_bucket])
         .expect("slot dump manifest should persist");
-    engine.validate_slot_dump_manifest(&manifest).unwrap();
-    let summaries = engine.slot_storage_summaries(1);
+    engine.validate_bucket_dump_manifest(&manifest).unwrap();
+    let summaries = engine.bucket_storage_summaries(1);
     assert!(summaries
         .iter()
-        .filter(|summary| summary.routing_slot == dirty_slot)
+        .filter(|summary| summary.routing_bucket == dirty_bucket)
         .all(|summary| summary.last_dump_sequence == manifest.index_log_sequence));
 }
 
 // shared-corpus: storage_dump_load_recovery
 #[test]
-fn slot_page_ownership_is_first_class_and_survives_reload() {
+fn bucket_page_ownership_is_first_class_and_survives_reload() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -1722,8 +1722,8 @@ fn slot_page_ownership_is_first_class_and_survives_reload() {
         load_version: 0,
         local_node_id: None,
         shard_uri: String::new(),
-        start_routing_slot: 10,
-        end_routing_slot: 12,
+        start_routing_bucket: 10,
+        end_routing_bucket: 12,
         readonly: false,
         table_name: String::new(),
     });
@@ -1744,37 +1744,37 @@ fn slot_page_ownership_is_first_class_and_survives_reload() {
     }
 
     let physical_before_reload = engine.storage_physical_index_report(1);
-    assert!(physical_before_reload.slot_index_authority);
+    assert!(physical_before_reload.bucket_index_authority);
     assert_eq!(physical_before_reload.page_index_count, 2);
-    assert_eq!(physical_before_reload.dirty_slot_count, 1);
+    assert_eq!(physical_before_reload.dirty_bucket_count, 1);
     assert_eq!(physical_before_reload.missing_object_id_count, 0);
-    assert_eq!(physical_before_reload.missing_routing_slot_count, 0);
-    assert!(physical_before_reload.slot_nodes.iter().any(|slot| {
-        slot.page_ref_count == 2
-            && slot.object_count == 2
-            && slot.dirty_generation >= 2
-            && slot.page_indexes.iter().all(|page| {
+    assert_eq!(physical_before_reload.missing_routing_bucket_count, 0);
+    assert!(physical_before_reload.bucket_nodes.iter().any(|bucket| {
+        bucket.page_ref_count == 2
+            && bucket.object_count == 2
+            && bucket.dirty_generation >= 2
+            && bucket.page_indexes.iter().all(|page| {
                 page.model_id == "hash" && page.dirty && !page.deleted && !page.log_backed
             })
     }));
     assert_eq!(
         engine
-            .slot_storage_summaries(1)
+            .bucket_storage_summaries(1)
             .iter()
             .map(|summary| summary.object_count)
             .sum::<u64>(),
         2
     );
-    let ownership = engine.slot_object_page_ownership_report(1);
+    let ownership = engine.bucket_object_page_ownership_report(1);
     assert!(ownership.first_class_index_present);
     assert!(!ownership.derived_from_model_maps);
     assert_eq!(ownership.page_ref_count, 2);
     assert_eq!(ownership.missing_owner_page_ref_count, 0);
     assert_eq!(ownership.owner_mismatch_page_ref_count, 0);
     let physical = engine.storage_physical_index_report(1);
-    assert!(physical.slot_index_authority);
+    assert!(physical.bucket_index_authority);
     assert_eq!(physical.page_index_count, 2);
-    assert_eq!(physical.dirty_slot_count, 1);
+    assert_eq!(physical.dirty_bucket_count, 1);
 
     engine.unload_shard(1);
     engine.load_shard_with(LoadShardRequest {
@@ -1782,33 +1782,33 @@ fn slot_page_ownership_is_first_class_and_survives_reload() {
         load_version: 1,
         local_node_id: None,
         shard_uri: String::new(),
-        start_routing_slot: 10,
-        end_routing_slot: 12,
+        start_routing_bucket: 10,
+        end_routing_bucket: 12,
         readonly: false,
         table_name: String::new(),
     });
     let physical_after_reload = engine.storage_physical_index_report(1);
-    assert!(physical_after_reload.slot_index_authority);
+    assert!(physical_after_reload.bucket_index_authority);
     assert_eq!(physical_after_reload.page_index_count, 2);
-    assert_eq!(physical_after_reload.dirty_slot_count, 0);
+    assert_eq!(physical_after_reload.dirty_bucket_count, 0);
     assert!(physical_after_reload
-        .slot_nodes
+        .bucket_nodes
         .iter()
-        .any(|slot| slot.page_ref_count == 2 && slot.object_count == 2));
-    let reloaded_ownership = engine.slot_object_page_ownership_report(1);
+        .any(|bucket| bucket.page_ref_count == 2 && bucket.object_count == 2));
+    let reloaded_ownership = engine.bucket_object_page_ownership_report(1);
     assert!(reloaded_ownership.first_class_index_present);
     assert!(!reloaded_ownership.derived_from_model_maps);
     assert_eq!(reloaded_ownership.page_ref_count, 2);
     assert_eq!(reloaded_ownership.missing_owner_page_ref_count, 0);
     assert_eq!(reloaded_ownership.owner_mismatch_page_ref_count, 0);
     let reloaded_physical = engine.storage_physical_index_report(1);
-    assert!(reloaded_physical.slot_index_authority);
+    assert!(reloaded_physical.bucket_index_authority);
     assert_eq!(reloaded_physical.page_index_count, 2);
 }
 
 // shared-corpus: storage_dump_load_recovery
 #[test]
-fn slot_index_is_authoritative_when_secondary_views_are_missing() {
+fn bucket_index_is_authoritative_when_secondary_views_are_missing() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -1833,7 +1833,7 @@ fn slot_index_is_authoritative_when_secondary_views_are_missing() {
     {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard loaded");
-        assert!(!shard.slot_index.slot_map.is_empty());
+        assert!(!shard.bucket_index.bucket_map.is_empty());
         shard.strings.clear();
         shard.hashes.clear();
         shard.sets.clear();
@@ -1863,9 +1863,9 @@ fn slot_index_is_authoritative_when_secondary_views_are_missing() {
     );
 }
 
-// shared-corpus: storage_recovery_reconciles_slot_index_to_model_views
+// shared-corpus: storage_recovery_reconciles_bucket_index_to_model_views
 #[test]
-fn storage_recovery_uses_slot_index_not_stale_secondary_model_maps() {
+fn storage_recovery_uses_bucket_index_not_stale_secondary_model_maps() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -1890,13 +1890,13 @@ fn storage_recovery_uses_slot_index_not_stale_secondary_model_maps() {
     {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard loaded");
-        assert!(!shard.slot_index.slot_map.is_empty());
+        assert!(!shard.bucket_index.bucket_map.is_empty());
         let stale = shard
             .strings
             .get_mut("slot-authority")
             .expect("secondary string view");
         stale.object_id = Some(stale.object_id.unwrap_or_default().wrapping_add(99));
-        stale.routing_slot = Some(stale.routing_slot.unwrap_or_default().wrapping_add(99));
+        stale.routing_bucket = Some(stale.routing_bucket.unwrap_or_default().wrapping_add(99));
         stale.page_segment_id = stale.page_segment_id.wrapping_add(999);
     }
 
@@ -1913,7 +1913,7 @@ fn storage_recovery_uses_slot_index_not_stale_secondary_model_maps() {
 
 // shared-corpus: storage_dump_load_recovery
 #[test]
-fn legacy_model_maps_are_promoted_to_slot_index_authority() {
+fn legacy_model_maps_are_promoted_to_bucket_index_authority() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -1939,7 +1939,7 @@ fn legacy_model_maps_are_promoted_to_slot_index_authority() {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard loaded");
         assert!(!shard.strings.is_empty());
-        shard.slot_index.slot_map.clear();
+        shard.bucket_index.bucket_map.clear();
     }
 
     let get = engine.execute(ExecuteRequest {
@@ -1956,15 +1956,15 @@ fn legacy_model_maps_are_promoted_to_slot_index_authority() {
         }
     );
     let physical = engine.storage_physical_index_report(1);
-    assert!(physical.slot_index_authority);
+    assert!(physical.bucket_index_authority);
     assert_eq!(physical.page_index_count, 1);
     assert_eq!(physical.missing_object_id_count, 0);
-    assert_eq!(physical.missing_routing_slot_count, 0);
+    assert_eq!(physical.missing_routing_bucket_count, 0);
 }
 
 // shared-corpus: storage_cold_read_page_address_fallback
 #[test]
-fn cold_read_uses_slot_page_address_after_cache_and_model_maps_are_cleared() {
+fn cold_read_uses_bucket_page_address_after_cache_and_model_maps_are_cleared() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -1989,7 +1989,7 @@ fn cold_read_uses_slot_page_address_after_cache_and_model_maps_are_cleared() {
     {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard loaded");
-        assert!(!shard.slot_index.slot_map.is_empty());
+        assert!(!shard.bucket_index.bucket_map.is_empty());
         shard.strings.clear();
     }
     let _ = engine
@@ -2014,9 +2014,9 @@ fn cold_read_uses_slot_page_address_after_cache_and_model_maps_are_cleared() {
     assert!(engine.block_store().stats().reads > block_reads_before);
 }
 
-// shared-corpus: storage_recovery_reconciles_slot_index_to_model_views
+// shared-corpus: storage_recovery_reconciles_bucket_index_to_model_views
 #[test]
-fn recovery_reconciles_model_views_from_slot_index_authority() {
+fn recovery_reconciles_model_views_from_bucket_index_authority() {
     let dir = tempfile::tempdir().unwrap();
     let cache_dir = dir.path().join("cache");
     let page_dir = dir.path().join("pages");
@@ -2066,7 +2066,7 @@ fn recovery_reconciles_model_views_from_slot_index_authority() {
 
 // shared-corpus: storage_dump_load_recovery
 #[test]
-fn core_index_loads_legacy_slot_page_field_names() {
+fn core_index_loads_legacy_bucket_page_field_names() {
     let legacy_json = r#"{
         "slots": {
             "7": {
@@ -2103,37 +2103,37 @@ fn core_index_loads_legacy_slot_page_field_names() {
     }"#;
 
     let index: CoreIndex = serde_json::from_str(legacy_json).unwrap();
-    let slot = index.slot_map.get(&7).expect("legacy slot should load");
-    assert!(slot.object_index.contains(&42));
-    assert_eq!(slot.page_index.len(), 1);
+    let bucket = index.bucket_map.get(&7).expect("legacy slot should load");
+    assert!(bucket.object_index.contains(&42));
+    assert_eq!(bucket.page_index.len(), 1);
     assert_eq!(
-        slot.page_index
+        bucket.page_index
             .values()
             .next()
             .expect("legacy page index should load")
             .address
-            .routing_slot,
+            .routing_bucket,
         Some(7)
     );
 }
 
-// shared-corpus: storage_object_page_slot_parity_surfaces storage_slot_layout_transitions;
+// shared-corpus: storage_object_page_bucket_parity_surfaces storage_bucket_layout_transitions;
 #[test]
-fn slot_store_reports_all_layout_states_and_runtime_flags() {
+fn bucket_store_reports_all_layout_states_and_runtime_flags() {
     let mut shard = ShardState::default();
-    shard.slot_index.slot_map.insert(
+    shard.bucket_index.bucket_map.insert(
         1,
-        SlotNode {
-            routing_slot: 1,
+        BucketNode {
+            routing_bucket: 1,
             meta_loaded: true,
-            ..SlotNode::default()
+            ..BucketNode::default()
         },
     );
-    shard.slot_index.slot_map.insert(
+    shard.bucket_index.bucket_map.insert(
         2,
-        SlotNode {
-            routing_slot: 2,
-            layout: SlotLayoutState::SingleObject,
+        BucketNode {
+            routing_bucket: 2,
+            layout: BucketLayoutState::SingleObject,
             dirty: true,
             deleted: true,
             meta_loaded: true,
@@ -2141,14 +2141,14 @@ fn slot_store_reports_all_layout_states_and_runtime_flags() {
             ttl_ms: Some(5_000),
             dirty_generation: 7,
             object_index: [20].into_iter().collect(),
-            ..SlotNode::default()
+            ..BucketNode::default()
         },
     );
-    shard.slot_index.slot_map.insert(
+    shard.bucket_index.bucket_map.insert(
         3,
-        SlotNode {
-            routing_slot: 3,
-            layout: SlotLayoutState::SinglePageObject,
+        BucketNode {
+            routing_bucket: 3,
+            layout: BucketLayoutState::SinglePageObject,
             meta_loaded: true,
             in_memory: true,
             object_index: [30].into_iter().collect(),
@@ -2165,7 +2165,7 @@ fn slot_store_reports_all_layout_states_and_runtime_flags() {
                         length: 4,
                         page_id: Some(1),
                         object_id: Some(30),
-                        routing_slot: Some(3),
+                        routing_bucket: Some(3),
                         band_id: None,
                         generation: Some(1),
                         sha256: None,
@@ -2177,14 +2177,14 @@ fn slot_store_reports_all_layout_states_and_runtime_flags() {
             )]
             .into_iter()
             .collect(),
-            ..SlotNode::default()
+            ..BucketNode::default()
         },
     );
-    shard.slot_index.slot_map.insert(
+    shard.bucket_index.bucket_map.insert(
         4,
-        SlotNode {
-            routing_slot: 4,
-            layout: SlotLayoutState::MultiPageObject,
+        BucketNode {
+            routing_bucket: 4,
+            layout: BucketLayoutState::MultiPageObject,
             meta_loaded: true,
             loading: true,
             in_memory: true,
@@ -2203,7 +2203,7 @@ fn slot_store_reports_all_layout_states_and_runtime_flags() {
                             length: 4,
                             page_id: Some(2),
                             object_id: Some(40),
-                            routing_slot: Some(4),
+                            routing_bucket: Some(4),
                             band_id: None,
                             generation: Some(2),
                             sha256: None,
@@ -2226,7 +2226,7 @@ fn slot_store_reports_all_layout_states_and_runtime_flags() {
                             length: 4,
                             page_id: Some(3),
                             object_id: Some(40),
-                            routing_slot: Some(4),
+                            routing_bucket: Some(4),
                             band_id: None,
                             generation: Some(3),
                             sha256: None,
@@ -2239,14 +2239,14 @@ fn slot_store_reports_all_layout_states_and_runtime_flags() {
             ]
             .into_iter()
             .collect(),
-            ..SlotNode::default()
+            ..BucketNode::default()
         },
     );
-    shard.slot_index.slot_map.insert(
+    shard.bucket_index.bucket_map.insert(
         5,
-        SlotNode {
-            routing_slot: 5,
-            layout: SlotLayoutState::MultiObject,
+        BucketNode {
+            routing_bucket: 5,
+            layout: BucketLayoutState::MultiObject,
             meta_loaded: true,
             in_memory: true,
             object_index: [50, 51].into_iter().collect(),
@@ -2264,7 +2264,7 @@ fn slot_store_reports_all_layout_states_and_runtime_flags() {
                             length: 1,
                             page_id: Some(4),
                             object_id: Some(50),
-                            routing_slot: Some(5),
+                            routing_bucket: Some(5),
                             band_id: None,
                             generation: Some(4),
                             sha256: None,
@@ -2287,7 +2287,7 @@ fn slot_store_reports_all_layout_states_and_runtime_flags() {
                             length: 1,
                             page_id: Some(5),
                             object_id: Some(51),
-                            routing_slot: Some(5),
+                            routing_bucket: Some(5),
                             band_id: None,
                             generation: Some(5),
                             sha256: None,
@@ -2300,21 +2300,21 @@ fn slot_store_reports_all_layout_states_and_runtime_flags() {
             ]
             .into_iter()
             .collect(),
-            ..SlotNode::default()
+            ..BucketNode::default()
         },
     );
 
-    let report = slot_store::runtime_report(&shard);
-    assert_eq!(report.empty_slots, 1);
-    assert_eq!(report.single_object_slots, 1);
-    assert_eq!(report.single_page_object_slots, 1);
-    assert_eq!(report.multi_page_object_slots, 1);
-    assert_eq!(report.multi_object_slots, 1);
-    assert_eq!(report.deleted_slot_count, 1);
-    assert_eq!(report.loading_slot_count, 1);
-    assert_eq!(report.ttl_slot_count, 1);
-    assert_eq!(report.in_memory_slot_count, 3);
+    let report = bucket_store::runtime_report(&shard);
+    assert_eq!(report.empty_buckets, 1);
+    assert_eq!(report.single_object_buckets, 1);
+    assert_eq!(report.single_page_object_buckets, 1);
+    assert_eq!(report.multi_page_object_buckets, 1);
+    assert_eq!(report.multi_object_buckets, 1);
+    assert_eq!(report.deleted_bucket_count, 1);
+    assert_eq!(report.loading_bucket_count, 1);
+    assert_eq!(report.ttl_bucket_count, 1);
+    assert_eq!(report.in_memory_bucket_count, 3);
     assert_eq!(report.max_dirty_generation, 7);
 }
 
-// shared-corpus: storage_object_page_slot_parity_surfaces storage_object_hot_cold_reload;
+// shared-corpus: storage_object_page_bucket_parity_surfaces storage_object_hot_cold_reload;

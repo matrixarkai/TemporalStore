@@ -6,8 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use temporalstore_rust::{
     execute_redis_command, Command, CommandResponse, ExecuteRequest, RaftCluster, RaftConfig,
-    RespValue, SharedStoreReplicator, SharedStoreStorageMode, SlotDumpFaultMatrixReport,
-    SlotDumpFollowerReplayCursor, StorageLifecycleReport, StorageLifecycleRequest,
+    RespValue, SharedStoreReplicator, SharedStoreStorageMode, BucketDumpFaultMatrixReport,
+    BucketDumpFollowerReplayCursor, StorageLifecycleReport, StorageLifecycleRequest,
     StorageRecoveryReport, TemporalEngine,
 };
 use temporalstore_snapshot::FileObjectStore;
@@ -60,8 +60,10 @@ struct StorageProductionCaseSummary {
     case_name: String,
     shard_id: u64,
     mutation_count: usize,
-    slot_dump_manifest_id: String,
-    dumped_slot_count: usize,
+    #[serde(rename = "slot_dump_manifest_id")]
+    bucket_dump_manifest_id: String,
+    #[serde(rename = "dumped_slot_count")]
+    dumped_bucket_count: usize,
     fault_matrix_ready: bool,
     fault_matrix_passed_count: usize,
     fault_matrix_scenario_count: usize,
@@ -157,27 +159,27 @@ async fn run_case(root: &Path, case: &StorageMigrationCase) -> StorageProduction
     let index_dir = case_root.join("indexes");
     let mut engine = new_engine(&case_root, &page_dir, &index_dir, case.shard_id);
     execute_steps(&engine, case.shard_id, &case.operations, &case.name);
-    let dirty_slots = engine
-        .slot_storage_summaries(case.shard_id)
+    let dirty_buckets = engine
+        .bucket_storage_summaries(case.shard_id)
         .into_iter()
         .filter(|summary| summary.dirty_generation > 0)
-        .map(|summary| summary.routing_slot)
+        .map(|summary| summary.routing_bucket)
         .collect::<Vec<_>>();
-    assert!(!dirty_slots.is_empty());
+    assert!(!dirty_buckets.is_empty());
     let installable_manifest = engine
-        .create_slot_dump_manifest(case.shard_id, Vec::new())
+        .create_bucket_dump_manifest(case.shard_id, Vec::new())
         .expect("storage production explicit dump manifest should be created");
     assert!(!installable_manifest.index_bytes.is_empty());
 
     let lifecycle = engine.apply_storage_lifecycle(StorageLifecycleRequest {
         shard_id: case.shard_id,
-        selected_dump_slots: dirty_slots,
-        max_dump_slots_per_round: 64,
+        selected_dump_buckets: dirty_buckets,
+        max_dump_buckets_per_round: 64,
         min_undumped_oplog_records: 0,
         purge_delayed_destroy: true,
-        prune_slot_dump_manifests: true,
-        roll_forward_slot_dump_installs: true,
-        follower_replay_cursors: vec![SlotDumpFollowerReplayCursor {
+        prune_bucket_dump_manifests: true,
+        roll_forward_bucket_dump_installs: true,
+        follower_replay_cursors: vec![BucketDumpFollowerReplayCursor {
             follower_id: "storage-production-lagging-follower".to_string(),
             shard_id: case.shard_id,
             oplog_sequence: 0,
@@ -198,7 +200,7 @@ async fn run_case(root: &Path, case: &StorageMigrationCase) -> StorageProduction
     drop(engine);
     engine = new_engine(&case_root, &page_dir, &index_dir, case.shard_id);
     engine
-        .install_slot_dump_manifest(&installable_manifest)
+        .install_bucket_dump_manifest(&installable_manifest)
         .expect("storage production manifest install after restart should succeed");
     let recovery_after_restart = engine.storage_recovery_report(case.shard_id);
     assert_recovery_ok(&recovery_after_restart, &case.name);
@@ -212,7 +214,7 @@ async fn run_case(root: &Path, case: &StorageMigrationCase) -> StorageProduction
     let raft_leader_after_transfer = run_raft(case);
     let redis_admin_replay_ok = validate_redis_admin_replay(&engine, case);
     let cache_stats = engine.storage_cache_inspection_report(case.shard_id).stats;
-    let fault_matrix = engine.slot_dump_fault_matrix_report(case.shard_id);
+    let fault_matrix = engine.bucket_dump_fault_matrix_report(case.shard_id);
     assert_fault_matrix_ok(&fault_matrix, &case.name);
     let manifest = lifecycle
         .dump_manifest
@@ -222,8 +224,8 @@ async fn run_case(root: &Path, case: &StorageMigrationCase) -> StorageProduction
         case_name: case.name.clone(),
         shard_id: case.shard_id,
         mutation_count: mutation_count(case),
-        slot_dump_manifest_id: manifest.manifest_id,
-        dumped_slot_count: manifest.slot_ids.len(),
+        bucket_dump_manifest_id: manifest.manifest_id,
+        dumped_bucket_count: manifest.bucket_ids.len(),
         fault_matrix_ready: fault_matrix.production_ready_slice,
         fault_matrix_passed_count: fault_matrix.passed_count,
         fault_matrix_scenario_count: fault_matrix.scenario_count,
@@ -322,7 +324,7 @@ fn assert_lifecycle_ok(report: &StorageLifecycleReport, case_name: &str) {
         panic!("case={case_name} did not create slot dump manifest");
     };
     assert!(!manifest.checksum.is_empty());
-    assert!(!manifest.slot_ids.is_empty());
+    assert!(!manifest.bucket_ids.is_empty());
     assert!(report.cache_warmup.considered_page_refs > 0);
     assert_eq!(report.cache_warmup.failed_page_refs, 0);
     assert!(
@@ -341,7 +343,7 @@ fn assert_lifecycle_ok(report: &StorageLifecycleReport, case_name: &str) {
     );
 }
 
-fn assert_fault_matrix_ok(report: &SlotDumpFaultMatrixReport, case_name: &str) {
+fn assert_fault_matrix_ok(report: &BucketDumpFaultMatrixReport, case_name: &str) {
     assert!(
         report.production_ready_slice,
         "case={case_name} slot dump fault matrix is not production ready: {:?}",
@@ -439,7 +441,7 @@ fn execute_steps(
 }
 
 fn validate_redis_admin_replay(engine: &TemporalEngine, case: &StorageMigrationCase) -> bool {
-    if engine.slot_storage_summaries(case.shard_id).is_empty() {
+    if engine.bucket_storage_summaries(case.shard_id).is_empty() {
         return false;
     }
     if !recovery_ok(&engine.storage_recovery_report(case.shard_id)) {

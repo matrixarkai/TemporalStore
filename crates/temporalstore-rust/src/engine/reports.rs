@@ -74,9 +74,11 @@ pub struct ShardCompactionReport {
     #[serde(default)]
     pub rewritten_object_pages: usize,
     #[serde(default)]
-    pub slot_layout_transition_count: u64,
+    #[serde(rename = "slot_layout_transition_count")]
+    pub bucket_layout_transition_count: u64,
     #[serde(default)]
-    pub slot_layout_states_after: Vec<SlotLayoutStateCount>,
+    #[serde(rename = "slot_layout_states_after")]
+    pub bucket_layout_states_after: Vec<BucketLayoutStateCount>,
     #[serde(default)]
     pub tombstoned_object_ids_before: u64,
     #[serde(default)]
@@ -92,7 +94,7 @@ pub struct ShardCompactionReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotLayoutStateCount {
+pub struct BucketLayoutStateCount {
     pub state: String,
     pub object_count: u64,
 }
@@ -162,9 +164,11 @@ pub struct ShardExpirySweepReport {
     pub shard_id: ShardId,
     pub expired_records_removed: usize,
     #[serde(default)]
-    pub hot_slots_scanned: usize,
+    #[serde(rename = "hot_slots_scanned")]
+    pub hot_buckets_scanned: usize,
     #[serde(default)]
-    pub cold_slots_scanned: usize,
+    #[serde(rename = "cold_slots_scanned")]
+    pub cold_buckets_scanned: usize,
     #[serde(default)]
     pub scanned_records: usize,
     #[serde(default)]
@@ -189,11 +193,14 @@ pub struct ShardExpirySweepRequest {
     #[serde(default)]
     pub cold_cursor: Option<String>,
     #[serde(default)]
-    pub max_hot_slots_per_round: usize,
+    #[serde(rename = "max_hot_slots_per_round")]
+    pub max_hot_buckets_per_round: usize,
     #[serde(default)]
-    pub max_cold_slots_per_round: usize,
+    #[serde(rename = "max_cold_slots_per_round")]
+    pub max_cold_buckets_per_round: usize,
     #[serde(default)]
-    pub load_cold_slots: bool,
+    #[serde(rename = "load_cold_slots")]
+    pub load_cold_buckets: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,8 +270,10 @@ pub struct StorageRecoveryPageOwnerMismatch {
     pub offset: u64,
     pub expected_object_id: u64,
     pub actual_object_id: Option<u64>,
-    pub expected_routing_slot: u32,
-    pub actual_routing_slot: Option<u32>,
+    #[serde(rename = "expected_routing_slot")]
+    pub expected_routing_bucket: u32,
+    #[serde(rename = "actual_routing_slot")]
+    pub actual_routing_bucket: Option<u32>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -375,7 +384,8 @@ pub struct StorageRecoverySegmentLiveReport {
     pub live_physical_bytes: u64,
     pub live_logical_bytes: u64,
     pub live_object_count: u64,
-    pub live_routing_slot_count: u64,
+    #[serde(rename = "live_routing_slot_count")]
+    pub live_routing_bucket_count: u64,
     pub live_ref_density_basis_points: u64,
 }
 
@@ -397,8 +407,9 @@ pub struct StorageSegmentIntegrityReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotStorageSummary {
-    pub routing_slot: u32,
+pub struct BucketStorageSummary {
+    #[serde(rename = "routing_slot")]
+    pub routing_bucket: u32,
     pub object_count: u64,
     pub page_ref_count: u64,
     pub logical_bytes: u64,
@@ -418,7 +429,8 @@ pub struct StoragePhysicalPageIndex {
     pub model_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub component: Option<String>,
-    pub routing_slot: u32,
+    #[serde(rename = "routing_slot")]
+    pub routing_bucket: u32,
     pub page_segment_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -438,8 +450,9 @@ pub struct StoragePhysicalPageIndex {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StoragePhysicalSlotNode {
-    pub routing_slot: u32,
+pub struct StoragePhysicalBucketNode {
+    #[serde(rename = "routing_slot")]
+    pub routing_bucket: u32,
     pub layout: String,
     pub dirty: bool,
     pub meta_loaded: bool,
@@ -452,8 +465,10 @@ pub struct StoragePhysicalSlotNode {
     pub physical_bytes: u64,
     pub dirty_generation: u64,
     pub last_dump_sequence: u64,
-    pub cpp_packed_slot_node_len: usize,
-    pub cpp_packed_slot_node_hex: String,
+    #[serde(rename = "cpp_packed_slot_node_len")]
+    pub cpp_packed_bucket_node_len: usize,
+    #[serde(rename = "cpp_packed_slot_node_hex")]
+    pub cpp_packed_bucket_node_hex: String,
     #[serde(default)]
     pub page_indexes: Vec<StoragePhysicalPageIndex>,
 }
@@ -461,26 +476,34 @@ pub struct StoragePhysicalSlotNode {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoragePhysicalIndexReport {
     pub shard_id: ShardId,
-    pub slot_first: bool,
-    pub slot_index_authority: bool,
+    #[serde(rename = "slot_first")]
+    pub bucket_first: bool,
+    #[serde(rename = "slot_index_authority")]
+    pub bucket_index_authority: bool,
     #[serde(default)]
-    pub secondary_views_reconciled_from_slot_index: bool,
-    pub slot_count: usize,
+    #[serde(rename = "secondary_views_reconciled_from_slot_index")]
+    pub secondary_views_reconciled_from_bucket_index: bool,
+    #[serde(rename = "slot_count")]
+    pub bucket_count: usize,
     pub page_index_count: usize,
-    pub dirty_slot_count: usize,
+    #[serde(rename = "dirty_slot_count")]
+    pub dirty_bucket_count: usize,
     pub missing_object_id_count: usize,
-    pub missing_routing_slot_count: usize,
+    #[serde(rename = "missing_routing_slot_count")]
+    pub missing_routing_bucket_count: usize,
     pub missing_page_id_count: usize,
     pub missing_checksum_count: usize,
     pub cpp_packed_page_index_size: usize,
-    pub cpp_packed_slot_node_size: usize,
+    #[serde(rename = "cpp_packed_slot_node_size")]
+    pub cpp_packed_bucket_node_size: usize,
     pub cpp_packed_layout_compatible: bool,
     #[serde(default)]
-    pub slot_nodes: Vec<StoragePhysicalSlotNode>,
+    #[serde(rename = "slot_nodes")]
+    pub bucket_nodes: Vec<StoragePhysicalBucketNode>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotObjectPageOwnershipReport {
+pub struct BucketObjectPageOwnershipReport {
     pub shard_id: ShardId,
     pub first_class_index_present: bool,
     pub derived_from_model_maps: bool,
@@ -493,7 +516,8 @@ pub struct SlotObjectPageOwnershipReport {
 pub struct ObjectManagerRuntimeReport {
     pub shard_id: ShardId,
     pub runtime_ready: bool,
-    pub routing_slot_count: u64,
+    #[serde(rename = "routing_slot_count")]
+    pub routing_bucket_count: u64,
     pub object_count: u64,
     pub page_ref_count: u64,
     pub hot_object_count: u64,
@@ -504,13 +528,14 @@ pub struct ObjectManagerRuntimeReport {
     pub loading_object_count: u64,
     pub meta_object_count: u64,
     pub ttl_object_count: u64,
-    pub dirty_slot_count: u64,
+    #[serde(rename = "dirty_slot_count")]
+    pub dirty_bucket_count: u64,
     pub max_dirty_generation: u64,
     #[serde(default)]
     pub object_page_transition_count: u64,
     pub layout_transition_count: u64,
     #[serde(default)]
-    pub layout_states: Vec<SlotLayoutStateCount>,
+    pub layout_states: Vec<BucketLayoutStateCount>,
     pub object_page_count: u64,
     pub packed_timestamped_page_count: u64,
     pub multi_page_object_count: u64,
@@ -522,7 +547,7 @@ pub struct ObjectManagerRuntimeReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotDumpManifest {
+pub struct BucketDumpManifest {
     pub version: u32,
     pub shard_id: ShardId,
     pub manifest_id: String,
@@ -535,16 +560,18 @@ pub struct SlotDumpManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_manifest_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub load_version_handoff: Option<SlotDumpLoadVersionHandoff>,
+    pub load_version_handoff: Option<BucketDumpLoadVersionHandoff>,
     pub created_unix_ms: u64,
-    pub slot_ids: Vec<u32>,
+    #[serde(rename = "slot_ids")]
+    pub bucket_ids: Vec<u32>,
     pub page_segment_ids: Vec<u64>,
     pub oplog_sequence: u64,
     pub index_log_sequence: u64,
     pub live_page_refs: u64,
     pub logical_bytes: u64,
     pub physical_bytes: u64,
-    pub slot_summaries: Vec<SlotStorageSummary>,
+    #[serde(rename = "slot_summaries")]
+    pub bucket_summaries: Vec<BucketStorageSummary>,
     #[serde(
         default,
         skip_serializing_if = "StorageObjectLifecycleReport::is_empty"
@@ -558,14 +585,14 @@ pub struct SlotDumpManifest {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotDumpLoadVersionHandoff {
+pub struct BucketDumpLoadVersionHandoff {
     pub previous_load_version: u64,
     pub next_load_version: u64,
     pub applied: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotDumpInstallMarker {
+pub struct BucketDumpInstallMarker {
     pub shard_id: ShardId,
     pub manifest_id: String,
     pub phase: String,
@@ -575,7 +602,7 @@ pub struct SlotDumpInstallMarker {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotDumpInstallPreflightReport {
+pub struct BucketDumpInstallPreflightReport {
     pub shard_id: ShardId,
     pub manifest_id: String,
     pub install_safe: bool,
@@ -602,23 +629,26 @@ pub struct SlotDumpInstallPreflightReport {
     #[serde(default)]
     pub missing_source_manifest_ids: Vec<String>,
     #[serde(default)]
-    pub source_manifest_slot_ids: Vec<u32>,
+    #[serde(rename = "source_manifest_slot_ids")]
+    pub source_manifest_bucket_ids: Vec<u32>,
     #[serde(default)]
-    pub source_slot_coverage_missing_slot_ids: Vec<u32>,
+    #[serde(rename = "source_slot_coverage_missing_slot_ids")]
+    pub source_bucket_coverage_missing_bucket_ids: Vec<u32>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotDumpMergedInstallReport {
+pub struct BucketDumpMergedInstallReport {
     pub shard_id: ShardId,
     pub manifest_id: String,
     pub source_manifest_ids: Vec<String>,
-    pub slot_ids: Vec<u32>,
-    pub preflight: SlotDumpInstallPreflightReport,
+    #[serde(rename = "slot_ids")]
+    pub bucket_ids: Vec<u32>,
+    pub preflight: BucketDumpInstallPreflightReport,
     pub rollback_marker_written: bool,
     pub prepare_marker_written: bool,
     pub install_marker_written: bool,
     pub commit_marker_written: bool,
-    pub load_version_handoff: Option<SlotDumpLoadVersionHandoff>,
+    pub load_version_handoff: Option<BucketDumpLoadVersionHandoff>,
     pub installed: bool,
     pub status_code: String,
     #[serde(default)]
@@ -626,7 +656,8 @@ pub struct SlotDumpMergedInstallReport {
     #[serde(default)]
     pub missing_source_manifest_ids: Vec<String>,
     #[serde(default)]
-    pub source_slot_coverage_missing_slot_ids: Vec<u32>,
+    #[serde(rename = "source_slot_coverage_missing_slot_ids")]
+    pub source_bucket_coverage_missing_bucket_ids: Vec<u32>,
     #[serde(default)]
     pub stale_object_conflict_count: usize,
     #[serde(default)]
@@ -634,18 +665,18 @@ pub struct SlotDumpMergedInstallReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotDumpFaultMatrixReport {
+pub struct BucketDumpFaultMatrixReport {
     pub shard_id: ShardId,
     pub manifest_id: String,
     pub production_ready_slice: bool,
     pub scenario_count: usize,
     pub passed_count: usize,
-    pub failed_scenarios: Vec<SlotDumpFaultScenarioReport>,
-    pub scenarios: Vec<SlotDumpFaultScenarioReport>,
+    pub failed_scenarios: Vec<BucketDumpFaultScenarioReport>,
+    pub scenarios: Vec<BucketDumpFaultScenarioReport>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotDumpFaultScenarioReport {
+pub struct BucketDumpFaultScenarioReport {
     pub scenario: String,
     pub passed: bool,
     pub expected_code: String,
@@ -655,7 +686,7 @@ pub struct SlotDumpFaultScenarioReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotDumpManifestChainIssue {
+pub struct BucketDumpManifestChainIssue {
     pub manifest_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_manifest_id: Option<String>,
@@ -663,29 +694,29 @@ pub struct SlotDumpManifestChainIssue {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotDumpManifestPrunePlan {
+pub struct BucketDumpManifestPrunePlan {
     pub shard_id: ShardId,
     pub retained_manifest_ids: Vec<String>,
     pub prunable_manifest_ids: Vec<String>,
     pub prunable_marker_manifest_ids: Vec<String>,
     pub blocked_manifest_ids: Vec<String>,
     #[serde(default)]
-    pub follower_blocks: Vec<SlotDumpFollowerRetentionBlock>,
+    pub follower_blocks: Vec<BucketDumpFollowerRetentionBlock>,
     #[serde(default)]
-    pub raft_snapshot_blocks: Vec<SlotDumpRaftSnapshotRetentionBlock>,
+    pub raft_snapshot_blocks: Vec<BucketDumpRaftSnapshotRetentionBlock>,
     pub reasons: Vec<String>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotDumpManifestPruneReport {
+pub struct BucketDumpManifestPruneReport {
     pub shard_id: ShardId,
-    pub plan: SlotDumpManifestPrunePlan,
+    pub plan: BucketDumpManifestPrunePlan,
     pub removed_manifest_ids: Vec<String>,
     pub removed_marker_files: usize,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotDumpInstallRollForwardReport {
+pub struct BucketDumpInstallRollForwardReport {
     pub shard_id: ShardId,
     pub manifest_id: String,
     pub interrupted_phase: String,
@@ -701,7 +732,7 @@ pub struct SlotDumpInstallRollForwardReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotDumpFollowerReplayCursor {
+pub struct BucketDumpFollowerReplayCursor {
     pub follower_id: String,
     pub shard_id: ShardId,
     pub oplog_sequence: u64,
@@ -709,7 +740,7 @@ pub struct SlotDumpFollowerReplayCursor {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotDumpRaftSnapshotRef {
+pub struct BucketDumpRaftSnapshotRef {
     pub snapshot_id: String,
     pub shard_id: ShardId,
     pub last_included_index: u64,
@@ -719,7 +750,7 @@ pub struct SlotDumpRaftSnapshotRef {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotDumpFollowerRetentionBlock {
+pub struct BucketDumpFollowerRetentionBlock {
     pub follower_id: String,
     pub manifest_id: String,
     pub manifest_oplog_sequence: u64,
@@ -730,7 +761,7 @@ pub struct SlotDumpFollowerRetentionBlock {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotDumpRaftSnapshotRetentionBlock {
+pub struct BucketDumpRaftSnapshotRetentionBlock {
     pub snapshot_id: String,
     pub manifest_id: String,
     pub manifest_oplog_sequence: u64,
@@ -745,13 +776,16 @@ pub struct SlotDumpRaftSnapshotRetentionBlock {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageLifecyclePlan {
     pub shard_id: ShardId,
-    pub dirty_slots: Vec<u32>,
-    pub selected_dump_slots: Vec<u32>,
+    #[serde(rename = "dirty_slots")]
+    pub dirty_buckets: Vec<u32>,
+    #[serde(rename = "selected_dump_slots")]
+    pub selected_dump_buckets: Vec<u32>,
     #[serde(default)]
     pub undumped_oplog_records: u64,
     #[serde(default)]
     pub dump_delayed: bool,
-    pub slot_summaries: Vec<SlotStorageSummary>,
+    #[serde(rename = "slot_summaries")]
+    pub bucket_summaries: Vec<BucketStorageSummary>,
     pub live_page_segment_ids: Vec<u64>,
     pub stale_page_segment_ids: Vec<u64>,
     #[serde(default)]
@@ -814,7 +848,8 @@ pub struct StoragePageGcDependencyPlan {
     #[serde(default)]
     pub live_ref_block_count: usize,
     #[serde(default)]
-    pub slot_dump_manifest_block_count: usize,
+    #[serde(rename = "slot_dump_manifest_block_count")]
+    pub bucket_dump_manifest_block_count: usize,
     #[serde(default)]
     pub shared_store_cursor_block_count: usize,
     #[serde(default)]
@@ -840,7 +875,8 @@ pub struct PublicStorageContract {
     pub stream: String,
     pub segment: String,
     pub band: String,
-    pub slot: String,
+    #[serde(rename = "slot")]
+    pub bucket: String,
     pub append_watermark: String,
     pub compaction_watermark: String,
     pub tombstone: String,
@@ -873,7 +909,7 @@ impl Default for PublicStorageContract {
             stream: text("Stream"),
             segment: text("Segment"),
             band: text("Band"),
-            slot: text("Slot"),
+            bucket: text("Slot"),
             append_watermark: text("AppendWatermark"),
             compaction_watermark: text("CompactionWatermark"),
             tombstone: text("Tombstone"),
@@ -895,7 +931,8 @@ pub struct PublicStorageFeatureShapes {
     pub stream_fields: Vec<String>,
     pub segment_fields: Vec<String>,
     pub band_fields: Vec<String>,
-    pub slot_fields: Vec<String>,
+    #[serde(rename = "slot_fields")]
+    pub bucket_fields: Vec<String>,
     pub append_watermark_fields: Vec<String>,
     pub compaction_watermark_fields: Vec<String>,
     pub tombstone_fields: Vec<String>,
@@ -966,7 +1003,7 @@ impl Default for PublicStorageFeatureShapes {
                 "reclaim_state",
                 "generation",
             ]),
-            slot_fields: public_storage_strings(&[
+            bucket_fields: public_storage_strings(&[
                 "slot_id",
                 "dirty_generation",
                 "object_refs",
@@ -1061,7 +1098,7 @@ pub struct StorageLifecycleReport {
     pub storage_reclaim_scope: StorageReclaimScope,
     pub plan: StorageLifecyclePlan,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dump_manifest: Option<SlotDumpManifest>,
+    pub dump_manifest: Option<BucketDumpManifest>,
     pub cache_entries_removed: usize,
     pub cache_disk_bytes_removed: u64,
     #[serde(default)]
@@ -1071,11 +1108,11 @@ pub struct StorageLifecycleReport {
     pub delayed_destroy_purged_segments: Vec<u64>,
     pub delayed_destroy_purged_bytes: u64,
     #[serde(default)]
-    pub manifest_prune_plan: SlotDumpManifestPrunePlan,
+    pub manifest_prune_plan: BucketDumpManifestPrunePlan,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub manifest_prune_report: Option<SlotDumpManifestPruneReport>,
+    pub manifest_prune_report: Option<BucketDumpManifestPruneReport>,
     #[serde(default)]
-    pub install_roll_forward_reports: Vec<SlotDumpInstallRollForwardReport>,
+    pub install_roll_forward_reports: Vec<BucketDumpInstallRollForwardReport>,
     #[serde(default)]
     pub object_lifecycle: StorageObjectLifecycleReport,
 }
@@ -1116,7 +1153,7 @@ impl Default for StorageLifecycleReport {
             cache_warmup: StorageCacheWarmupReport::default(),
             delayed_destroy_purged_segments: Vec::new(),
             delayed_destroy_purged_bytes: 0,
-            manifest_prune_plan: SlotDumpManifestPrunePlan::default(),
+            manifest_prune_plan: BucketDumpManifestPrunePlan::default(),
             manifest_prune_report: None,
             install_roll_forward_reports: Vec::new(),
             object_lifecycle: StorageObjectLifecycleReport::default(),
@@ -1197,7 +1234,7 @@ impl StorageLifecycleReport {
         put(
             &mut metrics,
             "segment_open_count",
-            plan.selected_dump_slots.len() as u64,
+            plan.selected_dump_buckets.len() as u64,
         );
         put(
             &mut metrics,
@@ -1245,9 +1282,9 @@ impl StorageLifecycleReport {
         put(
             &mut metrics,
             "slot_index_entry_count",
-            plan.slot_summaries
+            plan.bucket_summaries
                 .len()
-                .max(plan.selected_dump_slots.len()) as u64,
+                .max(plan.selected_dump_buckets.len()) as u64,
         );
         put(
             &mut metrics,
@@ -1564,7 +1601,8 @@ pub fn default_storage_safety_snapshot() -> StorageSafetySnapshot {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageAppendWatermarkSample {
     pub shard_id: ShardId,
-    pub slot_id: u32,
+    #[serde(rename = "slot_id")]
+    pub bucket_id: u32,
     pub log_index: u64,
     pub timestamp_ms: u64,
 }
@@ -1751,9 +1789,12 @@ pub struct StorageIndexSnapshot {
     pub page_index_entry_count: u64,
     pub block_index_entry_count: u64,
     pub object_index_entry_count: u64,
-    pub slot_index_entry_count: u64,
-    pub slot_object_ref_count: u64,
-    pub slot_page_ref_count: u64,
+    #[serde(rename = "slot_index_entry_count")]
+    pub bucket_index_entry_count: u64,
+    #[serde(rename = "slot_object_ref_count")]
+    pub bucket_object_ref_count: u64,
+    #[serde(rename = "slot_page_ref_count")]
+    pub bucket_page_ref_count: u64,
     pub page_address_count: u64,
     pub unreadable_page_refs: u64,
     pub checksum_mismatches: u64,
@@ -1775,9 +1816,9 @@ pub fn storage_index_snapshot_from_metrics(
         page_index_entry_count: metric(metrics, "page_index_entry_count"),
         block_index_entry_count: metric(metrics, "block_index_entry_count"),
         object_index_entry_count: metric(metrics, "object_index_entry_count"),
-        slot_index_entry_count: metric(metrics, "slot_index_entry_count"),
-        slot_object_ref_count: metric(metrics, "slot_object_ref_count"),
-        slot_page_ref_count: metric(metrics, "slot_page_ref_count"),
+        bucket_index_entry_count: metric(metrics, "slot_index_entry_count"),
+        bucket_object_ref_count: metric(metrics, "slot_object_ref_count"),
+        bucket_page_ref_count: metric(metrics, "slot_page_ref_count"),
         page_address_count: metric(metrics, "page_address_count"),
         unreadable_page_refs: metric(metrics, "unreadable_page_refs"),
         checksum_mismatches: metric(metrics, "checksum_mismatches"),
@@ -1831,8 +1872,9 @@ pub struct StorageBandSample {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorageSlotSample {
-    pub slot_id: u32,
+pub struct StorageBucketSample {
+    #[serde(rename = "slot_id")]
+    pub bucket_id: u32,
     pub dirty_generation: u64,
     pub object_refs: Vec<u64>,
     pub page_refs: Vec<StoragePageAddressSample>,
@@ -1863,7 +1905,8 @@ pub struct StorageTopologySnapshot {
     #[serde(default)]
     pub band_samples: Vec<StorageBandSample>,
     #[serde(default)]
-    pub slot_samples: Vec<StorageSlotSample>,
+    #[serde(rename = "slot_samples")]
+    pub bucket_samples: Vec<StorageBucketSample>,
 }
 
 pub fn storage_topology_snapshot_from_metrics(
@@ -1886,7 +1929,7 @@ pub fn storage_topology_snapshot_from_metrics(
         stream_samples: Vec::new(),
         segment_samples: Vec::new(),
         band_samples: Vec::new(),
-        slot_samples: Vec::new(),
+        bucket_samples: Vec::new(),
     }
 }
 
@@ -2510,17 +2553,22 @@ pub fn default_storage_reclaim_contract(
 pub struct StorageWalReclaimPlan {
     pub shard_id: ShardId,
     pub safe_to_reclaim: bool,
-    pub durable_slot_generation_frontier_oplog_sequence: u64,
-    pub durable_slot_generation_frontier_index_log_sequence: u64,
+    #[serde(rename = "durable_slot_generation_frontier_oplog_sequence")]
+    pub durable_bucket_generation_frontier_oplog_sequence: u64,
+    #[serde(rename = "durable_slot_generation_frontier_index_log_sequence")]
+    pub durable_bucket_generation_frontier_index_log_sequence: u64,
     pub retain_from_oplog_sequence: u64,
     pub retain_from_index_log_sequence: u64,
     pub current_oplog_sequence: u64,
     pub current_index_log_sequence: u64,
-    pub covered_slot_count: usize,
-    pub uncovered_slot_count: usize,
+    #[serde(rename = "covered_slot_count")]
+    pub covered_bucket_count: usize,
+    #[serde(rename = "uncovered_slot_count")]
+    pub uncovered_bucket_count: usize,
     pub follower_cursor_block_count: usize,
     pub raft_snapshot_block_count: usize,
-    pub missing_slot_generations: Vec<u32>,
+    #[serde(rename = "missing_slot_generations")]
+    pub missing_bucket_generations: Vec<u32>,
     pub retained_manifest_ids: Vec<String>,
     pub blocker_reasons: Vec<String>,
 }
@@ -2542,7 +2590,8 @@ pub struct StorageIndexGcReport {
     pub shard_id: ShardId,
     pub enabled: bool,
     pub applied: bool,
-    pub dirty_slots_committed_before_truncate: bool,
+    #[serde(rename = "dirty_slots_committed_before_truncate")]
+    pub dirty_buckets_committed_before_truncate: bool,
     pub bytes_threshold: u64,
     pub usage_ratio_trigger_basis_points: u64,
     pub usage_ratio_basis_points: u64,
@@ -2563,7 +2612,8 @@ pub struct StorageIndexGcReport {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageEvictionVictim {
-    pub routing_slot: u32,
+    #[serde(rename = "routing_slot")]
+    pub routing_bucket: u32,
     pub object_count: u64,
     pub logical_bytes: u64,
     pub physical_bytes: u64,
@@ -2614,7 +2664,8 @@ pub struct StorageMergedDumpLoadPolicyReport {
     pub index_gc_ready: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest_id: Option<String>,
-    pub manifest_slot_ids: Vec<u32>,
+    #[serde(rename = "manifest_slot_ids")]
+    pub manifest_bucket_ids: Vec<u32>,
     pub manifest_page_segment_ids: Vec<u64>,
     pub manifest_oplog_sequence: u64,
     pub manifest_index_log_sequence: u64,
@@ -2622,12 +2673,12 @@ pub struct StorageMergedDumpLoadPolicyReport {
     pub selected_replay_index_log_sequence: u64,
     pub lifecycle: StorageLifecycleReport,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub load_preflight: Option<SlotDumpInstallPreflightReport>,
+    pub load_preflight: Option<BucketDumpInstallPreflightReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_status: Option<Status>,
     pub boundary: StorageRecoveryBoundaryReport,
-    pub manifest_prune_plan: SlotDumpManifestPrunePlan,
-    pub install_roll_forward_reports: Vec<SlotDumpInstallRollForwardReport>,
+    pub manifest_prune_plan: BucketDumpManifestPrunePlan,
+    pub install_roll_forward_reports: Vec<BucketDumpInstallRollForwardReport>,
     pub evidence: Vec<String>,
     pub blockers: Vec<String>,
 }
@@ -2635,7 +2686,8 @@ pub struct StorageMergedDumpLoadPolicyReport {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageCacheWarmupReport {
     pub shard_id: ShardId,
-    pub selected_slots: Vec<u32>,
+    #[serde(rename = "selected_slots")]
+    pub selected_buckets: Vec<u32>,
     pub considered_page_refs: usize,
     pub skipped_page_refs: usize,
     pub already_cached_page_refs: usize,
@@ -2657,18 +2709,23 @@ pub struct StorageRecoveryBoundaryReport {
     pub selected_replay_oplog_sequence: u64,
     pub selected_replay_index_log_sequence: u64,
     pub orphan_page_segment_ids: Vec<u64>,
-    pub missing_dump_slot_ids: Vec<u32>,
+    #[serde(rename = "missing_dump_slot_ids")]
+    pub missing_dump_bucket_ids: Vec<u32>,
     pub stale_index_page_refs: Vec<StorageRecoveryPageError>,
     #[serde(default)]
-    pub interrupted_slot_dump_installs: Vec<SlotDumpInstallMarker>,
+    #[serde(rename = "interrupted_slot_dump_installs")]
+    pub interrupted_bucket_dump_installs: Vec<BucketDumpInstallMarker>,
     #[serde(default)]
-    pub prepared_slot_dump_install_count: usize,
+    #[serde(rename = "prepared_slot_dump_install_count")]
+    pub prepared_bucket_dump_install_count: usize,
     #[serde(default)]
-    pub installed_slot_dump_install_count: usize,
+    #[serde(rename = "installed_slot_dump_install_count")]
+    pub installed_bucket_dump_install_count: usize,
     #[serde(default)]
-    pub unknown_slot_dump_install_count: usize,
+    #[serde(rename = "unknown_slot_dump_install_count")]
+    pub unknown_bucket_dump_install_count: usize,
     #[serde(default)]
-    pub manifest_chain_issues: Vec<SlotDumpManifestChainIssue>,
+    pub manifest_chain_issues: Vec<BucketDumpManifestChainIssue>,
     #[serde(default)]
     pub owner_mismatch_page_refs: Vec<StorageRecoveryPageOwnerMismatch>,
     #[serde(default)]
@@ -2683,23 +2740,27 @@ pub struct StorageRecoveryBoundaryReport {
 pub struct StorageLifecycleRequest {
     pub shard_id: ShardId,
     #[serde(default)]
-    pub selected_dump_slots: Vec<u32>,
+    #[serde(rename = "selected_dump_slots")]
+    pub selected_dump_buckets: Vec<u32>,
     #[serde(default)]
-    pub max_dump_slots_per_round: usize,
+    #[serde(rename = "max_dump_slots_per_round")]
+    pub max_dump_buckets_per_round: usize,
     #[serde(default)]
     pub min_undumped_oplog_records: u64,
     #[serde(default)]
     pub purge_delayed_destroy: bool,
     #[serde(default)]
-    pub prune_slot_dump_manifests: bool,
+    #[serde(rename = "prune_slot_dump_manifests")]
+    pub prune_bucket_dump_manifests: bool,
     #[serde(default)]
-    pub roll_forward_slot_dump_installs: bool,
+    #[serde(rename = "roll_forward_slot_dump_installs")]
+    pub roll_forward_bucket_dump_installs: bool,
     #[serde(default)]
-    pub follower_replay_cursors: Vec<SlotDumpFollowerReplayCursor>,
+    pub follower_replay_cursors: Vec<BucketDumpFollowerReplayCursor>,
     #[serde(default)]
     pub page_gc_shared_store_cursors: Vec<StoragePageGcReplayCursor>,
     #[serde(default)]
-    pub page_gc_raft_snapshot_refs: Vec<SlotDumpRaftSnapshotRef>,
+    pub page_gc_raft_snapshot_refs: Vec<BucketDumpRaftSnapshotRef>,
     #[serde(default)]
     pub page_gc_checkpoint_floor_segment_id: Option<u64>,
     #[serde(default)]
@@ -2732,7 +2793,8 @@ pub struct StorageManagerCycleRequest {
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_index_gc: bool,
     #[serde(default)]
-    pub max_dump_slots_per_round: usize,
+    #[serde(rename = "max_dump_slots_per_round")]
+    pub max_dump_buckets_per_round: usize,
     #[serde(default)]
     pub min_undumped_oplog_records: u64,
     #[serde(default)]
@@ -2746,19 +2808,22 @@ pub struct StorageManagerCycleRequest {
     #[serde(default)]
     pub eviction_delete_drop: bool,
     #[serde(default)]
-    pub max_expire_hot_slots_per_round: usize,
+    #[serde(rename = "max_expire_hot_slots_per_round")]
+    pub max_expire_hot_buckets_per_round: usize,
     #[serde(default)]
-    pub max_expire_cold_slots_per_round: usize,
+    #[serde(rename = "max_expire_cold_slots_per_round")]
+    pub max_expire_cold_buckets_per_round: usize,
     #[serde(default)]
     pub expire_hot_cursor: Option<String>,
     #[serde(default)]
     pub expire_cold_cursor: Option<String>,
     #[serde(default)]
-    pub load_cold_slots_for_expire: bool,
+    #[serde(rename = "load_cold_slots_for_expire")]
+    pub load_cold_buckets_for_expire: bool,
     #[serde(default)]
-    pub follower_replay_cursors: Vec<SlotDumpFollowerReplayCursor>,
+    pub follower_replay_cursors: Vec<BucketDumpFollowerReplayCursor>,
     #[serde(default)]
-    pub raft_snapshot_refs: Vec<SlotDumpRaftSnapshotRef>,
+    pub raft_snapshot_refs: Vec<BucketDumpRaftSnapshotRef>,
     #[serde(default)]
     pub page_gc_shared_store_cursors: Vec<StoragePageGcReplayCursor>,
     #[serde(default)]
@@ -2774,7 +2839,8 @@ pub struct StorageManagerCycleRequest {
     #[serde(default)]
     pub index_gc_max_entries_per_round: usize,
     #[serde(default)]
-    pub index_gc_commit_dirty_slots_before_truncation: bool,
+    #[serde(rename = "index_gc_commit_dirty_slots_before_truncation")]
+    pub index_gc_commit_dirty_buckets_before_truncation: bool,
 }
 
 impl Default for StorageManagerCycleRequest {
@@ -2789,18 +2855,18 @@ impl Default for StorageManagerCycleRequest {
             enable_page_reclaim: true,
             enable_page_compaction: true,
             enable_index_gc: true,
-            max_dump_slots_per_round: 0,
+            max_dump_buckets_per_round: 0,
             min_undumped_oplog_records: 0,
             warm_cache: false,
             eviction_memory_pressure_threshold: default_storage_manager_eviction_threshold(),
             eviction_batch_limit: 0,
             eviction_dump_before_evict: false,
             eviction_delete_drop: false,
-            max_expire_hot_slots_per_round: 0,
-            max_expire_cold_slots_per_round: 0,
+            max_expire_hot_buckets_per_round: 0,
+            max_expire_cold_buckets_per_round: 0,
             expire_hot_cursor: None,
             expire_cold_cursor: None,
-            load_cold_slots_for_expire: false,
+            load_cold_buckets_for_expire: false,
             follower_replay_cursors: Vec::new(),
             raft_snapshot_refs: Vec::new(),
             page_gc_shared_store_cursors: Vec::new(),
@@ -2810,7 +2876,7 @@ impl Default for StorageManagerCycleRequest {
             index_gc_index_log_bytes_threshold: 0,
             index_gc_usage_ratio_trigger_basis_points: 0,
             index_gc_max_entries_per_round: 0,
-            index_gc_commit_dirty_slots_before_truncation: true,
+            index_gc_commit_dirty_buckets_before_truncation: true,
         }
     }
 }
@@ -2859,15 +2925,18 @@ pub struct StorageManagerStageReport {
     #[serde(default)]
     pub stale_bytes: u64,
     #[serde(default)]
-    pub selected_slots: Vec<u32>,
+    #[serde(rename = "selected_slots")]
+    pub selected_buckets: Vec<u32>,
     #[serde(default)]
     pub selected_page_segment_ids: Vec<u64>,
     #[serde(default)]
-    pub dirty_slot_count: usize,
+    #[serde(rename = "dirty_slot_count")]
+    pub dirty_bucket_count: usize,
     #[serde(default)]
     pub undumped_oplog_records: u64,
     #[serde(default)]
-    pub dumped_slot_count: usize,
+    #[serde(rename = "dumped_slot_count")]
+    pub dumped_bucket_count: usize,
     #[serde(default)]
     pub wal_records_removed: usize,
     #[serde(default)]
@@ -2917,14 +2986,16 @@ pub struct StorageManagerStageReport {
     #[serde(default)]
     pub pressure_after: u64,
     #[serde(default)]
-    pub metrics_slot_count: usize,
+    #[serde(rename = "metrics_slot_count")]
+    pub metrics_bucket_count: usize,
     #[serde(default)]
     pub metrics_page_ref_count: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageManagerPressureSignals {
-    pub dirty_slot_count: usize,
+    #[serde(rename = "dirty_slot_count")]
+    pub dirty_bucket_count: usize,
     pub undumped_wal_records: u64,
     pub wal_bytes: u64,
     pub index_log_bytes: u64,
@@ -2934,7 +3005,8 @@ pub struct StorageManagerPressureSignals {
     pub memory_cache_bytes: u64,
     pub disk_cache_bytes: u64,
     pub memory_cache_pressure_score: u64,
-    pub expired_slot_object_scan_debt: usize,
+    #[serde(rename = "expired_slot_object_scan_debt")]
+    pub expired_bucket_object_scan_debt: usize,
     pub delayed_destroy_segment_count: usize,
     pub delayed_destroy_bytes: u64,
     pub follower_cursor_retention_blockers: usize,
@@ -2983,8 +3055,10 @@ pub struct StorageManagerCycleReport {
 pub struct StorageDataStructureApiParityReport {
     pub shard_id: ShardId,
     pub ready: bool,
-    pub slot_object_page_authority_ready: bool,
-    pub slot_store_layout_api_ready: bool,
+    #[serde(rename = "slot_object_page_authority_ready")]
+    pub bucket_object_page_authority_ready: bool,
+    #[serde(rename = "slot_store_layout_api_ready")]
+    pub bucket_store_layout_api_ready: bool,
     pub object_manager_runtime_api_ready: bool,
     pub block_address_api_ready: bool,
     pub block_store_segment_api_ready: bool,
@@ -2993,7 +3067,8 @@ pub struct StorageDataStructureApiParityReport {
     pub storage_manager_phase_api_ready: bool,
     pub storage_manager_pressure_api_ready: bool,
     pub storage_manager_merged_dump_load_api_ready: bool,
-    pub slot_count: usize,
+    #[serde(rename = "slot_count")]
+    pub bucket_count: usize,
     pub page_index_count: usize,
     pub block_index_count: u64,
     pub stream_band_count: u64,
@@ -3041,7 +3116,8 @@ pub struct StorageManagerLoopReport {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageProductionReadinessPolicy {
     #[serde(default)]
-    pub max_dirty_slots: Option<usize>,
+    #[serde(rename = "max_dirty_slots")]
+    pub max_dirty_buckets: Option<usize>,
     #[serde(default)]
     pub max_stale_page_segments: Option<usize>,
     #[serde(default)]
@@ -3049,7 +3125,8 @@ pub struct StorageProductionReadinessPolicy {
     #[serde(default)]
     pub max_undumped_oplog_records: Option<u64>,
     #[serde(default)]
-    pub require_slot_dump_manifest: bool,
+    #[serde(rename = "require_slot_dump_manifest")]
+    pub require_bucket_dump_manifest: bool,
     #[serde(default)]
     pub block_on_warnings: bool,
 }
@@ -3069,7 +3146,8 @@ pub struct StorageProductionReadinessReport {
     pub production_ready: bool,
     pub blockers: Vec<String>,
     pub warnings: Vec<String>,
-    pub dirty_slot_count: usize,
+    #[serde(rename = "dirty_slot_count")]
+    pub dirty_bucket_count: usize,
     pub stale_page_segment_count: usize,
     pub orphan_page_segment_count: usize,
     #[serde(default)]
@@ -3079,14 +3157,19 @@ pub struct StorageProductionReadinessReport {
     pub owner_mismatch_page_ref_count: usize,
     pub missing_owner_page_ref_count: u64,
     pub reused_object_id_conflict_count: u64,
-    pub interrupted_slot_dump_install_count: usize,
+    #[serde(rename = "interrupted_slot_dump_install_count")]
+    pub interrupted_bucket_dump_install_count: usize,
     #[serde(default)]
-    pub prepared_slot_dump_install_count: usize,
+    #[serde(rename = "prepared_slot_dump_install_count")]
+    pub prepared_bucket_dump_install_count: usize,
     #[serde(default)]
-    pub installed_slot_dump_install_count: usize,
+    #[serde(rename = "installed_slot_dump_install_count")]
+    pub installed_bucket_dump_install_count: usize,
     #[serde(default)]
-    pub unknown_slot_dump_install_count: usize,
-    pub slot_dump_manifest_count: usize,
+    #[serde(rename = "unknown_slot_dump_install_count")]
+    pub unknown_bucket_dump_install_count: usize,
+    #[serde(rename = "slot_dump_manifest_count")]
+    pub bucket_dump_manifest_count: usize,
     pub cache_memory_bytes: u64,
     pub cache_disk_bytes: u64,
     pub page_store_bytes_written: u64,
@@ -3151,7 +3234,8 @@ pub struct StoragePageFormatCompatibilityReport {
     pub cxx_page_header_compatible: bool,
     pub checksum_protected: bool,
     pub object_ids_embedded: bool,
-    pub routing_slots_embedded: bool,
+    #[serde(rename = "routing_slots_embedded")]
+    pub routing_buckets_embedded: bool,
     pub compression_supported: bool,
     pub active_bands: u64,
     pub sealed_bands: u64,
@@ -3166,8 +3250,9 @@ pub struct StoragePageFormatCompatibilityReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorageCacheSlotSummary {
-    pub routing_slot: u32,
+pub struct StorageCacheBucketSummary {
+    #[serde(rename = "routing_slot")]
+    pub routing_bucket: u32,
     pub entry_count: usize,
     pub memory_bytes: u64,
     pub disk_bytes: u64,
@@ -3182,13 +3267,15 @@ pub struct StorageCacheInspectionReport {
     pub shard_id: ShardId,
     pub stats: CacheStats,
     pub entries: Vec<CacheEntryInfo>,
-    pub slot_summaries: Vec<StorageCacheSlotSummary>,
+    #[serde(rename = "slot_summaries")]
+    pub bucket_summaries: Vec<StorageCacheBucketSummary>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorageCacheInvalidateSlotRequest {
+pub struct StorageCacheInvalidateBucketRequest {
     pub shard_id: ShardId,
-    pub routing_slot: u32,
+    #[serde(rename = "routing_slot")]
+    pub routing_bucket: u32,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]

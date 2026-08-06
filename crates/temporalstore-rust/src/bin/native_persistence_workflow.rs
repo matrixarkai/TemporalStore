@@ -83,7 +83,8 @@ struct ReadProbe {
     cold_object_count: u64,
     mixed_residency_object_count: u64,
     dirty_object_count: u64,
-    cache_slot_entry_count: usize,
+    #[serde(rename = "cache_slot_entry_count")]
+    cache_bucket_entry_count: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -108,7 +109,8 @@ struct ResidencyProbe {
     cold_object_count: u64,
     mixed_residency_object_count: u64,
     dirty_object_count: u64,
-    cache_slot_entry_count: usize,
+    #[serde(rename = "cache_slot_entry_count")]
+    cache_bucket_entry_count: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -574,15 +576,15 @@ fn run_gradual_async_warmup_with_serving(
     let (done_tx, done_rx) = mpsc::channel();
     let start = Instant::now();
     let handle = thread::spawn(move || {
-        let mut slots = engine
-            .slot_storage_summaries(SHARD_ID)
+        let mut buckets = engine
+            .bucket_storage_summaries(SHARD_ID)
             .into_iter()
-            .map(|summary| summary.routing_slot)
+            .map(|summary| summary.routing_bucket)
             .collect::<Vec<_>>();
-        slots.sort_unstable();
-        slots.dedup();
+        buckets.sort_unstable();
+        buckets.dedup();
         let mut reports = Vec::new();
-        for (index, batch) in slots.chunks(batch_size.max(1)).enumerate() {
+        for (index, batch) in buckets.chunks(batch_size.max(1)).enumerate() {
             if index == 0 {
                 let _ = started_tx.send(());
             }
@@ -705,7 +707,7 @@ fn read_context_probe(name: &str, engine: &TemporalEngine) -> ReadProbe {
         cold_object_count: residency.cold_object_count,
         mixed_residency_object_count: residency.mixed_residency_object_count,
         dirty_object_count: residency.dirty_object_count,
-        cache_slot_entry_count: residency.cache_slot_entry_count,
+        cache_bucket_entry_count: residency.cache_bucket_entry_count,
     }
 }
 
@@ -726,11 +728,11 @@ fn residency_probe(name: &str, engine: &TemporalEngine) -> ResidencyProbe {
         .iter()
         .filter(|entry| entry.disk_bytes > 0)
         .count();
-    let context_slots = context_routing_slots(engine);
+    let context_buckets = context_routing_buckets(engine);
     let context_entries = cache_report
         .entries
         .iter()
-        .filter(|entry| is_context_cache_entry(entry, &context_slots))
+        .filter(|entry| is_context_cache_entry(entry, &context_buckets))
         .collect::<Vec<_>>();
     ResidencyProbe {
         name: name.to_string(),
@@ -759,11 +761,11 @@ fn residency_probe(name: &str, engine: &TemporalEngine) -> ResidencyProbe {
         cold_object_count: object_runtime.cold_object_count,
         mixed_residency_object_count: object_runtime.mixed_residency_object_count,
         dirty_object_count: object_runtime.dirty_object_count,
-        cache_slot_entry_count: cache_report.entries.len(),
+        cache_bucket_entry_count: cache_report.entries.len(),
     }
 }
 
-fn context_routing_slots(engine: &TemporalEngine) -> BTreeSet<u32> {
+fn context_routing_buckets(engine: &TemporalEngine) -> BTreeSet<u32> {
     [
         format!("ctx:node:{TENANT}:{NODE}"),
         format!("ctx:event:{TENANT}:{NODE}"),
@@ -772,20 +774,20 @@ fn context_routing_slots(engine: &TemporalEngine) -> BTreeSet<u32> {
         format!("ctx:embedding:{TENANT}:{NODE}"),
     ]
     .into_iter()
-    .map(|key| engine.routing_slot_for_key(SHARD_ID, &key))
+    .map(|key| engine.routing_bucket_for_key(SHARD_ID, &key))
     .collect()
 }
 
 fn is_context_cache_entry(
     entry: &matrixcache::CacheEntryInfo,
-    context_slots: &BTreeSet<u32>,
+    context_buckets: &BTreeSet<u32>,
 ) -> bool {
     entry.namespace.contains("context")
         || entry.record_key.starts_with("ctx:")
         || entry.selector.contains("ctx:")
         || entry
             .routing_slot
-            .map(|slot| context_slots.contains(&slot))
+            .map(|bucket| context_buckets.contains(&bucket))
             .unwrap_or(false)
 }
 

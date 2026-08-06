@@ -7,8 +7,8 @@ pub(crate) fn execute_on_shard(
     feature_max_size: usize,
     async_storage: bool,
     shard_id: ShardId,
-    start_routing_slot: u32,
-    end_routing_slot: u32,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
     shard: &mut ShardState,
     command: Command,
 ) -> ExecuteOutcome {
@@ -56,17 +56,17 @@ pub(crate) fn execute_on_shard(
         Command::StringSet { key, value } => {
             remove_if_expired(shard, &key);
             let object_id = stable_page_object_id(shard_id, "string", &key, None);
-            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
+            let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             if let Ok(address) = append_value(
                 cache,
                 page_store,
                 shard_id,
                 &value,
                 Some(object_id),
-                Some(routing_slot),
+                Some(routing_bucket),
                 async_storage,
             ) {
-                upsert_slot_index_page(
+                upsert_bucket_index_page(
                     shard,
                     shard_id,
                     "string",
@@ -84,17 +84,17 @@ pub(crate) fn execute_on_shard(
         Command::StringSetEx { key, value, ttl_ms } => {
             remove_if_expired(shard, &key);
             let object_id = stable_page_object_id(shard_id, "string", &key, None);
-            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
+            let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             if let Ok(address) = append_value(
                 cache,
                 page_store,
                 shard_id,
                 &value,
                 Some(object_id),
-                Some(routing_slot),
+                Some(routing_bucket),
                 async_storage,
             ) {
-                upsert_slot_index_page(
+                upsert_bucket_index_page(
                     shard,
                     shard_id,
                     "string",
@@ -132,17 +132,17 @@ pub(crate) fn execute_on_shard(
             };
             if should_set {
                 let object_id = stable_page_object_id(shard_id, "string", &key, None);
-                let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
+                let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
                 if let Ok(address) = append_value(
                     cache,
                     page_store,
                     shard_id,
                     &value,
                     Some(object_id),
-                    Some(routing_slot),
+                    Some(routing_bucket),
                     async_storage,
                 ) {
-                    upsert_slot_index_page(
+                    upsert_bucket_index_page(
                         shard,
                         shard_id,
                         "string",
@@ -182,14 +182,14 @@ pub(crate) fn execute_on_shard(
             }
             cached_response(cache, CacheKey::string(shard_id, &key), || {
                 CommandResponse::Bytes {
-                    value: read_slot_index_value(
+                    value: read_bucket_index_value(
                         cache, page_store, shard_id, shard, "string", &key, None,
                     ),
                 }
             })
         }
         Command::StringDelete { key } => {
-            mutated |= mark_slot_index_object_deleted(shard, &key);
+            mutated |= mark_bucket_index_object_deleted(shard, &key);
             mutated |= shard.strings.remove(&key).is_some();
             let _ = cache.invalidate(&CacheKey::string(shard_id, &key));
             CommandResponse::Empty
@@ -197,17 +197,17 @@ pub(crate) fn execute_on_shard(
         Command::HashSet { key, field, value } => {
             remove_if_expired(shard, &key);
             let object_id = stable_page_object_id(shard_id, "hash", &key, Some(&field));
-            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
+            let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             if let Ok(address) = append_value(
                 cache,
                 page_store,
                 shard_id,
                 &value,
                 Some(object_id),
-                Some(routing_slot),
+                Some(routing_bucket),
                 async_storage,
             ) {
-                upsert_slot_index_page(
+                upsert_bucket_index_page(
                     shard,
                     shard_id,
                     "hash",
@@ -237,7 +237,7 @@ pub(crate) fn execute_on_shard(
             }
             cached_response(cache, CacheKey::hash(shard_id, &key, &field), || {
                 CommandResponse::Bytes {
-                    value: read_slot_index_value(
+                    value: read_bucket_index_value(
                         cache,
                         page_store,
                         shard_id,
@@ -273,7 +273,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::HashMultiSet { key, entries } => {
             remove_if_expired(shard, &key);
-            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
+            let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             let mut applied = Vec::with_capacity(entries.len());
             for (field, value) in entries {
                 let object_id = stable_page_object_id(shard_id, "hash", &key, Some(&field));
@@ -283,10 +283,10 @@ pub(crate) fn execute_on_shard(
                     shard_id,
                     &value,
                     Some(object_id),
-                    Some(routing_slot),
+                    Some(routing_bucket),
                     async_storage,
                 ) {
-                    upsert_slot_index_page(
+                    upsert_bucket_index_page(
                         shard,
                         shard_id,
                         "hash",
@@ -314,7 +314,7 @@ pub(crate) fn execute_on_shard(
             increment,
         } => {
             remove_if_expired(shard, &key);
-            let current = read_slot_index_value(
+            let current = read_bucket_index_value(
                 cache,
                 page_store,
                 shard_id,
@@ -332,14 +332,14 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 value.to_string().as_bytes(),
                 Some(stable_page_object_id(shard_id, "hash", &key, Some(&field))),
-                Some(page_routing_slot(
+                Some(page_routing_bucket(
                     &key,
-                    start_routing_slot,
-                    end_routing_slot,
+                    start_routing_bucket,
+                    end_routing_bucket,
                 )),
                 async_storage,
             ) {
-                upsert_slot_index_page(
+                upsert_bucket_index_page(
                     shard,
                     shard_id,
                     "hash",
@@ -369,7 +369,7 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            let entries = slot_index_component_page_addresses(shard, "hash", &key)
+            let entries = bucket_index_component_page_addresses(shard, "hash", &key)
                 .into_iter()
                 .filter_map(|(field, address)| {
                     read_page_bytes(cache, page_store, shard_id, &address)
@@ -388,11 +388,11 @@ pub(crate) fn execute_on_shard(
                 };
             }
             CommandResponse::Integer {
-                value: slot_index_component_page_addresses(shard, "hash", &key).len() as i64,
+                value: bucket_index_component_page_addresses(shard, "hash", &key).len() as i64,
             }
         }
         Command::HashDelete { key, field } => {
-            mutated |= mark_slot_index_page_deleted(shard, "hash", &key, Some(field.as_str()));
+            mutated |= mark_bucket_index_page_deleted(shard, "hash", &key, Some(field.as_str()));
             if let Some(fields) = shard.hashes.get_mut(&key) {
                 mutated |= fields.remove(&field).is_some();
             }
@@ -403,17 +403,17 @@ pub(crate) fn execute_on_shard(
             remove_if_expired(shard, &key);
             let member_component = hex::encode(&member);
             let object_id = stable_page_object_id(shard_id, "set", &key, Some(&member_component));
-            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
+            let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             if let Ok(address) = append_value(
                 cache,
                 page_store,
                 shard_id,
                 &member,
                 Some(object_id),
-                Some(routing_slot),
+                Some(routing_bucket),
                 async_storage,
             ) {
-                upsert_slot_index_page(
+                upsert_bucket_index_page(
                     shard,
                     shard_id,
                     "set",
@@ -444,7 +444,7 @@ pub(crate) fn execute_on_shard(
                 };
             }
             cached_response(cache, CacheKey::set_members(shard_id, &key), || {
-                let members = slot_index_component_page_addresses(shard, "set", &key)
+                let members = bucket_index_component_page_addresses(shard, "set", &key)
                     .into_iter()
                     .filter_map(|(_, address)| {
                         read_page_bytes(cache, page_store, shard_id, &address)
@@ -455,7 +455,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::SetRemove { key, member } => {
             let member_component = hex::encode(&member);
-            mutated |= mark_slot_index_page_deleted(shard, "set", &key, Some(&member_component));
+            mutated |= mark_bucket_index_page_deleted(shard, "set", &key, Some(&member_component));
             if let Some(set) = shard.sets.get_mut(&key) {
                 mutated |= set.remove(&member).is_some();
             }
@@ -465,11 +465,11 @@ pub(crate) fn execute_on_shard(
         Command::FeatureAppend { key, points } => {
             remove_if_expired(shard, &key);
             let series = shard.features.entry(key.clone()).or_default();
-            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
+            let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             let points = sorted_feature_points(points);
             // feature_append_chunks_and_persists_timestamped_kv_pages: append each
             // timestamped feature point through the page-backed KV layout, then
-            // publish the resulting page addresses into the slot index below.
+            // publish the resulting page addresses into the bucket index below.
             if let Ok(addresses) = append_timestamped_kv_pages(
                 cache,
                 page_store,
@@ -477,7 +477,7 @@ pub(crate) fn execute_on_shard(
                 "feature",
                 &key,
                 points,
-                routing_slot,
+                routing_bucket,
                 async_storage,
             ) {
                 for (timestamp_ms, address) in addresses {
@@ -493,7 +493,7 @@ pub(crate) fn execute_on_shard(
                 }
             }
             let live_addresses = series.values().cloned().collect::<Vec<_>>();
-            sync_slot_index_object_pages(shard, shard_id, "feature", &key, live_addresses, mutated);
+            sync_bucket_index_object_pages(shard, shard_id, "feature", &key, live_addresses, mutated);
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
         }
@@ -504,7 +504,7 @@ pub(crate) fn execute_on_shard(
         } => {
             remove_if_expired(shard, &key);
             let series = shard.features.entry(key.clone()).or_default();
-            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
+            let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             let mut accepted_points = Vec::new();
             let mut accepted_timestamps = BTreeSet::new();
             for point in sorted_feature_points(points) {
@@ -529,7 +529,7 @@ pub(crate) fn execute_on_shard(
                     "feature",
                     &key,
                     accepted_points,
-                    routing_slot,
+                    routing_bucket,
                     async_storage,
                 ) {
                     for (timestamp_ms, address) in addresses {
@@ -547,7 +547,7 @@ pub(crate) fn execute_on_shard(
                 }
             }
             let live_addresses = series.values().cloned().collect::<Vec<_>>();
-            sync_slot_index_object_pages(shard, shard_id, "feature", &key, live_addresses, mutated);
+            sync_bucket_index_object_pages(shard, shard_id, "feature", &key, live_addresses, mutated);
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Integer {
                 value: if mutated { 1 } else { 0 },
@@ -639,7 +639,7 @@ pub(crate) fn execute_on_shard(
         } => {
             remove_if_expired(shard, &key);
             let series = shard.features.entry(key.clone()).or_default();
-            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
+            let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             let replaced = series
                 .range(start_ms..=end_ms)
                 .map(|(timestamp_ms, _)| *timestamp_ms)
@@ -656,7 +656,7 @@ pub(crate) fn execute_on_shard(
                 "feature",
                 &key,
                 points,
-                routing_slot,
+                routing_bucket,
                 async_storage,
             ) {
                 for (timestamp_ms, address) in addresses {
@@ -673,13 +673,13 @@ pub(crate) fn execute_on_shard(
                 }
             }
             let live_addresses = series.values().cloned().collect::<Vec<_>>();
-            sync_slot_index_object_pages(shard, shard_id, "feature", &key, live_addresses, mutated);
+            sync_bucket_index_object_pages(shard, shard_id, "feature", &key, live_addresses, mutated);
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
         }
         Command::FeatureDelete { key } => {
             mutated = shard.features.remove(&key).is_some();
-            mutated |= mark_slot_index_object_deleted(shard, &key);
+            mutated |= mark_bucket_index_object_deleted(shard, &key);
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
         }
@@ -719,7 +719,7 @@ pub(crate) fn execute_on_shard(
         Command::SequenceAdd { key, rows } => {
             remove_if_expired(shard, &key);
             let series = shard.sequences.entry(key.clone()).or_default();
-            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
+            let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             let points = rows
                 .into_iter()
                 .filter_map(|row| {
@@ -737,7 +737,7 @@ pub(crate) fn execute_on_shard(
                 "sequence",
                 &key,
                 points,
-                routing_slot,
+                routing_bucket,
                 async_storage,
             ) {
                 for (timestamp_ms, address) in addresses {
@@ -753,7 +753,7 @@ pub(crate) fn execute_on_shard(
                 }
             }
             let live_addresses = series.values().cloned().collect::<Vec<_>>();
-            sync_slot_index_object_pages(
+            sync_bucket_index_object_pages(
                 shard,
                 shard_id,
                 "sequence",
@@ -828,7 +828,7 @@ pub(crate) fn execute_on_shard(
             instance,
         } => {
             remove_if_expired(shard, &key);
-            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
+            let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             if let Ok(addresses) = append_timestamped_kv_pages(
                 cache,
                 page_store,
@@ -839,7 +839,7 @@ pub(crate) fn execute_on_shard(
                     timestamp_ms,
                     value: instance,
                 }],
-                routing_slot,
+                routing_bucket,
                 async_storage,
             ) {
                 let address = addresses
@@ -867,7 +867,7 @@ pub(crate) fn execute_on_shard(
                 .get(&key)
                 .map(|series| series.values().cloned().collect::<Vec<_>>())
                 .unwrap_or_default();
-            sync_slot_index_object_pages(shard, shard_id, "ips", &key, live_addresses, mutated);
+            sync_bucket_index_object_pages(shard, shard_id, "ips", &key, live_addresses, mutated);
             CommandResponse::Empty
         }
         Command::IpsAddWithOptions {
@@ -891,7 +891,7 @@ pub(crate) fn execute_on_shard(
                     };
                 }
             }
-            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
+            let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             if let Ok(addresses) = append_timestamped_kv_pages(
                 cache,
                 page_store,
@@ -902,7 +902,7 @@ pub(crate) fn execute_on_shard(
                     timestamp_ms,
                     value: instance,
                 }],
-                routing_slot,
+                routing_bucket,
                 async_storage,
             ) {
                 let address = addresses
@@ -937,14 +937,14 @@ pub(crate) fn execute_on_shard(
                 .get(&key)
                 .map(|series| series.values().cloned().collect::<Vec<_>>())
                 .unwrap_or_default();
-            sync_slot_index_object_pages(shard, shard_id, "ips", &key, live_addresses, mutated);
+            sync_bucket_index_object_pages(shard, shard_id, "ips", &key, live_addresses, mutated);
             CommandResponse::Integer {
                 value: if mutated { 1 } else { 0 },
             }
         }
         Command::IpsLoad { key, points } => {
             remove_if_expired(shard, &key);
-            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
+            let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             let points = sorted_feature_points(points);
             let mut loaded = 0i64;
             if let Ok(addresses) = append_timestamped_kv_pages(
@@ -954,7 +954,7 @@ pub(crate) fn execute_on_shard(
                 "ips",
                 &key,
                 points,
-                routing_slot,
+                routing_bucket,
                 async_storage,
             ) {
                 for (timestamp_ms, address) in addresses {
@@ -981,7 +981,7 @@ pub(crate) fn execute_on_shard(
                 .get(&key)
                 .map(|series| series.values().cloned().collect::<Vec<_>>())
                 .unwrap_or_default();
-            sync_slot_index_object_pages(shard, shard_id, "ips", &key, live_addresses, mutated);
+            sync_bucket_index_object_pages(shard, shard_id, "ips", &key, live_addresses, mutated);
             CommandResponse::Integer { value: loaded }
         }
         Command::IpsQueryLast { key, count } => {
@@ -1084,7 +1084,7 @@ pub(crate) fn execute_on_shard(
                 .get(&key)
                 .map(|series| series.values().cloned().collect::<Vec<_>>())
                 .unwrap_or_default();
-            sync_slot_index_object_pages(shard, shard_id, "ips", &key, live_addresses, mutated);
+            sync_bucket_index_object_pages(shard, shard_id, "ips", &key, live_addresses, mutated);
             CommandResponse::Integer {
                 value: if mutated { 1 } else { 0 },
             }
@@ -1093,7 +1093,7 @@ pub(crate) fn execute_on_shard(
             mutated = shard.ips.remove(&key).is_some();
             mutated |= shard.ips_meta.remove(&key).is_some();
             shard.ips_request_ids.remove(&key);
-            mutated |= mark_slot_index_object_deleted(shard, &key);
+            mutated |= mark_bucket_index_object_deleted(shard, &key);
             CommandResponse::Integer {
                 value: if mutated { 1 } else { 0 },
             }
@@ -1259,8 +1259,8 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 shard,
                 &key,
-                start_routing_slot,
-                end_routing_slot,
+                start_routing_bucket,
+                end_routing_bucket,
                 async_storage,
             );
             mutated = true;
@@ -1295,8 +1295,8 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 shard,
                 &key,
-                start_routing_slot,
-                end_routing_slot,
+                start_routing_bucket,
+                end_routing_bucket,
                 async_storage,
             );
             mutated = true;
@@ -1435,8 +1435,8 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 shard,
                 &key,
-                start_routing_slot,
-                end_routing_slot,
+                start_routing_bucket,
+                end_routing_bucket,
                 async_storage,
             );
             mutated = true;
@@ -1465,8 +1465,8 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 shard,
                 &key,
-                start_routing_slot,
-                end_routing_slot,
+                start_routing_bucket,
+                end_routing_bucket,
                 async_storage,
             );
             mutated = true;
@@ -1689,7 +1689,7 @@ pub(crate) fn execute_on_shard(
             let object_key = context_node_key(tenant_hash, node.node_hash);
             let object_id =
                 stable_page_object_id(shard_id, "hash", &object_key, Some(CONTEXT_NODE_FIELD));
-            let routing_slot = page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+            let routing_bucket = page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
             let bytes = context_bytes(&node);
             if let Ok(address) = append_value(
                 cache,
@@ -1697,7 +1697,7 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 &bytes,
                 Some(object_id),
-                Some(routing_slot),
+                Some(routing_bucket),
                 async_storage,
             ) {
                 shard
@@ -1765,8 +1765,8 @@ pub(crate) fn execute_on_shard(
             let series = shard.context_events.entry(object_key.clone()).or_default();
             if !(first_write_only && series.contains_key(&timeline_key)) {
                 let value = context_bytes(&event);
-                let routing_slot =
-                    page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+                let routing_bucket =
+                    page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
                 if let Ok(addresses) = append_timestamped_kv_pages(
                     cache,
                     page_store,
@@ -1777,7 +1777,7 @@ pub(crate) fn execute_on_shard(
                         timestamp_ms: timeline_key,
                         value,
                     }],
-                    routing_slot,
+                    routing_bucket,
                     async_storage && !cold_storage,
                 ) {
                     for (timestamp_ms, address) in addresses {
@@ -1795,8 +1795,8 @@ pub(crate) fn execute_on_shard(
                 tenant_hash,
                 node_hash,
                 &object_key,
-                start_routing_slot,
-                end_routing_slot,
+                start_routing_bucket,
+                end_routing_bucket,
                 async_storage,
             ) {
                 mutated = true;
@@ -1824,8 +1824,8 @@ pub(crate) fn execute_on_shard(
                 .or_default();
             if !(first_write_only && event_series.contains_key(&event_timeline_key)) {
                 let value = context_bytes(&event);
-                let routing_slot =
-                    page_routing_slot(&event_object_key, start_routing_slot, end_routing_slot);
+                let routing_bucket =
+                    page_routing_bucket(&event_object_key, start_routing_bucket, end_routing_bucket);
                 if let Ok(addresses) = append_timestamped_kv_pages(
                     cache,
                     page_store,
@@ -1836,7 +1836,7 @@ pub(crate) fn execute_on_shard(
                         timestamp_ms: event_timeline_key,
                         value,
                     }],
-                    routing_slot,
+                    routing_bucket,
                     async_storage && !cold_storage,
                 ) {
                     for (timestamp_ms, address) in addresses {
@@ -1862,8 +1862,8 @@ pub(crate) fn execute_on_shard(
                         context_index_key(tenant_hash, index_name, value_hash, indexes.scope_hash);
                     let timeline_key = context_timeline_key(index_time_ms, index_ref.event_id_hash);
                     let value = context_bytes(&index_ref);
-                    let routing_slot =
-                        page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+                    let routing_bucket =
+                        page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
                     if let Ok(addresses) = append_timestamped_kv_pages(
                         cache,
                         page_store,
@@ -1874,7 +1874,7 @@ pub(crate) fn execute_on_shard(
                             timestamp_ms: timeline_key,
                             value,
                         }],
-                        routing_slot,
+                        routing_bucket,
                         async_storage,
                     ) {
                         let series = shard.context_indexes.entry(object_key.clone()).or_default();
@@ -1982,7 +1982,7 @@ pub(crate) fn execute_on_shard(
                 context_index_key(tenant_hash, &index_name, index_value_hash, scope_hash);
             let timeline_key = context_timeline_key(event_time_ms, index_ref.event_id_hash);
             let value = context_bytes(&index_ref);
-            let routing_slot = page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+            let routing_bucket = page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
             if let Ok(addresses) = append_timestamped_kv_pages(
                 cache,
                 page_store,
@@ -1993,7 +1993,7 @@ pub(crate) fn execute_on_shard(
                     timestamp_ms: timeline_key,
                     value,
                 }],
-                routing_slot,
+                routing_bucket,
                 async_storage,
             ) {
                 let series = shard.context_indexes.entry(object_key.clone()).or_default();
@@ -2113,7 +2113,7 @@ pub(crate) fn execute_on_shard(
             let timeline_key =
                 context_timeline_key(audit.request_time_ms, stable_object_hash(&audit.query_id));
             let value = context_bytes(&audit);
-            let routing_slot = page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+            let routing_bucket = page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
             if let Ok(addresses) = append_timestamped_kv_pages(
                 cache,
                 page_store,
@@ -2124,7 +2124,7 @@ pub(crate) fn execute_on_shard(
                     timestamp_ms: timeline_key,
                     value,
                 }],
-                routing_slot,
+                routing_bucket,
                 async_storage,
             ) {
                 let series = shard.context_audits.entry(object_key.clone()).or_default();
@@ -2232,7 +2232,7 @@ pub(crate) fn execute_on_shard(
         } => {
             let object_key = context_entity_key(tenant_hash, entity.node_hash, entity.entity_hash);
             let object_id = stable_page_object_id(shard_id, "context_entity", &object_key, None);
-            let routing_slot = page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+            let routing_bucket = page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
             let bytes = context_bytes(&entity);
             if let Ok(address) = append_value(
                 cache,
@@ -2240,7 +2240,7 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 &bytes,
                 Some(object_id),
-                Some(routing_slot),
+                Some(routing_bucket),
                 async_storage,
             ) {
                 shard.context_entities.insert(object_key.clone(), address);
@@ -2296,8 +2296,8 @@ pub(crate) fn execute_on_shard(
             if created {
                 let timeline_key =
                     context_timeline_key(child_ref.updated_at_ms, child_ref.child_hash);
-                let routing_slot =
-                    page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+                let routing_bucket =
+                    page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
                 if let Ok(addresses) = append_timestamped_kv_pages(
                     cache,
                     page_store,
@@ -2308,7 +2308,7 @@ pub(crate) fn execute_on_shard(
                         timestamp_ms: timeline_key,
                         value: context_bytes(&child_ref),
                     }],
-                    routing_slot,
+                    routing_bucket,
                     async_storage,
                 ) {
                     let series = shard
@@ -2349,14 +2349,14 @@ pub(crate) fn execute_on_shard(
         } => {
             let object_key = context_embedding_key(tenant_hash, embedding.ref_hash);
             let object_id = stable_page_object_id(shard_id, "context_embedding", &object_key, None);
-            let routing_slot = page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+            let routing_bucket = page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
             if let Ok(address) = append_value(
                 cache,
                 page_store,
                 shard_id,
                 &context_bytes(&embedding),
                 Some(object_id),
-                Some(routing_slot),
+                Some(routing_bucket),
                 async_storage,
             ) {
                 shard.context_embeddings.insert(object_key.clone(), address);
@@ -2419,7 +2419,7 @@ pub(crate) fn execute_on_shard(
             let object_key = context_summary_key(tenant_hash, summary.node_hash, summary.level);
             let timeline_key =
                 context_timeline_key(summary.valid_from_ms, u64::from(summary.level));
-            let routing_slot = page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+            let routing_bucket = page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
             if let Ok(addresses) = append_timestamped_kv_pages(
                 cache,
                 page_store,
@@ -2430,7 +2430,7 @@ pub(crate) fn execute_on_shard(
                     timestamp_ms: timeline_key,
                     value: context_bytes(&summary),
                 }],
-                routing_slot,
+                routing_bucket,
                 async_storage,
             ) {
                 let series = shard
@@ -2472,7 +2472,7 @@ pub(crate) fn execute_on_shard(
             let object_key = context_compression_key(tenant_hash, event.node_hash);
             let timeline_key =
                 context_timeline_key(event.compressed_time_ms, event.compression_id_hash);
-            let routing_slot = page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+            let routing_bucket = page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
             if let Ok(addresses) = append_timestamped_kv_pages(
                 cache,
                 page_store,
@@ -2483,7 +2483,7 @@ pub(crate) fn execute_on_shard(
                     timestamp_ms: timeline_key,
                     value: context_bytes(&event),
                 }],
-                routing_slot,
+                routing_bucket,
                 async_storage,
             ) {
                 let series = shard
@@ -2587,8 +2587,8 @@ pub(crate) fn execute_on_shard(
                 );
                 let timeline_key =
                     context_timeline_key(event.compressed_time_ms, event.compression_id_hash);
-                let routing_slot =
-                    page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+                let routing_bucket =
+                    page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
                 if let Ok(addresses) = append_timestamped_kv_pages(
                     cache,
                     page_store,
@@ -2599,7 +2599,7 @@ pub(crate) fn execute_on_shard(
                         timestamp_ms: timeline_key,
                         value: context_bytes(&event),
                     }],
-                    routing_slot,
+                    routing_bucket,
                     async_storage,
                 ) {
                     let series = shard

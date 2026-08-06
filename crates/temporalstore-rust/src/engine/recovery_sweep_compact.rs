@@ -67,7 +67,7 @@ impl TemporalEngine {
             })
             .collect::<BTreeMap<_, _>>();
         let mut live_object_ids = BTreeMap::<u64, BTreeSet<u64>>::new();
-        let mut live_routing_slots = BTreeMap::<u64, BTreeSet<u32>>::new();
+        let mut live_routing_buckets = BTreeMap::<u64, BTreeSet<u32>>::new();
         for address in &addresses {
             let segment_report = page_segment_live_reports
                 .entry(address.page_segment_id)
@@ -84,12 +84,12 @@ impl TemporalEngine {
                 objects.insert(object_id);
                 segment_report.live_object_count = objects.len() as u64;
             }
-            if let Some(routing_slot) = address.routing_slot {
-                let slots = live_routing_slots
+            if let Some(routing_bucket) = address.routing_bucket {
+                let buckets = live_routing_buckets
                     .entry(address.page_segment_id)
                     .or_default();
-                slots.insert(routing_slot);
-                segment_report.live_routing_slot_count = slots.len() as u64;
+                buckets.insert(routing_bucket);
+                segment_report.live_routing_bucket_count = buckets.len() as u64;
             }
             match self.page_store.read(address) {
                 Ok(bytes) => {
@@ -188,7 +188,7 @@ impl TemporalEngine {
     ) -> Result<ShardExpirySweepReport, Status> {
         self.sweep_expired_records_with_request(ShardExpirySweepRequest {
             shard_id,
-            load_cold_slots: true,
+            load_cold_buckets: true,
             ..ShardExpirySweepRequest::default()
         })
     }
@@ -217,8 +217,8 @@ impl TemporalEngine {
             .collect::<Vec<_>>();
         cold_keys.sort_by(|left, right| left.0.cmp(&right.0));
 
-        let hot_limit = request.max_hot_slots_per_round;
-        let cold_limit = request.max_cold_slots_per_round;
+        let hot_limit = request.max_hot_buckets_per_round;
+        let cold_limit = request.max_cold_buckets_per_round;
         let (hot_selected, next_hot_cursor) =
             select_expiry_cursor_window(hot_keys, request.hot_cursor.as_deref(), hot_limit);
         let (cold_selected, next_cold_cursor) =
@@ -238,7 +238,7 @@ impl TemporalEngine {
         }
         for (key, expires_at) in cold_selected.iter() {
             if *expires_at <= now {
-                if request.load_cold_slots {
+                if request.load_cold_buckets {
                     loaded_for_expire = loaded_for_expire.saturating_add(1);
                     if delete_record(shard, key) {
                         invalidate_record_all(&self.cache, request.shard_id, key);
@@ -265,8 +265,8 @@ impl TemporalEngine {
         Ok(ShardExpirySweepReport {
             shard_id: request.shard_id,
             expired_records_removed,
-            hot_slots_scanned: hot_selected.len(),
-            cold_slots_scanned: cold_selected.len(),
+            hot_buckets_scanned: hot_selected.len(),
+            cold_buckets_scanned: cold_selected.len(),
             scanned_records: hot_selected.len().saturating_add(cold_selected.len()),
             skipped_records,
             loaded_for_expire,
@@ -289,23 +289,23 @@ impl TemporalEngine {
         shard_id: ShardId,
         shard: &ShardState,
     ) -> StoragePageOwnershipValidation {
-        let (start_routing_slot, end_routing_slot) = self
+        let (start_routing_bucket, end_routing_bucket) = self
             .infos
             .read()
             .expect("info lock poisoned")
             .get(&shard_id)
-            .map(|info| (info.start_routing_slot, info.end_routing_slot))
+            .map(|info| (info.start_routing_bucket, info.end_routing_bucket))
             .unwrap_or((0, u32::MAX));
-        validate_slot_ownership_index(shard_id, shard, start_routing_slot, end_routing_slot)
+        validate_bucket_ownership_index(shard_id, shard, start_routing_bucket, end_routing_bucket)
     }
 
     pub fn compact_shard_pages(&self, shard_id: ShardId) -> Result<ShardCompactionReport, Status> {
-        let (start_routing_slot, end_routing_slot) = self
+        let (start_routing_bucket, end_routing_bucket) = self
             .infos
             .read()
             .expect("shard info lock poisoned")
             .get(&shard_id)
-            .map(|info| (info.start_routing_slot, info.end_routing_slot))
+            .map(|info| (info.start_routing_bucket, info.end_routing_bucket))
             .unwrap_or((0, u32::MAX));
         let mut shards = self.shards.write().expect("engine lock poisoned");
         let Some(shard) = shards.get_mut(&shard_id) else {
@@ -327,8 +327,8 @@ impl TemporalEngine {
             storage_object_lifecycle_report(shard_id, shard).tombstoned_object_ids;
         let model_layouts_before = compaction_model_layout_reports(&self.page_store, shard);
         let object_manager_before =
-            object_manager_runtime_report(shard_id, shard, start_routing_slot, end_routing_slot);
-        let slot_layout_transition_count_before = object_manager_before.layout_transition_count;
+            object_manager_runtime_report(shard_id, shard, start_routing_bucket, end_routing_bucket);
+        let bucket_layout_transition_count_before = object_manager_before.layout_transition_count;
         let roll = self
             .page_store
             .roll_segment()
@@ -495,17 +495,17 @@ impl TemporalEngine {
             }
         }
 
-        rebuild_slot_first_index(shard_id, shard, 0, u32::MAX);
-        refresh_slot_runtime_flags(shard);
+        rebuild_bucket_first_index(shard_id, shard, 0, u32::MAX);
+        refresh_bucket_runtime_flags(shard);
         let after_segments = collect_live_page_segment_ids(shard);
         let after = compaction_utility_report(&self.page_store, shard);
-        rebuild_slot_page_ownership(shard_id, shard, start_routing_slot, end_routing_slot);
+        rebuild_bucket_page_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
         let tombstoned_object_ids_after =
             storage_object_lifecycle_report(shard_id, shard).tombstoned_object_ids;
         let object_manager_after =
-            object_manager_runtime_report(shard_id, shard, start_routing_slot, end_routing_slot);
-        let slot_layout_transition_count_after = object_manager_after.layout_transition_count;
-        let slot_layout_states_after = object_manager_after.layout_states;
+            object_manager_runtime_report(shard_id, shard, start_routing_bucket, end_routing_bucket);
+        let bucket_layout_transition_count_after = object_manager_after.layout_transition_count;
+        let bucket_layout_states_after = object_manager_after.layout_states;
         let stale_page_segment_ids = before_segments
             .difference(&after_segments)
             .copied()
@@ -533,14 +533,14 @@ impl TemporalEngine {
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         let _ = self.index_log_store.append_json(shard_id, &index_bytes);
         let rewritten_object_pages = rewrite_stats.rewritten_page_refs;
-        let slot_layout_transition_count =
-            slot_layout_transition_count_after.saturating_sub(slot_layout_transition_count_before);
+        let bucket_layout_transition_count =
+            bucket_layout_transition_count_after.saturating_sub(bucket_layout_transition_count_before);
         let has_model_layouts = !model_layouts_before.is_empty();
         let preserves_tombstones = tombstoned_object_ids_after >= tombstoned_object_ids_before;
         let improves_density =
             before.live_ref_density_basis_points <= after.live_ref_density_basis_points;
-        let has_layout_transitions = slot_layout_transition_count > 0
-            || slot_layout_states_after
+        let has_layout_transitions = bucket_layout_transition_count > 0
+            || bucket_layout_states_after
                 .iter()
                 .any(|state| state.object_count > 0);
         let mut model_layout_compaction_blockers = Vec::new();
@@ -593,8 +593,8 @@ impl TemporalEngine {
             layout_aware_policy_model_count,
             model_rewrite_policies: rewrite_stats.into_reports(&before),
             rewritten_object_pages,
-            slot_layout_transition_count,
-            slot_layout_states_after,
+            bucket_layout_transition_count,
+            bucket_layout_states_after,
             tombstoned_object_ids_before,
             tombstoned_object_ids_after,
             model_layouts: model_layouts_before,

@@ -64,10 +64,10 @@ pub fn execute_redis_command_with_state(
         }
         "PARTITION" if args.len() >= 2 => redis_partition_response(&args, shard_id, state),
         "PSLOTHASHKEY" if args.len() == 2 => {
-            RespValue::Integer(slot_id_for_key(String::from_utf8_lossy(&args[1]).as_ref()) as i64)
+            RespValue::Integer(bucket_id_for_key(String::from_utf8_lossy(&args[1]).as_ref()) as i64)
         }
         "PCLUSTERKEYSLOT" if args.len() == 2 => {
-            RespValue::Integer(slot_id_for_key(String::from_utf8_lossy(&args[1]).as_ref()) as i64)
+            RespValue::Integer(bucket_id_for_key(String::from_utf8_lossy(&args[1]).as_ref()) as i64)
         }
         "PCLUSTERHASH" if args.len() == 2 => {
             RespValue::Integer(stable_key_hash(String::from_utf8_lossy(&args[1]).as_ref()) as i64)

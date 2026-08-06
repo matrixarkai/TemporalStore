@@ -81,12 +81,12 @@ pub(super) fn build_shards(state: &MetaState, table: &TableMetaInfo) -> Vec<Tabl
                 &right.server_addr,
             ))
     });
-    let slot_count = 1_u64 << 30;
+    let bucket_count = 1_u64 << 30;
     let mut shards = Vec::new();
     for offset in 0..table.shard_count {
         let shard_id = table_shard_id(table, offset).unwrap_or(table.first_shard_id + offset);
-        let start_slot = slot_count * offset / table.shard_count;
-        let end_slot = (slot_count * (offset + 1) / table.shard_count).saturating_sub(1);
+        let start_bucket = bucket_count * offset / table.shard_count;
+        let end_bucket = (bucket_count * (offset + 1) / table.shard_count).saturating_sub(1);
         let mut replicas = Vec::new();
         let mut seen_replicas = BTreeSet::new();
         let mut used_locations = BTreeSet::new();
@@ -151,8 +151,8 @@ pub(super) fn build_shards(state: &MetaState, table: &TableMetaInfo) -> Vec<Tabl
             .collect();
         shards.push(TableShard {
             shard_id,
-            start_slot,
-            end_slot,
+            start_bucket,
+            end_bucket,
             primary,
             replicas,
             primary_endpoint,

@@ -465,7 +465,7 @@ fn classify_error(error: &str) -> (String, bool) {
     {
         return ("invalid_argument".to_string(), false);
     }
-    if lower.contains("slot not found")
+    if lower.contains("bucket not found")
         || lower.contains("partition info not found")
         || lower.contains("partition no primary")
         || lower.contains("timed out")

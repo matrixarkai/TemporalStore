@@ -33,7 +33,7 @@ use crate::engine::reports::{
     storage_index_snapshot_from_metrics, storage_safety_snapshot_from_metrics,
     storage_topology_snapshot_from_metrics, storage_watermark_snapshot_from_metrics,
     PublicStorageContract, PublicStorageFeatureShapes, ShardCompactionModelLayoutReport,
-    ShardCompactionUtilityReport, SlotDumpManifest, StorageContractValue, StorageGcSnapshot,
+    ShardCompactionUtilityReport, BucketDumpManifest, StorageContractValue, StorageGcSnapshot,
     StorageIndexSnapshot, StorageLifecyclePlan, StorageLifecycleReport, StorageLifecycleRequest,
     StorageManagerCycleReport, StorageManagerCycleRequest, StorageManagerStageReport,
     StorageProductionReadinessPolicy, StorageProductionReadinessReport, StorageReclaimScope,
@@ -432,9 +432,9 @@ fn apply_shard_storage_metrics(
         let page_entries = storage.page_index_entries.max(shard.total_records as u64);
         let block_entries = storage.block_index_entries.max(page_entries);
         let object_entries = storage.object_index_entries.max(shard.total_records as u64);
-        let slot_entries = storage.slot_entries.max(shard.dirty_slot_count);
+        let bucket_entries = storage.bucket_entries.max(shard.dirty_bucket_count);
         add(metrics, "object_index_entry_count", object_entries);
-        add(metrics, "slot_index_entry_count", slot_entries);
+        add(metrics, "slot_index_entry_count", bucket_entries);
         add(metrics, "slot_object_ref_count", object_entries);
         add(metrics, "slot_page_ref_count", page_entries);
         add(metrics, "page_index_entry_count", page_entries);
@@ -686,7 +686,8 @@ pub struct DirtyObjectInfo {
 pub struct DumpShardRequest {
     pub shard_id: ShardId,
     #[serde(default)]
-    pub selected_routing_slots: Vec<u32>,
+    #[serde(rename = "selected_routing_slots")]
+    pub selected_routing_buckets: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -696,7 +697,8 @@ pub struct DumpShardResponse {
     pub index_bytes: usize,
     pub dirty_objects_flushed: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub slot_dump_manifest: Option<SlotDumpManifest>,
+    #[serde(rename = "slot_dump_manifest")]
+    pub bucket_dump_manifest: Option<BucketDumpManifest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -764,12 +766,14 @@ pub struct GcResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StorageManagerOptions {
-    #[serde(default = "default_storage_manager_max_dump_slots_per_round")]
-    pub max_dump_slots_per_round: usize,
+    #[serde(default = "default_storage_manager_max_dump_buckets_per_round")]
+    #[serde(rename = "max_dump_slots_per_round")]
+    pub max_dump_buckets_per_round: usize,
     #[serde(default)]
     pub min_undumped_oplog_records: u64,
     #[serde(default)]
-    pub dirty_slot_pressure: usize,
+    #[serde(rename = "dirty_slot_pressure")]
+    pub dirty_bucket_pressure: usize,
     #[serde(default)]
     pub stale_page_segment_pressure: usize,
     #[serde(default)]
@@ -799,9 +803,9 @@ pub struct StorageManagerOptions {
 impl Default for StorageManagerOptions {
     fn default() -> Self {
         Self {
-            max_dump_slots_per_round: default_storage_manager_max_dump_slots_per_round(),
+            max_dump_buckets_per_round: default_storage_manager_max_dump_buckets_per_round(),
             min_undumped_oplog_records: 1,
-            dirty_slot_pressure: 1,
+            dirty_bucket_pressure: 1,
             stale_page_segment_pressure: 1,
             reclaimable_physical_bytes_pressure: 1,
             cache_memory_bytes_pressure: 1,
@@ -818,7 +822,7 @@ impl Default for StorageManagerOptions {
     }
 }
 
-fn default_storage_manager_max_dump_slots_per_round() -> usize {
+fn default_storage_manager_max_dump_buckets_per_round() -> usize {
     64
 }
 
@@ -883,8 +887,10 @@ fn storage_manager_pressure_decision(
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StorageManagerPressureSnapshot {
     pub shard_id: ShardId,
-    pub dirty_slot_count: usize,
-    pub selected_dirty_slot_count: usize,
+    #[serde(rename = "dirty_slot_count")]
+    pub dirty_bucket_count: usize,
+    #[serde(rename = "selected_dirty_slot_count")]
+    pub selected_dirty_bucket_count: usize,
     pub undumped_oplog_records: u64,
     #[serde(default)]
     pub wal_bytes: u64,
@@ -900,7 +906,8 @@ pub struct StorageManagerPressureSnapshot {
     #[serde(default)]
     pub memory_cache_pressure_score: u64,
     #[serde(default)]
-    pub expired_slot_object_scan_debt: usize,
+    #[serde(rename = "expired_slot_object_scan_debt")]
+    pub expired_bucket_object_scan_debt: usize,
     #[serde(default)]
     pub delayed_destroy_segment_count: usize,
     #[serde(default)]
@@ -988,7 +995,7 @@ impl Default for StorageManagerRuntimeOptions {
             initial_backoff_ms: 250,
             max_backoff_ms: 5_000,
             request: StorageManagerCycleRequest {
-                max_dump_slots_per_round: 16,
+                max_dump_buckets_per_round: 16,
                 warm_cache: true,
                 ..StorageManagerCycleRequest::default()
             },
@@ -1020,7 +1027,8 @@ pub struct StorageManagerRuntimeReport {
     pub phase_page_gc_enabled: bool,
     pub phase_compaction_enabled: bool,
     pub phase_index_gc_enabled: bool,
-    pub bounded_max_dump_slots_per_round: usize,
+    #[serde(rename = "bounded_max_dump_slots_per_round")]
+    pub bounded_max_dump_buckets_per_round: usize,
     #[serde(default)]
     pub configured_follower_cursor_count: usize,
     #[serde(default)]
@@ -1034,7 +1042,8 @@ pub struct StorageManagerRuntimeReport {
     #[serde(default)]
     pub last_phase_reports: Vec<StorageManagerStageReport>,
     #[serde(default)]
-    pub last_selected_slots: Vec<u32>,
+    #[serde(rename = "last_selected_slots")]
+    pub last_selected_buckets: Vec<u32>,
     #[serde(default)]
     pub last_skipped_reasons: Vec<String>,
     #[serde(default)]
@@ -1984,7 +1993,7 @@ impl DataNodeRuntime {
                 self.submit_dump(
                     DumpShardRequest {
                         shard_id,
-                        selected_routing_slots: Vec::new(),
+                        selected_routing_buckets: Vec::new(),
                     },
                     controller,
                 )

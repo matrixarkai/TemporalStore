@@ -142,7 +142,7 @@ pub(super) fn storage_feature_page_layout_report(
             }
         }
     }
-    let orphan_page_entries = collect_slot_index_live_page_entries(shard)
+    let orphan_page_entries = collect_bucket_index_live_page_entries(shard)
         .into_iter()
         .filter(|entry| !entry.deleted && !inspected_addresses.contains(&entry.address))
         .filter(|entry| {

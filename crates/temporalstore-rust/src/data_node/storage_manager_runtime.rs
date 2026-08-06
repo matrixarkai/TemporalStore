@@ -23,7 +23,7 @@ pub(super) fn storage_manager_runtime_initial_report(
         phase_page_gc_enabled: options.request.enable_page_reclaim,
         phase_compaction_enabled: options.request.enable_page_compaction,
         phase_index_gc_enabled: options.request.enable_index_gc,
-        bounded_max_dump_slots_per_round: options.request.max_dump_slots_per_round,
+        bounded_max_dump_buckets_per_round: options.request.max_dump_buckets_per_round,
         configured_follower_cursor_count: options.request.follower_replay_cursors.len(),
         configured_raft_snapshot_ref_count: options.request.raft_snapshot_refs.len(),
         configured_page_gc_raft_install_floor_segment_id: options
@@ -59,7 +59,7 @@ pub(super) fn apply_storage_manager_cycle_to_runtime_report(
     report: &mut StorageManagerRuntimeReport,
     cycle: StorageManagerCycleReport,
 ) {
-    let mut selected_slots = BTreeSet::new();
+    let mut selected_buckets = BTreeSet::new();
     let mut skipped_reasons = BTreeSet::new();
     let mut phase_blockers = BTreeSet::new();
     let mut bytes_reclaimed = 0u64;
@@ -69,7 +69,7 @@ pub(super) fn apply_storage_manager_cycle_to_runtime_report(
     let mut index_log_floor_sequence = 0u64;
     let mut retention_blockers = 0usize;
     for stage in &cycle.stages {
-        selected_slots.extend(stage.selected_slots.iter().copied());
+        selected_buckets.extend(stage.selected_buckets.iter().copied());
         if stage.skipped && !stage.reason.is_empty() {
             skipped_reasons.insert(stage.reason.clone());
         }
@@ -95,8 +95,8 @@ pub(super) fn apply_storage_manager_cycle_to_runtime_report(
     }
     report.last_pressure_snapshot = Some(StorageManagerPressureSnapshot {
         shard_id: cycle.shard_id,
-        dirty_slot_count: cycle.pressure_snapshot.dirty_slot_count,
-        selected_dirty_slot_count: cycle.plan.selected_dump_slots.len(),
+        dirty_bucket_count: cycle.pressure_snapshot.dirty_bucket_count,
+        selected_dirty_bucket_count: cycle.plan.selected_dump_buckets.len(),
         undumped_oplog_records: cycle.pressure_snapshot.undumped_wal_records,
         wal_bytes: cycle.pressure_snapshot.wal_bytes,
         index_log_bytes: cycle.pressure_snapshot.index_log_bytes,
@@ -109,7 +109,7 @@ pub(super) fn apply_storage_manager_cycle_to_runtime_report(
         cache_memory_bytes: cycle.pressure_snapshot.memory_cache_bytes,
         cache_disk_bytes: cycle.pressure_snapshot.disk_cache_bytes,
         memory_cache_pressure_score: cycle.pressure_snapshot.memory_cache_pressure_score,
-        expired_slot_object_scan_debt: cycle.pressure_snapshot.expired_slot_object_scan_debt,
+        expired_bucket_object_scan_debt: cycle.pressure_snapshot.expired_bucket_object_scan_debt,
         delayed_destroy_segment_count: cycle.pressure_snapshot.delayed_destroy_segment_count,
         delayed_destroy_bytes: cycle.pressure_snapshot.delayed_destroy_bytes,
         follower_cursor_retention_blockers: cycle
@@ -123,7 +123,7 @@ pub(super) fn apply_storage_manager_cycle_to_runtime_report(
         foreground_queue_depth: 0,
     });
     report.last_phase_reports = cycle.stages.clone();
-    report.last_selected_slots = selected_slots.into_iter().collect();
+    report.last_selected_buckets = selected_buckets.into_iter().collect();
     report.last_skipped_reasons = skipped_reasons.into_iter().collect();
     report.last_bytes_reclaimed = bytes_reclaimed;
     report.last_pressure_before = pressure_before.max(cycle.pressure_snapshot.total_pressure_score);

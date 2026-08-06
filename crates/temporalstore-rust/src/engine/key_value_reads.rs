@@ -4,8 +4,8 @@ use crate::block_store::LocalBlockStore;
 use crate::types::ShardId;
 
 use super::page_reads::read_page_bytes_batch;
-use super::slot_store::{
-    read_slot_index_component_values, read_slot_index_value, slot_index_component_page_addresses,
+use super::bucket_store::{
+    read_bucket_index_component_values, read_bucket_index_value, bucket_index_component_page_addresses,
 };
 use super::state::ShardState;
 
@@ -30,7 +30,7 @@ pub(super) fn read_hash_multi_values(
     fields
         .iter()
         .map(|field| {
-            read_slot_index_value(
+            read_bucket_index_value(
                 cache,
                 page_store,
                 shard_id,
@@ -45,7 +45,7 @@ pub(super) fn read_hash_multi_values(
 
 pub(super) fn read_hash_len(shard: &ShardState, key: &str) -> i64 {
     shard.hashes.get(key).map_or_else(
-        || slot_index_component_page_addresses(shard, "hash", key).len() as i64,
+        || bucket_index_component_page_addresses(shard, "hash", key).len() as i64,
         |fields| fields.len() as i64,
     )
 }
@@ -62,7 +62,7 @@ pub(super) fn read_set_members(
         .get(key)
         .map(|members| members.keys().cloned().collect())
         .unwrap_or_else(|| {
-            read_slot_index_component_values(cache, page_store, shard_id, shard, "set", key)
+            read_bucket_index_component_values(cache, page_store, shard_id, shard, "set", key)
                 .into_iter()
                 .map(|(_, value)| value)
                 .collect()

@@ -507,7 +507,7 @@ fn context_models_match_cpp_keys_timeline_pages_and_filters() {
 
     assert!(
         engine
-            .slot_storage_summaries(1)
+            .bucket_storage_summaries(1)
             .iter()
             .map(|summary| summary.page_ref_count)
             .sum::<u64>()
@@ -932,7 +932,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
             length: 1,
             page_id: None,
             object_id: None,
-            routing_slot: None,
+            routing_bucket: None,
             band_id: None,
             generation: None,
             sha256: None,
@@ -946,7 +946,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
             length: 1,
             page_id: None,
             object_id: None,
-            routing_slot: None,
+            routing_bucket: None,
             band_id: None,
             generation: None,
             sha256: None,
@@ -960,7 +960,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
             length: 1,
             page_id: None,
             object_id: None,
-            routing_slot: None,
+            routing_bucket: None,
             band_id: None,
             generation: None,
             sha256: None,
@@ -978,7 +978,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
                 length: 1,
                 page_id: None,
                 object_id: None,
-                routing_slot: None,
+                routing_bucket: None,
                 band_id: None,
                 generation: None,
                 sha256: None,
@@ -996,7 +996,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
                 length: 1,
                 page_id: None,
                 object_id: None,
-                routing_slot: None,
+                routing_bucket: None,
                 band_id: None,
                 generation: None,
                 sha256: None,
@@ -1010,7 +1010,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
             length: 1,
             page_id: None,
             object_id: None,
-            routing_slot: None,
+            routing_bucket: None,
             band_id: None,
             generation: None,
             sha256: None,
@@ -1025,7 +1025,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
                 length: 1,
                 page_id: None,
                 object_id: None,
-                routing_slot: None,
+                routing_bucket: None,
                 band_id: None,
                 generation: None,
                 sha256: None,
@@ -1128,16 +1128,16 @@ fn page_compaction_rewrites_live_addresses_and_allows_old_segment_gc() {
             Some(stable_page_object_id(1, "string", "k", None))
         );
         assert_eq!(
-            string_address.routing_slot,
-            Some(page_routing_slot("k", 0, u32::MAX))
+            string_address.routing_bucket,
+            Some(page_routing_bucket("k", 0, u32::MAX))
         );
         assert_eq!(
             hash_address.object_id,
             Some(stable_page_object_id(1, "hash", "h", Some("f")))
         );
         assert_eq!(
-            hash_address.routing_slot,
-            Some(page_routing_slot("h", 0, u32::MAX))
+            hash_address.routing_bucket,
+            Some(page_routing_bucket("h", 0, u32::MAX))
         );
     }
 
@@ -1448,12 +1448,12 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
     assert!(object_runtime.object_page_count >= 1);
     assert!(
         engine
-            .slot_storage_summaries(1)
+            .bucket_storage_summaries(1)
             .iter()
             .flat_map(|summary| summary.page_segment_ids.iter().copied())
             .all(|segment_id| segment_id == report.compacted_page_segment_id),
         "all index summaries should move to compacted segment: {:?}",
-        engine.slot_storage_summaries(1)
+        engine.bucket_storage_summaries(1)
     );
 }
 
@@ -1509,7 +1509,7 @@ fn storage_manager_cycle_runs_prepare_reclaim_evict_expire_compact_and_index_gc(
 
     let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
         shard_id: 1,
-        max_dump_slots_per_round: 16,
+        max_dump_buckets_per_round: 16,
         min_undumped_oplog_records: 0,
         warm_cache: true,
         ..StorageManagerCycleRequest::default()
@@ -1547,7 +1547,7 @@ fn storage_manager_cycle_runs_prepare_reclaim_evict_expire_compact_and_index_gc(
             .iter()
             .find(|phase| phase.stage == "prepare")
             .unwrap()
-            .dirty_slot_count
+            .dirty_bucket_count
             >= 1
     );
     assert_eq!(
@@ -1601,8 +1601,8 @@ fn storage_data_structure_api_parity_report_covers_stream_block_and_manager_surf
 
     let report = engine.storage_data_structure_api_parity_report(1);
     assert!(report.ready, "{report:?}");
-    assert!(report.slot_object_page_authority_ready);
-    assert!(report.slot_store_layout_api_ready);
+    assert!(report.bucket_object_page_authority_ready);
+    assert!(report.bucket_store_layout_api_ready);
     assert!(report.object_manager_runtime_api_ready);
     assert!(report.block_address_api_ready);
     assert!(report.block_store_segment_api_ready);
@@ -1611,7 +1611,7 @@ fn storage_data_structure_api_parity_report_covers_stream_block_and_manager_surf
     assert!(report.storage_manager_phase_api_ready);
     assert!(report.storage_manager_pressure_api_ready);
     assert!(report.storage_manager_merged_dump_load_api_ready);
-    assert!(report.slot_count >= 1);
+    assert!(report.bucket_count >= 1);
     assert!(report.page_index_count >= 1);
     assert!(report.block_index_count >= 1);
     assert!(report.stream_band_count >= 2);
@@ -1688,11 +1688,11 @@ fn storage_manager_loop_runs_prepare_reclaim_evict_expire_compact_and_index_gc()
         compact_pages: true,
         lifecycle: StorageLifecycleRequest {
             shard_id: 1,
-            max_dump_slots_per_round: 16,
+            max_dump_buckets_per_round: 16,
             min_undumped_oplog_records: 0,
             purge_delayed_destroy: true,
-            prune_slot_dump_manifests: true,
-            roll_forward_slot_dump_installs: true,
+            prune_bucket_dump_manifests: true,
+            roll_forward_bucket_dump_installs: true,
             invalidate_cache: true,
             warm_cache: true,
             ..StorageLifecycleRequest::default()
@@ -1752,10 +1752,10 @@ fn recovery_reports_owner_mismatch_and_compaction_refuses_it() {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("loaded shard");
         let page = shard
-            .slot_index
-            .slot_map
+            .bucket_index
+            .bucket_map
             .values_mut()
-            .flat_map(|slot| slot.page_index.values_mut())
+            .flat_map(|bucket| bucket.page_index.values_mut())
             .find(|page| page.object_key == "owned")
             .expect("owned slot page");
         page.address.object_id = Some(page.object_id.wrapping_add(1));
@@ -1806,18 +1806,18 @@ fn recovery_reports_reused_object_id_conflicts() {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("loaded shard");
         let first_object_id = shard
-            .slot_index
-            .slot_map
+            .bucket_index
+            .bucket_map
             .values()
-            .flat_map(|slot| slot.page_index.values())
+            .flat_map(|bucket| bucket.page_index.values())
             .find(|page| page.object_key == "first")
             .map(|page| page.object_id)
             .expect("first object id");
         let second = shard
-            .slot_index
-            .slot_map
+            .bucket_index
+            .bucket_map
             .values_mut()
-            .flat_map(|slot| slot.page_index.values_mut())
+            .flat_map(|bucket| bucket.page_index.values_mut())
             .find(|page| page.object_key == "second")
             .expect("second slot page");
         second.address.object_id = Some(first_object_id);
@@ -1939,7 +1939,7 @@ fn crash_recovery_report_covers_oplog_index_page_and_band_manifest() {
     );
     assert_eq!(report.page_segment_live_reports[0].live_object_count, 1);
     assert_eq!(
-        report.page_segment_live_reports[0].live_routing_slot_count,
+        report.page_segment_live_reports[0].live_routing_bucket_count,
         1
     );
     assert_eq!(report.page_segment_live_reports[0].live_logical_bytes, 2);
@@ -2023,7 +2023,7 @@ fn crash_recovery_report_marks_stale_segment_density_after_overwrite() {
     assert_eq!(segment.live_ref_density_basis_points, 5_000);
     assert_eq!(segment.live_logical_bytes, 3);
     assert_eq!(segment.live_object_count, 1);
-    assert_eq!(segment.live_routing_slot_count, 1);
+    assert_eq!(segment.live_routing_bucket_count, 1);
 }
 
 #[test]
@@ -2059,7 +2059,7 @@ fn cold_index_page_address_reads_from_disk_cache_or_block_store_and_refills_memo
             address.page_segment_id,
             address.offset,
             address.length,
-            address.routing_slot,
+            address.routing_bucket,
         )
     };
 
@@ -2225,8 +2225,8 @@ fn durable_writes_stamp_stable_object_ids_on_page_addresses() {
                 shard_id: 1,
                 table_name: "table".to_string(),
                 shard_uri: "local://1".to_string(),
-                start_routing_slot: 10,
-                end_routing_slot: 20,
+                start_routing_bucket: 10,
+                end_routing_bucket: 20,
                 readonly: false,
                 load_version: 1,
                 local_node_id: None,
@@ -2274,8 +2274,8 @@ fn durable_writes_stamp_stable_object_ids_on_page_addresses() {
         Some(stable_page_object_id(1, "string", "k", None))
     );
     assert_eq!(
-        string_address.routing_slot,
-        Some(page_routing_slot("k", 10, 20))
+        string_address.routing_bucket,
+        Some(page_routing_bucket("k", 10, 20))
     );
     assert_eq!(
         string_address.band_id,
@@ -2286,8 +2286,8 @@ fn durable_writes_stamp_stable_object_ids_on_page_addresses() {
         Some(stable_page_object_id(1, "hash", "h", Some("f")))
     );
     assert_eq!(
-        hash_address.routing_slot,
-        Some(page_routing_slot("h", 10, 20))
+        hash_address.routing_bucket,
+        Some(page_routing_bucket("h", 10, 20))
     );
     assert_eq!(hash_address.band_id, Some(hash_address.page_segment_id));
     assert_ne!(string_address.object_id, hash_address.object_id);

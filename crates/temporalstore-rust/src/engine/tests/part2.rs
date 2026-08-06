@@ -243,7 +243,7 @@ fn tiny_memory_cache_eviction_refills_from_persistence_then_block_cache() {
             address.page_segment_id,
             address.offset,
             address.length,
-            address.routing_slot,
+            address.routing_bucket,
         )
     };
     assert_eq!(
@@ -362,7 +362,7 @@ fn cache_replacement_policy_soak() {
             address.page_segment_id,
             address.offset,
             address.length,
-            address.routing_slot,
+            address.routing_bucket,
         )
     };
 
@@ -615,7 +615,7 @@ fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
             address.page_segment_id,
             address.offset,
             address.length,
-            address.routing_slot,
+            address.routing_bucket,
         )
     };
 
@@ -1505,7 +1505,7 @@ fn feature_recovery_reports_duplicate_timestamps_inside_packed_page() {
         .append_with_page_metadata(
             &duplicate_page,
             Some(stable_page_object_id(1, "feature", "layout-feature", None)),
-            Some(page_routing_slot("layout-feature", 0, u32::MAX)),
+            Some(page_routing_bucket("layout-feature", 0, u32::MAX)),
         )
         .expect("duplicate packed page append");
 
@@ -1556,7 +1556,7 @@ fn feature_recovery_reports_corrupt_packed_timestamped_page() {
         .append_with_page_metadata(
             &corrupt_page,
             Some(stable_page_object_id(1, "feature", "corrupt-feature", None)),
-            Some(page_routing_slot("corrupt-feature", 0, u32::MAX)),
+            Some(page_routing_bucket("corrupt-feature", 0, u32::MAX)),
         )
         .expect("corrupt packed page append");
 
@@ -1620,7 +1620,7 @@ fn feature_recovery_reports_unsupported_packed_timestamped_page_version() {
                 "versioned-feature",
                 None,
             )),
-            Some(page_routing_slot("versioned-feature", 0, u32::MAX)),
+            Some(page_routing_bucket("versioned-feature", 0, u32::MAX)),
         )
         .expect("unsupported packed page append");
 
@@ -2317,8 +2317,8 @@ fn control_api_load_config_info_stats_membership_and_unload() {
                 load_version: 42,
                 local_node_id: Some(2),
                 shard_uri: "file:///tmp/shard-7".to_string(),
-                start_routing_slot: 10,
-                end_routing_slot: 20,
+                start_routing_bucket: 10,
+                end_routing_bucket: 20,
                 readonly: false,
                 table_name: "table".to_string(),
             })
@@ -2330,8 +2330,8 @@ fn control_api_load_config_info_stats_membership_and_unload() {
         load_version: 43,
         local_node_id: Some(2),
         shard_uri: "file:///tmp/shard-7-duplicate".to_string(),
-        start_routing_slot: 10,
-        end_routing_slot: 20,
+        start_routing_bucket: 10,
+        end_routing_bucket: 20,
         readonly: false,
         table_name: "table".to_string(),
     });
@@ -2478,8 +2478,8 @@ fn engine_reload_shard_updates_metadata_and_rejects_stale_version() {
                 load_version: 42,
                 local_node_id: Some(2),
                 shard_uri: "file:///tmp/shard-7".to_string(),
-                start_routing_slot: 10,
-                end_routing_slot: 20,
+                start_routing_bucket: 10,
+                end_routing_bucket: 20,
                 readonly: false,
                 table_name: "old_table".to_string(),
             })
@@ -2503,8 +2503,8 @@ fn engine_reload_shard_updates_metadata_and_rejects_stale_version() {
         load_version: 41,
         local_node_id: Some(9),
         shard_uri: "file:///tmp/stale".to_string(),
-        start_routing_slot: 100,
-        end_routing_slot: 200,
+        start_routing_bucket: 100,
+        end_routing_bucket: 200,
         readonly: true,
         table_name: "stale_table".to_string(),
     });
@@ -2520,8 +2520,8 @@ fn engine_reload_shard_updates_metadata_and_rejects_stale_version() {
         load_version: 43,
         local_node_id: Some(9),
         shard_uri: "file:///tmp/shard-7-reloaded".to_string(),
-        start_routing_slot: 100,
-        end_routing_slot: 200,
+        start_routing_bucket: 100,
+        end_routing_bucket: 200,
         readonly: true,
         table_name: "new_table".to_string(),
     });
@@ -2530,8 +2530,8 @@ fn engine_reload_shard_updates_metadata_and_rejects_stale_version() {
     assert_eq!(info.load_version, 43);
     assert_eq!(info.local_node_id, Some(9));
     assert_eq!(info.table_name, "new_table");
-    assert_eq!(info.start_routing_slot, 100);
-    assert_eq!(info.end_routing_slot, 200);
+    assert_eq!(info.start_routing_bucket, 100);
+    assert_eq!(info.end_routing_bucket, 200);
     assert!(info.readonly);
     assert_eq!(info.replica_node_ids, vec![1, 2, 3]);
     assert_eq!(info.membership_version, 3);

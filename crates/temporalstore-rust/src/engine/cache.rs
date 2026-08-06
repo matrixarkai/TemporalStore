@@ -25,7 +25,7 @@ pub(super) fn page_physical_identity_key(address: &BlockAddress) -> PagePhysical
         address.length,
         address.page_id,
         address.object_id,
-        address.routing_slot,
+        address.routing_bucket,
         address.generation,
     )
 }
