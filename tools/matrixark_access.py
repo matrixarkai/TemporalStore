@@ -8,6 +8,46 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import *
 
+import hashlib
+import hmac
+import secrets
+
+
+# Password login is intentionally separate from OAuth/SSO. MatrixArk stores only
+# a salted PBKDF2-SHA256 hash; the plaintext password is never persisted or
+# logged. SSO/Gmail auto-login continues to flow through sso_callback/sso_login.
+MATRIXARK_PASSWORD_ITERATIONS = 210_000
+
+
+def hash_matrixark_password(
+    password: str, *, salt: bytes | None = None, iterations: int = MATRIXARK_PASSWORD_ITERATIONS
+) -> Json:
+    if not password:
+        raise MatrixArkError("password must not be empty")
+    salt = salt or secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    return {
+        "algo": "pbkdf2_sha256",
+        "iterations": iterations,
+        "salt_hex": salt.hex(),
+        "password_hash": digest.hex(),
+    }
+
+
+def verify_matrixark_password(password: str, credential: Json | None) -> bool:
+    if not password or not credential:
+        return False
+    try:
+        salt = bytes.fromhex(str(credential.get("salt_hex", "")))
+        iterations = int(credential.get("iterations") or MATRIXARK_PASSWORD_ITERATIONS)
+    except (ValueError, TypeError):
+        return False
+    expected = str(credential.get("password_hash", ""))
+    if not salt or not expected:
+        return False
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations).hex()
+    return hmac.compare_digest(digest, expected)
+
 
 class MatrixArkMetadataStore:
     """Admin/control-plane metadata boundary for MatrixArk.
@@ -80,6 +120,7 @@ class MatrixArkSqlMetadataStore(MatrixArkMetadataStore):
     API_KEY_TABLE = "matrixark_api_keys"
     API_KEY_USAGE_TABLE = "matrixark_api_key_usage"
     SSO_TABLE = "matrixark_sso_mappings"
+    CREDENTIAL_TABLE = "matrixark_user_credentials"
     AUDIT_TABLE = "matrixark_audit_logs"
     NORMALIZED_TABLES = [
         ACCOUNT_TABLE,
@@ -88,6 +129,7 @@ class MatrixArkSqlMetadataStore(MatrixArkMetadataStore):
         API_KEY_TABLE,
         API_KEY_USAGE_TABLE,
         SSO_TABLE,
+        CREDENTIAL_TABLE,
         AUDIT_TABLE,
     ]
 
@@ -247,6 +289,22 @@ class MatrixArkSqlMetadataStore(MatrixArkMetadataStore):
                 """,
                 f"CREATE INDEX IF NOT EXISTS idx_{self.SSO_TABLE}_user ON {self.SSO_TABLE}(account_id, tenant_id, user_id)",
                 f"""
+                CREATE TABLE IF NOT EXISTS {self.CREDENTIAL_TABLE} (
+                  account_id TEXT NOT NULL,
+                  tenant_id TEXT NOT NULL,
+                  user_id TEXT NOT NULL,
+                  email TEXT NOT NULL DEFAULT '',
+                  algo TEXT NOT NULL DEFAULT 'pbkdf2_sha256',
+                  iterations INTEGER NOT NULL DEFAULT 0,
+                  status TEXT NOT NULL DEFAULT 'active',
+                  created_at_ms INTEGER NOT NULL DEFAULT 0,
+                  updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                  payload_json TEXT NOT NULL,
+                  PRIMARY KEY (account_id, tenant_id, user_id)
+                )
+                """,
+                f"CREATE INDEX IF NOT EXISTS idx_{self.CREDENTIAL_TABLE}_email ON {self.CREDENTIAL_TABLE}(account_id, tenant_id, email)",
+                f"""
                 CREATE TABLE IF NOT EXISTS {self.AUDIT_TABLE} (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   audit_id_hash INTEGER NOT NULL DEFAULT 0,
@@ -367,6 +425,22 @@ class MatrixArkSqlMetadataStore(MatrixArkMetadataStore):
                   payload_json LONGTEXT NOT NULL,
                   PRIMARY KEY (provider, external_user_id),
                   KEY idx_user (account_id, tenant_id, user_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """,
+                f"""
+                CREATE TABLE IF NOT EXISTS {self.CREDENTIAL_TABLE} (
+                  account_id VARCHAR(128) NOT NULL,
+                  tenant_id VARCHAR(128) NOT NULL,
+                  user_id VARCHAR(256) NOT NULL,
+                  email VARCHAR(320) NOT NULL DEFAULT '',
+                  algo VARCHAR(32) NOT NULL DEFAULT 'pbkdf2_sha256',
+                  iterations BIGINT NOT NULL DEFAULT 0,
+                  status VARCHAR(32) NOT NULL DEFAULT 'active',
+                  created_at_ms BIGINT NOT NULL DEFAULT 0,
+                  updated_at_ms BIGINT NOT NULL DEFAULT 0,
+                  payload_json LONGTEXT NOT NULL,
+                  PRIMARY KEY (account_id, tenant_id, user_id),
+                  KEY idx_email (account_id, tenant_id, email)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """,
                 f"""
@@ -627,6 +701,14 @@ class MatrixArkSqlMetadataStore(MatrixArkMetadataStore):
                 ["provider", "external_user_id", "account_id", "tenant_id", "user_id", "email", "display_name", "status", "created_at_ms", "updated_at_ms", "payload_json"],
                 (str(record.get("provider", "")), str(record.get("external_user_id", "")), str(record.get("account_id", "")), str(record.get("tenant_id", "")), str(record.get("matrixark_user_id") or record.get("user_id") or ""), str(record.get("email", "")), str(record.get("display_name", "")), str(record.get("status", "active")), int(record.get("created_at_ms") or created_at_ms), int(record.get("updated_at_ms") or created_at_ms), payload),
                 conflict_columns=["provider", "external_user_id"],
+            )
+        elif record_type == "matrixark_user_credential":
+            self._execute_insert(
+                cur,
+                self.CREDENTIAL_TABLE,
+                ["account_id", "tenant_id", "user_id", "email", "algo", "iterations", "status", "created_at_ms", "updated_at_ms", "payload_json"],
+                (str(record.get("account_id", "")), str(record.get("tenant_id", "")), str(record.get("user_id", "")), str(record.get("email", "")), str(record.get("algo", "pbkdf2_sha256")), int(record.get("iterations") or 0), str(record.get("status", "active")), int(record.get("created_at_ms") or created_at_ms), int(record.get("updated_at_ms") or created_at_ms), payload),
+                conflict_columns=["account_id", "tenant_id", "user_id"],
             )
         elif record_type == "matrixark_audit_log":
             self._execute_insert(
@@ -943,6 +1025,63 @@ class MatrixArkAccessManager(_AccessPortalMixin, _AccessSsoMixin, _AccessApiKeyM
         record = self.latest_user_record(account_id, tenant_id, user_id)
         if record and record.get("status") != "active":
             raise MatrixArkError("scope.user_id is disabled")
+
+    def latest_user_credential(self, account_id: str, tenant_id: str, user_id: str) -> Json | None:
+        if not user_id:
+            return None
+        for record in reversed(self.metadata.read_all()):
+            if (
+                record.get("record_type") == "matrixark_user_credential"
+                and record.get("account_id") == account_id
+                and record.get("tenant_id") == tenant_id
+                and record.get("user_id") == user_id
+                and record.get("status", "active") == "active"
+            ):
+                return record
+        return None
+
+    def find_credential_user_id_by_email(self, account_id: str, tenant_id: str, email: str) -> str:
+        email_normalized = email.strip().lower()
+        if not email_normalized:
+            return ""
+        for record in reversed(self.metadata.read_all()):
+            if (
+                record.get("record_type") == "matrixark_user_credential"
+                and record.get("account_id") == account_id
+                and record.get("tenant_id") == tenant_id
+                and str(record.get("email", "")).strip().lower() == email_normalized
+                and record.get("status", "active") == "active"
+            ):
+                return str(record.get("user_id", ""))
+        return ""
+
+    def set_user_password(
+        self, account_id: str, tenant_id: str, user_id: str, password: str, *, email: str = "", identity: Json | None = None
+    ) -> None:
+        """Store a salted PBKDF2 hash for email/password login. Plaintext is never persisted."""
+        if not user_id:
+            raise MatrixArkError("user_id is required to set a password")
+        hashed = hash_matrixark_password(password)
+        self.metadata.append(
+            {
+                "record_type": "matrixark_user_credential",
+                "credential_id_hash": stable_hash(f"{account_id}:{tenant_id}:credential:{user_id}"),
+                "account_id": account_id,
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "email": email,
+                **hashed,
+                **identity_hashes(account_id, tenant_id, user_id),
+                "status": "active",
+                "created_by_api_key_id": (identity or {}).get("api_key_id", ""),
+                "created_at_ms": now_ms(),
+                "updated_at_ms": now_ms(),
+            }
+        )
+
+    def verify_user_password(self, password: str, credential: Json | None) -> bool:
+        """Constant-time PBKDF2 check for email/password login."""
+        return verify_matrixark_password(password, credential)
 
     def append_audit(self, action: str, identity: Json, *, status: str, details: Json | None = None) -> None:
         self.metadata.append(

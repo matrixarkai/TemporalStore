@@ -202,6 +202,63 @@ class _AccessSsoMixin:
             "stored_oauth_tokens": False,
         }
 
+    def login(self, args: Json, identity: Json) -> Json:
+        """Email/password login for users who registered without SSO.
+
+        MatrixArk verifies a salted PBKDF2 hash and never stores or logs the
+        plaintext password. Gmail/Google and GitHub users should use
+        sso_callback instead. Failures return a single generic error and are
+        audited without revealing whether the email or the password was wrong.
+        """
+        provider = safe_identifier(optional_string(args, "provider", "password"), default="password")
+        scope = optional_object(args, "scope")
+        account_id = canonical_account_id(optional_string(args, "account_id") or str(scope.get("account_id") or identity["account_id"]))
+        tenant_id = canonical_tenant_id(optional_string(args, "tenant_id") or str(scope.get("tenant_id") or identity["tenant_id"]))
+        email = optional_string(args, "email", "")
+        password = optional_string(args, "password", "")
+        user_id = optional_string(args, "user_id", "") or optional_string(args, "matrixark_user_id", "")
+        if not password or not (email or user_id):
+            self.append_denied_audit("auth.login", args, reason="email/user_id and password are required")
+            raise MatrixArkError("email and password are required")
+        if not user_id:
+            user_id = self.find_credential_user_id_by_email(account_id, tenant_id, email)
+        credential = self.latest_user_credential(account_id, tenant_id, user_id) if user_id else None
+        if not credential or not self.verify_user_password(password, credential):
+            self.append_denied_audit("auth.login", args, reason="invalid email or password")
+            raise MatrixArkError("invalid email or password")
+        self.ensure_account_tenant_active(account_id, tenant_id)
+        self.ensure_user_active(account_id, tenant_id, user_id)
+        login_scope = enrich_scope_with_identity(
+            {**scope, "account_id": account_id, "tenant_id": tenant_id, "user_id": user_id},
+            {"account_id": account_id, "tenant_id": tenant_id, "user_id": user_id, "session_id": str(scope.get("session_id") or "")},
+        )
+        self.append_audit(
+            "auth.login",
+            {**identity, "account_id": account_id, "tenant_id": tenant_id, "user_id": user_id},
+            status="ok",
+            details={"provider": provider, "email_present": bool(email), "matrixark_user_id": user_id},
+        )
+        return {
+            "status": "logged_in",
+            "provider": provider,
+            "email": email or str(credential.get("email", "")),
+            "matrixark_user_id": user_id,
+            "account_id": account_id,
+            "tenant_id": tenant_id,
+            "scope": login_scope,
+            "auth_method": "password",
+            "next_actions": {
+                "apply_api_key": {
+                    "tool": "matrixark_admin_apply_api_key",
+                    "arguments": {"account_id": account_id, "tenant_id": tenant_id, "user_id": user_id},
+                },
+                "open_portal": {
+                    "tool": "matrixark_management_portal",
+                    "arguments": {"scope": login_scope, "include_revoked": True},
+                },
+            },
+        }
+
     def map_sso_user(self, args: Json, identity: Json) -> Json:
         provider = require_string(args, "provider")
         external_user_id = require_string(args, "external_user_id")

@@ -397,6 +397,74 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
         self.assertIn("auth.signup", actions)
         self.assertIn("auth.sso_callback", actions)
 
+    def test_email_password_signup_login_and_never_stores_plaintext(self) -> None:
+        server = self.make_server()
+        secret_password = "correct-horse-battery-staple-42"
+        signup = server.call_tool(
+            "matrixark_auth_signup",
+            {
+                "trusted_gateway": True,
+                "provider": "password",
+                "email": "bob@gmail.com",
+                "password": secret_password,
+                "account_id": "acct_pw",
+                "tenant_id": "tenant_pw",
+                "user_id": "bob",
+                "display_name": "Bob",
+                "allowed_user_ids": ["bob"],
+                "first_key_scopes": ["portal:read", "context:retrieve"],
+            },
+        )
+        self.assertEqual("signed_up", signup["status"])
+        self.assertTrue(signup["password_login_enabled"])
+
+        # Plaintext password must never be persisted or echoed back.
+        record_dump = str(server.adapter.read_all())
+        self.assertNotIn(secret_password, record_dump)
+        self.assertNotIn(secret_password, str(signup))
+        credential_records = [r for r in server.adapter.read_all() if r.get("record_type") == "matrixark_user_credential"]
+        self.assertEqual(1, len(credential_records))
+        self.assertEqual("pbkdf2_sha256", credential_records[0]["algo"])
+        self.assertNotIn("password", credential_records[0])
+
+        # Correct email + password logs in and resolves the MatrixArk user.
+        login = server.call_tool(
+            "matrixark_auth_login",
+            {"email": "bob@gmail.com", "password": secret_password, "account_id": "acct_pw", "tenant_id": "tenant_pw"},
+        )
+        self.assertEqual("logged_in", login["status"])
+        self.assertEqual("bob", login["matrixark_user_id"])
+        self.assertEqual("password", login["auth_method"])
+        self.assertIn("apply_api_key", login["next_actions"])
+
+        # Wrong password and unknown email both fail with a single generic error.
+        with self.assertRaises(MatrixArkError):
+            server.call_tool(
+                "matrixark_auth_login",
+                {"email": "bob@gmail.com", "password": "wrong-password", "account_id": "acct_pw", "tenant_id": "tenant_pw"},
+            )
+        with self.assertRaises(MatrixArkError):
+            server.call_tool(
+                "matrixark_auth_login",
+                {"email": "nobody@gmail.com", "password": secret_password, "account_id": "acct_pw", "tenant_id": "tenant_pw"},
+            )
+
+        admin_key = server.call_tool(
+            "matrixark_admin_create_api_key",
+            {
+                "account_id": "acct_pw",
+                "tenant_id": "tenant_pw",
+                "role": "owner",
+                "scopes": ["admin:audit", "portal:read"],
+            },
+        )["api_key"]
+        audit_actions = [
+            row.get("action")
+            for row in server.call_tool("matrixark_admin_audit", {"api_key": admin_key, "account_id": "acct_pw", "tenant_id": "tenant_pw"})["audit_logs"]
+        ]
+        self.assertIn("auth.login", audit_actions)
+        self.assertNotIn(secret_password, str(server.adapter.read_all()))
+
 
     def test_http_json_portal_facade_calls_live_mcp_admin_routes(self) -> None:
         server = self.make_server()

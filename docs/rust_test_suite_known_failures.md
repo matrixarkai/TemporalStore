@@ -133,6 +133,62 @@ Tests: `block_store::tests::page_address_matches_compact_segment_metadata_contra
 `client::tests::table_typed_methods_and_pipeline_match_cpp_client_shape`,
 `data_node::tests::storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_flags`.
 
+## Python hook / MCP `unittest` suite (`tools/test_matrixark_*`)
+
+A separate suite (Python `unittest` driving ingest→extract→retrieve→commit against the
+Rust proxy in `no-metaserver` local mode). Reproduce per-file at a **pinned** commit
+after building the proxy:
+
+```bash
+cargo build -p temporalstore-rust --bin matrixark_rust_proxy
+cd tools
+MATRIXARK_TEST_RUST_PROXY=$PWD/../target/debug/matrixark_rust_proxy \
+  python3 -m unittest test_matrixark_popular_agent_hooks
+```
+
+Fixed (on `main`): two `NameError` import regressions from the "split helpers out of
+core" refactor that broke **all** `matrixark_ingest` — `non_default_classification`
+missing in `matrixark_mcp_core_compact` (`35029984`) and `_mcp_debug_log` missing in
+`matrixark_mcp_local_adapter` (`d6a7b5fd`, dropped by `import *` skipping underscore
+names) — plus two stale hook-test expectations. `test_matrixark_popular_agent_hooks` is
+**23/23 in a clean, isolated run**.
+
+Measurement caveat: combined multi-file runs are **not** a baseline. `main` is
+mid-refactor (a green commit is red ~6 commits later), cross-test runs share `/tmp`
+stores / leave orphaned proxies / keep refresher threads alive (same commit → different
+results), and the dev WSL shell blanks `$$`/loop vars in `bash -lc`. The ~140/529
+combined count is inflated; the clusters below are keyed by **root cause**, which is
+stable.
+
+### 9. Serving-embedding lineage is now debug-only (largest; INTENDED)
+
+Files: `test_matrixark_codex_hook_pipeline` (majority), some `codex_hook_output`.
+Symptom: `KeyError` on `source_memory_scopes`, `source_session_continuities`,
+`source_extraction_phases`, `source_role_counts`, `source_session_ids`, `source_roles`
+when asserting on **serving/hot embedding** rows. Root cause: a deliberate commit series
+(`Keep embedding lineage debug-only`, `Keep embedding lineage out of serving records`,
+`Compact context embedding serving rows`, `Strip dirty hash from serving embeddings`)
+moved lineage off compact serving rows into the debug variant. Owner decision (do **not**
+blind-edit to green): assert the new compact shape, or enable context-debug records and
+assert lineage there — editing to accept current output risks masking an unintended drop.
+
+### 10. `mcp_backend_policy` mixin-split churn (in flight)
+
+File: `test_matrixark_mcp_backend_policy`, actively being split
+(`refactor(tests): split MatrixArkMcpBackendPolicyTest into 4 mixins`). Symptoms:
+`--rust-direct-lib` not found in a generated server script (flag moved by the MCP
+entrypoint split); `KeyError` on renamed keys (`profile_entity`, `selected_refs`,
+`recovery_status`); `assertIn`/count assertions on shapes the split changed. Reconcile
+with the owning refactor, not piecemeal against a moving target.
+
+### 11. `codex_hook_output` / `plugin_session_resolver` churn
+
+Same class as #10: output-shape and session-resolution assertions shifted by the ongoing
+"split into mixins" reorganization. Reconcile with the owning refactor.
+
+A deeper reproduction/triage of these lives in
+[`python_hook_mcp_test_suite_known_failures.md`](python_hook_mcp_test_suite_known_failures.md).
+
 ## Recommendation
 
 The `slot_storage_summaries` bug (a declared-but-unpopulated field consumed
@@ -141,8 +197,8 @@ metric/recovery failures may share that shape. Now that the suite compiles,
 add a CI gate on `cargo build --workspace --all-targets` (and, once green, on
 `cargo test`) so this class of regression cannot silently reaccumulate.
 
-For the **Python hook / MCP `unittest` suites** (`tools/test_matrixark_*`), see
-[`python_hook_mcp_test_suite_known_failures.md`](python_hook_mcp_test_suite_known_failures.md):
-the shared ingest path is fixed (two `NameError` import regressions from the "split
-helpers out of core" refactor), and the remaining red is an intended serving-embedding
-lineage compaction plus in-flight mixin-split churn.
+For the Python hook / MCP suite, the shared ingest path is fixed; the remaining red
+(clusters 9–11) is an **intended** serving-embedding lineage compaction plus **in-flight**
+mixin-split churn — owner/refactor work, not bug fixes. Do not edit those test
+expectations to force green until the split campaign settles, to preserve the
+intended-vs-regression boundary on the lineage change.
