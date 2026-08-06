@@ -174,11 +174,11 @@ pub struct StorageProductionPostureReport {
     pub native_slot_store_layout_transition_ready: bool,
     #[serde(default)]
     pub native_slot_store_layout_transition_evidence: Vec<String>,
-    pub stream_backed_extent_runtime_ready: bool,
+    pub stream_backed_band_runtime_ready: bool,
     #[serde(default)]
-    pub stream_backed_extent_runtime_evidence: Vec<String>,
+    pub stream_backed_band_runtime_evidence: Vec<String>,
     #[serde(default)]
-    pub stream_backed_extent_runtime_blockers: Vec<String>,
+    pub stream_backed_band_runtime_blockers: Vec<String>,
     pub model_layout_compaction_ready: bool,
     #[serde(default)]
     pub model_layout_compaction_evidence: Vec<String>,
@@ -1325,13 +1325,13 @@ mod tests {
             .native_slot_store_layout_transition_evidence
             .iter()
             .any(|item| item.contains("slot objects track layout state transitions")));
-        assert!(report.stream_backed_extent_runtime_ready);
+        assert!(report.stream_backed_band_runtime_ready);
         assert!(report
-            .stream_backed_extent_runtime_evidence
+            .stream_backed_band_runtime_evidence
             .iter()
             .any(|item| item.contains("logical stream reads span page records")));
         assert!(report
-            .stream_backed_extent_runtime_blockers
+            .stream_backed_band_runtime_blockers
             .iter()
             .any(|item| item.contains("byte-for-byte stream backend layout")));
         assert!(report.model_layout_compaction_ready);
@@ -1379,7 +1379,7 @@ mod tests {
         for required in [
             "Rust lifecycle behavior evidence",
             "native ObjectManager runtime mechanics",
-            "stream-backed extent runtime",
+            "stream-backed band runtime",
             "mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop",
             "orphan page detection",
             "missing/stale page-reference detection",

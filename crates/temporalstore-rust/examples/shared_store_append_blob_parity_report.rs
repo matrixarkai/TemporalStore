@@ -76,7 +76,7 @@ struct OffsetMetadataMapping {
     command_sha256: String,
     command_encoding: u32,
     object_length: u64,
-    physical_extent_count: u64,
+    physical_band_count: u64,
     first_physical_offset: Option<u64>,
     expected_start_offset: Option<u64>,
     expected_end_offset: Option<u64>,
@@ -93,11 +93,11 @@ struct AuthoritativeOffsetLookupReport {
     range_bytes_read: u64,
     exact_offset_slice_reads: u64,
     range_reads_smaller_than_blob: u64,
-    extent_metadata_entries: u64,
+    band_metadata_entries: u64,
     first_physical_offset_entries: u64,
     all_oplog_indexes_directly_read_from_offset_metadata: bool,
     all_direct_reads_match_expected_entries: bool,
-    all_direct_reads_have_extent_metadata: bool,
+    all_direct_reads_have_band_metadata: bool,
     lower_layer_range_reads_exact_offset_slices: bool,
     lower_layer_range_reads_avoid_full_blob_scans: bool,
     lower_layer_blob_offset_reads_proven: bool,
@@ -112,7 +112,7 @@ struct PublishPhaseReport {
     append_receipts: Vec<AppendBlobReceipt>,
     offset_metadata_mappings: Vec<OffsetMetadataMapping>,
     blob_object_length: u64,
-    blob_physical_extent_count: usize,
+    blob_physical_band_count: usize,
     offset_frame_validation: OffsetFrameValidation,
     offset_index_validation: OffsetIndexValidation,
     authoritative_offset_lookup: AuthoritativeOffsetLookupReport,
@@ -126,7 +126,7 @@ struct WriterPhaseReport {
     write_reports: Vec<SharedStoreWriteReport>,
     offset_metadata_mappings: Vec<OffsetMetadataMapping>,
     blob_object_length: u64,
-    blob_physical_extent_count: usize,
+    blob_physical_band_count: usize,
     authoritative_offset_lookup: AuthoritativeOffsetLookupReport,
     replay: ReplayPhaseReport,
 }
@@ -140,7 +140,7 @@ struct AsyncWriterPhaseReport {
     flush_report: SharedStoreFlushReport,
     offset_metadata_mappings: Vec<OffsetMetadataMapping>,
     blob_object_length: u64,
-    blob_physical_extent_count: usize,
+    blob_physical_band_count: usize,
     authoritative_offset_lookup: AuthoritativeOffsetLookupReport,
     replay: ReplayPhaseReport,
 }
@@ -205,7 +205,7 @@ struct Summary {
     direct_offset_index_maps_oplog_to_blob_offsets: bool,
     authoritative_offset_lookup_reads_all_records: bool,
     authoritative_offset_lookup_matches_all_records: bool,
-    authoritative_offset_lookup_has_extent_metadata: bool,
+    authoritative_offset_lookup_has_band_metadata: bool,
     lower_layer_blob_offset_reads_proven: bool,
     lower_layer_range_reads_avoid_full_blob_scans: bool,
     snapshot_reopen_restores_offset_metadata: bool,
@@ -342,15 +342,15 @@ async fn main() {
             && async_writer
                 .authoritative_offset_lookup
                 .all_direct_reads_match_expected_entries,
-        authoritative_offset_lookup_has_extent_metadata: direct_publish
+        authoritative_offset_lookup_has_band_metadata: direct_publish
             .authoritative_offset_lookup
-            .all_direct_reads_have_extent_metadata
+            .all_direct_reads_have_band_metadata
             && sync_writer
                 .authoritative_offset_lookup
-                .all_direct_reads_have_extent_metadata
+                .all_direct_reads_have_band_metadata
             && async_writer
                 .authoritative_offset_lookup
-                .all_direct_reads_have_extent_metadata,
+                .all_direct_reads_have_band_metadata,
         lower_layer_blob_offset_reads_proven: direct_publish
             .authoritative_offset_lookup
             .lower_layer_blob_offset_reads_proven
@@ -469,7 +469,7 @@ fn replay_report_uses_offset_index(report: &ReplayReport, entry_count: u64) -> b
 fn matrixobject_options(persistent_journal_path: Option<&std::path::Path>) -> StoreOptions {
     StoreOptions {
         segment_size: 4096,
-        max_extent_bytes: 1024,
+        max_band_bytes: 1024,
         chunk_size: 1024,
         persistent_journal_path: persistent_journal_path
             .map(|path| path.to_string_lossy().to_string())
@@ -526,7 +526,7 @@ async fn run_direct_publish(
         append_receipts,
         offset_metadata_mappings,
         blob_object_length: metadata.length,
-        blob_physical_extent_count: metadata.extents.len(),
+        blob_physical_band_count: metadata.bands.len(),
         offset_frame_validation,
         offset_index_validation,
         authoritative_offset_lookup,
@@ -578,7 +578,7 @@ async fn run_sync_writer(
         write_reports,
         offset_metadata_mappings,
         blob_object_length: metadata.length,
-        blob_physical_extent_count: metadata.extents.len(),
+        blob_physical_band_count: metadata.bands.len(),
         authoritative_offset_lookup,
         replay: replay_and_retrieve(root, replicator, shard_id, entry_count, "sync").await,
     }
@@ -633,7 +633,7 @@ async fn run_async_writer(
         flush_report,
         offset_metadata_mappings,
         blob_object_length: metadata.length,
-        blob_physical_extent_count: metadata.extents.len(),
+        blob_physical_band_count: metadata.bands.len(),
         authoritative_offset_lookup,
         replay: replay_and_retrieve(root, replicator, shard_id, entry_count, "async").await,
     }
@@ -916,7 +916,7 @@ fn build_offset_metadata_mappings(
                 command_sha256: metadata.command_sha256.clone(),
                 command_encoding: metadata.command_encoding,
                 object_length: metadata.wal_blob_object_length,
-                physical_extent_count: metadata.wal_blob_physical_extent_count,
+                physical_band_count: metadata.wal_blob_physical_band_count,
                 first_physical_offset: metadata.wal_blob_first_physical_offset,
                 expected_start_offset,
                 expected_end_offset,
@@ -940,7 +940,7 @@ async fn validate_authoritative_offset_lookup(
     let mut range_bytes_read = 0u64;
     let mut exact_offset_slice_reads = 0u64;
     let mut range_reads_smaller_than_blob = 0u64;
-    let mut extent_metadata_entries = 0u64;
+    let mut band_metadata_entries = 0u64;
     let mut first_physical_offset_entries = 0u64;
     let mut errors = Vec::new();
     for index in 1..=entry_count {
@@ -968,8 +968,8 @@ async fn validate_authoritative_offset_lookup(
                 if read.metadata.wal_blob_object_length > read.range_bytes_read {
                     range_reads_smaller_than_blob += 1;
                 }
-                if read.metadata.wal_blob_physical_extent_count > 0 {
-                    extent_metadata_entries += 1;
+                if read.metadata.wal_blob_physical_band_count > 0 {
+                    band_metadata_entries += 1;
                 }
                 if read.metadata.wal_blob_first_physical_offset.is_some() {
                     first_physical_offset_entries += 1;
@@ -994,12 +994,12 @@ async fn validate_authoritative_offset_lookup(
         range_bytes_read,
         exact_offset_slice_reads,
         range_reads_smaller_than_blob,
-        extent_metadata_entries,
+        band_metadata_entries,
         first_physical_offset_entries,
         all_oplog_indexes_directly_read_from_offset_metadata: metadata_hits == entry_count
             && decoded_entries == entry_count,
         all_direct_reads_match_expected_entries: matched_entries == entry_count,
-        all_direct_reads_have_extent_metadata: extent_metadata_entries == entry_count
+        all_direct_reads_have_band_metadata: band_metadata_entries == entry_count
             && first_physical_offset_entries == entry_count,
         lower_layer_range_reads_exact_offset_slices: exact_offset_slice_reads == entry_count,
         lower_layer_range_reads_avoid_full_blob_scans: range_reads_smaller_than_blob

@@ -1,5 +1,5 @@
 ﻿use super::*;
-use crate::block_store::BlockStoreExtentState;
+use crate::block_store::BlockStoreBandState;
 use crate::engine::golden::{
     cpp_api_golden_corpus_report, cpp_feature_sequence_golden_corpus_report,
 };

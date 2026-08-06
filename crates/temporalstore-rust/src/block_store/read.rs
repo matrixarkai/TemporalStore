@@ -105,32 +105,32 @@ impl LocalBlockStore {
             inner.page_segment_id = page_segment_id;
             inner.write_offset = bytes.len() as u64;
         }
-        let extent_summary = summarize_segment(bytes, page_segment_id)?;
-        if let Some(max_page_id) = extent_summary.last_page_id {
+        let band_summary = summarize_segment(bytes, page_segment_id)?;
+        if let Some(max_page_id) = band_summary.last_page_id {
             inner.next_page_id = inner.next_page_id.max(max_page_id.saturating_add(1));
         }
         let is_current_segment = page_segment_id == inner.page_segment_id;
         let now = now_unix_ms();
-        inner.extents.insert(
+        inner.bands.insert(
             page_segment_id,
-            BlockStoreExtentDescriptor {
-                extent_id: extent_id_for_segment(page_segment_id),
+            BlockStoreBandDescriptor {
+                band_id: band_id_for_segment(page_segment_id),
                 page_segment_id,
                 state: if is_current_segment {
-                    BlockStoreExtentState::Active
+                    BlockStoreBandState::Active
                 } else {
-                    BlockStoreExtentState::Sealed
+                    BlockStoreBandState::Sealed
                 },
                 physical_bytes: bytes.len() as u64,
-                logical_bytes: extent_summary.logical_bytes,
+                logical_bytes: band_summary.logical_bytes,
                 created_unix_ms: Some(
                     file_modified_unix_ms(&path)
                         .or_else(|| file_created_unix_ms(&path))
                         .unwrap_or(now),
                 ),
                 updated_unix_ms: Some(now),
-                first_page_id: extent_summary.first_page_id,
-                last_page_id: extent_summary.last_page_id,
+                first_page_id: band_summary.first_page_id,
+                last_page_id: band_summary.last_page_id,
                 readable_prefix_physical_bytes: bytes.len() as u64,
                 has_corruption: false,
                 first_error_offset: None,
@@ -138,15 +138,15 @@ impl LocalBlockStore {
             },
         );
         if is_current_segment {
-            for extent in inner.extents.values_mut() {
-                if extent.page_segment_id != page_segment_id
-                    && extent.state == BlockStoreExtentState::Active
+            for band in inner.bands.values_mut() {
+                if band.page_segment_id != page_segment_id
+                    && band.state == BlockStoreBandState::Active
                 {
-                    extent.state = BlockStoreExtentState::Sealed;
+                    band.state = BlockStoreBandState::Sealed;
                 }
             }
         }
-        persist_extent_manifest(&inner.root, &inner.extents)?;
+        persist_band_manifest(&inner.root, &inner.bands)?;
         Ok(())
     }
 }

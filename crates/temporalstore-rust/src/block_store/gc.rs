@@ -188,10 +188,10 @@ impl LocalBlockStore {
                 .map(|metadata| metadata.len())
                 .unwrap_or_default();
             let zone_id = inner
-                .extents
+                .bands
                 .get(page_segment_id)
-                .map(|extent| extent.extent_id)
-                .unwrap_or_else(|| extent_id_for_segment(*page_segment_id));
+                .map(|band| band.band_id)
+                .unwrap_or_else(|| band_id_for_segment(*page_segment_id));
             *zone_total_bytes.entry(zone_id).or_default() = zone_total_bytes
                 .get(&zone_id)
                 .copied()
@@ -219,15 +219,15 @@ impl LocalBlockStore {
                     .metadata()
                     .map(|metadata| metadata.len())
                     .unwrap_or_default();
-                let extent = inner.extents.get(&page_segment_id);
-                let created_unix_ms = extent.and_then(|extent| extent.created_unix_ms);
-                let updated_unix_ms = extent.and_then(|extent| extent.updated_unix_ms);
+                let band = inner.bands.get(&page_segment_id);
+                let created_unix_ms = band.and_then(|band| band.created_unix_ms);
+                let updated_unix_ms = band.and_then(|band| band.updated_unix_ms);
                 let age_ms = updated_unix_ms
                     .or(created_unix_ms)
                     .map(|timestamp| now.saturating_sub(timestamp));
-                let zone_id = extent
-                    .map(|extent| extent.extent_id)
-                    .unwrap_or_else(|| extent_id_for_segment(page_segment_id));
+                let zone_id = band
+                    .map(|band| band.band_id)
+                    .unwrap_or_else(|| band_id_for_segment(page_segment_id));
                 let total_bytes = zone_total_bytes.get(&zone_id).copied().unwrap_or(bytes);
                 let used_bytes = zone_used_bytes.get(&zone_id).copied().unwrap_or_default();
                 let stale_bytes = total_bytes.saturating_sub(used_bytes);
@@ -323,19 +323,19 @@ impl LocalBlockStore {
                 removed_physical_bytes += segment_physical_bytes;
                 if delayed_destroy {
                     move_segment_to_delayed_destroy(&inner.root, page_segment_id)?;
-                    set_extent_state(
-                        &mut inner.extents,
+                    set_band_state(
+                        &mut inner.bands,
                         page_segment_id,
-                        BlockStoreExtentState::DelayedDestroy,
+                        BlockStoreBandState::DelayedDestroy,
                     );
                     delayed_destroy_ids.push(page_segment_id);
                     delayed_destroy_physical_bytes += segment_physical_bytes;
                 } else {
                     fs::remove_file(segment_path(&inner.root, page_segment_id))?;
-                    set_extent_state(
-                        &mut inner.extents,
+                    set_band_state(
+                        &mut inner.bands,
                         page_segment_id,
-                        BlockStoreExtentState::Purged,
+                        BlockStoreBandState::Purged,
                     );
                 }
                 removed.push(page_segment_id);
@@ -352,7 +352,7 @@ impl LocalBlockStore {
                 retained.push(page_segment_id);
             }
         }
-        persist_extent_manifest(&inner.root, &inner.extents)?;
+        persist_band_manifest(&inner.root, &inner.bands)?;
         Ok(BlockStoreGcReport {
             retain_from_page_segment_id,
             removed_page_segment_ids: removed,

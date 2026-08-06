@@ -1902,8 +1902,8 @@ fn storage_page_format_compatibility_report_counts_zones_and_header_gaps() {
     assert!(report.object_ids_embedded);
     assert!(report.routing_slots_embedded);
     assert!(report.compression_supported);
-    assert_eq!(report.sealed_extents, 1);
-    assert_eq!(report.active_extents, 1);
+    assert_eq!(report.sealed_bands, 1);
+    assert_eq!(report.active_bands, 1);
     assert!(report.live_physical_bytes > 0);
     assert!(report.page_store_writes > 0);
     assert!(report.page_store_bytes_written > 0);

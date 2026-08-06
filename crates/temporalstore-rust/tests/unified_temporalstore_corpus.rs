@@ -3351,12 +3351,12 @@ fn maybe_run_storage_parity_command(case: &UnifiedCase, step: &UnifiedStep) -> b
             let storage_case = load_storage_migration_case(&command.required_migration_case());
             verify_storage_recovery_reconciles_slot_index_to_model_views(&storage_case);
         }
-        "storage_stream_backed_extent_runtime" => verify_storage_stream_backed_extent_runtime(),
-        "storage_stream_partial_extent_rebuild" => verify_storage_stream_backed_extent_runtime(),
+        "storage_stream_backed_band_runtime" => verify_storage_stream_backed_band_runtime(),
+        "storage_stream_partial_band_rebuild" => verify_storage_stream_backed_band_runtime(),
         "storage_stream_manifest_disk_reconciliation" => {
-            verify_storage_stream_backed_extent_runtime()
+            verify_storage_stream_backed_band_runtime()
         }
-        "storage_stream_segment_manifest_rebuild" => verify_storage_stream_backed_extent_runtime(),
+        "storage_stream_segment_manifest_rebuild" => verify_storage_stream_backed_band_runtime(),
         "storage_stream_reopen_scan" => verify_storage_stream_reopen_scan(&command),
         other => panic!(
             "case={} step={} unsupported storage command {other}",
@@ -4235,7 +4235,7 @@ fn verify_storage_stream_reopen_scan(command: &StorageUnifiedCommand) {
     }
 }
 
-fn verify_storage_stream_backed_extent_runtime() {
+fn verify_storage_stream_backed_band_runtime() {
     verify_random_size_reopen_scan();
     verify_cross_block_large_values();
 }

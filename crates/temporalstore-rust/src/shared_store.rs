@@ -83,7 +83,7 @@ pub struct SharedStoreWalOffsetMetadata {
     pub wal_blob_bytes_written: u64,
     pub wal_blob_object_length: u64,
     #[serde(default)]
-    pub wal_blob_physical_extent_count: u64,
+    pub wal_blob_physical_band_count: u64,
     pub wal_blob_first_physical_offset: Option<u64>,
     pub command_byte_size: u64,
     pub command_sha256: String,
@@ -281,7 +281,7 @@ struct SharedStoreWalOffsetMetadataProto {
     #[prost(uint32, tag = "10")]
     command_encoding: u32,
     #[prost(uint64, tag = "11")]
-    wal_blob_physical_extent_count: u64,
+    wal_blob_physical_band_count: u64,
     #[prost(uint64, optional, tag = "12")]
     wal_blob_first_physical_offset: Option<u64>,
 }
@@ -398,7 +398,7 @@ where
             wal_blob_end_offset: receipt.end_offset,
             wal_blob_bytes_written: receipt.bytes_written,
             wal_blob_object_length: receipt.object_length,
-            wal_blob_physical_extent_count: receipt.physical_extent_count as u64,
+            wal_blob_physical_band_count: receipt.physical_band_count as u64,
             wal_blob_first_physical_offset: receipt.first_physical_offset,
             command_byte_size: command_metadata.byte_size,
             command_sha256: command_metadata.sha256,
@@ -1419,7 +1419,7 @@ fn encode_wal_offset_metadata_frame(metadata: &SharedStoreWalOffsetMetadata) -> 
         command_byte_size: metadata.command_byte_size,
         command_sha256: metadata.command_sha256.clone(),
         command_encoding: metadata.command_encoding,
-        wal_blob_physical_extent_count: metadata.wal_blob_physical_extent_count,
+        wal_blob_physical_band_count: metadata.wal_blob_physical_band_count,
         wal_blob_first_physical_offset: metadata.wal_blob_first_physical_offset,
     };
     let mut encoded = proto.encode_to_vec();
@@ -1550,7 +1550,7 @@ fn decode_wal_offset_metadata_blob(
                 wal_blob_end_offset: frame.wal_blob_end_offset,
                 wal_blob_bytes_written: frame.wal_blob_bytes_written,
                 wal_blob_object_length: frame.wal_blob_object_length,
-                wal_blob_physical_extent_count: frame.wal_blob_physical_extent_count,
+                wal_blob_physical_band_count: frame.wal_blob_physical_band_count,
                 wal_blob_first_physical_offset: frame.wal_blob_first_physical_offset,
                 command_byte_size: frame.command_byte_size,
                 command_sha256: frame.command_sha256,
@@ -2427,7 +2427,7 @@ mod tests {
                 "temporalstore-shared",
                 StoreOptions {
                     segment_size: 16,
-                    max_extent_bytes: 4,
+                    max_band_bytes: 4,
                     chunk_size: 4,
                     ..StoreOptions::default()
                 },
@@ -2464,7 +2464,7 @@ mod tests {
             append_receipts[1].end_offset,
             append_receipts[1].object_length
         );
-        assert!(append_receipts[1].physical_extent_count > 1);
+        assert!(append_receipts[1].physical_band_count > 1);
 
         let blob_key = "cluster-a/shards/1/shared/oplog/oplog.protobuf.blob";
         let offset_index_key = "cluster-a/shards/1/shared/oplog/oplog.offset_index.protobuf.blob";
@@ -2495,7 +2495,7 @@ mod tests {
             .get_object("temporalstore-shared", blob_key)
             .unwrap();
         assert!(
-            matrixobject_blob.metadata.extents.len() > 1,
+            matrixobject_blob.metadata.bands.len() > 1,
             "protobuf WAL frames should be appended into one MatrixObject blob"
         );
 
