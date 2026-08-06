@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
 
-use crate::page_store::PageAddress;
+use crate::block_store::BlockAddress;
 use crate::types::{CommandResponse, FeaturePoint, RiskFolType, ShardId};
 
 /// In-memory, coalesced summary-dirty entry.
@@ -26,32 +26,32 @@ pub(super) struct ContextDirtyEntry {
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(super) struct ShardState {
     pub(super) expires_at_ms: HashMap<String, u64>,
-    pub(super) strings: HashMap<String, PageAddress>,
-    pub(super) hashes: HashMap<String, HashMap<String, PageAddress>>,
+    pub(super) strings: HashMap<String, BlockAddress>,
+    pub(super) hashes: HashMap<String, HashMap<String, BlockAddress>>,
     #[serde(default, with = "super::set_index_serde")]
-    pub(super) sets: HashMap<String, BTreeMap<Vec<u8>, PageAddress>>,
-    pub(super) features: HashMap<String, BTreeMap<u64, PageAddress>>,
-    pub(super) sequences: HashMap<String, BTreeMap<u64, PageAddress>>,
-    pub(super) ips: HashMap<String, BTreeMap<u64, PageAddress>>,
+    pub(super) sets: HashMap<String, BTreeMap<Vec<u8>, BlockAddress>>,
+    pub(super) features: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    pub(super) sequences: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    pub(super) ips: HashMap<String, BTreeMap<u64, BlockAddress>>,
     #[serde(default)]
     pub(super) ips_meta: HashMap<String, BTreeMap<u64, IpsPointMeta>>,
     #[serde(default)]
     pub(super) ips_request_ids: HashMap<String, BTreeSet<String>>,
     pub(super) risk: HashMap<String, BTreeMap<u64, i64>>,
     #[serde(default)]
-    pub(super) risk_pages: HashMap<String, PageAddress>,
+    pub(super) risk_pages: HashMap<String, BlockAddress>,
     #[serde(default)]
     pub(super) risk_changes: HashMap<String, BTreeMap<u64, BTreeSet<Vec<u8>>>>,
     #[serde(default)]
     pub(super) risk_fol: HashMap<String, RiskFolValue>,
     #[serde(default)]
-    pub(super) context_nodes: HashMap<String, PageAddress>,
+    pub(super) context_nodes: HashMap<String, BlockAddress>,
     #[serde(default)]
-    pub(super) context_events: HashMap<String, BTreeMap<u64, PageAddress>>,
+    pub(super) context_events: HashMap<String, BTreeMap<u64, BlockAddress>>,
     #[serde(default)]
-    pub(super) context_indexes: HashMap<String, BTreeMap<u64, PageAddress>>,
+    pub(super) context_indexes: HashMap<String, BTreeMap<u64, BlockAddress>>,
     #[serde(default)]
-    pub(super) context_audits: HashMap<String, BTreeMap<u64, PageAddress>>,
+    pub(super) context_audits: HashMap<String, BTreeMap<u64, BlockAddress>>,
     // Summary-dirty tracking is intentionally in-memory only. Instead of appending a
     // persisted `ctx:dirty` page per event (which produced one dirty node per write and
     // unbounded dirty-page growth: a real e2e capture stored 47 dirty records for only 6
@@ -68,15 +68,15 @@ pub(super) struct ShardState {
     #[serde(skip)]
     pub(super) context_compression_watermark: HashMap<String, u64>,
     #[serde(default)]
-    pub(super) context_entities: HashMap<String, PageAddress>,
+    pub(super) context_entities: HashMap<String, BlockAddress>,
     #[serde(default)]
-    pub(super) context_children: HashMap<String, BTreeMap<u64, PageAddress>>,
+    pub(super) context_children: HashMap<String, BTreeMap<u64, BlockAddress>>,
     #[serde(default)]
-    pub(super) context_embeddings: HashMap<String, PageAddress>,
+    pub(super) context_embeddings: HashMap<String, BlockAddress>,
     #[serde(default)]
-    pub(super) context_summaries: HashMap<String, BTreeMap<u64, PageAddress>>,
+    pub(super) context_summaries: HashMap<String, BTreeMap<u64, BlockAddress>>,
     #[serde(default)]
-    pub(super) context_compressions: HashMap<String, BTreeMap<u64, PageAddress>>,
+    pub(super) context_compressions: HashMap<String, BTreeMap<u64, BlockAddress>>,
     #[serde(default)]
     pub(super) slot_index: CoreIndex,
     #[serde(skip)]
@@ -154,7 +154,7 @@ pub(super) struct PageIndex {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) component: Option<String>,
     pub(super) object_id: u64,
-    pub(super) address: PageAddress,
+    pub(super) address: BlockAddress,
     pub(super) dirty: bool,
     pub(super) deleted: bool,
     pub(super) log_backed: bool,
@@ -233,7 +233,7 @@ impl CoreIndex {
         model_id: &str,
         object_key: &str,
         component: Option<&str>,
-        address: &PageAddress,
+        address: &BlockAddress,
     ) -> bool {
         let lookup_key = object_page_lookup_key(model_id, object_key, component);
         if let Some(page_refs) = self.object_page_lookup.get(&lookup_key) {
@@ -300,7 +300,7 @@ fn push_lookup_part(buffer: &mut String, value: &str) {
     buffer.push('|');
 }
 
-fn same_page_address(left: &PageAddress, right: &PageAddress) -> bool {
+fn same_page_address(left: &BlockAddress, right: &BlockAddress) -> bool {
     left.page_segment_id == right.page_segment_id
         && left.offset == right.offset
         && left.length == right.length
@@ -339,7 +339,7 @@ pub(super) struct AdmissionLimit {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct IpsPointMeta {
-    pub(super) address: PageAddress,
+    pub(super) address: BlockAddress,
     pub(super) action_type: Option<u32>,
     pub(super) table_id: Option<u64>,
     pub(super) request_id: Option<String>,

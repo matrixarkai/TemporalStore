@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use super::cache::{page_physical_identity_key, PagePhysicalIdentityKey};
 use super::state::ShardState;
-use crate::page_store::PageAddress;
+use crate::block_store::BlockAddress;
 
 pub(super) struct TimestampedPageBatchWrite {
     pub(super) kind: &'static str,
@@ -13,9 +13,9 @@ pub(super) struct TimestampedPageBatchWrite {
 }
 
 pub(super) fn unique_timestamped_kv_page_addresses(
-    series: &BTreeMap<u64, PageAddress>,
-) -> Vec<PageAddress> {
-    let mut addresses = BTreeMap::<PagePhysicalIdentityKey, PageAddress>::new();
+    series: &BTreeMap<u64, BlockAddress>,
+) -> Vec<BlockAddress> {
+    let mut addresses = BTreeMap::<PagePhysicalIdentityKey, BlockAddress>::new();
     for address in series.values() {
         addresses.insert(page_physical_identity_key(address), address.clone());
     }
@@ -23,14 +23,14 @@ pub(super) fn unique_timestamped_kv_page_addresses(
 }
 
 pub(super) fn unique_feature_page_addresses(
-    series: &BTreeMap<u64, PageAddress>,
-) -> Vec<PageAddress> {
+    series: &BTreeMap<u64, BlockAddress>,
+) -> Vec<BlockAddress> {
     unique_timestamped_kv_page_addresses(series)
 }
 
 pub(super) fn timestamped_kv_series<'a>(
     shard: &'a ShardState,
-) -> Vec<(&'static str, &'a str, &'a BTreeMap<u64, PageAddress>)> {
+) -> Vec<(&'static str, &'a str, &'a BTreeMap<u64, BlockAddress>)> {
     let mut series = Vec::new();
     for (key, timeline) in &shard.features {
         series.push(("feature", key.as_str(), timeline));

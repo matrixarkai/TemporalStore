@@ -1,8 +1,8 @@
 ﻿use std::collections::{BTreeMap, HashMap};
 
 use crate::engine::constants::*;
-use crate::page_store::LocalPageStore;
-use crate::page_store::PageAddress;
+use crate::block_store::LocalBlockStore;
+use crate::block_store::BlockAddress;
 use crate::types::{
     ContextAuditRef, ContextChildRef, ContextCompressionEvent, ContextEmbedding, ContextEntity,
     ContextEvent, ContextExtractedEventIndexes, ContextIndexLookup, ContextIndexRef, ContextNode,
@@ -216,9 +216,9 @@ pub(super) fn context_timeline_key(timestamp_ms: u64, disambiguator: u64) -> u64
 }
 
 pub(super) fn context_event_timeline_key_for_write(
-    series: &BTreeMap<u64, PageAddress>,
+    series: &BTreeMap<u64, BlockAddress>,
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
     event: &ContextEvent,
     first_write_only: bool,
@@ -274,19 +274,19 @@ pub(super) fn context_from_bytes<T: ContextWire>(bytes: &[u8]) -> Option<T> {
 
 pub(super) fn read_context_value<T: ContextWire>(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
     timeline_key: u64,
-    address: &PageAddress,
+    address: &BlockAddress,
 ) -> Option<T> {
     let point = read_feature_point(cache, page_store, shard_id, timeline_key, address)?;
     context_from_bytes(&point.value)
 }
 
 pub(super) fn read_context_value_cold<T: ContextWire>(
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     timeline_key: u64,
-    address: &PageAddress,
+    address: &BlockAddress,
 ) -> Option<T> {
     let point = read_feature_point_cold(page_store, timeline_key, address)?;
     context_from_bytes(&point.value)
@@ -294,11 +294,11 @@ pub(super) fn read_context_value_cold<T: ContextWire>(
 
 pub(super) fn read_context_value_cached<T: ContextWire>(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
     timeline_key: u64,
-    address: &PageAddress,
-    packed_page_cache: &mut HashMap<PageAddress, Option<Vec<FeaturePoint>>>,
+    address: &BlockAddress,
+    packed_page_cache: &mut HashMap<BlockAddress, Option<Vec<FeaturePoint>>>,
 ) -> Option<T> {
     let point = read_feature_point_cached(
         cache,
@@ -717,7 +717,7 @@ pub(super) fn validate_context_compression_event(
 
 pub(super) fn load_context_children(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     object_key: &str,
@@ -744,7 +744,7 @@ pub(super) fn load_context_children(
 
 pub(super) fn load_context_embedding(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     tenant_hash: u64,
@@ -761,7 +761,7 @@ pub(super) fn load_context_embedding(
 
 pub(super) fn load_context_summaries(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     object_key: &str,
@@ -792,7 +792,7 @@ pub(super) fn load_context_summaries(
 
 pub(super) fn load_latest_context_summary(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     object_key: &str,
@@ -807,7 +807,7 @@ pub(super) fn load_latest_context_summary(
 
 pub(super) fn load_context_compression_events(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     tenant_hash: u64,
@@ -873,7 +873,7 @@ pub(super) fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn traverse_context_tree(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     tenant_hash: u64,

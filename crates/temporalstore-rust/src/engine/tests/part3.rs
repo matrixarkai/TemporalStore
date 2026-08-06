@@ -2159,7 +2159,7 @@ fn slot_store_reports_all_layout_states_and_runtime_flags() {
                     model_id: "string".to_string(),
                     component: None,
                     object_id: 30,
-                    address: PageAddress {
+                    address: BlockAddress {
                         page_segment_id: 1,
                         offset: 0,
                         length: 4,
@@ -2197,7 +2197,7 @@ fn slot_store_reports_all_layout_states_and_runtime_flags() {
                         model_id: "feature".to_string(),
                         component: None,
                         object_id: 40,
-                        address: PageAddress {
+                        address: BlockAddress {
                             page_segment_id: 2,
                             offset: 0,
                             length: 4,
@@ -2220,7 +2220,7 @@ fn slot_store_reports_all_layout_states_and_runtime_flags() {
                         model_id: "feature".to_string(),
                         component: None,
                         object_id: 40,
-                        address: PageAddress {
+                        address: BlockAddress {
                             page_segment_id: 2,
                             offset: 4,
                             length: 4,
@@ -2258,7 +2258,7 @@ fn slot_store_reports_all_layout_states_and_runtime_flags() {
                         model_id: "hash".to_string(),
                         component: Some("a".to_string()),
                         object_id: 50,
-                        address: PageAddress {
+                        address: BlockAddress {
                             page_segment_id: 3,
                             offset: 0,
                             length: 1,
@@ -2281,7 +2281,7 @@ fn slot_store_reports_all_layout_states_and_runtime_flags() {
                         model_id: "hash".to_string(),
                         component: Some("b".to_string()),
                         object_id: 51,
-                        address: PageAddress {
+                        address: BlockAddress {
                             page_segment_id: 3,
                             offset: 1,
                             length: 1,

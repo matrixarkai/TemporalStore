@@ -1,6 +1,6 @@
 ﻿use serde::{Deserialize, Serialize};
 
-use crate::page_store::{LocalPageStore, PageAddress};
+use crate::block_store::{LocalBlockStore, BlockAddress};
 use crate::types::ShardId;
 use matrixcache::MultiLayerCache;
 
@@ -142,7 +142,7 @@ pub(super) fn slot_index_page_address(
     model_id: &str,
     object_key: &str,
     component: Option<&str>,
-) -> Option<PageAddress> {
+) -> Option<BlockAddress> {
     let lookup_key = object_page_lookup_key(model_id, object_key, component);
     if let Some(page_refs) = shard.slot_index.object_page_lookup.get(&lookup_key) {
         for page_ref in page_refs {
@@ -186,7 +186,7 @@ pub(super) fn slot_index_component_page_addresses(
     shard: &ShardState,
     model_id: &str,
     object_key: &str,
-) -> Vec<(Option<String>, PageAddress)> {
+) -> Vec<(Option<String>, BlockAddress)> {
     let lookup_key = object_component_lookup_key(model_id, object_key);
     if let Some(page_refs) = shard.slot_index.object_component_lookup.get(&lookup_key) {
         let mut refs = page_refs
@@ -226,7 +226,7 @@ pub(super) fn slot_index_component_page_addresses(
 
 pub(super) fn read_slot_index_value(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     model_id: &str,

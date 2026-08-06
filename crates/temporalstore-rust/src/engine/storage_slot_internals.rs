@@ -180,7 +180,7 @@ pub(super) struct LivePageEntry {
     pub(super) object_key: String,
     pub(super) kind: String,
     pub(super) component: Option<String>,
-    pub(super) address: PageAddress,
+    pub(super) address: BlockAddress,
     pub(super) dirty: bool,
     pub(super) deleted: bool,
     pub(super) log_backed: bool,
@@ -196,7 +196,7 @@ pub(super) fn live_page_entry(
     object_key: impl Into<String>,
     kind: impl Into<String>,
     component: Option<String>,
-    address: PageAddress,
+    address: BlockAddress,
 ) -> LivePageEntry {
     LivePageEntry {
         object_key: object_key.into(),
@@ -211,7 +211,7 @@ pub(super) fn live_page_entry(
 
 pub(super) fn storage_page_address_sample(
     shard_id: ShardId,
-    address: &PageAddress,
+    address: &BlockAddress,
 ) -> StoragePageAddressSample {
     StoragePageAddressSample {
         shard_id,
@@ -226,7 +226,7 @@ pub(super) fn storage_page_address_sample(
 
 pub(super) fn storage_block_address_sample(
     shard_id: ShardId,
-    address: &PageAddress,
+    address: &BlockAddress,
 ) -> StorageBlockAddressSample {
     StorageBlockAddressSample {
         shard_id,
@@ -993,7 +993,7 @@ pub(super) fn page_index_ref_key(entry: &LivePageEntry) -> String {
 }
 
 pub(super) fn page_physical_identity_key(
-    address: &PageAddress,
+    address: &BlockAddress,
 ) -> (
     u64,
     u64,
@@ -1020,7 +1020,7 @@ pub(super) fn upsert_slot_index_page(
     kind: &str,
     object_key: &str,
     component: Option<String>,
-    address: PageAddress,
+    address: BlockAddress,
     dirty: bool,
 ) {
     let routing_slot = address
@@ -1137,7 +1137,7 @@ pub(super) fn sync_slot_index_object_pages(
     shard_id: ShardId,
     kind: &str,
     object_key: &str,
-    addresses: Vec<PageAddress>,
+    addresses: Vec<BlockAddress>,
     dirty: bool,
 ) {
     let mut touched_slots = BTreeSet::new();
@@ -1192,7 +1192,7 @@ pub(super) fn sync_slot_index_object_pages(
             Option<u32>,
             Option<u64>,
         ),
-        PageAddress,
+        BlockAddress,
     >::new();
     for address in addresses {
         unique_addresses.insert(page_physical_identity_key(&address), address);
@@ -1411,7 +1411,7 @@ pub(super) fn rebuild_slot_first_index(
     shard.slot_index = slot_index;
 }
 
-pub(super) fn reconcile_secondary_views_from_slot_index(page_store: &LocalPageStore, shard: &mut ShardState) {
+pub(super) fn reconcile_secondary_views_from_slot_index(page_store: &LocalBlockStore, shard: &mut ShardState) {
     if shard.slot_index.slot_map.is_empty() {
         return;
     }
@@ -1441,21 +1441,21 @@ pub(super) fn reconcile_secondary_views_from_slot_index(page_store: &LocalPageSt
     let mut saw_context_compressions = false;
 
     let mut strings = HashMap::new();
-    let mut hashes = HashMap::<String, HashMap<String, PageAddress>>::new();
-    let mut sets = HashMap::<String, BTreeMap<Vec<u8>, PageAddress>>::new();
-    let mut features = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
-    let mut sequences = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
-    let mut ips = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
+    let mut hashes = HashMap::<String, HashMap<String, BlockAddress>>::new();
+    let mut sets = HashMap::<String, BTreeMap<Vec<u8>, BlockAddress>>::new();
+    let mut features = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
+    let mut sequences = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
+    let mut ips = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut risk = HashMap::<String, BTreeMap<u64, i64>>::new();
     let mut risk_pages = HashMap::new();
-    let mut context_events = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
-    let mut context_indexes = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
-    let mut context_audits = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
+    let mut context_events = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
+    let mut context_indexes = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
+    let mut context_audits = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut context_entities = HashMap::new();
-    let mut context_children = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
+    let mut context_children = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut context_embeddings = HashMap::new();
-    let mut context_summaries = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
-    let mut context_compressions = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
+    let mut context_summaries = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
+    let mut context_compressions = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
 
     for entry in entries {
         match entry.kind.as_str() {
@@ -1636,10 +1636,10 @@ pub(super) fn reconcile_secondary_views_from_slot_index(page_store: &LocalPageSt
 }
 
 pub(super) fn insert_timestamped_secondary_view(
-    page_store: &LocalPageStore,
-    target: &mut HashMap<String, BTreeMap<u64, PageAddress>>,
+    page_store: &LocalBlockStore,
+    target: &mut HashMap<String, BTreeMap<u64, BlockAddress>>,
     object_key: String,
-    address: PageAddress,
+    address: BlockAddress,
 ) {
     let timestamps = page_store
         .read(&address)

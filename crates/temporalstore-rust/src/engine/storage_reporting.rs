@@ -84,7 +84,7 @@ pub(super) fn slot_dump_entries_by_key(
     shard: &ShardState,
     selected_slots: &BTreeSet<u32>,
     routing_slot_for_key: impl Fn(&str) -> u32,
-) -> BTreeMap<String, PageAddress> {
+) -> BTreeMap<String, BlockAddress> {
     collect_live_page_entries(shard)
         .into_iter()
         .filter(|entry| {
@@ -206,7 +206,7 @@ pub(super) fn storage_model_code(kind: &str) -> u8 {
     }
 }
 
-pub(super) fn physical_address_word(address: &PageAddress) -> u64 {
+pub(super) fn physical_address_word(address: &BlockAddress) -> u64 {
     address.page_segment_id.wrapping_shl(32) | (address.offset & u32::MAX as u64)
 }
 
@@ -220,7 +220,7 @@ pub(super) fn cpp_packed_page_index_bytes(
     bytes[4] = u8::from(page.dirty) | (u8::from(page.log_backed) << 1);
     let page_size = if page.deleted { 0 } else { page.length as u32 };
     bytes[5..9].copy_from_slice(&page_size.to_le_bytes());
-    let address = physical_address_word(&PageAddress {
+    let address = physical_address_word(&BlockAddress {
         page_segment_id: page.page_segment_id,
         offset: page.offset,
         length: page.length,
@@ -707,14 +707,14 @@ pub(super) fn slot_generation_fingerprints_by_slot(shard: &ShardState) -> BTreeM
     by_slot
 }
 
-pub(super) fn collect_live_page_addresses(shard: &ShardState) -> Vec<PageAddress> {
+pub(super) fn collect_live_page_addresses(shard: &ShardState) -> Vec<BlockAddress> {
     collect_live_page_entries(shard)
         .into_iter()
         .map(|entry| entry.address)
         .collect()
 }
 
-pub(super) fn unique_timestamped_kv_page_addresses(series: &BTreeMap<u64, PageAddress>) -> Vec<PageAddress> {
+pub(super) fn unique_timestamped_kv_page_addresses(series: &BTreeMap<u64, BlockAddress>) -> Vec<BlockAddress> {
     let mut addresses = series
         .values()
         .cloned()
@@ -730,13 +730,13 @@ pub(super) fn unique_timestamped_kv_page_addresses(series: &BTreeMap<u64, PageAd
     addresses
 }
 
-pub(super) fn unique_feature_page_addresses(series: &BTreeMap<u64, PageAddress>) -> Vec<PageAddress> {
+pub(super) fn unique_feature_page_addresses(series: &BTreeMap<u64, BlockAddress>) -> Vec<BlockAddress> {
     unique_timestamped_kv_page_addresses(series)
 }
 
 pub(super) fn timestamped_kv_series<'a>(
     shard: &'a ShardState,
-) -> Vec<(&'static str, &'a str, &'a BTreeMap<u64, PageAddress>)> {
+) -> Vec<(&'static str, &'a str, &'a BTreeMap<u64, BlockAddress>)> {
     let mut series = Vec::new();
     for (key, timeline) in &shard.features {
         series.push(("feature", key.as_str(), timeline));
@@ -769,12 +769,12 @@ pub(super) fn timestamped_kv_series<'a>(
 }
 
 pub(super) fn storage_feature_page_layout_report(
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard: &ShardState,
 ) -> StorageFeaturePageLayoutReport {
     let mut report = StorageFeaturePageLayoutReport::default();
     let mut family_reports = BTreeMap::<String, StorageTimestampedPageFamilyReport>::new();
-    let mut inspected_addresses = HashSet::<PageAddress>::new();
+    let mut inspected_addresses = HashSet::<BlockAddress>::new();
     for (kind, key, series) in timestamped_kv_series(shard) {
         report.indexed_timestamped_points = report
             .indexed_timestamped_points
@@ -790,7 +790,7 @@ pub(super) fn storage_feature_page_layout_report(
             }
         });
         family.indexed_points = family.indexed_points.saturating_add(series.len());
-        let mut timestamps_by_address = HashMap::<PageAddress, BTreeSet<u64>>::new();
+        let mut timestamps_by_address = HashMap::<BlockAddress, BTreeSet<u64>>::new();
         for (timestamp_ms, address) in series {
             timestamps_by_address
                 .entry(address.clone())
@@ -989,7 +989,7 @@ pub(super) fn storage_feature_page_layout_report(
 pub(super) fn feature_page_error(
     kind: &str,
     key: &str,
-    address: &PageAddress,
+    address: &BlockAddress,
     error: impl Into<String>,
 ) -> StorageFeaturePageError {
     StorageFeaturePageError {
@@ -1006,7 +1006,7 @@ pub(super) fn feature_page_timestamp_mismatch(
     kind: &str,
     key: &str,
     timestamp_ms: u64,
-    address: &PageAddress,
+    address: &BlockAddress,
 ) -> StorageFeaturePageTimestampMismatch {
     StorageFeaturePageTimestampMismatch {
         kind: kind.to_string(),

@@ -189,16 +189,11 @@ pub struct LocalWriteAheadLogStore {
     inner: Arc<Mutex<WriteAheadLogInner>>,
 }
 
-#[allow(deprecated)]
-pub type WalError = OplogError;
-#[allow(deprecated)]
-pub type WalRecord = OplogRecord;
-#[allow(deprecated)]
-pub type WalStats = OplogStats;
-#[allow(deprecated)]
-pub type WalGcReport = OplogGcReport;
-#[allow(deprecated)]
-pub type LocalWalStore = LocalOplogStore;
+pub type WalError = WriteAheadLogError;
+pub type WalRecord = WriteAheadLogRecord;
+pub type WalStats = WriteAheadLogStats;
+pub type WalGcReport = WriteAheadLogGcReport;
+pub type LocalWalStore = LocalWriteAheadLogStore;
 
 #[derive(Debug)]
 struct WriteAheadLogInner {
@@ -731,36 +726,6 @@ fn unique_temp_path(kind: &str) -> PathBuf {
         std::process::id()
     ))
 }
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use WriteAheadLogError; oplog naming remains only for legacy compatibility"
-)]
-pub type OplogError = WriteAheadLogError;
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use WriteAheadLogRecord; oplog naming remains only for legacy compatibility"
-)]
-pub type OplogRecord = WriteAheadLogRecord;
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use WriteAheadLogStats; oplog naming remains only for legacy compatibility"
-)]
-pub type OplogStats = WriteAheadLogStats;
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use WriteAheadLogGcReport; oplog naming remains only for legacy compatibility"
-)]
-pub type OplogGcReport = WriteAheadLogGcReport;
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use LocalWriteAheadLogStore; oplog naming remains only for legacy compatibility"
-)]
-pub type LocalOplogStore = LocalWriteAheadLogStore;
 
 #[cfg(test)]
 mod tests {

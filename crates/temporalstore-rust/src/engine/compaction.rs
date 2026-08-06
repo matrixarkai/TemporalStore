@@ -2,7 +2,7 @@
 use super::*;
 
 pub(super) fn compaction_utility_report(
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard: &ShardState,
 ) -> ShardCompactionUtilityReport {
     let entries = collect_live_page_entries(shard);
@@ -253,7 +253,7 @@ impl CompactionRewriteStats {
     }
 }
 
-pub(super) fn page_memory_resident(cache: &MultiLayerCache, shard_id: ShardId, address: &PageAddress) -> bool {
+pub(super) fn page_memory_resident(cache: &MultiLayerCache, shard_id: ShardId, address: &BlockAddress) -> bool {
     cache
         .get_memory(&CacheKey::page_with_slot_generation(
             shard_id,
@@ -267,7 +267,7 @@ pub(super) fn page_memory_resident(cache: &MultiLayerCache, shard_id: ShardId, a
 }
 
 pub(super) fn compaction_model_layout_reports(
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard: &ShardState,
 ) -> Vec<ShardCompactionModelLayoutReport> {
     let segment_page_counts = page_store
@@ -376,10 +376,10 @@ pub(super) fn compaction_model_layout_reports(
 
 pub(super) fn compaction_timestamped_layout(
     kind: &str,
-    timelines: &HashMap<String, BTreeMap<u64, PageAddress>>,
+    timelines: &HashMap<String, BTreeMap<u64, BlockAddress>>,
     segment_page_counts: &BTreeMap<u64, u64>,
 ) -> ShardCompactionModelLayoutReport {
-    let mut ref_counts = HashMap::<PageAddress, usize>::new();
+    let mut ref_counts = HashMap::<BlockAddress, usize>::new();
     for address in timelines
         .values()
         .flat_map(|series| series.values().cloned())
@@ -400,7 +400,7 @@ pub(super) fn compaction_timestamped_layout(
 pub(super) fn compaction_layout_from_addresses(
     kind: &str,
     object_count: usize,
-    addresses: impl IntoIterator<Item = PageAddress>,
+    addresses: impl IntoIterator<Item = BlockAddress>,
     segment_page_counts: &BTreeMap<u64, u64>,
     packed_pages: Option<usize>,
 ) -> ShardCompactionModelLayoutReport {
@@ -455,11 +455,11 @@ impl CompactionLayoutIndexRefs for ShardCompactionModelLayoutReport {
 }
 
 pub(super) fn compact_page_addresses<'a>(
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     cache: &MultiLayerCache,
     shard_id: ShardId,
     model_id: &str,
-    addresses: impl IntoIterator<Item = &'a mut PageAddress>,
+    addresses: impl IntoIterator<Item = &'a mut BlockAddress>,
     rewrite_stats: &mut CompactionRewriteStats,
 ) -> Result<(), Status> {
     for address in addresses {
@@ -491,15 +491,15 @@ pub(super) fn compact_page_addresses<'a>(
 }
 
 pub(super) fn compact_feature_page_addresses(
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     cache: &MultiLayerCache,
     shard_id: ShardId,
     model_id: &str,
-    series: &mut BTreeMap<u64, PageAddress>,
+    series: &mut BTreeMap<u64, BlockAddress>,
     rewrite_stats: &mut CompactionRewriteStats,
 ) -> Result<(), Status> {
     let unique_addresses = unique_feature_page_addresses(series);
-    let mut rewritten = HashMap::<PageAddress, PageAddress>::new();
+    let mut rewritten = HashMap::<BlockAddress, BlockAddress>::new();
     for old_address in unique_addresses {
         let cold_page = !page_memory_resident(cache, shard_id, &old_address);
         let bytes =

@@ -25,36 +25,6 @@ pub mod storage_config;
 pub mod types;
 pub mod wal;
 
-#[allow(deprecated)]
-pub mod page_store {
-    pub use crate::block_store::{
-        BlockAddress as PageAddress,
-        BlockStoreDelayedDestroySegmentReport as PageStoreDelayedDestroySegmentReport,
-        BlockStoreError as PageStoreError, BlockStoreBandDescriptor as PageStoreBandDescriptor,
-        BlockStoreBandDescriptor as PageStoreZoneDescriptor,
-        BlockStoreBandState as PageStoreBandState, BlockStoreBandState as PageStoreZoneState,
-        BlockStoreBandSummary as PageStoreBandSummary,
-        BlockStoreBandSummary as PageStoreZoneSummary, BlockStoreGcPolicy as PageStoreGcPolicy,
-        BlockStoreGcPolicyPlan as PageStoreGcPolicyPlan, BlockStoreGcReport as PageStoreGcReport,
-        BlockStoreGcUtilityCandidate as PageStoreGcUtilityCandidate,
-        BlockStoreOptions as PageStoreOptions,
-        BlockStorePurgeDelayedDestroyReport as PageStorePurgeDelayedDestroyReport,
-        BlockStoreRollReport as PageStoreRollReport,
-        BlockStoreSegmentReport as PageStoreSegmentReport, BlockStoreStats as PageStoreStats,
-        LocalBlockStore as LocalPageStore,
-    };
-}
-
-#[allow(deprecated)]
-pub mod oplog {
-    pub use crate::wal::{
-        LocalOplogStore, OplogError, OplogGcReport, OplogRecord, OplogStats,
-        WriteAheadLogAppendReport, WriteAheadLogFlushReport, WriteAheadLogInfo,
-        WriteAheadLogItemKind, WriteAheadLogItemMetadata, WriteAheadLogModel,
-        WriteAheadLogRecordMetadata, WRITE_AHEAD_LOG_FORMAT_VERSION,
-    };
-}
-
 pub use block_store::{
     BlockAddress, BlockStoreBandDescriptor, BlockStoreBandState, BlockStoreBandSummary,
     BlockStoreOptions, BlockStoreSegmentReport, BlockStoreStats, LocalBlockStore,
@@ -157,10 +127,6 @@ pub use meta::{
     ServerShardServingState, ShardLoad, ShardLocation, SingleNodeMeta, StaleResourceReport,
     StaleServerReport, StateChangeRequest, TableMetaInfo, TableShard, TableTopologyResponse,
 };
-#[allow(deprecated)]
-pub use page_store::{
-    LocalPageStore, PageAddress, PageStoreOptions, PageStoreSegmentReport, PageStoreStats,
-};
 pub use partition_id::{
     validate_partition_count_per_set, validate_partition_set_count, PartitionId, PartitionIdError,
     MAX_PARTITION_SET_INDEX, MAX_TABLE_ID, MIN_SLOTS_PER_PARTITION, PARTITION_INDEX_MASK,
@@ -244,10 +210,8 @@ pub use types::{
     IpsStats, ReplicatedBatchExecuteRequest, ReplicatedBatchExecuteResponse, ReplicatedCommand,
     ReplicatedExecuteRequest, ShardId, Status,
 };
-#[allow(deprecated)]
 pub use wal::{
-    LocalOplogStore, LocalWalStore, OplogRecord, OplogStats, WalError, WalGcReport, WalRecord,
-    WalStats,
+    LocalWalStore, WalError, WalGcReport, WalRecord, WalStats,
 };
 pub use wal::{
     LocalWriteAheadLogStore, WriteAheadLogAppendReport, WriteAheadLogError,

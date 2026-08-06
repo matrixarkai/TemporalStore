@@ -2,17 +2,17 @@ use super::*;
 
 pub(super) fn append_value(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
     bytes: &[u8],
     object_id: Option<u64>,
     routing_slot: Option<u32>,
     async_storage: bool,
-) -> Result<PageAddress, PageStoreError> {
+) -> Result<BlockAddress, BlockStoreError> {
     if !async_storage {
         return page_store.append_with_page_metadata(bytes, object_id, routing_slot);
     }
-    let address = PageAddress {
+    let address = BlockAddress {
         page_segment_id: HOT_PAGE_SEGMENT_ID,
         offset: HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed),
         length: bytes.len() as u64,
@@ -40,11 +40,11 @@ pub(super) fn append_value(
 
 pub(super) fn append_timestamped_single_pages_batch(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
     writes: &[TimestampedPageBatchWrite],
     async_storage: bool,
-) -> Option<Vec<PageAddress>> {
+) -> Option<Vec<BlockAddress>> {
     if writes.is_empty() {
         return Some(Vec::new());
     }
@@ -58,7 +58,7 @@ pub(super) fn append_timestamped_single_pages_batch(
                 .ok()
                 .map(|address| vec![address]);
         }
-        let address = PageAddress {
+        let address = BlockAddress {
             page_segment_id: HOT_PAGE_SEGMENT_ID,
             offset: HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed),
             length: packed.len() as u64,
@@ -102,7 +102,7 @@ pub(super) fn append_timestamped_single_pages_batch(
     for (index, write) in writes.iter().enumerate() {
         let object_id = stable_page_object_id(shard_id, write.kind, &write.object_key, None);
         let packed = encode_single_feature_page(write.timestamp_ms, &write.value);
-        let address = PageAddress {
+        let address = BlockAddress {
             page_segment_id: HOT_PAGE_SEGMENT_ID,
             offset: start_offset.saturating_add(index as u64),
             length: packed.len() as u64,
@@ -142,7 +142,7 @@ pub(super) fn hash_multiset_batch_memory_put_min() -> usize {
 
 pub(super) fn persist_control_state_page(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
     shard: &mut ShardState,
     key: &str,
