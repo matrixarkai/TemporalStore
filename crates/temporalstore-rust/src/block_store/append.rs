@@ -35,7 +35,7 @@ impl LocalBlockStore {
         &self,
         bytes: &[u8],
         object_id: Option<u64>,
-        routing_slot: Option<u32>,
+        routing_bucket: Option<u32>,
     ) -> Result<BlockAddress, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         fs::create_dir_all(&inner.root)?;
@@ -46,7 +46,7 @@ impl LocalBlockStore {
             bytes,
             page_id,
             object_id,
-            routing_slot,
+            routing_bucket,
             band_id,
             inner.options,
         )?;
@@ -62,7 +62,7 @@ impl LocalBlockStore {
                 bytes,
                 page_id,
                 object_id,
-                routing_slot,
+                routing_bucket,
                 band_id,
                 inner.options,
             )?;
@@ -75,7 +75,7 @@ impl LocalBlockStore {
             length: record.bytes.len() as u64,
             page_id: Some(page_id),
             object_id,
-            routing_slot,
+            routing_bucket,
             generation: Some(page_id),
             band_id: Some(band_id),
             sha256: Some(sha256_hex(bytes)),
@@ -131,14 +131,14 @@ impl LocalBlockStore {
         let mut compressed_records_written = 0u64;
         let mut compression_bytes_saved = 0u64;
 
-        for (bytes, object_id, routing_slot) in records {
+        for (bytes, object_id, routing_bucket) in records {
             let mut page_id = inner.next_page_id;
             let mut band_id = band_id_for_segment(inner.page_segment_id);
             let mut record = encode_page_record(
                 &bytes,
                 page_id,
                 object_id,
-                routing_slot,
+                routing_bucket,
                 band_id,
                 inner.options,
             )?;
@@ -158,7 +158,7 @@ impl LocalBlockStore {
                     &bytes,
                     page_id,
                     object_id,
-                    routing_slot,
+                    routing_bucket,
                     band_id,
                     inner.options,
                 )?;
@@ -173,7 +173,7 @@ impl LocalBlockStore {
                 length: record.bytes.len() as u64,
                 page_id: Some(page_id),
                 object_id,
-                routing_slot,
+                routing_bucket,
                 generation: Some(page_id),
                 band_id: Some(band_id),
                 sha256: Some(sha256_hex(&bytes)),

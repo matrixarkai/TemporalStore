@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const SLOT_COUNT: u32 = 1 << 30;
-pub const SLOT_MASK: u32 = SLOT_COUNT - 1;
-pub const MIN_SLOTS_PER_PARTITION: u32 = 1 << 14;
+pub const BUCKET_COUNT: u32 = 1 << 30;
+pub const BUCKET_MASK: u32 = BUCKET_COUNT - 1;
+pub const MIN_BUCKETS_PER_PARTITION: u32 = 1 << 14;
 pub const PARTITION_VERSION_MASK: u32 = 0xFFFF;
 pub const MAX_TABLE_ID: u32 = 0xFFFF;
 pub const PARTITION_INDEX_MASK: u32 = 0xFF;
@@ -128,7 +128,7 @@ impl std::fmt::Display for PartitionId {
 }
 
 pub fn validate_partition_set_count(value: u32) -> Result<(), PartitionIdError> {
-    let max = SLOT_COUNT / MIN_SLOTS_PER_PARTITION;
+    let max = BUCKET_COUNT / MIN_BUCKETS_PER_PARTITION;
     if value == 0 || value > max {
         return Err(PartitionIdError::InvalidPartitionSetCount { value, max });
     }
@@ -203,7 +203,7 @@ mod tests {
             PartitionId::new(0, 0, 0, 0x1_0000).unwrap_err(),
             PartitionIdError::PartitionVersionOutOfRange(0x1_0000)
         );
-        assert!(validate_partition_set_count(SLOT_COUNT / MIN_SLOTS_PER_PARTITION).is_ok());
+        assert!(validate_partition_set_count(BUCKET_COUNT / MIN_BUCKETS_PER_PARTITION).is_ok());
         assert!(validate_partition_set_count(0).is_err());
         assert!(validate_partition_count_per_set(255).is_ok());
         assert!(validate_partition_count_per_set(256).is_err());

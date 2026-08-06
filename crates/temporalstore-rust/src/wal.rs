@@ -51,7 +51,8 @@ pub struct WriteAheadLogItemMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub slot_id: Option<u64>,
+    #[serde(rename = "slot_id")]
+    pub bucket_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -69,13 +70,13 @@ pub struct WriteAheadLogItemMetadata {
 impl WriteAheadLogItemMetadata {
     pub fn from_command(command: &Command) -> Self {
         let object_key = command_object_key(command);
-        let slot_id = object_key.as_deref().map(command_slot_id);
+        let bucket_id = object_key.as_deref().map(command_bucket_id);
         let item_kind = command_item_kind(command);
         Self {
             item_kind,
             model: command_model(command),
             object_key,
-            slot_id,
+            bucket_id,
             object_id: None,
             block_id: None,
             ttl_ms: command_ttl_ms(command),
@@ -644,7 +645,7 @@ fn command_ttl_ms(command: &Command) -> Option<u64> {
     payload.get("ttl_ms").and_then(|value| value.as_u64())
 }
 
-fn command_slot_id(key: &str) -> u64 {
+fn command_bucket_id(key: &str) -> u64 {
     const FNV_OFFSET: u64 = 0xcbf29ce484222325;
     const FNV_PRIME: u64 = 0x100000001b3;
     let mut hash = FNV_OFFSET;
@@ -897,7 +898,7 @@ mod tests {
         assert_eq!(item.model, WriteAheadLogModel::String);
         assert_eq!(item.object_key.as_deref(), Some("profile:7"));
         assert_eq!(item.ttl_ms, Some(30_000));
-        assert!(item.slot_id.is_some());
+        assert!(item.bucket_id.is_some());
         assert!(!item.deleted);
         assert!(!item.meta_log);
     }

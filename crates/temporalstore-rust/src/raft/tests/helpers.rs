@@ -292,8 +292,8 @@ pub(super) fn topology_for_shard(
         }),
         shards: vec![TableShard {
             shard_id,
-            start_slot: 0,
-            end_slot: u64::MAX,
+            start_bucket: 0,
+            end_bucket: u64::MAX,
             primary: Some(primary.to_string()),
             replicas: replicas
                 .into_iter()

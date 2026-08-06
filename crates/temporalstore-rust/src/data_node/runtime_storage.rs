@@ -20,12 +20,12 @@ impl DataNodeRuntime {
             .engine
             .storage_lifecycle_plan(StorageLifecycleRequest {
                 shard_id,
-                selected_dump_slots: Vec::new(),
-                max_dump_slots_per_round: options.max_dump_slots_per_round,
+                selected_dump_buckets: Vec::new(),
+                max_dump_buckets_per_round: options.max_dump_buckets_per_round,
                 min_undumped_oplog_records: options.min_undumped_oplog_records,
                 purge_delayed_destroy: options.enable_page_gc,
-                prune_slot_dump_manifests: options.enable_index_gc,
-                roll_forward_slot_dump_installs: options.enable_index_gc,
+                prune_bucket_dump_manifests: options.enable_index_gc,
+                roll_forward_bucket_dump_installs: options.enable_index_gc,
                 follower_replay_cursors: Vec::new(),
                 page_gc_shared_store_cursors: Vec::new(),
                 page_gc_raft_snapshot_refs: Vec::new(),
@@ -45,8 +45,8 @@ impl DataNodeRuntime {
         (
             StorageManagerPressureSnapshot {
                 shard_id,
-                dirty_slot_count: plan.dirty_slots.len(),
-                selected_dirty_slot_count: plan.selected_dump_slots.len(),
+                dirty_bucket_count: plan.dirty_buckets.len(),
+                selected_dirty_bucket_count: plan.selected_dump_buckets.len(),
                 undumped_oplog_records: plan.undumped_oplog_records,
                 wal_bytes: plan.undumped_oplog_records,
                 index_log_bytes: log_pressure.index_log_bytes,
@@ -61,7 +61,7 @@ impl DataNodeRuntime {
                     .saturating_add(cache.disk_bytes)
                     .saturating_add(cache.async_writeback_queue_bytes)
                     .saturating_add(cache.async_writeback_queue_depth),
-                expired_slot_object_scan_debt: plan.slot_summaries.len(),
+                expired_bucket_object_scan_debt: plan.bucket_summaries.len(),
                 delayed_destroy_segment_count: plan.delayed_destroy_page_segment_ids.len(),
                 delayed_destroy_bytes: plan.reclaimable_physical_bytes,
                 follower_cursor_retention_blockers: 0,
@@ -69,9 +69,9 @@ impl DataNodeRuntime {
                 compaction_debt_model_count: usize::from(!plan.stale_page_segment_ids.is_empty()),
                 compaction_debt_score: plan.reclaimable_physical_bytes,
                 total_pressure_score: plan
-                    .dirty_slots
+                    .dirty_buckets
                     .len()
-                    .saturating_add(plan.selected_dump_slots.len())
+                    .saturating_add(plan.selected_dump_buckets.len())
                     as u64
                     + plan.undumped_oplog_records
                     + log_pressure.index_log_bytes
@@ -120,8 +120,8 @@ impl DataNodeRuntime {
             vec![
                 storage_manager_pressure_signal(
                     "dirty_slot_count",
-                    pressure.dirty_slot_count as u64,
-                    options.dirty_slot_pressure.max(1) as u64,
+                    pressure.dirty_bucket_count as u64,
+                    options.dirty_bucket_pressure.max(1) as u64,
                 ),
                 storage_manager_pressure_signal(
                     "stale_page_segment_count",
@@ -138,7 +138,7 @@ impl DataNodeRuntime {
             (!options.enable_prepare).then(|| "prepare_disabled".to_string()),
         ));
 
-        let dump_pressure = pressure.dirty_slot_count >= options.dirty_slot_pressure.max(1)
+        let dump_pressure = pressure.dirty_bucket_count >= options.dirty_bucket_pressure.max(1)
             || pressure.undumped_oplog_records >= options.min_undumped_oplog_records.max(1);
         let cache_pressure = pressure.cache_memory_bytes
             >= options.cache_memory_bytes_pressure.max(1)
@@ -152,12 +152,12 @@ impl DataNodeRuntime {
         if options.enable_oplog_reclaim && dump_pressure {
             let response = self.apply_storage_lifecycle(StorageLifecycleRequest {
                 shard_id,
-                selected_dump_slots: Vec::new(),
-                max_dump_slots_per_round: options.max_dump_slots_per_round,
+                selected_dump_buckets: Vec::new(),
+                max_dump_buckets_per_round: options.max_dump_buckets_per_round,
                 min_undumped_oplog_records: options.min_undumped_oplog_records,
                 purge_delayed_destroy: false,
-                prune_slot_dump_manifests: false,
-                roll_forward_slot_dump_installs: false,
+                prune_bucket_dump_manifests: false,
+                roll_forward_bucket_dump_installs: false,
                 follower_replay_cursors: Vec::new(),
                 page_gc_shared_store_cursors: Vec::new(),
                 page_gc_raft_snapshot_refs: Vec::new(),
@@ -168,11 +168,11 @@ impl DataNodeRuntime {
                 warm_cache: false,
             });
             if let Some(manifest) = response.report.dump_manifest.as_ref() {
-                clear_dirty_shard_slots(
+                clear_dirty_shard_buckets(
                     &self.inner.dirty,
                     &self.inner.engine,
                     shard_id,
-                    &manifest.slot_ids,
+                    &manifest.bucket_ids,
                 );
                 let mut stats = self
                     .inner
@@ -197,8 +197,8 @@ impl DataNodeRuntime {
             vec![
                 storage_manager_pressure_signal(
                     "dirty_slot_count",
-                    pressure.dirty_slot_count as u64,
-                    options.dirty_slot_pressure.max(1) as u64,
+                    pressure.dirty_bucket_count as u64,
+                    options.dirty_bucket_pressure.max(1) as u64,
                 ),
                 storage_manager_pressure_signal(
                     "undumped_oplog_records",
@@ -208,7 +208,7 @@ impl DataNodeRuntime {
             ],
             storage_manager_trigger_reasons(&[
                 (
-                    pressure.dirty_slot_count >= options.dirty_slot_pressure.max(1),
+                    pressure.dirty_bucket_count >= options.dirty_bucket_pressure.max(1),
                     "dirty_slot_pressure",
                 ),
                 (
@@ -226,12 +226,12 @@ impl DataNodeRuntime {
         if options.enable_memory_reclaim && cache_pressure {
             let response = self.apply_storage_lifecycle(StorageLifecycleRequest {
                 shard_id,
-                selected_dump_slots: Vec::new(),
-                max_dump_slots_per_round: 0,
+                selected_dump_buckets: Vec::new(),
+                max_dump_buckets_per_round: 0,
                 min_undumped_oplog_records: 0,
                 purge_delayed_destroy: false,
-                prune_slot_dump_manifests: false,
-                roll_forward_slot_dump_installs: false,
+                prune_bucket_dump_manifests: false,
+                roll_forward_bucket_dump_installs: false,
                 follower_replay_cursors: Vec::new(),
                 page_gc_shared_store_cursors: Vec::new(),
                 page_gc_raft_snapshot_refs: Vec::new(),
@@ -464,12 +464,12 @@ impl DataNodeRuntime {
         if options.enable_index_gc {
             let response = self.apply_storage_lifecycle(StorageLifecycleRequest {
                 shard_id,
-                selected_dump_slots: Vec::new(),
-                max_dump_slots_per_round: 0,
+                selected_dump_buckets: Vec::new(),
+                max_dump_buckets_per_round: 0,
                 min_undumped_oplog_records: 0,
                 purge_delayed_destroy: true,
-                prune_slot_dump_manifests: true,
-                roll_forward_slot_dump_installs: true,
+                prune_bucket_dump_manifests: true,
+                roll_forward_bucket_dump_installs: true,
                 follower_replay_cursors: Vec::new(),
                 page_gc_shared_store_cursors: Vec::new(),
                 page_gc_raft_snapshot_refs: Vec::new(),

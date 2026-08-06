@@ -47,7 +47,7 @@ struct PageRecordHeader {
     expected_sha256: [u8; 32],
     page_id: Option<u64>,
     object_id: Option<u64>,
-    routing_slot: Option<u32>,
+    routing_bucket: Option<u32>,
     band_id: Option<u64>,
     pub(super) compression: PageRecordCompression,
 }
@@ -77,7 +77,7 @@ pub(super) fn encode_page_record(
     payload: &[u8],
     page_id: u64,
     object_id: Option<u64>,
-    routing_slot: Option<u32>,
+    routing_bucket: Option<u32>,
     band_id: u64,
     options: BlockStoreOptions,
 ) -> Result<EncodedPageRecord, BlockStoreError> {
@@ -94,9 +94,9 @@ pub(super) fn encode_page_record(
     record.extend_from_slice(&digest);
     record.extend_from_slice(&page_id.to_le_bytes());
     record.extend_from_slice(&object_id.unwrap_or_default().to_le_bytes());
-    record.push(u8::from(routing_slot.is_some()));
+    record.push(u8::from(routing_bucket.is_some()));
     record.extend_from_slice(&[0, 0, 0]);
-    record.extend_from_slice(&routing_slot.unwrap_or_default().to_le_bytes());
+    record.extend_from_slice(&routing_bucket.unwrap_or_default().to_le_bytes());
     record.extend_from_slice(&band_id.to_le_bytes());
     record.push(match compression {
         PageRecordCompression::None => PAGE_RECORD_COMPRESSION_NONE,
@@ -165,14 +165,14 @@ pub(super) fn decode_page_record(
             ));
         }
     }
-    if let (Some(address_routing_slot), Some(record_routing_slot)) =
-        (address.routing_slot, header.routing_slot)
+    if let (Some(address_routing_bucket), Some(record_routing_bucket)) =
+        (address.routing_bucket, header.routing_bucket)
     {
-        if address_routing_slot != record_routing_slot {
+        if address_routing_bucket != record_routing_bucket {
             return Err(corrupt_page_envelope(
                 address,
                 format!(
-                    "routing slot mismatch: address {address_routing_slot}, record {record_routing_slot}"
+                    "routing slot mismatch: address {address_routing_bucket}, record {record_routing_bucket}"
                 ),
             ));
         }
@@ -244,7 +244,7 @@ pub(super) fn logical_range_from_segment(
             length: 0,
             page_id: None,
             object_id: None,
-            routing_slot: None,
+            routing_bucket: None,
             generation: None,
             band_id: None,
             sha256: None,
@@ -270,7 +270,7 @@ pub(super) fn logical_range_from_segment(
             length: record_len as u64,
             page_id: header.page_id,
             object_id: header.object_id,
-            routing_slot: header.routing_slot,
+            routing_bucket: header.routing_bucket,
             generation: header.page_id.or(header.object_id),
             band_id: header.band_id,
             ..address
@@ -380,7 +380,7 @@ fn parse_page_record_header(
     } else {
         None
     };
-    let routing_slot = if version >= 4 {
+    let routing_bucket = if version >= 4 {
         if record[76] == 1 {
             Some(u32::from_le_bytes(
                 record[80..84]
@@ -435,7 +435,7 @@ fn parse_page_record_header(
         expected_sha256,
         page_id,
         object_id,
-        routing_slot,
+        routing_bucket,
         band_id,
         compression,
     })
@@ -528,7 +528,7 @@ pub(super) fn summarize_segment(
             length: 0,
             page_id: None,
             object_id: None,
-            routing_slot: None,
+            routing_bucket: None,
             generation: None,
             band_id: None,
             sha256: None,
@@ -577,7 +577,7 @@ pub(super) fn inspect_segment(segment: &[u8], page_segment_id: u64) -> BlockStor
         ..BlockStoreSegmentReport::default()
     };
     let mut object_ids = BTreeSet::new();
-    let mut routing_slots = BTreeSet::new();
+    let mut routing_buckets = BTreeSet::new();
     if segment.is_empty() {
         return report;
     }
@@ -597,7 +597,7 @@ pub(super) fn inspect_segment(segment: &[u8], page_segment_id: u64) -> BlockStor
             length: 0,
             page_id: None,
             object_id: None,
-            routing_slot: None,
+            routing_bucket: None,
             generation: None,
             band_id: None,
             sha256: None,
@@ -637,7 +637,7 @@ pub(super) fn inspect_segment(segment: &[u8], page_segment_id: u64) -> BlockStor
         address.length = record_len as u64;
         address.page_id = header.page_id;
         address.object_id = header.object_id;
-        address.routing_slot = header.routing_slot;
+        address.routing_bucket = header.routing_bucket;
         address.band_id = header.band_id;
         match decode_page_record(&remaining[..record_len], &address) {
             Ok(decoded) => {
@@ -661,7 +661,7 @@ pub(super) fn inspect_segment(segment: &[u8], page_segment_id: u64) -> BlockStor
                     dirty: false,
                     deleted: decoded.logical_len == 0,
                     block_in_log: false,
-                    routing_slot: header.routing_slot,
+                    routing_bucket: header.routing_bucket,
                     checksum: Some(sha256_hex(&decoded.payload)),
                 });
                 report.block_index_count = report.block_index_entries.len() as u64;
@@ -672,11 +672,11 @@ pub(super) fn inspect_segment(segment: &[u8], page_segment_id: u64) -> BlockStor
                     object_ids.insert(object_id);
                     report.object_count = object_ids.len() as u64;
                 }
-                if let Some(routing_slot) = header.routing_slot {
-                    routing_slots.insert(routing_slot);
-                    report.routing_slot_count = routing_slots.len() as u64;
-                    report.first_routing_slot = routing_slots.first().copied();
-                    report.last_routing_slot = routing_slots.last().copied();
+                if let Some(routing_bucket) = header.routing_bucket {
+                    routing_buckets.insert(routing_bucket);
+                    report.routing_bucket_count = routing_buckets.len() as u64;
+                    report.first_routing_bucket = routing_buckets.first().copied();
+                    report.last_routing_bucket = routing_buckets.last().copied();
                 }
                 if let Some(page_id) = header.page_id {
                     report.first_page_id = Some(

@@ -3,34 +3,34 @@ use super::*;
 
 impl TemporalEngine {
     pub fn storage_lifecycle_plan(&self, request: StorageLifecycleRequest) -> StorageLifecyclePlan {
-        let slot_summaries = self.slot_storage_summaries(request.shard_id);
-        let dirty_slots = slot_summaries
+        let bucket_summaries = self.bucket_storage_summaries(request.shard_id);
+        let dirty_buckets = bucket_summaries
             .iter()
             .filter(|summary| summary.dirty_object_count > 0)
-            .map(|summary| summary.routing_slot)
+            .map(|summary| summary.routing_bucket)
             .collect::<Vec<_>>();
         let latest_dump_oplog_sequence =
-            latest_slot_dump_manifest_at(&self.index_dir, request.shard_id)
+            latest_bucket_dump_manifest_at(&self.index_dir, request.shard_id)
                 .map(|manifest| manifest.oplog_sequence)
                 .unwrap_or_default();
         let current_oplog_sequence = self.wal_store.stats(request.shard_id).last_sequence;
         let undumped_oplog_records =
             current_oplog_sequence.saturating_sub(latest_dump_oplog_sequence);
-        let explicit_slots = !request.selected_dump_slots.is_empty();
-        let dump_delayed = !explicit_slots
+        let explicit_buckets = !request.selected_dump_buckets.is_empty();
+        let dump_delayed = !explicit_buckets
             && request.min_undumped_oplog_records > 0
             && undumped_oplog_records < request.min_undumped_oplog_records;
-        let mut selected_dump_slots = if explicit_slots {
-            request.selected_dump_slots.clone()
+        let mut selected_dump_buckets = if explicit_buckets {
+            request.selected_dump_buckets.clone()
         } else if dump_delayed {
             Vec::new()
         } else {
-            dirty_slots.clone()
+            dirty_buckets.clone()
         };
-        if request.max_dump_slots_per_round > 0
-            && selected_dump_slots.len() > request.max_dump_slots_per_round
+        if request.max_dump_buckets_per_round > 0
+            && selected_dump_buckets.len() > request.max_dump_buckets_per_round
         {
-            selected_dump_slots.truncate(request.max_dump_slots_per_round);
+            selected_dump_buckets.truncate(request.max_dump_buckets_per_round);
         }
         let live_page_segment_ids = self.live_page_segment_ids(request.shard_id);
         let live_page_segment_set = live_page_segment_ids
@@ -74,9 +74,9 @@ impl TemporalEngine {
                 .then_with(|| left.page_segment_id.cmp(&right.page_segment_id))
         });
         let mut reasons = Vec::new();
-        if !selected_dump_slots.is_empty() {
+        if !selected_dump_buckets.is_empty() {
             reasons.push("dirty_slot_dump".to_string());
-        } else if dump_delayed && !dirty_slots.is_empty() {
+        } else if dump_delayed && !dirty_buckets.is_empty() {
             reasons.push("dirty_slot_dump_delayed".to_string());
         }
         if !stale_page_segment_ids.is_empty() {
@@ -106,7 +106,7 @@ impl TemporalEngine {
         {
             reasons.push("page_gc_dependency_blocked".to_string());
         }
-        let manifest_prune_plan = self.slot_dump_manifest_prune_plan_with_follower_cursors(
+        let manifest_prune_plan = self.bucket_dump_manifest_prune_plan_with_follower_cursors(
             request.shard_id,
             request.follower_replay_cursors.clone(),
         );
@@ -116,7 +116,7 @@ impl TemporalEngine {
             reasons.push("slot_dump_manifest_prune".to_string());
         }
         if !self
-            .interrupted_slot_dump_installs(request.shard_id)
+            .interrupted_bucket_dump_installs(request.shard_id)
             .is_empty()
         {
             reasons.push("slot_dump_install_roll_forward_check".to_string());
@@ -126,11 +126,11 @@ impl TemporalEngine {
         }
         StorageLifecyclePlan {
             shard_id: request.shard_id,
-            dirty_slots,
-            selected_dump_slots,
+            dirty_buckets,
+            selected_dump_buckets,
             undumped_oplog_records,
             dump_delayed,
-            slot_summaries,
+            bucket_summaries,
             live_page_segment_ids,
             stale_page_segment_ids,
             reclaim_candidates,
@@ -151,7 +151,7 @@ impl TemporalEngine {
         shard_id: ShardId,
         candidate_page_segment_ids: impl IntoIterator<Item = u64>,
         shared_store_cursors: impl IntoIterator<Item = StoragePageGcReplayCursor>,
-        raft_snapshot_refs: impl IntoIterator<Item = SlotDumpRaftSnapshotRef>,
+        raft_snapshot_refs: impl IntoIterator<Item = BucketDumpRaftSnapshotRef>,
         checkpoint_snapshot_floor: Option<u64>,
         raft_snapshot_install_floor: Option<u64>,
         delayed_destroy_grace_ms: u64,
@@ -171,7 +171,7 @@ impl TemporalEngine {
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
-        let manifests = self.list_slot_dump_manifests(shard_id);
+        let manifests = self.list_bucket_dump_manifests(shard_id);
         let mut manifest_page_segment_ids = manifests
             .iter()
             .flat_map(|manifest| manifest.page_segment_ids.iter().copied())
@@ -316,7 +316,7 @@ impl TemporalEngine {
                 .count()
         };
         let live_ref_block_count = dependency_count("live_page_ref");
-        let slot_dump_manifest_block_count = dependency_count("slot_dump_manifest");
+        let bucket_dump_manifest_block_count = dependency_count("slot_dump_manifest");
         let shared_store_cursor_block_count = dependency_count("shared_store_replay_cursor");
         let raft_snapshot_ref_block_count = dependency_count("raft_snapshot_ref");
         let checkpoint_snapshot_floor_block_count = dependency_count("checkpoint_snapshot_floor");
@@ -354,7 +354,7 @@ impl TemporalEngine {
             raft_snapshot_install_floor,
             delayed_destroy_grace_ms,
             live_ref_block_count,
-            slot_dump_manifest_block_count,
+            bucket_dump_manifest_block_count,
             shared_store_cursor_block_count,
             raft_snapshot_ref_block_count,
             checkpoint_snapshot_floor_block_count,
@@ -370,10 +370,10 @@ impl TemporalEngine {
         request: StorageLifecycleRequest,
     ) -> StorageLifecycleReport {
         let plan = self.storage_lifecycle_plan(request.clone());
-        let dump_manifest = if plan.selected_dump_slots.is_empty() {
+        let dump_manifest = if plan.selected_dump_buckets.is_empty() {
             None
         } else {
-            self.create_slot_dump_manifest(request.shard_id, plan.selected_dump_slots.clone())
+            self.create_bucket_dump_manifest(request.shard_id, plan.selected_dump_buckets.clone())
                 .ok()
         };
         let (cache_entries_removed, cache_disk_bytes_removed) = if request.invalidate_cache {
@@ -385,11 +385,11 @@ impl TemporalEngine {
             (0, 0)
         };
         let cache_warmup = if request.warm_cache {
-            self.storage_cache_warmup_report(request.shard_id, plan.selected_dump_slots.clone())
+            self.storage_cache_warmup_report(request.shard_id, plan.selected_dump_buckets.clone())
         } else {
             StorageCacheWarmupReport {
                 shard_id: request.shard_id,
-                selected_slots: plan.selected_dump_slots.clone(),
+                selected_buckets: plan.selected_dump_buckets.clone(),
                 ..StorageCacheWarmupReport::default()
             }
         };
@@ -401,20 +401,20 @@ impl TemporalEngine {
         } else {
             Default::default()
         };
-        let manifest_prune_plan = self.slot_dump_manifest_prune_plan_with_follower_cursors(
+        let manifest_prune_plan = self.bucket_dump_manifest_prune_plan_with_follower_cursors(
             request.shard_id,
             request.follower_replay_cursors.clone(),
         );
-        let manifest_prune_report = request.prune_slot_dump_manifests.then(|| {
-            self.apply_slot_dump_manifest_prune_with_follower_cursors(
+        let manifest_prune_report = request.prune_bucket_dump_manifests.then(|| {
+            self.apply_bucket_dump_manifest_prune_with_follower_cursors(
                 request.shard_id,
                 request.follower_replay_cursors.clone(),
             )
         });
-        let install_roll_forward_reports = if request.roll_forward_slot_dump_installs {
-            self.roll_forward_slot_dump_installs(request.shard_id)
+        let install_roll_forward_reports = if request.roll_forward_bucket_dump_installs {
+            self.roll_forward_bucket_dump_installs(request.shard_id)
         } else {
-            self.slot_dump_install_roll_forward_reports(request.shard_id)
+            self.bucket_dump_install_roll_forward_reports(request.shard_id)
         };
         let object_lifecycle = self
             .storage_recovery_report_without_boundary(request.shard_id)
@@ -492,64 +492,64 @@ impl TemporalEngine {
     pub fn storage_wal_reclaim_plan(
         &self,
         shard_id: ShardId,
-        follower_replay_cursors: impl IntoIterator<Item = SlotDumpFollowerReplayCursor>,
-        raft_snapshot_refs: impl IntoIterator<Item = SlotDumpRaftSnapshotRef>,
+        follower_replay_cursors: impl IntoIterator<Item = BucketDumpFollowerReplayCursor>,
+        raft_snapshot_refs: impl IntoIterator<Item = BucketDumpRaftSnapshotRef>,
     ) -> StorageWalReclaimPlan {
         let follower_replay_cursors = follower_replay_cursors.into_iter().collect::<Vec<_>>();
         let raft_snapshot_refs = raft_snapshot_refs.into_iter().collect::<Vec<_>>();
         let current_oplog_sequence = self.write_ahead_log_store().stats(shard_id).last_sequence;
         let current_index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
-        let slot_summaries = self.slot_storage_summaries(shard_id);
-        let current_slot_fingerprints = self
+        let bucket_summaries = self.bucket_storage_summaries(shard_id);
+        let current_bucket_fingerprints = self
             .shards
             .read()
             .expect("shards lock poisoned")
             .get(&shard_id)
-            .map(slot_generation_fingerprints_by_slot)
+            .map(bucket_generation_fingerprints_by_bucket)
             .unwrap_or_default();
-        let manifests = self.list_slot_dump_manifests(shard_id);
-        let mut missing_slot_generations = Vec::new();
+        let manifests = self.list_bucket_dump_manifests(shard_id);
+        let mut missing_bucket_generations = Vec::new();
         let mut retained_manifest_ids = BTreeSet::<String>::new();
         let mut durable_oplog_frontier = u64::MAX;
         let mut durable_index_log_frontier = u64::MAX;
-        let mut covered_slot_count = 0usize;
+        let mut covered_bucket_count = 0usize;
 
-        for summary in &slot_summaries {
+        for summary in &bucket_summaries {
             let matching_manifest = manifests.iter().rev().find(|manifest| {
                 let Ok(manifest_state) =
                     serde_json::from_slice::<ShardState>(&manifest.index_bytes)
                 else {
                     return false;
                 };
-                let manifest_slot_fingerprints =
-                    slot_generation_fingerprints_by_slot(&manifest_state);
-                manifest.slot_summaries.iter().any(|manifest_summary| {
-                    slot_dump_summary_matches_current_generation(
+                let manifest_bucket_fingerprints =
+                    bucket_generation_fingerprints_by_bucket(&manifest_state);
+                manifest.bucket_summaries.iter().any(|manifest_summary| {
+                    bucket_dump_summary_matches_current_generation(
                         manifest_summary,
                         summary,
-                        &manifest_slot_fingerprints,
-                        &current_slot_fingerprints,
+                        &manifest_bucket_fingerprints,
+                        &current_bucket_fingerprints,
                     )
                 })
             });
             let Some(manifest) = matching_manifest else {
-                missing_slot_generations.push(summary.routing_slot);
+                missing_bucket_generations.push(summary.routing_bucket);
                 continue;
             };
             retained_manifest_ids.insert(manifest.manifest_id.clone());
-            covered_slot_count = covered_slot_count.saturating_add(1);
+            covered_bucket_count = covered_bucket_count.saturating_add(1);
             durable_oplog_frontier = durable_oplog_frontier.min(manifest.oplog_sequence);
             durable_index_log_frontier =
                 durable_index_log_frontier.min(manifest.index_log_sequence);
         }
 
         let mut blocker_reasons = Vec::new();
-        if slot_summaries.is_empty() {
+        if bucket_summaries.is_empty() {
             blocker_reasons.push("no_slot_generations_to_anchor_reclaim".to_string());
             durable_oplog_frontier = 0;
             durable_index_log_frontier = 0;
         }
-        if !missing_slot_generations.is_empty() {
+        if !missing_bucket_generations.is_empty() {
             blocker_reasons.push("slot_generation_without_durable_dump".to_string());
         }
 
@@ -590,8 +590,8 @@ impl TemporalEngine {
                 ));
             }
         }
-        let safe_to_reclaim = missing_slot_generations.is_empty()
-            && covered_slot_count == slot_summaries.len()
+        let safe_to_reclaim = missing_bucket_generations.is_empty()
+            && covered_bucket_count == bucket_summaries.len()
             && durable_oplog_frontier > 0
             && durable_index_log_frontier > 0
             && follower_cursor_block_count == 0
@@ -610,17 +610,17 @@ impl TemporalEngine {
         StorageWalReclaimPlan {
             shard_id,
             safe_to_reclaim,
-            durable_slot_generation_frontier_oplog_sequence: durable_oplog_frontier,
-            durable_slot_generation_frontier_index_log_sequence: durable_index_log_frontier,
+            durable_bucket_generation_frontier_oplog_sequence: durable_oplog_frontier,
+            durable_bucket_generation_frontier_index_log_sequence: durable_index_log_frontier,
             retain_from_oplog_sequence,
             retain_from_index_log_sequence,
             current_oplog_sequence,
             current_index_log_sequence,
-            covered_slot_count,
-            uncovered_slot_count: missing_slot_generations.len(),
+            covered_bucket_count,
+            uncovered_bucket_count: missing_bucket_generations.len(),
             follower_cursor_block_count,
             raft_snapshot_block_count,
-            missing_slot_generations,
+            missing_bucket_generations,
             retained_manifest_ids: retained_manifest_ids.into_iter().collect(),
             blocker_reasons,
         }
@@ -694,15 +694,15 @@ impl TemporalEngine {
             || bytes_before >= request.index_gc_index_log_bytes_threshold;
         let usage_ratio_triggered = request.index_gc_usage_ratio_trigger_basis_points == 0
             || usage_ratio_basis_points >= request.index_gc_usage_ratio_trigger_basis_points;
-        let dirty_slots_committed_before_truncate = plan.selected_dump_slots.is_empty()
+        let dirty_buckets_committed_before_truncate = plan.selected_dump_buckets.is_empty()
             || lifecycle_report
                 .and_then(|report| report.dump_manifest.as_ref())
-                .map(|manifest| !manifest.slot_ids.is_empty())
+                .map(|manifest| !manifest.bucket_ids.is_empty())
                 .unwrap_or(false);
         let safe_to_truncate = wal_plan.safe_to_reclaim
             && removable_records_before_budget > 0
-            && (!request.index_gc_commit_dirty_slots_before_truncation
-                || dirty_slots_committed_before_truncate);
+            && (!request.index_gc_commit_dirty_buckets_before_truncation
+                || dirty_buckets_committed_before_truncate);
         let should_apply = request.enable_index_gc
             && !request.dry_run
             && safe_to_truncate
@@ -735,8 +735,8 @@ impl TemporalEngine {
             "durable WAL/index frontier not safe"
         } else if removable_records_before_budget == 0 {
             "no reclaimable index-log entries"
-        } else if request.index_gc_commit_dirty_slots_before_truncation
-            && !dirty_slots_committed_before_truncate
+        } else if request.index_gc_commit_dirty_buckets_before_truncation
+            && !dirty_buckets_committed_before_truncate
         {
             "dirty slots not committed before truncation"
         } else if !threshold_triggered {
@@ -756,7 +756,7 @@ impl TemporalEngine {
                 .as_ref()
                 .map(|report| report.records_removed > 0)
                 .unwrap_or(false),
-            dirty_slots_committed_before_truncate,
+            dirty_buckets_committed_before_truncate,
             bytes_threshold: request.index_gc_index_log_bytes_threshold,
             usage_ratio_trigger_basis_points: request.index_gc_usage_ratio_trigger_basis_points,
             usage_ratio_basis_points,
@@ -815,20 +815,20 @@ impl TemporalEngine {
                 ..StorageEvictionReport::default()
             };
         }
-        let cache_by_slot = before_cache
-            .slot_summaries
+        let cache_by_bucket = before_cache
+            .bucket_summaries
             .iter()
-            .map(|summary| (summary.routing_slot, summary.clone()))
+            .map(|summary| (summary.routing_bucket, summary.clone()))
             .collect::<BTreeMap<_, _>>();
         let mut victims = self
-            .slot_storage_summaries(shard_id)
+            .bucket_storage_summaries(shard_id)
             .into_iter()
             .map(|summary| {
-                let cache = cache_by_slot.get(&summary.routing_slot);
+                let cache = cache_by_bucket.get(&summary.routing_bucket);
                 let cache_memory_bytes = cache.map(|cache| cache.memory_bytes).unwrap_or_default();
                 let cache_disk_bytes = cache.map(|cache| cache.disk_bytes).unwrap_or_default();
                 StorageEvictionVictim {
-                    routing_slot: summary.routing_slot,
+                    routing_bucket: summary.routing_bucket,
                     object_count: summary.object_count,
                     logical_bytes: summary.logical_bytes,
                     physical_bytes: summary.physical_bytes,
@@ -848,20 +848,20 @@ impl TemporalEngine {
             right
                 .weight
                 .cmp(&left.weight)
-                .then_with(|| left.routing_slot.cmp(&right.routing_slot))
+                .then_with(|| left.routing_bucket.cmp(&right.routing_bucket))
         });
         if batch_limit > 0 && victims.len() > batch_limit {
             victims.truncate(batch_limit);
         }
         let mut dump_manifest_ids = Vec::new();
         if dump_before_evict {
-            let dirty_slots = victims
+            let dirty_buckets = victims
                 .iter()
                 .filter(|victim| victim.dirty_object_count > 0)
-                .map(|victim| victim.routing_slot)
+                .map(|victim| victim.routing_bucket)
                 .collect::<Vec<_>>();
-            if !dirty_slots.is_empty() {
-                if let Ok(manifest) = self.create_slot_dump_manifest(shard_id, dirty_slots) {
+            if !dirty_buckets.is_empty() {
+                if let Ok(manifest) = self.create_bucket_dump_manifest(shard_id, dirty_buckets) {
                     dump_manifest_ids.push(manifest.manifest_id);
                 }
             }
@@ -869,7 +869,7 @@ impl TemporalEngine {
         let mut cache_entries_removed = 0usize;
         let mut cache_disk_bytes_removed = 0u64;
         for victim in &victims {
-            if let Ok(report) = self.cache.invalidate_slot(shard_id, victim.routing_slot) {
+            if let Ok(report) = self.cache.invalidate_slot(shard_id, victim.routing_bucket) {
                 cache_entries_removed =
                     cache_entries_removed.saturating_add(report.memory_entries_removed);
                 cache_disk_bytes_removed =
@@ -878,20 +878,20 @@ impl TemporalEngine {
         }
         let mut dropped_object_count = 0usize;
         if delete_drop && !victims.is_empty() {
-            let victim_slots = victims
+            let victim_buckets = victims
                 .iter()
-                .map(|victim| victim.routing_slot)
+                .map(|victim| victim.routing_bucket)
                 .collect::<BTreeSet<_>>();
             let mut shards = self.shards.write().expect("shards lock poisoned");
             if let Some(shard) = shards.get_mut(&shard_id) {
                 let object_keys = collect_live_page_entries(shard)
                     .into_iter()
                     .filter_map(|entry| {
-                        let slot = entry
+                        let bucket = entry
                             .address
-                            .routing_slot
-                            .unwrap_or_else(|| slot_for_object(&entry.object_key, 0, u32::MAX));
-                        victim_slots.contains(&slot).then_some(entry.object_key)
+                            .routing_bucket
+                            .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
+                        victim_buckets.contains(&bucket).then_some(entry.object_key)
                     })
                     .collect::<BTreeSet<_>>();
                 for key in object_keys {

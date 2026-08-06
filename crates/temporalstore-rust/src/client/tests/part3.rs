@@ -62,8 +62,8 @@ fn table_write_refreshes_due_topology_before_network() {
                                 }),
                                 shards: vec![crate::meta::TableShard {
                                     shard_id: first_shard_id,
-                                    start_slot: 0,
-                                    end_slot: u64::MAX,
+                                    start_bucket: 0,
+                                    end_bucket: u64::MAX,
                                     primary: Some(data_addr.clone()),
                                     replicas: vec![data_addr.clone()],
                                     primary_endpoint: None,

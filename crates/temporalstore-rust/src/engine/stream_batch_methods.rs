@@ -151,21 +151,21 @@ impl TemporalEngine {
             .expect("info lock poisoned")
             .get(&request.shard_id)
             .cloned();
-        let start_routing_slot = info
+        let start_routing_bucket = info
             .as_ref()
-            .map(|info| info.start_routing_slot)
+            .map(|info| info.start_routing_bucket)
             .unwrap_or_default();
-        let end_routing_slot = info
+        let end_routing_bucket = info
             .as_ref()
-            .map(|info| info.end_routing_slot)
+            .map(|info| info.end_routing_bucket)
             .unwrap_or(u32::MAX);
-        if promote_model_maps_to_slot_index_authority(
+        if promote_model_maps_to_bucket_index_authority(
             request.shard_id,
             shard,
-            start_routing_slot,
-            end_routing_slot,
+            start_routing_bucket,
+            end_routing_bucket,
         ) {
-            reconcile_secondary_views_from_slot_index(&self.page_store, shard);
+            reconcile_secondary_views_from_bucket_index(&self.page_store, shard);
         }
         let mut mutated_any = false;
         let mut sync_wal_commands = Vec::new();
@@ -222,8 +222,8 @@ impl TemporalEngine {
                 config.feature_max_size,
                 config.async_storage,
                 request.shard_id,
-                start_routing_slot,
-                end_routing_slot,
+                start_routing_bucket,
+                end_routing_bucket,
                 shard,
                 command,
             );
@@ -231,11 +231,11 @@ impl TemporalEngine {
                 mutated_any = true;
                 let object_keys = command_object_keys(&command_for_post_write);
                 if object_keys.is_empty() {
-                    rebuild_slot_page_ownership(
+                    rebuild_bucket_page_ownership(
                         request.shard_id,
                         shard,
-                        start_routing_slot,
-                        end_routing_slot,
+                        start_routing_bucket,
+                        end_routing_bucket,
                     );
                 } else {
                     for object_key in object_keys {
@@ -243,19 +243,19 @@ impl TemporalEngine {
                         mark_async_dirty_object(
                             shard,
                             &object_key,
-                            start_routing_slot,
-                            end_routing_slot,
+                            start_routing_bucket,
+                            end_routing_bucket,
                         );
                     }
                 }
-                if !command_updates_slot_index_directly(&command_for_post_write)
-                    || shard.slot_index.slot_map.is_empty()
+                if !command_updates_bucket_index_directly(&command_for_post_write)
+                    || shard.bucket_index.bucket_map.is_empty()
                 {
-                    rebuild_slot_first_index(
+                    rebuild_bucket_first_index(
                         request.shard_id,
                         shard,
-                        start_routing_slot,
-                        end_routing_slot,
+                        start_routing_bucket,
+                        end_routing_bucket,
                     );
                 }
                 if write_command && !config.async_storage {
@@ -268,7 +268,7 @@ impl TemporalEngine {
             });
         }
         if mutated_any {
-            refresh_slot_runtime_flags(shard);
+            refresh_bucket_runtime_flags(shard);
             if !config.async_storage {
                 for command in sync_wal_commands {
                     let _ = self.wal_store.append(request.shard_id, command);
@@ -429,7 +429,7 @@ impl TemporalEngine {
                     address.clone(),
                     bytes,
                     address.object_id,
-                    address.routing_slot,
+                    address.routing_bucket,
                 ));
             }
         }
@@ -438,8 +438,8 @@ impl TemporalEngine {
         }
         let append_records = publish_records
             .iter()
-            .map(|(_, _, bytes, object_id, routing_slot)| {
-                (bytes.clone(), *object_id, *routing_slot)
+            .map(|(_, _, bytes, object_id, routing_bucket)| {
+                (bytes.clone(), *object_id, *routing_bucket)
             })
             .collect::<Vec<BlockAppendRecord>>();
         let published_addresses = self
@@ -469,12 +469,12 @@ impl TemporalEngine {
                                 published.page_segment_id,
                                 published.offset,
                                 published.length,
-                                published.routing_slot,
+                                published.routing_bucket,
                                 published.generation,
                             ),
                             bytes,
                         );
-                        upsert_slot_index_page(
+                        upsert_bucket_index_page(
                             shard,
                             shard_id,
                             "string",
@@ -497,12 +497,12 @@ impl TemporalEngine {
                                 published.page_segment_id,
                                 published.offset,
                                 published.length,
-                                published.routing_slot,
+                                published.routing_bucket,
                                 published.generation,
                             ),
                             bytes,
                         );
-                        upsert_slot_index_page(
+                        upsert_bucket_index_page(
                             shard,
                             shard_id,
                             "hash",
@@ -521,7 +521,7 @@ impl TemporalEngine {
             for object_key in published_object_keys {
                 clear_published_object_dirty_state(shard, &object_key);
             }
-            refresh_slot_runtime_flags(shard);
+            refresh_bucket_runtime_flags(shard);
             serialize_index(shard)
         };
         if !bulk_ingest_mode() {

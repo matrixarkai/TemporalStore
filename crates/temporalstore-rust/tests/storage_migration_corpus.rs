@@ -5,7 +5,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 use temporalstore_rust::{
     execute_redis_command, Command, CommandResponse, ExecuteRequest, RaftCluster, RaftConfig,
-    RespValue, SharedStoreReplicator, SharedStoreStorageMode, SlotDumpFollowerReplayCursor,
+    RespValue, SharedStoreReplicator, SharedStoreStorageMode, BucketDumpFollowerReplayCursor,
     StorageLifecycleRequest, TemporalEngine,
 };
 use temporalstore_snapshot::FileObjectStore;
@@ -79,7 +79,7 @@ fn verify_engine_dump_load_recovery(case: &StorageMigrationCase) {
 
     execute_steps(&engine, case.shard_id, &case.operations, &case.name);
 
-    let summaries = engine.slot_storage_summaries(case.shard_id);
+    let summaries = engine.bucket_storage_summaries(case.shard_id);
     assert!(
         !summaries.is_empty(),
         "case={} should create slot ownership summaries",
@@ -92,14 +92,14 @@ fn verify_engine_dump_load_recovery(case: &StorageMigrationCase) {
         "case={} should track dirty slot generations and page refs",
         case.name
     );
-    let dirty_slots = summaries
+    let dirty_buckets = summaries
         .iter()
         .filter(|summary| summary.dirty_generation > 0)
-        .map(|summary| summary.routing_slot)
+        .map(|summary| summary.routing_bucket)
         .collect::<Vec<_>>();
-    assert!(!dirty_slots.is_empty());
+    assert!(!dirty_buckets.is_empty());
     let installable_manifest = engine
-        .create_slot_dump_manifest(case.shard_id, Vec::new())
+        .create_bucket_dump_manifest(case.shard_id, Vec::new())
         .expect("explicit slot dump manifest should be created");
     assert!(
         !installable_manifest.index_bytes.is_empty(),
@@ -108,13 +108,13 @@ fn verify_engine_dump_load_recovery(case: &StorageMigrationCase) {
 
     let lifecycle = engine.apply_storage_lifecycle(StorageLifecycleRequest {
         shard_id: case.shard_id,
-        selected_dump_slots: dirty_slots,
-        max_dump_slots_per_round: 64,
+        selected_dump_buckets: dirty_buckets,
+        max_dump_buckets_per_round: 64,
         min_undumped_oplog_records: 0,
         purge_delayed_destroy: true,
-        prune_slot_dump_manifests: true,
-        roll_forward_slot_dump_installs: true,
-        follower_replay_cursors: vec![SlotDumpFollowerReplayCursor {
+        prune_bucket_dump_manifests: true,
+        roll_forward_bucket_dump_installs: true,
+        follower_replay_cursors: vec![BucketDumpFollowerReplayCursor {
             follower_id: "lagging-storage-corpus-follower".to_string(),
             shard_id: case.shard_id,
             oplog_sequence: 0,
@@ -133,7 +133,7 @@ fn verify_engine_dump_load_recovery(case: &StorageMigrationCase) {
         .as_ref()
         .expect("storage lifecycle should write a slot dump manifest");
     assert!(!report_manifest.checksum.is_empty());
-    assert!(!report_manifest.slot_summaries.is_empty());
+    assert!(!report_manifest.bucket_summaries.is_empty());
     assert!(
         lifecycle.cache_warmup.considered_page_refs > 0,
         "case={} cache warmup should inspect page refs",
@@ -150,7 +150,7 @@ fn verify_engine_dump_load_recovery(case: &StorageMigrationCase) {
     drop(engine);
     engine = new_engine(dir.path(), &page_dir, &index_dir, case.shard_id);
     engine
-        .install_slot_dump_manifest(&installable_manifest)
+        .install_bucket_dump_manifest(&installable_manifest)
         .unwrap_or_else(|status| {
             panic!(
                 "case={} slot dump manifest install failed after restart: {:?}",
@@ -284,7 +284,7 @@ fn execute_steps(
 
 fn verify_redis_admin_replay(engine: &TemporalEngine, case: &StorageMigrationCase) {
     assert!(
-        !engine.slot_storage_summaries(case.shard_id).is_empty(),
+        !engine.bucket_storage_summaries(case.shard_id).is_empty(),
         "case={} admin slot summaries should be populated",
         case.name
     );

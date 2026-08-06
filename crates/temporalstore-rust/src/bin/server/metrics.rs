@@ -98,7 +98,7 @@ fn append_storage_manager_cycle_metrics(out: &mut String, report: &StorageManage
     out.push_str("# TYPE temporalstore_storage_manager_pressure gauge\n");
     let pressure = &report.pressure_snapshot;
     for (signal, value) in [
-        ("dirty_slots", pressure.dirty_slot_count as u64),
+        ("dirty_slots", pressure.dirty_bucket_count as u64),
         ("undumped_wal_records", pressure.undumped_wal_records),
         ("wal_bytes", pressure.wal_bytes),
         ("index_log_bytes", pressure.index_log_bytes),
@@ -116,7 +116,7 @@ fn append_storage_manager_cycle_metrics(out: &mut String, report: &StorageManage
         ),
         (
             "expired_slot_object_scan_debt",
-            pressure.expired_slot_object_scan_debt as u64,
+            pressure.expired_bucket_object_scan_debt as u64,
         ),
         (
             "delayed_destroy_segments",
@@ -216,13 +216,13 @@ fn append_storage_manager_cycle_metrics(out: &mut String, report: &StorageManage
         for (kind, value) in [
             ("candidates", stage.candidate_count as u64),
             ("skipped", stage.skipped_count as u64),
-            ("selected_slots", stage.selected_slots.len() as u64),
+            ("selected_slots", stage.selected_buckets.len() as u64),
             (
                 "selected_page_segments",
                 stage.selected_page_segment_ids.len() as u64,
             ),
-            ("dirty_slots", stage.dirty_slot_count as u64),
-            ("dumped_slots", stage.dumped_slot_count as u64),
+            ("dirty_slots", stage.dirty_bucket_count as u64),
+            ("dumped_slots", stage.dumped_bucket_count as u64),
             ("wal_records_removed", stage.wal_records_removed as u64),
             (
                 "index_log_records_removed",
@@ -241,7 +241,7 @@ fn append_storage_manager_cycle_metrics(out: &mut String, report: &StorageManage
             ("pages_compacted", stage.pages_compacted as u64),
             ("rewritten_page_refs", stage.rewritten_page_refs as u64),
             ("manifest_pruned", stage.manifest_pruned_count as u64),
-            ("metrics_slots", stage.metrics_slot_count as u64),
+            ("metrics_slots", stage.metrics_bucket_count as u64),
             ("metrics_page_refs", stage.metrics_page_ref_count),
         ] {
             append_storage_manager_phase_kind_value(

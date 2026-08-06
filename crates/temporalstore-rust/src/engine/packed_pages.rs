@@ -57,7 +57,7 @@ pub(super) fn append_timestamped_kv_pages(
     kind: &str,
     key: &str,
     points: Vec<FeaturePoint>,
-    routing_slot: u32,
+    routing_bucket: u32,
     async_storage: bool,
 ) -> Result<Vec<(u64, BlockAddress)>, BlockStoreError> {
     let object_id = stable_page_object_id(shard_id, kind, key, None);
@@ -70,7 +70,7 @@ pub(super) fn append_timestamped_kv_pages(
             writes.push((
                 encode_feature_page(&chunk),
                 Some(object_id),
-                Some(routing_slot),
+                Some(routing_bucket),
             ));
             chunk_points.push(chunk);
         }
@@ -99,7 +99,7 @@ pub(super) fn append_timestamped_kv_pages(
             shard_id,
             &packed,
             Some(object_id),
-            Some(routing_slot),
+            Some(routing_bucket),
             async_storage,
         )?;
         refs.extend(

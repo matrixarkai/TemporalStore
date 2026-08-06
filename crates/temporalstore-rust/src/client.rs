@@ -33,7 +33,7 @@ use retry::{
     sleep_before_retry,
 };
 pub use routing::{
-    crc64_jones, key_is_dropped_by_percent, shard_id_for_key, slot_id_for_key, stable_key_hash,
+    crc64_jones, key_is_dropped_by_percent, shard_id_for_key, bucket_id_for_key, stable_key_hash,
 };
 
 use crate::types::{
@@ -429,8 +429,10 @@ pub struct ClientCppPartitionSetReport {
 pub struct ClientCppPartitionMemberReport {
     pub partition_id: ShardId,
     pub shard_id: ShardId,
-    pub start_slot: u64,
-    pub end_slot: u64,
+    #[serde(rename = "start_slot")]
+    pub start_bucket: u64,
+    #[serde(rename = "end_slot")]
+    pub end_bucket: u64,
     pub primary_addr: Option<String>,
     pub replica_addrs: Vec<String>,
     pub replica_count: usize,
@@ -524,8 +526,10 @@ pub struct ClientRouteCacheEntryReport {
     pub shard_id: ShardId,
     pub table: String,
     pub partition_id: ShardId,
-    pub start_slot: u64,
-    pub end_slot: u64,
+    #[serde(rename = "start_slot")]
+    pub start_bucket: u64,
+    #[serde(rename = "end_slot")]
+    pub end_bucket: u64,
     pub use_cpp_partition_ids: bool,
     pub partition_version: u32,
     pub primary_addr: String,
@@ -620,8 +624,8 @@ struct ClientMetaSyncTableState {
 struct CachedRoute {
     table_key: String,
     partition_id: ShardId,
-    start_slot: u64,
-    end_slot: u64,
+    start_bucket: u64,
+    end_bucket: u64,
     use_cpp_partition_ids: bool,
     partition_version: u32,
     primary_addr: String,
@@ -638,8 +642,8 @@ impl CachedRoute {
         Self {
             table_key: String::new(),
             partition_id: shard_id,
-            start_slot: 0,
-            end_slot: 0,
+            start_bucket: 0,
+            end_bucket: 0,
             use_cpp_partition_ids: false,
             partition_version: 0,
             primary_addr: primary_addr.into(),
@@ -779,7 +783,7 @@ impl TemporalStoreClient {
                 && partition_set.members.iter().all(|member| {
                     member.route_ready
                         && member.topology_version == partition_set.topology_version
-                        && member.start_slot <= member.end_slot
+                        && member.start_bucket <= member.end_bucket
                 })
         });
         let topology_sync_ready = replacement.topology_sync_tested
@@ -1550,20 +1554,20 @@ fn client_partition_id_for_offset(options: &TableOptions, offset: u64) -> ShardI
     options.first_shard_id.saturating_add(offset)
 }
 
-fn partition_start_slot(offset: u64, shard_count: u64) -> u64 {
-    let slot_count = 1_u64 << 30;
+fn partition_start_bucket(offset: u64, shard_count: u64) -> u64 {
+    let bucket_count = 1_u64 << 30;
     if shard_count == 0 {
         return 0;
     }
-    slot_count.saturating_mul(offset) / shard_count
+    bucket_count.saturating_mul(offset) / shard_count
 }
 
-fn partition_end_slot(offset: u64, shard_count: u64) -> u64 {
-    let slot_count = 1_u64 << 30;
+fn partition_end_bucket(offset: u64, shard_count: u64) -> u64 {
+    let bucket_count = 1_u64 << 30;
     if shard_count == 0 {
         return 0;
     }
-    (slot_count.saturating_mul(offset.saturating_add(1)) / shard_count).saturating_sub(1)
+    (bucket_count.saturating_mul(offset.saturating_add(1)) / shard_count).saturating_sub(1)
 }
 
 fn meta_sync_jittered_delay_ms(

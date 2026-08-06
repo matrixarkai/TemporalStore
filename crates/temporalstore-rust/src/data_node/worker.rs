@@ -163,17 +163,17 @@ pub(super) fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> D
             if cancellation.is_requested() {
                 return task_canceled_output(task, "data node dump canceled before dirty flush");
             }
-            let selected_slots = if request.selected_routing_slots.is_empty() {
+            let selected_buckets = if request.selected_routing_buckets.is_empty() {
                 inner
                     .engine
                     .storage_lifecycle_plan(StorageLifecycleRequest {
                         shard_id: request.shard_id,
-                        selected_dump_slots: Vec::new(),
-                        max_dump_slots_per_round: 0,
+                        selected_dump_buckets: Vec::new(),
+                        max_dump_buckets_per_round: 0,
                         min_undumped_oplog_records: 0,
                         purge_delayed_destroy: false,
-                        prune_slot_dump_manifests: false,
-                        roll_forward_slot_dump_installs: false,
+                        prune_bucket_dump_manifests: false,
+                        roll_forward_bucket_dump_installs: false,
                         follower_replay_cursors: Vec::new(),
                         page_gc_shared_store_cursors: Vec::new(),
                         page_gc_raft_snapshot_refs: Vec::new(),
@@ -183,19 +183,19 @@ pub(super) fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> D
                         invalidate_cache: false,
                         warm_cache: false,
                     })
-                    .selected_dump_slots
+                    .selected_dump_buckets
             } else {
-                request.selected_routing_slots.clone()
+                request.selected_routing_buckets.clone()
             };
-            let slot_dump_manifest = inner
+            let bucket_dump_manifest = inner
                 .engine
-                .create_slot_dump_manifest(request.shard_id, selected_slots.clone())
+                .create_bucket_dump_manifest(request.shard_id, selected_buckets.clone())
                 .ok();
-            let dirty_objects_flushed = clear_dirty_shard_slots(
+            let dirty_objects_flushed = clear_dirty_shard_buckets(
                 &inner.dirty,
                 &inner.engine,
                 request.shard_id,
-                &selected_slots,
+                &selected_buckets,
             );
             inner
                 .stats
@@ -207,7 +207,7 @@ pub(super) fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> D
                 shard_id: request.shard_id,
                 index_bytes,
                 dirty_objects_flushed,
-                slot_dump_manifest,
+                bucket_dump_manifest,
             })
         }
         TaskRequest::Compact(request) => {

@@ -85,21 +85,21 @@ pub(super) fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         return true;
     }
 
-    if !shard.slot_index.object_key_lookup.is_empty() {
-        shard.slot_index.contains_object_key(key)
-    } else if !shard.slot_index.object_component_lookup.is_empty() {
+    if !shard.bucket_index.object_key_lookup.is_empty() {
+        shard.bucket_index.contains_object_key(key)
+    } else if !shard.bucket_index.object_component_lookup.is_empty() {
         storage_model_kinds().iter().any(|kind| {
             shard
-                .slot_index
+                .bucket_index
                 .object_component_lookup
                 .get(&object_component_lookup_key(kind, key))
                 .map(|page_refs| {
                     page_refs.iter().any(|page_ref| {
                         shard
-                            .slot_index
-                            .slot_map
-                            .get(&page_ref.routing_slot)
-                            .and_then(|slot| slot.page_index.get(&page_ref.page_ref_key))
+                            .bucket_index
+                            .bucket_map
+                            .get(&page_ref.routing_bucket)
+                            .and_then(|bucket| bucket.page_index.get(&page_ref.page_ref_key))
                             .map(|page| {
                                 !page.deleted && page.model_id == *kind && page.object_key == key
                             })
@@ -109,7 +109,7 @@ pub(super) fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
                 .unwrap_or(false)
         })
     } else {
-        shard.slot_index.contains_object_key(key)
+        shard.bucket_index.contains_object_key(key)
     }
 }
 

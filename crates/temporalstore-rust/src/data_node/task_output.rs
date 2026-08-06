@@ -37,7 +37,7 @@ pub(super) fn task_timeout_output(kind: DataNodeTaskKind) -> DataNodeTaskOutput 
             shard_id: 0,
             index_bytes: 0,
             dirty_objects_flushed: 0,
-            slot_dump_manifest: None,
+            bucket_dump_manifest: None,
         }),
         DataNodeTaskKind::Compact => DataNodeTaskOutput::Compact(CompactionResponse {
             status,
@@ -102,7 +102,7 @@ pub(super) fn task_canceled_output(task: &QueuedTask, message: &str) -> DataNode
             shard_id,
             index_bytes: 0,
             dirty_objects_flushed: 0,
-            slot_dump_manifest: None,
+            bucket_dump_manifest: None,
         }),
         DataNodeTaskKind::Compact => DataNodeTaskOutput::Compact(CompactionResponse {
             status,

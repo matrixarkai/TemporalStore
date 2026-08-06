@@ -216,7 +216,7 @@ pub(super) fn command_object_keys(command: &Command) -> Vec<String> {
     }
 }
 
-pub(super) fn command_updates_slot_index_directly(command: &Command) -> bool {
+pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
     matches!(
         command,
         Command::CommonDelete { .. }

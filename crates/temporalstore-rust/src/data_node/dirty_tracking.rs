@@ -40,21 +40,21 @@ pub(super) fn clear_dirty_shard(dirty: &Mutex<DirtyTracker>, shard_id: ShardId) 
     before - dirty.by_key.len()
 }
 
-pub(super) fn clear_dirty_shard_slots(
+pub(super) fn clear_dirty_shard_buckets(
     dirty: &Mutex<DirtyTracker>,
     engine: &TemporalEngine,
     shard_id: ShardId,
-    selected_slots: &[u32],
+    selected_buckets: &[u32],
 ) -> usize {
-    if selected_slots.is_empty() {
+    if selected_buckets.is_empty() {
         return 0;
     }
-    let selected_slots = selected_slots.iter().copied().collect::<BTreeSet<_>>();
+    let selected_buckets = selected_buckets.iter().copied().collect::<BTreeSet<_>>();
     let mut dirty = dirty.lock().expect("dirty tracker lock poisoned");
     let before = dirty.by_key.len();
     dirty.by_key.retain(|(dirty_shard_id, key), _| {
         *dirty_shard_id != shard_id
-            || !selected_slots.contains(&engine.routing_slot_for_key(shard_id, key))
+            || !selected_buckets.contains(&engine.routing_bucket_for_key(shard_id, key))
     });
     before - dirty.by_key.len()
 }

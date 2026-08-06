@@ -1056,8 +1056,8 @@ mod tests {
             load_version: 1,
             local_node_id: Some(1),
             shard_uri: "memory://ingestion".to_string(),
-            start_routing_slot: 0,
-            end_routing_slot: 1023,
+            start_routing_bucket: 0,
+            end_routing_bucket: 1023,
             readonly: false,
             table_name: "ingestion_table".to_string(),
         });

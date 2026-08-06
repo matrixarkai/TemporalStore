@@ -30,7 +30,7 @@ pub use block_store::{
     BlockStoreOptions, BlockStoreSegmentReport, BlockStoreStats, LocalBlockStore,
 };
 pub use client::{
-    crc64_jones, key_is_dropped_by_percent, shard_id_for_key, slot_id_for_key, stable_key_hash,
+    crc64_jones, key_is_dropped_by_percent, shard_id_for_key, bucket_id_for_key, stable_key_hash,
     ClientError, ClientOptions, ClientPreflightReport, ClientStats, RequestOptions, TableOptions,
     TemporalStoreClient, TemporalStorePipeline, TemporalStoreTable,
 };
@@ -87,13 +87,13 @@ pub use e2e::{
 pub use engine::golden::{cpp_api_golden_corpus_report, cpp_feature_sequence_golden_corpus_report};
 pub use engine::reports::{
     CppGoldenCaseReport, CppGoldenCorpusReport, RustStorageObservation, ShardCompactionReport,
-    ShardCompactionUtilityReport, ShardExpirySweepReport, SlotDumpFaultMatrixReport,
-    SlotDumpFaultScenarioReport, SlotDumpFollowerReplayCursor, SlotDumpFollowerRetentionBlock,
-    SlotDumpInstallMarker, SlotDumpInstallPreflightReport, SlotDumpInstallRollForwardReport,
-    SlotDumpManifest, SlotDumpManifestChainIssue, SlotDumpManifestPrunePlan,
-    SlotDumpManifestPruneReport, SlotDumpRaftSnapshotRef, SlotDumpRaftSnapshotRetentionBlock,
-    SlotStorageSummary, StorageCacheInspectionReport, StorageCacheInvalidateSlotRequest,
-    StorageCacheSlotSummary, StorageCacheWarmupReport, StorageDataStructureApiParityReport,
+    ShardCompactionUtilityReport, ShardExpirySweepReport, BucketDumpFaultMatrixReport,
+    BucketDumpFaultScenarioReport, BucketDumpFollowerReplayCursor, BucketDumpFollowerRetentionBlock,
+    BucketDumpInstallMarker, BucketDumpInstallPreflightReport, BucketDumpInstallRollForwardReport,
+    BucketDumpManifest, BucketDumpManifestChainIssue, BucketDumpManifestPrunePlan,
+    BucketDumpManifestPruneReport, BucketDumpRaftSnapshotRef, BucketDumpRaftSnapshotRetentionBlock,
+    BucketStorageSummary, StorageCacheInspectionReport, StorageCacheInvalidateBucketRequest,
+    StorageCacheBucketSummary, StorageCacheWarmupReport, StorageDataStructureApiParityReport,
     StorageFeaturePageError, StorageFeaturePageLayoutReport, StorageFeaturePageTimestampMismatch,
     StorageLifecyclePlan, StorageLifecycleReport, StorageLifecycleRequest,
     StorageLogCompatibilityReport, StorageObjectLifecycleReport,
@@ -129,8 +129,8 @@ pub use meta::{
 };
 pub use partition_id::{
     validate_partition_count_per_set, validate_partition_set_count, PartitionId, PartitionIdError,
-    MAX_PARTITION_SET_INDEX, MAX_TABLE_ID, MIN_SLOTS_PER_PARTITION, PARTITION_INDEX_MASK,
-    PARTITION_VERSION_MASK, SLOT_COUNT, SLOT_MASK,
+    MAX_PARTITION_SET_INDEX, MAX_TABLE_ID, MIN_BUCKETS_PER_PARTITION, PARTITION_INDEX_MASK,
+    PARTITION_VERSION_MASK, BUCKET_COUNT, BUCKET_MASK,
 };
 pub use proxy::{
     ProxyClientPreflightReport, ProxyConfigUpdateReport, ProxyCppMigrationContract, ProxyInfo,

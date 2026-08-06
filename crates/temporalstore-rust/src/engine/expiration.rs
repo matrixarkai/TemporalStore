@@ -4,7 +4,7 @@ use crate::types::ShardId;
 
 use super::records::visit_associated_record_keys;
 use super::{
-    invalidate_record_all, mark_slot_index_object_deleted, record_exists, record_exists_exact,
+    invalidate_record_all, mark_bucket_index_object_deleted, record_exists, record_exists_exact,
     ShardState,
 };
 
@@ -140,7 +140,7 @@ pub(super) fn delete_record_exact(
         return false;
     }
     let mut removed = false;
-    removed |= mark_slot_index_object_deleted(cache, shard_id, shard, key);
+    removed |= mark_bucket_index_object_deleted(cache, shard_id, shard, key);
     removed |= shard.expires_at_ms.remove(key).is_some();
     removed |= shard.strings.remove(key).is_some();
     removed |= shard.hashes.remove(key).is_some();

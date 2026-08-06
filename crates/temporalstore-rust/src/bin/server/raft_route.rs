@@ -577,8 +577,8 @@ fn startup_load_shard_request(shard_id: u64, node_id: u64) -> LoadShardRequest {
         local_node_id: if node_id == 0 { None } else { Some(node_id) },
         shard_uri: std::env::var("TS_SHARD_URI")
             .unwrap_or_else(|_| format!("local://shard/{shard_id}")),
-        start_routing_slot: env_u32("TS_SHARD_START_ROUTING_SLOT", 0),
-        end_routing_slot: env_u32("TS_SHARD_END_ROUTING_SLOT", u32::MAX),
+        start_routing_bucket: env_u32("TS_SHARD_START_ROUTING_SLOT", 0),
+        end_routing_bucket: env_u32("TS_SHARD_END_ROUTING_SLOT", u32::MAX),
         readonly: env_bool("TS_SHARD_READONLY", env_bool("TS_SERVER_READONLY", false)),
         table_name: std::env::var("TS_TABLE_NAME").unwrap_or_default(),
     }

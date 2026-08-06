@@ -6,12 +6,12 @@ impl TemporalEngine {
         self.index_dir.join(format!("shard-{shard_id}.index.json"))
     }
 
-    pub(super) fn persist_slot_dump_manifest(
+    pub(super) fn persist_bucket_dump_manifest(
         &self,
-        manifest: &SlotDumpManifest,
+        manifest: &BucketDumpManifest,
     ) -> Result<(), std::io::Error> {
         let path =
-            slot_dump_manifest_path(&self.index_dir, manifest.shard_id, &manifest.manifest_id);
+            bucket_dump_manifest_path(&self.index_dir, manifest.shard_id, &manifest.manifest_id);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -20,12 +20,12 @@ impl TemporalEngine {
         fs::write(path, bytes)
     }
 
-    pub(super) fn persist_slot_dump_install_marker(
+    pub(super) fn persist_bucket_dump_install_marker(
         &self,
-        manifest: &SlotDumpManifest,
+        manifest: &BucketDumpManifest,
         phase: &str,
     ) -> Result<(), std::io::Error> {
-        self.persist_slot_dump_install_marker_by_fields(
+        self.persist_bucket_dump_install_marker_by_fields(
             manifest.shard_id,
             &manifest.manifest_id,
             phase,
@@ -34,7 +34,7 @@ impl TemporalEngine {
         )
     }
 
-    pub(super) fn persist_slot_dump_install_marker_by_fields(
+    pub(super) fn persist_bucket_dump_install_marker_by_fields(
         &self,
         shard_id: ShardId,
         manifest_id: &str,
@@ -42,9 +42,9 @@ impl TemporalEngine {
         oplog_sequence: u64,
         index_log_sequence: u64,
     ) -> Result<(), std::io::Error> {
-        write_slot_dump_install_marker(
+        write_bucket_dump_install_marker(
             &self.index_dir,
-            &SlotDumpInstallMarker {
+            &BucketDumpInstallMarker {
                 shard_id,
                 manifest_id: manifest_id.to_string(),
                 phase: phase.to_string(),
@@ -55,20 +55,20 @@ impl TemporalEngine {
         )
     }
 
-    pub(super) fn validate_slot_dump_generation_for_install(
+    pub(super) fn validate_bucket_dump_generation_for_install(
         &self,
-        manifest: &SlotDumpManifest,
+        manifest: &BucketDumpManifest,
     ) -> Result<(), Status> {
         if manifest.dump_generation_id.is_empty() {
             return Ok(());
         }
-        let requested_slots = manifest.slot_ids.iter().copied().collect::<BTreeSet<_>>();
+        let requested_buckets = manifest.bucket_ids.iter().copied().collect::<BTreeSet<_>>();
         let source_manifest_ids = manifest
             .source_manifest_ids
             .iter()
             .cloned()
             .collect::<BTreeSet<_>>();
-        for existing in self.list_slot_dump_manifests(manifest.shard_id) {
+        for existing in self.list_bucket_dump_manifests(manifest.shard_id) {
             if existing.manifest_id == manifest.manifest_id
                 || source_manifest_ids.contains(&existing.manifest_id)
                 || existing.dump_generation_id.is_empty()
@@ -76,10 +76,10 @@ impl TemporalEngine {
             {
                 continue;
             }
-            let existing_slots = existing.slot_ids.iter().copied().collect::<BTreeSet<_>>();
-            let overlaps = requested_slots.is_empty()
-                || existing_slots.is_empty()
-                || !requested_slots.is_disjoint(&existing_slots);
+            let existing_buckets = existing.bucket_ids.iter().copied().collect::<BTreeSet<_>>();
+            let overlaps = requested_buckets.is_empty()
+                || existing_buckets.is_empty()
+                || !requested_buckets.is_disjoint(&existing_buckets);
             if overlaps
                 && existing.index_log_sequence >= manifest.index_log_sequence
                 && existing.oplog_sequence >= manifest.oplog_sequence
@@ -99,8 +99,8 @@ impl TemporalEngine {
     pub(super) fn load_index(&self, shard_id: ShardId) -> Option<ShardState> {
         let bytes = fs::read(self.index_path(shard_id)).ok()?;
         let mut shard = serde_json::from_slice::<ShardState>(&bytes).ok()?;
-        reconcile_secondary_views_from_slot_index(&self.page_store, &mut shard);
-        refresh_slot_runtime_flags(&mut shard);
+        reconcile_secondary_views_from_bucket_index(&self.page_store, &mut shard);
+        refresh_bucket_runtime_flags(&mut shard);
         Some(shard)
     }
 
@@ -114,17 +114,17 @@ impl TemporalEngine {
         let _ = self.wal_store.flush(shard_id);
         let index_bytes = {
             // Reconstruct everything the per-command bulk path deferred: promote
-            // model-map pages into slot_index, rebuild the secondary views, refresh
+            // model-map pages into bucket_index, rebuild the secondary views, refresh
             // runtime flags, then serialize once. Needs a write lock.
             let mut shards = self.shards.write().expect("engine lock poisoned");
             match shards.get_mut(&shard_id) {
                 Some(shard) => {
-                    if promote_model_maps_to_slot_index_authority(shard_id, shard, 0, u32::MAX)
+                    if promote_model_maps_to_bucket_index_authority(shard_id, shard, 0, u32::MAX)
                     {
-                        reconcile_secondary_views_from_slot_index(&self.page_store, shard);
+                        reconcile_secondary_views_from_bucket_index(&self.page_store, shard);
                     }
-                    rebuild_slot_first_index(shard_id, shard, 0, u32::MAX);
-                    refresh_slot_runtime_flags(shard);
+                    rebuild_bucket_first_index(shard_id, shard, 0, u32::MAX);
+                    refresh_bucket_runtime_flags(shard);
                     serialize_index(shard)
                 }
                 None => return,
@@ -203,15 +203,15 @@ impl TemporalEngine {
                 .as_ref()
                 .map(|info| info.shard_uri.clone())
                 .unwrap_or_default();
-            let start_routing_slot = info
+            let start_routing_bucket = info
                 .as_ref()
-                .map(|info| info.start_routing_slot)
+                .map(|info| info.start_routing_bucket)
                 .unwrap_or_default();
-            let end_routing_slot = info
+            let end_routing_bucket = info
                 .as_ref()
-                .map(|info| info.end_routing_slot)
+                .map(|info| info.end_routing_bucket)
                 .unwrap_or(u32::MAX);
-            let object_manager = object_manager_stats(state, start_routing_slot, end_routing_slot);
+            let object_manager = object_manager_stats(state, start_routing_bucket, end_routing_bucket);
             let secondary_view_total_records = string_records
                 + hash_records
                 + set_records
@@ -219,7 +219,7 @@ impl TemporalEngine {
                 + sequence_records
                 + ips_records
                 + risk_records;
-            let total_records = if state.slot_index.slot_map.is_empty() {
+            let total_records = if state.bucket_index.bucket_map.is_empty() {
                 secondary_view_total_records
             } else {
                 object_manager.object_count
@@ -231,8 +231,8 @@ impl TemporalEngine {
                 load_version,
                 table_name,
                 shard_uri,
-                start_routing_slot,
-                end_routing_slot,
+                start_routing_bucket,
+                end_routing_bucket,
                 total_records,
                 storage_bytes: page_store.bytes_written,
                 object_manager: object_manager.clone(),
@@ -241,7 +241,7 @@ impl TemporalEngine {
                 page_index_entries: object_manager.page_ref_count as u64,
                 block_index_entries: page_store.writes,
                 object_index_entries: object_manager.object_count as u64,
-                slot_entries: object_manager.routing_slot_count as u64,
+                bucket_entries: object_manager.routing_bucket_count as u64,
                 storage_zone_count: page_store_zones
                     .active_bands
                     .saturating_add(page_store_zones.sealed_bands)

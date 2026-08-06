@@ -432,15 +432,15 @@ impl TemporalEngine {
                 &mut out,
                 "temporalstore_object_manager_dirty_slots",
                 &[("shard_id", stats.shard_id.to_string())],
-                stats.object_manager.dirty_slot_count as u64,
+                stats.object_manager.dirty_bucket_count as u64,
             );
-            for summary in self.slot_storage_summaries(stats.shard_id) {
+            for summary in self.bucket_storage_summaries(stats.shard_id) {
                 push_metric(
                     &mut out,
                     "temporalstore_storage_slot_page_refs",
                     &[
                         ("shard_id", stats.shard_id.to_string()),
-                        ("slot", summary.routing_slot.to_string()),
+                        ("slot", summary.routing_bucket.to_string()),
                     ],
                     summary.page_ref_count,
                 );
@@ -453,7 +453,7 @@ impl TemporalEngine {
                         "temporalstore_storage_slot_bytes",
                         &[
                             ("shard_id", stats.shard_id.to_string()),
-                            ("slot", summary.routing_slot.to_string()),
+                            ("slot", summary.routing_bucket.to_string()),
                             ("kind", kind.to_string()),
                         ],
                         value,
@@ -464,7 +464,7 @@ impl TemporalEngine {
                     "temporalstore_storage_slot_dirty_objects",
                     &[
                         ("shard_id", stats.shard_id.to_string()),
-                        ("slot", summary.routing_slot.to_string()),
+                        ("slot", summary.routing_bucket.to_string()),
                     ],
                     summary.dirty_object_count,
                 );
@@ -473,7 +473,7 @@ impl TemporalEngine {
                 &mut out,
                 "temporalstore_partition_routing_slots",
                 &[("shard_id", stats.shard_id.to_string())],
-                stats.object_manager.routing_slot_count as u64,
+                stats.object_manager.routing_bucket_count as u64,
             );
         }
         let ingestion = self.ingestion_state_report();

@@ -135,8 +135,8 @@ impl TemporalStoreClient {
                         CachedRoute {
                             table_key: table_key.clone(),
                             partition_id: partition.shard_id,
-                            start_slot: partition.start_slot,
-                            end_slot: partition.end_slot,
+                            start_bucket: partition.start_bucket,
+                            end_bucket: partition.end_bucket,
                             use_cpp_partition_ids: table.use_cpp_partition_ids,
                             partition_version: table.partition_version,
                             primary_addr: primary.clone(),
@@ -588,12 +588,12 @@ impl TemporalStoreClient {
                         ClientCppPartitionMemberReport {
                             partition_id,
                             shard_id,
-                            start_slot: route.map(|route| route.start_slot).unwrap_or_else(|| {
-                                partition_start_slot(offset, options.shard_count)
+                            start_bucket: route.map(|route| route.start_bucket).unwrap_or_else(|| {
+                                partition_start_bucket(offset, options.shard_count)
                             }),
-                            end_slot: route
-                                .map(|route| route.end_slot)
-                                .unwrap_or_else(|| partition_end_slot(offset, options.shard_count)),
+                            end_bucket: route
+                                .map(|route| route.end_bucket)
+                                .unwrap_or_else(|| partition_end_bucket(offset, options.shard_count)),
                             primary_addr: route.map(|route| route.primary_addr.clone()),
                             replica_addrs: route
                                 .map(|route| route.replica_addrs.clone())
@@ -662,8 +662,8 @@ impl TemporalStoreClient {
                     shard_id: *shard_id,
                     table: route.table_key.clone(),
                     partition_id: route.partition_id,
-                    start_slot: route.start_slot,
-                    end_slot: route.end_slot,
+                    start_bucket: route.start_bucket,
+                    end_bucket: route.end_bucket,
                     use_cpp_partition_ids: route.use_cpp_partition_ids,
                     partition_version: route.partition_version,
                     primary_addr: route.primary_addr.clone(),

@@ -5,7 +5,8 @@ use super::state::ShardState;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct ObjectRuntimeState {
     pub object_id: u64,
-    pub routing_slot: u32,
+    #[serde(rename = "routing_slot")]
+    pub routing_bucket: u32,
     pub object_keys: Vec<String>,
     pub model_ids: Vec<String>,
     pub page_ref_count: usize,
@@ -23,7 +24,8 @@ pub(super) struct ObjectRuntimeState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct ObjectManagerRuntimeReport {
     pub object_manager_runtime_module: bool,
-    pub slot_index_authority: bool,
+    #[serde(rename = "slot_index_authority")]
+    pub bucket_index_authority: bool,
     pub live_object_count: usize,
     pub live_page_ref_count: usize,
     pub missing_object_owner_refs: usize,
@@ -48,15 +50,15 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
     let mut objects = std::collections::BTreeMap::<u64, ObjectRuntimeState>::new();
     let mut live_page_ref_count = 0usize;
 
-    for slot in shard.slot_index.slot_map.values() {
-        for object_id in &slot.object_index {
+    for bucket in shard.bucket_index.bucket_map.values() {
+        for object_id in &bucket.object_index {
             object_ids.insert(*object_id);
-            let object_deleted = slot.deleted || slot.deleted_object_index.contains(object_id);
+            let object_deleted = bucket.deleted || bucket.deleted_object_index.contains(object_id);
             let object = objects
                 .entry(*object_id)
                 .or_insert_with(|| ObjectRuntimeState {
                     object_id: *object_id,
-                    routing_slot: slot.routing_slot,
+                    routing_bucket: bucket.routing_bucket,
                     object_keys: Vec::new(),
                     model_ids: Vec::new(),
                     page_ref_count: 0,
@@ -64,23 +66,23 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
                     cold_page_ref_count: 0,
                     deleted_page_ref_count: 0,
                     residency: "cold".to_string(),
-                    dirty: slot.dirty,
+                    dirty: bucket.dirty,
                     deleted: object_deleted,
-                    loading: slot.loading,
-                    in_memory: slot.in_memory,
-                    ttl_ms: slot.ttl_ms,
+                    loading: bucket.loading,
+                    in_memory: bucket.in_memory,
+                    ttl_ms: bucket.ttl_ms,
                 });
-            object.dirty |= slot.dirty;
+            object.dirty |= bucket.dirty;
             object.deleted |= object_deleted;
-            object.loading |= slot.loading;
-            object.in_memory |= slot.in_memory;
-            object.ttl_ms = match (object.ttl_ms, slot.ttl_ms) {
+            object.loading |= bucket.loading;
+            object.in_memory |= bucket.in_memory;
+            object.ttl_ms = match (object.ttl_ms, bucket.ttl_ms) {
                 (Some(existing), Some(next)) => Some(existing.min(next)),
                 (None, Some(next)) => Some(next),
                 (existing, None) => existing,
             };
         }
-        for page in slot.page_index.values() {
+        for page in bucket.page_index.values() {
             live_page_ref_count = live_page_ref_count.saturating_add(1);
             object_ids.insert(page.object_id);
             *object_ref_counts.entry(page.object_id).or_default() += 1;
@@ -91,7 +93,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
                 .entry(page.object_id)
                 .or_insert_with(|| ObjectRuntimeState {
                     object_id: page.object_id,
-                    routing_slot: slot.routing_slot,
+                    routing_bucket: bucket.routing_bucket,
                     object_keys: Vec::new(),
                     model_ids: Vec::new(),
                     page_ref_count: 0,
@@ -106,20 +108,20 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
                     ttl_ms: None,
                 });
             object.page_ref_count = object.page_ref_count.saturating_add(1);
-            object.dirty |= page.dirty || slot.dirty;
+            object.dirty |= page.dirty || bucket.dirty;
             let object_deleted =
-                page.deleted || slot.deleted || slot.deleted_object_index.contains(&page.object_id);
+                page.deleted || bucket.deleted || bucket.deleted_object_index.contains(&page.object_id);
             object.deleted |= object_deleted;
             if object_deleted {
                 object.deleted_page_ref_count = object.deleted_page_ref_count.saturating_add(1);
-            } else if slot.in_memory && !page.log_backed {
+            } else if bucket.in_memory && !page.log_backed {
                 object.hot_page_ref_count = object.hot_page_ref_count.saturating_add(1);
             } else {
                 object.cold_page_ref_count = object.cold_page_ref_count.saturating_add(1);
             }
-            object.loading |= slot.loading;
-            object.in_memory |= slot.in_memory;
-            object.ttl_ms = match (object.ttl_ms, slot.ttl_ms) {
+            object.loading |= bucket.loading;
+            object.in_memory |= bucket.in_memory;
+            object.ttl_ms = match (object.ttl_ms, bucket.ttl_ms) {
                 (Some(existing), Some(next)) => Some(existing.min(next)),
                 (None, Some(next)) => Some(next),
                 (existing, None) => existing,
@@ -155,7 +157,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
 
     ObjectManagerRuntimeReport {
         object_manager_runtime_module: true,
-        slot_index_authority: !shard.slot_index.slot_map.is_empty(),
+        bucket_index_authority: !shard.bucket_index.bucket_map.is_empty(),
         live_object_count: object_ids.len(),
         live_page_ref_count,
         missing_object_owner_refs,

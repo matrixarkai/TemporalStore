@@ -9,7 +9,7 @@ pub(super) struct TimestampedPageBatchWrite {
     pub(super) object_key: String,
     pub(super) timestamp_ms: u64,
     pub(super) value: Vec<u8>,
-    pub(super) routing_slot: u32,
+    pub(super) routing_bucket: u32,
 }
 
 pub(super) fn unique_timestamped_kv_page_addresses(

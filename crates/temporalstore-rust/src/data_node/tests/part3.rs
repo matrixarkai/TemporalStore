@@ -25,8 +25,8 @@ fn runtime_enforces_authorized_lifecycle_token_when_installed() {
         shard_id: 7,
         table_name: "tbl".to_string(),
         shard_uri: "local://tbl/stale".to_string(),
-        start_routing_slot: 10,
-        end_routing_slot: 19,
+        start_routing_bucket: 10,
+        end_routing_bucket: 19,
         readonly: false,
         load_version: 42,
         local_node_id: Some(3),
@@ -41,8 +41,8 @@ fn runtime_enforces_authorized_lifecycle_token_when_installed() {
         shard_id: 7,
         table_name: "tbl".to_string(),
         shard_uri: "local://tbl/7".to_string(),
-        start_routing_slot: 10,
-        end_routing_slot: 19,
+        start_routing_bucket: 10,
+        end_routing_bucket: 19,
         readonly: false,
         load_version: 43,
         local_node_id: Some(3),
@@ -83,8 +83,8 @@ fn runtime_lifecycle_snapshot_restores_transitions_and_tokens() {
         shard_id: 7,
         table_name: "tbl".to_string(),
         shard_uri: "local://tbl/7".to_string(),
-        start_routing_slot: 10,
-        end_routing_slot: 19,
+        start_routing_bucket: 10,
+        end_routing_bucket: 19,
         readonly: false,
         load_version: 42,
         local_node_id: Some(3),
@@ -94,8 +94,8 @@ fn runtime_lifecycle_snapshot_restores_transitions_and_tokens() {
         shard_id: 7,
         table_name: "tbl".to_string(),
         shard_uri: "local://tbl/7".to_string(),
-        start_routing_slot: 10,
-        end_routing_slot: 19,
+        start_routing_bucket: 10,
+        end_routing_bucket: 19,
         readonly: true,
         load_version: 43,
         local_node_id: Some(3),
@@ -132,8 +132,8 @@ fn runtime_lifecycle_snapshot_restores_transitions_and_tokens() {
         shard_id: 7,
         table_name: "stale".to_string(),
         shard_uri: "local://tbl/stale".to_string(),
-        start_routing_slot: 10,
-        end_routing_slot: 19,
+        start_routing_bucket: 10,
+        end_routing_bucket: 19,
         readonly: true,
         load_version: 42,
         local_node_id: Some(3),
@@ -144,8 +144,8 @@ fn runtime_lifecycle_snapshot_restores_transitions_and_tokens() {
         shard_id: 7,
         table_name: "tbl-restored".to_string(),
         shard_uri: "local://tbl/restored".to_string(),
-        start_routing_slot: 10,
-        end_routing_slot: 19,
+        start_routing_bucket: 10,
+        end_routing_bucket: 19,
         readonly: true,
         load_version: 43,
         local_node_id: Some(3),
@@ -193,8 +193,8 @@ fn runtime_auto_persists_lifecycle_snapshot_across_transitions() {
         shard_id: 8,
         table_name: "storage_lifecycle".to_string(),
         shard_uri: "local://storage-lifecycle/8".to_string(),
-        start_routing_slot: 10,
-        end_routing_slot: 19,
+        start_routing_bucket: 10,
+        end_routing_bucket: 19,
         readonly: false,
         load_version: 42,
         local_node_id: Some(3),
@@ -234,8 +234,8 @@ fn runtime_auto_persists_lifecycle_snapshot_across_transitions() {
         shard_id: 8,
         table_name: "storage_lifecycle_reloaded".to_string(),
         shard_uri: "local://storage-lifecycle/8-reload".to_string(),
-        start_routing_slot: 10,
-        end_routing_slot: 19,
+        start_routing_bucket: 10,
+        end_routing_bucket: 19,
         readonly: true,
         load_version: 43,
         local_node_id: Some(3),
@@ -323,8 +323,8 @@ fn runtime_async_lifecycle_jobs_report_progress_and_outputs() {
             shard_id: 7,
             table_name: "tbl".to_string(),
             shard_uri: "local://tbl/7".to_string(),
-            start_routing_slot: 10,
-            end_routing_slot: 19,
+            start_routing_bucket: 10,
+            end_routing_bucket: 19,
             readonly: false,
             load_version: 42,
             local_node_id: Some(3),
@@ -351,8 +351,8 @@ fn runtime_async_lifecycle_jobs_report_progress_and_outputs() {
             shard_id: 7,
             table_name: "tbl-new".to_string(),
             shard_uri: "local://tbl/7-new".to_string(),
-            start_routing_slot: 10,
-            end_routing_slot: 19,
+            start_routing_bucket: 10,
+            end_routing_bucket: 19,
             readonly: true,
             load_version: 43,
             local_node_id: Some(3),
@@ -385,8 +385,8 @@ fn runtime_rejects_foreground_writes_during_lifecycle_transition() {
         shard_id: 7,
         table_name: "tbl".to_string(),
         shard_uri: "local://tbl/7".to_string(),
-        start_routing_slot: 10,
-        end_routing_slot: 19,
+        start_routing_bucket: 10,
+        end_routing_bucket: 19,
         readonly: false,
         load_version: 42,
         local_node_id: Some(3),
@@ -451,8 +451,8 @@ fn runtime_rejects_queued_foreground_write_during_lifecycle_transition() {
         shard_id: 7,
         table_name: "tbl".to_string(),
         shard_uri: "local://tbl/7".to_string(),
-        start_routing_slot: 10,
-        end_routing_slot: 19,
+        start_routing_bucket: 10,
+        end_routing_bucket: 19,
         readonly: false,
         load_version: 42,
         local_node_id: Some(3),
@@ -514,7 +514,7 @@ fn runtime_executes_async_tracks_dirty_and_dump_clears_it() {
     let dump = runtime.submit_dump(
         DumpShardRequest {
             shard_id: 1,
-            selected_routing_slots: Vec::new(),
+            selected_routing_buckets: Vec::new(),
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -527,19 +527,19 @@ fn runtime_executes_async_tracks_dirty_and_dump_clears_it() {
 }
 
 #[test]
-fn runtime_dump_can_flush_only_selected_dirty_slots() {
+fn runtime_dump_can_flush_only_selected_dirty_buckets() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     let mut key_a = String::new();
     let mut key_b = String::new();
-    let mut slot_a = 0;
+    let mut bucket_a = 0;
     for index in 0..128 {
         let key = format!("slot-key-{index}");
-        let slot = engine.routing_slot_for_key(1, &key);
+        let bucket = engine.routing_bucket_for_key(1, &key);
         if key_a.is_empty() {
             key_a = key;
-            slot_a = slot;
-        } else if slot != slot_a {
+            bucket_a = bucket;
+        } else if bucket != bucket_a {
             key_b = key;
             break;
         }
@@ -571,7 +571,7 @@ fn runtime_dump_can_flush_only_selected_dirty_slots() {
     let dump = runtime.submit_dump(
         DumpShardRequest {
             shard_id: 1,
-            selected_routing_slots: vec![slot_a],
+            selected_routing_buckets: vec![bucket_a],
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -582,8 +582,8 @@ fn runtime_dump_can_flush_only_selected_dirty_slots() {
     assert!(output.status.ok);
     assert_eq!(output.dirty_objects_flushed, 1);
     assert_eq!(
-        output.slot_dump_manifest.as_ref().unwrap().slot_ids,
-        vec![slot_a]
+        output.bucket_dump_manifest.as_ref().unwrap().bucket_ids,
+        vec![bucket_a]
     );
     let remaining = runtime.dirty_objects();
     assert_eq!(remaining.len(), 1);
@@ -692,8 +692,8 @@ fn runtime_builds_cpp_style_server_load_report() {
                 shard_id: 7,
                 table_name: "tbl".to_string(),
                 shard_uri: "local://tbl/7".to_string(),
-                start_routing_slot: 10,
-                end_routing_slot: 19,
+                start_routing_bucket: 10,
+                end_routing_bucket: 19,
                 readonly: false,
                 load_version: 42,
                 local_node_id: Some(3),
@@ -790,8 +790,8 @@ fn runtime_builds_cpp_style_server_load_report() {
         }),
         shards: vec![crate::meta::TableShard {
             shard_id: 7,
-            start_slot: 10,
-            end_slot: 19,
+            start_bucket: 10,
+            end_bucket: 19,
             primary: Some("server-a".to_string()),
             replicas: vec!["server-a".to_string()],
             primary_endpoint: None,
@@ -809,8 +809,8 @@ fn runtime_builds_cpp_style_server_load_report() {
         table: None,
         shards: vec![crate::meta::TableShard {
             shard_id: 7,
-            start_slot: 0,
-            end_slot: 9,
+            start_bucket: 0,
+            end_bucket: 9,
             primary: Some("server-b".to_string()),
             replicas: vec!["server-b".to_string()],
             primary_endpoint: None,
@@ -923,12 +923,12 @@ fn runtime_storage_lifecycle_scheduler_runs_periodically() {
         Duration::from_millis(5),
         StorageLifecycleRequest {
             shard_id: 1,
-            selected_dump_slots: Vec::new(),
-            max_dump_slots_per_round: 0,
+            selected_dump_buckets: Vec::new(),
+            max_dump_buckets_per_round: 0,
             min_undumped_oplog_records: 0,
             purge_delayed_destroy: false,
-            prune_slot_dump_manifests: false,
-            roll_forward_slot_dump_installs: false,
+            prune_bucket_dump_manifests: false,
+            roll_forward_bucket_dump_installs: false,
             follower_replay_cursors: Vec::new(),
             page_gc_shared_store_cursors: Vec::new(),
             page_gc_raft_snapshot_refs: Vec::new(),
@@ -988,9 +988,9 @@ fn runtime_storage_manager_loop_runs_cpp_style_pressure_stages() {
     let report = runtime.run_storage_manager_once(
         1,
         StorageManagerOptions {
-            max_dump_slots_per_round: 16,
+            max_dump_buckets_per_round: 16,
             min_undumped_oplog_records: 1,
-            dirty_slot_pressure: 1,
+            dirty_bucket_pressure: 1,
             stale_page_segment_pressure: 1,
             reclaimable_physical_bytes_pressure: 1,
             cache_memory_bytes_pressure: 1,
@@ -1018,7 +1018,7 @@ fn runtime_storage_manager_loop_runs_cpp_style_pressure_stages() {
             "missing stage {stage}: {report:?}"
         );
     }
-    assert!(report.pressure.dirty_slot_count >= 1);
+    assert!(report.pressure.dirty_bucket_count >= 1);
     assert!(report.pressure.undumped_oplog_records >= 1);
     assert_eq!(report.pressure_decisions.len(), 8, "{report:?}");
     for stage in [
@@ -1166,9 +1166,9 @@ fn runtime_storage_manager_scale_repeats_cpp_style_pressure_stages() {
         let report = runtime.run_storage_manager_once(
             17,
             StorageManagerOptions {
-                max_dump_slots_per_round: 64,
+                max_dump_buckets_per_round: 64,
                 min_undumped_oplog_records: 1,
-                dirty_slot_pressure: 1,
+                dirty_bucket_pressure: 1,
                 stale_page_segment_pressure: 1,
                 reclaimable_physical_bytes_pressure: 1,
                 cache_memory_bytes_pressure: 1,
@@ -1203,7 +1203,7 @@ fn runtime_storage_manager_scale_repeats_cpp_style_pressure_stages() {
                 "missing executed pressure decision {stage}: {report:?}"
             );
         }
-        assert!(report.pressure.dirty_slot_count >= 1, "{report:?}");
+        assert!(report.pressure.dirty_bucket_count >= 1, "{report:?}");
         assert!(report.pressure.undumped_oplog_records >= 1, "{report:?}");
         assert!(report.lifecycle_report.is_some(), "{report:?}");
         assert!(
@@ -1560,8 +1560,8 @@ fn runtime_cancels_queued_lifecycle_job_before_execution() {
             shard_id: 7,
             table_name: "tbl".to_string(),
             shard_uri: "local://tbl/7".to_string(),
-            start_routing_slot: 10,
-            end_routing_slot: 19,
+            start_routing_bucket: 10,
+            end_routing_bucket: 19,
             readonly: false,
             load_version: 42,
             local_node_id: Some(3),
@@ -1587,7 +1587,7 @@ fn runtime_marks_inflight_cancellation_requested_before_worker_finishes() {
     let submitted = runtime.submit_dump(
         DumpShardRequest {
             shard_id: 1,
-            selected_routing_slots: Vec::new(),
+            selected_routing_buckets: Vec::new(),
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -1637,7 +1637,7 @@ fn runtime_honors_inflight_cancellation_before_dump_side_effects() {
         submitted_at_ms: now_ms(),
         request: TaskRequest::Dump(DumpShardRequest {
             shard_id: 1,
-            selected_routing_slots: Vec::new(),
+            selected_routing_buckets: Vec::new(),
         }),
     };
     runtime
@@ -1782,7 +1782,7 @@ fn runtime_rejects_background_work_when_background_queue_is_full() {
     let accepted = runtime.submit_dump(
         DumpShardRequest {
             shard_id: 1,
-            selected_routing_slots: Vec::new(),
+            selected_routing_buckets: Vec::new(),
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -1825,8 +1825,8 @@ fn storage_manager_cycle_runs_as_bounded_background_data_node_task() {
                 shard_id: 1,
                 table_name: "storage-manager".to_string(),
                 shard_uri: "local://storage-manager/1".to_string(),
-                start_routing_slot: 0,
-                end_routing_slot: 16_383,
+                start_routing_bucket: 0,
+                end_routing_bucket: 16_383,
                 readonly: false,
                 load_version: 1,
                 local_node_id: Some(1),
@@ -1850,7 +1850,7 @@ fn storage_manager_cycle_runs_as_bounded_background_data_node_task() {
     let submitted = runtime.submit_storage_manager_cycle(
         StorageManagerCycleRequest {
             shard_id: 1,
-            max_dump_slots_per_round: 8,
+            max_dump_buckets_per_round: 8,
             warm_cache: true,
             ..StorageManagerCycleRequest::default()
         },
@@ -1887,7 +1887,7 @@ fn storage_manager_cycle_runs_as_bounded_background_data_node_task() {
         .report
         .stages
         .iter()
-        .any(|stage| stage.stage == "reclaim_oplog" && stage.dumped_slot_count >= 1));
+        .any(|stage| stage.stage == "reclaim_oplog" && stage.dumped_bucket_count >= 1));
     assert_eq!(runtime.stats().storage_manager_runs, 1);
     assert_eq!(runtime.stats().background_queue_depth, 0);
 }
@@ -1916,8 +1916,8 @@ fn storage_manager_scheduler_submits_deduplicated_background_cycles() {
                 shard_id: 1,
                 table_name: "storage-manager-scheduler".to_string(),
                 shard_uri: "local://storage-manager-scheduler/1".to_string(),
-                start_routing_slot: 0,
-                end_routing_slot: 16_383,
+                start_routing_bucket: 0,
+                end_routing_bucket: 16_383,
                 readonly: false,
                 load_version: 1,
                 local_node_id: Some(1),
@@ -1937,7 +1937,7 @@ fn storage_manager_scheduler_submits_deduplicated_background_cycles() {
         Duration::from_millis(5),
         StorageManagerCycleRequest {
             shard_id: 1,
-            max_dump_slots_per_round: 8,
+            max_dump_buckets_per_round: 8,
             warm_cache: true,
             ..StorageManagerCycleRequest::default()
         },
@@ -1976,8 +1976,8 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
                 shard_id: 8,
                 table_name: "storage-manager-runtime".to_string(),
                 shard_uri: "local://storage-manager-runtime/8".to_string(),
-                start_routing_slot: 0,
-                end_routing_slot: 16_383,
+                start_routing_bucket: 0,
+                end_routing_bucket: 16_383,
                 readonly: false,
                 load_version: 1,
                 local_node_id: Some(1),
@@ -2013,7 +2013,7 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
         max_backoff_ms: 40,
         request: StorageManagerCycleRequest {
             shard_id: 8,
-            max_dump_slots_per_round: 3,
+            max_dump_buckets_per_round: 3,
             enable_prepare: true,
             enable_oplog_reclaim: true,
             enable_expire: false,
@@ -2022,13 +2022,13 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
             enable_page_compaction: false,
             enable_index_gc: true,
             warm_cache: true,
-            follower_replay_cursors: vec![crate::engine::reports::SlotDumpFollowerReplayCursor {
+            follower_replay_cursors: vec![crate::engine::reports::BucketDumpFollowerReplayCursor {
                 follower_id: "follower-lagging-runtime".to_string(),
                 shard_id: 8,
                 oplog_sequence: 1,
                 index_log_sequence: 1,
             }],
-            raft_snapshot_refs: vec![crate::engine::reports::SlotDumpRaftSnapshotRef {
+            raft_snapshot_refs: vec![crate::engine::reports::BucketDumpRaftSnapshotRef {
                 snapshot_id: "raft-snapshot-runtime".to_string(),
                 shard_id: 8,
                 last_included_index: 1,
@@ -2055,7 +2055,7 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
     assert_eq!(running.jitter_percent, 50);
     assert!(running.last_delay_ms >= 5);
     assert!(running.last_delay_ms <= 7);
-    assert_eq!(running.bounded_max_dump_slots_per_round, 3);
+    assert_eq!(running.bounded_max_dump_buckets_per_round, 3);
     assert!(running.phase_prepare_enabled);
     assert!(running.phase_wal_reclaim_enabled);
     assert!(!running.phase_expire_enabled);
@@ -2074,7 +2074,7 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
     assert!(running.last_completed_cycle.is_some());
     assert!(running.last_pressure_snapshot.is_some());
     let pressure = running.last_pressure_snapshot.as_ref().unwrap();
-    assert!(pressure.dirty_slot_count >= 1, "{pressure:?}");
+    assert!(pressure.dirty_bucket_count >= 1, "{pressure:?}");
     assert!(pressure.undumped_oplog_records >= 1, "{pressure:?}");
     assert!(pressure.wal_bytes >= 1, "{pressure:?}");
     assert!(pressure.index_log_bytes >= 1, "{pressure:?}");
@@ -2084,7 +2084,7 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
     assert!(pressure.raft_snapshot_retention_blockers >= 1);
     assert!(pressure.total_pressure_score >= pressure.wal_bytes);
     assert!(running.last_pressure_before >= running.last_pressure_after);
-    assert!(!running.last_selected_slots.is_empty());
+    assert!(!running.last_selected_buckets.is_empty());
     assert!(running.last_bytes_reclaimed >= pressure.cache_disk_bytes);
     assert!(running.last_wal_floor_sequence >= 1);
     assert!(running.last_index_log_floor_sequence >= 1);
@@ -2101,7 +2101,7 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
             && stage.pressure_before >= stage.pressure_after));
     assert!(running.last_phase_reports.iter().any(|stage| {
         stage.stage == "reclaim_oplog"
-            && !stage.selected_slots.is_empty()
+            && !stage.selected_buckets.is_empty()
             && stage.wal_floor_sequence >= 1
             && stage.index_log_floor_sequence >= 1
             && stage.retention_blockers >= 1
@@ -2166,7 +2166,7 @@ fn storage_manager_runtime_jitter_and_backoff_are_bounded() {
         max_backoff_ms: 16,
         request: StorageManagerCycleRequest {
             shard_id: 404,
-            max_dump_slots_per_round: 1,
+            max_dump_buckets_per_round: 1,
             ..StorageManagerCycleRequest::default()
         },
         controller: RequestController { timeout_ms: 10 },
@@ -2182,7 +2182,7 @@ fn storage_manager_runtime_jitter_and_backoff_are_bounded() {
     let report = storage_manager_runtime_initial_report(&options);
     assert!(report.running);
     assert_eq!(report.current_backoff_ms, 4);
-    assert_eq!(report.bounded_max_dump_slots_per_round, 1);
+    assert_eq!(report.bounded_max_dump_buckets_per_round, 1);
     assert!(report.phase_prepare_enabled);
     assert!(report.phase_wal_reclaim_enabled);
     assert!(report.phase_expire_enabled);
@@ -2216,7 +2216,7 @@ fn queued_dump(job_id: u64, shard_id: ShardId) -> QueuedTask {
         submitted_at_ms: now_ms(),
         request: TaskRequest::Dump(DumpShardRequest {
             shard_id,
-            selected_routing_slots: Vec::new(),
+            selected_routing_buckets: Vec::new(),
         }),
     }
 }

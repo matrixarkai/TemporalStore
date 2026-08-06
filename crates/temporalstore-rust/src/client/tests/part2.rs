@@ -163,8 +163,8 @@ fn client_metasync_backoff_deadline_and_topology_refresh_survive_outage_churn() 
                             }),
                             shards: vec![TableShard {
                                 shard_id: 40,
-                                start_slot: 0,
-                                end_slot: 1_073_741_823,
+                                start_bucket: 0,
+                                end_bucket: 1_073_741_823,
                                 primary: Some("127.0.0.1:27440".to_string()),
                                 replicas: vec!["127.0.0.1:27440".to_string()],
                                 primary_endpoint: None,
@@ -424,8 +424,8 @@ fn table_read_policy_can_select_secondary_from_metaserver_topology() {
                         }),
                         shards: vec![TableShard {
                             shard_id: 1,
-                            start_slot: 0,
-                            end_slot: u64::MAX,
+                            start_bucket: 0,
+                            end_bucket: u64::MAX,
                             primary: Some(primary_for_meta.clone()),
                             replicas: vec![primary_for_meta.clone(), replica_for_meta.clone()],
                             primary_endpoint: None,
@@ -466,9 +466,9 @@ fn table_read_policy_can_select_secondary_from_metaserver_topology() {
 }
 
 #[test]
-fn client_router_matches_cpp_crc64_slot_formula() {
+fn client_router_matches_cpp_crc64_bucket_formula() {
     assert_eq!(crc64_jones(b"123456789"), 0xe9c6d914c4b8d9ca);
-    assert_eq!(slot_id_for_key("123456789"), 0x3a71_b645);
+    assert_eq!(bucket_id_for_key("123456789"), 0x3a71_b645);
     assert_eq!(
         shard_id_for_key("123456789", 10, 4, 1),
         10 + (0x3a71_b645 % 4)
@@ -481,8 +481,8 @@ fn client_router_round_robins_secondary_reads_like_cpp_router() {
     let mut route = CachedRoute {
         table_key: String::new(),
         partition_id: 1,
-        start_slot: 0,
-        end_slot: 0,
+        start_bucket: 0,
+        end_bucket: 0,
         use_cpp_partition_ids: false,
         partition_version: 0,
         primary_addr: "primary".to_string(),
@@ -517,8 +517,8 @@ fn client_router_prefers_same_location_replica_when_available() {
     let mut route = CachedRoute {
         table_key: String::new(),
         partition_id: 1,
-        start_slot: 0,
-        end_slot: 0,
+        start_bucket: 0,
+        end_bucket: 0,
         use_cpp_partition_ids: false,
         partition_version: 0,
         primary_addr: "primary".to_string(),
@@ -696,8 +696,8 @@ fn client_deployment_placement_routes_reads_to_local_secondary_and_writes_to_pri
                             }),
                             shards: vec![TableShard {
                                 shard_id: 81,
-                                start_slot: 0,
-                                end_slot: u64::MAX,
+                                start_bucket: 0,
+                                end_bucket: u64::MAX,
                                 primary: Some(primary_addr.clone()),
                                 replicas: vec![primary_addr.clone(), replica_addr.clone()],
                                 primary_endpoint: Some(ServerEndpoint {

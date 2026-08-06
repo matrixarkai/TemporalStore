@@ -120,8 +120,8 @@ impl TemporalEngine {
 
         phases.push(StorageManagerLoopPhaseReport {
             phase: "index_gc".to_string(),
-            attempted: request.lifecycle.prune_slot_dump_manifests
-                || request.lifecycle.roll_forward_slot_dump_installs,
+            attempted: request.lifecycle.prune_bucket_dump_manifests
+                || request.lifecycle.roll_forward_bucket_dump_installs,
             applied: lifecycle.manifest_prune_report.is_some()
                 || !lifecycle.install_roll_forward_reports.is_empty(),
             evidence: vec![
@@ -187,12 +187,12 @@ impl TemporalEngine {
         let segment_integrity = storage_segment_integrity_report(shard_id, &recovery, &boundary);
         let plan = self.storage_lifecycle_plan(StorageLifecycleRequest {
             shard_id,
-            selected_dump_slots: Vec::new(),
-            max_dump_slots_per_round: 0,
+            selected_dump_buckets: Vec::new(),
+            max_dump_buckets_per_round: 0,
             min_undumped_oplog_records: 0,
             purge_delayed_destroy: false,
-            prune_slot_dump_manifests: false,
-            roll_forward_slot_dump_installs: false,
+            prune_bucket_dump_manifests: false,
+            roll_forward_bucket_dump_installs: false,
             follower_replay_cursors: Vec::new(),
             page_gc_shared_store_cursors: Vec::new(),
             page_gc_raft_snapshot_refs: Vec::new(),
@@ -216,8 +216,8 @@ impl TemporalEngine {
             .unwrap_or_else(|| self.page_store.stats());
         let log_compatibility = self.storage_log_compatibility_report(shard_id);
         let page_format_compatibility = self.storage_page_format_compatibility_report(shard_id);
-        let slot_dump_manifest_count = self.list_slot_dump_manifests(shard_id).len();
-        let interrupted_slot_dump_install_count = boundary.interrupted_slot_dump_installs.len();
+        let bucket_dump_manifest_count = self.list_bucket_dump_manifests(shard_id).len();
+        let interrupted_bucket_dump_install_count = boundary.interrupted_bucket_dump_installs.len();
         let undumped_oplog_records = boundary
             .latest_safe_oplog_sequence
             .saturating_sub(boundary.latest_dump_oplog_sequence);
@@ -240,7 +240,7 @@ impl TemporalEngine {
         if boundary.object_lifecycle.reused_object_id_conflicts > 0 {
             blockers.push("reused_object_id_conflicts".to_string());
         }
-        if interrupted_slot_dump_install_count > 0 {
+        if interrupted_bucket_dump_install_count > 0 {
             blockers.push("interrupted_slot_dump_installs".to_string());
         }
         if !boundary.manifest_chain_issues.is_empty() {
@@ -258,7 +258,7 @@ impl TemporalEngine {
         }
 
         let mut warnings = Vec::new();
-        if !plan.dirty_slots.is_empty() {
+        if !plan.dirty_buckets.is_empty() {
             warnings.push("dirty_slots_pending_dump".to_string());
         }
         if !plan.stale_page_segment_ids.is_empty() {
@@ -267,12 +267,12 @@ impl TemporalEngine {
         if !boundary.orphan_page_segment_ids.is_empty() {
             warnings.push("orphan_page_segments_pending_gc".to_string());
         }
-        if slot_dump_manifest_count == 0 && recovery.total_page_refs > 0 {
+        if bucket_dump_manifest_count == 0 && recovery.total_page_refs > 0 {
             warnings.push("no_slot_dump_manifest_for_live_pages".to_string());
         }
         if policy
-            .max_dirty_slots
-            .map(|limit| plan.dirty_slots.len() > limit)
+            .max_dirty_buckets
+            .map(|limit| plan.dirty_buckets.len() > limit)
             .unwrap_or(false)
         {
             blockers.push("dirty_slots_exceed_policy".to_string());
@@ -298,8 +298,8 @@ impl TemporalEngine {
         {
             blockers.push("undumped_oplog_records_exceed_policy".to_string());
         }
-        if policy.require_slot_dump_manifest
-            && slot_dump_manifest_count == 0
+        if policy.require_bucket_dump_manifest
+            && bucket_dump_manifest_count == 0
             && recovery.total_page_refs > 0
         {
             blockers.push("slot_dump_manifest_required".to_string());
@@ -314,7 +314,7 @@ impl TemporalEngine {
             production_ready: blockers.is_empty(),
             blockers,
             warnings,
-            dirty_slot_count: plan.dirty_slots.len(),
+            dirty_bucket_count: plan.dirty_buckets.len(),
             stale_page_segment_count: plan.stale_page_segment_ids.len(),
             orphan_page_segment_count: boundary.orphan_page_segment_ids.len(),
             undumped_oplog_records,
@@ -323,11 +323,11 @@ impl TemporalEngine {
             owner_mismatch_page_ref_count: boundary.owner_mismatch_page_refs.len(),
             missing_owner_page_ref_count: boundary.object_lifecycle.missing_owner_page_refs,
             reused_object_id_conflict_count: boundary.object_lifecycle.reused_object_id_conflicts,
-            interrupted_slot_dump_install_count,
-            prepared_slot_dump_install_count: boundary.prepared_slot_dump_install_count,
-            installed_slot_dump_install_count: boundary.installed_slot_dump_install_count,
-            unknown_slot_dump_install_count: boundary.unknown_slot_dump_install_count,
-            slot_dump_manifest_count,
+            interrupted_bucket_dump_install_count,
+            prepared_bucket_dump_install_count: boundary.prepared_bucket_dump_install_count,
+            installed_bucket_dump_install_count: boundary.installed_bucket_dump_install_count,
+            unknown_bucket_dump_install_count: boundary.unknown_bucket_dump_install_count,
+            bucket_dump_manifest_count,
             cache_memory_bytes: cache.memory_bytes,
             cache_disk_bytes: cache.disk_bytes,
             page_store_bytes_written: page_store.bytes_written,
@@ -408,7 +408,7 @@ impl TemporalEngine {
             cxx_page_header_compatible: false,
             checksum_protected: true,
             object_ids_embedded: true,
-            routing_slots_embedded: true,
+            routing_buckets_embedded: true,
             compression_supported: true,
             active_bands: zones.active_bands,
             sealed_bands: zones.sealed_bands,
@@ -432,21 +432,21 @@ impl TemporalEngine {
     pub fn warm_cache_from_page_index(
         &self,
         shard_id: ShardId,
-        selected_slots: impl IntoIterator<Item = u32>,
+        selected_buckets: impl IntoIterator<Item = u32>,
     ) -> usize {
-        self.storage_cache_warmup_report(shard_id, selected_slots)
+        self.storage_cache_warmup_report(shard_id, selected_buckets)
             .warmed_page_refs
     }
 
     pub fn storage_cache_warmup_report(
         &self,
         shard_id: ShardId,
-        selected_slots: impl IntoIterator<Item = u32>,
+        selected_buckets: impl IntoIterator<Item = u32>,
     ) -> StorageCacheWarmupReport {
-        let selected_slots = selected_slots.into_iter().collect::<BTreeSet<_>>();
+        let selected_buckets = selected_buckets.into_iter().collect::<BTreeSet<_>>();
         let mut report = StorageCacheWarmupReport {
             shard_id,
-            selected_slots: selected_slots.iter().copied().collect(),
+            selected_buckets: selected_buckets.iter().copied().collect(),
             ..StorageCacheWarmupReport::default()
         };
         let shards = self.shards.read().expect("engine lock poisoned");
@@ -454,11 +454,11 @@ impl TemporalEngine {
             return report;
         };
         for entry in collect_live_page_entries(shard) {
-            let routing_slot = entry
+            let routing_bucket = entry
                 .address
-                .routing_slot
-                .unwrap_or_else(|| self.routing_slot_for_key(shard_id, &entry.object_key));
-            if !selected_slots.is_empty() && !selected_slots.contains(&routing_slot) {
+                .routing_bucket
+                .unwrap_or_else(|| self.routing_bucket_for_key(shard_id, &entry.object_key));
+            if !selected_buckets.is_empty() && !selected_buckets.contains(&routing_bucket) {
                 report.skipped_page_refs = report.skipped_page_refs.saturating_add(1);
                 continue;
             }
@@ -468,7 +468,7 @@ impl TemporalEngine {
                 entry.address.page_segment_id,
                 entry.address.offset,
                 entry.address.length,
-                entry.address.routing_slot,
+                entry.address.routing_bucket,
                 entry.address.generation,
             );
             if self.cache.get(&key).ok().flatten().is_some() {
@@ -499,16 +499,16 @@ impl TemporalEngine {
         shard_id: ShardId,
     ) -> StorageCacheInspectionReport {
         let entries = self.cache.entries_for_shard(shard_id);
-        let mut slot_summaries = BTreeMap::<u32, StorageCacheSlotSummary>::new();
+        let mut bucket_summaries = BTreeMap::<u32, StorageCacheBucketSummary>::new();
         for entry in &entries {
-            let Some(routing_slot) = cache_entry_routing_slot(entry) else {
+            let Some(routing_bucket) = cache_entry_routing_bucket(entry) else {
                 continue;
             };
-            let summary = slot_summaries
-                .entry(routing_slot)
-                .or_insert(StorageCacheSlotSummary {
-                    routing_slot,
-                    ..StorageCacheSlotSummary::default()
+            let summary = bucket_summaries
+                .entry(routing_bucket)
+                .or_insert(StorageCacheBucketSummary {
+                    routing_bucket,
+                    ..StorageCacheBucketSummary::default()
                 });
             summary.entry_count = summary.entry_count.saturating_add(1);
             summary.memory_bytes = summary.memory_bytes.saturating_add(entry.memory_bytes);
@@ -522,16 +522,16 @@ impl TemporalEngine {
             shard_id,
             stats: self.cache.stats(),
             entries,
-            slot_summaries: slot_summaries.into_values().collect(),
+            bucket_summaries: bucket_summaries.into_values().collect(),
         }
     }
 
-    pub fn invalidate_storage_cache_slot(
+    pub fn invalidate_storage_cache_bucket(
         &self,
-        request: StorageCacheInvalidateSlotRequest,
+        request: StorageCacheInvalidateBucketRequest,
     ) -> Result<CacheGcReport, Status> {
         self.cache
-            .invalidate_slot(request.shard_id, request.routing_slot)
+            .invalidate_slot(request.shard_id, request.routing_bucket)
             .map_err(|err| Status::error("cache_slot_invalidation_failed", err.to_string()))
     }
 
@@ -539,7 +539,7 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
     ) -> StorageRecoveryBoundaryReport {
-        let manifests = self.list_slot_dump_manifests(shard_id);
+        let manifests = self.list_bucket_dump_manifests(shard_id);
         let latest_dump_oplog_sequence = manifests
             .iter()
             .map(|manifest| manifest.oplog_sequence)
@@ -566,24 +566,24 @@ impl TemporalEngine {
             .difference(&live_page_segment_ids)
             .copied()
             .collect::<Vec<_>>();
-        let latest_dump_slots = manifests
+        let latest_dump_buckets = manifests
             .last()
-            .map(|manifest| manifest.slot_ids.iter().copied().collect::<BTreeSet<_>>())
+            .map(|manifest| manifest.bucket_ids.iter().copied().collect::<BTreeSet<_>>())
             .unwrap_or_default();
-        let missing_dump_slot_ids = self
-            .slot_storage_summaries(shard_id)
+        let missing_dump_bucket_ids = self
+            .bucket_storage_summaries(shard_id)
             .into_iter()
             .filter(|summary| summary.dirty_object_count > 0)
-            .map(|summary| summary.routing_slot)
-            .filter(|slot| !latest_dump_slots.contains(slot))
+            .map(|summary| summary.routing_bucket)
+            .filter(|bucket| !latest_dump_buckets.contains(bucket))
             .collect::<Vec<_>>();
-        let interrupted_slot_dump_installs = self.interrupted_slot_dump_installs(shard_id);
+        let interrupted_bucket_dump_installs = self.interrupted_bucket_dump_installs(shard_id);
         let (
-            prepared_slot_dump_install_count,
-            installed_slot_dump_install_count,
-            unknown_slot_dump_install_count,
-        ) = slot_dump_install_phase_counts(&interrupted_slot_dump_installs);
-        let manifest_chain_issues = slot_dump_manifest_chain_issues(&manifests);
+            prepared_bucket_dump_install_count,
+            installed_bucket_dump_install_count,
+            unknown_bucket_dump_install_count,
+        ) = bucket_dump_install_phase_counts(&interrupted_bucket_dump_installs);
+        let manifest_chain_issues = bucket_dump_manifest_chain_issues(&manifests);
         let recovery = self.storage_recovery_report_without_boundary(shard_id);
         let corrupt_page_segment_ids = recovery
             .page_segment_reports
@@ -608,12 +608,12 @@ impl TemporalEngine {
             selected_replay_index_log_sequence: latest_dump_index_log_sequence
                 .min(latest_safe_index_log_sequence),
             orphan_page_segment_ids,
-            missing_dump_slot_ids,
+            missing_dump_bucket_ids,
             stale_index_page_refs: recovery.unreadable_page_refs,
-            interrupted_slot_dump_installs,
-            prepared_slot_dump_install_count,
-            installed_slot_dump_install_count,
-            unknown_slot_dump_install_count,
+            interrupted_bucket_dump_installs,
+            prepared_bucket_dump_install_count,
+            installed_bucket_dump_install_count,
+            unknown_bucket_dump_install_count,
             manifest_chain_issues,
             owner_mismatch_page_refs: recovery.owner_mismatch_page_refs,
             missing_owner_page_refs: recovery.missing_owner_page_refs,

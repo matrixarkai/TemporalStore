@@ -19,7 +19,7 @@ pub use server::serve_redis_proxy;
 pub use state::RedisCommandState;
 pub use dispatch::execute_redis_command_with_state;
 
-use crate::client::{slot_id_for_key, stable_key_hash};
+use crate::client::{bucket_id_for_key, stable_key_hash};
 use crate::types::{
     parse_cpp_feature_filters, Command, CommandResponse, FeatureFilter, FeatureFilterOp,
     FeaturePoint, FeatureWritePolicy, RiskFamily, RiskFolType, ShardId, StringSetCondition,

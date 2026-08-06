@@ -12,7 +12,7 @@ use super::packed_pages::{
 use super::product_model::{
     aggregate_feature_values, is_supported_feature_aggregate, sequence_filter_matches,
 };
-use super::slot_index_object_page_addresses;
+use super::bucket_index_object_page_addresses;
 use super::state::ShardState;
 
 fn timestamp_page_refs_in_range(
@@ -76,7 +76,7 @@ pub(super) fn read_feature_points_in_range(
             read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
         })
         .unwrap_or_else(|| {
-            let addresses = slot_index_object_page_addresses(shard, model_id, key);
+            let addresses = bucket_index_object_page_addresses(shard, model_id, key);
             read_feature_points_from_pages_in_range(
                 cache, page_store, shard_id, &addresses, start_ms, end_ms, limit,
             )
@@ -155,7 +155,7 @@ pub(super) fn read_ips_count_in_range(
         .get(key)
         .map(|series| series.range(start_ms..=end_ms).count() as i64)
         .unwrap_or_else(|| {
-            let addresses = slot_index_object_page_addresses(shard, "ips", key);
+            let addresses = bucket_index_object_page_addresses(shard, "ips", key);
             read_feature_points_from_pages_in_range(
                 cache,
                 page_store,
@@ -185,7 +185,7 @@ pub(super) fn read_ips_points_last(
             read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
         })
         .unwrap_or_else(|| {
-            let addresses = slot_index_object_page_addresses(shard, "ips", key);
+            let addresses = bucket_index_object_page_addresses(shard, "ips", key);
             read_feature_points_from_pages_last(cache, page_store, shard_id, &addresses, count)
         })
 }

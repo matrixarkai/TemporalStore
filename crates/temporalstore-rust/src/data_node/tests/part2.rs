@@ -165,7 +165,7 @@ fn runtime_direct_unload_rejects_busy_shard_without_unloading() {
     let queued = runtime.submit_dump(
         DumpShardRequest {
             shard_id: 7,
-            selected_routing_slots: Vec::new(),
+            selected_routing_buckets: Vec::new(),
         },
         RequestController { timeout_ms: 1000 },
     );
