@@ -2,6 +2,23 @@
 use super::*;
 
 impl LocalBlockStore {
+    /// Force durability for writes made under relaxed (bulk) mode: fsync the
+    /// active segment's data and persist the extent manifest once. No-op when
+    /// nothing was deferred (e.g. the live per-append-fsync path).
+    pub fn sync_durable(&self) -> Result<(), BlockStoreError> {
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
+        if !inner.relaxed_dirty {
+            return Ok(());
+        }
+        let path = segment_path(&inner.root, inner.page_segment_id);
+        if let Ok(file) = OpenOptions::new().append(true).open(&path) {
+            file.sync_data()?;
+        }
+        persist_extent_manifest(&inner.root, &inner.extents)?;
+        inner.relaxed_dirty = false;
+        Ok(())
+    }
+
     pub fn append(&self, bytes: &[u8]) -> Result<BlockAddress, BlockStoreError> {
         self.append_with_object_id(bytes, None)
     }
@@ -65,7 +82,10 @@ impl LocalBlockStore {
         };
         file.write_all(&record.bytes)?;
         file.flush()?;
-        file.sync_data()?;
+        let relaxed = bulk_relaxed_durability();
+        if !relaxed {
+            file.sync_data()?;
+        }
         inner.next_page_id = inner.next_page_id.saturating_add(1);
         inner.write_offset += address.length;
         let page_segment_id = inner.page_segment_id;
@@ -77,7 +97,11 @@ impl LocalBlockStore {
             record.logical_len as u64,
             page_id,
         );
-        persist_extent_manifest(&inner.root, &inner.extents)?;
+        if relaxed {
+            inner.relaxed_dirty = true;
+        } else {
+            persist_extent_manifest(&inner.root, &inner.extents)?;
+        }
         inner.stats.writes += 1;
         inner.stats.bytes_written += address.length;
         inner.stats.logical_bytes_written += record.logical_len as u64;

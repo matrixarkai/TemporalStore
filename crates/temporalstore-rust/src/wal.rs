@@ -242,7 +242,11 @@ impl LocalWriteAheadLogStore {
             metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
             command,
         };
-        let report = append_record_locked(&mut inner, &record, true)?;
+        // Bulk backfill defers the WAL fsync to an explicit flush(shard_id) at
+        // chunk end (mirrors the block-store relaxed path). Recovery for backfill
+        // is the resumable source offset; flush bounds power-loss exposure to one
+        // chunk. Live path (env unset) keeps the per-append fsync.
+        let report = append_record_locked(&mut inner, &record, !wal_bulk_relaxed_durability())?;
         inner.stats.last_sequence = report.current_sequence;
         inner.stats.last_flushed_sequence = report.current_sequence;
         inner.last_sequence_by_shard.insert(shard_id, next_sequence);
@@ -503,6 +507,17 @@ fn write_ahead_log_path(root: &Path, shard_id: ShardId) -> PathBuf {
 
 fn legacy_oplog_path(root: &Path, shard_id: ShardId) -> PathBuf {
     root.join(format!("shard-{shard_id}.oplog.jsonl"))
+}
+
+fn wal_bulk_relaxed_durability() -> bool {
+    matches!(
+        std::env::var("MATRIXARK_BULK_INGEST")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 fn append_record_locked(
