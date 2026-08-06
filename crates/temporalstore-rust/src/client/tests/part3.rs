@@ -60,7 +60,7 @@ fn table_write_refreshes_due_topology_before_network() {
                                     partition_version: 0,
                                     serving_options: crate::meta::TableServingOptions::default(),
                                 }),
-                                partitions: vec![crate::meta::TablePartition {
+                                shards: vec![crate::meta::TableShard {
                                     shard_id: first_shard_id,
                                     start_slot: 0,
                                     end_slot: u64::MAX,
@@ -281,7 +281,7 @@ fn client_background_meta_sync_updates_existing_table_handle() {
                                     partition_version: 0,
                                     serving_options: crate::meta::TableServingOptions::default(),
                                 }),
-                                partitions: Vec::new(),
+                                shards: Vec::new(),
                                 unchanged: false,
                             },
                         )

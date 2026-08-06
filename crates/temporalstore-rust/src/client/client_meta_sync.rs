@@ -126,7 +126,7 @@ impl TemporalStoreClient {
         };
         let table_key = table_combine_name(&namespace, &table_name);
         let routes = topology
-            .partitions
+            .shards
             .iter()
             .filter_map(|partition| {
                 partition.primary.as_ref().map(|primary| {

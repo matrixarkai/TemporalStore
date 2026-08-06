@@ -13,7 +13,7 @@ impl SingleNodeMeta {
             return TableTopologyResponse {
                 status: Status::error("table_not_found", "table not found"),
                 table: None,
-                partitions: Vec::new(),
+                shards: Vec::new(),
                 unchanged: false,
             };
         };
@@ -21,7 +21,7 @@ impl SingleNodeMeta {
             return TableTopologyResponse {
                 status: Status::error("table_not_found", "table is dropped"),
                 table: Some(table.info.clone()),
-                partitions: Vec::new(),
+                shards: Vec::new(),
                 unchanged: false,
             };
         }
@@ -29,7 +29,7 @@ impl SingleNodeMeta {
             return TableTopologyResponse {
                 status: Status::error("resource_frozen", "table is frozen"),
                 table: Some(table.info.clone()),
-                partitions: Vec::new(),
+                shards: Vec::new(),
                 unchanged: false,
             };
         }
@@ -37,15 +37,15 @@ impl SingleNodeMeta {
             return TableTopologyResponse {
                 status: Status::ok(),
                 table: Some(table.info.clone()),
-                partitions: Vec::new(),
+                shards: Vec::new(),
                 unchanged: true,
             };
         }
-        let partitions = build_partitions(&state, &table.info);
+        let shards = build_shards(&state, &table.info);
         TableTopologyResponse {
             status: Status::ok(),
             table: Some(table.info.clone()),
-            partitions,
+            shards,
             unchanged: false,
         }
     }

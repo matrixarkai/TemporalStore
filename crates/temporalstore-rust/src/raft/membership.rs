@@ -173,7 +173,7 @@ pub fn plan_data_raft_membership_from_topology(
     shard_id: ShardId,
 ) -> Result<DataRaftTopologyMembershipPlan, RaftError> {
     let partition = topology
-        .partitions
+        .shards
         .iter()
         .find(|partition| partition.shard_id == shard_id)
         .ok_or_else(|| {

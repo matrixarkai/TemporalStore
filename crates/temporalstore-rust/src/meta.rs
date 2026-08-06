@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::control::{PartitionInfoStats, ShardCanonicalStorageStats};
+use crate::control::{ShardStatInfo, ShardCanonicalStorageStats};
 use crate::partition_id::{validate_partition_set_count, PartitionId, MAX_TABLE_ID};
 use crate::types::{ShardId, Status};
 mod partitioning;
@@ -112,7 +112,8 @@ pub struct ServerHeartbeatRequest {
     #[serde(default)]
     pub shard_loads: Vec<ShardLoad>,
     #[serde(default)]
-    pub partition_loads: Vec<PartitionLoad>,
+    #[serde(alias = "partition_loads")]
+    pub shard_stat_loads: Vec<ShardStatLoad>,
     #[serde(default)]
     pub runtime_load: ServerRuntimeLoad,
     #[serde(default)]
@@ -137,9 +138,10 @@ pub struct ShardLoad {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PartitionLoad {
+pub struct ShardStatLoad {
     pub shard_id: ShardId,
-    pub partition_info: PartitionInfoStats,
+    #[serde(alias = "partition_info")]
+    pub shard_stat_info: ShardStatInfo,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -208,7 +210,8 @@ pub struct ServerMetaInfo {
     pub binary_version: String,
     pub shard_loads: Vec<ShardLoad>,
     #[serde(default)]
-    pub partition_loads: Vec<PartitionLoad>,
+    #[serde(alias = "partition_loads")]
+    pub shard_stat_loads: Vec<ShardStatLoad>,
     #[serde(default)]
     pub runtime_load: ServerRuntimeLoad,
     #[serde(default)]
@@ -449,7 +452,7 @@ pub struct TableMetaInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TablePartition {
+pub struct TableShard {
     pub shard_id: ShardId,
     pub start_slot: u64,
     pub end_slot: u64,
@@ -472,7 +475,8 @@ pub struct ServerEndpoint {
 pub struct TableTopologyResponse {
     pub status: Status,
     pub table: Option<TableMetaInfo>,
-    pub partitions: Vec<TablePartition>,
+    #[serde(alias = "partitions")]
+    pub shards: Vec<TableShard>,
     pub unchanged: bool,
 }
 
@@ -1056,9 +1060,9 @@ mod tests {
                 key_count: 10,
                 memory_bytes: 100,
             }],
-            partition_loads: vec![PartitionLoad {
+            shard_stat_loads: vec![ShardStatLoad {
                 shard_id: 7,
-                partition_info: crate::control::PartitionInfoStats {
+                shard_stat_info: crate::control::ShardStatInfo {
                     shard_id: 7,
                     loaded: true,
                     readonly: false,
@@ -1123,8 +1127,8 @@ mod tests {
         assert_eq!(heartbeat.server_state, "normal");
         let server = meta.list_servers().servers.remove(0);
         assert_eq!(server.shard_loads[0].key_count, 10);
-        assert_eq!(server.partition_loads[0].partition_info.table_name, "tbl");
-        assert_eq!(server.partition_loads[0].partition_info.storage_bytes, 100);
+        assert_eq!(server.shard_stat_loads[0].shard_stat_info.table_name, "tbl");
+        assert_eq!(server.shard_stat_loads[0].shard_stat_info.storage_bytes, 100);
         assert_eq!(server.runtime_load.queue_depth, 2);
         assert_eq!(server.runtime_load.storage_lifecycle_runs, 8);
         assert_eq!(server.runtime_load.last_meta_topology_version, 12);
@@ -1326,7 +1330,7 @@ mod tests {
             boot_time_ms: 1,
             binary_version: "v".to_string(),
             shard_loads: Vec::new(),
-            partition_loads: Vec::new(),
+            shard_stat_loads: Vec::new(),
             runtime_load: ServerRuntimeLoad::default(),
             shard_states: Vec::new(),
         });
@@ -1410,9 +1414,9 @@ mod tests {
             old_topology_version: 0,
         });
         assert!(topo.status.ok);
-        assert_eq!(topo.partitions.len(), 2);
-        assert_eq!(topo.partitions[0].primary.as_deref(), Some("s1"));
-        assert_eq!(topo.partitions[0].replicas.len(), 2);
+        assert_eq!(topo.shards.len(), 2);
+        assert_eq!(topo.shards[0].primary.as_deref(), Some("s1"));
+        assert_eq!(topo.shards[0].replicas.len(), 2);
         let topology_version = topo.table.as_ref().unwrap().topology_version;
         let report = meta.topology_version_report(TopologyVersionRequest {
             old_topology_version: 0,
@@ -1454,7 +1458,7 @@ mod tests {
         });
         assert!(unchanged.status.ok);
         assert!(unchanged.unchanged);
-        assert!(unchanged.partitions.is_empty());
+        assert!(unchanged.shards.is_empty());
     }
 
     #[test]
@@ -1496,7 +1500,7 @@ mod tests {
         });
         assert_eq!(topology.status.code, "table_not_found");
         assert_eq!(topology.table.unwrap().state, MetaEntityState::Dropped);
-        assert!(topology.partitions.is_empty());
+        assert!(topology.shards.is_empty());
 
         let duplicate = meta.delete_table(DeleteTableRequest {
             namespace: "ns".to_string(),
@@ -1542,7 +1546,7 @@ mod tests {
             old_topology_version: 0,
         });
         assert_eq!(topology.status.code, "resource_frozen");
-        assert!(topology.partitions.is_empty());
+        assert!(topology.shards.is_empty());
 
         let update = meta.update_table(UpdateTableRequest {
             namespace: "ns".to_string(),
@@ -1579,7 +1583,7 @@ mod tests {
             old_topology_version: 0,
         });
         assert!(topology.status.ok);
-        assert_eq!(topology.partitions.len(), 1);
+        assert_eq!(topology.shards.len(), 1);
         let finish = meta.finish_load(LoadFinishRequest {
             server_addr: "s1".to_string(),
             shard_id: 42,
@@ -1628,8 +1632,8 @@ mod tests {
             old_topology_version: created.topology_version,
         });
         assert!(topology.status.ok, "{topology:?}");
-        assert_eq!(topology.partitions.len(), 4);
-        assert_eq!(topology.partitions[3].shard_id, 103);
+        assert_eq!(topology.shards.len(), 4);
+        assert_eq!(topology.shards[3].shard_id, 103);
 
         let unchanged = meta.update_table(UpdateTableRequest {
             namespace: "ns".to_string(),
@@ -1809,7 +1813,7 @@ mod tests {
             PartitionId::new(1, 0, 0, 17).unwrap().id()
         );
         let shard_ids = topo
-            .partitions
+            .shards
             .iter()
             .map(|partition| partition.shard_id)
             .collect::<Vec<_>>();
@@ -1853,7 +1857,7 @@ mod tests {
                     key_count,
                     memory_bytes,
                 }],
-                partition_loads: Vec::new(),
+                shard_stat_loads: Vec::new(),
                 runtime_load: ServerRuntimeLoad::default(),
                 shard_states: Vec::new(),
             });
@@ -1875,7 +1879,7 @@ mod tests {
             old_topology_version: 0,
         });
         assert_eq!(
-            topo.partitions[0].replicas,
+            topo.shards[0].replicas,
             vec!["cool".to_string(), "warm".to_string()]
         );
     }
@@ -1903,7 +1907,7 @@ mod tests {
                     key_count: 10,
                     memory_bytes: 10,
                 }],
-                partition_loads: Vec::new(),
+                shard_stat_loads: Vec::new(),
                 runtime_load: ServerRuntimeLoad {
                     queue_depth,
                     dirty_object_count,
@@ -1933,7 +1937,7 @@ mod tests {
             old_topology_version: 0,
         });
         assert_eq!(
-            topo.partitions[0].replicas,
+            topo.shards[0].replicas,
             vec!["cool".to_string(), "busy".to_string()]
         );
     }
@@ -1961,7 +1965,7 @@ mod tests {
                     key_count: 10,
                     memory_bytes: 10,
                 }],
-                partition_loads: Vec::new(),
+                shard_stat_loads: Vec::new(),
                 runtime_load: ServerRuntimeLoad::default(),
                 shard_states: vec![ServerShardServingState {
                     shard_id: 1,
@@ -1988,7 +1992,7 @@ mod tests {
             old_topology_version: 0,
         });
         assert_eq!(
-            topo.partitions[0].replicas,
+            topo.shards[0].replicas,
             vec!["serving".to_string(), "freezing".to_string()]
         );
     }
@@ -2016,7 +2020,7 @@ mod tests {
                     key_count,
                     memory_bytes,
                 }],
-                partition_loads: Vec::new(),
+                shard_stat_loads: Vec::new(),
                 runtime_load: ServerRuntimeLoad::default(),
                 shard_states: Vec::new(),
             });
@@ -2038,10 +2042,10 @@ mod tests {
             old_topology_version: 0,
         });
         assert_eq!(
-            topo.partitions[0].replicas,
+            topo.shards[0].replicas,
             vec!["zone-a-cool".to_string(), "zone-b-hot".to_string()]
         );
-        assert_eq!(topo.partitions[0].primary.as_deref(), Some("zone-a-cool"));
+        assert_eq!(topo.shards[0].primary.as_deref(), Some("zone-a-cool"));
     }
 
     #[test]
@@ -2067,7 +2071,7 @@ mod tests {
                     key_count,
                     memory_bytes,
                 }],
-                partition_loads: Vec::new(),
+                shard_stat_loads: Vec::new(),
                 runtime_load: ServerRuntimeLoad::default(),
                 shard_states: Vec::new(),
             });
@@ -2089,7 +2093,7 @@ mod tests {
             old_topology_version: 0,
         });
         assert_eq!(
-            topo.partitions[0].replicas,
+            topo.shards[0].replicas,
             vec!["10.0.0.1:18001".to_string(), "10.0.0.2:18001".to_string()]
         );
     }
@@ -2116,7 +2120,7 @@ mod tests {
                     key_count,
                     memory_bytes,
                 }],
-                partition_loads: Vec::new(),
+                shard_stat_loads: Vec::new(),
                 runtime_load: ServerRuntimeLoad::default(),
                 shard_states: Vec::new(),
             });
@@ -2138,7 +2142,7 @@ mod tests {
             old_topology_version: 0,
         });
         assert_eq!(
-            topo.partitions[0].replicas,
+            topo.shards[0].replicas,
             vec!["10.0.0.1:18001".to_string(), "10.0.0.1:18002".to_string()]
         );
     }
@@ -2222,7 +2226,7 @@ mod tests {
             boot_time_ms: 1,
             binary_version: "v1".to_string(),
             shard_loads: Vec::new(),
-            partition_loads: Vec::new(),
+            shard_stat_loads: Vec::new(),
             runtime_load: ServerRuntimeLoad::default(),
             shard_states: vec![ServerShardServingState {
                 shard_id: 42,
@@ -2362,7 +2366,7 @@ mod tests {
             boot_time_ms: 1,
             binary_version: "v1".to_string(),
             shard_loads: Vec::new(),
-            partition_loads: Vec::new(),
+            shard_stat_loads: Vec::new(),
             runtime_load: ServerRuntimeLoad::default(),
             shard_states: vec![ServerShardServingState {
                 shard_id: 77,
@@ -2455,7 +2459,7 @@ mod tests {
             boot_time_ms: 1,
             binary_version: "v".to_string(),
             shard_loads: Vec::new(),
-            partition_loads: Vec::new(),
+            shard_stat_loads: Vec::new(),
             runtime_load: ServerRuntimeLoad::default(),
             shard_states: vec![ServerShardServingState {
                 shard_id: 7,
@@ -2606,9 +2610,9 @@ mod tests {
             old_topology_version: 0,
         });
         assert_eq!(recovered_topology.table.unwrap().replica_count, 2);
-        assert_eq!(recovered_topology.partitions.len(), 2);
+        assert_eq!(recovered_topology.shards.len(), 2);
         assert_eq!(
-            recovered_topology.partitions[0].primary.as_deref(),
+            recovered_topology.shards[0].primary.as_deref(),
             Some("server-a")
         );
         assert_eq!(
@@ -2753,10 +2757,10 @@ mod tests {
             old_topology_version: 0,
         });
         assert!(topology.status.ok);
-        assert_eq!(topology.partitions.len(), 2);
-        assert_eq!(topology.partitions[0].primary.as_deref(), Some("server-a"));
+        assert_eq!(topology.shards.len(), 2);
+        assert_eq!(topology.shards[0].primary.as_deref(), Some("server-a"));
         assert_eq!(
-            topology.partitions[0].replicas,
+            topology.shards[0].replicas,
             vec!["server-a".to_string(), "server-b".to_string()]
         );
         assert_eq!(

@@ -290,7 +290,7 @@ pub(super) fn topology_for_shard(
             partition_version: 0,
             serving_options: crate::meta::TableServingOptions::default(),
         }),
-        partitions: vec![TablePartition {
+        shards: vec![TableShard {
             shard_id,
             start_slot: 0,
             end_slot: u64::MAX,
@@ -318,7 +318,7 @@ pub(super) fn server_meta(addr: &str, node_id: u64, state: MetaEntityState) -> S
         boot_time_ms: 1,
         binary_version: "test".to_string(),
         shard_loads: Vec::new(),
-        partition_loads: Vec::new(),
+        shard_stat_loads: Vec::new(),
         runtime_load: crate::meta::ServerRuntimeLoad::default(),
         shard_states: Vec::new(),
     }

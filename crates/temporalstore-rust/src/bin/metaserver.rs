@@ -784,7 +784,7 @@ fn handle(
         ("GET", "/meta/safe_mode") | ("GET", "/safe_mode") => {
             json_response(200, &backend_call!(meta, safe_mode_report))
         }
-        ("POST", "/partitions/finish_load") | ("POST", "/finish_load") => {
+        ("POST", "/shards/finish_load") | ("POST", "/finish_load") => {
             parse_or(&request.body, |req: LoadFinishRequest| {
                 match scheduler.validate_finish_load(&req) {
                     Ok(()) => backend_call!(meta, finish_load, req),
@@ -1766,7 +1766,7 @@ mod tests {
         assert_eq!(code, 200);
         let topo: TableTopologyResponse = serde_json::from_slice(&body).unwrap();
         assert!(topo.status.ok, "{topo:?}");
-        assert_eq!(topo.partitions.len(), 2);
+        assert_eq!(topo.shards.len(), 2);
         let serving_options = &topo.table.as_ref().unwrap().serving_options;
         assert!(!serving_options.pin_primary);
         assert_eq!(serving_options.replica_read_policy, "first_replica");
@@ -1858,7 +1858,7 @@ mod tests {
                 .drop_percent,
             21
         );
-        assert_eq!(changed_topo.partitions.len(), 3);
+        assert_eq!(changed_topo.shards.len(), 3);
 
         let (code, body) = handle(
             &backend,
@@ -2434,7 +2434,7 @@ mod tests {
             &scheduler,
             HttpRequest {
                 method: "POST".to_string(),
-                path: "/partitions/finish_load".to_string(),
+                path: "/shards/finish_load".to_string(),
                 body: serde_json::to_vec(&LoadFinishRequest {
                     server_addr: node_addr.clone(),
                     shard_id: 44,
@@ -2455,7 +2455,7 @@ mod tests {
             &scheduler,
             HttpRequest {
                 method: "POST".to_string(),
-                path: "/partitions/finish_load".to_string(),
+                path: "/shards/finish_load".to_string(),
                 body: serde_json::to_vec(&LoadFinishRequest {
                     server_addr: node_addr.clone(),
                     shard_id: 44,

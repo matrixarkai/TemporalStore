@@ -1572,11 +1572,11 @@ fn stats_include_cpp_style_partition_and_object_manager_accounting() {
     assert!(stats.object_manager.dirty_slot_count > 0);
     assert!(stats.object_manager.dirty_slot_count <= 7);
     assert_eq!(stats.object_manager.routing_slot_count, 11);
-    assert_eq!(stats.partition_info.table_name, "feature_table");
-    assert_eq!(stats.partition_info.shard_uri, "local://table/shard-9");
-    assert_eq!(stats.partition_info.start_routing_slot, 10);
-    assert_eq!(stats.partition_info.end_routing_slot, 20);
-    assert_eq!(stats.partition_info.object_manager, stats.object_manager);
+    assert_eq!(stats.shard_stat_info.table_name, "feature_table");
+    assert_eq!(stats.shard_stat_info.shard_uri, "local://table/shard-9");
+    assert_eq!(stats.shard_stat_info.start_routing_slot, 10);
+    assert_eq!(stats.shard_stat_info.end_routing_slot, 20);
+    assert_eq!(stats.shard_stat_info.object_manager, stats.object_manager);
     assert!(stats.block_store_extents.active_extents >= 1);
     assert!(stats.block_store_extents.active_physical_bytes > 0);
     assert_eq!(

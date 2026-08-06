@@ -150,12 +150,12 @@ pub use meta::{
     AckResponse, AddNamespaceRequest, AddTableRequest, FreezeStaleServersRequest, GetShardResponse,
     GetTableTopologyRequest, ListNamespacesResponse, ListProxiesResponse, ListServersResponse,
     ListTablesResponse, LoadFinishRequest, LocalMetaMutationLog, MetaEntityState, MetaInfo,
-    MetaMutation, MetaPreflightReport, MetaStats, NamespaceMetaInfo, PartitionLoad,
+    MetaMutation, MetaPreflightReport, MetaStats, NamespaceMetaInfo, ShardStatLoad,
     ProxyHeartbeatRequest, ProxyHeartbeatResponse, ProxyMetaInfo, RegisterProxyRequest,
     RegisterServerRequest, RegisterShardRequest, RegisterShardResponse, ServerEndpoint,
     ServerHeartbeatRequest, ServerHeartbeatResponse, ServerMetaInfo, ServerRuntimeLoad,
     ServerShardServingState, ShardLoad, ShardLocation, SingleNodeMeta, StaleResourceReport,
-    StaleServerReport, StateChangeRequest, TableMetaInfo, TablePartition, TableTopologyResponse,
+    StaleServerReport, StateChangeRequest, TableMetaInfo, TableShard, TableTopologyResponse,
 };
 #[allow(deprecated)]
 pub use page_store::{

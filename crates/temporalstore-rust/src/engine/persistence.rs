@@ -224,7 +224,7 @@ impl TemporalEngine {
             } else {
                 object_manager.object_count
             };
-            let partition_info = PartitionInfoStats {
+            let shard_stat_info = ShardStatInfo {
                 shard_id,
                 loaded,
                 readonly,
@@ -281,7 +281,7 @@ impl TemporalEngine {
                 risk_records,
                 storage_bytes: page_store.bytes_written,
                 object_manager,
-                partition_info,
+                shard_stat_info,
                 storage,
                 cache: self.cache.stats(),
                 page_store: page_store.clone(),

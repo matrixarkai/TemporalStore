@@ -35,7 +35,7 @@ impl SingleNodeMeta {
                 boot_time_ms: 0,
                 binary_version: request.binary_version,
                 shard_loads: Vec::new(),
-                partition_loads: Vec::new(),
+                shard_stat_loads: Vec::new(),
                 runtime_load: ServerRuntimeLoad::default(),
                 shard_states: Vec::new(),
             },
@@ -77,7 +77,7 @@ impl SingleNodeMeta {
             server.binary_version = request.binary_version;
         }
         server.shard_loads = request.shard_loads;
-        server.partition_loads = request.partition_loads;
+        server.shard_stat_loads = request.shard_stat_loads;
         server.runtime_load = request.runtime_load;
         server.shard_states = request.shard_states;
         ServerHeartbeatResponse {

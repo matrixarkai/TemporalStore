@@ -303,7 +303,7 @@ impl DataNodeRuntime {
         for state in &loaded_states {
             let partition = topologies
                 .iter()
-                .flat_map(|topology| topology.partitions.iter())
+                .flat_map(|topology| topology.shards.iter())
                 .find(|partition| partition.shard_id == state.shard_id);
             let Some(partition) = partition else {
                 missing_in_meta.push(state.shard_id);
@@ -475,10 +475,10 @@ impl DataNodeRuntime {
                     loaded: stats.loaded,
                     readonly: stats.readonly,
                     load_version: stats.load_version,
-                    table_name: stats.partition_info.table_name,
-                    shard_uri: stats.partition_info.shard_uri,
-                    start_routing_slot: stats.partition_info.start_routing_slot,
-                    end_routing_slot: stats.partition_info.end_routing_slot,
+                    table_name: stats.shard_stat_info.table_name,
+                    shard_uri: stats.shard_stat_info.shard_uri,
+                    start_routing_slot: stats.shard_stat_info.start_routing_slot,
+                    end_routing_slot: stats.shard_stat_info.end_routing_slot,
                     total_records: stats.total_records,
                     storage_bytes: stats.storage_bytes,
                     cache_memory_bytes: stats.cache.memory_bytes,

@@ -220,7 +220,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "config get/set follows C++ partition-map not-found semantics".to_string(),
                 "data-node membership update rejects stale global/unit versions and reports whether local replica remains active"
                     .to_string(),
-                "data-node runtime uses shard-affine worker lanes so one partition has FIFO single-lane execution while different partitions run in parallel"
+                "data-node runtime uses shard-affine worker lanes so one partition has FIFO single-lane execution while different shards run in parallel"
                     .to_string(),
                 "data-node scheduler prioritizes foreground execute work over background dump/compact/GC and applies a separate background queue admission limit"
                     .to_string(),
@@ -231,7 +231,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "background dump/compact/GC honor in-flight cancellation checkpoints before destructive phases"
                     .to_string(),
-                "local partition_info and object-manager stats report logical objects, page refs, dirty objects, dirty routing slots, and storage bytes"
+                "local shard_stat_info and object-manager stats report logical objects, page refs, dirty objects, dirty routing slots, and storage bytes"
                     .to_string(),
                 "local shard/table/tenant read/write QPS admission is enforced from Config quota fields"
                     .to_string(),

@@ -788,7 +788,7 @@ fn runtime_builds_cpp_style_server_load_report() {
             partition_version: 0,
             serving_options: crate::meta::TableServingOptions::default(),
         }),
-        partitions: vec![crate::meta::TablePartition {
+        shards: vec![crate::meta::TableShard {
             shard_id: 7,
             start_slot: 10,
             end_slot: 19,
@@ -807,7 +807,7 @@ fn runtime_builds_cpp_style_server_load_report() {
     let mismatch_topology = TableTopologyResponse {
         status: Status::ok(),
         table: None,
-        partitions: vec![crate::meta::TablePartition {
+        shards: vec![crate::meta::TableShard {
             shard_id: 7,
             start_slot: 0,
             end_slot: 9,

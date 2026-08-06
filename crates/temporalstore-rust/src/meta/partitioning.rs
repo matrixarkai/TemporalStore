@@ -3,7 +3,7 @@
 use super::*;
 use std::collections::BTreeSet;
 
-pub(super) fn build_partitions(state: &MetaState, table: &TableMetaInfo) -> Vec<TablePartition> {
+pub(super) fn build_shards(state: &MetaState, table: &TableMetaInfo) -> Vec<TableShard> {
     #[derive(Debug)]
     struct PlacementCandidate {
         server_addr: String,
@@ -82,7 +82,7 @@ pub(super) fn build_partitions(state: &MetaState, table: &TableMetaInfo) -> Vec<
             ))
     });
     let slot_count = 1_u64 << 30;
-    let mut partitions = Vec::new();
+    let mut shards = Vec::new();
     for offset in 0..table.shard_count {
         let shard_id = table_shard_id(table, offset).unwrap_or(table.first_shard_id + offset);
         let start_slot = slot_count * offset / table.shard_count;
@@ -149,7 +149,7 @@ pub(super) fn build_partitions(state: &MetaState, table: &TableMetaInfo) -> Vec<
             .iter()
             .map(|server_addr| server_endpoint(state, server_addr))
             .collect();
-        partitions.push(TablePartition {
+        shards.push(TableShard {
             shard_id,
             start_slot,
             end_slot,
@@ -159,7 +159,7 @@ pub(super) fn build_partitions(state: &MetaState, table: &TableMetaInfo) -> Vec<
             replica_endpoints,
         });
     }
-    partitions
+    shards
 }
 
 

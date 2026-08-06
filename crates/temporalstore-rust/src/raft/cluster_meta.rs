@@ -312,7 +312,7 @@ impl MetaRaftCluster {
             |status| TableTopologyResponse {
                 status,
                 table: None,
-                partitions: Vec::new(),
+                shards: Vec::new(),
                 unchanged: false,
             },
             |meta| meta.get_table_topology(request),
