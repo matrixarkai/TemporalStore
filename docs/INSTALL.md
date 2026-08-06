@@ -436,6 +436,14 @@ entities, summaries, and embeddings, and retrieval of relevant context before th
 next LLM call — and all of it is persisted in TemporalStore under an agent-scoped
 prefix (`matrixark:codex-hook:rust`, `matrixark:claude-hook:rust`).
 
+**On restart, memory is recovered from TemporalStore's own persistence — not from
+logs.** The engine loads its persisted records from the on-disk data dir on start,
+so restarting the service (or re-running a hook) keeps all prior memory without
+re-reading any transcript. External local context is (re-)ingested **only on a
+first start or when the on-disk store is empty** (a fresh or wiped data dir): the
+`MATRIXARK_BACKFILL_ON_START` daemon checks each agent's store and skips any that
+already holds records, so restarts never re-ingest from external logs.
+
 **Local memory is backfilled into TemporalStore** rather than kept as a separate
 store:
 

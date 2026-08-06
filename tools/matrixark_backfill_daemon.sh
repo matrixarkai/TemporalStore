@@ -2,10 +2,16 @@
 #
 # Async, resumable first-start backfill of local Claude/Codex context into the
 # live TemporalStore hook stores. Launched detached from the SessionStart hook
-# (opt-in: MATRIXARK_BACKFILL_ON_START=1) so it never blocks a turn. Safe to run
-# repeatedly: a lockfile prevents overlap, a per-agent offset marker makes it
-# resume where it left off after a teardown, and the engine dedups by content
-# hash so re-processed records never duplicate.
+# (opt-in: MATRIXARK_BACKFILL_ON_START=1) so it never blocks a turn.
+#
+# It only ingests external local context when the on-disk store is EMPTY (a first
+# start or a fresh/wiped data dir). A populated store recovers context/memory from
+# its own on-disk persistence on restart, so the daemon skips it (see the
+# recover-from-persistence guard below) — restarts never re-ingest from logs.
+#
+# Safe to run repeatedly: a lockfile prevents overlap, a per-agent offset marker
+# makes it resume where it left off after a teardown, and the engine dedups by
+# content hash so re-processed records never duplicate.
 #
 # Flow: build batch bin (offline) -> emit per-agent JSONL once -> ingest in
 # bounded chunks (MATRIXARK_BULK_INGEST keeps disk O(1)/record) advancing an
@@ -41,6 +47,24 @@ flock -n 9 || exit 0                      # another daemon already running
 log() { echo "[$(date -u +%FT%TZ)] $*" >>"$LOG"; }
 log "daemon start (chunk=$CHUNK agents='$AGENTS')"
 
+# Recover-from-persistence guard.
+#
+# TemporalStore is the system of record: on restart the engine loads its own
+# persisted records from the on-disk data dir, so context/memory is recovered
+# from persistence, NOT by re-ingesting external logs. We therefore only ingest
+# local context on a *first start* or when the on-disk store is *empty* (e.g. a
+# fresh or wiped data dir). If every agent's store already holds records, there
+# is nothing to backfill.
+agent_root() { echo "/tmp/temporalstore-rust-$1-hook"; }
+store_has_memory() { [[ -d "$1" ]] && [[ -n "$(find "$1" -type f -print -quit 2>/dev/null)" ]]; }
+need_backfill=0
+for AG in $AGENTS; do store_has_memory "$(agent_root "$AG")" || need_backfill=1; done
+if (( ! need_backfill )); then
+  log "all agent stores already populated on disk; recovering from persistence, skipping local-context backfill"
+  touch "$DONE"
+  exit 0
+fi
+
 # 1) Ensure the load-once batch bin exists (offline build; deps are cached).
 if [[ ! -x "$BATCH" ]]; then
   log "building context_batch_ingest"
@@ -68,6 +92,10 @@ for AG in $AGENTS; do
   off_file="$WORK/.offset.$AG"
   off=$(cat "$off_file" 2>/dev/null || echo 0)
   ROOT="$(agent_root "$AG")"
+  if store_has_memory "$ROOT"; then
+    log "$AG: store already populated ($ROOT); recovering from persistence, skipping local-context backfill"
+    continue
+  fi
   while (( off < total )); do
     end=$(( off + CHUNK ))
     log "$AG: ingesting rows $((off+1))..$([[ $end -gt $total ]] && echo $total || echo $end) / $total"
