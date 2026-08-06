@@ -15,6 +15,11 @@ except ImportError:
     strip_oauth_token_fields,
 )
 
+try:  # in-process Google ID-token verification
+    from tools.matrixark_google_oauth import verify_google_id_token
+except ImportError:
+    from matrixark_google_oauth import verify_google_id_token
+
 
 class _AccessSsoMixin:
     def latest_sso_mapping(self, account_id: str, tenant_id: str, provider: str, external_user_id: str) -> Json | None:
@@ -155,13 +160,47 @@ class _AccessSsoMixin:
             },
         }
 
+    def _verify_google_id_token(self, args: Json, id_token: str) -> Json:
+        """Verify a Google ID token in-process and merge its trusted claims into args.
+
+        Sets ``id_token_verified=True`` so the downstream mapping is trusted. The
+        raw token is dropped by ``strip_oauth_token_fields`` and never persisted.
+        A test may set ``self._google_cert_fetcher`` to inject a JWKS without a
+        network call; production fetches Google's certs over HTTPS.
+        """
+        audience = optional_string(args, "google_client_id", "") or os.environ.get("MATRIXARK_GOOGLE_CLIENT_ID", "")
+        if not audience:
+            raise MatrixArkError("google id token verification requires google_client_id or MATRIXARK_GOOGLE_CLIENT_ID")
+        domains_env = os.environ.get("MATRIXARK_GOOGLE_HOSTED_DOMAINS", "").strip()
+        allowed_domains = [domain.strip() for domain in domains_env.split(",") if domain.strip()] or None
+        claims = verify_google_id_token(
+            id_token,
+            audience=audience,
+            allowed_hosted_domains=allowed_domains,
+            cert_fetcher=getattr(self, "_google_cert_fetcher", None),
+        )
+        merged = {**args}
+        merged["email"] = claims.get("email") or optional_string(args, "email", "")
+        merged["external_user_id"] = optional_string(args, "external_user_id", "") or claims.get("sub", "")
+        merged["display_name"] = optional_string(args, "display_name", "") or claims.get("name", "") or claims.get("email", "")
+        merged["id_token_verified"] = True
+        merged["google_verified_in_process"] = True
+        return merged
+
     def sso_callback(self, args: Json, identity: Json) -> Json:
         """Trusted gateway callback contract for OAuth/OIDC providers.
 
         The gateway verifies Google/Gmail, GitHub, Okta, or Azure AD tokens.
         MatrixArk receives only stable identity metadata and never stores raw
-        OAuth access tokens, refresh tokens, or ID-token bytes.
+        OAuth access tokens, refresh tokens, or ID-token bytes. When a Google
+        ``id_token`` is supplied without a trusted gateway, MatrixArk verifies it
+        in process (RS256 against Google's JWKS) before mapping the identity.
         """
+        provider_hint = safe_identifier(optional_string(args, "provider", ""), default="")
+        google_id_token = optional_string(args, "id_token", "") or optional_string(args, "google_id_token", "")
+        if provider_hint in {"google", "gmail"} and google_id_token and not bool(args.get("trusted_gateway", False)):
+            args = self._verify_google_id_token(args, google_id_token)
+
         args = strip_oauth_token_fields(args)
 
         provider = safe_identifier(require_string(args, "provider"), default="sso")
@@ -187,10 +226,12 @@ class _AccessSsoMixin:
                 "email_present": bool(login.get("email")),
                 "matrixark_user_id": login.get("matrixark_user_id", ""),
                 "stored_tokens": False,
+                "google_verified_in_process": bool(args.get("google_verified_in_process", False)),
             },
         )
         return {
             **login,
+            "google_verified_in_process": bool(args.get("google_verified_in_process", False)),
             "status": "sso_callback_mapped",
             "callback_contract": "trusted_gateway_oidc_oauth_callback",
             "stored_identity_metadata": {

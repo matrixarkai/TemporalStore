@@ -54,6 +54,8 @@ ADMIN_TOOLS: list[Json] = [
             "required": ["provider"],
             "properties": {
                 "provider": {"type": "string", "enum": ["google", "gmail", "github", "okta", "azure_ad", "azuread", "oidc"]},
+                "id_token": {"type": "string", "description": "Google OIDC ID token. When provided for provider google/gmail without trusted_gateway, MatrixArk verifies RS256 + claims against Google's JWKS in process and never stores it."},
+                "google_client_id": {"type": "string", "description": "Google OAuth client id used as the expected token audience; falls back to the MATRIXARK_GOOGLE_CLIENT_ID environment variable."},
                 "external_user_id": {"type": "string", "description": "Stable IdP subject, such as OIDC sub or GitHub id."},
                 "email": {"type": "string"},
                 "matrixark_user_id": {"type": "string"},
