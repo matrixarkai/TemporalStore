@@ -10,8 +10,8 @@ use thiserror::Error;
 use crate::storage_config::{effective_block_segment_target_bytes, storage_zone_size_bytes};
 
 mod paths;
-mod extent_manifest;
-mod extent_reports;
+mod band_manifest;
+mod band_reports;
 mod append;
 mod read;
 mod gc;
@@ -19,7 +19,7 @@ mod segment_ids;
 mod record;
 
 use paths::{
-    delayed_destroy_dir, delayed_destroy_path, extent_manifest_path, file_created_unix_ms,
+    delayed_destroy_dir, delayed_destroy_path, band_manifest_path, file_created_unix_ms,
     file_modified_unix_ms, legacy_zone_manifest_path, now_unix_ms, segment_path, sync_dir,
     sync_parent_dir, system_time_unix_ms, unique_temp_path,
 };
@@ -29,7 +29,7 @@ use record::{
     encode_page_record, inspect_segment, logical_range_from_segment, sha256_hex, summarize_segment,
     PageRecordCompression,
 };
-use self::extent_manifest::*;
+use self::band_manifest::*;
 pub(crate) use segment_ids::*;
 #[cfg(test)]
 use record::{
@@ -72,8 +72,8 @@ pub struct BlockAddress {
     pub routing_slot: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation: Option<u64>,
-    #[serde(default, alias = "zone_id", skip_serializing_if = "Option::is_none")]
-    pub extent_id: Option<u64>,
+    #[serde(default, alias = "extent_id", alias = "zone_id", skip_serializing_if = "Option::is_none")]
+    pub band_id: Option<u64>,
     #[serde(default, alias = "checksum", skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
 }
@@ -93,14 +93,14 @@ impl BlockAddress {
 
     pub fn from_compact_segment_address(compact_segment_address: u64, length: u64) -> Self {
         Self {
-            page_segment_id: compact_extract_extent_id(compact_segment_address) as u64,
-            offset: compact_extract_extent_offset(compact_segment_address) as u64,
+            page_segment_id: compact_extract_band_id(compact_segment_address) as u64,
+            offset: compact_extract_band_offset(compact_segment_address) as u64,
             length,
             page_id: None,
             object_id: None,
             routing_slot: None,
             generation: None,
-            extent_id: None,
+            band_id: None,
             sha256: None,
         }
     }
@@ -251,7 +251,7 @@ pub struct BlockStorePurgeDelayedDestroyReport {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum BlockStoreExtentState {
+pub enum BlockStoreBandState {
     Active,
     Sealed,
     DelayedDestroy,
@@ -259,11 +259,11 @@ pub enum BlockStoreExtentState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BlockStoreExtentDescriptor {
-    #[serde(alias = "zone_id")]
-    pub extent_id: u64,
+pub struct BlockStoreBandDescriptor {
+    #[serde(alias = "extent_id", alias = "zone_id")]
+    pub band_id: u64,
     pub page_segment_id: u64,
-    pub state: BlockStoreExtentState,
+    pub state: BlockStoreBandState,
     pub physical_bytes: u64,
     pub logical_bytes: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -285,15 +285,15 @@ pub struct BlockStoreExtentDescriptor {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BlockStoreExtentSummary {
+pub struct BlockStoreBandSummary {
     #[serde(alias = "active_zones")]
-    pub active_extents: u64,
+    pub active_bands: u64,
     #[serde(alias = "sealed_zones")]
-    pub sealed_extents: u64,
+    pub sealed_bands: u64,
     #[serde(alias = "delayed_destroy_zones")]
-    pub delayed_destroy_extents: u64,
+    pub delayed_destroy_bands: u64,
     #[serde(alias = "purged_zones")]
-    pub purged_extents: u64,
+    pub purged_bands: u64,
     pub active_physical_bytes: u64,
     pub sealed_physical_bytes: u64,
     pub delayed_destroy_physical_bytes: u64,
@@ -306,49 +306,49 @@ pub struct BlockStoreExtentSummary {
         alias = "oldest_known_zone_unix_ms",
         skip_serializing_if = "Option::is_none"
     )]
-    pub oldest_known_extent_unix_ms: Option<u64>,
+    pub oldest_known_band_unix_ms: Option<u64>,
     #[serde(
         default,
         alias = "oldest_known_zone_age_ms",
         skip_serializing_if = "Option::is_none"
     )]
-    pub oldest_known_extent_age_ms: Option<u64>,
+    pub oldest_known_band_age_ms: Option<u64>,
     #[serde(
         default,
         alias = "oldest_live_zone_unix_ms",
         skip_serializing_if = "Option::is_none"
     )]
-    pub oldest_live_extent_unix_ms: Option<u64>,
+    pub oldest_live_band_unix_ms: Option<u64>,
     #[serde(
         default,
         alias = "oldest_live_zone_age_ms",
         skip_serializing_if = "Option::is_none"
     )]
-    pub oldest_live_extent_age_ms: Option<u64>,
+    pub oldest_live_band_age_ms: Option<u64>,
     #[serde(
         default,
         alias = "oldest_reclaimable_zone_unix_ms",
         skip_serializing_if = "Option::is_none"
     )]
-    pub oldest_reclaimable_extent_unix_ms: Option<u64>,
+    pub oldest_reclaimable_band_unix_ms: Option<u64>,
     #[serde(
         default,
         alias = "oldest_reclaimable_zone_age_ms",
         skip_serializing_if = "Option::is_none"
     )]
-    pub oldest_reclaimable_extent_age_ms: Option<u64>,
+    pub oldest_reclaimable_band_age_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreZoneUsage {
-    #[serde(alias = "zone_id")]
-    pub extent_id: u64,
+    #[serde(alias = "extent_id", alias = "zone_id")]
+    pub band_id: u64,
     pub page_segment_id: u64,
     #[serde(default)]
     pub storage_zone_id: u64,
     #[serde(default)]
     pub stream_segment_id: u64,
-    pub state: BlockStoreExtentState,
+    pub state: BlockStoreBandState,
     #[serde(default)]
     pub used_bytes: u64,
     #[serde(default)]
@@ -368,20 +368,20 @@ pub struct BlockStoreZoneUsage {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StreamBackedExtentRuntimeReport {
+pub struct StreamBackedBandRuntimeReport {
     pub runtime_ready: bool,
     #[serde(default)]
-    pub extent_lifecycle_states: Vec<String>,
-    #[serde(alias = "zone_count")]
-    pub extent_count: u64,
+    pub band_lifecycle_states: Vec<String>,
+    #[serde(alias = "extent_count", alias = "zone_count")]
+    pub band_count: u64,
     #[serde(alias = "active_zones")]
-    pub active_extents: u64,
+    pub active_bands: u64,
     #[serde(alias = "sealed_zones")]
-    pub sealed_extents: u64,
+    pub sealed_bands: u64,
     #[serde(alias = "delayed_destroy_zones")]
-    pub delayed_destroy_extents: u64,
+    pub delayed_destroy_bands: u64,
     #[serde(alias = "purged_zones")]
-    pub purged_extents: u64,
+    pub purged_bands: u64,
     #[serde(default)]
     pub zone_stats_ready: bool,
     #[serde(default)]
@@ -400,29 +400,29 @@ pub struct StreamBackedExtentRuntimeReport {
     #[serde(default)]
     pub logical_stream_bytes_read: u64,
     #[serde(default)]
-    pub extent_state_transition_count: u64,
+    pub band_state_transition_count: u64,
     pub logical_stream_read_ready: bool,
     pub append_roll_ready: bool,
-    #[serde(alias = "zone_manifest_ready")]
-    pub extent_manifest_ready: bool,
+    #[serde(alias = "extent_manifest_ready", alias = "zone_manifest_ready")]
+    pub band_manifest_ready: bool,
     #[serde(default)]
-    pub extent_manifest_rebuild_ready: bool,
+    pub band_manifest_rebuild_ready: bool,
     #[serde(default)]
-    pub extent_manifest_reconciled_on_open: bool,
+    pub band_manifest_reconciled_on_open: bool,
     #[serde(default)]
-    pub extent_manifest_disk_consistent: bool,
+    pub band_manifest_disk_consistent: bool,
     #[serde(default)]
-    pub manifest_missing_stream_extents: u64,
+    pub manifest_missing_stream_bands: u64,
     #[serde(default)]
-    pub manifest_extra_stream_extents: u64,
+    pub manifest_extra_stream_bands: u64,
     #[serde(default)]
-    pub corrupt_extent_count: u64,
+    pub corrupt_band_count: u64,
     #[serde(default)]
-    pub partial_extent_count: u64,
+    pub partial_band_count: u64,
     #[serde(default)]
     pub readable_prefix_physical_bytes: u64,
     #[serde(default)]
-    pub partial_extent_recovery_ready: bool,
+    pub partial_band_recovery_ready: bool,
     pub envelope_checksum_ready: bool,
     pub compression_stream_ready: bool,
     pub delayed_destroy_ready: bool,
@@ -504,10 +504,10 @@ pub struct BlockStoreBlockIndexReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct BlockStoreExtentManifest {
+struct BlockStoreBandManifest {
     version: u32,
-    #[serde(alias = "zones")]
-    extents: Vec<BlockStoreExtentDescriptor>,
+    #[serde(alias = "extents", alias = "zones")]
+    bands: Vec<BlockStoreBandDescriptor>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -531,8 +531,8 @@ struct BlockStoreInner {
     write_offset: u64,
     next_page_id: u64,
     options: BlockStoreOptions,
-    extents: BTreeMap<u64, BlockStoreExtentDescriptor>,
-    extent_manifest_reconciled_on_open: bool,
+    bands: BTreeMap<u64, BlockStoreBandDescriptor>,
+    band_manifest_reconciled_on_open: bool,
     stats: BlockStoreStats,
 }
 
@@ -551,26 +551,26 @@ impl LocalBlockStore {
             .unwrap_or_default();
         let next_page_id = next_page_id_at(&root).unwrap_or_default();
         let manifest_exists =
-            extent_manifest_path(&root).exists() || legacy_zone_manifest_path(&root).exists();
-        let (mut extents, mut manifest_rebuilt) = if manifest_exists {
-            match load_extent_manifest_at(&root) {
-                Ok(extents) => (extents, false),
-                Err(_) => (rebuild_extent_manifest_at(&root).unwrap_or_default(), true),
+            band_manifest_path(&root).exists() || legacy_zone_manifest_path(&root).exists();
+        let (mut bands, mut manifest_rebuilt) = if manifest_exists {
+            match load_band_manifest_at(&root) {
+                Ok(bands) => (bands, false),
+                Err(_) => (rebuild_band_manifest_at(&root).unwrap_or_default(), true),
             }
         } else {
-            (rebuild_extent_manifest_at(&root).unwrap_or_default(), true)
+            (rebuild_band_manifest_at(&root).unwrap_or_default(), true)
         };
-        let extent_manifest_reconciled_on_open =
-            reconcile_extent_manifest_with_disk(&root, &mut extents).unwrap_or_default();
-        manifest_rebuilt |= extent_manifest_reconciled_on_open;
-        ensure_extent_descriptor(
-            &mut extents,
+        let band_manifest_reconciled_on_open =
+            reconcile_band_manifest_with_disk(&root, &mut bands).unwrap_or_default();
+        manifest_rebuilt |= band_manifest_reconciled_on_open;
+        ensure_band_descriptor(
+            &mut bands,
             &root,
             page_segment_id,
-            BlockStoreExtentState::Active,
+            BlockStoreBandState::Active,
         );
         if manifest_rebuilt {
-            let _ = persist_extent_manifest(&root, &extents);
+            let _ = persist_band_manifest(&root, &bands);
         }
         Self {
             inner: Arc::new(Mutex::new(BlockStoreInner {
@@ -580,8 +580,8 @@ impl LocalBlockStore {
                 write_offset,
                 next_page_id,
                 options,
-                extents,
-                extent_manifest_reconciled_on_open,
+                bands,
+                band_manifest_reconciled_on_open,
                 stats: BlockStoreStats::default(),
             })),
         }
@@ -620,21 +620,21 @@ impl LocalBlockStore {
         Ok(ids)
     }
 
-    pub fn zone_summary(&self) -> BlockStoreExtentSummary {
-        self.extent_summary()
+    pub fn zone_summary(&self) -> BlockStoreBandSummary {
+        self.band_summary()
     }
 
-    pub fn zone_descriptors(&self) -> Vec<BlockStoreExtentDescriptor> {
-        self.extent_descriptors()
+    pub fn zone_descriptors(&self) -> Vec<BlockStoreBandDescriptor> {
+        self.band_descriptors()
     }
 
     pub fn zone_usage(&self) -> Vec<BlockStoreZoneUsage> {
-        extent_zone_usage(
+        band_zone_usage(
             &self
                 .inner
                 .lock()
                 .expect("block store lock poisoned")
-                .extents,
+                .bands,
         )
     }
 
@@ -687,12 +687,12 @@ impl LocalBlockStore {
                 .map(|metadata| metadata.len())
                 .unwrap_or_default();
             fs::remove_file(entry.path())?;
-            set_extent_state(&mut inner.extents, id, BlockStoreExtentState::Purged);
+            set_band_state(&mut inner.bands, id, BlockStoreBandState::Purged);
             purged.push(id);
         }
         purged.sort_unstable();
         sync_dir(&trash_dir)?;
-        persist_extent_manifest(&inner.root, &inner.extents)?;
+        persist_band_manifest(&inner.root, &inner.bands)?;
         Ok(BlockStorePurgeDelayedDestroyReport {
             purged_page_segment_ids: purged,
             purged_physical_bytes,
@@ -769,14 +769,14 @@ fn roll_segment_inner(
     file.sync_all()?;
     sync_parent_dir(&path)?;
     let transition_unix_ms = now_unix_ms();
-    if let Some(previous) = inner.extents.get_mut(&previous_page_segment_id) {
-        previous.state = BlockStoreExtentState::Sealed;
+    if let Some(previous) = inner.bands.get_mut(&previous_page_segment_id) {
+        previous.state = BlockStoreBandState::Sealed;
         previous.updated_unix_ms = Some(transition_unix_ms);
     }
-    let new_extent = BlockStoreExtentDescriptor {
-        extent_id: extent_id_for_segment(inner.page_segment_id),
+    let new_band = BlockStoreBandDescriptor {
+        band_id: band_id_for_segment(inner.page_segment_id),
         page_segment_id: inner.page_segment_id,
-        state: BlockStoreExtentState::Active,
+        state: BlockStoreBandState::Active,
         physical_bytes: 0,
         logical_bytes: 0,
         created_unix_ms: Some(transition_unix_ms),
@@ -789,33 +789,33 @@ fn roll_segment_inner(
         first_error: None,
     };
     let page_segment_id = inner.page_segment_id;
-    inner.extents.insert(page_segment_id, new_extent);
-    persist_extent_manifest(&inner.root, &inner.extents)?;
+    inner.bands.insert(page_segment_id, new_band);
+    persist_band_manifest(&inner.root, &inner.bands)?;
     Ok(BlockStoreRollReport {
         previous_page_segment_id,
         new_page_segment_id: inner.page_segment_id,
     })
 }
 
-fn extent_lifecycle_states(summary: &BlockStoreExtentSummary) -> Vec<String> {
+fn band_lifecycle_states(summary: &BlockStoreBandSummary) -> Vec<String> {
     let mut states = Vec::new();
-    if summary.active_extents > 0 {
+    if summary.active_bands > 0 {
         states.push("active".to_string());
     }
-    if summary.sealed_extents > 0 {
+    if summary.sealed_bands > 0 {
         states.push("sealed".to_string());
     }
-    if summary.delayed_destroy_extents > 0 {
+    if summary.delayed_destroy_bands > 0 {
         states.push("delayed_destroy".to_string());
     }
-    if summary.purged_extents > 0 {
+    if summary.purged_bands > 0 {
         states.push("purged".to_string());
     }
     states
 }
 
-fn extent_zone_usage(
-    extents: &BTreeMap<u64, BlockStoreExtentDescriptor>,
+fn band_zone_usage(
+    bands: &BTreeMap<u64, BlockStoreBandDescriptor>,
 ) -> Vec<BlockStoreZoneUsage> {
     #[derive(Debug, Clone)]
     struct ZoneUsageAcc {
@@ -823,10 +823,10 @@ fn extent_zone_usage(
     }
 
     fn merged_zone_state(
-        left: BlockStoreExtentState,
-        right: BlockStoreExtentState,
-    ) -> BlockStoreExtentState {
-        use BlockStoreExtentState::*;
+        left: BlockStoreBandState,
+        right: BlockStoreBandState,
+    ) -> BlockStoreBandState {
+        use BlockStoreBandState::*;
         match (left, right) {
             (Active, _) | (_, Active) => Active,
             (Sealed, _) | (_, Sealed) => Sealed,
@@ -836,23 +836,23 @@ fn extent_zone_usage(
     }
 
     let mut zones = BTreeMap::<u64, ZoneUsageAcc>::new();
-    for extent in extents.values() {
-        let (live, reclaimable, purged) = match extent.state {
-            BlockStoreExtentState::Active | BlockStoreExtentState::Sealed => {
-                (extent.physical_bytes, 0, 0)
+    for band in bands.values() {
+        let (live, reclaimable, purged) = match band.state {
+            BlockStoreBandState::Active | BlockStoreBandState::Sealed => {
+                (band.physical_bytes, 0, 0)
             }
-            BlockStoreExtentState::DelayedDestroy => (0, extent.physical_bytes, 0),
-            BlockStoreExtentState::Purged => (0, 0, extent.physical_bytes),
+            BlockStoreBandState::DelayedDestroy => (0, band.physical_bytes, 0),
+            BlockStoreBandState::Purged => (0, 0, band.physical_bytes),
         };
         let entry = zones
-            .entry(extent.extent_id)
+            .entry(band.band_id)
             .or_insert_with(|| ZoneUsageAcc {
                 usage: BlockStoreZoneUsage {
-                    extent_id: extent.extent_id,
-                    page_segment_id: extent.page_segment_id,
-                    storage_zone_id: extent.extent_id,
-                    stream_segment_id: extent.page_segment_id,
-                    state: extent.state,
+                    band_id: band.band_id,
+                    page_segment_id: band.page_segment_id,
+                    storage_zone_id: band.band_id,
+                    stream_segment_id: band.page_segment_id,
+                    state: band.state,
                     used_bytes: 0,
                     live_bytes: 0,
                     reclaimable_bytes: 0,
@@ -866,28 +866,28 @@ fn extent_zone_usage(
                 },
             });
         let usage = &mut entry.usage;
-        usage.page_segment_id = usage.page_segment_id.min(extent.page_segment_id);
-        usage.stream_segment_id = usage.stream_segment_id.min(extent.page_segment_id);
-        usage.state = merged_zone_state(usage.state, extent.state);
-        usage.used_bytes = usage.used_bytes.saturating_add(extent.physical_bytes);
+        usage.page_segment_id = usage.page_segment_id.min(band.page_segment_id);
+        usage.stream_segment_id = usage.stream_segment_id.min(band.page_segment_id);
+        usage.state = merged_zone_state(usage.state, band.state);
+        usage.used_bytes = usage.used_bytes.saturating_add(band.physical_bytes);
         usage.live_bytes = usage.live_bytes.saturating_add(live);
         usage.reclaimable_bytes = usage.reclaimable_bytes.saturating_add(reclaimable);
         usage.purged_bytes = usage.purged_bytes.saturating_add(purged);
         usage.page_store_used_bytes = usage
             .page_store_used_bytes
-            .saturating_add(extent.physical_bytes);
+            .saturating_add(band.physical_bytes);
         usage.live_page_store_used_bytes = usage.live_page_store_used_bytes.saturating_add(live);
         usage.reclaimable_page_store_used_bytes = usage
             .reclaimable_page_store_used_bytes
             .saturating_add(reclaimable);
         usage.purged_page_store_used_bytes =
             usage.purged_page_store_used_bytes.saturating_add(purged);
-        usage.first_page_id = match (usage.first_page_id, extent.first_page_id) {
+        usage.first_page_id = match (usage.first_page_id, band.first_page_id) {
             (Some(left), Some(right)) => Some(left.min(right)),
             (None, right) => right,
             (left, None) => left,
         };
-        usage.last_page_id = match (usage.last_page_id, extent.last_page_id) {
+        usage.last_page_id = match (usage.last_page_id, band.last_page_id) {
             (Some(left), Some(right)) => Some(left.max(right)),
             (None, right) => right,
             (left, None) => left,
@@ -962,56 +962,56 @@ pub type PageStoreDelayedDestroySegmentReport = BlockStoreDelayedDestroySegmentR
 )]
 pub type PageStorePurgeDelayedDestroyReport = BlockStorePurgeDelayedDestroyReport;
 
-#[deprecated(since = "0.1.0", note = "use BlockStoreExtentState")]
-pub type BlockStoreZoneState = BlockStoreExtentState;
+#[deprecated(since = "0.1.0", note = "use BlockStoreBandState")]
+pub type BlockStoreZoneState = BlockStoreBandState;
 
-#[deprecated(since = "0.1.0", note = "use BlockStoreExtentDescriptor")]
-pub type BlockStoreZoneDescriptor = BlockStoreExtentDescriptor;
+#[deprecated(since = "0.1.0", note = "use BlockStoreBandDescriptor")]
+pub type BlockStoreZoneDescriptor = BlockStoreBandDescriptor;
 
-#[deprecated(since = "0.1.0", note = "use BlockStoreExtentSummary")]
-pub type BlockStoreZoneSummary = BlockStoreExtentSummary;
+#[deprecated(since = "0.1.0", note = "use BlockStoreBandSummary")]
+pub type BlockStoreZoneSummary = BlockStoreBandSummary;
 
 #[deprecated(since = "0.1.0", note = "use BlockStoreZoneUsage")]
 pub type PageStoreZoneUsage = BlockStoreZoneUsage;
 
-#[deprecated(since = "0.1.0", note = "use StreamBackedExtentRuntimeReport")]
-pub type StreamBackedZoneRuntimeReport = StreamBackedExtentRuntimeReport;
+#[deprecated(since = "0.1.0", note = "use StreamBackedBandRuntimeReport")]
+pub type StreamBackedZoneRuntimeReport = StreamBackedBandRuntimeReport;
 
 #[deprecated(
     since = "0.1.0",
-    note = "use BlockStoreExtentState; page naming remains only for legacy compatibility"
+    note = "use BlockStoreBandState; page naming remains only for legacy compatibility"
 )]
-pub type PageStoreExtentState = BlockStoreExtentState;
+pub type PageStoreBandState = BlockStoreBandState;
 
 #[deprecated(
     since = "0.1.0",
-    note = "use BlockStoreExtentState; zone naming remains only for legacy compatibility"
+    note = "use BlockStoreBandState; zone naming remains only for legacy compatibility"
 )]
-pub type PageStoreZoneState = BlockStoreExtentState;
+pub type PageStoreZoneState = BlockStoreBandState;
 
 #[deprecated(
     since = "0.1.0",
-    note = "use BlockStoreExtentDescriptor; page naming remains only for legacy compatibility"
+    note = "use BlockStoreBandDescriptor; page naming remains only for legacy compatibility"
 )]
-pub type PageStoreExtentDescriptor = BlockStoreExtentDescriptor;
+pub type PageStoreBandDescriptor = BlockStoreBandDescriptor;
 
 #[deprecated(
     since = "0.1.0",
-    note = "use BlockStoreExtentDescriptor; zone naming remains only for legacy compatibility"
+    note = "use BlockStoreBandDescriptor; zone naming remains only for legacy compatibility"
 )]
-pub type PageStoreZoneDescriptor = BlockStoreExtentDescriptor;
+pub type PageStoreZoneDescriptor = BlockStoreBandDescriptor;
 
 #[deprecated(
     since = "0.1.0",
-    note = "use BlockStoreExtentSummary; page naming remains only for legacy compatibility"
+    note = "use BlockStoreBandSummary; page naming remains only for legacy compatibility"
 )]
-pub type PageStoreExtentSummary = BlockStoreExtentSummary;
+pub type PageStoreBandSummary = BlockStoreBandSummary;
 
 #[deprecated(
     since = "0.1.0",
-    note = "use BlockStoreExtentSummary; zone naming remains only for legacy compatibility"
+    note = "use BlockStoreBandSummary; zone naming remains only for legacy compatibility"
 )]
-pub type PageStoreZoneSummary = BlockStoreExtentSummary;
+pub type PageStoreZoneSummary = BlockStoreBandSummary;
 
 #[deprecated(
     since = "0.1.0",
@@ -1099,7 +1099,7 @@ mod tests {
 
     // shared-corpus: storage_stream_manifest_disk_reconciliation;
     #[test]
-    fn reopen_reconciles_manifest_missing_existing_stream_extent() {
+    fn reopen_reconciles_manifest_missing_existing_stream_band() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         let first = store.append(b"first").unwrap();
@@ -1107,14 +1107,14 @@ mod tests {
         let second = store.append(b"second").unwrap();
         drop(store);
 
-        let manifest_path = extent_manifest_path(dir.path());
+        let manifest_path = band_manifest_path(dir.path());
         let mut manifest: serde_json::Value =
             serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-        manifest["extents"] = serde_json::json!([manifest["extents"]
+        manifest["bands"] = serde_json::json!([manifest["bands"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|extent| extent["page_segment_id"] == serde_json::json!(first.page_segment_id))
+            .find(|band| band["page_segment_id"] == serde_json::json!(first.page_segment_id))
             .unwrap()
             .clone()]);
         fs::write(
@@ -1124,28 +1124,28 @@ mod tests {
         .unwrap();
 
         let reopened = LocalBlockStore::new(dir.path());
-        let descriptors = reopened.extent_descriptors();
+        let descriptors = reopened.band_descriptors();
 
         assert!(descriptors
             .iter()
-            .any(|extent| extent.page_segment_id == first.page_segment_id
-                && extent.state == BlockStoreExtentState::Sealed));
+            .any(|band| band.page_segment_id == first.page_segment_id
+                && band.state == BlockStoreBandState::Sealed));
         assert!(descriptors
             .iter()
-            .any(|extent| extent.page_segment_id == second.page_segment_id
-                && extent.state == BlockStoreExtentState::Active));
-        let report = reopened.stream_backed_extent_runtime_report().unwrap();
-        assert!(report.extent_manifest_reconciled_on_open);
-        assert!(report.extent_manifest_disk_consistent);
-        assert_eq!(report.manifest_extra_stream_extents, 0);
-        assert_eq!(report.manifest_missing_stream_extents, 0);
+            .any(|band| band.page_segment_id == second.page_segment_id
+                && band.state == BlockStoreBandState::Active));
+        let report = reopened.stream_backed_band_runtime_report().unwrap();
+        assert!(report.band_manifest_reconciled_on_open);
+        assert!(report.band_manifest_disk_consistent);
+        assert_eq!(report.manifest_extra_stream_bands, 0);
+        assert_eq!(report.manifest_missing_stream_bands, 0);
         assert_eq!(reopened.read(&first).unwrap(), b"first");
         assert_eq!(reopened.read(&second).unwrap(), b"second");
     }
 
     // shared-corpus: storage_stream_manifest_disk_reconciliation;
     #[test]
-    fn reopen_marks_manifest_extent_without_stream_file_as_purged() {
+    fn reopen_marks_manifest_band_without_stream_file_as_purged() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         let first = store.append(b"first").unwrap();
@@ -1156,21 +1156,21 @@ mod tests {
         fs::remove_file(segment_path(dir.path(), first.page_segment_id)).unwrap();
 
         let reopened = LocalBlockStore::new(dir.path());
-        let descriptors = reopened.extent_descriptors();
+        let descriptors = reopened.band_descriptors();
 
         assert!(descriptors
             .iter()
-            .any(|extent| extent.page_segment_id == first.page_segment_id
-                && extent.state == BlockStoreExtentState::Purged));
+            .any(|band| band.page_segment_id == first.page_segment_id
+                && band.state == BlockStoreBandState::Purged));
         assert!(descriptors
             .iter()
-            .any(|extent| extent.page_segment_id == second.page_segment_id
-                && extent.state == BlockStoreExtentState::Active));
-        let report = reopened.stream_backed_extent_runtime_report().unwrap();
-        assert!(report.extent_manifest_reconciled_on_open);
-        assert!(report.extent_manifest_disk_consistent);
-        assert_eq!(report.manifest_extra_stream_extents, 0);
-        assert_eq!(report.manifest_missing_stream_extents, 0);
+            .any(|band| band.page_segment_id == second.page_segment_id
+                && band.state == BlockStoreBandState::Active));
+        let report = reopened.stream_backed_band_runtime_report().unwrap();
+        assert!(report.band_manifest_reconciled_on_open);
+        assert!(report.band_manifest_disk_consistent);
+        assert_eq!(report.manifest_extra_stream_bands, 0);
+        assert_eq!(report.manifest_missing_stream_bands, 0);
         assert_eq!(reopened.read(&second).unwrap(), b"second");
     }
 
@@ -1234,7 +1234,7 @@ mod tests {
         assert_eq!(address.page_id, Some(0));
         assert_eq!(address.object_id, Some(4242));
         assert_eq!(address.routing_slot, Some(17));
-        assert_eq!(address.extent_id, Some(0));
+        assert_eq!(address.band_id, Some(0));
         assert_eq!(address.sha256, Some(sha256_hex(b"address-contract")));
         assert_eq!(address.compact_segment_id(), Some(0));
         assert_eq!(address.compact_segment_offset(), Some(0));
@@ -1262,7 +1262,7 @@ mod tests {
             // Some(page_id)) and on read (record decode derives it), so the legacy
             // alias JSON must carry it or the round-trip deserializes to None.
             "generation": address.generation,
-            "extent_id": address.extent_id,
+            "band_id": address.band_id,
             "checksum": address.sha256,
         });
         let from_checksum_alias: BlockAddress = serde_json::from_value(legacy_alias_json).unwrap();
@@ -1340,7 +1340,7 @@ mod tests {
 
         assert_eq!(address.object_id, Some(42));
         assert_eq!(address.routing_slot, Some(7));
-        assert_eq!(address.extent_id, Some(0));
+        assert_eq!(address.band_id, Some(0));
         assert_eq!(store.read(&address).unwrap(), b"object-page");
 
         address.object_id = Some(43);
@@ -1353,123 +1353,123 @@ mod tests {
         assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
 
         address.routing_slot = Some(7);
-        address.extent_id = Some(1);
+        address.band_id = Some(1);
         let err = store.read(&address).unwrap_err();
         assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
     }
 
     #[test]
-    fn rolled_segments_stamp_new_extent_ids() {
+    fn rolled_segments_stamp_new_band_ids() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
-        let first = store.append(b"first-extent").unwrap();
+        let first = store.append(b"first-band").unwrap();
         let roll = store.roll_segment().unwrap();
-        let second = store.append(b"second-extent").unwrap();
+        let second = store.append(b"second-band").unwrap();
 
-        assert_eq!(first.extent_id, Some(first.page_segment_id));
-        assert_eq!(second.extent_id, Some(second.page_segment_id));
-        assert_eq!(second.extent_id, Some(roll.new_page_segment_id));
-        assert_ne!(first.extent_id, second.extent_id);
+        assert_eq!(first.band_id, Some(first.page_segment_id));
+        assert_eq!(second.band_id, Some(second.page_segment_id));
+        assert_eq!(second.band_id, Some(roll.new_page_segment_id));
+        assert_ne!(first.band_id, second.band_id);
     }
 
     #[test]
-    fn extent_manifest_tracks_roll_reopen_gc_and_purge() {
+    fn band_manifest_tracks_roll_reopen_gc_and_purge() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
-        let first = store.append(b"first-extent").unwrap();
+        let first = store.append(b"first-band").unwrap();
         store.roll_segment().unwrap();
-        let second = store.append(b"second-extent").unwrap();
+        let second = store.append(b"second-band").unwrap();
 
-        let extents = store.extent_descriptors();
-        assert_eq!(extents.len(), 2);
-        assert_eq!(extents[0].page_segment_id, first.page_segment_id);
-        assert_eq!(extents[0].state, BlockStoreExtentState::Sealed);
-        assert_eq!(extents[0].first_page_id, first.page_id);
-        assert_eq!(extents[0].last_page_id, first.page_id);
-        assert!(extents[0].created_unix_ms.is_some());
-        assert!(extents[0].updated_unix_ms.is_some());
-        assert_eq!(extents[1].page_segment_id, second.page_segment_id);
-        assert_eq!(extents[1].state, BlockStoreExtentState::Active);
-        assert_eq!(extents[1].first_page_id, second.page_id);
-        assert_eq!(extents[1].last_page_id, second.page_id);
-        assert!(extents[1].created_unix_ms.is_some());
-        assert!(extents[1].updated_unix_ms.is_some());
-        assert!(extent_manifest_path(dir.path()).exists());
-        let initial_summary = store.extent_summary();
-        assert_eq!(initial_summary.sealed_extents, 1);
-        assert_eq!(initial_summary.active_extents, 1);
-        assert_eq!(initial_summary.delayed_destroy_extents, 0);
-        assert_eq!(initial_summary.purged_extents, 0);
+        let bands = store.band_descriptors();
+        assert_eq!(bands.len(), 2);
+        assert_eq!(bands[0].page_segment_id, first.page_segment_id);
+        assert_eq!(bands[0].state, BlockStoreBandState::Sealed);
+        assert_eq!(bands[0].first_page_id, first.page_id);
+        assert_eq!(bands[0].last_page_id, first.page_id);
+        assert!(bands[0].created_unix_ms.is_some());
+        assert!(bands[0].updated_unix_ms.is_some());
+        assert_eq!(bands[1].page_segment_id, second.page_segment_id);
+        assert_eq!(bands[1].state, BlockStoreBandState::Active);
+        assert_eq!(bands[1].first_page_id, second.page_id);
+        assert_eq!(bands[1].last_page_id, second.page_id);
+        assert!(bands[1].created_unix_ms.is_some());
+        assert!(bands[1].updated_unix_ms.is_some());
+        assert!(band_manifest_path(dir.path()).exists());
+        let initial_summary = store.band_summary();
+        assert_eq!(initial_summary.sealed_bands, 1);
+        assert_eq!(initial_summary.active_bands, 1);
+        assert_eq!(initial_summary.delayed_destroy_bands, 0);
+        assert_eq!(initial_summary.purged_bands, 0);
         assert_eq!(
             initial_summary.sealed_physical_bytes,
-            extents[0].physical_bytes
+            bands[0].physical_bytes
         );
         assert_eq!(
             initial_summary.active_physical_bytes,
-            extents[1].physical_bytes
+            bands[1].physical_bytes
         );
         assert_eq!(
             initial_summary.live_physical_bytes,
-            extents[0].physical_bytes + extents[1].physical_bytes
+            bands[0].physical_bytes + bands[1].physical_bytes
         );
         assert_eq!(initial_summary.reclaimable_physical_bytes, 0);
-        assert!(initial_summary.oldest_known_extent_unix_ms.is_some());
-        assert!(initial_summary.oldest_known_extent_age_ms.is_some());
-        assert!(initial_summary.oldest_live_extent_unix_ms.is_some());
-        assert!(initial_summary.oldest_live_extent_age_ms.is_some());
-        assert!(initial_summary.oldest_reclaimable_extent_unix_ms.is_none());
-        assert!(initial_summary.oldest_reclaimable_extent_age_ms.is_none());
+        assert!(initial_summary.oldest_known_band_unix_ms.is_some());
+        assert!(initial_summary.oldest_known_band_age_ms.is_some());
+        assert!(initial_summary.oldest_live_band_unix_ms.is_some());
+        assert!(initial_summary.oldest_live_band_age_ms.is_some());
+        assert!(initial_summary.oldest_reclaimable_band_unix_ms.is_none());
+        assert!(initial_summary.oldest_reclaimable_band_age_ms.is_none());
         let initial_zone_usage = store.zone_usage();
         assert_eq!(initial_zone_usage.len(), 2);
-        assert_eq!(initial_zone_usage[0].extent_id, extents[0].extent_id);
+        assert_eq!(initial_zone_usage[0].band_id, bands[0].band_id);
         assert_eq!(
             initial_zone_usage[0].page_segment_id,
-            extents[0].page_segment_id
+            bands[0].page_segment_id
         );
         assert_eq!(
             initial_zone_usage[0].page_store_used_bytes,
-            extents[0].physical_bytes
+            bands[0].physical_bytes
         );
         assert_eq!(
             initial_zone_usage[0].live_page_store_used_bytes,
-            extents[0].physical_bytes
+            bands[0].physical_bytes
         );
         assert_eq!(initial_zone_usage[0].reclaimable_page_store_used_bytes, 0);
         assert_eq!(initial_zone_usage[0].purged_page_store_used_bytes, 0);
 
         let reopened = LocalBlockStore::new(dir.path());
-        let reopened_extents = reopened.extent_descriptors();
-        assert_eq!(reopened_extents.len(), extents.len());
-        assert_eq!(reopened_extents[0], extents[0]);
+        let reopened_bands = reopened.band_descriptors();
+        assert_eq!(reopened_bands.len(), bands.len());
+        assert_eq!(reopened_bands[0], bands[0]);
         assert_eq!(
-            reopened_extents[1].page_segment_id,
-            extents[1].page_segment_id
+            reopened_bands[1].page_segment_id,
+            bands[1].page_segment_id
         );
-        assert_eq!(reopened_extents[1].state, extents[1].state);
+        assert_eq!(reopened_bands[1].state, bands[1].state);
         assert_eq!(
-            reopened_extents[1].physical_bytes,
-            extents[1].physical_bytes
+            reopened_bands[1].physical_bytes,
+            bands[1].physical_bytes
         );
-        assert_eq!(reopened_extents[1].logical_bytes, extents[1].logical_bytes);
+        assert_eq!(reopened_bands[1].logical_bytes, bands[1].logical_bytes);
         assert_eq!(
-            reopened_extents[1].created_unix_ms,
-            extents[1].created_unix_ms
+            reopened_bands[1].created_unix_ms,
+            bands[1].created_unix_ms
         );
-        assert!(reopened_extents[1].updated_unix_ms >= extents[1].updated_unix_ms);
+        assert!(reopened_bands[1].updated_unix_ms >= bands[1].updated_unix_ms);
 
         let report = reopened
             .gc_segments_before_with_live_refs_delayed_destroy(1, std::iter::empty())
             .unwrap();
         assert_eq!(report.delayed_destroy_page_segment_ids, vec![0]);
-        let delayed = reopened.extent_descriptors();
-        assert_eq!(delayed[0].state, BlockStoreExtentState::DelayedDestroy);
+        let delayed = reopened.band_descriptors();
+        assert_eq!(delayed[0].state, BlockStoreBandState::DelayedDestroy);
         assert!(delayed[0].physical_bytes > 0);
-        assert_eq!(delayed[0].created_unix_ms, extents[0].created_unix_ms);
-        assert!(delayed[0].updated_unix_ms >= extents[0].updated_unix_ms);
-        assert_eq!(delayed[1].state, BlockStoreExtentState::Active);
-        let delayed_summary = reopened.extent_summary();
-        assert_eq!(delayed_summary.delayed_destroy_extents, 1);
-        assert_eq!(delayed_summary.active_extents, 1);
+        assert_eq!(delayed[0].created_unix_ms, bands[0].created_unix_ms);
+        assert!(delayed[0].updated_unix_ms >= bands[0].updated_unix_ms);
+        assert_eq!(delayed[1].state, BlockStoreBandState::Active);
+        let delayed_summary = reopened.band_summary();
+        assert_eq!(delayed_summary.delayed_destroy_bands, 1);
+        assert_eq!(delayed_summary.active_bands, 1);
         assert_eq!(
             delayed_summary.delayed_destroy_physical_bytes,
             delayed[0].physical_bytes
@@ -1482,13 +1482,13 @@ mod tests {
             delayed_summary.live_physical_bytes,
             delayed[1].physical_bytes
         );
-        assert!(delayed_summary.oldest_known_extent_unix_ms.is_some());
-        assert!(delayed_summary.oldest_live_extent_unix_ms.is_some());
+        assert!(delayed_summary.oldest_known_band_unix_ms.is_some());
+        assert!(delayed_summary.oldest_live_band_unix_ms.is_some());
         assert_eq!(
-            delayed_summary.oldest_reclaimable_extent_unix_ms,
+            delayed_summary.oldest_reclaimable_band_unix_ms,
             delayed[0].updated_unix_ms
         );
-        assert!(delayed_summary.oldest_reclaimable_extent_age_ms.is_some());
+        assert!(delayed_summary.oldest_reclaimable_band_age_ms.is_some());
         let delayed_zone_usage = reopened.zone_usage();
         let delayed_first = delayed_zone_usage
             .iter()
@@ -1505,14 +1505,14 @@ mod tests {
             .unwrap();
         assert_eq!(purge.purged_page_segment_ids, vec![0]);
         assert!(purge.purged_physical_bytes > 0);
-        let purged = LocalBlockStore::new(dir.path()).extent_descriptors();
-        assert_eq!(purged[0].state, BlockStoreExtentState::Purged);
-        assert_eq!(purged[0].created_unix_ms, extents[0].created_unix_ms);
+        let purged = LocalBlockStore::new(dir.path()).band_descriptors();
+        assert_eq!(purged[0].state, BlockStoreBandState::Purged);
+        assert_eq!(purged[0].created_unix_ms, bands[0].created_unix_ms);
         assert!(purged[0].updated_unix_ms >= delayed[0].updated_unix_ms);
-        assert_eq!(purged[1].state, BlockStoreExtentState::Active);
-        let purged_summary = LocalBlockStore::new(dir.path()).extent_summary();
-        assert_eq!(purged_summary.purged_extents, 1);
-        assert_eq!(purged_summary.active_extents, 1);
+        assert_eq!(purged[1].state, BlockStoreBandState::Active);
+        let purged_summary = LocalBlockStore::new(dir.path()).band_summary();
+        assert_eq!(purged_summary.purged_bands, 1);
+        assert_eq!(purged_summary.active_bands, 1);
         assert_eq!(
             purged_summary.purged_physical_bytes,
             purged[0].physical_bytes
@@ -1529,44 +1529,44 @@ mod tests {
             purged[0].physical_bytes
         );
         assert_eq!(purged_first.reclaimable_page_store_used_bytes, 0);
-        assert!(purged_summary.oldest_known_extent_unix_ms.is_some());
-        assert!(purged_summary.oldest_live_extent_unix_ms.is_some());
-        assert!(purged_summary.oldest_reclaimable_extent_unix_ms.is_none());
-        assert!(purged_summary.oldest_reclaimable_extent_age_ms.is_none());
+        assert!(purged_summary.oldest_known_band_unix_ms.is_some());
+        assert!(purged_summary.oldest_live_band_unix_ms.is_some());
+        assert!(purged_summary.oldest_reclaimable_band_unix_ms.is_none());
+        assert!(purged_summary.oldest_reclaimable_band_age_ms.is_none());
     }
 
     #[test]
-    fn missing_extent_manifest_rebuilds_from_existing_segments() {
+    fn missing_band_manifest_rebuilds_from_existing_segments() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
-        let first = store.append(b"first-extent").unwrap();
+        let first = store.append(b"first-band").unwrap();
         store.roll_segment().unwrap();
-        let second = store.append(b"second-extent").unwrap();
-        fs::remove_file(extent_manifest_path(dir.path())).unwrap();
+        let second = store.append(b"second-band").unwrap();
+        fs::remove_file(band_manifest_path(dir.path())).unwrap();
 
         let rebuilt = LocalBlockStore::new(dir.path());
-        let extents = rebuilt.extent_descriptors();
+        let bands = rebuilt.band_descriptors();
 
-        assert_eq!(extents.len(), 2);
-        assert_eq!(extents[0].page_segment_id, first.page_segment_id);
-        assert_eq!(extents[0].state, BlockStoreExtentState::Sealed);
-        assert_eq!(extents[0].first_page_id, first.page_id);
-        assert_eq!(extents[0].last_page_id, first.page_id);
-        assert!(extents[0].created_unix_ms.is_some());
-        assert!(extents[0].updated_unix_ms.is_some());
-        assert_eq!(extents[1].page_segment_id, second.page_segment_id);
-        assert_eq!(extents[1].state, BlockStoreExtentState::Active);
-        assert_eq!(extents[1].first_page_id, second.page_id);
-        assert_eq!(extents[1].last_page_id, second.page_id);
-        assert!(extents[1].created_unix_ms.is_some());
-        assert!(extents[1].updated_unix_ms.is_some());
-        assert!(extent_manifest_path(dir.path()).exists());
+        assert_eq!(bands.len(), 2);
+        assert_eq!(bands[0].page_segment_id, first.page_segment_id);
+        assert_eq!(bands[0].state, BlockStoreBandState::Sealed);
+        assert_eq!(bands[0].first_page_id, first.page_id);
+        assert_eq!(bands[0].last_page_id, first.page_id);
+        assert!(bands[0].created_unix_ms.is_some());
+        assert!(bands[0].updated_unix_ms.is_some());
+        assert_eq!(bands[1].page_segment_id, second.page_segment_id);
+        assert_eq!(bands[1].state, BlockStoreBandState::Active);
+        assert_eq!(bands[1].first_page_id, second.page_id);
+        assert_eq!(bands[1].last_page_id, second.page_id);
+        assert!(bands[1].created_unix_ms.is_some());
+        assert!(bands[1].updated_unix_ms.is_some());
+        assert!(band_manifest_path(dir.path()).exists());
 
-        let report = rebuilt.stream_backed_extent_runtime_report().unwrap();
+        let report = rebuilt.stream_backed_band_runtime_report().unwrap();
         assert!(report.runtime_ready, "{report:?}");
-        assert_eq!(report.extent_lifecycle_states, vec!["active", "sealed"]);
-        assert!(report.extent_manifest_ready);
-        assert!(report.extent_manifest_rebuild_ready);
+        assert_eq!(report.band_lifecycle_states, vec!["active", "sealed"]);
+        assert!(report.band_manifest_ready);
+        assert!(report.band_manifest_rebuild_ready);
         assert!(report.zone_stats_ready);
         assert_eq!(report.zone_usage.len(), 2);
         assert_eq!(
@@ -1577,19 +1577,19 @@ mod tests {
                 .sum::<u64>(),
             report.physical_bytes
         );
-        assert!(!report.extent_manifest_reconciled_on_open);
-        assert!(report.extent_manifest_disk_consistent);
-        assert_eq!(report.manifest_missing_stream_extents, 0);
-        assert_eq!(report.manifest_extra_stream_extents, 0);
-        assert_eq!(report.corrupt_extent_count, 0);
-        assert_eq!(report.partial_extent_count, 0);
-        assert!(report.partial_extent_recovery_ready);
+        assert!(!report.band_manifest_reconciled_on_open);
+        assert!(report.band_manifest_disk_consistent);
+        assert_eq!(report.manifest_missing_stream_bands, 0);
+        assert_eq!(report.manifest_extra_stream_bands, 0);
+        assert_eq!(report.corrupt_band_count, 0);
+        assert_eq!(report.partial_band_count, 0);
+        assert!(report.partial_band_recovery_ready);
         assert_eq!(report.readable_prefix_physical_bytes, report.physical_bytes);
     }
 
-    // shared-corpus: storage_stream_partial_extent_rebuild;
+    // shared-corpus: storage_stream_partial_band_rebuild;
     #[test]
-    fn partial_extent_manifest_rebuild_preserves_readable_prefix_and_reports_corruption() {
+    fn partial_band_manifest_rebuild_preserves_readable_prefix_and_reports_corruption() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         let first_payload = b"sealed-readable-prefix".repeat(64);
@@ -1605,18 +1605,18 @@ mod tests {
             .unwrap()
             .write_all(b"partial-corrupt-tail")
             .unwrap();
-        fs::remove_file(extent_manifest_path(dir.path())).unwrap();
+        fs::remove_file(band_manifest_path(dir.path())).unwrap();
 
         let rebuilt = LocalBlockStore::new(dir.path());
         assert_eq!(rebuilt.read(&first).unwrap(), first_payload);
         assert_eq!(rebuilt.read(&second).unwrap(), b"active-clean-tail");
 
-        let extents = rebuilt.extent_descriptors();
-        let sealed = extents
+        let bands = rebuilt.band_descriptors();
+        let sealed = bands
             .iter()
-            .find(|extent| extent.page_segment_id == first.page_segment_id)
+            .find(|band| band.page_segment_id == first.page_segment_id)
             .unwrap();
-        assert_eq!(sealed.state, BlockStoreExtentState::Sealed);
+        assert_eq!(sealed.state, BlockStoreBandState::Sealed);
         assert!(sealed.has_corruption);
         assert_eq!(sealed.first_error_offset, Some(readable_prefix));
         assert_eq!(sealed.readable_prefix_physical_bytes, readable_prefix);
@@ -1627,24 +1627,24 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("mixed raw bytes"));
-        assert!(extent_manifest_path(dir.path()).exists());
+        assert!(band_manifest_path(dir.path()).exists());
 
-        let report = rebuilt.stream_backed_extent_runtime_report().unwrap();
+        let report = rebuilt.stream_backed_band_runtime_report().unwrap();
         assert!(!report.runtime_ready, "{report:?}");
-        assert!(report.extent_manifest_ready);
-        assert!(report.extent_manifest_rebuild_ready);
-        assert!(!report.extent_manifest_reconciled_on_open);
-        assert!(report.extent_manifest_disk_consistent);
-        assert_eq!(report.manifest_missing_stream_extents, 0);
-        assert_eq!(report.manifest_extra_stream_extents, 0);
-        assert_eq!(report.extent_lifecycle_states, vec!["active", "sealed"]);
-        assert_eq!(report.corrupt_extent_count, 1);
-        assert_eq!(report.partial_extent_count, 1);
+        assert!(report.band_manifest_ready);
+        assert!(report.band_manifest_rebuild_ready);
+        assert!(!report.band_manifest_reconciled_on_open);
+        assert!(report.band_manifest_disk_consistent);
+        assert_eq!(report.manifest_missing_stream_bands, 0);
+        assert_eq!(report.manifest_extra_stream_bands, 0);
+        assert_eq!(report.band_lifecycle_states, vec!["active", "sealed"]);
+        assert_eq!(report.corrupt_band_count, 1);
+        assert_eq!(report.partial_band_count, 1);
         assert_eq!(
             report.readable_prefix_physical_bytes,
             readable_prefix + second.length
         );
-        assert!(report.partial_extent_recovery_ready);
+        assert!(report.partial_band_recovery_ready);
         assert!(!report.envelope_checksum_ready);
         assert!(report
             .blockers
@@ -1701,13 +1701,13 @@ mod tests {
         assert!(stats.logical_bytes_read >= stats.bytes_read);
     }
 
-    // shared-corpus: storage_stream_backed_extent_runtime;
+    // shared-corpus: storage_stream_backed_band_runtime;
     #[test]
-    fn stream_backed_extent_runtime_report_covers_roll_read_manifest_and_delayed_destroy() {
+    fn stream_backed_band_runtime_report_covers_roll_read_manifest_and_delayed_destroy() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
-        let first_payload = b"extent-stream-first-".repeat(96);
-        let second_payload = b"extent-stream-second-".repeat(96);
+        let first_payload = b"band-stream-first-".repeat(96);
+        let second_payload = b"band-stream-second-".repeat(96);
         let first = store
             .append_with_page_metadata(&first_payload, Some(11), Some(7))
             .unwrap();
@@ -1726,21 +1726,21 @@ mod tests {
         assert_eq!(logical, expected);
 
         let roll = store.roll_segment().unwrap();
-        let third_payload = b"extent-stream-third-".repeat(96);
+        let third_payload = b"band-stream-third-".repeat(96);
         let third = store
             .append_with_page_metadata(&third_payload, Some(13), Some(8))
             .unwrap();
         assert_eq!(third.page_segment_id, roll.new_page_segment_id);
-        let before_gc = store.stream_backed_extent_runtime_report().unwrap();
+        let before_gc = store.stream_backed_band_runtime_report().unwrap();
         assert!(before_gc.runtime_ready, "{before_gc:?}");
-        assert_eq!(before_gc.active_extents, 1);
-        assert_eq!(before_gc.sealed_extents, 1);
-        assert_eq!(before_gc.extent_lifecycle_states, vec!["active", "sealed"]);
+        assert_eq!(before_gc.active_bands, 1);
+        assert_eq!(before_gc.sealed_bands, 1);
+        assert_eq!(before_gc.band_lifecycle_states, vec!["active", "sealed"]);
         assert_eq!(before_gc.stream_record_count, 3);
         assert_eq!(before_gc.first_page_id, first.page_id);
         assert_eq!(before_gc.last_page_id, third.page_id);
         assert!(before_gc.page_id_continuity_ready);
-        assert!(before_gc.extent_manifest_rebuild_ready);
+        assert!(before_gc.band_manifest_rebuild_ready);
         assert!(before_gc.zone_stats_ready);
         assert_eq!(before_gc.zone_usage.len(), 2);
         assert_eq!(
@@ -1752,7 +1752,7 @@ mod tests {
             before_gc.physical_bytes
         );
         assert!(before_gc.logical_stream_bytes_read >= 16);
-        assert!(before_gc.extent_state_transition_count >= 2);
+        assert!(before_gc.band_state_transition_count >= 2);
 
         let delayed = store
             .gc_segments_before_with_live_refs_delayed_destroy(
@@ -1767,30 +1767,30 @@ mod tests {
 
         let reopened = LocalBlockStore::new(dir.path());
         assert_eq!(reopened.read(&third).unwrap(), third_payload);
-        let report = reopened.stream_backed_extent_runtime_report().unwrap();
+        let report = reopened.stream_backed_band_runtime_report().unwrap();
         assert!(report.runtime_ready, "{report:?}");
-        assert_eq!(report.active_extents, 1);
-        assert_eq!(report.delayed_destroy_extents, 1);
+        assert_eq!(report.active_bands, 1);
+        assert_eq!(report.delayed_destroy_bands, 1);
         assert_eq!(
-            report.extent_lifecycle_states,
+            report.band_lifecycle_states,
             vec!["active", "delayed_destroy"]
         );
-        assert!(report.extent_count >= 2);
+        assert!(report.band_count >= 2);
         assert!(report.stream_segment_count >= 1);
         assert!(report.logical_stream_read_ready);
         assert!(report.append_roll_ready);
-        assert!(report.extent_manifest_ready);
-        assert!(report.extent_manifest_rebuild_ready);
+        assert!(report.band_manifest_ready);
+        assert!(report.band_manifest_rebuild_ready);
         assert!(report.zone_stats_ready);
         assert!(report
             .zone_usage
             .iter()
-            .any(|zone| zone.state == BlockStoreExtentState::DelayedDestroy
+            .any(|zone| zone.state == BlockStoreBandState::DelayedDestroy
                 && zone.reclaimable_page_store_used_bytes > 0));
         assert!(report
             .zone_usage
             .iter()
-            .any(|zone| zone.state == BlockStoreExtentState::Active
+            .any(|zone| zone.state == BlockStoreBandState::Active
                 && zone.live_page_store_used_bytes > 0));
         assert!(report.envelope_checksum_ready);
         assert!(report.compression_stream_ready);
@@ -1819,18 +1819,18 @@ mod tests {
             vec![roll.previous_page_segment_id]
         );
         let purged = LocalBlockStore::new(dir.path())
-            .stream_backed_extent_runtime_report()
+            .stream_backed_band_runtime_report()
             .unwrap();
         assert!(purged.runtime_ready, "{purged:?}");
-        assert_eq!(purged.active_extents, 1);
-        assert_eq!(purged.delayed_destroy_extents, 0);
-        assert_eq!(purged.purged_extents, 1);
-        assert_eq!(purged.extent_lifecycle_states, vec!["active", "purged"]);
+        assert_eq!(purged.active_bands, 1);
+        assert_eq!(purged.delayed_destroy_bands, 0);
+        assert_eq!(purged.purged_bands, 1);
+        assert_eq!(purged.band_lifecycle_states, vec!["active", "purged"]);
         assert!(purged.zone_stats_ready);
         assert!(purged
             .zone_usage
             .iter()
-            .any(|zone| zone.state == BlockStoreExtentState::Purged
+            .any(|zone| zone.state == BlockStoreBandState::Purged
                 && zone.purged_page_store_used_bytes > 0));
         assert!(purged.purge_lifecycle_ready);
         assert!(purged.append_roll_ready);
@@ -2073,7 +2073,7 @@ mod tests {
             object_id: None,
             routing_slot: None,
             generation: None,
-            extent_id: None,
+            band_id: None,
             sha256: None,
         };
         fs::write(

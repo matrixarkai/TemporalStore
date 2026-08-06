@@ -20,7 +20,7 @@ pub(super) fn append_value(
         object_id,
         routing_slot,
         generation: object_id,
-        extent_id: None,
+        band_id: None,
         sha256: None,
     };
     let bytes = bytes.to_vec();
@@ -66,7 +66,7 @@ pub(super) fn append_timestamped_single_pages_batch(
             object_id: Some(object_id),
             routing_slot: Some(write.routing_slot),
             generation: Some(object_id),
-            extent_id: None,
+            band_id: None,
             sha256: None,
         };
         cache.put_memory_only(
@@ -110,7 +110,7 @@ pub(super) fn append_timestamped_single_pages_batch(
             object_id: Some(object_id),
             routing_slot: Some(write.routing_slot),
             generation: Some(object_id),
-            extent_id: None,
+            band_id: None,
             sha256: None,
         };
         cache.put_memory_only(

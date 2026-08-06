@@ -5,7 +5,7 @@ pub(super) fn segment_path(root: &Path, page_segment_id: u64) -> PathBuf {
     root.join(format!("page_segment_{page_segment_id:020}.seg"))
 }
 
-pub(super) fn extent_manifest_path(root: &Path) -> PathBuf {
+pub(super) fn band_manifest_path(root: &Path) -> PathBuf {
     root.join("page_extent_manifest.json")
 }
 

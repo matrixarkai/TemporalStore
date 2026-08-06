@@ -48,7 +48,7 @@ struct PageRecordHeader {
     page_id: Option<u64>,
     object_id: Option<u64>,
     routing_slot: Option<u32>,
-    extent_id: Option<u64>,
+    band_id: Option<u64>,
     pub(super) compression: PageRecordCompression,
 }
 
@@ -78,7 +78,7 @@ pub(super) fn encode_page_record(
     page_id: u64,
     object_id: Option<u64>,
     routing_slot: Option<u32>,
-    extent_id: u64,
+    band_id: u64,
     options: BlockStoreOptions,
 ) -> Result<EncodedPageRecord, BlockStoreError> {
     let digest = Sha256::digest(payload);
@@ -97,7 +97,7 @@ pub(super) fn encode_page_record(
     record.push(u8::from(routing_slot.is_some()));
     record.extend_from_slice(&[0, 0, 0]);
     record.extend_from_slice(&routing_slot.unwrap_or_default().to_le_bytes());
-    record.extend_from_slice(&extent_id.to_le_bytes());
+    record.extend_from_slice(&band_id.to_le_bytes());
     record.push(match compression {
         PageRecordCompression::None => PAGE_RECORD_COMPRESSION_NONE,
         PageRecordCompression::Zstd => PAGE_RECORD_COMPRESSION_ZSTD,
@@ -177,13 +177,13 @@ pub(super) fn decode_page_record(
             ));
         }
     }
-    if let (Some(address_extent_id), Some(record_extent_id)) = (address.extent_id, header.extent_id)
+    if let (Some(address_band_id), Some(record_band_id)) = (address.band_id, header.band_id)
     {
-        if address_extent_id != record_extent_id {
+        if address_band_id != record_band_id {
             return Err(corrupt_page_envelope(
                 address,
                 format!(
-                    "extent id mismatch: address {address_extent_id}, record {record_extent_id}"
+                    "band id mismatch: address {address_band_id}, record {record_band_id}"
                 ),
             ));
         }
@@ -246,7 +246,7 @@ pub(super) fn logical_range_from_segment(
             object_id: None,
             routing_slot: None,
             generation: None,
-            extent_id: None,
+            band_id: None,
             sha256: None,
         };
         if !remaining.starts_with(PAGE_RECORD_MAGIC) {
@@ -272,7 +272,7 @@ pub(super) fn logical_range_from_segment(
             object_id: header.object_id,
             routing_slot: header.routing_slot,
             generation: header.page_id.or(header.object_id),
-            extent_id: header.extent_id,
+            band_id: header.band_id,
             ..address
         };
         let payload = decode_page_record_payload(
@@ -393,11 +393,11 @@ fn parse_page_record_header(
     } else {
         None
     };
-    let extent_id = if version >= 5 {
+    let band_id = if version >= 5 {
         Some(u64::from_le_bytes(
             record[84..92]
                 .try_into()
-                .expect("page envelope extent id slice"),
+                .expect("page envelope band id slice"),
         ))
     } else {
         None
@@ -436,7 +436,7 @@ fn parse_page_record_header(
         page_id,
         object_id,
         routing_slot,
-        extent_id,
+        band_id,
         compression,
     })
 }
@@ -530,7 +530,7 @@ pub(super) fn summarize_segment(
             object_id: None,
             routing_slot: None,
             generation: None,
-            extent_id: None,
+            band_id: None,
             sha256: None,
         };
         if !remaining.starts_with(PAGE_RECORD_MAGIC) {
@@ -599,7 +599,7 @@ pub(super) fn inspect_segment(segment: &[u8], page_segment_id: u64) -> BlockStor
             object_id: None,
             routing_slot: None,
             generation: None,
-            extent_id: None,
+            band_id: None,
             sha256: None,
         };
         if !remaining.starts_with(PAGE_RECORD_MAGIC) {
@@ -638,7 +638,7 @@ pub(super) fn inspect_segment(segment: &[u8], page_segment_id: u64) -> BlockStor
         address.page_id = header.page_id;
         address.object_id = header.object_id;
         address.routing_slot = header.routing_slot;
-        address.extent_id = header.extent_id;
+        address.band_id = header.band_id;
         match decode_page_record(&remaining[..record_len], &address) {
             Ok(decoded) => {
                 report.page_count = report.page_count.saturating_add(1);
@@ -652,7 +652,7 @@ pub(super) fn inspect_segment(segment: &[u8], page_segment_id: u64) -> BlockStor
                     compact_segment_address: address.compact_segment_address(),
                     compact_segment_id: address.compact_segment_id(),
                     compact_segment_offset: address.compact_segment_offset(),
-                    storage_segment_id: header.extent_id,
+                    storage_segment_id: header.band_id,
                     object_id: header.object_id,
                     model_id: None,
                     block_id: header.page_id,

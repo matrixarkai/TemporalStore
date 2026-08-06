@@ -73,7 +73,7 @@ pub(crate) fn delayed_destroy_segment_id_from_name(name: &std::ffi::OsStr) -> Op
     id.parse::<u64>().ok()
 }
 
-pub(crate) fn extent_id_for_segment(page_segment_id: u64) -> u64 {
+pub(crate) fn band_id_for_segment(page_segment_id: u64) -> u64 {
     let segment_target_bytes = effective_block_segment_target_bytes().max(1);
     let storage_zone_size = storage_zone_size_bytes().max(1);
     page_segment_id
@@ -82,16 +82,16 @@ pub(crate) fn extent_id_for_segment(page_segment_id: u64) -> u64 {
 }
 
 pub(crate) fn compact_segment_address_from_parts(page_segment_id: u64, offset: u64) -> Option<u64> {
-    let extent_id = u32::try_from(page_segment_id).ok()?;
-    let extent_offset = u32::try_from(offset).ok()?;
-    Some(((extent_id as u64) << 32) | extent_offset as u64)
+    let band_id = u32::try_from(page_segment_id).ok()?;
+    let band_offset = u32::try_from(offset).ok()?;
+    Some(((band_id as u64) << 32) | band_offset as u64)
 }
 
-pub(crate) fn compact_extract_extent_id(address: u64) -> u32 {
+pub(crate) fn compact_extract_band_id(address: u64) -> u32 {
     (address >> 32) as u32
 }
 
-pub(crate) fn compact_extract_extent_offset(address: u64) -> u32 {
+pub(crate) fn compact_extract_band_offset(address: u64) -> u32 {
     (address & 0xFFFF_FFFF) as u32
 }
 

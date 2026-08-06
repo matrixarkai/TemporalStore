@@ -237,7 +237,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "C++ ServerService admin aliases expose runtime stats, preflight, dirty-object, and queued-worker state"
                     .to_string(),
-                "crash recovery reports and tests cover oplog, index-log, page stream, and extent-manifest ordering"
+                "crash recovery reports and tests cover oplog, index-log, page stream, and band-manifest ordering"
                     .to_string(),
                 "data-node service readiness covers execute runtime, async jobs, lifecycle admin, shard-affine workers, local admission, crash recovery reports, tonic/gRPC streaming callbacks, distributed admission, and multi-process lifecycle validation"
                     .to_string(),
@@ -298,7 +298,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "storage production report exposes Rust JSONL oplog/index-log format, replay-safe status, sequence/record/byte counts, and C++ binary compatibility gaps"
                     .to_string(),
-                "storage production report exposes Rust page-envelope version, checksum/object-id/routing-slot/compression support, extent bytes, and C++ page-header compatibility gaps"
+                "storage production report exposes Rust page-envelope version, checksum/object-id/routing-slot/compression support, band bytes, and C++ page-header compatibility gaps"
                     .to_string(),
                 "storage compatibility decision is explicit: Rust log/page formats are migration-only versus C++ binary logs/page headers, with golden conversion/replay required before C++ migration"
                     .to_string(),
@@ -324,9 +324,9 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, weighted hotness/LRU eviction, slot warmup, cache invalidation, tiering policy, admission tuning, and long-running pressure validation evidence"
                     .to_string(),
-                "storage production posture covers Rust lifecycle behavior evidence, native ObjectManager runtime mechanics, stream-backed extent runtime, mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, merged dump/load policy with ownership validation, orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/page ownership index, SlotStore layout transition evidence, and model-layout compaction"
+                "storage production posture covers Rust lifecycle behavior evidence, native ObjectManager runtime mechanics, stream-backed band runtime, mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, merged dump/load policy with ownership validation, orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/page ownership index, SlotStore layout transition evidence, and model-layout compaction"
                     .to_string(),
-                "storage production posture covers Rust lifecycle behavior evidence, native ObjectManager runtime mechanics, stream-backed extent runtime, mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, merged dump/load policy with ownership validation, orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/page ownership index, SlotStore layout transition evidence, and model-layout compaction"
+                "storage production posture covers Rust lifecycle behavior evidence, native ObjectManager runtime mechanics, stream-backed band runtime, mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, merged dump/load policy with ownership validation, orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/page ownership index, SlotStore layout transition evidence, and model-layout compaction"
                     .to_string(),
             ],
             missing: {
@@ -634,8 +634,8 @@ pub(crate) fn evidence_field_for(area: &str, capability: &str) -> &'static str {
         "storage_cache" if capability.contains("SlotStore") => {
             "storage_runtime_slot_store.layout_transition_ready"
         }
-        "storage_cache" if capability.contains("stream-backed extent") => {
-            "storage_runtime_extents.stream_backed_extent_runtime_ready"
+        "storage_cache" if capability.contains("stream-backed band") => {
+            "storage_runtime_bands.stream_backed_band_runtime_ready"
         }
         "storage_cache"
             if capability.contains("model layout") || capability.contains("tombstones") =>

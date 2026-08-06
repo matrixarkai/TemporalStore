@@ -933,7 +933,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
             page_id: None,
             object_id: None,
             routing_slot: None,
-            extent_id: None,
+            band_id: None,
             generation: None,
             sha256: None,
         },
@@ -947,7 +947,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
             page_id: None,
             object_id: None,
             routing_slot: None,
-            extent_id: None,
+            band_id: None,
             generation: None,
             sha256: None,
         },
@@ -961,7 +961,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
             page_id: None,
             object_id: None,
             routing_slot: None,
-            extent_id: None,
+            band_id: None,
             generation: None,
             sha256: None,
         },
@@ -979,7 +979,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
                 page_id: None,
                 object_id: None,
                 routing_slot: None,
-                extent_id: None,
+                band_id: None,
                 generation: None,
                 sha256: None,
             },
@@ -997,7 +997,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
                 page_id: None,
                 object_id: None,
                 routing_slot: None,
-                extent_id: None,
+                band_id: None,
                 generation: None,
                 sha256: None,
             },
@@ -1011,7 +1011,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
             page_id: None,
             object_id: None,
             routing_slot: None,
-            extent_id: None,
+            band_id: None,
             generation: None,
             sha256: None,
         },
@@ -1026,7 +1026,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
                 page_id: None,
                 object_id: None,
                 routing_slot: None,
-                extent_id: None,
+                band_id: None,
                 generation: None,
                 sha256: None,
             },
@@ -1606,7 +1606,7 @@ fn storage_data_structure_api_parity_report_covers_stream_block_and_manager_surf
     assert!(report.object_manager_runtime_api_ready);
     assert!(report.block_address_api_ready);
     assert!(report.block_store_segment_api_ready);
-    assert!(report.stream_backed_extent_api_ready);
+    assert!(report.stream_backed_band_api_ready);
     assert!(report.legacy_page_zone_aliases_ready);
     assert!(report.storage_manager_phase_api_ready);
     assert!(report.storage_manager_pressure_api_ready);
@@ -1614,7 +1614,7 @@ fn storage_data_structure_api_parity_report_covers_stream_block_and_manager_surf
     assert!(report.slot_count >= 1);
     assert!(report.page_index_count >= 1);
     assert!(report.block_index_count >= 1);
-    assert!(report.stream_extent_count >= 2);
+    assert!(report.stream_band_count >= 2);
     assert!(report.stream_record_count >= 3);
     assert_eq!(
         report.storage_manager_stage_order,
@@ -1843,7 +1843,7 @@ fn recovery_reports_reused_object_id_conflicts() {
 }
 
 #[test]
-fn crash_recovery_report_covers_oplog_index_page_and_extent_manifest() {
+fn crash_recovery_report_covers_oplog_index_page_and_band_manifest() {
     let cache_dir = unique_temp_path("recovery-cache");
     let page_dir = unique_temp_path("recovery-pages");
     let index_dir = unique_temp_path("recovery-index");
@@ -1899,15 +1899,15 @@ fn crash_recovery_report_covers_oplog_index_page_and_extent_manifest() {
     assert_eq!(report.zone_descriptors.len(), 2);
     assert_eq!(
         report.zone_descriptors[0].state,
-        BlockStoreExtentState::Sealed
+        BlockStoreBandState::Sealed
     );
     assert_eq!(
         report.zone_descriptors[1].state,
-        BlockStoreExtentState::Active
+        BlockStoreBandState::Active
     );
-    assert_eq!(report.zone_summary.sealed_extents, 1);
-    assert_eq!(report.zone_summary.active_extents, 1);
-    assert_eq!(report.zone_summary.delayed_destroy_extents, 0);
+    assert_eq!(report.zone_summary.sealed_bands, 1);
+    assert_eq!(report.zone_summary.active_bands, 1);
+    assert_eq!(report.zone_summary.delayed_destroy_bands, 0);
     assert_eq!(
         report.zone_summary.sealed_physical_bytes,
         report.zone_descriptors[0].physical_bytes
@@ -2131,7 +2131,7 @@ fn cold_index_page_address_reads_from_disk_cache_or_block_store_and_refills_memo
 }
 
 #[test]
-fn crash_recovery_rebuilds_missing_extent_manifest_from_page_stream() {
+fn crash_recovery_rebuilds_missing_band_manifest_from_page_stream() {
     let cache_dir = unique_temp_path("recovery-rebuild-cache");
     let page_dir = unique_temp_path("recovery-rebuild-pages");
     let index_dir = unique_temp_path("recovery-rebuild-index");
@@ -2178,14 +2178,14 @@ fn crash_recovery_rebuilds_missing_extent_manifest_from_page_stream() {
     assert_eq!(report.zone_descriptors.len(), 2);
     assert_eq!(
         report.zone_descriptors[0].state,
-        BlockStoreExtentState::Sealed
+        BlockStoreBandState::Sealed
     );
     assert_eq!(
         report.zone_descriptors[1].state,
-        BlockStoreExtentState::Active
+        BlockStoreBandState::Active
     );
-    assert_eq!(report.zone_summary.sealed_extents, 1);
-    assert_eq!(report.zone_summary.active_extents, 1);
+    assert_eq!(report.zone_summary.sealed_bands, 1);
+    assert_eq!(report.zone_summary.active_bands, 1);
     assert!(report.zone_summary.live_physical_bytes > 0);
     assert!(page_dir.join("page_extent_manifest.json").exists());
     assert_eq!(
@@ -2278,7 +2278,7 @@ fn durable_writes_stamp_stable_object_ids_on_page_addresses() {
         Some(page_routing_slot("k", 10, 20))
     );
     assert_eq!(
-        string_address.extent_id,
+        string_address.band_id,
         Some(string_address.page_segment_id)
     );
     assert_eq!(
@@ -2289,7 +2289,7 @@ fn durable_writes_stamp_stable_object_ids_on_page_addresses() {
         hash_address.routing_slot,
         Some(page_routing_slot("h", 10, 20))
     );
-    assert_eq!(hash_address.extent_id, Some(hash_address.page_segment_id));
+    assert_eq!(hash_address.band_id, Some(hash_address.page_segment_id));
     assert_ne!(string_address.object_id, hash_address.object_id);
 }
 

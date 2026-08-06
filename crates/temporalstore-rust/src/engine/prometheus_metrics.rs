@@ -52,8 +52,8 @@ impl TemporalEngine {
         out.push_str("# TYPE temporalstore_storage_slot_dirty_objects gauge\n");
         out.push_str("# HELP temporalstore_block_store_operations_total Canonical block-store operation counters by shard.\n");
         out.push_str("# TYPE temporalstore_block_store_operations_total counter\n");
-        out.push_str("# HELP temporalstore_block_store_extent_bytes Canonical block-store extent bytes by shard and kind.\n");
-        out.push_str("# TYPE temporalstore_block_store_extent_bytes gauge\n");
+        out.push_str("# HELP temporalstore_block_store_band_bytes Canonical block-store band bytes by shard and kind.\n");
+        out.push_str("# TYPE temporalstore_block_store_band_bytes gauge\n");
         out.push_str(
             "# HELP temporalstore_partition_routing_slots Routing slots owned by shard.\n",
         );
@@ -264,13 +264,13 @@ impl TemporalEngine {
                 );
             }
             for (state, value) in [
-                ("active", stats.page_store_zones.active_extents),
-                ("sealed", stats.page_store_zones.sealed_extents),
+                ("active", stats.page_store_zones.active_bands),
+                ("sealed", stats.page_store_zones.sealed_bands),
                 (
                     "delayed_destroy",
-                    stats.page_store_zones.delayed_destroy_extents,
+                    stats.page_store_zones.delayed_destroy_bands,
                 ),
-                ("purged", stats.page_store_zones.purged_extents),
+                ("purged", stats.page_store_zones.purged_bands),
             ] {
                 push_metric(
                     &mut out,
@@ -320,7 +320,7 @@ impl TemporalEngine {
                 );
                 push_metric(
                     &mut out,
-                    "temporalstore_block_store_extent_bytes",
+                    "temporalstore_block_store_band_bytes",
                     &[
                         ("shard_id", stats.shard_id.to_string()),
                         ("kind", kind.into()),
@@ -329,11 +329,11 @@ impl TemporalEngine {
                 );
             }
             for (scope, value) in [
-                ("known", stats.page_store_zones.oldest_known_extent_unix_ms),
-                ("live", stats.page_store_zones.oldest_live_extent_unix_ms),
+                ("known", stats.page_store_zones.oldest_known_band_unix_ms),
+                ("live", stats.page_store_zones.oldest_live_band_unix_ms),
                 (
                     "reclaimable",
-                    stats.page_store_zones.oldest_reclaimable_extent_unix_ms,
+                    stats.page_store_zones.oldest_reclaimable_band_unix_ms,
                 ),
             ] {
                 if let Some(value) = value {
@@ -358,11 +358,11 @@ impl TemporalEngine {
                 }
             }
             for (scope, value) in [
-                ("known", stats.page_store_zones.oldest_known_extent_age_ms),
-                ("live", stats.page_store_zones.oldest_live_extent_age_ms),
+                ("known", stats.page_store_zones.oldest_known_band_age_ms),
+                ("live", stats.page_store_zones.oldest_live_band_age_ms),
                 (
                     "reclaimable",
-                    stats.page_store_zones.oldest_reclaimable_extent_age_ms,
+                    stats.page_store_zones.oldest_reclaimable_band_age_ms,
                 ),
             ] {
                 if let Some(value) = value {

@@ -1577,12 +1577,12 @@ fn stats_include_cpp_style_partition_and_object_manager_accounting() {
     assert_eq!(stats.shard_stat_info.start_routing_slot, 10);
     assert_eq!(stats.shard_stat_info.end_routing_slot, 20);
     assert_eq!(stats.shard_stat_info.object_manager, stats.object_manager);
-    assert!(stats.block_store_extents.active_extents >= 1);
-    assert!(stats.block_store_extents.active_physical_bytes > 0);
+    assert!(stats.block_store_bands.active_bands >= 1);
+    assert!(stats.block_store_bands.active_physical_bytes > 0);
     assert_eq!(
-        stats.block_store_extents.live_physical_bytes,
-        stats.block_store_extents.active_physical_bytes
-            + stats.block_store_extents.sealed_physical_bytes
+        stats.block_store_bands.live_physical_bytes,
+        stats.block_store_bands.active_physical_bytes
+            + stats.block_store_bands.sealed_physical_bytes
     );
 }
 
@@ -1613,23 +1613,23 @@ fn prometheus_metrics_include_records_cache_page_and_wal() {
     ));
     assert!(metrics.contains("temporalstore_block_store_operations_total"));
     assert!(metrics
-        .contains("temporalstore_block_store_extent_count{shard_id=\"1\",state=\"sealed\"} 1"));
+        .contains("temporalstore_block_store_band_count{shard_id=\"1\",state=\"sealed\"} 1"));
     assert!(
-        metrics.contains("temporalstore_block_store_extent_bytes{shard_id=\"1\",kind=\"live\"}")
+        metrics.contains("temporalstore_block_store_band_bytes{shard_id=\"1\",kind=\"live\"}")
     );
     assert!(metrics
-        .contains("temporalstore_block_store_extent_bytes{shard_id=\"1\",kind=\"total_known\"}"));
+        .contains("temporalstore_block_store_band_bytes{shard_id=\"1\",kind=\"total_known\"}"));
     assert!(metrics.contains(
-        "temporalstore_block_store_extent_oldest_unix_ms{shard_id=\"1\",scope=\"known\"}"
+        "temporalstore_block_store_band_oldest_unix_ms{shard_id=\"1\",scope=\"known\"}"
     ));
     assert!(metrics.contains(
-        "temporalstore_block_store_extent_oldest_unix_ms{shard_id=\"1\",scope=\"live\"}"
+        "temporalstore_block_store_band_oldest_unix_ms{shard_id=\"1\",scope=\"live\"}"
     ));
     assert!(metrics.contains(
-        "temporalstore_block_store_extent_oldest_age_ms{shard_id=\"1\",scope=\"known\"}"
+        "temporalstore_block_store_band_oldest_age_ms{shard_id=\"1\",scope=\"known\"}"
     ));
     assert!(metrics
-        .contains("temporalstore_block_store_extent_oldest_age_ms{shard_id=\"1\",scope=\"live\"}"));
+        .contains("temporalstore_block_store_band_oldest_age_ms{shard_id=\"1\",scope=\"live\"}"));
     assert!(metrics.contains("temporalstore_wal_records_total{shard_id=\"1\"} 1"));
     assert!(metrics.contains("temporalstore_oplog_records_total{shard_id=\"1\"} 1"));
     assert!(metrics.contains("temporalstore_object_manager_objects{shard_id=\"1\"} 1"));
@@ -2166,7 +2166,7 @@ fn slot_store_reports_all_layout_states_and_runtime_flags() {
                         page_id: Some(1),
                         object_id: Some(30),
                         routing_slot: Some(3),
-                        extent_id: None,
+                        band_id: None,
                         generation: Some(1),
                         sha256: None,
                     },
@@ -2204,7 +2204,7 @@ fn slot_store_reports_all_layout_states_and_runtime_flags() {
                             page_id: Some(2),
                             object_id: Some(40),
                             routing_slot: Some(4),
-                            extent_id: None,
+                            band_id: None,
                             generation: Some(2),
                             sha256: None,
                         },
@@ -2227,7 +2227,7 @@ fn slot_store_reports_all_layout_states_and_runtime_flags() {
                             page_id: Some(3),
                             object_id: Some(40),
                             routing_slot: Some(4),
-                            extent_id: None,
+                            band_id: None,
                             generation: Some(3),
                             sha256: None,
                         },
@@ -2265,7 +2265,7 @@ fn slot_store_reports_all_layout_states_and_runtime_flags() {
                             page_id: Some(4),
                             object_id: Some(50),
                             routing_slot: Some(5),
-                            extent_id: None,
+                            band_id: None,
                             generation: Some(4),
                             sha256: None,
                         },
@@ -2288,7 +2288,7 @@ fn slot_store_reports_all_layout_states_and_runtime_flags() {
                             page_id: Some(5),
                             object_id: Some(51),
                             routing_slot: Some(5),
-                            extent_id: None,
+                            band_id: None,
                             generation: Some(5),
                             sha256: None,
                         },

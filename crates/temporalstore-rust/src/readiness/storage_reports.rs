@@ -260,7 +260,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
             .to_string(),
         "slot ownership validation reports missing owner refs, owner mismatches, and model-map fallback refs"
             .to_string(),
-        "BlockAddress carries segment/offset/length plus optional page id, object id, routing slot, extent id, and checksum"
+        "BlockAddress carries segment/offset/length plus optional page id, object id, routing slot, band id, and checksum"
             .to_string(),
     ];
     let native_object_manager_runtime_ready = true;
@@ -286,17 +286,17 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         "slot dump/load validates restored slot summaries against the first-class ownership index"
             .to_string(),
     ];
-    let stream_backed_extent_runtime_ready = true;
-    let stream_backed_extent_runtime_evidence = vec![
-        "LocalBlockStore exposes stream-backed extent runtime reports".to_string(),
+    let stream_backed_band_runtime_ready = true;
+    let stream_backed_band_runtime_evidence = vec![
+        "LocalBlockStore exposes stream-backed band runtime reports".to_string(),
         "logical stream reads span page records while skipping envelopes and decompression"
             .to_string(),
-        "segment roll seals previous extents and opens a new active stream extent".to_string(),
-        "extent manifests persist active/sealed/delayed-destroy/purged lifecycle states".to_string(),
-        "stream envelopes carry checksum, page id, object id, routing slot, extent id, and compression metadata"
+        "segment roll seals previous bands and opens a new active stream band".to_string(),
+        "band manifests persist active/sealed/delayed-destroy/purged lifecycle states".to_string(),
+        "stream envelopes carry checksum, page id, object id, routing slot, band id, and compression metadata"
             .to_string(),
     ];
-    let stream_backed_extent_runtime_blockers = vec![
+    let stream_backed_band_runtime_blockers = vec![
         "C++ byte-for-byte stream backend layout remains out of scope".to_string(),
         "distributed/control-plane compression policy remains separate evidence".to_string(),
     ];
@@ -394,8 +394,8 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
     if !native_slot_store_layout_transition_ready {
         missing.push("native SlotStore slot layout transitions".to_string());
     }
-    if !stream_backed_extent_runtime_ready {
-        missing.push("stream-backed extent runtime".to_string());
+    if !stream_backed_band_runtime_ready {
+        missing.push("stream-backed band runtime".to_string());
     }
     if !model_layout_compaction_ready {
         missing.push("page compaction tied to model layout and tombstones".to_string());
@@ -428,9 +428,9 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         native_object_manager_runtime_blockers,
         native_slot_store_layout_transition_ready,
         native_slot_store_layout_transition_evidence,
-        stream_backed_extent_runtime_ready,
-        stream_backed_extent_runtime_evidence,
-        stream_backed_extent_runtime_blockers,
+        stream_backed_band_runtime_ready,
+        stream_backed_band_runtime_evidence,
+        stream_backed_band_runtime_blockers,
         model_layout_compaction_ready,
         model_layout_compaction_evidence,
         model_layout_compaction_blockers,

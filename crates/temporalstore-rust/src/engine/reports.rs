@@ -839,7 +839,7 @@ pub struct PublicStorageContract {
     pub storage_zone: String,
     pub stream: String,
     pub segment: String,
-    pub extent: String,
+    pub band: String,
     pub slot: String,
     pub append_watermark: String,
     pub compaction_watermark: String,
@@ -872,7 +872,7 @@ impl Default for PublicStorageContract {
             storage_zone: text("StorageZone"),
             stream: text("Stream"),
             segment: text("Segment"),
-            extent: text("Extent"),
+            band: text("Band"),
             slot: text("Slot"),
             append_watermark: text("AppendWatermark"),
             compaction_watermark: text("CompactionWatermark"),
@@ -894,7 +894,7 @@ pub struct PublicStorageFeatureShapes {
     pub storage_zone_fields: Vec<String>,
     pub stream_fields: Vec<String>,
     pub segment_fields: Vec<String>,
-    pub extent_fields: Vec<String>,
+    pub band_fields: Vec<String>,
     pub slot_fields: Vec<String>,
     pub append_watermark_fields: Vec<String>,
     pub compaction_watermark_fields: Vec<String>,
@@ -928,7 +928,7 @@ impl Default for PublicStorageFeatureShapes {
             block_index_entry_fields: public_storage_strings(&[
                 "page_address",
                 "block_address",
-                "extent",
+                "band",
                 "checksum",
                 "generation",
             ]),
@@ -955,13 +955,13 @@ impl Default for PublicStorageFeatureShapes {
             ]),
             segment_fields: public_storage_strings(&[
                 "segment_id",
-                "extent",
+                "band",
                 "start_offset",
                 "sealed",
                 "generation",
             ]),
-            extent_fields: public_storage_strings(&[
-                "extent",
+            band_fields: public_storage_strings(&[
+                "band",
                 "block_range",
                 "reclaim_state",
                 "generation",
@@ -1731,7 +1731,7 @@ pub struct StoragePageIndexEntrySample {
 pub struct StorageBlockIndexEntrySample {
     pub page_address: StoragePageAddressSample,
     pub block_address: StorageBlockAddressSample,
-    pub extent: u64,
+    pub band: u64,
     pub checksum: String,
     pub generation: u64,
 }
@@ -1816,15 +1816,15 @@ pub struct StorageStreamSample {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageSegmentSample {
     pub segment_id: u64,
-    pub extent: u64,
+    pub band: u64,
     pub start_offset: u64,
     pub sealed: bool,
     pub generation: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorageExtentSample {
-    pub extent: u64,
+pub struct StorageBandSample {
+    pub band: u64,
     pub block_range: Vec<u64>,
     pub reclaim_state: String,
     pub generation: u64,
@@ -1861,7 +1861,7 @@ pub struct StorageTopologySnapshot {
     #[serde(default)]
     pub segment_samples: Vec<StorageSegmentSample>,
     #[serde(default)]
-    pub extent_samples: Vec<StorageExtentSample>,
+    pub band_samples: Vec<StorageBandSample>,
     #[serde(default)]
     pub slot_samples: Vec<StorageSlotSample>,
 }
@@ -1885,7 +1885,7 @@ pub fn storage_topology_snapshot_from_metrics(
         storage_zone_samples: Vec::new(),
         stream_samples: Vec::new(),
         segment_samples: Vec::new(),
-        extent_samples: Vec::new(),
+        band_samples: Vec::new(),
         slot_samples: Vec::new(),
     }
 }
@@ -2988,7 +2988,7 @@ pub struct StorageDataStructureApiParityReport {
     pub object_manager_runtime_api_ready: bool,
     pub block_address_api_ready: bool,
     pub block_store_segment_api_ready: bool,
-    pub stream_backed_extent_api_ready: bool,
+    pub stream_backed_band_api_ready: bool,
     pub legacy_page_zone_aliases_ready: bool,
     pub storage_manager_phase_api_ready: bool,
     pub storage_manager_pressure_api_ready: bool,
@@ -2996,7 +2996,7 @@ pub struct StorageDataStructureApiParityReport {
     pub slot_count: usize,
     pub page_index_count: usize,
     pub block_index_count: u64,
-    pub stream_extent_count: u64,
+    pub stream_band_count: u64,
     pub stream_record_count: u64,
     pub storage_manager_stage_order: Vec<String>,
     pub blockers: Vec<String>,
@@ -3153,9 +3153,9 @@ pub struct StoragePageFormatCompatibilityReport {
     pub object_ids_embedded: bool,
     pub routing_slots_embedded: bool,
     pub compression_supported: bool,
-    pub active_extents: u64,
-    pub sealed_extents: u64,
-    pub delayed_destroy_extents: u64,
+    pub active_bands: u64,
+    pub sealed_bands: u64,
+    pub delayed_destroy_bands: u64,
     pub live_physical_bytes: u64,
     pub reclaimable_physical_bytes: u64,
     pub page_store_writes: u64,

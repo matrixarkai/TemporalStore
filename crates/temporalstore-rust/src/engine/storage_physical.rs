@@ -19,7 +19,7 @@ pub(super) fn storage_page_address_sample(
 ) -> StoragePageAddressSample {
     StoragePageAddressSample {
         shard_id,
-        zone_id: address.extent_id.unwrap_or(address.page_segment_id),
+        zone_id: address.band_id.unwrap_or(address.page_segment_id),
         segment_id: address.page_segment_id,
         page_id: address.page_id.unwrap_or(address.page_segment_id),
         offset: address.offset,
@@ -34,7 +34,7 @@ pub(super) fn storage_block_address_sample(
 ) -> StorageBlockAddressSample {
     StorageBlockAddressSample {
         shard_id,
-        zone_id: address.extent_id.unwrap_or(address.page_segment_id),
+        zone_id: address.band_id.unwrap_or(address.page_segment_id),
         block_id: address.page_segment_id,
         offset: address.offset,
         length: address.length,
@@ -60,7 +60,7 @@ pub(super) fn cpp_packed_page_index_bytes(
         object_id: page.object_id,
         routing_slot: Some(page.routing_slot),
         generation: page.page_id.or(page.object_id),
-        extent_id: page.zone_id,
+        band_id: page.zone_id,
         sha256: page.checksum.clone(),
     });
     bytes[9..17].copy_from_slice(&address.to_le_bytes());

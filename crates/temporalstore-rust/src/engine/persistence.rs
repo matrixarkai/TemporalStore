@@ -243,17 +243,17 @@ impl TemporalEngine {
                 object_index_entries: object_manager.object_count as u64,
                 slot_entries: object_manager.routing_slot_count as u64,
                 storage_zone_count: page_store_zones
-                    .active_extents
-                    .saturating_add(page_store_zones.sealed_extents)
-                    .saturating_add(page_store_zones.delayed_destroy_extents)
-                    .saturating_add(page_store_zones.purged_extents),
-                active_storage_zones: page_store_zones.active_extents,
-                sealed_storage_zones: page_store_zones.sealed_extents,
+                    .active_bands
+                    .saturating_add(page_store_zones.sealed_bands)
+                    .saturating_add(page_store_zones.delayed_destroy_bands)
+                    .saturating_add(page_store_zones.purged_bands),
+                active_storage_zones: page_store_zones.active_bands,
+                sealed_storage_zones: page_store_zones.sealed_bands,
                 stream_segment_count: page_store_zones
-                    .active_extents
-                    .saturating_add(page_store_zones.sealed_extents)
-                    .saturating_add(page_store_zones.delayed_destroy_extents)
-                    .saturating_add(page_store_zones.purged_extents),
+                    .active_bands
+                    .saturating_add(page_store_zones.sealed_bands)
+                    .saturating_add(page_store_zones.delayed_destroy_bands)
+                    .saturating_add(page_store_zones.purged_bands),
                 storage_zone_total_bytes: page_store_zones.total_known_physical_bytes,
                 storage_zone_used_bytes: page_store_zones.live_physical_bytes,
                 storage_zone_stale_bytes: page_store_zones.reclaimable_physical_bytes,
@@ -287,7 +287,7 @@ impl TemporalEngine {
                 page_store: page_store.clone(),
                 page_store_zones: page_store_zones.clone(),
                 block_store: page_store,
-                block_store_extents: page_store_zones,
+                block_store_bands: page_store_zones,
                 write_ahead_log: self.wal_store.stats(shard_id),
             }
         })

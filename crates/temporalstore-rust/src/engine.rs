@@ -786,12 +786,12 @@ impl TemporalEngine {
                     && entry.checksum.is_some()
             })
         });
-        let extent_report = self.page_store.stream_backed_extent_runtime_report().ok();
-        let stream_backed_extent_api_ready = extent_report
+        let band_report = self.page_store.stream_backed_band_runtime_report().ok();
+        let stream_backed_band_api_ready = band_report
             .as_ref()
             .map(|report| {
-                report.extent_manifest_ready
-                    && report.extent_manifest_disk_consistent
+                report.band_manifest_ready
+                    && report.band_manifest_disk_consistent
                     && report.zone_stats_ready
                     && report.stream_record_count > 0
                     && report.blockers.iter().all(|blocker| {
@@ -861,8 +861,8 @@ impl TemporalEngine {
         if block_index_count == 0 {
             blockers.push("block_store_segment_index_missing".to_string());
         }
-        if !stream_backed_extent_api_ready {
-            blockers.push("stream_backed_extent_api_not_ready".to_string());
+        if !stream_backed_band_api_ready {
+            blockers.push("stream_backed_band_api_not_ready".to_string());
         }
         if !storage_manager_phase_api_ready {
             blockers.push("storage_manager_phase_api_incomplete".to_string());
@@ -884,7 +884,7 @@ impl TemporalEngine {
             object_manager_runtime_api_ready: object_manager.runtime_ready,
             block_address_api_ready,
             block_store_segment_api_ready: block_index_count > 0,
-            stream_backed_extent_api_ready,
+            stream_backed_band_api_ready,
             legacy_page_zone_aliases_ready,
             storage_manager_phase_api_ready,
             storage_manager_pressure_api_ready,
@@ -892,11 +892,11 @@ impl TemporalEngine {
             slot_count: physical_index.slot_count,
             page_index_count: physical_index.page_index_count,
             block_index_count,
-            stream_extent_count: extent_report
+            stream_band_count: band_report
                 .as_ref()
-                .map(|report| report.extent_count)
+                .map(|report| report.band_count)
                 .unwrap_or_default(),
-            stream_record_count: extent_report
+            stream_record_count: band_report
                 .as_ref()
                 .map(|report| report.stream_record_count)
                 .unwrap_or_default(),
@@ -905,9 +905,9 @@ impl TemporalEngine {
             evidence: vec![
                 "slot/object/page authority is reported from the first-class slot index"
                     .to_string(),
-                "block addresses expose segment, offset, length, block id, object id, routing slot, extent id, and checksum"
+                "block addresses expose segment, offset, length, block id, object id, routing slot, band id, and checksum"
                     .to_string(),
-                "stream-backed storage exposes active/sealed/delayed-destroy/purged extent lifecycle while accepting legacy zone aliases"
+                "stream-backed storage exposes active/sealed/delayed-destroy/purged band lifecycle while accepting legacy zone aliases"
                     .to_string(),
                 "StorageManager exposes C++-style prepare/reclaim/expire/evict/reclaim-page/index-GC/compact/reap-metrics phases"
                     .to_string(),
@@ -1385,7 +1385,7 @@ fn append_value(
         object_id,
         routing_slot,
         generation: object_id,
-        extent_id: None,
+        band_id: None,
         sha256: None,
     };
     let bytes = bytes.to_vec();

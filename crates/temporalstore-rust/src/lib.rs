@@ -30,11 +30,11 @@ pub mod page_store {
     pub use crate::block_store::{
         BlockAddress as PageAddress,
         BlockStoreDelayedDestroySegmentReport as PageStoreDelayedDestroySegmentReport,
-        BlockStoreError as PageStoreError, BlockStoreExtentDescriptor as PageStoreExtentDescriptor,
-        BlockStoreExtentDescriptor as PageStoreZoneDescriptor,
-        BlockStoreExtentState as PageStoreExtentState, BlockStoreExtentState as PageStoreZoneState,
-        BlockStoreExtentSummary as PageStoreExtentSummary,
-        BlockStoreExtentSummary as PageStoreZoneSummary, BlockStoreGcPolicy as PageStoreGcPolicy,
+        BlockStoreError as PageStoreError, BlockStoreBandDescriptor as PageStoreBandDescriptor,
+        BlockStoreBandDescriptor as PageStoreZoneDescriptor,
+        BlockStoreBandState as PageStoreBandState, BlockStoreBandState as PageStoreZoneState,
+        BlockStoreBandSummary as PageStoreBandSummary,
+        BlockStoreBandSummary as PageStoreZoneSummary, BlockStoreGcPolicy as PageStoreGcPolicy,
         BlockStoreGcPolicyPlan as PageStoreGcPolicyPlan, BlockStoreGcReport as PageStoreGcReport,
         BlockStoreGcUtilityCandidate as PageStoreGcUtilityCandidate,
         BlockStoreOptions as PageStoreOptions,
@@ -56,7 +56,7 @@ pub mod oplog {
 }
 
 pub use block_store::{
-    BlockAddress, BlockStoreExtentDescriptor, BlockStoreExtentState, BlockStoreExtentSummary,
+    BlockAddress, BlockStoreBandDescriptor, BlockStoreBandState, BlockStoreBandSummary,
     BlockStoreOptions, BlockStoreSegmentReport, BlockStoreStats, LocalBlockStore,
 };
 pub use client::{

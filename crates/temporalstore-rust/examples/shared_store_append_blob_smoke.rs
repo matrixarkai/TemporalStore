@@ -26,7 +26,7 @@ async fn main() {
             "temporalstore-shared",
             StoreOptions {
                 segment_size: 16,
-                max_extent_bytes: 4,
+                max_band_bytes: 4,
                 chunk_size: 4,
                 ..StoreOptions::default()
             },
@@ -67,7 +67,7 @@ async fn main() {
         .expect("matrixobject lock poisoned")
         .get_object("temporalstore-shared", blob_key)
         .unwrap();
-    assert!(matrixobject_blob.metadata.extents.len() > 1);
+    assert!(matrixobject_blob.metadata.bands.len() > 1);
 
     let restarted = SharedStoreReplicator::new("cluster-a", store)
         .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);

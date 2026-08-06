@@ -141,7 +141,7 @@ pub(super) fn slot_storage_summaries(
             .entry(routing_slot)
             .or_default()
             .insert(entry.address.page_segment_id);
-        if let Some(zone_id) = entry.address.extent_id {
+        if let Some(zone_id) = entry.address.band_id {
             summary.last_compacted_zone = Some(
                 summary
                     .last_compacted_zone
@@ -228,7 +228,7 @@ pub(super) fn cpp_packed_page_index_bytes(
         object_id: page.object_id,
         routing_slot: Some(page.routing_slot),
         generation: page.page_id.or(page.object_id),
-        extent_id: page.zone_id,
+        band_id: page.zone_id,
         sha256: page.checksum.clone(),
     });
     bytes[9..17].copy_from_slice(&address.to_le_bytes());
@@ -333,7 +333,7 @@ pub(super) fn storage_physical_index_report(
             length: entry.address.length,
             page_id: entry.address.page_id,
             object_id: entry.address.object_id,
-            zone_id: entry.address.extent_id,
+            zone_id: entry.address.band_id,
             checksum: entry.address.sha256.clone(),
             dirty: entry.dirty,
             deleted: entry.deleted,
@@ -384,7 +384,7 @@ pub(super) fn storage_physical_index_report(
                 length: page.address.length,
                 page_id: page.address.page_id,
                 object_id: Some(page.object_id),
-                zone_id: page.address.extent_id,
+                zone_id: page.address.band_id,
                 checksum: page.address.sha256.clone(),
                 dirty: page.dirty,
                 deleted: page.deleted,

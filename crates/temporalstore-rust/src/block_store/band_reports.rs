@@ -1,43 +1,43 @@
-//! LocalBlockStore extent descriptor/summary + stream-backed extent runtime report, extracted from block_store.rs.
+//! LocalBlockStore band descriptor/summary + stream-backed band runtime report, extracted from block_store.rs.
 
 use super::*;
 
 impl LocalBlockStore {
-    pub fn extent_descriptors(&self) -> Vec<BlockStoreExtentDescriptor> {
+    pub fn band_descriptors(&self) -> Vec<BlockStoreBandDescriptor> {
         self.inner
             .lock()
             .expect("block store lock poisoned")
-            .extents
+            .bands
             .values()
             .cloned()
             .collect()
     }
 
-    pub fn extent_summary(&self) -> BlockStoreExtentSummary {
-        summarize_extents(
+    pub fn band_summary(&self) -> BlockStoreBandSummary {
+        summarize_bands(
             &self
                 .inner
                 .lock()
                 .expect("block store lock poisoned")
-                .extents,
+                .bands,
         )
     }
 
-    pub fn stream_backed_extent_runtime_report(
+    pub fn stream_backed_band_runtime_report(
         &self,
-    ) -> Result<StreamBackedExtentRuntimeReport, BlockStoreError> {
+    ) -> Result<StreamBackedBandRuntimeReport, BlockStoreError> {
         let inner = self.inner.lock().expect("block store lock poisoned");
-        let extents = inner.extents.clone();
+        let bands = inner.bands.clone();
         let root = inner.root.clone();
         let options = inner.options;
         let stats = inner.stats;
-        let extent_manifest_reconciled_on_open = inner.extent_manifest_reconciled_on_open;
+        let band_manifest_reconciled_on_open = inner.band_manifest_reconciled_on_open;
         drop(inner);
 
-        let summary = summarize_extents(&extents);
-        let zone_usage = extent_zone_usage(&extents);
+        let summary = summarize_bands(&bands);
+        let zone_usage = band_zone_usage(&bands);
         let zone_stats_ready = zone_usage.iter().all(|zone| {
-            zone.extent_id == extent_id_for_segment(zone.page_segment_id)
+            zone.band_id == band_id_for_segment(zone.page_segment_id)
                 && zone.page_store_used_bytes
                     == zone
                         .live_page_store_used_bytes
@@ -63,20 +63,20 @@ impl LocalBlockStore {
             .into_iter()
             .map(|report| report.page_segment_id)
             .collect::<BTreeSet<_>>();
-        let manifest_missing_stream_extents = extents
+        let manifest_missing_stream_bands = bands
             .values()
-            .filter(|extent| {
-                !matches!(extent.state, BlockStoreExtentState::Purged)
-                    && !live_segment_ids.contains(&extent.page_segment_id)
-                    && !delayed_segment_ids.contains(&extent.page_segment_id)
+            .filter(|band| {
+                !matches!(band.state, BlockStoreBandState::Purged)
+                    && !live_segment_ids.contains(&band.page_segment_id)
+                    && !delayed_segment_ids.contains(&band.page_segment_id)
             })
             .count() as u64;
-        let manifest_extra_stream_extents = live_segment_ids
+        let manifest_extra_stream_bands = live_segment_ids
             .iter()
-            .filter(|page_segment_id| !extents.contains_key(page_segment_id))
+            .filter(|page_segment_id| !bands.contains_key(page_segment_id))
             .count() as u64;
-        let extent_manifest_disk_consistent =
-            manifest_missing_stream_extents == 0 && manifest_extra_stream_extents == 0;
+        let band_manifest_disk_consistent =
+            manifest_missing_stream_bands == 0 && manifest_extra_stream_bands == 0;
         let physical_bytes = segment_reports
             .iter()
             .map(|report| report.physical_bytes)
@@ -89,11 +89,11 @@ impl LocalBlockStore {
             .iter()
             .map(|report| report.page_count)
             .sum::<u64>();
-        let corrupt_extent_count = segment_reports
+        let corrupt_band_count = segment_reports
             .iter()
             .filter(|report| report.has_corruption)
             .count() as u64;
-        let partial_extent_count = segment_reports
+        let partial_band_count = segment_reports
             .iter()
             .filter(|report| {
                 report.has_corruption
@@ -122,45 +122,45 @@ impl LocalBlockStore {
             _ => stream_record_count == 0,
         };
         let logical_stream_read_ready = segment_reports.iter().any(|report| report.page_count > 0);
-        let append_roll_ready = summary.active_extents == 1
+        let append_roll_ready = summary.active_bands == 1
             && summary
-                .sealed_extents
-                .saturating_add(summary.delayed_destroy_extents)
-                .saturating_add(summary.purged_extents)
+                .sealed_bands
+                .saturating_add(summary.delayed_destroy_bands)
+                .saturating_add(summary.purged_bands)
                 > 0;
-        let extent_manifest_ready = extent_manifest_path(&root).exists()
-            && !extents.is_empty()
-            && extents
+        let band_manifest_ready = band_manifest_path(&root).exists()
+            && !bands.is_empty()
+            && bands
                 .values()
-                .all(|extent| extent.extent_id == extent_id_for_segment(extent.page_segment_id));
-        let extent_manifest_rebuild_ready = extent_manifest_ready
+                .all(|band| band.band_id == band_id_for_segment(band.page_segment_id));
+        let band_manifest_rebuild_ready = band_manifest_ready
             && segment_reports.iter().all(|report| {
-                extents
+                bands
                     .get(&report.page_segment_id)
-                    .map(|extent| {
-                        extent.first_page_id == report.first_page_id
-                            && extent.last_page_id == report.last_page_id
-                            && extent.logical_bytes == report.logical_bytes
-                            && extent.readable_prefix_physical_bytes
+                    .map(|band| {
+                        band.first_page_id == report.first_page_id
+                            && band.last_page_id == report.last_page_id
+                            && band.logical_bytes == report.logical_bytes
+                            && band.readable_prefix_physical_bytes
                                 == report.readable_prefix_physical_bytes
-                            && extent.has_corruption == report.has_corruption
+                            && band.has_corruption == report.has_corruption
                     })
                     .unwrap_or(false)
             });
-        let partial_extent_recovery_ready = corrupt_extent_count == 0
+        let partial_band_recovery_ready = corrupt_band_count == 0
             || segment_reports
                 .iter()
                 .filter(|report| report.has_corruption)
                 .all(|report| {
-                    extents
+                    bands
                         .get(&report.page_segment_id)
-                        .map(|extent| {
-                            extent.has_corruption
-                                && extent.first_error_offset == report.first_error_offset
-                                && extent.readable_prefix_physical_bytes
+                        .map(|band| {
+                            band.has_corruption
+                                && band.first_error_offset == report.first_error_offset
+                                && band.readable_prefix_physical_bytes
                                     == report.readable_prefix_physical_bytes
-                                && extent.first_page_id == report.first_page_id
-                                && extent.last_page_id == report.last_page_id
+                                && band.first_page_id == report.first_page_id
+                                && band.last_page_id == report.last_page_id
                         })
                         .unwrap_or(false)
                 });
@@ -173,14 +173,14 @@ impl LocalBlockStore {
                 .iter()
                 .any(|report| report.compressed_records > 0);
         let delayed_destroy_ready =
-            summary.delayed_destroy_extents > 0 || summary.purged_extents > 0;
-        let purge_lifecycle_ready = summary.purged_extents > 0;
-        let extent_lifecycle_states = extent_lifecycle_states(&summary);
-        let extent_state_transition_count = [
-            summary.active_extents,
-            summary.sealed_extents,
-            summary.delayed_destroy_extents,
-            summary.purged_extents,
+            summary.delayed_destroy_bands > 0 || summary.purged_bands > 0;
+        let purge_lifecycle_ready = summary.purged_bands > 0;
+        let band_lifecycle_states = band_lifecycle_states(&summary);
+        let band_state_transition_count = [
+            summary.active_bands,
+            summary.sealed_bands,
+            summary.delayed_destroy_bands,
+            summary.purged_bands,
         ]
         .into_iter()
         .filter(|count| *count > 0)
@@ -192,19 +192,19 @@ impl LocalBlockStore {
         }
         if !append_roll_ready {
             blockers.push(
-                "append/roll extent lifecycle has not produced active plus sealed extents"
+                "append/roll band lifecycle has not produced active plus sealed bands"
                     .to_string(),
             );
         }
-        if !extent_manifest_ready {
-            blockers.push("extent manifest is missing or inconsistent".to_string());
+        if !band_manifest_ready {
+            blockers.push("band manifest is missing or inconsistent".to_string());
         }
-        if !extent_manifest_rebuild_ready {
-            blockers.push("extent manifest does not match stream page-id boundaries".to_string());
+        if !band_manifest_rebuild_ready {
+            blockers.push("band manifest does not match stream page-id boundaries".to_string());
         }
-        if !extent_manifest_disk_consistent {
+        if !band_manifest_disk_consistent {
             blockers.push(
-                "extent manifest still diverges from live/delayed-destroy stream files".to_string(),
+                "band manifest still diverges from live/delayed-destroy stream files".to_string(),
             );
         }
         if !zone_stats_ready {
@@ -213,25 +213,25 @@ impl LocalBlockStore {
         if !envelope_checksum_ready {
             blockers.push("stream record envelope/checksum inspection is not clean".to_string());
         }
-        if corrupt_extent_count > 0 && partial_extent_recovery_ready {
+        if corrupt_band_count > 0 && partial_band_recovery_ready {
             blockers.push(
-                "corrupt stream extent detected; readable prefix was preserved in rebuilt manifest"
+                "corrupt stream band detected; readable prefix was preserved in rebuilt manifest"
                     .to_string(),
             );
         }
         if !page_id_continuity_ready {
-            blockers.push("stream page ids are not contiguous across extents".to_string());
+            blockers.push("stream page ids are not contiguous across bands".to_string());
         }
 
         let runtime_ready = blockers.is_empty();
-        Ok(StreamBackedExtentRuntimeReport {
+        Ok(StreamBackedBandRuntimeReport {
             runtime_ready,
-            extent_lifecycle_states,
-            extent_count: extents.len() as u64,
-            active_extents: summary.active_extents,
-            sealed_extents: summary.sealed_extents,
-            delayed_destroy_extents: summary.delayed_destroy_extents,
-            purged_extents: summary.purged_extents,
+            band_lifecycle_states,
+            band_count: bands.len() as u64,
+            active_bands: summary.active_bands,
+            sealed_bands: summary.sealed_bands,
+            delayed_destroy_bands: summary.delayed_destroy_bands,
+            purged_bands: summary.purged_bands,
             zone_stats_ready,
             zone_usage,
             stream_segment_count,
@@ -242,19 +242,19 @@ impl LocalBlockStore {
             last_page_id,
             page_id_continuity_ready,
             logical_stream_bytes_read: stats.logical_bytes_read,
-            extent_state_transition_count,
+            band_state_transition_count,
             logical_stream_read_ready,
             append_roll_ready,
-            extent_manifest_ready,
-            extent_manifest_rebuild_ready,
-            extent_manifest_reconciled_on_open,
-            extent_manifest_disk_consistent,
-            manifest_missing_stream_extents,
-            manifest_extra_stream_extents,
-            corrupt_extent_count,
-            partial_extent_count,
+            band_manifest_ready,
+            band_manifest_rebuild_ready,
+            band_manifest_reconciled_on_open,
+            band_manifest_disk_consistent,
+            manifest_missing_stream_bands,
+            manifest_extra_stream_bands,
+            corrupt_band_count,
+            partial_band_count,
             readable_prefix_physical_bytes,
-            partial_extent_recovery_ready,
+            partial_band_recovery_ready,
             envelope_checksum_ready,
             compression_stream_ready,
             delayed_destroy_ready,
@@ -264,16 +264,16 @@ impl LocalBlockStore {
                 "block records are appended as self-describing stream envelopes".to_string(),
                 "logical stream reads span records while skipping envelopes and decompression"
                     .to_string(),
-                "segment roll seals the previous extent and opens a new active extent".to_string(),
-                "extent manifest persists active/sealed/delayed-destroy/purged lifecycle state"
+                "segment roll seals the previous band and opens a new active band".to_string(),
+                "band manifest persists active/sealed/delayed-destroy/purged lifecycle state"
                     .to_string(),
                 "stream runtime reports page-id continuity and logical read byte evidence"
                     .to_string(),
-                "extent manifest descriptors are validated against inspected stream boundaries"
+                "band manifest descriptors are validated against inspected stream boundaries"
                     .to_string(),
                 "open-time reconciliation repairs manifest/live stream divergence like C++ zone updates"
                     .to_string(),
-                "zone usage reports map extent ids to page-store used bytes like C++ ZoneStats"
+                "zone usage reports map band ids to page-store used bytes like C++ ZoneStats"
                     .to_string(),
             ],
         })

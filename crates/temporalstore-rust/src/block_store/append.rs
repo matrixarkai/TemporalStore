@@ -41,13 +41,13 @@ impl LocalBlockStore {
         fs::create_dir_all(&inner.root)?;
         let segment_target_bytes = effective_block_segment_target_bytes();
         let mut page_id = inner.next_page_id;
-        let mut extent_id = extent_id_for_segment(inner.page_segment_id);
+        let mut band_id = band_id_for_segment(inner.page_segment_id);
         let mut record = encode_page_record(
             bytes,
             page_id,
             object_id,
             routing_slot,
-            extent_id,
+            band_id,
             inner.options,
         )?;
         if should_roll_before_append(
@@ -57,13 +57,13 @@ impl LocalBlockStore {
         ) {
             roll_segment_inner(&mut inner)?;
             page_id = inner.next_page_id;
-            extent_id = extent_id_for_segment(inner.page_segment_id);
+            band_id = band_id_for_segment(inner.page_segment_id);
             record = encode_page_record(
                 bytes,
                 page_id,
                 object_id,
                 routing_slot,
-                extent_id,
+                band_id,
                 inner.options,
             )?;
         }
@@ -77,7 +77,7 @@ impl LocalBlockStore {
             object_id,
             routing_slot,
             generation: Some(page_id),
-            extent_id: Some(extent_id),
+            band_id: Some(band_id),
             sha256: Some(sha256_hex(bytes)),
         };
         file.write_all(&record.bytes)?;
@@ -90,8 +90,8 @@ impl LocalBlockStore {
         inner.write_offset += address.length;
         let page_segment_id = inner.page_segment_id;
         let write_offset = inner.write_offset;
-        upsert_extent_after_append(
-            &mut inner.extents,
+        upsert_band_after_append(
+            &mut inner.bands,
             page_segment_id,
             write_offset,
             record.logical_len as u64,
@@ -100,7 +100,7 @@ impl LocalBlockStore {
         if relaxed {
             inner.relaxed_dirty = true;
         } else {
-            persist_extent_manifest(&inner.root, &inner.extents)?;
+            persist_band_manifest(&inner.root, &inner.bands)?;
         }
         inner.stats.writes += 1;
         inner.stats.bytes_written += address.length;
@@ -133,13 +133,13 @@ impl LocalBlockStore {
 
         for (bytes, object_id, routing_slot) in records {
             let mut page_id = inner.next_page_id;
-            let mut extent_id = extent_id_for_segment(inner.page_segment_id);
+            let mut band_id = band_id_for_segment(inner.page_segment_id);
             let mut record = encode_page_record(
                 &bytes,
                 page_id,
                 object_id,
                 routing_slot,
-                extent_id,
+                band_id,
                 inner.options,
             )?;
             if should_roll_before_append(
@@ -153,13 +153,13 @@ impl LocalBlockStore {
                 }
                 roll_segment_inner(&mut inner)?;
                 page_id = inner.next_page_id;
-                extent_id = extent_id_for_segment(inner.page_segment_id);
+                band_id = band_id_for_segment(inner.page_segment_id);
                 record = encode_page_record(
                     &bytes,
                     page_id,
                     object_id,
                     routing_slot,
-                    extent_id,
+                    band_id,
                     inner.options,
                 )?;
             }
@@ -175,7 +175,7 @@ impl LocalBlockStore {
                 object_id,
                 routing_slot,
                 generation: Some(page_id),
-                extent_id: Some(extent_id),
+                band_id: Some(band_id),
                 sha256: Some(sha256_hex(&bytes)),
             };
             if let Some(current) = file.as_mut() {
@@ -185,8 +185,8 @@ impl LocalBlockStore {
             inner.write_offset += address.length;
             let page_segment_id = inner.page_segment_id;
             let write_offset = inner.write_offset;
-            upsert_extent_after_append(
-                &mut inner.extents,
+            upsert_band_after_append(
+                &mut inner.bands,
                 page_segment_id,
                 write_offset,
                 record.logical_len as u64,
@@ -206,7 +206,7 @@ impl LocalBlockStore {
             current.flush()?;
             current.sync_data()?;
         }
-        persist_extent_manifest(&inner.root, &inner.extents)?;
+        persist_band_manifest(&inner.root, &inner.bands)?;
         inner.stats.writes = inner.stats.writes.saturating_add(writes);
         inner.stats.bytes_written = inner.stats.bytes_written.saturating_add(bytes_written);
         inner.stats.logical_bytes_written = inner

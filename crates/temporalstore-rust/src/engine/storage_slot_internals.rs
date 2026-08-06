@@ -215,7 +215,7 @@ pub(super) fn storage_page_address_sample(
 ) -> StoragePageAddressSample {
     StoragePageAddressSample {
         shard_id,
-        zone_id: address.extent_id.unwrap_or(address.page_segment_id),
+        zone_id: address.band_id.unwrap_or(address.page_segment_id),
         segment_id: address.page_segment_id,
         page_id: address.page_id.unwrap_or(address.page_segment_id),
         offset: address.offset,
@@ -230,7 +230,7 @@ pub(super) fn storage_block_address_sample(
 ) -> StorageBlockAddressSample {
     StorageBlockAddressSample {
         shard_id,
-        zone_id: address.extent_id.unwrap_or(address.page_segment_id),
+        zone_id: address.band_id.unwrap_or(address.page_segment_id),
         block_id: address.page_segment_id,
         offset: address.offset,
         length: address.length,
@@ -283,9 +283,9 @@ pub(super) fn storage_index_snapshot_with_samples(
             let page_address = storage_page_address_sample(shard_id, &entry.address);
             let block_address = storage_block_address_sample(shard_id, &entry.address);
             StorageBlockIndexEntrySample {
-                extent: entry
+                band: entry
                     .address
-                    .extent_id
+                    .band_id
                     .unwrap_or(entry.address.page_segment_id),
                 checksum: entry.address.sha256.clone().unwrap_or_default(),
                 generation: entry.address.object_id.unwrap_or(0),
@@ -499,7 +499,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
     entries.sort_by(|left, right| {
         (
             left.address
-                .extent_id
+                .band_id
                 .unwrap_or(left.address.page_segment_id),
             left.address.page_segment_id,
             left.address.offset,
@@ -509,7 +509,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
             .cmp(&(
                 right
                     .address
-                    .extent_id
+                    .band_id
                     .unwrap_or(right.address.page_segment_id),
                 right.address.page_segment_id,
                 right.address.offset,
@@ -528,14 +528,14 @@ pub(super) fn storage_topology_snapshot_with_samples(
     }
     #[derive(Default)]
     struct SegmentAcc {
-        extent_id: u64,
+        band_id: u64,
         start_offset: u64,
         generation: u64,
         deleted_refs: u64,
         live_refs: u64,
     }
     #[derive(Default)]
-    struct ExtentAcc {
+    struct BandAcc {
         min_offset: u64,
         max_offset: u64,
         generation: u64,
@@ -552,13 +552,13 @@ pub(super) fn storage_topology_snapshot_with_samples(
 
     let mut zones = BTreeMap::<u64, ZoneAcc>::new();
     let mut segments = BTreeMap::<u64, SegmentAcc>::new();
-    let mut extents = BTreeMap::<u64, ExtentAcc>::new();
+    let mut bands = BTreeMap::<u64, BandAcc>::new();
     let mut slots = BTreeMap::<u32, SlotAcc>::new();
 
     for entry in &entries {
         let zone_id = entry
             .address
-            .extent_id
+            .band_id
             .unwrap_or(entry.address.page_segment_id);
         let segment_id = entry.address.page_segment_id;
         let generation = entry.address.object_id.unwrap_or(0);
@@ -572,7 +572,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
         }
 
         let segment = segments.entry(segment_id).or_insert_with(|| SegmentAcc {
-            extent_id: zone_id,
+            band_id: zone_id,
             start_offset: entry.address.offset,
             ..SegmentAcc::default()
         });
@@ -584,20 +584,20 @@ pub(super) fn storage_topology_snapshot_with_samples(
             segment.live_refs = segment.live_refs.saturating_add(1);
         }
 
-        let extent = extents.entry(zone_id).or_insert_with(|| ExtentAcc {
+        let band = bands.entry(zone_id).or_insert_with(|| BandAcc {
             min_offset: entry.address.offset,
             max_offset: entry.address.offset.saturating_add(entry.address.length),
-            ..ExtentAcc::default()
+            ..BandAcc::default()
         });
-        extent.min_offset = extent.min_offset.min(entry.address.offset);
-        extent.max_offset = extent
+        band.min_offset = band.min_offset.min(entry.address.offset);
+        band.max_offset = band
             .max_offset
             .max(entry.address.offset.saturating_add(entry.address.length));
-        extent.generation = extent.generation.max(generation);
+        band.generation = band.generation.max(generation);
         if entry.deleted {
-            extent.deleted_refs = extent.deleted_refs.saturating_add(1);
+            band.deleted_refs = band.deleted_refs.saturating_add(1);
         } else {
-            extent.live_refs = extent.live_refs.saturating_add(1);
+            band.live_refs = band.live_refs.saturating_add(1);
         }
 
         let slot_id = entry
@@ -664,26 +664,26 @@ pub(super) fn storage_topology_snapshot_with_samples(
         .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
         .map(|(segment_id, segment)| StorageSegmentSample {
             segment_id,
-            extent: segment.extent_id,
+            band: segment.band_id,
             start_offset: segment.start_offset,
             sealed: segment.live_refs == 0 || segment.deleted_refs > 0,
             generation: segment.generation,
         })
         .collect();
-    snapshot.extent_samples = extents
+    snapshot.band_samples = bands
         .into_iter()
         .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
-        .map(|(extent_id, extent)| StorageExtentSample {
-            extent: extent_id,
-            block_range: vec![extent.min_offset, extent.max_offset],
-            reclaim_state: if extent.deleted_refs > 0 && extent.live_refs == 0 {
+        .map(|(band_id, band)| StorageBandSample {
+            band: band_id,
+            block_range: vec![band.min_offset, band.max_offset],
+            reclaim_state: if band.deleted_refs > 0 && band.live_refs == 0 {
                 "reclaimable".to_string()
-            } else if extent.deleted_refs > 0 {
+            } else if band.deleted_refs > 0 {
                 "mixed_live_stale".to_string()
             } else {
                 "live".to_string()
             },
-            generation: extent.generation,
+            generation: band.generation,
         })
         .collect();
     snapshot.slot_samples = slots
