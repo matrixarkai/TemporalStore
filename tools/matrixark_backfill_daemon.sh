@@ -84,18 +84,35 @@ agent_account() { case "$1" in claude) echo acct_claude;; codex) echo acct_codex
 agent_tenant()  { case "$1" in claude) echo tenant_claude;; codex) echo tenant_codex;; *) echo "tenant_$1";; esac; }
 agent_root()    { echo "/tmp/temporalstore-rust-$1-hook"; }
 
-all_done=1
-for AG in $AGENTS; do
-  SRC="$WORK/backfill.$AG.jsonl"
-  [[ -f "$SRC" ]] || continue
+# Bounded parallel pool. Each agent has its own store root, so agents are
+# independent and run concurrently; chunks WITHIN an agent stay sequential (one
+# per-store write lock + a resumable offset that must advance in order). Parallel
+# writers into a SINGLE store would only contend on that lock, so we never split
+# one agent across workers. JOBS defaults to min(cores-1, #agents).
+num_agents=$(echo $AGENTS | wc -w)
+JOBS="${MATRIXARK_BACKFILL_JOBS:-0}"
+if (( JOBS <= 0 )); then
+  ncpu=$(nproc 2>/dev/null || echo 2)
+  JOBS=$(( ncpu > 1 ? ncpu - 1 : 1 ))
+  (( JOBS > num_agents )) && JOBS=$num_agents
+  (( JOBS < 1 )) && JOBS=1
+fi
+
+# Ingest one agent to completion (or until a chunk fails). Records outcome in a
+# per-agent status file so the parent can aggregate after the pool drains.
+backfill_agent() {
+  local AG="$1"
+  local SRC="$WORK/backfill.$AG.jsonl"
+  local ROOT; ROOT="$(agent_root "$AG")"
+  [[ -f "$SRC" ]] || { echo skipped >"$WORK/.status.$AG"; return 0; }
+  if store_has_memory "$ROOT"; then
+    log "$AG: store already populated ($ROOT); recovering from persistence, skipping local-context backfill"
+    echo skipped >"$WORK/.status.$AG"; return 0
+  fi
+  local total off end off_file
   total=$(wc -l <"$SRC")
   off_file="$WORK/.offset.$AG"
   off=$(cat "$off_file" 2>/dev/null || echo 0)
-  ROOT="$(agent_root "$AG")"
-  if store_has_memory "$ROOT"; then
-    log "$AG: store already populated ($ROOT); recovering from persistence, skipping local-context backfill"
-    continue
-  fi
   while (( off < total )); do
     end=$(( off + CHUNK ))
     log "$AG: ingesting rows $((off+1))..$([[ $end -gt $total ]] && echo $total || echo $end) / $total"
@@ -109,11 +126,30 @@ for AG in $AGENTS; do
       [[ "${YIELD_MS:-0}" -gt 0 ]] && sleep "$(awk "BEGIN{print $YIELD_MS/1000}")"
     else
       log "$AG: chunk failed at offset $off; will retry next launch"
-      all_done=0
-      break
+      echo paused >"$WORK/.status.$AG"; return 0
     fi
   done
-  (( off < total )) && all_done=0
+  echo done >"$WORK/.status.$AG"
+  return 0
+}
+
+log "parallel backfill: JOBS=$JOBS agents='$AGENTS'"
+running=0
+for AG in $AGENTS; do
+  rm -f "$WORK/.status.$AG"
+  backfill_agent "$AG" &
+  running=$(( running + 1 ))
+  if (( running >= JOBS )); then
+    wait -n 2>/dev/null || wait
+    running=$(( running - 1 ))
+  fi
+done
+wait
+
+all_done=1
+for AG in $AGENTS; do
+  st=$(cat "$WORK/.status.$AG" 2>/dev/null || echo paused)
+  [[ "$st" == "paused" ]] && all_done=0
 done
 
 if (( all_done )); then
