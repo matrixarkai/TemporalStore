@@ -140,3 +140,9 @@ downstream) is a useful pattern to audit for elsewhere — several of the storag
 metric/recovery failures may share that shape. Now that the suite compiles,
 add a CI gate on `cargo build --workspace --all-targets` (and, once green, on
 `cargo test`) so this class of regression cannot silently reaccumulate.
+
+For the **Python hook / MCP `unittest` suites** (`tools/test_matrixark_*`), see
+[`python_hook_mcp_test_suite_known_failures.md`](python_hook_mcp_test_suite_known_failures.md):
+the shared ingest path is fixed (two `NameError` import regressions from the "split
+helpers out of core" refactor), and the remaining red is an intended serving-embedding
+lineage compaction plus in-flight mixin-split churn.
