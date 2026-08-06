@@ -61,7 +61,7 @@ use crate::control::{
     CheckedBatchExecuteRequest, CheckedBatchExecuteResponse, CheckedExecuteRequest,
     CheckedExecuteResponse, Config, GetConfigResponse, GetInfoResponse, GetStatsResponse,
     LoadShardRequest, LoadShardResponse, MembershipUpdateRequest, ObjectManagerStats,
-    PartitionInfoStats, ScanStreamRequest, ScanStreamResponse, SetConfigRequest, ShardInfo,
+    ShardStatInfo, ScanStreamRequest, ScanStreamResponse, SetConfigRequest, ShardInfo,
     ShardStats, StreamKind, StreamReadRequest, StreamReadResponse, StreamRecord,
     UnloadShardRequest, UnloadShardResponse,
 };

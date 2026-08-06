@@ -142,7 +142,7 @@ pub struct ObjectManagerStats {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PartitionInfoStats {
+pub struct ShardStatInfo {
     pub shard_id: ShardId,
     pub loaded: bool,
     pub readonly: bool,
@@ -195,7 +195,8 @@ pub struct ShardStats {
     pub risk_records: usize,
     pub storage_bytes: u64,
     pub object_manager: ObjectManagerStats,
-    pub partition_info: PartitionInfoStats,
+    #[serde(alias = "partition_info")]
+    pub shard_stat_info: ShardStatInfo,
     #[serde(default)]
     pub storage: ShardCanonicalStorageStats,
     pub cache: CacheStats,

@@ -29,7 +29,7 @@ use temporalstore_rust::{
     ServerHeartbeatRequest, ServerRuntimeLoad, ServerShardServingState, SharedStoreReplicator,
     SharedStoreStorageMode, SingleNodeMeta, SlotDumpFollowerReplayCursor, SlotDumpRaftSnapshotRef,
     Status, StorageLifecycleRequest, StreamKind, StreamReadRequest, StreamReadResponse,
-    TableMetaInfo, TableOptions, TablePartition, TableTopologyResponse, TemporalEngine,
+    TableMetaInfo, TableOptions, TableShard, TableTopologyResponse, TemporalEngine,
     TemporalStoreClient, TemporalStoreTable,
 };
 use temporalstore_snapshot::FileObjectStore;
@@ -2146,8 +2146,8 @@ fn verify_client_cpp_partition_set_route_cache() {
                             partition_version: 17,
                             serving_options: Default::default(),
                         }),
-                        partitions: vec![
-                            TablePartition {
+                        shards: vec![
+                            TableShard {
                                 shard_id: PartitionId::new(42, 0, 0, 17).unwrap().id(),
                                 start_slot: 0,
                                 end_slot: 536_870_911,
@@ -2162,7 +2162,7 @@ fn verify_client_cpp_partition_set_route_cache() {
                                     location: "zone-b".to_string(),
                                 }],
                             },
-                            TablePartition {
+                            TableShard {
                                 shard_id: PartitionId::new(42, 1, 0, 17).unwrap().id(),
                                 start_slot: 536_870_912,
                                 end_slot: 1_073_741_823,
@@ -2389,7 +2389,7 @@ fn verify_client_metasync_outage_churn() {
                             &TableTopologyResponse {
                                 status: Status::error("metaserver_unavailable", "outage"),
                                 table: None,
-                                partitions: Vec::new(),
+                                shards: Vec::new(),
                                 unchanged: false,
                             },
                         );
@@ -2411,7 +2411,7 @@ fn verify_client_metasync_outage_churn() {
                                 partition_version: 0,
                                 serving_options: Default::default(),
                             }),
-                            partitions: vec![TablePartition {
+                            shards: vec![TableShard {
                                 shard_id: 40,
                                 start_slot: 0,
                                 end_slot: 1_073_741_823,
@@ -2639,7 +2639,7 @@ fn verify_client_deployment_placement_routing() {
                                 connect_timeout_ms: 1_000,
                             },
                         }),
-                        partitions: vec![TablePartition {
+                        shards: vec![TableShard {
                             shard_id: 81,
                             start_slot: 0,
                             end_slot: u64::MAX,
@@ -2722,7 +2722,7 @@ fn verify_metaserver_scheduler_control_plane() {
             boot_time_ms: node_id,
             binary_version: "unified-meta".to_string(),
             shard_loads: Vec::new(),
-            partition_loads: Vec::new(),
+            shard_stat_loads: Vec::new(),
             runtime_load: ServerRuntimeLoad::default(),
             shard_states: Vec::new(),
         });
@@ -2762,25 +2762,25 @@ fn verify_metaserver_scheduler_control_plane() {
     assert!(table.use_cpp_partition_ids);
     assert_eq!(table.partition_version, 23);
     assert_eq!(table.shard_count, 2);
-    assert_eq!(topology.partitions.len(), 2);
-    assert_eq!(topology.partitions[0].shard_id, first);
+    assert_eq!(topology.shards.len(), 2);
+    assert_eq!(topology.shards[0].shard_id, first);
     assert_eq!(
-        topology.partitions[0].primary.as_deref(),
+        topology.shards[0].primary.as_deref(),
         Some("127.0.0.1:27111")
     );
-    assert!(topology.partitions[0]
+    assert!(topology.shards[0]
         .replicas
         .contains(&"127.0.0.1:27112".to_string()));
-    assert_eq!(topology.partitions[1].shard_id, second);
-    assert_eq!(topology.partitions[1].start_slot, 536_870_912);
-    assert_eq!(topology.partitions[1].end_slot, 1_073_741_823);
+    assert_eq!(topology.shards[1].shard_id, second);
+    assert_eq!(topology.shards[1].start_slot, 536_870_912);
+    assert_eq!(topology.shards[1].end_slot, 1_073_741_823);
 
     meta.server_heartbeat(ServerHeartbeatRequest {
         server_addr: "127.0.0.1:27111".to_string(),
         boot_time_ms: 1,
         binary_version: "unified-meta".to_string(),
         shard_loads: Vec::new(),
-        partition_loads: Vec::new(),
+        shard_stat_loads: Vec::new(),
         runtime_load: ServerRuntimeLoad::default(),
         shard_states: vec![ServerShardServingState {
             shard_id: first,

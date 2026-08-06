@@ -254,8 +254,8 @@ fn client_route_cache_preserves_cpp_partition_set_member_version_hierarchy() {
                             partition_version: 17,
                             serving_options: crate::meta::TableServingOptions::default(),
                         }),
-                        partitions: vec![
-                            TablePartition {
+                        shards: vec![
+                            TableShard {
                                 shard_id: crate::partition_id::PartitionId::new(42, 0, 0, 17)
                                     .unwrap()
                                     .id(),
@@ -272,7 +272,7 @@ fn client_route_cache_preserves_cpp_partition_set_member_version_hierarchy() {
                                     location: "zone-b".to_string(),
                                 }],
                             },
-                            TablePartition {
+                            TableShard {
                                 shard_id: crate::partition_id::PartitionId::new(42, 1, 0, 17)
                                     .unwrap()
                                     .id(),
@@ -922,7 +922,7 @@ fn table_write_refreshes_topology_after_meta_changed_without_write_retry_budget(
                             partition_version: 0,
                             serving_options: crate::meta::TableServingOptions::default(),
                         }),
-                        partitions: vec![TablePartition {
+                        shards: vec![TableShard {
                             shard_id: 1,
                             start_slot: 0,
                             end_slot: u64::MAX,
@@ -1086,7 +1086,7 @@ fn client_opens_table_from_metaserver_topology() {
                             partition_version: 0,
                             serving_options: crate::meta::TableServingOptions::default(),
                         }),
-                        partitions: Vec::new(),
+                        shards: Vec::new(),
                         unchanged: false,
                     },
                 ),

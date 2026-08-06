@@ -16,7 +16,7 @@ use temporalstore_rust::engine::TemporalEngine;
 use temporalstore_rust::http::{json_response, parse_json, post_json, serve, HttpRequest};
 use temporalstore_rust::ingestion::{FlinkCheckpointStatus, IngestionBatchRequest};
 use temporalstore_rust::meta::{
-    AckResponse, GetTableTopologyRequest, LoadFinishRequest, PartitionLoad, RegisterServerRequest,
+    AckResponse, GetTableTopologyRequest, LoadFinishRequest, ShardStatLoad, RegisterServerRequest,
     RegisterShardRequest, RegisterShardResponse, ServerHeartbeatRequest, ServerHeartbeatResponse,
     ShardLoad, ShardSnapshotRef, TableTopologyResponse,
 };
@@ -1317,11 +1317,11 @@ fn send_heartbeat(
             memory_bytes: stats.cache.memory_bytes as u64,
         })
         .collect();
-    let partition_loads = stats
+    let shard_stat_loads = stats
         .into_iter()
-        .map(|stats| PartitionLoad {
+        .map(|stats| ShardStatLoad {
             shard_id: stats.shard_id,
-            partition_info: stats.partition_info,
+            shard_stat_info: stats.shard_stat_info,
         })
         .collect();
     let request = ServerHeartbeatRequest {
@@ -1329,7 +1329,7 @@ fn send_heartbeat(
         boot_time_ms: 0,
         binary_version: binary_version.to_string(),
         shard_loads,
-        partition_loads,
+        shard_stat_loads,
         runtime_load: runtime.server_runtime_load(),
         shard_states: runtime.shard_serving_states(),
     };
@@ -1534,7 +1534,7 @@ mod tests {
                                     serving_options:
                                         temporalstore_rust::meta::TableServingOptions::default(),
                                 }),
-                                partitions: vec![temporalstore_rust::meta::TablePartition {
+                                shards: vec![temporalstore_rust::meta::TableShard {
                                     shard_id: 9,
                                     start_slot: 90,
                                     end_slot: 99,
@@ -3283,7 +3283,7 @@ mod tests {
         thread::spawn(move || {
             serve(&bind_addr, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
-                    ("POST", "/partitions/finish_load") => {
+                    ("POST", "/shards/finish_load") => {
                         match parse_json::<LoadFinishRequest>(&request.body) {
                             Ok(req) => {
                                 callbacks.lock().unwrap().push(req);

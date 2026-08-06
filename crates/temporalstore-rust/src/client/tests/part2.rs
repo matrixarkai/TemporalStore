@@ -18,7 +18,7 @@ fn client_meta_sync_report_tracks_success_and_table_errors() {
                             &TableTopologyResponse {
                                 status: Status::error("not_found", "missing table"),
                                 table: None,
-                                partitions: Vec::new(),
+                                shards: Vec::new(),
                                 unchanged: false,
                             },
                         );
@@ -40,7 +40,7 @@ fn client_meta_sync_report_tracks_success_and_table_errors() {
                                 partition_version: 0,
                                 serving_options: crate::meta::TableServingOptions::default(),
                             }),
-                            partitions: Vec::new(),
+                            shards: Vec::new(),
                             unchanged: false,
                         },
                     )
@@ -139,7 +139,7 @@ fn client_metasync_backoff_deadline_and_topology_refresh_survive_outage_churn() 
                             &TableTopologyResponse {
                                 status: Status::error("metaserver_unavailable", "outage"),
                                 table: None,
-                                partitions: Vec::new(),
+                                shards: Vec::new(),
                                 unchanged: false,
                             },
                         );
@@ -161,7 +161,7 @@ fn client_metasync_backoff_deadline_and_topology_refresh_survive_outage_churn() 
                                 partition_version: 0,
                                 serving_options: crate::meta::TableServingOptions::default(),
                             }),
-                            partitions: vec![TablePartition {
+                            shards: vec![TableShard {
                                 shard_id: 40,
                                 start_slot: 0,
                                 end_slot: 1_073_741_823,
@@ -297,7 +297,7 @@ fn client_applies_metaserver_table_serving_options() {
                                 connect_timeout_ms: 123,
                             },
                         }),
-                        partitions: Vec::new(),
+                        shards: Vec::new(),
                         unchanged: false,
                     },
                 ),
@@ -422,7 +422,7 @@ fn table_read_policy_can_select_secondary_from_metaserver_topology() {
                             partition_version: 0,
                             serving_options: crate::meta::TableServingOptions::default(),
                         }),
-                        partitions: vec![TablePartition {
+                        shards: vec![TableShard {
                             shard_id: 1,
                             start_slot: 0,
                             end_slot: u64::MAX,
@@ -694,7 +694,7 @@ fn client_deployment_placement_routes_reads_to_local_secondary_and_writes_to_pri
                                     connect_timeout_ms: 1_000,
                                 },
                             }),
-                            partitions: vec![TablePartition {
+                            shards: vec![TableShard {
                                 shard_id: 81,
                                 start_slot: 0,
                                 end_slot: u64::MAX,

@@ -596,7 +596,7 @@ fn update_membership_with_finish_callback(
         if let Some(info) = engine.get_info(shard_id).info {
             let _ = post_json::<_, AckResponse>(
                 meta_addr,
-                "/partitions/finish_load",
+                "/shards/finish_load",
                 &LoadFinishRequest {
                     server_addr: server_addr.to_string(),
                     shard_id,

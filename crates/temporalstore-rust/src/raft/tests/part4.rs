@@ -530,8 +530,8 @@ fn metaserver_raft_replicates_full_metadata_mutation_api() {
     });
     assert!(topology.status.ok);
     assert_eq!(topology.table.unwrap().shard_count, 2);
-    assert_eq!(topology.partitions.len(), 2);
-    assert_eq!(topology.partitions[0].primary.as_deref(), Some("server-a"));
+    assert_eq!(topology.shards.len(), 2);
+    assert_eq!(topology.shards[0].primary.as_deref(), Some("server-a"));
 
     let updated = meta.update_table(UpdateTableRequest {
         namespace: "feature".to_string(),
@@ -556,7 +556,7 @@ fn metaserver_raft_replicates_full_metadata_mutation_api() {
     let updated_table = updated_topology.table.unwrap();
     assert_eq!(updated_table.shard_count, 3);
     assert_eq!(updated_table.replica_count, 2);
-    assert_eq!(updated_topology.partitions.len(), 3);
+    assert_eq!(updated_topology.shards.len(), 3);
 
     let duplicate = meta.add_table(AddTableRequest {
         namespace: "feature".to_string(),

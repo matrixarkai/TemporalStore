@@ -226,7 +226,7 @@ fn handle_heartbeat_service_route(
                         boot_time_ms: heartbeat_boot_time_ms(req.boot_time_ms, req.boot_time_us),
                         binary_version: req.binary_version,
                         shard_loads: Vec::new(),
-                        partition_loads: Vec::new(),
+                        shard_stat_loads: Vec::new(),
                         runtime_load: Default::default(),
                         shard_states: Vec::new(),
                     }
