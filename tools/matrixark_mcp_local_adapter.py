@@ -9,6 +9,7 @@ from typing import Any
 
 try:
     from tools.matrixark_mcp_core import *
+    from tools.matrixark_mcp_core import _mcp_debug_log  # import * skips underscore names
     from tools.matrixark_mcp_core import compact_context_pack_for_serving_flat as compact_context_pack_for_serving
     from tools.matrixark_mcp_serving_records import (
         compact_latest_context_state_records,
@@ -17,6 +18,7 @@ try:
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import *
+    from matrixark_mcp_core import _mcp_debug_log  # import * skips underscore names
     from matrixark_mcp_core import compact_context_pack_for_serving_flat as compact_context_pack_for_serving
     from matrixark_mcp_serving_records import (
         compact_latest_context_state_records,
