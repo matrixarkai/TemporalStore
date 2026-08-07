@@ -580,6 +580,14 @@ pub struct BucketDumpManifest {
     pub dump_generation_id: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_manifest_ids: Vec<String>,
+    // Self-describing source coverage for a merged dump: each source's
+    // (manifest_id, bucket_ids), captured at create time when the sources were
+    // validated. Lets a target engine that does not hold the source manifest files
+    // preflight source coverage from the manifest itself (falls back to on-disk
+    // sources when empty). Rust-native, skip-if-empty so non-merged manifests are
+    // byte-for-byte unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_manifest_coverage: Vec<BucketDumpSourceCoverage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_manifest_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -606,6 +614,13 @@ pub struct BucketDumpManifest {
     #[serde(default)]
     pub index_sha256: String,
     pub checksum: String,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BucketDumpSourceCoverage {
+    pub manifest_id: String,
+    #[serde(rename = "slot_ids")]
+    pub bucket_ids: Vec<u32>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]

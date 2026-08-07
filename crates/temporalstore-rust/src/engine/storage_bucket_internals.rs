@@ -202,10 +202,13 @@ pub(super) fn live_page_entry(
         object_key: object_key.into(),
         kind: kind.into(),
         component,
+        // A page materialized in the block store carries a real page_id; a page
+        // backed only by the hot/append-log buffer does not. Evaluate before the
+        // `address` field moves it.
+        log_backed: address.page_id.is_none(),
         address,
         dirty: false,
         deleted: false,
-        log_backed: true,
     }
 }
 
@@ -1033,10 +1036,10 @@ pub(super) fn upsert_bucket_index_page(
         object_key: object_key.to_string(),
         kind: kind.to_string(),
         component,
+        log_backed: address.page_id.is_none(),
         address,
         dirty,
         deleted: false,
-        log_backed: true,
     };
     let lookup_enabled = !shard.bucket_index.object_page_lookup.is_empty();
     let direct_page_refs = if lookup_enabled {
@@ -1209,10 +1212,10 @@ pub(super) fn sync_bucket_index_object_pages(
             object_key: object_key.to_string(),
             kind: kind.to_string(),
             component: None,
+            log_backed: address.page_id.is_none(),
             address,
             dirty,
             deleted: false,
-            log_backed: true,
         };
         let bucket = shard
             .bucket_index

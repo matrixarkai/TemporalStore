@@ -24,10 +24,10 @@ pub(super) fn storage_object_lifecycle_report_for_buckets(
 }
 
 /// Same object-lifecycle report, but derived from the secondary model maps
-/// (strings/hashes/feature series/...) instead of the slot index. Used to detect
-/// a slot-dump manifest whose serialized model maps disagree with its slot index
-/// (e.g. a mutated object_id): the slot-index-derived report alone stays valid.
-pub(super) fn storage_object_lifecycle_report_for_slots_from_model_maps(
+/// (strings/hashes/feature series/...) instead of the bucket index. Used to detect
+/// a bucket-dump manifest whose serialized model maps disagree with its bucket index
+/// (e.g. a mutated object_id): the bucket-index-derived report alone stays valid.
+pub(super) fn storage_object_lifecycle_report_for_buckets_from_model_maps(
     shard_id: ShardId,
     shard: &ShardState,
     selected_buckets: &BTreeSet<u32>,

@@ -488,14 +488,12 @@ impl TemporalEngine {
                             continue;
                         }
                         let _ = self.cache.put(
-                            CacheKey::page_with_slot_generation(
+                            CacheKey::page_with_slot(
                                 shard_id,
                                 published.page_slab_id,
                                 published.offset,
                                 published.length,
-                                published.routing_bucket,
-                                published.generation,
-                            ),
+                                published.routing_bucket),
                             bytes,
                         );
                         upsert_bucket_index_page(
@@ -516,14 +514,12 @@ impl TemporalEngine {
                             continue;
                         }
                         let _ = self.cache.put(
-                            CacheKey::page_with_slot_generation(
+                            CacheKey::page_with_slot(
                                 shard_id,
                                 published.page_slab_id,
                                 published.offset,
                                 published.length,
-                                published.routing_bucket,
-                                published.generation,
-                            ),
+                                published.routing_bucket),
                             bytes,
                         );
                         upsert_bucket_index_page(

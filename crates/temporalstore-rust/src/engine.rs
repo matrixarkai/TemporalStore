@@ -624,14 +624,12 @@ impl TemporalEngine {
     pub fn string_page_cache_key_for_test(&self, shard_id: ShardId, key: &str) -> Option<CacheKey> {
         let shards = self.shards.read().expect("engine lock poisoned");
         let address = shards.get(&shard_id)?.strings.get(key)?;
-        Some(CacheKey::page_with_slot_generation(
+        Some(CacheKey::page_with_slot(
             shard_id,
             address.page_slab_id,
             address.offset,
             address.length,
-            address.routing_bucket,
-            address.generation,
-        ))
+            address.routing_bucket))
     }
 
     #[doc(hidden)]
@@ -1432,14 +1430,12 @@ fn append_value(
     };
     let bytes = bytes.to_vec();
     cache.put_memory_only(
-        CacheKey::page_with_slot_generation(
+        CacheKey::page_with_slot(
             shard_id,
             address.page_slab_id,
             address.offset,
             address.length,
-            address.routing_bucket,
-            address.generation,
-        ),
+            address.routing_bucket),
         bytes,
     );
     Ok(address)
@@ -1580,14 +1576,12 @@ fn read_page_bytes(
     shard_id: ShardId,
     address: &BlockAddress,
 ) -> Option<Vec<u8>> {
-    let cache_key = CacheKey::page_with_slot_generation(
+    let cache_key = CacheKey::page_with_slot(
         shard_id,
         address.page_slab_id,
         address.offset,
         address.length,
-        address.routing_bucket,
-        address.generation,
-    );
+        address.routing_bucket);
     if let Ok(Some(bytes)) = cache.get(&cache_key) {
         return Some(bytes);
     }

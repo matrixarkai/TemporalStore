@@ -463,13 +463,12 @@ impl TemporalEngine {
                 continue;
             }
             report.considered_page_refs = report.considered_page_refs.saturating_add(1);
-            let key = CacheKey::page_with_slot_generation(
+            let key = CacheKey::page_with_slot(
                 shard_id,
                 entry.address.page_slab_id,
                 entry.address.offset,
                 entry.address.length,
                 entry.address.routing_bucket,
-                entry.address.generation,
             );
             if self.cache.get(&key).ok().flatten().is_some() {
                 report.already_cached_page_refs = report.already_cached_page_refs.saturating_add(1);

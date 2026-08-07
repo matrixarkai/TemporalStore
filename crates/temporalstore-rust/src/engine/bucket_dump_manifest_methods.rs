@@ -57,6 +57,7 @@ impl TemporalEngine {
             manifest_kind: "slot_dump".to_string(),
             dump_generation_id: String::new(),
             source_manifest_ids: Vec::new(),
+            source_manifest_coverage: Vec::new(),
             parent_manifest_id,
             load_version_handoff: None,
             created_unix_ms,
@@ -148,6 +149,20 @@ impl TemporalEngine {
         }
         let mut manifest = self.create_bucket_dump_manifest(shard_id, target_buckets)?;
         manifest.manifest_kind = "merged_slot_dump".to_string();
+        // Capture each validated source's bucket coverage into the manifest so a
+        // target engine that does not hold the source files can preflight coverage.
+        manifest.source_manifest_coverage = source_manifest_ids
+            .iter()
+            .filter_map(|manifest_id| {
+                bucket_dump_manifest_at(&self.index_dir, shard_id, manifest_id)
+                    .ok()
+                    .flatten()
+                    .map(|source| BucketDumpSourceCoverage {
+                        manifest_id: manifest_id.clone(),
+                        bucket_ids: source.bucket_ids,
+                    })
+            })
+            .collect();
         manifest.source_manifest_ids = source_manifest_ids;
         if let Some(next_load_version) = next_load_version {
             let previous_load_version = self
@@ -558,9 +573,9 @@ impl TemporalEngine {
             );
             // Also derive the lifecycle from the serialized model maps. For a
             // consistent index the two agree; a manifest whose model maps disagree
-            // with its slot index (e.g. a tampered object_id that the slot-index
+            // with its bucket index (e.g. a tampered object_id that the bucket-index
             // derivation alone would miss) is rejected.
-            let model_object_lifecycle = storage_object_lifecycle_report_for_slots_from_model_maps(
+            let model_object_lifecycle = storage_object_lifecycle_report_for_buckets_from_model_maps(
                 manifest.shard_id,
                 &restored,
                 &manifest_buckets,
@@ -761,8 +776,35 @@ impl TemporalEngine {
         if manifest.manifest_kind != "merged_slot_dump" && manifest.source_manifest_ids.is_empty() {
             return (0, Vec::new(), Vec::new(), Vec::new());
         }
-        let (source_manifest_count, missing_source_manifest_ids, source_manifest_bucket_ids) = self
-            .bucket_dump_source_manifest_coverage(manifest.shard_id, &manifest.source_manifest_ids);
+        let (source_manifest_count, missing_source_manifest_ids, source_manifest_bucket_ids) =
+            if !manifest.source_manifest_coverage.is_empty() {
+                // Self-describing manifest: use the embedded per-source coverage so a
+                // target engine without the source files on disk can still validate.
+                let present = manifest
+                    .source_manifest_coverage
+                    .iter()
+                    .map(|coverage| coverage.manifest_id.clone())
+                    .collect::<BTreeSet<_>>();
+                let missing = manifest
+                    .source_manifest_ids
+                    .iter()
+                    .filter(|manifest_id| !present.contains(*manifest_id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let bucket_ids = manifest
+                    .source_manifest_coverage
+                    .iter()
+                    .flat_map(|coverage| coverage.bucket_ids.iter().copied())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                (manifest.source_manifest_coverage.len(), missing, bucket_ids)
+            } else {
+                self.bucket_dump_source_manifest_coverage(
+                    manifest.shard_id,
+                    &manifest.source_manifest_ids,
+                )
+            };
         let source_buckets = source_manifest_bucket_ids
             .iter()
             .copied()
@@ -829,17 +871,47 @@ impl TemporalEngine {
                 self.routing_bucket_for_key(manifest.shard_id, key)
             })
         };
+        // bucket_dump_entries_by_key keys pages by "kind:object_key:component:page_id",
+        // so a value update (which allocates a new page_id) shows up as a removed page
+        // plus a new page for the same object. Classify at the object level (strip the
+        // trailing :page_id): a page whose object still exists on the other side is a
+        // page conflict; only an object present on exactly one side is an object
+        // conflict.
+        let object_level = |key: &str| -> String {
+            key.rsplit_once(':')
+                .map(|(prefix, _)| prefix.to_string())
+                .unwrap_or_else(|| key.to_string())
+        };
+        let manifest_object_keys = manifest_entries
+            .keys()
+            .map(|key| object_level(key))
+            .collect::<BTreeSet<_>>();
+        let current_object_keys = current_entries
+            .keys()
+            .map(|key| object_level(key))
+            .collect::<BTreeSet<_>>();
         let mut stale_object_conflicts = Vec::new();
         let mut stale_page_conflicts = Vec::new();
         for key in manifest_entries.keys().chain(current_entries.keys()) {
+            let object_key = object_level(key);
             match (manifest_entries.get(key), current_entries.get(key)) {
                 (Some(manifest_address), Some(current_address)) => {
                     if manifest_address != current_address {
-                        stale_page_conflicts.push(key.clone());
+                        stale_page_conflicts.push(object_key);
                     }
                 }
-                (Some(_), None) => {}
-                (None, Some(_)) => stale_object_conflicts.push(key.clone()),
+                (Some(_), None) => {
+                    if current_object_keys.contains(&object_key) {
+                        stale_page_conflicts.push(object_key);
+                    }
+                }
+                (None, Some(_)) => {
+                    if manifest_object_keys.contains(&object_key) {
+                        stale_page_conflicts.push(object_key);
+                    } else {
+                        stale_object_conflicts.push(object_key);
+                    }
+                }
                 (None, None) => {}
             }
         }

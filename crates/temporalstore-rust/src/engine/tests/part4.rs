@@ -61,7 +61,9 @@ fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {
     assert!(report.routing_bucket_count >= 1);
     assert!(report.object_count >= 4);
     assert!(report.page_ref_count >= 3);
-    assert!(report.cold_object_count >= 3);
+    // Freshly written, materialized, in-memory pages are hot (not log-backed), so
+    // their objects are hot; cold residency only applies to reloaded-from-disk pages.
+    assert!(report.hot_object_count >= 3);
     assert!(report.tombstone_object_count >= 1);
     assert!(report.dirty_object_count >= 4);
     assert!(report.dirty_bucket_count >= 1);
@@ -184,7 +186,9 @@ fn object_manager_runtime_report_tracks_residency_layout_and_tombstones_cpp_pari
     assert!(report.routing_bucket_count >= 1);
     assert!(report.object_count >= 4);
     assert!(report.page_ref_count >= 3);
-    assert!(report.cold_object_count >= 3);
+    // Freshly written, materialized, in-memory pages are hot (not log-backed), so
+    // their objects are hot; cold residency only applies to reloaded-from-disk pages.
+    assert!(report.hot_object_count >= 3);
     assert!(report.tombstone_object_count >= 1);
     assert!(report.dirty_object_count >= 4);
     assert!(report.dirty_bucket_count >= 1);
