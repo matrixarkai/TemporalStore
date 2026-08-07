@@ -29,8 +29,8 @@ impl DataNodeRuntime {
                 follower_replay_cursors: Vec::new(),
                 page_gc_shared_store_cursors: Vec::new(),
                 page_gc_raft_snapshot_refs: Vec::new(),
-                page_gc_checkpoint_floor_segment_id: None,
-                page_gc_raft_install_floor_segment_id: None,
+                page_gc_checkpoint_floor_slab_id: None,
+                page_gc_raft_install_floor_slab_id: None,
                 page_gc_delayed_destroy_grace_ms: 0,
                 invalidate_cache: false,
                 warm_cache: false,
@@ -50,10 +50,10 @@ impl DataNodeRuntime {
                 undumped_oplog_records: plan.undumped_oplog_records,
                 wal_bytes: plan.undumped_oplog_records,
                 index_log_bytes: log_pressure.index_log_bytes,
-                stale_page_segment_count: plan.stale_page_segment_ids.len(),
+                stale_page_slab_count: plan.stale_page_slab_ids.len(),
                 reclaim_candidate_count: plan.reclaim_candidates.len(),
                 reclaimable_physical_bytes: plan.reclaimable_physical_bytes,
-                page_segment_stale_density_basis_points: 0,
+                page_slab_stale_density_basis_points: 0,
                 cache_memory_bytes: cache.memory_bytes,
                 cache_disk_bytes: cache.disk_bytes,
                 memory_cache_pressure_score: cache
@@ -62,11 +62,11 @@ impl DataNodeRuntime {
                     .saturating_add(cache.async_writeback_queue_bytes)
                     .saturating_add(cache.async_writeback_queue_depth),
                 expired_bucket_object_scan_debt: plan.bucket_summaries.len(),
-                delayed_destroy_segment_count: plan.delayed_destroy_page_segment_ids.len(),
+                delayed_destroy_slab_count: plan.delayed_destroy_page_slab_ids.len(),
                 delayed_destroy_bytes: plan.reclaimable_physical_bytes,
                 follower_cursor_retention_blockers: 0,
                 raft_snapshot_retention_blockers: 0,
-                compaction_debt_model_count: usize::from(!plan.stale_page_segment_ids.is_empty()),
+                compaction_debt_model_count: usize::from(!plan.stale_page_slab_ids.is_empty()),
                 compaction_debt_score: plan.reclaimable_physical_bytes,
                 total_pressure_score: plan
                     .dirty_buckets
@@ -125,8 +125,8 @@ impl DataNodeRuntime {
                 ),
                 storage_manager_pressure_signal(
                     "stale_page_segment_count",
-                    pressure.stale_page_segment_count as u64,
-                    options.stale_page_segment_pressure.max(1) as u64,
+                    pressure.stale_page_slab_count as u64,
+                    options.stale_page_slab_pressure.max(1) as u64,
                 ),
                 storage_manager_pressure_signal(
                     "background_queue_depth",
@@ -143,9 +143,9 @@ impl DataNodeRuntime {
         let cache_pressure = pressure.cache_memory_bytes
             >= options.cache_memory_bytes_pressure.max(1)
             || pressure.cache_disk_bytes >= options.cache_disk_bytes_pressure.max(1);
-        let stale_page_pressure = pressure.stale_page_segment_count
-            >= options.stale_page_segment_pressure.max(1)
-            || pressure.reclaim_candidate_count >= options.stale_page_segment_pressure.max(1)
+        let stale_page_pressure = pressure.stale_page_slab_count
+            >= options.stale_page_slab_pressure.max(1)
+            || pressure.reclaim_candidate_count >= options.stale_page_slab_pressure.max(1)
             || pressure.reclaimable_physical_bytes
                 >= options.reclaimable_physical_bytes_pressure.max(1);
 
@@ -161,8 +161,8 @@ impl DataNodeRuntime {
                 follower_replay_cursors: Vec::new(),
                 page_gc_shared_store_cursors: Vec::new(),
                 page_gc_raft_snapshot_refs: Vec::new(),
-                page_gc_checkpoint_floor_segment_id: None,
-                page_gc_raft_install_floor_segment_id: None,
+                page_gc_checkpoint_floor_slab_id: None,
+                page_gc_raft_install_floor_slab_id: None,
                 page_gc_delayed_destroy_grace_ms: 0,
                 invalidate_cache: false,
                 warm_cache: false,
@@ -235,8 +235,8 @@ impl DataNodeRuntime {
                 follower_replay_cursors: Vec::new(),
                 page_gc_shared_store_cursors: Vec::new(),
                 page_gc_raft_snapshot_refs: Vec::new(),
-                page_gc_checkpoint_floor_segment_id: None,
-                page_gc_raft_install_floor_segment_id: None,
+                page_gc_checkpoint_floor_slab_id: None,
+                page_gc_raft_install_floor_slab_id: None,
                 page_gc_delayed_destroy_grace_ms: 0,
                 invalidate_cache: true,
                 warm_cache: false,
@@ -318,11 +318,11 @@ impl DataNodeRuntime {
         ));
 
         if options.enable_page_gc && stale_page_pressure {
-            let retain_page_segments_from_id = lifecycle_plan
-                .stale_page_segment_ids
+            let retain_page_slabs_from_id = lifecycle_plan
+                .stale_page_slab_ids
                 .iter()
                 .min()
-                .map(|segment_id| segment_id.saturating_add(1));
+                .map(|slab_id| slab_id.saturating_add(1));
             let response = run_gc_inner(
                 &self.inner,
                 GcRequest {
@@ -335,7 +335,7 @@ impl DataNodeRuntime {
                         .as_ref()
                         .and_then(|report| report.dump_manifest.as_ref())
                         .map(|manifest| manifest.index_log_sequence),
-                    retain_page_segments_from_id,
+                    retain_page_slabs_from_id,
                 },
             );
             if !response.status.ok {
@@ -361,13 +361,13 @@ impl DataNodeRuntime {
             vec![
                 storage_manager_pressure_signal(
                     "stale_page_segment_count",
-                    pressure.stale_page_segment_count as u64,
-                    options.stale_page_segment_pressure.max(1) as u64,
+                    pressure.stale_page_slab_count as u64,
+                    options.stale_page_slab_pressure.max(1) as u64,
                 ),
                 storage_manager_pressure_signal(
                     "reclaim_candidate_count",
                     pressure.reclaim_candidate_count as u64,
-                    options.stale_page_segment_pressure.max(1) as u64,
+                    options.stale_page_slab_pressure.max(1) as u64,
                 ),
                 storage_manager_pressure_signal(
                     "reclaimable_physical_bytes",
@@ -377,11 +377,11 @@ impl DataNodeRuntime {
             ],
             storage_manager_trigger_reasons(&[
                 (
-                    pressure.stale_page_segment_count >= options.stale_page_segment_pressure.max(1),
+                    pressure.stale_page_slab_count >= options.stale_page_slab_pressure.max(1),
                     "stale_page_segment_pressure",
                 ),
                 (
-                    pressure.reclaim_candidate_count >= options.stale_page_segment_pressure.max(1),
+                    pressure.reclaim_candidate_count >= options.stale_page_slab_pressure.max(1),
                     "reclaim_candidate_pressure",
                 ),
                 (
@@ -422,13 +422,13 @@ impl DataNodeRuntime {
             vec![
                 storage_manager_pressure_signal(
                     "stale_page_segment_count",
-                    pressure.stale_page_segment_count as u64,
-                    options.stale_page_segment_pressure.max(1) as u64,
+                    pressure.stale_page_slab_count as u64,
+                    options.stale_page_slab_pressure.max(1) as u64,
                 ),
                 storage_manager_pressure_signal(
                     "reclaim_candidate_count",
                     pressure.reclaim_candidate_count as u64,
-                    options.stale_page_segment_pressure.max(1) as u64,
+                    options.stale_page_slab_pressure.max(1) as u64,
                 ),
                 storage_manager_pressure_signal(
                     "reclaimable_physical_bytes",
@@ -438,11 +438,11 @@ impl DataNodeRuntime {
             ],
             storage_manager_trigger_reasons(&[
                 (
-                    pressure.stale_page_segment_count >= options.stale_page_segment_pressure.max(1),
+                    pressure.stale_page_slab_count >= options.stale_page_slab_pressure.max(1),
                     "stale_page_segment_pressure",
                 ),
                 (
-                    pressure.reclaim_candidate_count >= options.stale_page_segment_pressure.max(1),
+                    pressure.reclaim_candidate_count >= options.stale_page_slab_pressure.max(1),
                     "reclaim_candidate_pressure",
                 ),
                 (
@@ -473,8 +473,8 @@ impl DataNodeRuntime {
                 follower_replay_cursors: Vec::new(),
                 page_gc_shared_store_cursors: Vec::new(),
                 page_gc_raft_snapshot_refs: Vec::new(),
-                page_gc_checkpoint_floor_segment_id: None,
-                page_gc_raft_install_floor_segment_id: None,
+                page_gc_checkpoint_floor_slab_id: None,
+                page_gc_raft_install_floor_slab_id: None,
                 page_gc_delayed_destroy_grace_ms: 0,
                 invalidate_cache: false,
                 warm_cache: false,

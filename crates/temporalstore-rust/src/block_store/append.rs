@@ -39,9 +39,9 @@ impl LocalBlockStore {
     ) -> Result<BlockAddress, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         fs::create_dir_all(&inner.root)?;
-        let segment_target_bytes = effective_block_segment_target_bytes();
+        let slab_target_bytes = effective_block_slab_target_bytes();
         let mut page_id = inner.next_page_id;
-        let mut band_id = band_id_for_segment(inner.page_segment_id);
+        let mut band_id = band_id_for_slab(inner.page_slab_id);
         let mut record = encode_page_record(
             bytes,
             page_id,
@@ -53,11 +53,11 @@ impl LocalBlockStore {
         if should_roll_before_append(
             inner.write_offset,
             record.bytes.len() as u64,
-            segment_target_bytes,
+            slab_target_bytes,
         ) {
-            roll_segment_inner(&mut inner)?;
+            roll_slab_inner(&mut inner)?;
             page_id = inner.next_page_id;
-            band_id = band_id_for_segment(inner.page_segment_id);
+            band_id = band_id_for_slab(inner.page_slab_id);
             record = encode_page_record(
                 bytes,
                 page_id,
@@ -67,10 +67,10 @@ impl LocalBlockStore {
                 inner.options,
             )?;
         }
-        let path = segment_path(&inner.root, inner.page_segment_id);
+        let path = slab_path(&inner.root, inner.page_slab_id);
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
         let address = BlockAddress {
-            page_segment_id: inner.page_segment_id,
+            page_slab_id: inner.page_slab_id,
             offset: inner.write_offset,
             length: record.bytes.len() as u64,
             page_id: Some(page_id),
@@ -88,11 +88,11 @@ impl LocalBlockStore {
         }
         inner.next_page_id = inner.next_page_id.saturating_add(1);
         inner.write_offset += address.length;
-        let page_segment_id = inner.page_segment_id;
+        let page_slab_id = inner.page_slab_id;
         let write_offset = inner.write_offset;
         upsert_band_after_append(
             &mut inner.bands,
-            page_segment_id,
+            page_slab_id,
             write_offset,
             record.logical_len as u64,
             page_id,
@@ -122,7 +122,7 @@ impl LocalBlockStore {
             return Ok(Vec::new());
         }
         fs::create_dir_all(&inner.root)?;
-        let segment_target_bytes = effective_block_segment_target_bytes();
+        let slab_target_bytes = effective_block_slab_target_bytes();
         let mut file = None::<File>;
         let mut addresses = Vec::with_capacity(records.len());
         let mut writes = 0u64;
@@ -133,7 +133,7 @@ impl LocalBlockStore {
 
         for (bytes, object_id, routing_bucket) in records {
             let mut page_id = inner.next_page_id;
-            let mut band_id = band_id_for_segment(inner.page_segment_id);
+            let mut band_id = band_id_for_slab(inner.page_slab_id);
             let mut record = encode_page_record(
                 &bytes,
                 page_id,
@@ -145,15 +145,15 @@ impl LocalBlockStore {
             if should_roll_before_append(
                 inner.write_offset,
                 record.bytes.len() as u64,
-                segment_target_bytes,
+                slab_target_bytes,
             ) {
                 if let Some(mut current) = file.take() {
                     current.flush()?;
                     current.sync_data()?;
                 }
-                roll_segment_inner(&mut inner)?;
+                roll_slab_inner(&mut inner)?;
                 page_id = inner.next_page_id;
-                band_id = band_id_for_segment(inner.page_segment_id);
+                band_id = band_id_for_slab(inner.page_slab_id);
                 record = encode_page_record(
                     &bytes,
                     page_id,
@@ -164,11 +164,11 @@ impl LocalBlockStore {
                 )?;
             }
             if file.is_none() {
-                let path = segment_path(&inner.root, inner.page_segment_id);
+                let path = slab_path(&inner.root, inner.page_slab_id);
                 file = Some(OpenOptions::new().create(true).append(true).open(path)?);
             }
             let address = BlockAddress {
-                page_segment_id: inner.page_segment_id,
+                page_slab_id: inner.page_slab_id,
                 offset: inner.write_offset,
                 length: record.bytes.len() as u64,
                 page_id: Some(page_id),
@@ -183,11 +183,11 @@ impl LocalBlockStore {
             }
             inner.next_page_id = inner.next_page_id.saturating_add(1);
             inner.write_offset += address.length;
-            let page_segment_id = inner.page_segment_id;
+            let page_slab_id = inner.page_slab_id;
             let write_offset = inner.write_offset;
             upsert_band_after_append(
                 &mut inner.bands,
-                page_segment_id,
+                page_slab_id,
                 write_offset,
                 record.logical_len as u64,
                 page_id,

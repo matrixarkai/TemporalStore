@@ -129,7 +129,7 @@ pub(super) fn read_page_bytes_cold(
 pub(super) fn page_address_cache_key(shard_id: ShardId, address: &BlockAddress) -> CacheKey {
     CacheKey::page_with_slot_generation(
         shard_id,
-        address.page_segment_id,
+        address.page_slab_id,
         address.offset,
         address.length,
         address.routing_bucket,

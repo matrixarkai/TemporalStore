@@ -13,7 +13,7 @@ pub(super) fn append_value(
         return page_store.append_with_page_metadata(bytes, object_id, routing_bucket);
     }
     let address = BlockAddress {
-        page_segment_id: HOT_PAGE_SEGMENT_ID,
+        page_slab_id: HOT_PAGE_SLAB_ID,
         offset: HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed),
         length: bytes.len() as u64,
         page_id: None,
@@ -27,7 +27,7 @@ pub(super) fn append_value(
     cache.put_memory_only(
         CacheKey::page_with_slot_generation(
             shard_id,
-            address.page_segment_id,
+            address.page_slab_id,
             address.offset,
             address.length,
             address.routing_bucket,
@@ -59,7 +59,7 @@ pub(super) fn append_timestamped_single_pages_batch(
                 .map(|address| vec![address]);
         }
         let address = BlockAddress {
-            page_segment_id: HOT_PAGE_SEGMENT_ID,
+            page_slab_id: HOT_PAGE_SLAB_ID,
             offset: HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed),
             length: packed.len() as u64,
             page_id: None,
@@ -72,7 +72,7 @@ pub(super) fn append_timestamped_single_pages_batch(
         cache.put_memory_only(
             CacheKey::page_with_slot_generation(
                 shard_id,
-                address.page_segment_id,
+                address.page_slab_id,
                 address.offset,
                 address.length,
                 address.routing_bucket,
@@ -103,7 +103,7 @@ pub(super) fn append_timestamped_single_pages_batch(
         let object_id = stable_page_object_id(shard_id, write.kind, &write.object_key, None);
         let packed = encode_single_feature_page(write.timestamp_ms, &write.value);
         let address = BlockAddress {
-            page_segment_id: HOT_PAGE_SEGMENT_ID,
+            page_slab_id: HOT_PAGE_SLAB_ID,
             offset: start_offset.saturating_add(index as u64),
             length: packed.len() as u64,
             page_id: None,
@@ -116,7 +116,7 @@ pub(super) fn append_timestamped_single_pages_batch(
         cache.put_memory_only(
             CacheKey::page_with_slot_generation(
                 shard_id,
-                address.page_segment_id,
+                address.page_slab_id,
                 address.offset,
                 address.length,
                 address.routing_bucket,

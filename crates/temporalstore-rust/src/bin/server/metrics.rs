@@ -106,7 +106,7 @@ fn append_storage_manager_cycle_metrics(out: &mut String, report: &StorageManage
         ("live_page_bytes", pressure.live_page_bytes),
         (
             "page_segment_stale_density_basis_points",
-            pressure.page_segment_stale_density_basis_points,
+            pressure.page_slab_stale_density_basis_points,
         ),
         ("memory_cache_bytes", pressure.memory_cache_bytes),
         ("disk_cache_bytes", pressure.disk_cache_bytes),
@@ -120,7 +120,7 @@ fn append_storage_manager_cycle_metrics(out: &mut String, report: &StorageManage
         ),
         (
             "delayed_destroy_segments",
-            pressure.delayed_destroy_segment_count as u64,
+            pressure.delayed_destroy_slab_count as u64,
         ),
         ("delayed_destroy_bytes", pressure.delayed_destroy_bytes),
         (
@@ -219,7 +219,7 @@ fn append_storage_manager_cycle_metrics(out: &mut String, report: &StorageManage
             ("selected_slots", stage.selected_buckets.len() as u64),
             (
                 "selected_page_segments",
-                stage.selected_page_segment_ids.len() as u64,
+                stage.selected_page_slab_ids.len() as u64,
             ),
             ("dirty_slots", stage.dirty_bucket_count as u64),
             ("dumped_slots", stage.dumped_bucket_count as u64),
@@ -236,7 +236,7 @@ fn append_storage_manager_cycle_metrics(out: &mut String, report: &StorageManage
             ("dropped_objects", stage.dropped_object_count as u64),
             (
                 "page_segments_reclaimed",
-                stage.page_segments_reclaimed as u64,
+                stage.page_slabs_reclaimed as u64,
             ),
             ("pages_compacted", stage.pages_compacted as u64),
             ("rewritten_page_refs", stage.rewritten_page_refs as u64),

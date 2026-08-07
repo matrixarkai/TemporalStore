@@ -478,7 +478,7 @@ fn apply_shard_storage_metrics(
         add(
             metrics,
             "stream_segment_count",
-            storage.stream_segment_count,
+            storage.stream_slab_count,
         );
         add(
             metrics,
@@ -720,11 +720,14 @@ pub struct CompactionResponse {
     #[serde(default)]
     pub model_layouts: Vec<ShardCompactionModelLayoutReport>,
     #[serde(default)]
-    pub previous_page_segment_id: u64,
+    #[serde(alias = "previous_page_segment_id")]
+    pub previous_page_slab_id: u64,
     #[serde(default)]
-    pub compacted_page_segment_id: u64,
+    #[serde(alias = "compacted_page_segment_id")]
+    pub compacted_page_slab_id: u64,
     #[serde(default)]
-    pub stale_page_segment_ids: Vec<u64>,
+    #[serde(alias = "stale_page_segment_ids")]
+    pub stale_page_slab_ids: Vec<u64>,
     #[serde(default)]
     pub before: ShardCompactionUtilityReport,
     #[serde(default)]
@@ -739,7 +742,8 @@ pub struct GcRequest {
     #[serde(default)]
     pub retain_index_log_from_sequence: Option<u64>,
     #[serde(default)]
-    pub retain_page_segments_from_id: Option<u64>,
+    #[serde(alias = "retain_page_segments_from_id")]
+    pub retain_page_slabs_from_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -751,15 +755,20 @@ pub struct GcResponse {
     pub cache_disk_bytes_removed: u64,
     pub oplog_records_removed: usize,
     pub index_log_records_removed: usize,
-    pub page_segments_removed: usize,
+    #[serde(alias = "page_segments_removed")]
+    pub page_slabs_removed: usize,
     #[serde(default)]
-    pub page_segments_removed_physical_bytes: u64,
+    #[serde(alias = "page_segments_removed_physical_bytes")]
+    pub page_slabs_removed_physical_bytes: u64,
     #[serde(default)]
-    pub page_segments_retained_physical_bytes: u64,
+    #[serde(alias = "page_segments_retained_physical_bytes")]
+    pub page_slabs_retained_physical_bytes: u64,
     #[serde(default)]
-    pub page_segments_retained_live: usize,
+    #[serde(alias = "page_segments_retained_live")]
+    pub page_slabs_retained_live: usize,
     #[serde(default)]
-    pub page_segments_retained_live_physical_bytes: u64,
+    #[serde(alias = "page_segments_retained_live_physical_bytes")]
+    pub page_slabs_retained_live_physical_bytes: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle_plan: Option<StorageLifecyclePlan>,
 }
@@ -775,7 +784,8 @@ pub struct StorageManagerOptions {
     #[serde(rename = "dirty_slot_pressure")]
     pub dirty_bucket_pressure: usize,
     #[serde(default)]
-    pub stale_page_segment_pressure: usize,
+    #[serde(alias = "stale_page_segment_pressure")]
+    pub stale_page_slab_pressure: usize,
     #[serde(default)]
     pub reclaimable_physical_bytes_pressure: u64,
     #[serde(default)]
@@ -806,7 +816,7 @@ impl Default for StorageManagerOptions {
             max_dump_buckets_per_round: default_storage_manager_max_dump_buckets_per_round(),
             min_undumped_oplog_records: 1,
             dirty_bucket_pressure: 1,
-            stale_page_segment_pressure: 1,
+            stale_page_slab_pressure: 1,
             reclaimable_physical_bytes_pressure: 1,
             cache_memory_bytes_pressure: 1,
             cache_disk_bytes_pressure: 1,
@@ -896,11 +906,13 @@ pub struct StorageManagerPressureSnapshot {
     pub wal_bytes: u64,
     #[serde(default)]
     pub index_log_bytes: u64,
-    pub stale_page_segment_count: usize,
+    #[serde(alias = "stale_page_segment_count")]
+    pub stale_page_slab_count: usize,
     pub reclaim_candidate_count: usize,
     pub reclaimable_physical_bytes: u64,
     #[serde(default)]
-    pub page_segment_stale_density_basis_points: u64,
+    #[serde(alias = "page_segment_stale_density_basis_points")]
+    pub page_slab_stale_density_basis_points: u64,
     pub cache_memory_bytes: u64,
     pub cache_disk_bytes: u64,
     #[serde(default)]
@@ -909,7 +921,8 @@ pub struct StorageManagerPressureSnapshot {
     #[serde(rename = "expired_slot_object_scan_debt")]
     pub expired_bucket_object_scan_debt: usize,
     #[serde(default)]
-    pub delayed_destroy_segment_count: usize,
+    #[serde(alias = "delayed_destroy_segment_count")]
+    pub delayed_destroy_slab_count: usize,
     #[serde(default)]
     pub delayed_destroy_bytes: u64,
     #[serde(default)]
@@ -1034,7 +1047,8 @@ pub struct StorageManagerRuntimeReport {
     #[serde(default)]
     pub configured_raft_snapshot_ref_count: usize,
     #[serde(default)]
-    pub configured_page_gc_raft_install_floor_segment_id: Option<u64>,
+    #[serde(alias = "configured_page_gc_raft_install_floor_segment_id")]
+    pub configured_page_gc_raft_install_floor_slab_id: Option<u64>,
     #[serde(default)]
     pub last_completed_cycle: Option<StorageManagerCycleReport>,
     #[serde(default)]

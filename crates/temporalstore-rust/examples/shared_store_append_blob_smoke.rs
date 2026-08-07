@@ -25,7 +25,7 @@ async fn main() {
         MatrixObjectObjectStore::new(
             "temporalstore-shared",
             StoreOptions {
-                segment_size: 16,
+                slab_size: 16,
                 max_band_bytes: 4,
                 chunk_size: 4,
                 ..StoreOptions::default()

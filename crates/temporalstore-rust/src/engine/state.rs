@@ -306,7 +306,7 @@ fn push_lookup_part(buffer: &mut String, value: &str) {
 }
 
 fn same_page_address(left: &BlockAddress, right: &BlockAddress) -> bool {
-    left.page_segment_id == right.page_segment_id
+    left.page_slab_id == right.page_slab_id
         && left.offset == right.offset
         && left.length == right.length
         && left.page_id == right.page_id

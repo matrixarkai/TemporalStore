@@ -174,7 +174,8 @@ pub struct ShardCanonicalStorageStats {
     pub storage_zone_count: u64,
     pub active_storage_zones: u64,
     pub sealed_storage_zones: u64,
-    pub stream_segment_count: u64,
+    #[serde(alias = "stream_segment_count")]
+    pub stream_slab_count: u64,
     pub storage_zone_total_bytes: u64,
     pub storage_zone_used_bytes: u64,
     pub storage_zone_stale_bytes: u64,
@@ -269,7 +270,7 @@ pub struct StreamReadRequest {
     pub shard_id: ShardId,
     pub stream_kind: StreamKind,
     #[serde(alias = "page_segment_id")]
-    pub page_segment_id: u64,
+    pub page_slab_id: u64,
     pub offset: u64,
     pub size: u64,
 }
@@ -285,7 +286,7 @@ pub struct ScanStreamRequest {
     pub shard_id: ShardId,
     pub stream_kind: StreamKind,
     #[serde(alias = "page_segment_id")]
-    pub page_segment_id: u64,
+    pub page_slab_id: u64,
     pub start_offset: u64,
     pub end_offset: u64,
     pub max_bytes: u64,

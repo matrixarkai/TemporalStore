@@ -33,7 +33,7 @@ fn main() {
     fs::create_dir_all(&options.root).expect("failed to create crash harness root");
     match options.mode {
         HarnessMode::WriteAbort => write_then_abort(options.root),
-        HarnessMode::CorruptPage => corrupt_first_page_segment(options.root),
+        HarnessMode::CorruptPage => corrupt_first_page_slab(options.root),
         HarnessMode::Recover => recover_and_print(options.root),
     }
 }
@@ -42,7 +42,7 @@ fn write_then_abort(root: PathBuf) -> ! {
     let engine = open_engine(&root);
     engine.load_shard(1);
     write_string(&engine, "before", "before-value");
-    engine.block_store().roll_segment().expect("segment roll");
+    engine.block_store().roll_slab().expect("segment roll");
     write_string(&engine, "after", "after-value");
 
     // Simulate abrupt process loss after durable appends and index/log syncs.
@@ -64,14 +64,14 @@ fn recover_and_print(root: PathBuf) {
     );
 }
 
-fn corrupt_first_page_segment(root: PathBuf) {
-    let segment_path = root
+fn corrupt_first_page_slab(root: PathBuf) {
+    let slab_path = root
         .join("pages")
         .join("page_segment_00000000000000000000.seg");
     let mut file = fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .open(&segment_path)
+        .open(&slab_path)
         .expect("page segment should exist before corruption");
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes).expect("read page segment");

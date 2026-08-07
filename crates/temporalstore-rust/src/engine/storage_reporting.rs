@@ -121,7 +121,7 @@ pub(super) fn bucket_storage_summaries(
     end_routing_bucket: u32,
 ) -> Vec<BucketStorageSummary> {
     let mut buckets = BTreeMap::<u32, BucketStorageSummary>::new();
-    let mut page_segments_by_bucket = BTreeMap::<u32, BTreeSet<u64>>::new();
+    let mut page_slabs_by_bucket = BTreeMap::<u32, BTreeSet<u64>>::new();
     for entry in collect_live_page_entries(shard) {
         let routing_bucket = entry
             .address
@@ -134,13 +134,13 @@ pub(super) fn bucket_storage_summaries(
         summary.page_ref_count = summary.page_ref_count.saturating_add(1);
         summary.physical_bytes = summary.physical_bytes.saturating_add(entry.address.length);
         summary.logical_bytes = summary.logical_bytes.saturating_add(entry.address.length);
-        // Record which page segment backs each slot so slot-dump manifests carry the
-        // live segment set (used by manifest validation and the dump/copy path).
-        // Without this the map stayed empty and every summary reported no segments.
-        page_segments_by_slot
-            .entry(routing_slot)
+        // Record which page slab backs each bucket so bucket-dump manifests carry the
+        // live slab set (used by manifest validation and the dump/copy path).
+        // Without this the map stayed empty and every summary reported no slabs.
+        page_slabs_by_bucket
+            .entry(routing_bucket)
             .or_default()
-            .insert(entry.address.page_segment_id);
+            .insert(entry.address.page_slab_id);
         if let Some(zone_id) = entry.address.band_id {
             summary.last_compacted_zone = Some(
                 summary
@@ -173,7 +173,7 @@ pub(super) fn bucket_storage_summaries(
         summary.dirty_generation = summary.dirty_generation.saturating_add(1);
     }
     for (routing_bucket, summary) in &mut buckets {
-        summary.page_segment_ids = page_segments_by_bucket
+        summary.page_slab_ids = page_slabs_by_bucket
             .get(routing_bucket)
             .map(|ids| ids.iter().copied().collect())
             .unwrap_or_default();
@@ -207,7 +207,7 @@ pub(super) fn storage_model_code(kind: &str) -> u8 {
 }
 
 pub(super) fn physical_address_word(address: &BlockAddress) -> u64 {
-    address.page_segment_id.wrapping_shl(32) | (address.offset & u32::MAX as u64)
+    address.page_slab_id.wrapping_shl(32) | (address.offset & u32::MAX as u64)
 }
 
 pub(super) fn cpp_packed_page_index_bytes(
@@ -221,7 +221,7 @@ pub(super) fn cpp_packed_page_index_bytes(
     let page_size = if page.deleted { 0 } else { page.length as u32 };
     bytes[5..9].copy_from_slice(&page_size.to_le_bytes());
     let address = physical_address_word(&BlockAddress {
-        page_segment_id: page.page_segment_id,
+        page_slab_id: page.page_slab_id,
         offset: page.offset,
         length: page.length,
         page_id: page.page_id,
@@ -262,7 +262,7 @@ pub(super) fn cpp_packed_bucket_node_bytes(bucket: &StoragePhysicalBucketNode) -
     let address = bucket
         .page_indexes
         .first()
-        .map(|page| page.page_segment_id.wrapping_shl(32) | (page.offset & u32::MAX as u64))
+        .map(|page| page.page_slab_id.wrapping_shl(32) | (page.offset & u32::MAX as u64))
         .unwrap_or_default();
     bytes[16..24].copy_from_slice(&address.to_le_bytes());
     bytes
@@ -328,7 +328,7 @@ pub(super) fn storage_physical_index_report(
             model_id: entry.kind.clone(),
             component: entry.component.clone(),
             routing_bucket,
-            page_segment_id: entry.address.page_segment_id,
+            page_slab_id: entry.address.page_slab_id,
             offset: entry.address.offset,
             length: entry.address.length,
             page_id: entry.address.page_id,
@@ -368,7 +368,7 @@ pub(super) fn storage_physical_index_report(
                 existing.object_key == page.object_key
                     && existing.model_id == page.model_id
                     && existing.component == page.component
-                    && existing.page_segment_id == page.address.page_segment_id
+                    && existing.page_slab_id == page.address.page_slab_id
                     && existing.offset == page.address.offset
             });
             if already_present {
@@ -379,7 +379,7 @@ pub(super) fn storage_physical_index_report(
                 model_id: page.model_id.clone(),
                 component: page.component.clone(),
                 routing_bucket: *routing_bucket,
-                page_segment_id: page.address.page_segment_id,
+                page_slab_id: page.address.page_slab_id,
                 offset: page.address.offset,
                 length: page.address.length,
                 page_id: page.address.page_id,
@@ -403,7 +403,7 @@ pub(super) fn storage_physical_index_report(
                 .cmp(&right.object_key)
                 .then(left.model_id.cmp(&right.model_id))
                 .then(left.component.cmp(&right.component))
-                .then(left.page_segment_id.cmp(&right.page_segment_id))
+                .then(left.page_slab_id.cmp(&right.page_slab_id))
                 .then(left.offset.cmp(&right.offset))
         });
         if !shard.bucket_index.bucket_map.contains_key(&bucket.routing_bucket) {
@@ -646,8 +646,8 @@ pub(super) fn comparable_bucket_dump_summaries(
         summary.dirty_object_count = 0;
         summary.dirty_generation = 0;
         summary.last_dump_sequence = 0;
-        summary.page_segment_ids.sort_unstable();
-        summary.page_segment_ids.dedup();
+        summary.page_slab_ids.sort_unstable();
+        summary.page_slab_ids.dedup();
     }
     summaries.retain(|summary| {
         summary.object_count > 0
@@ -665,19 +665,19 @@ pub(super) fn bucket_dump_summary_matches_current_generation(
     manifest_bucket_fingerprints: &BTreeMap<u32, BTreeSet<String>>,
     current_bucket_fingerprints: &BTreeMap<u32, BTreeSet<String>>,
 ) -> bool {
-    let mut manifest_segments = manifest_summary.page_segment_ids.clone();
-    manifest_segments.sort_unstable();
-    manifest_segments.dedup();
-    let mut current_segments = current_summary.page_segment_ids.clone();
-    current_segments.sort_unstable();
-    current_segments.dedup();
+    let mut manifest_slabs = manifest_summary.page_slab_ids.clone();
+    manifest_slabs.sort_unstable();
+    manifest_slabs.dedup();
+    let mut current_slabs = current_summary.page_slab_ids.clone();
+    current_slabs.sort_unstable();
+    current_slabs.dedup();
     manifest_summary.routing_bucket == current_summary.routing_bucket
         && manifest_summary.dirty_generation == current_summary.dirty_generation
         && manifest_summary.object_count == current_summary.object_count
         && manifest_summary.page_ref_count == current_summary.page_ref_count
         && manifest_summary.logical_bytes == current_summary.logical_bytes
         && manifest_summary.physical_bytes == current_summary.physical_bytes
-        && manifest_segments == current_segments
+        && manifest_slabs == current_slabs
         && manifest_bucket_fingerprints.get(&manifest_summary.routing_bucket)
             == current_bucket_fingerprints.get(&current_summary.routing_bucket)
 }
@@ -694,7 +694,7 @@ pub(super) fn bucket_generation_fingerprints_by_bucket(shard: &ShardState) -> BT
             entry.kind,
             entry.object_key,
             entry.component.unwrap_or_default(),
-            entry.address.page_segment_id,
+            entry.address.page_slab_id,
             entry.address.offset,
             entry.address.length,
             entry.address.page_id.unwrap_or_default(),
@@ -722,8 +722,8 @@ pub(super) fn unique_timestamped_kv_page_addresses(series: &BTreeMap<u64, BlockA
         .into_iter()
         .collect::<Vec<_>>();
     addresses.sort_by(|left, right| {
-        left.page_segment_id
-            .cmp(&right.page_segment_id)
+        left.page_slab_id
+            .cmp(&right.page_slab_id)
             .then(left.offset.cmp(&right.offset))
             .then(left.length.cmp(&right.length))
     });
@@ -995,7 +995,7 @@ pub(super) fn feature_page_error(
     StorageFeaturePageError {
         kind: kind.to_string(),
         key: key.to_string(),
-        page_segment_id: address.page_segment_id,
+        page_slab_id: address.page_slab_id,
         offset: address.offset,
         length: address.length,
         error: error.into(),
@@ -1012,7 +1012,7 @@ pub(super) fn feature_page_timestamp_mismatch(
         kind: kind.to_string(),
         key: key.to_string(),
         timestamp_ms,
-        page_segment_id: address.page_segment_id,
+        page_slab_id: address.page_slab_id,
         offset: address.offset,
         length: address.length,
     }

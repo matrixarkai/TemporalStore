@@ -37,63 +37,63 @@ impl LocalBlockStore {
         let summary = summarize_bands(&bands);
         let zone_usage = band_zone_usage(&bands);
         let zone_stats_ready = zone_usage.iter().all(|zone| {
-            zone.band_id == band_id_for_segment(zone.page_segment_id)
+            zone.band_id == band_id_for_slab(zone.page_slab_id)
                 && zone.page_store_used_bytes
                     == zone
                         .live_page_store_used_bytes
                         .saturating_add(zone.reclaimable_page_store_used_bytes)
                         .saturating_add(zone.purged_page_store_used_bytes)
         });
-        let segment_reports = {
+        let slab_reports = {
             let mut reports = Vec::new();
-            for id in segment_ids_at(&root)? {
-                reports.push(inspect_segment(&fs::read(segment_path(&root, id))?, id));
+            for id in slab_ids_at(&root)? {
+                reports.push(inspect_slab(&fs::read(slab_path(&root, id))?, id));
             }
             reports
         };
-        let stream_segment_count = segment_reports
+        let stream_slab_count = slab_reports
             .iter()
             .filter(|report| report.page_count > 0 || report.physical_bytes > 0)
             .count() as u64;
-        let live_segment_ids = segment_reports
+        let live_slab_ids = slab_reports
             .iter()
-            .map(|report| report.page_segment_id)
+            .map(|report| report.page_slab_id)
             .collect::<BTreeSet<_>>();
-        let delayed_segment_ids = delayed_destroy_segment_reports_at(&root)?
+        let delayed_slab_ids = delayed_destroy_slab_reports_at(&root)?
             .into_iter()
-            .map(|report| report.page_segment_id)
+            .map(|report| report.page_slab_id)
             .collect::<BTreeSet<_>>();
         let manifest_missing_stream_bands = bands
             .values()
             .filter(|band| {
                 !matches!(band.state, BlockStoreBandState::Purged)
-                    && !live_segment_ids.contains(&band.page_segment_id)
-                    && !delayed_segment_ids.contains(&band.page_segment_id)
+                    && !live_slab_ids.contains(&band.page_slab_id)
+                    && !delayed_slab_ids.contains(&band.page_slab_id)
             })
             .count() as u64;
-        let manifest_extra_stream_bands = live_segment_ids
+        let manifest_extra_stream_bands = live_slab_ids
             .iter()
-            .filter(|page_segment_id| !bands.contains_key(page_segment_id))
+            .filter(|page_slab_id| !bands.contains_key(page_slab_id))
             .count() as u64;
         let band_manifest_disk_consistent =
             manifest_missing_stream_bands == 0 && manifest_extra_stream_bands == 0;
-        let physical_bytes = segment_reports
+        let physical_bytes = slab_reports
             .iter()
             .map(|report| report.physical_bytes)
             .sum::<u64>();
-        let logical_bytes = segment_reports
+        let logical_bytes = slab_reports
             .iter()
             .map(|report| report.logical_bytes)
             .sum::<u64>();
-        let stream_record_count = segment_reports
+        let stream_record_count = slab_reports
             .iter()
             .map(|report| report.page_count)
             .sum::<u64>();
-        let corrupt_band_count = segment_reports
+        let corrupt_band_count = slab_reports
             .iter()
             .filter(|report| report.has_corruption)
             .count() as u64;
-        let partial_band_count = segment_reports
+        let partial_band_count = slab_reports
             .iter()
             .filter(|report| {
                 report.has_corruption
@@ -101,15 +101,15 @@ impl LocalBlockStore {
                     && report.readable_prefix_physical_bytes < report.physical_bytes
             })
             .count() as u64;
-        let readable_prefix_physical_bytes = segment_reports
+        let readable_prefix_physical_bytes = slab_reports
             .iter()
             .map(|report| report.readable_prefix_physical_bytes)
             .sum::<u64>();
-        let first_page_id = segment_reports
+        let first_page_id = slab_reports
             .iter()
             .filter_map(|report| report.first_page_id)
             .min();
-        let last_page_id = segment_reports
+        let last_page_id = slab_reports
             .iter()
             .filter_map(|report| report.last_page_id)
             .max();
@@ -121,7 +121,7 @@ impl LocalBlockStore {
             }
             _ => stream_record_count == 0,
         };
-        let logical_stream_read_ready = segment_reports.iter().any(|report| report.page_count > 0);
+        let logical_stream_read_ready = slab_reports.iter().any(|report| report.page_count > 0);
         let append_roll_ready = summary.active_bands == 1
             && summary
                 .sealed_bands
@@ -132,11 +132,11 @@ impl LocalBlockStore {
             && !bands.is_empty()
             && bands
                 .values()
-                .all(|band| band.band_id == band_id_for_segment(band.page_segment_id));
+                .all(|band| band.band_id == band_id_for_slab(band.page_slab_id));
         let band_manifest_rebuild_ready = band_manifest_ready
-            && segment_reports.iter().all(|report| {
+            && slab_reports.iter().all(|report| {
                 bands
-                    .get(&report.page_segment_id)
+                    .get(&report.page_slab_id)
                     .map(|band| {
                         band.first_page_id == report.first_page_id
                             && band.last_page_id == report.last_page_id
@@ -148,12 +148,12 @@ impl LocalBlockStore {
                     .unwrap_or(false)
             });
         let partial_band_recovery_ready = corrupt_band_count == 0
-            || segment_reports
+            || slab_reports
                 .iter()
                 .filter(|report| report.has_corruption)
                 .all(|report| {
                     bands
-                        .get(&report.page_segment_id)
+                        .get(&report.page_slab_id)
                         .map(|band| {
                             band.has_corruption
                                 && band.first_error_offset == report.first_error_offset
@@ -164,12 +164,12 @@ impl LocalBlockStore {
                         })
                         .unwrap_or(false)
                 });
-        let envelope_checksum_ready = segment_reports
+        let envelope_checksum_ready = slab_reports
             .iter()
             .filter(|report| report.page_count > 0)
             .all(|report| !report.has_corruption && report.logical_bytes > 0);
         let compression_stream_ready = options.compression_enabled
-            && segment_reports
+            && slab_reports
                 .iter()
                 .any(|report| report.compressed_records > 0);
         let delayed_destroy_ready =
@@ -234,7 +234,7 @@ impl LocalBlockStore {
             purged_bands: summary.purged_bands,
             zone_stats_ready,
             zone_usage,
-            stream_segment_count,
+            stream_slab_count,
             physical_bytes,
             logical_bytes,
             stream_record_count,

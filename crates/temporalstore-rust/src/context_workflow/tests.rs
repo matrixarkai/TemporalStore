@@ -734,9 +734,9 @@ fn context_retrieval_limits_namespace_fanout_with_summary_and_locality_plan() {
         .any(|block| block.tier == ContextTier::L2));
 }
 
-// shared-corpus: context_benchmark_injection_entity_segment_index
+// shared-corpus: context_benchmark_injection_entity_slab_index
 #[test]
-fn context_benchmark_injection_uses_entity_segment_l0_l1_and_secondary_index() {
+fn context_benchmark_injection_uses_entity_slab_l0_l1_and_secondary_index() {
     let engine = test_engine();
     let extract = extract_context(
             &engine,
@@ -754,15 +754,15 @@ fn context_benchmark_injection_uses_entity_segment_l0_l1_and_secondary_index() {
     assert!(extract.status.ok, "{:?}", extract.status);
 
     let node_entity: crate::ContextNode = extract.node.clone();
-    let segment: crate::ContextSegment = extract.event.clone();
+    let slab: crate::ContextSlab = extract.event.clone();
     assert_eq!(node_entity.node_hash, extract.index_ref.primary_node_hash);
-    assert_eq!(segment.event_id_hash, extract.index_ref.event_id_hash);
+    assert_eq!(slab.event_id_hash, extract.index_ref.event_id_hash);
     assert!(node_entity.l0.contains("Caroline"));
     assert!(node_entity.l1_ref.contains("kind=Chat"));
-    assert!(segment
+    assert!(slab
         .text
         .contains("cardiology appointment moved after the museum visit"));
-    assert!(segment.related_node_hashes.is_empty());
+    assert!(slab.related_node_hashes.is_empty());
     assert_eq!(extract.related_node_hashes, vec![node_entity.node_hash]);
 
     let indexed = engine.execute(ExecuteRequest {
@@ -814,14 +814,14 @@ fn context_benchmark_injection_uses_entity_segment_l0_l1_and_secondary_index() {
     assert!(retrieved
         .blocks
         .iter()
-        .any(|block| { block.tier == ContextTier::L2 && block.text == segment.text }));
+        .any(|block| { block.tier == ContextTier::L2 && block.text == slab.text }));
     let l1_summary = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::ContextQuerySummaries {
             tenant_hash: 20260622,
             node_hash: node_entity.node_hash,
             level: 2,
-            as_of_ms: segment.event_time_ms,
+            as_of_ms: slab.event_time_ms,
             limit: Some(2),
         },
     });
@@ -863,7 +863,7 @@ fn context_benchmark_injection_uses_entity_segment_l0_l1_and_secondary_index() {
         .selected_refs
         .iter()
         .any(|audit| audit.node_hash == node_entity.node_hash
-            && audit.event_time_ms == segment.event_time_ms));
+            && audit.event_time_ms == slab.event_time_ms));
 }
 
 // shared-corpus: context_management_ingest_retrieve_pipeline
@@ -2122,7 +2122,7 @@ fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
     );
     assert_eq!(report.fanout.node_count, report.ingest.accepted);
     assert_eq!(report.fanout.event_count, report.ingest.accepted);
-    assert_eq!(report.fanout.segment_count, report.ingest.accepted);
+    assert_eq!(report.fanout.slab_count, report.ingest.accepted);
     assert_eq!(report.fanout.entity_count, report.ingest.accepted);
     assert_eq!(report.fanout.child_ref_count, report.ingest.accepted);
     assert_eq!(report.fanout.compression_count, report.ingest.accepted);

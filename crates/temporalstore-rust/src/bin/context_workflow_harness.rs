@@ -178,7 +178,8 @@ struct ResourceSkillConversationScaleSummary {
     embedding_production_evidence_ready: bool,
     fanout_node_count: usize,
     fanout_event_count: usize,
-    fanout_segment_count: usize,
+    #[serde(alias = "fanout_segment_count")]
+    fanout_slab_count: usize,
     fanout_entity_count: usize,
     fanout_child_ref_count: usize,
     fanout_embedding_count: usize,
@@ -1092,7 +1093,7 @@ fn run_resource_skill_conversation_scale(
             .production_evidence_ready,
         fanout_node_count: resource_skill_report.fanout.node_count,
         fanout_event_count: resource_skill_report.fanout.event_count,
-        fanout_segment_count: resource_skill_report.fanout.segment_count,
+        fanout_slab_count: resource_skill_report.fanout.slab_count,
         fanout_entity_count: resource_skill_report.fanout.entity_count,
         fanout_child_ref_count: resource_skill_report.fanout.child_ref_count,
         fanout_embedding_count: resource_skill_report.fanout.embedding_count,

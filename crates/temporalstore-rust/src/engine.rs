@@ -611,7 +611,7 @@ impl TemporalEngine {
         let address = shards.get(&shard_id)?.strings.get(key)?;
         Some(CacheKey::page_with_slot_generation(
             shard_id,
-            address.page_segment_id,
+            address.page_slab_id,
             address.offset,
             address.length,
             address.routing_bucket,
@@ -770,16 +770,16 @@ impl TemporalEngine {
         let physical_index = self.storage_physical_index_report(shard_id);
         let ownership = self.bucket_object_page_ownership_report(shard_id);
         let object_manager = self.object_manager_runtime_report(shard_id);
-        let segment_reports = self.page_store.segment_reports().unwrap_or_default();
-        let block_index_count = segment_reports
+        let slab_reports = self.page_store.slab_reports().unwrap_or_default();
+        let block_index_count = slab_reports
             .iter()
-            .map(|segment| segment.block_index_count)
+            .map(|slab| slab.block_index_count)
             .sum::<u64>();
-        let block_address_api_ready = segment_reports.iter().any(|segment| {
-            segment.block_index_entries.iter().any(|entry| {
-                entry.compact_segment_address.is_some()
-                    && entry.compact_segment_id.is_some()
-                    && entry.compact_segment_offset.is_some()
+        let block_address_api_ready = slab_reports.iter().any(|slab| {
+            slab.block_index_entries.iter().any(|entry| {
+                entry.compact_slab_address.is_some()
+                    && entry.compact_slab_id.is_some()
+                    && entry.compact_slab_offset.is_some()
                     && entry.block_id.is_some()
                     && entry.object_id.is_some()
                     && entry.routing_bucket.is_some()
@@ -883,7 +883,7 @@ impl TemporalEngine {
             bucket_store_layout_api_ready,
             object_manager_runtime_api_ready: object_manager.runtime_ready,
             block_address_api_ready,
-            block_store_segment_api_ready: block_index_count > 0,
+            block_store_slab_api_ready: block_index_count > 0,
             stream_backed_band_api_ready,
             legacy_page_zone_aliases_ready,
             storage_manager_phase_api_ready,
@@ -1303,64 +1303,64 @@ fn associated_record_keys(key: &str) -> Vec<String> {
     keys
 }
 
-fn collect_live_page_segment_ids(shard: &ShardState) -> BTreeSet<u64> {
+fn collect_live_page_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
     let mut ids = BTreeSet::new();
     ids.extend(
         shard
             .strings
             .values()
-            .map(|address| address.page_segment_id),
+            .map(|address| address.page_slab_id),
     );
     for fields in shard.hashes.values() {
-        ids.extend(fields.values().map(|address| address.page_segment_id));
+        ids.extend(fields.values().map(|address| address.page_slab_id));
     }
     for members in shard.sets.values() {
-        ids.extend(members.values().map(|address| address.page_segment_id));
+        ids.extend(members.values().map(|address| address.page_slab_id));
     }
     for series in shard.features.values() {
-        ids.extend(series.values().map(|address| address.page_segment_id));
+        ids.extend(series.values().map(|address| address.page_slab_id));
     }
     for series in shard.sequences.values() {
-        ids.extend(series.values().map(|address| address.page_segment_id));
+        ids.extend(series.values().map(|address| address.page_slab_id));
     }
     for series in shard.ips.values() {
-        ids.extend(series.values().map(|address| address.page_segment_id));
+        ids.extend(series.values().map(|address| address.page_slab_id));
     }
     ids.extend(
         shard
             .context_nodes
             .values()
-            .map(|address| address.page_segment_id),
+            .map(|address| address.page_slab_id),
     );
     for series in shard.context_events.values() {
-        ids.extend(series.values().map(|address| address.page_segment_id));
+        ids.extend(series.values().map(|address| address.page_slab_id));
     }
     for series in shard.context_indexes.values() {
-        ids.extend(series.values().map(|address| address.page_segment_id));
+        ids.extend(series.values().map(|address| address.page_slab_id));
     }
     for series in shard.context_audits.values() {
-        ids.extend(series.values().map(|address| address.page_segment_id));
+        ids.extend(series.values().map(|address| address.page_slab_id));
     }
     ids.extend(
         shard
             .context_entities
             .values()
-            .map(|address| address.page_segment_id),
+            .map(|address| address.page_slab_id),
     );
     for series in shard.context_children.values() {
-        ids.extend(series.values().map(|address| address.page_segment_id));
+        ids.extend(series.values().map(|address| address.page_slab_id));
     }
     ids.extend(
         shard
             .context_embeddings
             .values()
-            .map(|address| address.page_segment_id),
+            .map(|address| address.page_slab_id),
     );
     for series in shard.context_summaries.values() {
-        ids.extend(series.values().map(|address| address.page_segment_id));
+        ids.extend(series.values().map(|address| address.page_slab_id));
     }
     for series in shard.context_compressions.values() {
-        ids.extend(series.values().map(|address| address.page_segment_id));
+        ids.extend(series.values().map(|address| address.page_slab_id));
     }
     ids
 }
@@ -1378,7 +1378,7 @@ fn append_value(
         return page_store.append_with_page_metadata(bytes, object_id, routing_bucket);
     }
     let address = BlockAddress {
-        page_segment_id: HOT_PAGE_SEGMENT_ID,
+        page_slab_id: HOT_PAGE_SLAB_ID,
         offset: HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed),
         length: bytes.len() as u64,
         page_id: None,
@@ -1392,7 +1392,7 @@ fn append_value(
     cache.put_memory_only(
         CacheKey::page_with_slot_generation(
             shard_id,
-            address.page_segment_id,
+            address.page_slab_id,
             address.offset,
             address.length,
             address.routing_bucket,
@@ -1540,7 +1540,7 @@ fn read_page_bytes(
 ) -> Option<Vec<u8>> {
     let cache_key = CacheKey::page_with_slot_generation(
         shard_id,
-        address.page_segment_id,
+        address.page_slab_id,
         address.offset,
         address.length,
         address.routing_bucket,

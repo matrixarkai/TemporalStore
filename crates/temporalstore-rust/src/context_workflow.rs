@@ -680,7 +680,8 @@ pub struct ContextResourceSkillIngestRequest {
 pub struct ContextResourceSkillModelFanoutReport {
     pub node_count: usize,
     pub event_count: usize,
-    pub segment_count: usize,
+    #[serde(alias = "segment_count")]
+    pub slab_count: usize,
     pub entity_count: usize,
     pub child_ref_count: usize,
     pub embedding_count: usize,

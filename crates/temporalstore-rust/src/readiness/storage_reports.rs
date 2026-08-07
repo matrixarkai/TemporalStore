@@ -185,13 +185,13 @@ pub fn storage_cache_dependency_matrix_report() -> StorageCacheDependencyMatrixR
     let local_file_store_ready = true;
     let shared_store_checkpoint_manifest_ready = true;
     let oplog_cursor_retention_ready = true;
-    let page_segment_manifest_ready = true;
+    let page_slab_manifest_ready = true;
     let follower_cursor_retention_ready = true;
     let raft_snapshot_manifest_retention_ready = true;
     let local_shared_store_production_ready = local_file_store_ready
         && shared_store_checkpoint_manifest_ready
         && oplog_cursor_retention_ready
-        && page_segment_manifest_ready
+        && page_slab_manifest_ready
         && follower_cursor_retention_ready
         && raft_snapshot_manifest_retention_ready;
     let live_external_object_store_out_of_scope = true;
@@ -219,7 +219,7 @@ pub fn storage_cache_dependency_matrix_report() -> StorageCacheDependencyMatrixR
         local_file_store_ready,
         shared_store_checkpoint_manifest_ready,
         oplog_cursor_retention_ready,
-        page_segment_manifest_ready,
+        page_slab_manifest_ready,
         follower_cursor_retention_ready,
         raft_snapshot_manifest_retention_ready,
         local_shared_store_production_ready,

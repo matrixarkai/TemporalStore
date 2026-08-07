@@ -36,7 +36,7 @@ impl TemporalEngine {
             phase: "reclaim".to_string(),
             attempted: true,
             applied: request.apply
-                && (!lifecycle.delayed_destroy_purged_segments.is_empty()
+                && (!lifecycle.delayed_destroy_purged_slabs.is_empty()
                     || !lifecycle.plan.reclaim_candidates.is_empty()),
             evidence: vec![
                 "ranked reclaim candidates by stale bytes, live density, delayed-destroy pressure, and utility score".to_string(),
@@ -184,7 +184,7 @@ impl TemporalEngine {
     ) -> StorageProductionReadinessReport {
         let boundary = self.storage_recovery_boundary_report(shard_id);
         let recovery = self.storage_recovery_report_without_boundary(shard_id);
-        let segment_integrity = storage_segment_integrity_report(shard_id, &recovery, &boundary);
+        let slab_integrity = storage_slab_integrity_report(shard_id, &recovery, &boundary);
         let plan = self.storage_lifecycle_plan(StorageLifecycleRequest {
             shard_id,
             selected_dump_buckets: Vec::new(),
@@ -196,8 +196,8 @@ impl TemporalEngine {
             follower_replay_cursors: Vec::new(),
             page_gc_shared_store_cursors: Vec::new(),
             page_gc_raft_snapshot_refs: Vec::new(),
-            page_gc_checkpoint_floor_segment_id: None,
-            page_gc_raft_install_floor_segment_id: None,
+            page_gc_checkpoint_floor_slab_id: None,
+            page_gc_raft_install_floor_slab_id: None,
             page_gc_delayed_destroy_grace_ms: 0,
             invalidate_cache: false,
             warm_cache: false,
@@ -225,7 +225,7 @@ impl TemporalEngine {
         if !boundary.stale_index_page_refs.is_empty() {
             blockers.push("stale_index_page_refs".to_string());
         }
-        if !boundary.corrupt_page_segment_ids.is_empty() {
+        if !boundary.corrupt_page_slab_ids.is_empty() {
             blockers.push("corrupt_page_segments".to_string());
         }
         if boundary.unreadable_page_bytes > 0 || !recovery.all_live_pages_readable {
@@ -246,7 +246,7 @@ impl TemporalEngine {
         if !boundary.manifest_chain_issues.is_empty() {
             blockers.push("broken_slot_dump_manifest_chain".to_string());
         }
-        if !segment_integrity.integrity_ok
+        if !slab_integrity.integrity_ok
             && !blockers
                 .iter()
                 .any(|blocker| blocker == "storage_segment_integrity_failed")
@@ -261,10 +261,10 @@ impl TemporalEngine {
         if !plan.dirty_buckets.is_empty() {
             warnings.push("dirty_slots_pending_dump".to_string());
         }
-        if !plan.stale_page_segment_ids.is_empty() {
+        if !plan.stale_page_slab_ids.is_empty() {
             warnings.push("stale_page_segments_pending_gc".to_string());
         }
-        if !boundary.orphan_page_segment_ids.is_empty() {
+        if !boundary.orphan_page_slab_ids.is_empty() {
             warnings.push("orphan_page_segments_pending_gc".to_string());
         }
         if bucket_dump_manifest_count == 0 && recovery.total_page_refs > 0 {
@@ -278,15 +278,15 @@ impl TemporalEngine {
             blockers.push("dirty_slots_exceed_policy".to_string());
         }
         if policy
-            .max_stale_page_segments
-            .map(|limit| plan.stale_page_segment_ids.len() > limit)
+            .max_stale_page_slabs
+            .map(|limit| plan.stale_page_slab_ids.len() > limit)
             .unwrap_or(false)
         {
             blockers.push("stale_page_segments_exceed_policy".to_string());
         }
         if policy
-            .max_orphan_page_segments
-            .map(|limit| boundary.orphan_page_segment_ids.len() > limit)
+            .max_orphan_page_slabs
+            .map(|limit| boundary.orphan_page_slab_ids.len() > limit)
             .unwrap_or(false)
         {
             blockers.push("orphan_page_segments_exceed_policy".to_string());
@@ -315,10 +315,10 @@ impl TemporalEngine {
             blockers,
             warnings,
             dirty_bucket_count: plan.dirty_buckets.len(),
-            stale_page_segment_count: plan.stale_page_segment_ids.len(),
-            orphan_page_segment_count: boundary.orphan_page_segment_ids.len(),
+            stale_page_slab_count: plan.stale_page_slab_ids.len(),
+            orphan_page_slab_count: boundary.orphan_page_slab_ids.len(),
             undumped_oplog_records,
-            corrupt_page_segment_count: boundary.corrupt_page_segment_ids.len(),
+            corrupt_page_slab_count: boundary.corrupt_page_slab_ids.len(),
             unreadable_page_ref_count: recovery.unreadable_page_refs.len(),
             owner_mismatch_page_ref_count: boundary.owner_mismatch_page_refs.len(),
             missing_owner_page_ref_count: boundary.object_lifecycle.missing_owner_page_refs,
@@ -334,7 +334,7 @@ impl TemporalEngine {
             block_store_bytes_written: page_store.bytes_written,
             boundary,
             object_lifecycle: recovery.object_lifecycle,
-            segment_integrity,
+            slab_integrity,
             log_compatibility,
             page_format_compatibility,
             feature_page_layout_mismatch_count: recovery.feature_page_layout.mismatch_count(),
@@ -465,7 +465,7 @@ impl TemporalEngine {
             report.considered_page_refs = report.considered_page_refs.saturating_add(1);
             let key = CacheKey::page_with_slot_generation(
                 shard_id,
-                entry.address.page_segment_id,
+                entry.address.page_slab_id,
                 entry.address.offset,
                 entry.address.length,
                 entry.address.routing_bucket,
@@ -552,18 +552,18 @@ impl TemporalEngine {
             .unwrap_or_default();
         let latest_safe_oplog_sequence = self.wal_store.stats(shard_id).last_sequence;
         let latest_safe_index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
-        let live_page_segment_ids = self
-            .live_page_segment_ids(shard_id)
+        let live_page_slab_ids = self
+            .live_page_slab_ids(shard_id)
             .into_iter()
             .collect::<BTreeSet<_>>();
-        let all_segment_ids = self
+        let all_slab_ids = self
             .page_store
-            .segment_ids()
+            .slab_ids()
             .unwrap_or_default()
             .into_iter()
             .collect::<BTreeSet<_>>();
-        let orphan_page_segment_ids = all_segment_ids
-            .difference(&live_page_segment_ids)
+        let orphan_page_slab_ids = all_slab_ids
+            .difference(&live_page_slab_ids)
             .copied()
             .collect::<Vec<_>>();
         let latest_dump_buckets = manifests
@@ -585,11 +585,11 @@ impl TemporalEngine {
         ) = bucket_dump_install_phase_counts(&interrupted_bucket_dump_installs);
         let manifest_chain_issues = bucket_dump_manifest_chain_issues(&manifests);
         let recovery = self.storage_recovery_report_without_boundary(shard_id);
-        let corrupt_page_segment_ids = recovery
-            .page_segment_reports
+        let corrupt_page_slab_ids = recovery
+            .page_slab_reports
             .iter()
             .filter(|report| report.has_corruption)
-            .map(|report| report.page_segment_id)
+            .map(|report| report.page_slab_id)
             .collect::<Vec<_>>();
         let unreadable_page_bytes = recovery
             .unreadable_page_refs
@@ -607,7 +607,7 @@ impl TemporalEngine {
                 .min(latest_safe_oplog_sequence),
             selected_replay_index_log_sequence: latest_dump_index_log_sequence
                 .min(latest_safe_index_log_sequence),
-            orphan_page_segment_ids,
+            orphan_page_slab_ids,
             missing_dump_bucket_ids,
             stale_index_page_refs: recovery.unreadable_page_refs,
             interrupted_bucket_dump_installs,
@@ -618,7 +618,7 @@ impl TemporalEngine {
             owner_mismatch_page_refs: recovery.owner_mismatch_page_refs,
             missing_owner_page_refs: recovery.missing_owner_page_refs,
             object_lifecycle,
-            corrupt_page_segment_ids,
+            corrupt_page_slab_ids,
             unreadable_page_bytes,
         }
     }

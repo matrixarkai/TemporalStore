@@ -222,7 +222,8 @@ pub struct IpsSnapshotReport {
     pub table_id_counts: Vec<(u64, u64)>,
     pub unique_page_ref_count: usize,
     pub packed_timestamped_page_count: usize,
-    pub page_segment_ids: Vec<u64>,
+    #[serde(alias = "page_segment_ids")]
+    pub page_slab_ids: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -468,7 +469,7 @@ pub struct ContextTraversedNode {
 
 pub type ContextNodeModel = ContextNode;
 pub type ContextEventModel = ContextEvent;
-pub type ContextSegment = ContextEvent;
+pub type ContextSlab = ContextEvent;
 pub type ContextIndexModel = ContextIndexRef;
 pub type ContextAuditModel = ContextPackAudit;
 pub type ContextChildModel = ContextChildRef;

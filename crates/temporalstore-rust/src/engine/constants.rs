@@ -27,5 +27,5 @@ pub(super) const CONTEXT_MAX_REF_BYTES: usize = 4096;
 pub(super) const CONTEXT_MAX_EVENT_TEXT_BYTES: usize = 64 * 1024;
 pub(super) const CONTEXT_MAX_COMPACT_ATTRS_BYTES: usize = 8 * 1024;
 pub(super) const CONTEXT_NODE_FIELD: &str = "meta";
-pub(super) const HOT_PAGE_SEGMENT_ID: u64 = u64::MAX;
+pub(super) const HOT_PAGE_SLAB_ID: u64 = u64::MAX;
 pub(super) static HOT_PAGE_OFFSET: AtomicU64 = AtomicU64::new(1);

@@ -241,7 +241,7 @@ fn feature_page_error(
     StorageFeaturePageError {
         kind: kind.to_string(),
         key: key.to_string(),
-        page_segment_id: address.page_segment_id,
+        page_slab_id: address.page_slab_id,
         offset: address.offset,
         length: address.length,
         error: error.into(),
@@ -258,7 +258,7 @@ fn feature_page_timestamp_mismatch(
         kind: kind.to_string(),
         key: key.to_string(),
         timestamp_ms,
-        page_segment_id: address.page_segment_id,
+        page_slab_id: address.page_slab_id,
         offset: address.offset,
         length: address.length,
     }

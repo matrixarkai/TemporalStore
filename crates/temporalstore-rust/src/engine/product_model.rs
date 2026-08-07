@@ -228,7 +228,7 @@ pub(super) fn empty_ips_snapshot_report(
         table_id_counts: Vec::new(),
         unique_page_ref_count: 0,
         packed_timestamped_page_count: 0,
-        page_segment_ids: Vec::new(),
+        page_slab_ids: Vec::new(),
     }
 }
 
@@ -254,12 +254,12 @@ pub(super) fn ips_snapshot_report_in_range(
     );
     let stats = ips_stats_in_range(shard, &key, start_ms, end_ms);
     let mut page_refs = HashSet::<BlockAddress>::new();
-    let mut page_segment_ids = BTreeSet::<u64>::new();
+    let mut page_slab_ids = BTreeSet::<u64>::new();
     let mut packed_timestamped_page_count = 0usize;
     if let Some(series) = shard.ips.get(&key) {
         for (_, address) in series.range(start_ms..=end_ms) {
             if page_refs.insert(address.clone()) {
-                page_segment_ids.insert(address.page_segment_id);
+                page_slab_ids.insert(address.page_slab_id);
                 if read_page_bytes(cache, block_store, shard_id, address)
                     .map(|bytes| {
                         matches!(
@@ -287,7 +287,7 @@ pub(super) fn ips_snapshot_report_in_range(
         table_id_counts: stats.table_id_counts,
         unique_page_ref_count: page_refs.len(),
         packed_timestamped_page_count,
-        page_segment_ids: page_segment_ids.into_iter().collect(),
+        page_slab_ids: page_slab_ids.into_iter().collect(),
     }
 }
 

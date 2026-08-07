@@ -23,7 +23,7 @@ fn control_api_reads_page_and_index_streams() {
     let page = engine.read_stream(StreamReadRequest {
         shard_id: 1,
         stream_kind: StreamKind::Block,
-        page_segment_id: 0,
+        page_slab_id: 0,
         offset: 0,
         size: 12,
     });
@@ -32,7 +32,7 @@ fn control_api_reads_page_and_index_streams() {
     let index = engine.read_stream(StreamReadRequest {
         shard_id: 1,
         stream_kind: StreamKind::Index,
-        page_segment_id: 0,
+        page_slab_id: 0,
         offset: 0,
         size: 32,
     });
@@ -42,7 +42,7 @@ fn control_api_reads_page_and_index_streams() {
     let scan = engine.scan_stream(ScanStreamRequest {
         shard_id: 1,
         stream_kind: StreamKind::Block,
-        page_segment_id: 0,
+        page_slab_id: 0,
         start_offset: 0,
         end_offset: 12,
         max_bytes: 12,
@@ -53,7 +53,7 @@ fn control_api_reads_page_and_index_streams() {
     let invalid = engine.scan_stream(ScanStreamRequest {
         shard_id: 1,
         stream_kind: StreamKind::Block,
-        page_segment_id: 0,
+        page_slab_id: 0,
         start_offset: 12,
         end_offset: 1,
         max_bytes: 12,
@@ -90,7 +90,7 @@ fn control_api_reads_and_scans_wal_stream() {
     let stream = engine.read_stream(StreamReadRequest {
         shard_id: 1,
         stream_kind: StreamKind::Wal,
-        page_segment_id: 0,
+        page_slab_id: 0,
         offset: 0,
         size: 4096,
     });
@@ -102,7 +102,7 @@ fn control_api_reads_and_scans_wal_stream() {
     let scan = engine.scan_stream(ScanStreamRequest {
         shard_id: 1,
         stream_kind: StreamKind::Wal,
-        page_segment_id: 0,
+        page_slab_id: 0,
         start_offset: 0,
         end_offset: 4096,
         max_bytes: 4096,
@@ -148,7 +148,7 @@ fn control_api_reads_and_scans_index_log_stream() {
     let stream = engine.read_stream(StreamReadRequest {
         shard_id: 1,
         stream_kind: StreamKind::IndexLog,
-        page_segment_id: 0,
+        page_slab_id: 0,
         offset: 0,
         size: 8192,
     });
@@ -162,7 +162,7 @@ fn control_api_reads_and_scans_index_log_stream() {
     let scan = engine.scan_stream(ScanStreamRequest {
         shard_id: 1,
         stream_kind: StreamKind::IndexLog,
-        page_segment_id: 0,
+        page_slab_id: 0,
         start_offset: 0,
         end_offset: 8192,
         max_bytes: 8192,
@@ -1603,7 +1603,7 @@ fn prometheus_metrics_include_records_cache_page_and_wal() {
             key: "k".to_string(),
         },
     });
-    engine.block_store().roll_segment().unwrap();
+    engine.block_store().roll_slab().unwrap();
 
     let metrics = engine.prometheus_metrics();
     assert!(metrics.contains("temporalstore_shard_records{shard_id=\"1\",kind=\"string\"} 1"));
@@ -1897,7 +1897,7 @@ fn storage_recovery_uses_bucket_index_not_stale_secondary_model_maps() {
             .expect("secondary string view");
         stale.object_id = Some(stale.object_id.unwrap_or_default().wrapping_add(99));
         stale.routing_bucket = Some(stale.routing_bucket.unwrap_or_default().wrapping_add(99));
-        stale.page_segment_id = stale.page_segment_id.wrapping_add(999);
+        stale.page_slab_id = stale.page_slab_id.wrapping_add(999);
     }
 
     let recovery = engine.storage_recovery_report(1);
@@ -1907,8 +1907,8 @@ fn storage_recovery_uses_bucket_index_not_stale_secondary_model_maps() {
     assert!(recovery.owner_mismatch_page_refs.is_empty());
     assert_eq!(recovery.missing_owner_page_refs, 0);
     assert_eq!(recovery.object_lifecycle.owner_mismatch_page_refs, 0);
-    assert_eq!(recovery.segment_integrity.owner_mismatch_page_ref_count, 0);
-    assert!(recovery.segment_integrity.integrity_ok);
+    assert_eq!(recovery.slab_integrity.owner_mismatch_page_ref_count, 0);
+    assert!(recovery.slab_integrity.integrity_ok);
 }
 
 // shared-corpus: storage_dump_load_recovery
@@ -2160,7 +2160,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                     component: None,
                     object_id: 30,
                     address: BlockAddress {
-                        page_segment_id: 1,
+                        page_slab_id: 1,
                         offset: 0,
                         length: 4,
                         page_id: Some(1),
@@ -2198,7 +2198,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         component: None,
                         object_id: 40,
                         address: BlockAddress {
-                            page_segment_id: 2,
+                            page_slab_id: 2,
                             offset: 0,
                             length: 4,
                             page_id: Some(2),
@@ -2221,7 +2221,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         component: None,
                         object_id: 40,
                         address: BlockAddress {
-                            page_segment_id: 2,
+                            page_slab_id: 2,
                             offset: 4,
                             length: 4,
                             page_id: Some(3),
@@ -2259,7 +2259,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         component: Some("a".to_string()),
                         object_id: 50,
                         address: BlockAddress {
-                            page_segment_id: 3,
+                            page_slab_id: 3,
                             offset: 0,
                             length: 1,
                             page_id: Some(4),
@@ -2282,7 +2282,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         component: Some("b".to_string()),
                         object_id: 51,
                         address: BlockAddress {
-                            page_segment_id: 3,
+                            page_slab_id: 3,
                             offset: 1,
                             length: 1,
                             page_id: Some(5),

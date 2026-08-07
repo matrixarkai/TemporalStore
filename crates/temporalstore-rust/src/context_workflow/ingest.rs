@@ -202,7 +202,7 @@ pub fn ingest_resource_skill_context(
     let mut fanout = ContextResourceSkillModelFanoutReport {
         node_count: ingest.extracts.len(),
         event_count: ingest.extracts.len(),
-        segment_count: ingest.extracts.len(),
+        slab_count: ingest.extracts.len(),
         embedding_count: ingest.extracts.len().saturating_mul(3),
         summary_count: ingest.extracts.len().saturating_mul(2),
         dirty_marker_count: ingest.extracts.len(),

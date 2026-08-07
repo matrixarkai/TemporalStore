@@ -1,8 +1,8 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-pub(super) fn segment_path(root: &Path, page_segment_id: u64) -> PathBuf {
-    root.join(format!("page_segment_{page_segment_id:020}.seg"))
+pub(super) fn slab_path(root: &Path, page_slab_id: u64) -> PathBuf {
+    root.join(format!("page_segment_{page_slab_id:020}.seg"))
 }
 
 pub(super) fn band_manifest_path(root: &Path) -> PathBuf {
@@ -17,13 +17,13 @@ pub(super) fn delayed_destroy_dir(root: &Path) -> PathBuf {
     root.join(".page_segment_trash")
 }
 
-pub(super) fn delayed_destroy_path(root: &Path, page_segment_id: u64) -> PathBuf {
+pub(super) fn delayed_destroy_path(root: &Path, page_slab_id: u64) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
     delayed_destroy_dir(root).join(format!(
-        "page_segment_{page_segment_id:020}.seg.deleted.{nanos}"
+        "page_segment_{page_slab_id:020}.seg.deleted.{nanos}"
     ))
 }
 

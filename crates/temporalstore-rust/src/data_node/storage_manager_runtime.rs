@@ -26,9 +26,9 @@ pub(super) fn storage_manager_runtime_initial_report(
         bounded_max_dump_buckets_per_round: options.request.max_dump_buckets_per_round,
         configured_follower_cursor_count: options.request.follower_replay_cursors.len(),
         configured_raft_snapshot_ref_count: options.request.raft_snapshot_refs.len(),
-        configured_page_gc_raft_install_floor_segment_id: options
+        configured_page_gc_raft_install_floor_slab_id: options
             .request
-            .page_gc_raft_install_floor_segment_id,
+            .page_gc_raft_install_floor_slab_id,
         ..StorageManagerRuntimeReport::default()
     }
 }
@@ -100,17 +100,17 @@ pub(super) fn apply_storage_manager_cycle_to_runtime_report(
         undumped_oplog_records: cycle.pressure_snapshot.undumped_wal_records,
         wal_bytes: cycle.pressure_snapshot.wal_bytes,
         index_log_bytes: cycle.pressure_snapshot.index_log_bytes,
-        stale_page_segment_count: cycle.plan.stale_page_segment_ids.len(),
+        stale_page_slab_count: cycle.plan.stale_page_slab_ids.len(),
         reclaim_candidate_count: cycle.plan.reclaim_candidates.len(),
         reclaimable_physical_bytes: cycle.plan.reclaimable_physical_bytes,
-        page_segment_stale_density_basis_points: cycle
+        page_slab_stale_density_basis_points: cycle
             .pressure_snapshot
-            .page_segment_stale_density_basis_points,
+            .page_slab_stale_density_basis_points,
         cache_memory_bytes: cycle.pressure_snapshot.memory_cache_bytes,
         cache_disk_bytes: cycle.pressure_snapshot.disk_cache_bytes,
         memory_cache_pressure_score: cycle.pressure_snapshot.memory_cache_pressure_score,
         expired_bucket_object_scan_debt: cycle.pressure_snapshot.expired_bucket_object_scan_debt,
-        delayed_destroy_segment_count: cycle.pressure_snapshot.delayed_destroy_segment_count,
+        delayed_destroy_slab_count: cycle.pressure_snapshot.delayed_destroy_slab_count,
         delayed_destroy_bytes: cycle.pressure_snapshot.delayed_destroy_bytes,
         follower_cursor_retention_blockers: cycle
             .pressure_snapshot

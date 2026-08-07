@@ -249,7 +249,7 @@ impl TemporalEngine {
                     .saturating_add(page_store_zones.purged_bands),
                 active_storage_zones: page_store_zones.active_bands,
                 sealed_storage_zones: page_store_zones.sealed_bands,
-                stream_segment_count: page_store_zones
+                stream_slab_count: page_store_zones
                     .active_bands
                     .saturating_add(page_store_zones.sealed_bands)
                     .saturating_add(page_store_zones.delayed_destroy_bands)
