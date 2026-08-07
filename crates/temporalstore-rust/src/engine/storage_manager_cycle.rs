@@ -954,8 +954,11 @@ impl TemporalEngine {
             lifecycle_request.shard_id,
             lifecycle_request.follower_replay_cursors.clone(),
         );
-        let install_roll_forward_reports =
-            self.bucket_dump_install_roll_forward_reports(lifecycle_request.shard_id);
+        // Report the roll-forward recoveries that the lifecycle pass above actually
+        // performed. Re-deriving them from the current interrupted-install set here
+        // would return empty, because apply_storage_lifecycle already rolled the
+        // interrupted installs forward (and cleared their markers).
+        let install_roll_forward_reports = lifecycle.install_roll_forward_reports.clone();
         let load_preflight = manifest
             .as_ref()
             .map(|manifest| self.bucket_dump_install_preflight_report(manifest));
