@@ -1700,7 +1700,7 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
             key,
             timestamp_ms,
             amount,
-        } => v1::command::Kind::RiskIncrement(v1::RiskIncrement {
+        } => v1::command::Kind::ControlStateIncrement(v1::ControlStateIncrement {
             key: key.clone(),
             family: String::new(),
             delta: *amount,
@@ -1711,7 +1711,7 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
             start_ms,
             end_ms,
             aggregator,
-        } => v1::command::Kind::RiskQuery(v1::RiskQuery {
+        } => v1::command::Kind::ControlStateQuery(v1::ControlStateQuery {
             key: key.clone(),
             family: aggregator.clone(),
             start_ms: *start_ms,
