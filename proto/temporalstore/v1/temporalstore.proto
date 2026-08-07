@@ -237,8 +237,8 @@ message Command {
     SequenceQuery sequence_query = 13;
     IpsAdd ips_add = 14;
     IpsQuery ips_query = 15;
-    RiskIncrement risk_increment = 16;
-    RiskQuery risk_query = 17;
+    ControlStateIncrement control_state_increment = 16;
+    ControlStateQuery control_state_query = 17;
     ContextNodeUpsert context_node_upsert = 18;
     ContextNodeGet context_node_get = 19;
     CommonExpire common_expire = 20;
@@ -356,14 +356,14 @@ message IpsQuery {
   uint32 limit = 4;
 }
 
-message RiskIncrement {
+message ControlStateIncrement {
   string key = 1;
   string family = 2;
   int64 delta = 3;
   uint64 timestamp_ms = 4;
 }
 
-message RiskQuery {
+message ControlStateQuery {
   string key = 1;
   string family = 2;
   uint64 start_ms = 3;
