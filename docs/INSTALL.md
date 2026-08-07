@@ -444,6 +444,15 @@ first start or when the on-disk store is empty** (a fresh or wiped data dir): th
 `MATRIXARK_BACKFILL_ON_START` daemon checks each agent's store and skips any that
 already holds records, so restarts never re-ingest from external logs.
 
+To **force** a re-ingest from the agents' own logs (Claude/Codex transcripts,
+rollouts, resources) even when the store is already populated — e.g. to re-import
+history on demand — set `MATRIXARK_BACKFILL_FORCE=1`. It overrides the guard and
+is dedup-safe (records are keyed by content hash):
+
+```bash
+MATRIXARK_BACKFILL_FORCE=1 bash tools/matrixark_backfill_daemon.sh
+```
+
 **Local memory is backfilled into TemporalStore** rather than kept as a separate
 store:
 
