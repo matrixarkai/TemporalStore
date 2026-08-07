@@ -475,17 +475,21 @@ impl TemporalEngine {
             request.shard_id,
             request.follower_replay_cursors.clone(),
         );
+        // Roll forward interrupted installs BEFORE pruning: prune removes obsolete
+        // install markers, which would otherwise drop an interrupted install before it
+        // can be recovered (leaving install_roll_forward_reports empty even though an
+        // interrupted install was present).
+        let install_roll_forward_reports = if request.roll_forward_bucket_dump_installs {
+            self.roll_forward_bucket_dump_installs(request.shard_id)
+        } else {
+            self.bucket_dump_install_roll_forward_reports(request.shard_id)
+        };
         let manifest_prune_report = request.prune_bucket_dump_manifests.then(|| {
             self.apply_bucket_dump_manifest_prune_with_follower_cursors(
                 request.shard_id,
                 request.follower_replay_cursors.clone(),
             )
         });
-        let install_roll_forward_reports = if request.roll_forward_bucket_dump_installs {
-            self.roll_forward_bucket_dump_installs(request.shard_id)
-        } else {
-            self.bucket_dump_install_roll_forward_reports(request.shard_id)
-        };
         let object_lifecycle = self
             .storage_recovery_report_without_boundary(request.shard_id)
             .object_lifecycle;
