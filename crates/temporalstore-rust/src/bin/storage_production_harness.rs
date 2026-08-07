@@ -88,9 +88,11 @@ struct StorageProductionCaseSummary {
 
 #[derive(Debug, Serialize)]
 struct StorageRecoveryErrorSummary {
-    orphan_page_segment_count: usize,
+    #[serde(alias = "orphan_page_segment_count")]
+    orphan_page_slab_count: usize,
     stale_page_ref_count: usize,
-    corrupt_page_segment_count: usize,
+    #[serde(alias = "corrupt_page_segment_count")]
+    corrupt_page_slab_count: usize,
     unreadable_page_ref_count: usize,
     unreadable_page_bytes: u64,
     owner_mismatch_page_ref_count: usize,
@@ -187,8 +189,8 @@ async fn run_case(root: &Path, case: &StorageMigrationCase) -> StorageProduction
         }],
         page_gc_shared_store_cursors: Vec::new(),
         page_gc_raft_snapshot_refs: Vec::new(),
-        page_gc_checkpoint_floor_segment_id: None,
-        page_gc_raft_install_floor_segment_id: None,
+        page_gc_checkpoint_floor_slab_id: None,
+        page_gc_raft_install_floor_slab_id: None,
         page_gc_delayed_destroy_grace_ms: 0,
         invalidate_cache: true,
         warm_cache: true,
@@ -358,9 +360,9 @@ fn assert_recovery_ok(report: &StorageRecoveryReport, case_name: &str) {
     assert!(
         recovery_ok(report),
         "case={case_name} storage recovery failed: {:?}",
-        report.segment_integrity
+        report.slab_integrity
     );
-    assert!(report.segment_integrity.orphan_page_segment_count <= 1);
+    assert!(report.slab_integrity.orphan_page_slab_count <= 1);
     assert_eq!(
         report.feature_page_layout.duplicate_packed_timestamps.len(),
         0
@@ -369,12 +371,12 @@ fn assert_recovery_ok(report: &StorageRecoveryReport, case_name: &str) {
 
 fn recovery_ok(report: &StorageRecoveryReport) -> bool {
     report.all_live_pages_readable
-        && report.segment_integrity.integrity_ok
-        && report.segment_integrity.stale_page_ref_count == 0
-        && report.segment_integrity.corrupt_page_segment_count == 0
-        && report.segment_integrity.unreadable_page_ref_count == 0
-        && report.segment_integrity.owner_mismatch_page_ref_count == 0
-        && report.segment_integrity.missing_owner_page_ref_count == 0
+        && report.slab_integrity.integrity_ok
+        && report.slab_integrity.stale_page_ref_count == 0
+        && report.slab_integrity.corrupt_page_slab_count == 0
+        && report.slab_integrity.unreadable_page_ref_count == 0
+        && report.slab_integrity.owner_mismatch_page_ref_count == 0
+        && report.slab_integrity.missing_owner_page_ref_count == 0
         && report
             .feature_page_layout
             .corrupt_packed_feature_pages
@@ -395,13 +397,13 @@ fn recovery_ok(report: &StorageRecoveryReport) -> bool {
 
 fn recovery_error_summary(report: &StorageRecoveryReport) -> StorageRecoveryErrorSummary {
     StorageRecoveryErrorSummary {
-        orphan_page_segment_count: report.segment_integrity.orphan_page_segment_count,
-        stale_page_ref_count: report.segment_integrity.stale_page_ref_count,
-        corrupt_page_segment_count: report.segment_integrity.corrupt_page_segment_count,
-        unreadable_page_ref_count: report.segment_integrity.unreadable_page_ref_count,
-        unreadable_page_bytes: report.segment_integrity.unreadable_page_bytes,
-        owner_mismatch_page_ref_count: report.segment_integrity.owner_mismatch_page_ref_count,
-        missing_owner_page_ref_count: report.segment_integrity.missing_owner_page_ref_count,
+        orphan_page_slab_count: report.slab_integrity.orphan_page_slab_count,
+        stale_page_ref_count: report.slab_integrity.stale_page_ref_count,
+        corrupt_page_slab_count: report.slab_integrity.corrupt_page_slab_count,
+        unreadable_page_ref_count: report.slab_integrity.unreadable_page_ref_count,
+        unreadable_page_bytes: report.slab_integrity.unreadable_page_bytes,
+        owner_mismatch_page_ref_count: report.slab_integrity.owner_mismatch_page_ref_count,
+        missing_owner_page_ref_count: report.slab_integrity.missing_owner_page_ref_count,
         corrupt_packed_feature_pages: report
             .feature_page_layout
             .corrupt_packed_feature_pages

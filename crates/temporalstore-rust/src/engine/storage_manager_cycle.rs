@@ -35,8 +35,8 @@ impl TemporalEngine {
             follower_replay_cursors: request.follower_replay_cursors.clone(),
             page_gc_shared_store_cursors: request.page_gc_shared_store_cursors.clone(),
             page_gc_raft_snapshot_refs: request.raft_snapshot_refs.clone(),
-            page_gc_checkpoint_floor_segment_id: request.page_gc_checkpoint_floor_segment_id,
-            page_gc_raft_install_floor_segment_id: request.page_gc_raft_install_floor_segment_id,
+            page_gc_checkpoint_floor_slab_id: request.page_gc_checkpoint_floor_slab_id,
+            page_gc_raft_install_floor_slab_id: request.page_gc_raft_install_floor_slab_id,
             page_gc_delayed_destroy_grace_ms: request.page_gc_delayed_destroy_grace_ms,
             invalidate_cache: false,
             warm_cache: request.warm_cache,
@@ -46,11 +46,11 @@ impl TemporalEngine {
             request.shard_id,
             plan.reclaim_candidates
                 .iter()
-                .map(|candidate| candidate.page_segment_id),
+                .map(|candidate| candidate.page_slab_id),
             request.page_gc_shared_store_cursors.clone(),
             request.raft_snapshot_refs.clone(),
-            request.page_gc_checkpoint_floor_segment_id,
-            request.page_gc_raft_install_floor_segment_id,
+            request.page_gc_checkpoint_floor_slab_id,
+            request.page_gc_raft_install_floor_slab_id,
             request.page_gc_delayed_destroy_grace_ms,
         );
         let bucket_logical_bytes = plan
@@ -75,18 +75,18 @@ impl TemporalEngine {
             .sum::<u64>();
         let reclaim_candidate_count = plan.reclaim_candidates.len();
         let reclaim_skipped_count = plan
-            .stale_page_segment_ids
+            .stale_page_slab_ids
             .len()
             .saturating_sub(reclaim_candidate_count);
         let log_pressure = self.storage_log_compatibility_report(request.shard_id);
         let cache_pressure = self.storage_cache_inspection_report(request.shard_id);
-        let page_segment_total_bytes = reclaim_live_bytes.saturating_add(reclaim_stale_bytes);
-        let page_segment_stale_density_basis_points = if page_segment_total_bytes == 0 {
+        let page_slab_total_bytes = reclaim_live_bytes.saturating_add(reclaim_stale_bytes);
+        let page_slab_stale_density_basis_points = if page_slab_total_bytes == 0 {
             0
         } else {
-            reclaim_stale_bytes.saturating_mul(10_000) / page_segment_total_bytes
+            reclaim_stale_bytes.saturating_mul(10_000) / page_slab_total_bytes
         };
-        let delayed_destroy_segment_count = plan.delayed_destroy_page_segment_ids.len();
+        let delayed_destroy_slab_count = plan.delayed_destroy_page_slab_ids.len();
         let delayed_destroy_bytes = plan
             .reclaim_candidates
             .iter()
@@ -116,7 +116,7 @@ impl TemporalEngine {
                     || policy.tombstone_density_basis_points > 0
             })
             .count()
-            .max(usize::from(page_segment_stale_density_basis_points > 0));
+            .max(usize::from(page_slab_stale_density_basis_points > 0));
         let compaction_debt_score = compaction_utility
             .model_policies
             .iter()
@@ -129,7 +129,7 @@ impl TemporalEngine {
             .sum::<u64>()
             .saturating_add(compaction_utility.stale_page_estimate)
             .saturating_add(reclaim_stale_bytes)
-            .saturating_add(page_segment_stale_density_basis_points);
+            .saturating_add(page_slab_stale_density_basis_points);
         let retention_prune_plan = self.bucket_dump_manifest_prune_plan_with_retention_refs(
             request.shard_id,
             request.follower_replay_cursors.clone(),
@@ -149,7 +149,7 @@ impl TemporalEngine {
             .dirty_buckets
             .len()
             .saturating_add(expired_bucket_object_scan_debt)
-            .saturating_add(delayed_destroy_segment_count)
+            .saturating_add(delayed_destroy_slab_count)
             .saturating_add(compaction_debt_model_count) as u64
             + plan.undumped_oplog_records
             + log_pressure.oplog_bytes
@@ -167,12 +167,12 @@ impl TemporalEngine {
             index_log_bytes: log_pressure.index_log_bytes,
             stale_page_bytes: reclaim_stale_bytes,
             live_page_bytes: reclaim_live_bytes,
-            page_segment_stale_density_basis_points,
+            page_slab_stale_density_basis_points,
             memory_cache_bytes: cache_pressure.stats.memory_bytes,
             disk_cache_bytes: cache_pressure.stats.disk_bytes,
             memory_cache_pressure_score,
             expired_bucket_object_scan_debt,
-            delayed_destroy_segment_count,
+            delayed_destroy_slab_count,
             delayed_destroy_bytes,
             follower_cursor_retention_blockers: retention_prune_plan.follower_blocks.len(),
             raft_snapshot_retention_blockers: retention_prune_plan.raft_snapshot_blocks.len(),
@@ -192,7 +192,7 @@ impl TemporalEngine {
             } else {
                 "prepare disabled".to_string()
             },
-            selected_page_segment_ids: plan.live_page_segment_ids.clone(),
+            selected_page_slab_ids: plan.live_page_slab_ids.clone(),
             pressure_signal:
                 "dirty_slots+wal_bytes+index_log_bytes+stale_density+cache_pressure+expire_debt+delayed_destroy+retention_blockers+model_compaction_debt"
                     .to_string(),
@@ -236,28 +236,28 @@ impl TemporalEngine {
             && !plan.reclaim_candidates.is_empty()
             && page_gc_dependency_plan.safe_to_reclaim
         {
-            let retain_from_page_segment_id = plan
+            let retain_from_page_slab_id = plan
                 .reclaim_candidates
                 .iter()
-                .map(|candidate| candidate.page_segment_id)
+                .map(|candidate| candidate.page_slab_id)
                 .max()
                 .unwrap_or_default()
                 .saturating_add(1);
-            match self.page_store.gc_segments_before_with_live_refs_utility(
-                retain_from_page_segment_id,
-                plan.live_page_segment_ids.clone(),
+            match self.page_store.gc_slabs_before_with_live_refs_utility(
+                retain_from_page_slab_id,
+                plan.live_page_slab_ids.clone(),
                 plan.reclaim_candidates.len(),
                 true,
             ) {
                 Ok(report) => {
-                    for page_segment_id in report
-                        .removed_page_segment_ids
+                    for page_slab_id in report
+                        .removed_page_slab_ids
                         .iter()
-                        .chain(report.delayed_destroy_page_segment_ids.iter())
+                        .chain(report.delayed_destroy_page_slab_ids.iter())
                     {
                         let _ = self
                             .cache
-                            .invalidate_page_segment(request.shard_id, *page_segment_id);
+                            .invalidate_page_segment(request.shard_id, *page_slab_id);
                     }
                 }
                 Err(err) => errors.push(format!("reclaim_page: {err}")),
@@ -576,7 +576,7 @@ impl TemporalEngine {
                 && page_gc_dependency_plan.safe_to_reclaim
                 && lifecycle_report
                     .as_ref()
-                    .map(|report| !report.delayed_destroy_purged_segments.is_empty())
+                    .map(|report| !report.delayed_destroy_purged_slabs.is_empty())
                     .unwrap_or(false),
             skipped: !request.enable_page_reclaim
                 || plan.reclaim_candidates.is_empty()
@@ -600,22 +600,22 @@ impl TemporalEngine {
             pressure_score: pressure_signals
                 .stale_page_bytes
                 .saturating_add(pressure_signals.delayed_destroy_bytes)
-                .saturating_add(pressure_signals.page_segment_stale_density_basis_points),
+                .saturating_add(pressure_signals.page_slab_stale_density_basis_points),
             pressure_threshold: 1,
             pressure_triggered: request.enable_page_reclaim
                 && !plan.reclaim_candidates.is_empty()
                 && page_gc_dependency_plan.safe_to_reclaim,
             candidate_count: reclaim_candidate_count,
             skipped_count: reclaim_skipped_count
-                .saturating_add(page_gc_dependency_plan.blocked_page_segment_ids.len()),
+                .saturating_add(page_gc_dependency_plan.blocked_page_slab_ids.len()),
             before_bytes: reclaim_live_bytes + reclaim_stale_bytes,
             after_bytes: reclaim_live_bytes,
             live_bytes: reclaim_live_bytes,
             stale_bytes: reclaim_stale_bytes,
-            selected_page_segment_ids: page_gc_dependency_plan.reclaimable_page_segment_ids.clone(),
-            page_segments_reclaimed: lifecycle_report
+            selected_page_slab_ids: page_gc_dependency_plan.reclaimable_page_slab_ids.clone(),
+            page_slabs_reclaimed: lifecycle_report
                 .as_ref()
-                .map(|report| report.delayed_destroy_purged_segments.len())
+                .map(|report| report.delayed_destroy_purged_slabs.len())
                 .unwrap_or_default(),
             page_bytes_reclaimed: lifecycle_report
                 .as_ref()
@@ -750,7 +750,7 @@ impl TemporalEngine {
 
         let should_compact = request.enable_page_compaction
             && !request.dry_run
-            && (!plan.reclaim_candidates.is_empty() || plan.live_page_segment_ids.len() > 1);
+            && (!plan.reclaim_candidates.is_empty() || plan.live_page_slab_ids.len() > 1);
         let compaction_report = if should_compact {
             match self.compact_shard_pages(request.shard_id) {
                 Ok(report) => Some(report),
@@ -768,12 +768,12 @@ impl TemporalEngine {
             applied: compaction_report.is_some(),
             skipped: !request.enable_page_compaction
                 || request.dry_run
-                || (plan.reclaim_candidates.is_empty() && plan.live_page_segment_ids.len() <= 1),
+                || (plan.reclaim_candidates.is_empty() && plan.live_page_slab_ids.len() <= 1),
             reason: if !request.enable_page_compaction {
                 "page compaction disabled".to_string()
             } else if request.dry_run {
                 "dry run reports compaction pressure without rewriting pages".to_string()
-            } else if plan.reclaim_candidates.is_empty() && plan.live_page_segment_ids.len() <= 1 {
+            } else if plan.reclaim_candidates.is_empty() && plan.live_page_slab_ids.len() <= 1 {
                 "compaction skipped because page density does not show stale-segment pressure"
                     .to_string()
             } else {
@@ -782,14 +782,14 @@ impl TemporalEngine {
             pressure_signal: "model_layout_compaction_debt+stale_segment_density".to_string(),
             pressure_score: pressure_signals
                 .compaction_debt_score
-                .saturating_add(pressure_signals.page_segment_stale_density_basis_points),
+                .saturating_add(pressure_signals.page_slab_stale_density_basis_points),
             pressure_threshold: 1,
             pressure_triggered: should_compact,
-            candidate_count: plan.stale_page_segment_ids.len(),
-            skipped_count: plan.stale_page_segment_ids.len().saturating_sub(
+            candidate_count: plan.stale_page_slab_ids.len(),
+            skipped_count: plan.stale_page_slab_ids.len().saturating_sub(
                 compaction_report
                     .as_ref()
-                    .map(|report| report.stale_page_segment_ids.len())
+                    .map(|report| report.stale_page_slab_ids.len())
                     .unwrap_or_default(),
             ),
             before_bytes: bucket_physical_bytes,
@@ -799,13 +799,13 @@ impl TemporalEngine {
                 .unwrap_or(bucket_physical_bytes),
             live_bytes: bucket_logical_bytes,
             stale_bytes: reclaim_stale_bytes,
-            selected_page_segment_ids: compaction_report
+            selected_page_slab_ids: compaction_report
                 .as_ref()
-                .map(|report| report.stale_page_segment_ids.clone())
+                .map(|report| report.stale_page_slab_ids.clone())
                 .unwrap_or_default(),
-            compacted_page_segment_id: compaction_report
+            compacted_page_slab_id: compaction_report
                 .as_ref()
-                .map(|report| report.compacted_page_segment_id),
+                .map(|report| report.compacted_page_slab_id),
             rewritten_page_refs: compaction_report
                 .as_ref()
                 .map(|report| report.rewritten_page_refs)
@@ -991,7 +991,7 @@ impl TemporalEngine {
         let (
             manifest_id,
             manifest_bucket_ids,
-            manifest_page_segment_ids,
+            manifest_page_slab_ids,
             manifest_oplog_sequence,
             manifest_index_log_sequence,
         ) = manifest
@@ -1000,7 +1000,7 @@ impl TemporalEngine {
                 (
                     Some(manifest.manifest_id.clone()),
                     manifest.bucket_ids.clone(),
-                    manifest.page_segment_ids.clone(),
+                    manifest.page_slab_ids.clone(),
                     manifest.oplog_sequence,
                     manifest.index_log_sequence,
                 )
@@ -1019,7 +1019,7 @@ impl TemporalEngine {
             index_gc_ready,
             manifest_id,
             manifest_bucket_ids,
-            manifest_page_segment_ids,
+            manifest_page_slab_ids,
             manifest_oplog_sequence,
             manifest_index_log_sequence,
             selected_replay_oplog_sequence: boundary.selected_replay_oplog_sequence,

@@ -10,7 +10,7 @@ pub(super) const CPP_PACKED_PAGE_INDEX_SIZE: usize = 17;
 pub(super) const CPP_PACKED_BUCKET_NODE_SIZE: usize = 24;
 
 fn physical_address_word(address: &BlockAddress) -> u64 {
-    address.page_segment_id.wrapping_shl(32) | (address.offset & u32::MAX as u64)
+    address.page_slab_id.wrapping_shl(32) | (address.offset & u32::MAX as u64)
 }
 
 pub(super) fn storage_page_address_sample(
@@ -19,9 +19,9 @@ pub(super) fn storage_page_address_sample(
 ) -> StoragePageAddressSample {
     StoragePageAddressSample {
         shard_id,
-        zone_id: address.band_id.unwrap_or(address.page_segment_id),
-        segment_id: address.page_segment_id,
-        page_id: address.page_id.unwrap_or(address.page_segment_id),
+        zone_id: address.band_id.unwrap_or(address.page_slab_id),
+        slab_id: address.page_slab_id,
+        page_id: address.page_id.unwrap_or(address.page_slab_id),
         offset: address.offset,
         length: address.length,
         generation: address.object_id.unwrap_or(0),
@@ -34,8 +34,8 @@ pub(super) fn storage_block_address_sample(
 ) -> StorageBlockAddressSample {
     StorageBlockAddressSample {
         shard_id,
-        zone_id: address.band_id.unwrap_or(address.page_segment_id),
-        block_id: address.page_segment_id,
+        zone_id: address.band_id.unwrap_or(address.page_slab_id),
+        block_id: address.page_slab_id,
         offset: address.offset,
         length: address.length,
         checksum: address.sha256.clone().unwrap_or_default(),
@@ -53,7 +53,7 @@ pub(super) fn cpp_packed_page_index_bytes(
     let page_size = if page.deleted { 0 } else { page.length as u32 };
     bytes[5..9].copy_from_slice(&page_size.to_le_bytes());
     let address = physical_address_word(&BlockAddress {
-        page_segment_id: page.page_segment_id,
+        page_slab_id: page.page_slab_id,
         offset: page.offset,
         length: page.length,
         page_id: page.page_id,
@@ -96,7 +96,7 @@ pub(super) fn cpp_packed_bucket_node_bytes(
     let address = bucket
         .page_indexes
         .first()
-        .map(|page| page.page_segment_id.wrapping_shl(32) | (page.offset & u32::MAX as u64))
+        .map(|page| page.page_slab_id.wrapping_shl(32) | (page.offset & u32::MAX as u64))
         .unwrap_or_default();
     bytes[16..24].copy_from_slice(&address.to_le_bytes());
     bytes

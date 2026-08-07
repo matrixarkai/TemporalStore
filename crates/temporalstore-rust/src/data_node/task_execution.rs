@@ -14,9 +14,9 @@ pub(super) fn run_compaction_inner(
         tombstoned_object_ids_before,
         tombstoned_object_ids_after,
         model_layouts,
-        previous_page_segment_id,
-        compacted_page_segment_id,
-        stale_page_segment_ids,
+        previous_page_slab_id,
+        compacted_page_slab_id,
+        stale_page_slab_ids,
         before,
         after,
     ) = match compaction {
@@ -27,9 +27,9 @@ pub(super) fn run_compaction_inner(
             report.tombstoned_object_ids_before,
             report.tombstoned_object_ids_after,
             report.model_layouts,
-            report.previous_page_segment_id,
-            report.compacted_page_segment_id,
-            report.stale_page_segment_ids,
+            report.previous_page_slab_id,
+            report.compacted_page_slab_id,
+            report.stale_page_slab_ids,
             report.before,
             report.after,
         ),
@@ -60,9 +60,9 @@ pub(super) fn run_compaction_inner(
         tombstoned_object_ids_before,
         tombstoned_object_ids_after,
         model_layouts,
-        previous_page_segment_id,
-        compacted_page_segment_id,
-        stale_page_segment_ids,
+        previous_page_slab_id,
+        compacted_page_slab_id,
+        stale_page_slab_ids,
         before,
         after,
     }
@@ -75,11 +75,11 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
     let mut cache_disk_bytes_removed = 0;
     let mut oplog_records_removed = 0;
     let mut index_log_records_removed = 0;
-    let mut page_segments_removed = 0;
-    let mut page_segments_removed_physical_bytes = 0;
-    let mut page_segments_retained_physical_bytes = 0;
-    let mut page_segments_retained_live = 0;
-    let mut page_segments_retained_live_physical_bytes = 0;
+    let mut page_slabs_removed = 0;
+    let mut page_slabs_removed_physical_bytes = 0;
+    let mut page_slabs_retained_physical_bytes = 0;
+    let mut page_slabs_retained_live = 0;
+    let mut page_slabs_retained_live_physical_bytes = 0;
     match inner.engine.cache().invalidate_shard(request.shard_id) {
         Ok(report) => {
             cache_entries_removed = report.memory_entries_removed;
@@ -118,21 +118,21 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
         }
     }
     if status.ok {
-        if let Some(retain_from_page_segment_id) = request.retain_page_segments_from_id {
-            let live_page_segment_ids = inner.engine.live_page_segment_ids(request.shard_id);
+        if let Some(retain_from_page_slab_id) = request.retain_page_slabs_from_id {
+            let live_page_slab_ids = inner.engine.live_page_slab_ids(request.shard_id);
             match inner
                 .engine
                 .block_store()
-                .gc_segments_before_with_live_refs(
-                    retain_from_page_segment_id,
-                    live_page_segment_ids,
+                .gc_slabs_before_with_live_refs(
+                    retain_from_page_slab_id,
+                    live_page_slab_ids,
                 ) {
                 Ok(report) => {
-                    page_segments_removed = report.removed_page_segment_ids.len();
-                    page_segments_removed_physical_bytes = report.removed_physical_bytes;
-                    page_segments_retained_physical_bytes = report.retained_physical_bytes;
-                    page_segments_retained_live = report.retained_live_page_segment_ids.len();
-                    page_segments_retained_live_physical_bytes =
+                    page_slabs_removed = report.removed_page_slab_ids.len();
+                    page_slabs_removed_physical_bytes = report.removed_physical_bytes;
+                    page_slabs_retained_physical_bytes = report.retained_physical_bytes;
+                    page_slabs_retained_live = report.retained_live_page_slab_ids.len();
+                    page_slabs_retained_live_physical_bytes =
                         report.retained_live_physical_bytes;
                 }
                 Err(err) => {
@@ -155,8 +155,8 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
                 follower_replay_cursors: Vec::new(),
                 page_gc_shared_store_cursors: Vec::new(),
                 page_gc_raft_snapshot_refs: Vec::new(),
-                page_gc_checkpoint_floor_segment_id: None,
-                page_gc_raft_install_floor_segment_id: None,
+                page_gc_checkpoint_floor_slab_id: None,
+                page_gc_raft_install_floor_slab_id: None,
                 page_gc_delayed_destroy_grace_ms: 0,
                 invalidate_cache: false,
                 warm_cache: false,
@@ -175,11 +175,11 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
         cache_disk_bytes_removed,
         oplog_records_removed,
         index_log_records_removed,
-        page_segments_removed,
-        page_segments_removed_physical_bytes,
-        page_segments_retained_physical_bytes,
-        page_segments_retained_live,
-        page_segments_retained_live_physical_bytes,
+        page_slabs_removed,
+        page_slabs_removed_physical_bytes,
+        page_slabs_retained_physical_bytes,
+        page_slabs_retained_live,
+        page_slabs_retained_live_physical_bytes,
         lifecycle_plan,
     }
 }

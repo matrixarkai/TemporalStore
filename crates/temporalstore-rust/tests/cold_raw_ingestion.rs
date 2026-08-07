@@ -87,7 +87,7 @@ fn cold_raw_ingestion_writes_wal_and_avoids_cache_promotion() {
     let wal_scan = engine.scan_stream(ScanStreamRequest {
         shard_id: 1,
         stream_kind: StreamKind::Wal,
-        page_segment_id: 0,
+        page_slab_id: 0,
         start_offset: 0,
         end_offset: 64 * 1024,
         max_bytes: 64 * 1024,

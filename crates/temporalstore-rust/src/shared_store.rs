@@ -98,8 +98,9 @@ pub struct SharedStoreWalIndexedRead {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SharedStorePageSegment {
-    pub page_segment_id: u64,
+pub struct SharedStorePageSlab {
+    #[serde(alias = "page_segment_id")]
+    pub page_slab_id: u64,
     pub key: String,
     pub byte_size: u64,
     pub sha256: String,
@@ -115,7 +116,8 @@ pub struct SharedStoreCheckpointManifest {
     pub index_key: String,
     pub index_byte_size: u64,
     pub index_sha256: String,
-    pub page_segments: Vec<SharedStorePageSegment>,
+    #[serde(alias = "page_segments")]
+    pub page_slabs: Vec<SharedStorePageSlab>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -503,20 +505,20 @@ where
         Ok(())
     }
 
-    pub async fn publish_page_segments(
+    pub async fn publish_page_slabs(
         &self,
         shard_id: ShardId,
         block_store: &LocalBlockStore,
     ) -> Result<Vec<u64>, SharedStoreReplicationError> {
         let mut published = Vec::new();
-        for page_segment_id in block_store.segment_ids()? {
+        for page_slab_id in block_store.slab_ids()? {
             self.object_store
                 .put(
-                    &self.page_segment_key(shard_id, page_segment_id),
-                    Bytes::from(block_store.read_segment(page_segment_id)?),
+                    &self.page_slab_key(shard_id, page_slab_id),
+                    Bytes::from(block_store.read_slab(page_slab_id)?),
                 )
                 .await?;
-            published.push(page_segment_id);
+            published.push(page_slab_id);
         }
         Ok(published)
     }
@@ -536,15 +538,15 @@ where
             .put(&index_key, Bytes::from(index.clone()))
             .await?;
 
-        let mut page_segments = Vec::new();
-        for page_segment_id in block_store.segment_ids()? {
-            let bytes = block_store.read_segment(page_segment_id)?;
-            let key = format!("{prefix}page_segments/page_segment_{page_segment_id:020}.seg");
+        let mut page_slabs = Vec::new();
+        for page_slab_id in block_store.slab_ids()? {
+            let bytes = block_store.read_slab(page_slab_id)?;
+            let key = format!("{prefix}page_segments/page_segment_{page_slab_id:020}.seg");
             self.object_store
                 .put(&key, Bytes::from(bytes.clone()))
                 .await?;
-            page_segments.push(SharedStorePageSegment {
-                page_segment_id,
+            page_slabs.push(SharedStorePageSlab {
+                page_slab_id,
                 key,
                 byte_size: bytes.len() as u64,
                 sha256: sha256_hex(&bytes),
@@ -560,7 +562,7 @@ where
             index_key,
             index_byte_size: index.len() as u64,
             index_sha256: sha256_hex(&index),
-            page_segments,
+            page_slabs,
         };
         self.object_store
             .put(
@@ -580,15 +582,15 @@ where
         let index = self.object_store.get(&self.index_key(shard_id)).await?;
         engine.install_index_bytes(shard_id, &index)?;
 
-        let prefix = self.page_segment_prefix(shard_id);
+        let prefix = self.page_slab_prefix(shard_id);
         let mut restored = Vec::new();
         for key in self.object_store.list(&prefix).await? {
-            let Some(page_segment_id) = parse_page_segment_id(&key) else {
+            let Some(page_slab_id) = parse_page_slab_id(&key) else {
                 continue;
             };
             let bytes = self.object_store.get(&key).await?;
-            block_store.install_segment(page_segment_id, &bytes)?;
-            restored.push(page_segment_id);
+            block_store.install_slab(page_slab_id, &bytes)?;
+            restored.push(page_slab_id);
         }
         restored.sort_unstable();
         Ok(restored)
@@ -630,10 +632,10 @@ where
         )?;
         engine.install_index_bytes(manifest.shard_id, &index)?;
 
-        for segment in &manifest.page_segments {
-            let bytes = self.object_store.get(&segment.key).await?;
-            verify_checksum(&segment.key, &bytes, segment.byte_size, &segment.sha256)?;
-            block_store.install_segment(segment.page_segment_id, &bytes)?;
+        for slab in &manifest.page_slabs {
+            let bytes = self.object_store.get(&slab.key).await?;
+            verify_checksum(&slab.key, &bytes, slab.byte_size, &slab.sha256)?;
+            block_store.install_slab(slab.page_slab_id, &bytes)?;
         }
         Ok(())
     }
@@ -1049,14 +1051,14 @@ where
         format!("{}index/shard.index.json", self.shard_prefix(shard_id))
     }
 
-    fn page_segment_prefix(&self, shard_id: ShardId) -> String {
+    fn page_slab_prefix(&self, shard_id: ShardId) -> String {
         format!("{}page_segments/", self.shard_prefix(shard_id))
     }
 
-    fn page_segment_key(&self, shard_id: ShardId, page_segment_id: u64) -> String {
+    fn page_slab_key(&self, shard_id: ShardId, page_slab_id: u64) -> String {
         format!(
-            "{}page_segment_{page_segment_id:020}.seg",
-            self.page_segment_prefix(shard_id)
+            "{}page_segment_{page_slab_id:020}.seg",
+            self.page_slab_prefix(shard_id)
         )
     }
 
@@ -1321,7 +1323,7 @@ where
     }
 }
 
-fn parse_page_segment_id(key: &str) -> Option<u64> {
+fn parse_page_slab_id(key: &str) -> Option<u64> {
     key.rsplit('/')
         .next()?
         .strip_prefix("page_segment_")?
@@ -1785,7 +1787,7 @@ mod tests {
         let (_store, replicator) = test_shared_store(dir.path());
         replicator.publish_index(1, &primary).await.unwrap();
         replicator
-            .publish_page_segments(1, &primary.block_store())
+            .publish_page_slabs(1, &primary.block_store())
             .await
             .unwrap();
         replicator
@@ -1848,7 +1850,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shared_store_checkpoint_rejects_corrupt_page_segment() {
+    async fn shared_store_checkpoint_rejects_corrupt_page_slab() {
         let dir = tempfile::tempdir().unwrap();
         let primary = test_engine(dir.path(), "primary");
         primary.load_shard(1);
@@ -1867,7 +1869,7 @@ mod tests {
             .unwrap();
         store
             .put(
-                &manifest.page_segments[0].key,
+                &manifest.page_slabs[0].key,
                 Bytes::from_static(b"corrupt"),
             )
             .await
@@ -2133,7 +2135,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(manifest.checkpoint_oplog_index, 1);
-        assert!(!manifest.page_segments.is_empty());
+        assert!(!manifest.page_slabs.is_empty());
 
         let sync_writer = replicator.storage_writer(SharedStoreStorageMode::Sync, 2);
         assert_eq!(
@@ -2426,7 +2428,7 @@ mod tests {
             MatrixObjectObjectStore::new(
                 "temporalstore-shared",
                 StoreOptions {
-                    segment_size: 16,
+                    slab_size: 16,
                     max_band_bytes: 4,
                     chunk_size: 4,
                     ..StoreOptions::default()

@@ -11,21 +11,21 @@ pub(super) fn compaction_utility_report(
         .filter(|entry| !entry.deleted)
         .map(|entry| entry.address.clone())
         .collect::<Vec<_>>();
-    let live_page_segment_ids = addresses
+    let live_page_slab_ids = addresses
         .iter()
-        .map(|address| address.page_segment_id)
+        .map(|address| address.page_slab_id)
         .collect::<BTreeSet<_>>();
-    let segment_page_counts = page_store
-        .segment_reports()
+    let slab_page_counts = page_store
+        .slab_reports()
         .unwrap_or_default()
         .into_iter()
-        .map(|report| (report.page_segment_id, report.page_count))
+        .map(|report| (report.page_slab_id, report.page_count))
         .collect::<BTreeMap<_, _>>();
-    let total_page_count = live_page_segment_ids
+    let total_page_count = live_page_slab_ids
         .iter()
-        .map(|page_segment_id| {
-            segment_page_counts
-                .get(page_segment_id)
+        .map(|page_slab_id| {
+            slab_page_counts
+                .get(page_slab_id)
                 .copied()
                 .unwrap_or_default()
         })
@@ -38,25 +38,25 @@ pub(super) fn compaction_utility_report(
         live_page_refs.saturating_mul(10_000) / total_page_count
     };
     ShardCompactionUtilityReport {
-        live_page_segment_count: live_page_segment_ids.len(),
+        live_page_slab_count: live_page_slab_ids.len(),
         total_page_count,
         live_page_refs,
         stale_page_estimate,
         live_ref_density_basis_points,
-        model_policies: model_compaction_policy_reports(shard, &entries, &segment_page_counts),
+        model_policies: model_compaction_policy_reports(shard, &entries, &slab_page_counts),
     }
 }
 
 pub(super) fn model_compaction_policy_reports(
     shard: &ShardState,
     entries: &[LivePageEntry],
-    segment_page_counts: &BTreeMap<u64, u64>,
+    slab_page_counts: &BTreeMap<u64, u64>,
 ) -> Vec<ModelCompactionPolicyReport> {
     #[derive(Default)]
     struct ModelStats {
         live_page_refs: u64,
         deleted_page_refs: u64,
-        segment_ids: BTreeSet<u64>,
+        slab_ids: BTreeSet<u64>,
     }
 
     let mut by_model = BTreeMap::<String, ModelStats>::new();
@@ -66,7 +66,7 @@ pub(super) fn model_compaction_policy_reports(
             stats.deleted_page_refs = stats.deleted_page_refs.saturating_add(1);
         } else {
             stats.live_page_refs = stats.live_page_refs.saturating_add(1);
-            stats.segment_ids.insert(entry.address.page_segment_id);
+            stats.slab_ids.insert(entry.address.page_slab_id);
         }
     }
     for key in shard
@@ -102,21 +102,21 @@ pub(super) fn model_compaction_policy_reports(
     by_model
         .into_iter()
         .map(|(model_id, stats)| {
-            let total_segment_pages = stats
-                .segment_ids
+            let total_slab_pages = stats
+                .slab_ids
                 .iter()
-                .map(|segment_id| {
-                    segment_page_counts
-                        .get(segment_id)
+                .map(|slab_id| {
+                    slab_page_counts
+                        .get(slab_id)
                         .copied()
                         .unwrap_or_default()
                 })
                 .sum::<u64>();
-            let stale_page_estimate = total_segment_pages.saturating_sub(stats.live_page_refs);
-            let stale_density_basis_points = if total_segment_pages == 0 {
+            let stale_page_estimate = total_slab_pages.saturating_sub(stats.live_page_refs);
+            let stale_density_basis_points = if total_slab_pages == 0 {
                 0
             } else {
-                stale_page_estimate.saturating_mul(10_000) / total_segment_pages
+                stale_page_estimate.saturating_mul(10_000) / total_slab_pages
             };
             let total_refs = stats.live_page_refs.saturating_add(stats.deleted_page_refs);
             let tombstone_density_basis_points = if total_refs == 0 {
@@ -141,11 +141,11 @@ pub(super) fn model_compaction_policy_reports(
                 model_id,
                 live_page_refs: stats.live_page_refs,
                 deleted_page_refs: stats.deleted_page_refs,
-                total_segment_pages,
+                total_slab_pages,
                 stale_page_estimate,
                 stale_density_basis_points,
                 tombstone_density_basis_points,
-                object_page_pack_group_count: stats.segment_ids.len() as u64,
+                object_page_pack_group_count: stats.slab_ids.len() as u64,
                 cold_page_rewrite_eligible_refs: stats.live_page_refs,
                 compaction_action: compaction_action_for_policy(
                     stats.live_page_refs,
@@ -257,7 +257,7 @@ pub(super) fn page_memory_resident(cache: &MultiLayerCache, shard_id: ShardId, a
     cache
         .get_memory(&CacheKey::page_with_slot_generation(
             shard_id,
-            address.page_segment_id,
+            address.page_slab_id,
             address.offset,
             address.length,
             address.routing_bucket,
@@ -270,18 +270,18 @@ pub(super) fn compaction_model_layout_reports(
     page_store: &LocalBlockStore,
     shard: &ShardState,
 ) -> Vec<ShardCompactionModelLayoutReport> {
-    let segment_page_counts = page_store
-        .segment_reports()
+    let slab_page_counts = page_store
+        .slab_reports()
         .unwrap_or_default()
         .into_iter()
-        .map(|report| (report.page_segment_id, report.page_count))
+        .map(|report| (report.page_slab_id, report.page_count))
         .collect::<BTreeMap<_, _>>();
     let mut reports = Vec::new();
     reports.push(compaction_layout_from_addresses(
         "string",
         shard.strings.len(),
         shard.strings.values().cloned(),
-        &segment_page_counts,
+        &slab_page_counts,
         None,
     ));
     reports.push(compaction_layout_from_addresses(
@@ -291,7 +291,7 @@ pub(super) fn compaction_model_layout_reports(
             .hashes
             .values()
             .flat_map(|fields| fields.values().cloned()),
-        &segment_page_counts,
+        &slab_page_counts,
         None,
     ));
     reports.push(compaction_layout_from_addresses(
@@ -301,74 +301,74 @@ pub(super) fn compaction_model_layout_reports(
             .sets
             .values()
             .flat_map(|members| members.values().cloned()),
-        &segment_page_counts,
+        &slab_page_counts,
         None,
     ));
     reports.push(compaction_timestamped_layout(
         "feature",
         &shard.features,
-        &segment_page_counts,
+        &slab_page_counts,
     ));
     reports.push(compaction_timestamped_layout(
         "sequence",
         &shard.sequences,
-        &segment_page_counts,
+        &slab_page_counts,
     ));
     reports.push(compaction_timestamped_layout(
         "ips",
         &shard.ips,
-        &segment_page_counts,
+        &slab_page_counts,
     ));
     reports.push(compaction_layout_from_addresses(
         "context_node",
         shard.context_nodes.len(),
         shard.context_nodes.values().cloned(),
-        &segment_page_counts,
+        &slab_page_counts,
         None,
     ));
     reports.push(compaction_timestamped_layout(
         "context_event",
         &shard.context_events,
-        &segment_page_counts,
+        &slab_page_counts,
     ));
     reports.push(compaction_timestamped_layout(
         "context_index",
         &shard.context_indexes,
-        &segment_page_counts,
+        &slab_page_counts,
     ));
     reports.push(compaction_timestamped_layout(
         "context_audit",
         &shard.context_audits,
-        &segment_page_counts,
+        &slab_page_counts,
     ));
     reports.push(compaction_layout_from_addresses(
         "context_entity",
         shard.context_entities.len(),
         shard.context_entities.values().cloned(),
-        &segment_page_counts,
+        &slab_page_counts,
         None,
     ));
     reports.push(compaction_timestamped_layout(
         "context_child",
         &shard.context_children,
-        &segment_page_counts,
+        &slab_page_counts,
     ));
     reports.push(compaction_layout_from_addresses(
         "context_embedding",
         shard.context_embeddings.len(),
         shard.context_embeddings.values().cloned(),
-        &segment_page_counts,
+        &slab_page_counts,
         None,
     ));
     reports.push(compaction_timestamped_layout(
         "context_summary",
         &shard.context_summaries,
-        &segment_page_counts,
+        &slab_page_counts,
     ));
     reports.push(compaction_timestamped_layout(
         "context_compression",
         &shard.context_compressions,
-        &segment_page_counts,
+        &slab_page_counts,
     ));
     reports.retain(|report| report.object_count > 0 || report.index_refs > 0);
     reports
@@ -377,7 +377,7 @@ pub(super) fn compaction_model_layout_reports(
 pub(super) fn compaction_timestamped_layout(
     kind: &str,
     timelines: &HashMap<String, BTreeMap<u64, BlockAddress>>,
-    segment_page_counts: &BTreeMap<u64, u64>,
+    slab_page_counts: &BTreeMap<u64, u64>,
 ) -> ShardCompactionModelLayoutReport {
     let mut ref_counts = HashMap::<BlockAddress, usize>::new();
     for address in timelines
@@ -391,7 +391,7 @@ pub(super) fn compaction_timestamped_layout(
         kind,
         timelines.len(),
         ref_counts.keys().cloned(),
-        segment_page_counts,
+        slab_page_counts,
         Some(packed_pages),
     )
     .with_index_refs(ref_counts.values().sum())
@@ -401,7 +401,7 @@ pub(super) fn compaction_layout_from_addresses(
     kind: &str,
     object_count: usize,
     addresses: impl IntoIterator<Item = BlockAddress>,
-    segment_page_counts: &BTreeMap<u64, u64>,
+    slab_page_counts: &BTreeMap<u64, u64>,
     packed_pages: Option<usize>,
 ) -> ShardCompactionModelLayoutReport {
     let addresses = addresses.into_iter().collect::<Vec<_>>();
@@ -411,25 +411,25 @@ pub(super) fn compaction_layout_from_addresses(
         .collect::<HashSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    let live_segment_ids = unique_addresses
+    let live_slab_ids = unique_addresses
         .iter()
-        .map(|address| address.page_segment_id)
+        .map(|address| address.page_slab_id)
         .collect::<BTreeSet<_>>();
-    let total_pages_in_live_segments = live_segment_ids
+    let total_pages_in_live_slabs = live_slab_ids
         .iter()
-        .map(|segment_id| {
-            segment_page_counts
-                .get(segment_id)
+        .map(|slab_id| {
+            slab_page_counts
+                .get(slab_id)
                 .copied()
                 .unwrap_or_default()
         })
         .sum::<u64>();
     let unique_page_refs = unique_addresses.len();
     let packed_timestamped_pages = packed_pages.unwrap_or_default();
-    let live_ref_density_basis_points = if total_pages_in_live_segments == 0 {
+    let live_ref_density_basis_points = if total_pages_in_live_slabs == 0 {
         0
     } else {
-        (unique_page_refs as u64).saturating_mul(10_000) / total_pages_in_live_segments
+        (unique_page_refs as u64).saturating_mul(10_000) / total_pages_in_live_slabs
     };
     ShardCompactionModelLayoutReport {
         kind: kind.to_string(),
@@ -438,7 +438,7 @@ pub(super) fn compaction_layout_from_addresses(
         unique_page_refs,
         packed_timestamped_pages,
         legacy_value_pages: unique_page_refs.saturating_sub(packed_timestamped_pages),
-        stale_page_estimate: total_pages_in_live_segments.saturating_sub(unique_page_refs as u64),
+        stale_page_estimate: total_pages_in_live_slabs.saturating_sub(unique_page_refs as u64),
         live_ref_density_basis_points,
     }
 }
@@ -477,7 +477,7 @@ pub(super) fn compact_page_addresses<'a>(
         let _ = cache.put(
             CacheKey::page_with_slot_generation(
                 shard_id,
-                new_address.page_segment_id,
+                new_address.page_slab_id,
                 new_address.offset,
                 new_address.length,
                 new_address.routing_bucket,
@@ -515,7 +515,7 @@ pub(super) fn compact_feature_page_addresses(
         let _ = cache.put(
             CacheKey::page_with_slot_generation(
                 shard_id,
-                new_address.page_segment_id,
+                new_address.page_slab_id,
                 new_address.offset,
                 new_address.length,
                 new_address.routing_bucket,

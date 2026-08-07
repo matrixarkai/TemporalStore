@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 
 use super::{
     BlockAddress, BlockStoreBlockIndexReport, BlockStoreError, BlockStoreOptions,
-    BlockStoreSegmentReport,
+    BlockStoreSlabReport,
 };
 
 pub(super) const PAGE_RECORD_MAGIC: &[u8; 8] = b"TSPAGE01";
@@ -203,9 +203,9 @@ pub(super) fn decode_page_record(
     })
 }
 
-pub(super) fn logical_range_from_segment(
-    segment: &[u8],
-    page_segment_id: u64,
+pub(super) fn logical_range_from_slab(
+    slab: &[u8],
+    page_slab_id: u64,
     offset: u64,
     size: u64,
 ) -> Result<LogicalRangeRead, BlockStoreError> {
@@ -215,13 +215,13 @@ pub(super) fn logical_range_from_segment(
             compressed_records_read: 0,
         });
     }
-    if !segment.starts_with(PAGE_RECORD_MAGIC) {
+    if !slab.starts_with(PAGE_RECORD_MAGIC) {
         let start = offset as usize;
-        let end = start.saturating_add(size as usize).min(segment.len());
-        let bytes = if start >= segment.len() {
+        let end = start.saturating_add(size as usize).min(slab.len());
+        let bytes = if start >= slab.len() {
             Vec::new()
         } else {
-            segment[start..end].to_vec()
+            slab[start..end].to_vec()
         };
         return Ok(LogicalRangeRead {
             bytes,
@@ -236,10 +236,10 @@ pub(super) fn logical_range_from_segment(
     let mut out = Vec::with_capacity(size as usize);
     let mut compressed_records_read = 0_u64;
 
-    while physical_offset < segment.len() && out.len() < size as usize {
-        let remaining = &segment[physical_offset..];
+    while physical_offset < slab.len() && out.len() < size as usize {
+        let remaining = &slab[physical_offset..];
         let address = BlockAddress {
-            page_segment_id,
+            page_slab_id,
             offset: physical_offset as u64,
             length: 0,
             page_id: None,
@@ -475,7 +475,7 @@ fn verify_page_record_checksum(
     let actual_sha256 = Sha256::digest(payload);
     if &actual_sha256[..] != expected_sha256 {
         return Err(BlockStoreError::ChecksumMismatch {
-            page_segment_id: address.page_segment_id,
+            page_slab_id: address.page_slab_id,
             offset: address.offset,
             length: address.length,
             expected: hex::encode(expected_sha256),
@@ -490,7 +490,7 @@ pub(super) fn corrupt_page_envelope(
     reason: impl Into<String>,
 ) -> BlockStoreError {
     BlockStoreError::CorruptPageEnvelope {
-        page_segment_id: address.page_segment_id,
+        page_slab_id: address.page_slab_id,
         offset: address.offset,
         reason: reason.into(),
     }
@@ -501,29 +501,29 @@ pub(super) fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(super) struct SegmentSummary {
+pub(super) struct SlabSummary {
     pub(super) logical_bytes: u64,
     pub(super) first_page_id: Option<u64>,
     pub(super) last_page_id: Option<u64>,
 }
 
-pub(super) fn summarize_segment(
-    segment: &[u8],
-    page_segment_id: u64,
-) -> Result<SegmentSummary, BlockStoreError> {
-    if !segment.starts_with(PAGE_RECORD_MAGIC) {
-        return Ok(SegmentSummary {
-            logical_bytes: segment.len() as u64,
+pub(super) fn summarize_slab(
+    slab: &[u8],
+    page_slab_id: u64,
+) -> Result<SlabSummary, BlockStoreError> {
+    if !slab.starts_with(PAGE_RECORD_MAGIC) {
+        return Ok(SlabSummary {
+            logical_bytes: slab.len() as u64,
             first_page_id: None,
             last_page_id: None,
         });
     }
     let mut physical_offset = 0usize;
-    let mut summary = SegmentSummary::default();
-    while physical_offset < segment.len() {
-        let remaining = &segment[physical_offset..];
+    let mut summary = SlabSummary::default();
+    while physical_offset < slab.len() {
+        let remaining = &slab[physical_offset..];
         let address = BlockAddress {
-            page_segment_id,
+            page_slab_id,
             offset: physical_offset as u64,
             length: 0,
             page_id: None,
@@ -570,29 +570,29 @@ pub(super) fn summarize_segment(
     Ok(summary)
 }
 
-pub(super) fn inspect_segment(segment: &[u8], page_segment_id: u64) -> BlockStoreSegmentReport {
-    let mut report = BlockStoreSegmentReport {
-        page_segment_id,
-        physical_bytes: segment.len() as u64,
-        ..BlockStoreSegmentReport::default()
+pub(super) fn inspect_slab(slab: &[u8], page_slab_id: u64) -> BlockStoreSlabReport {
+    let mut report = BlockStoreSlabReport {
+        page_slab_id,
+        physical_bytes: slab.len() as u64,
+        ..BlockStoreSlabReport::default()
     };
     let mut object_ids = BTreeSet::new();
     let mut routing_buckets = BTreeSet::new();
-    if segment.is_empty() {
+    if slab.is_empty() {
         return report;
     }
-    if !segment.starts_with(PAGE_RECORD_MAGIC) {
-        report.logical_bytes = segment.len() as u64;
+    if !slab.starts_with(PAGE_RECORD_MAGIC) {
+        report.logical_bytes = slab.len() as u64;
         report.page_count = 1;
-        report.readable_prefix_physical_bytes = segment.len() as u64;
+        report.readable_prefix_physical_bytes = slab.len() as u64;
         return report;
     }
 
     let mut physical_offset = 0usize;
-    while physical_offset < segment.len() {
-        let remaining = &segment[physical_offset..];
+    while physical_offset < slab.len() {
+        let remaining = &slab[physical_offset..];
         let mut address = BlockAddress {
-            page_segment_id,
+            page_slab_id,
             offset: physical_offset as u64,
             length: 0,
             page_id: None,
@@ -603,7 +603,7 @@ pub(super) fn inspect_segment(segment: &[u8], page_segment_id: u64) -> BlockStor
             sha256: None,
         };
         if !remaining.starts_with(PAGE_RECORD_MAGIC) {
-            record_segment_inspection_error(
+            record_slab_inspection_error(
                 &mut report,
                 address.offset,
                 corrupt_page_envelope(&address, "mixed raw bytes after page envelope").to_string(),
@@ -611,7 +611,7 @@ pub(super) fn inspect_segment(segment: &[u8], page_segment_id: u64) -> BlockStor
             break;
         }
         if remaining.len() < PAGE_RECORD_V1_HEADER_LEN {
-            record_segment_inspection_error(
+            record_slab_inspection_error(
                 &mut report,
                 address.offset,
                 corrupt_page_envelope(&address, "short header").to_string(),
@@ -621,13 +621,13 @@ pub(super) fn inspect_segment(segment: &[u8], page_segment_id: u64) -> BlockStor
         let header = match parse_page_record_header(remaining, &address) {
             Ok(header) => header,
             Err(err) => {
-                record_segment_inspection_error(&mut report, address.offset, err.to_string());
+                record_slab_inspection_error(&mut report, address.offset, err.to_string());
                 break;
             }
         };
         let record_len = header.header_len.saturating_add(header.stored_len);
         if remaining.len() < record_len {
-            record_segment_inspection_error(
+            record_slab_inspection_error(
                 &mut report,
                 address.offset,
                 corrupt_page_envelope(&address, "payload length mismatch".to_string()).to_string(),
@@ -646,13 +646,13 @@ pub(super) fn inspect_segment(segment: &[u8], page_segment_id: u64) -> BlockStor
                     .logical_bytes
                     .saturating_add(decoded.logical_len as u64);
                 report.block_index_entries.push(BlockStoreBlockIndexReport {
-                    block_segment_id: page_segment_id,
+                    block_slab_id: page_slab_id,
                     offset: address.offset,
                     length: address.length,
-                    compact_segment_address: address.compact_segment_address(),
-                    compact_segment_id: address.compact_segment_id(),
-                    compact_segment_offset: address.compact_segment_offset(),
-                    storage_segment_id: header.band_id,
+                    compact_slab_address: address.compact_slab_address(),
+                    compact_slab_id: address.compact_slab_id(),
+                    compact_slab_offset: address.compact_slab_offset(),
+                    storage_slab_id: header.band_id,
                     object_id: header.object_id,
                     model_id: None,
                     block_id: header.page_id,
@@ -692,7 +692,7 @@ pub(super) fn inspect_segment(segment: &[u8], page_segment_id: u64) -> BlockStor
                 }
             }
             Err(err) => {
-                record_segment_inspection_error(&mut report, address.offset, err.to_string());
+                record_slab_inspection_error(&mut report, address.offset, err.to_string());
                 break;
             }
         }
@@ -702,8 +702,8 @@ pub(super) fn inspect_segment(segment: &[u8], page_segment_id: u64) -> BlockStor
     report
 }
 
-fn record_segment_inspection_error(
-    report: &mut BlockStoreSegmentReport,
+fn record_slab_inspection_error(
+    report: &mut BlockStoreSlabReport,
     offset: u64,
     error: String,
 ) {

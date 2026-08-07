@@ -1,7 +1,7 @@
 //! Band manifest load/rebuild/reconcile/persist + band descriptor maintenance, extracted from block_store.rs.
 
 use super::*;
-use super::segment_ids::*;
+use super::slab_ids::*;
 use std::fs::{self, File};
 use std::path::Path;
 
@@ -21,7 +21,7 @@ pub(super) fn load_band_manifest_at(
     let manifest: BlockStoreBandManifest =
         serde_json::from_slice(&fs::read(path)?).map_err(|err| {
             BlockStoreError::CorruptPageEnvelope {
-                page_segment_id: 0,
+                page_slab_id: 0,
                 offset: 0,
                 reason: format!("corrupt band manifest: {err}"),
             }
@@ -29,7 +29,7 @@ pub(super) fn load_band_manifest_at(
     Ok(manifest
         .bands
         .into_iter()
-        .map(|band| (band.page_segment_id, band))
+        .map(|band| (band.page_slab_id, band))
         .collect())
 }
 
@@ -37,17 +37,17 @@ pub(super) fn rebuild_band_manifest_at(
     root: &Path,
 ) -> Result<BTreeMap<u64, BlockStoreBandDescriptor>, BlockStoreError> {
     let mut bands = BTreeMap::new();
-    let latest = latest_segment_id_at(root)?;
-    for page_segment_id in segment_ids_at(root)? {
-        let path = segment_path(root, page_segment_id);
+    let latest = latest_slab_id_at(root)?;
+    for page_slab_id in slab_ids_at(root)? {
+        let path = slab_path(root, page_slab_id);
         let bytes = fs::read(&path)?;
-        let report = inspect_segment(&bytes, page_segment_id);
+        let report = inspect_slab(&bytes, page_slab_id);
         bands.insert(
-            page_segment_id,
+            page_slab_id,
             BlockStoreBandDescriptor {
-                band_id: band_id_for_segment(page_segment_id),
-                page_segment_id,
-                state: if page_segment_id == latest {
+                band_id: band_id_for_slab(page_slab_id),
+                page_slab_id,
+                state: if page_slab_id == latest {
                     BlockStoreBandState::Active
                 } else {
                     BlockStoreBandState::Sealed
@@ -67,17 +67,17 @@ pub(super) fn rebuild_band_manifest_at(
             },
         );
     }
-    for delayed in delayed_destroy_segment_reports_at(root)? {
+    for delayed in delayed_destroy_slab_reports_at(root)? {
         bands
-            .entry(delayed.page_segment_id)
+            .entry(delayed.page_slab_id)
             .and_modify(|band| {
                 band.state = BlockStoreBandState::DelayedDestroy;
                 band.updated_unix_ms = delayed.modified_unix_ms;
                 band.physical_bytes = delayed.physical_bytes;
             })
             .or_insert(BlockStoreBandDescriptor {
-                band_id: band_id_for_segment(delayed.page_segment_id),
-                page_segment_id: delayed.page_segment_id,
+                band_id: band_id_for_slab(delayed.page_slab_id),
+                page_slab_id: delayed.page_slab_id,
                 state: BlockStoreBandState::DelayedDestroy,
                 physical_bytes: delayed.physical_bytes,
                 logical_bytes: 0,
@@ -99,33 +99,33 @@ pub(super) fn reconcile_band_manifest_with_disk(
     bands: &mut BTreeMap<u64, BlockStoreBandDescriptor>,
 ) -> Result<bool, BlockStoreError> {
     let mut changed = false;
-    let live_segment_ids = segment_ids_at(root)?.into_iter().collect::<BTreeSet<_>>();
-    let delayed_segments = delayed_destroy_segment_reports_at(root)?
+    let live_slab_ids = slab_ids_at(root)?.into_iter().collect::<BTreeSet<_>>();
+    let delayed_slabs = delayed_destroy_slab_reports_at(root)?
         .into_iter()
-        .map(|report| (report.page_segment_id, report))
+        .map(|report| (report.page_slab_id, report))
         .collect::<BTreeMap<_, _>>();
-    let latest = live_segment_ids
+    let latest = live_slab_ids
         .iter()
         .next_back()
         .copied()
         .unwrap_or_default();
 
-    for page_segment_id in &live_segment_ids {
-        let path = segment_path(root, *page_segment_id);
+    for page_slab_id in &live_slab_ids {
+        let path = slab_path(root, *page_slab_id);
         let bytes = fs::read(&path)?;
-        let report = inspect_segment(&bytes, *page_segment_id);
-        let desired_state = if *page_segment_id == latest {
+        let report = inspect_slab(&bytes, *page_slab_id);
+        let desired_state = if *page_slab_id == latest {
             BlockStoreBandState::Active
         } else {
             BlockStoreBandState::Sealed
         };
         let created_unix_ms = file_created_unix_ms(&path).or_else(|| file_modified_unix_ms(&path));
         let updated_unix_ms = file_modified_unix_ms(&path).or_else(|| file_created_unix_ms(&path));
-        match bands.get_mut(page_segment_id) {
+        match bands.get_mut(page_slab_id) {
             Some(band) => {
                 let old = band.clone();
-                let content_changed = band.band_id != band_id_for_segment(*page_segment_id)
-                    || band.page_segment_id != *page_segment_id
+                let content_changed = band.band_id != band_id_for_slab(*page_slab_id)
+                    || band.page_slab_id != *page_slab_id
                     || band.state != desired_state
                     || band.physical_bytes != bytes.len() as u64
                     || band.logical_bytes != report.logical_bytes
@@ -136,8 +136,8 @@ pub(super) fn reconcile_band_manifest_with_disk(
                     || band.has_corruption != report.has_corruption
                     || band.first_error_offset != report.first_error_offset
                     || band.first_error != report.first_error;
-                band.band_id = band_id_for_segment(*page_segment_id);
-                band.page_segment_id = *page_segment_id;
+                band.band_id = band_id_for_slab(*page_slab_id);
+                band.page_slab_id = *page_slab_id;
                 band.state = desired_state;
                 band.physical_bytes = bytes.len() as u64;
                 band.logical_bytes = report.logical_bytes;
@@ -155,10 +155,10 @@ pub(super) fn reconcile_band_manifest_with_disk(
             }
             None => {
                 bands.insert(
-                    *page_segment_id,
+                    *page_slab_id,
                     BlockStoreBandDescriptor {
-                        band_id: band_id_for_segment(*page_segment_id),
-                        page_segment_id: *page_segment_id,
+                        band_id: band_id_for_slab(*page_slab_id),
+                        page_slab_id: *page_slab_id,
                         state: desired_state,
                         physical_bytes: bytes.len() as u64,
                         logical_bytes: report.logical_bytes,
@@ -177,13 +177,13 @@ pub(super) fn reconcile_band_manifest_with_disk(
         }
     }
 
-    for (page_segment_id, report) in &delayed_segments {
-        let old = bands.get(page_segment_id).cloned();
+    for (page_slab_id, report) in &delayed_slabs {
+        let old = bands.get(page_slab_id).cloned();
         bands.insert(
-            *page_segment_id,
+            *page_slab_id,
             BlockStoreBandDescriptor {
-                band_id: band_id_for_segment(*page_segment_id),
-                page_segment_id: *page_segment_id,
+                band_id: band_id_for_slab(*page_slab_id),
+                page_slab_id: *page_slab_id,
                 state: BlockStoreBandState::DelayedDestroy,
                 physical_bytes: report.physical_bytes,
                 logical_bytes: old.as_ref().map(|band| band.logical_bytes).unwrap_or(0),
@@ -200,17 +200,17 @@ pub(super) fn reconcile_band_manifest_with_disk(
                 first_error: None,
             },
         );
-        changed |= bands.get(page_segment_id) != old.as_ref();
+        changed |= bands.get(page_slab_id) != old.as_ref();
     }
 
     let known_ids = bands.keys().copied().collect::<Vec<_>>();
-    for page_segment_id in known_ids {
-        if live_segment_ids.contains(&page_segment_id)
-            || delayed_segments.contains_key(&page_segment_id)
+    for page_slab_id in known_ids {
+        if live_slab_ids.contains(&page_slab_id)
+            || delayed_slabs.contains_key(&page_slab_id)
         {
             continue;
         }
-        if let Some(band) = bands.get_mut(&page_segment_id) {
+        if let Some(band) = bands.get_mut(&page_slab_id) {
             if band.state != BlockStoreBandState::Purged {
                 band.state = BlockStoreBandState::Purged;
                 band.updated_unix_ms = Some(now_unix_ms());
@@ -243,7 +243,7 @@ pub(super) fn persist_band_manifest(
         let mut temp = File::create(&temp_path)?;
         serde_json::to_writer_pretty(&mut temp, &manifest).map_err(|err| {
             BlockStoreError::CorruptPageEnvelope {
-                page_segment_id: 0,
+                page_slab_id: 0,
                 offset: 0,
                 reason: format!("serialize band manifest: {err}"),
             }
@@ -333,23 +333,23 @@ pub(super) fn update_oldest_band_timestamp(target: &mut Option<u64>, band: &Bloc
 pub(super) fn ensure_band_descriptor(
     bands: &mut BTreeMap<u64, BlockStoreBandDescriptor>,
     root: &Path,
-    page_segment_id: u64,
+    page_slab_id: u64,
     state: BlockStoreBandState,
 ) {
-    bands.entry(page_segment_id).or_insert_with(|| {
-        let physical_bytes = segment_path(root, page_segment_id)
+    bands.entry(page_slab_id).or_insert_with(|| {
+        let physical_bytes = slab_path(root, page_slab_id)
             .metadata()
             .map(|metadata| metadata.len())
             .unwrap_or_default();
         BlockStoreBandDescriptor {
-            band_id: band_id_for_segment(page_segment_id),
-            page_segment_id,
+            band_id: band_id_for_slab(page_slab_id),
+            page_slab_id,
             state,
             physical_bytes,
             logical_bytes: physical_bytes,
-            created_unix_ms: file_created_unix_ms(&segment_path(root, page_segment_id))
-                .or_else(|| file_modified_unix_ms(&segment_path(root, page_segment_id))),
-            updated_unix_ms: file_modified_unix_ms(&segment_path(root, page_segment_id)),
+            created_unix_ms: file_created_unix_ms(&slab_path(root, page_slab_id))
+                .or_else(|| file_modified_unix_ms(&slab_path(root, page_slab_id))),
+            updated_unix_ms: file_modified_unix_ms(&slab_path(root, page_slab_id)),
             first_page_id: None,
             last_page_id: None,
             readable_prefix_physical_bytes: physical_bytes,
@@ -360,7 +360,7 @@ pub(super) fn ensure_band_descriptor(
     });
     let transition_unix_ms = now_unix_ms();
     for band in bands.values_mut() {
-        if band.page_segment_id == page_segment_id {
+        if band.page_slab_id == page_slab_id {
             band.state = state;
             band.updated_unix_ms = Some(transition_unix_ms);
         } else if band.state == BlockStoreBandState::Active {
@@ -372,16 +372,16 @@ pub(super) fn ensure_band_descriptor(
 
 pub(super) fn upsert_band_after_append(
     bands: &mut BTreeMap<u64, BlockStoreBandDescriptor>,
-    page_segment_id: u64,
+    page_slab_id: u64,
     physical_bytes: u64,
     logical_bytes_written: u64,
     page_id: u64,
 ) {
     let band = bands
-        .entry(page_segment_id)
+        .entry(page_slab_id)
         .or_insert(BlockStoreBandDescriptor {
-            band_id: band_id_for_segment(page_segment_id),
-            page_segment_id,
+            band_id: band_id_for_slab(page_slab_id),
+            page_slab_id,
             state: BlockStoreBandState::Active,
             physical_bytes: 0,
             logical_bytes: 0,
@@ -420,18 +420,18 @@ pub(super) fn upsert_band_after_append(
 
 pub(super) fn set_band_state(
     bands: &mut BTreeMap<u64, BlockStoreBandDescriptor>,
-    page_segment_id: u64,
+    page_slab_id: u64,
     state: BlockStoreBandState,
 ) {
     bands
-        .entry(page_segment_id)
+        .entry(page_slab_id)
         .and_modify(|band| {
             band.state = state;
             band.updated_unix_ms = Some(now_unix_ms());
         })
         .or_insert(BlockStoreBandDescriptor {
-            band_id: band_id_for_segment(page_segment_id),
-            page_segment_id,
+            band_id: band_id_for_slab(page_slab_id),
+            page_slab_id,
             state,
             physical_bytes: 0,
             logical_bytes: 0,

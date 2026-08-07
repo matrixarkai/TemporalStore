@@ -25,13 +25,13 @@ impl TemporalEngine {
             })
             .collect::<Vec<_>>();
         bucket_summaries.sort_by_key(|summary| summary.routing_bucket);
-        let mut page_segment_ids = bucket_summaries
+        let mut page_slab_ids = bucket_summaries
             .iter()
-            .flat_map(|summary| summary.page_segment_ids.iter().copied())
+            .flat_map(|summary| summary.page_slab_ids.iter().copied())
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        page_segment_ids.sort_unstable();
+        page_slab_ids.sort_unstable();
         let oplog_sequence = self.wal_store.stats(shard_id).last_sequence;
         let index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
         let index_bytes = self
@@ -64,7 +64,7 @@ impl TemporalEngine {
                 .iter()
                 .map(|summary| summary.routing_bucket)
                 .collect(),
-            page_segment_ids,
+            page_slab_ids,
             oplog_sequence,
             index_log_sequence,
             live_page_refs: bucket_summaries
@@ -455,17 +455,17 @@ impl TemporalEngine {
                 "slot dump manifest index checksum mismatch",
             ));
         }
-        let existing_segments = self
+        let existing_slabs = self
             .page_store
-            .segment_ids()
+            .slab_ids()
             .map_err(|err| Status::error("slot_dump_invalid", err.to_string()))?
             .into_iter()
             .collect::<BTreeSet<_>>();
         let missing = manifest
-            .page_segment_ids
+            .page_slab_ids
             .iter()
             .copied()
-            .filter(|id| !existing_segments.contains(id))
+            .filter(|id| !existing_slabs.contains(id))
             .collect::<Vec<_>>();
         if !missing.is_empty() {
             return Err(Status::error(
@@ -484,14 +484,14 @@ impl TemporalEngine {
                 "slot dump manifest slot ids must be sorted and unique",
             ));
         }
-        let canonical_page_segment_ids = manifest
-            .page_segment_ids
+        let canonical_page_slab_ids = manifest
+            .page_slab_ids
             .iter()
             .copied()
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        if manifest.page_segment_ids != canonical_page_segment_ids {
+        if manifest.page_slab_ids != canonical_page_slab_ids {
             return Err(Status::error(
                 "slot_dump_page_segment_ids_not_canonical",
                 "slot dump manifest page segment ids must be sorted and unique",
@@ -563,20 +563,20 @@ impl TemporalEngine {
                 ));
             }
         }
-        let referenced_page_segment_ids = live_page_entries
+        let referenced_page_slab_ids = live_page_entries
             .iter()
-            .map(|entry| entry.address.page_segment_id)
+            .map(|entry| entry.address.page_slab_id)
             .collect::<BTreeSet<_>>();
-        let manifest_page_segment_ids = manifest
-            .page_segment_ids
+        let manifest_page_slab_ids = manifest
+            .page_slab_ids
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
-        if referenced_page_segment_ids != manifest_page_segment_ids {
+        if referenced_page_slab_ids != manifest_page_slab_ids {
             return Err(Status::error(
                 "slot_dump_page_segment_mismatch",
                 format!(
-                    "slot dump page segment ids {manifest_page_segment_ids:?} do not match live refs {referenced_page_segment_ids:?}"
+                    "slot dump page segment ids {manifest_page_slab_ids:?} do not match live refs {referenced_page_slab_ids:?}"
                 ),
             ));
         }
@@ -614,44 +614,44 @@ impl TemporalEngine {
         let current_oplog_sequence = self.wal_store.stats(manifest.shard_id).last_sequence;
         let current_index_log_sequence =
             self.index_log_store.stats(manifest.shard_id).last_sequence;
-        let existing_segments = self
+        let existing_slabs = self
             .page_store
-            .segment_ids()
+            .slab_ids()
             .unwrap_or_default()
             .into_iter()
             .collect::<BTreeSet<_>>();
-        let missing_page_segment_ids = manifest
-            .page_segment_ids
+        let missing_page_slab_ids = manifest
+            .page_slab_ids
             .iter()
             .copied()
-            .filter(|id| !existing_segments.contains(id))
+            .filter(|id| !existing_slabs.contains(id))
             .collect::<Vec<_>>();
-        let corrupt_page_segment_ids = self
+        let corrupt_page_slab_ids = self
             .page_store
-            .segment_reports()
+            .slab_reports()
             .unwrap_or_default()
             .into_iter()
             .filter(|report| {
-                report.has_corruption && manifest.page_segment_ids.contains(&report.page_segment_id)
+                report.has_corruption && manifest.page_slab_ids.contains(&report.page_slab_id)
             })
-            .map(|report| report.page_segment_id)
+            .map(|report| report.page_slab_id)
             .collect::<Vec<_>>();
         let stale_manifest = current_index_log_sequence > manifest.index_log_sequence;
         let mut blockers = Vec::new();
         if stale_manifest {
             blockers.push("stale_manifest_sequence".to_string());
         }
-        if !missing_page_segment_ids.is_empty() {
+        if !missing_page_slab_ids.is_empty() {
             blockers.push("missing_page_segments".to_string());
         }
-        if !corrupt_page_segment_ids.is_empty() {
+        if !corrupt_page_slab_ids.is_empty() {
             blockers.push("corrupt_page_segments".to_string());
         }
 
         let mut unreadable_page_ref_count = 0usize;
         let mut unreadable_page_bytes = 0u64;
         let mut restored_index = None;
-        if !manifest.index_bytes.is_empty() && missing_page_segment_ids.is_empty() {
+        if !manifest.index_bytes.is_empty() && missing_page_slab_ids.is_empty() {
             if let Ok(restored) = serde_json::from_slice::<ShardState>(&manifest.index_bytes) {
                 let manifest_buckets = manifest.bucket_ids.iter().copied().collect::<BTreeSet<_>>();
                 for entry in collect_live_page_entries(&restored) {
@@ -726,8 +726,8 @@ impl TemporalEngine {
             current_index_log_sequence,
             manifest_oplog_sequence: manifest.oplog_sequence,
             manifest_index_log_sequence: manifest.index_log_sequence,
-            missing_page_segment_ids,
-            corrupt_page_segment_ids,
+            missing_page_slab_ids,
+            corrupt_page_slab_ids,
             unreadable_page_ref_count,
             unreadable_page_bytes,
             stale_manifest,
@@ -897,15 +897,15 @@ impl TemporalEngine {
         ));
 
         let mut missing = manifest.clone();
-        let missing_segment_id = missing
-            .page_segment_ids
+        let missing_slab_id = missing
+            .page_slab_ids
             .iter()
             .copied()
             .max()
             .unwrap_or_default()
             .saturating_add(1_000_000);
-        missing.page_segment_ids.push(missing_segment_id);
-        missing.page_segment_ids.sort_unstable();
+        missing.page_slab_ids.push(missing_slab_id);
+        missing.page_slab_ids.sort_unstable();
         missing.checksum =
             bucket_dump_manifest_checksum(&missing).unwrap_or_else(|err| err.code.clone());
         let missing_preflight = self.bucket_dump_install_preflight_report(&missing);
@@ -1001,13 +1001,13 @@ impl TemporalEngine {
         let mut corrupt_code = "not_run".to_string();
         let mut corrupt_blockers = Vec::new();
         let mut corrupt_install_safe = false;
-        if let Some(segment_id) = manifest.page_segment_ids.first().copied() {
-            match self.page_store.read_segment(segment_id) {
-                Ok(mut segment) if !segment.is_empty() => {
-                    if let Some(last) = segment.last_mut() {
+        if let Some(slab_id) = manifest.page_slab_ids.first().copied() {
+            match self.page_store.read_slab(slab_id) {
+                Ok(mut slab) if !slab.is_empty() => {
+                    if let Some(last) = slab.last_mut() {
                         *last ^= 0xff;
                     }
-                    match self.page_store.install_segment(segment_id, &segment) {
+                    match self.page_store.install_slab(slab_id, &slab) {
                         Ok(()) => {
                             let corrupt_preflight =
                                 self.bucket_dump_install_preflight_report(&manifest);

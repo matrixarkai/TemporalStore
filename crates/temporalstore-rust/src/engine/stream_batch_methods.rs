@@ -6,7 +6,7 @@ impl TemporalEngine {
         let data: Result<Vec<u8>, String> = match request.stream_kind {
             StreamKind::Block | StreamKind::Page => self
                 .page_store
-                .read_logical_range(request.page_segment_id, request.offset, request.size)
+                .read_logical_range(request.page_slab_id, request.offset, request.size)
                 .map_err(|err| err.to_string()),
             StreamKind::Index => fs::read(self.index_path(request.shard_id))
                 .map_err(|err| err.to_string())
@@ -93,7 +93,7 @@ impl TemporalEngine {
         let read = self.read_stream(StreamReadRequest {
             shard_id: request.shard_id,
             stream_kind: request.stream_kind,
-            page_segment_id: request.page_segment_id,
+            page_slab_id: request.page_slab_id,
             offset: request.start_offset,
             size,
         });
@@ -367,7 +367,7 @@ impl TemporalEngine {
                 let mut publish_targets = shard
                     .strings
                     .iter()
-                    .filter(|(_, address)| address.page_segment_id == HOT_PAGE_SEGMENT_ID)
+                    .filter(|(_, address)| address.page_slab_id == HOT_PAGE_SLAB_ID)
                     .map(|(key, address)| {
                         (PublishTarget::String { key: key.clone() }, address.clone())
                     })
@@ -378,7 +378,7 @@ impl TemporalEngine {
                         .iter()
                         .flat_map(|(key, fields)| {
                             fields.iter().filter_map(move |(field, address)| {
-                                (address.page_segment_id == HOT_PAGE_SEGMENT_ID).then(|| {
+                                (address.page_slab_id == HOT_PAGE_SLAB_ID).then(|| {
                                     (
                                         PublishTarget::Hash {
                                             key: key.clone(),
@@ -396,7 +396,7 @@ impl TemporalEngine {
                 let mut publish_targets = Vec::new();
                 for key in &selected_keys {
                     if let Some(address) = shard.strings.get(key) {
-                        if address.page_segment_id == HOT_PAGE_SEGMENT_ID {
+                        if address.page_slab_id == HOT_PAGE_SLAB_ID {
                             publish_targets.push((
                                 PublishTarget::String { key: key.clone() },
                                 address.clone(),
@@ -405,7 +405,7 @@ impl TemporalEngine {
                     }
                     if let Some(fields) = shard.hashes.get(key) {
                         publish_targets.extend(fields.iter().filter_map(|(field, address)| {
-                            (address.page_segment_id == HOT_PAGE_SEGMENT_ID).then(|| {
+                            (address.page_slab_id == HOT_PAGE_SLAB_ID).then(|| {
                                 (
                                     PublishTarget::Hash {
                                         key: key.clone(),
@@ -466,7 +466,7 @@ impl TemporalEngine {
                         let _ = self.cache.put(
                             CacheKey::page_with_slot_generation(
                                 shard_id,
-                                published.page_segment_id,
+                                published.page_slab_id,
                                 published.offset,
                                 published.length,
                                 published.routing_bucket,
@@ -494,7 +494,7 @@ impl TemporalEngine {
                         let _ = self.cache.put(
                             CacheKey::page_with_slot_generation(
                                 shard_id,
-                                published.page_segment_id,
+                                published.page_slab_id,
                                 published.offset,
                                 published.length,
                                 published.routing_bucket,

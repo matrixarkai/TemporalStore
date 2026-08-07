@@ -78,7 +78,8 @@ pub struct StorageCacheDependencyMatrixReport {
     pub local_file_store_ready: bool,
     pub shared_store_checkpoint_manifest_ready: bool,
     pub oplog_cursor_retention_ready: bool,
-    pub page_segment_manifest_ready: bool,
+    #[serde(alias = "page_segment_manifest_ready")]
+    pub page_slab_manifest_ready: bool,
     pub follower_cursor_retention_ready: bool,
     pub raft_snapshot_manifest_retention_ready: bool,
     pub local_shared_store_production_ready: bool,
@@ -795,7 +796,7 @@ mod tests {
         assert!(matrix.local_file_store_ready);
         assert!(matrix.shared_store_checkpoint_manifest_ready);
         assert!(matrix.oplog_cursor_retention_ready);
-        assert!(matrix.page_segment_manifest_ready);
+        assert!(matrix.page_slab_manifest_ready);
         assert!(matrix.follower_cursor_retention_ready);
         assert!(matrix.raft_snapshot_manifest_retention_ready);
         assert!(matrix.local_shared_store_ready);

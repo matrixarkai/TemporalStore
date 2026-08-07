@@ -1,10 +1,10 @@
-//! LocalBlockStore read/read_range/install_segment methods, split from block_store.rs.
+//! LocalBlockStore read/read_range/install_slab methods, split from block_store.rs.
 use super::*;
 
 impl LocalBlockStore {
     pub fn read(&self, address: &BlockAddress) -> Result<Vec<u8>, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        let path = segment_path(&inner.root, address.page_segment_id);
+        let path = slab_path(&inner.root, address.page_slab_id);
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(address.offset))?;
         let mut bytes = vec![0; address.length as usize];
@@ -15,7 +15,7 @@ impl LocalBlockStore {
             let actual = sha256_hex(&bytes);
             if &actual != expected {
                 return Err(BlockStoreError::ChecksumMismatch {
-                    page_segment_id: address.page_segment_id,
+                    page_slab_id: address.page_slab_id,
                     offset: address.offset,
                     length: address.length,
                     expected: expected.clone(),
@@ -34,12 +34,12 @@ impl LocalBlockStore {
 
     pub fn read_range(
         &self,
-        page_segment_id: u64,
+        page_slab_id: u64,
         offset: u64,
         size: u64,
     ) -> Result<Vec<u8>, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        let path = segment_path(&inner.root, page_segment_id);
+        let path = slab_path(&inner.root, page_slab_id);
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(offset))?;
         let mut bytes = vec![0; size as usize];
@@ -52,14 +52,14 @@ impl LocalBlockStore {
 
     pub fn read_logical_range(
         &self,
-        page_segment_id: u64,
+        page_slab_id: u64,
         offset: u64,
         size: u64,
     ) -> Result<Vec<u8>, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        let path = segment_path(&inner.root, page_segment_id);
-        let segment = fs::read(path)?;
-        let range = logical_range_from_segment(&segment, page_segment_id, offset, size)?;
+        let path = slab_path(&inner.root, page_slab_id);
+        let slab = fs::read(path)?;
+        let range = logical_range_from_slab(&slab, page_slab_id, offset, size)?;
         let bytes = range.bytes;
         inner.stats.reads += 1;
         inner.stats.bytes_read += bytes.len() as u64;
@@ -68,24 +68,24 @@ impl LocalBlockStore {
         Ok(bytes)
     }
 
-    pub fn read_segment(&self, page_segment_id: u64) -> Result<Vec<u8>, BlockStoreError> {
+    pub fn read_slab(&self, page_slab_id: u64) -> Result<Vec<u8>, BlockStoreError> {
         let root = self
             .inner
             .lock()
             .expect("block store lock poisoned")
             .root
             .clone();
-        Ok(fs::read(segment_path(&root, page_segment_id))?)
+        Ok(fs::read(slab_path(&root, page_slab_id))?)
     }
 
-    pub fn install_segment(
+    pub fn install_slab(
         &self,
-        page_segment_id: u64,
+        page_slab_id: u64,
         bytes: &[u8],
     ) -> Result<(), BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         fs::create_dir_all(&inner.root)?;
-        let path = segment_path(&inner.root, page_segment_id);
+        let path = slab_path(&inner.root, page_slab_id);
         let temp_path = path.with_extension(format!(
             "seg.tmp.{}",
             std::time::SystemTime::now()
@@ -101,22 +101,22 @@ impl LocalBlockStore {
         }
         fs::rename(&temp_path, &path)?;
         sync_parent_dir(&path)?;
-        if page_segment_id >= inner.page_segment_id {
-            inner.page_segment_id = page_segment_id;
+        if page_slab_id >= inner.page_slab_id {
+            inner.page_slab_id = page_slab_id;
             inner.write_offset = bytes.len() as u64;
         }
-        let band_summary = summarize_segment(bytes, page_segment_id)?;
+        let band_summary = summarize_slab(bytes, page_slab_id)?;
         if let Some(max_page_id) = band_summary.last_page_id {
             inner.next_page_id = inner.next_page_id.max(max_page_id.saturating_add(1));
         }
-        let is_current_segment = page_segment_id == inner.page_segment_id;
+        let is_current_slab = page_slab_id == inner.page_slab_id;
         let now = now_unix_ms();
         inner.bands.insert(
-            page_segment_id,
+            page_slab_id,
             BlockStoreBandDescriptor {
-                band_id: band_id_for_segment(page_segment_id),
-                page_segment_id,
-                state: if is_current_segment {
+                band_id: band_id_for_slab(page_slab_id),
+                page_slab_id,
+                state: if is_current_slab {
                     BlockStoreBandState::Active
                 } else {
                     BlockStoreBandState::Sealed
@@ -137,9 +137,9 @@ impl LocalBlockStore {
                 first_error: None,
             },
         );
-        if is_current_segment {
+        if is_current_slab {
             for band in inner.bands.values_mut() {
-                if band.page_segment_id != page_segment_id
+                if band.page_slab_id != page_slab_id
                     && band.state == BlockStoreBandState::Active
                 {
                     band.state = BlockStoreBandState::Sealed;

@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use matrixcache::{CacheKey, MultiLayerCache};
 
-use super::constants::HOT_PAGE_SEGMENT_ID;
+use super::constants::HOT_PAGE_SLAB_ID;
 use super::page_reads::page_address_cache_key;
 use super::records::storage_model_kinds;
 use crate::block_store::BlockAddress;
@@ -20,7 +20,7 @@ pub(super) type PagePhysicalIdentityKey = (
 
 pub(super) fn page_physical_identity_key(address: &BlockAddress) -> PagePhysicalIdentityKey {
     (
-        address.page_segment_id,
+        address.page_slab_id,
         address.offset,
         address.length,
         address.page_id,
@@ -39,7 +39,7 @@ pub(super) fn page_memory_resident(
 }
 
 pub(super) fn page_address_is_memory_only(address: &BlockAddress) -> bool {
-    address.page_segment_id == HOT_PAGE_SEGMENT_ID
+    address.page_slab_id == HOT_PAGE_SLAB_ID
 }
 
 pub(super) fn invalidate_cache_key(cache: &MultiLayerCache, key: CacheKey, memory_only: bool) {

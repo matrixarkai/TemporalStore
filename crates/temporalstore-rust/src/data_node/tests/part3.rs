@@ -932,8 +932,8 @@ fn runtime_storage_lifecycle_scheduler_runs_periodically() {
             follower_replay_cursors: Vec::new(),
             page_gc_shared_store_cursors: Vec::new(),
             page_gc_raft_snapshot_refs: Vec::new(),
-            page_gc_checkpoint_floor_segment_id: None,
-            page_gc_raft_install_floor_segment_id: None,
+            page_gc_checkpoint_floor_slab_id: None,
+            page_gc_raft_install_floor_slab_id: None,
             page_gc_delayed_destroy_grace_ms: 0,
             invalidate_cache: false,
             warm_cache: true,
@@ -991,7 +991,7 @@ fn runtime_storage_manager_loop_runs_cpp_style_pressure_stages() {
             max_dump_buckets_per_round: 16,
             min_undumped_oplog_records: 1,
             dirty_bucket_pressure: 1,
-            stale_page_segment_pressure: 1,
+            stale_page_slab_pressure: 1,
             reclaimable_physical_bytes_pressure: 1,
             cache_memory_bytes_pressure: 1,
             cache_disk_bytes_pressure: 1,
@@ -1169,7 +1169,7 @@ fn runtime_storage_manager_scale_repeats_cpp_style_pressure_stages() {
                 max_dump_buckets_per_round: 64,
                 min_undumped_oplog_records: 1,
                 dirty_bucket_pressure: 1,
-                stale_page_segment_pressure: 1,
+                stale_page_slab_pressure: 1,
                 reclaimable_physical_bytes_pressure: 1,
                 cache_memory_bytes_pressure: 1,
                 cache_disk_bytes_pressure: 1,
@@ -1398,7 +1398,7 @@ fn runtime_cancel_reports_not_found_and_already_finished_jobs() {
 }
 
 #[test]
-fn runtime_compaction_rewrites_live_pages_and_reports_stale_segments() {
+fn runtime_compaction_rewrites_live_pages_and_reports_stale_slabs() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     for (key, value) in [
@@ -1415,7 +1415,7 @@ fn runtime_compaction_rewrites_live_pages_and_reports_stale_segments() {
         });
         assert!(response.status.ok);
     }
-    assert_eq!(engine.live_page_segment_ids(1), vec![0]);
+    assert_eq!(engine.live_page_slab_ids(1), vec![0]);
 
     let runtime = DataNodeRuntime::new(
         engine.clone(),
@@ -1436,9 +1436,9 @@ fn runtime_compaction_rewrites_live_pages_and_reports_stale_segments() {
     };
     assert!(output.status.ok);
     assert_eq!(output.compacted_objects, 2);
-    assert_eq!(output.previous_page_segment_id, 0);
-    assert_eq!(output.compacted_page_segment_id, 1);
-    assert_eq!(output.stale_page_segment_ids, vec![0]);
+    assert_eq!(output.previous_page_slab_id, 0);
+    assert_eq!(output.compacted_page_slab_id, 1);
+    assert_eq!(output.stale_page_slab_ids, vec![0]);
     assert_eq!(output.before.total_page_count, 3);
     assert_eq!(output.before.live_page_refs, 2);
     assert_eq!(output.before.stale_page_estimate, 1);
@@ -1447,7 +1447,7 @@ fn runtime_compaction_rewrites_live_pages_and_reports_stale_segments() {
     assert_eq!(output.after.live_page_refs, 2);
     assert_eq!(output.after.stale_page_estimate, 0);
     assert_eq!(output.after.live_ref_density_basis_points, 10_000);
-    assert_eq!(engine.live_page_segment_ids(1), vec![1]);
+    assert_eq!(engine.live_page_slab_ids(1), vec![1]);
     assert_eq!(
         engine
             .execute(ExecuteRequest {
@@ -1490,8 +1490,8 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
             value: Some(b"a".to_vec())
         }
     );
-    engine.block_store().install_segment(1, b"old").unwrap();
-    engine.block_store().install_segment(2, b"new").unwrap();
+    engine.block_store().install_slab(1, b"old").unwrap();
+    engine.block_store().install_slab(2, b"new").unwrap();
 
     let runtime = DataNodeRuntime::new(
         engine.clone(),
@@ -1506,7 +1506,7 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
             shard_id: 1,
             retain_oplog_from_sequence: Some(3),
             retain_index_log_from_sequence: Some(2),
-            retain_page_segments_from_id: Some(2),
+            retain_page_slabs_from_id: Some(2),
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -1519,14 +1519,14 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
     assert!(output.cache_disk_bytes_removed > 0);
     assert_eq!(output.oplog_records_removed, 2);
     assert_eq!(output.index_log_records_removed, 1);
-    assert_eq!(output.page_segments_removed, 1);
-    assert!(output.page_segments_removed_physical_bytes > 0);
-    assert!(output.page_segments_retained_physical_bytes > 0);
-    assert_eq!(output.page_segments_retained_live, 1);
-    assert!(output.page_segments_retained_live_physical_bytes > 0);
+    assert_eq!(output.page_slabs_removed, 1);
+    assert!(output.page_slabs_removed_physical_bytes > 0);
+    assert!(output.page_slabs_retained_physical_bytes > 0);
+    assert_eq!(output.page_slabs_retained_live, 1);
+    assert!(output.page_slabs_retained_live_physical_bytes > 0);
     assert_eq!(engine.write_ahead_log_store().stats(1).last_sequence, 3);
     assert_eq!(engine.index_log_store().stats(1).last_sequence, 3);
-    assert_eq!(engine.block_store().segment_ids().unwrap(), vec![0, 2]);
+    assert_eq!(engine.block_store().slab_ids().unwrap(), vec![0, 2]);
 }
 
 #[test]
@@ -1681,7 +1681,7 @@ fn runtime_honors_inflight_cancellation_before_gc_side_effects() {
             shard_id: 1,
             retain_oplog_from_sequence: Some(2),
             retain_index_log_from_sequence: Some(2),
-            retain_page_segments_from_id: None,
+            retain_page_slabs_from_id: None,
         }),
     };
     runtime
@@ -1792,7 +1792,7 @@ fn runtime_rejects_background_work_when_background_queue_is_full() {
             shard_id: 1,
             retain_oplog_from_sequence: None,
             retain_index_log_from_sequence: None,
-            retain_page_segments_from_id: None,
+            retain_page_slabs_from_id: None,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -2036,7 +2036,7 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
                 oplog_sequence: 1,
                 index_log_sequence: 1,
             }],
-            page_gc_raft_install_floor_segment_id: Some(1),
+            page_gc_raft_install_floor_slab_id: Some(1),
             ..StorageManagerCycleRequest::default()
         },
         controller: RequestController { timeout_ms: 30_000 },
@@ -2066,7 +2066,7 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
     assert_eq!(running.configured_follower_cursor_count, 1);
     assert_eq!(running.configured_raft_snapshot_ref_count, 1);
     assert_eq!(
-        running.configured_page_gc_raft_install_floor_segment_id,
+        running.configured_page_gc_raft_install_floor_slab_id,
         Some(1)
     );
     assert!(running.last_job_id.is_some());

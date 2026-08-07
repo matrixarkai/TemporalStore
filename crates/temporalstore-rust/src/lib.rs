@@ -27,7 +27,7 @@ pub mod wal;
 
 pub use block_store::{
     BlockAddress, BlockStoreBandDescriptor, BlockStoreBandState, BlockStoreBandSummary,
-    BlockStoreOptions, BlockStoreSegmentReport, BlockStoreStats, LocalBlockStore,
+    BlockStoreOptions, BlockStoreSlabReport, BlockStoreStats, LocalBlockStore,
 };
 pub use client::{
     crc64_jones, key_is_dropped_by_percent, shard_id_for_key, bucket_id_for_key, stable_key_hash,
@@ -100,7 +100,7 @@ pub use engine::reports::{
     StoragePageFormatCompatibilityReport, StorageProductionReadinessPolicy,
     StorageProductionReadinessReport, StorageProductionReadinessRequest, StorageReclaimCandidate,
     StorageRecoveryBoundaryReport, StorageRecoveryPageError, StorageRecoveryPageOwnerMismatch,
-    StorageRecoveryReport, StorageRecoverySegmentLiveReport, StorageSegmentIntegrityReport,
+    StorageRecoveryReport, StorageRecoverySlabLiveReport, StorageSlabIntegrityReport,
     StorageTimestampedPageFamilyReport,
 };
 pub use engine::TemporalEngine;
@@ -193,7 +193,7 @@ pub use matrixcache::{CacheEntryInfo, CacheGcReport, CacheKey, CacheStats, Multi
 pub use matrixobject_store::MatrixObjectObjectStore;
 pub use shared_store::{
     ReplayReport, SharedStoreCheckpointManifest, SharedStoreFlushReport, SharedStoreGcReport,
-    SharedStoreOplogEntry, SharedStoreOplogObject, SharedStorePageSegment, SharedStoreReplayCursor,
+    SharedStoreOplogEntry, SharedStoreOplogObject, SharedStorePageSlab, SharedStoreReplayCursor,
     SharedStoreReplicationError, SharedStoreReplicator, SharedStoreRetryPolicy,
     SharedStoreWalAppendMode,
     SharedStoreStorageMode, SharedStoreStorageWriter, SharedStoreWriteReport,
@@ -204,7 +204,7 @@ pub use types::{
     ContextCompressionModel, ContextEmbedding, ContextEmbeddingModel,
     ContextEntity, ContextEvent, ContextEventModel, ContextExtractedEventIndexes,
     ContextIndexModel, ContextIndexRef, ContextNode, ContextNodeModel, ContextPackAudit,
-    ContextSegment, ContextSummary, ContextSummaryDirtyMarker, ContextSummaryModel,
+    ContextSlab, ContextSummary, ContextSummaryDirtyMarker, ContextSummaryModel,
     ContextTraversedNode, ContextWire, EventReplicationMode, EventReplicationSelectionReport,
     ExecuteRequest, ExecuteResponse, FeaturePoint, InternalContextIndex, IpsSnapshotReport,
     IpsStats, ReplicatedBatchExecuteRequest, ReplicatedBatchExecuteResponse, ReplicatedCommand,

@@ -401,8 +401,8 @@ pub(super) fn bucket_dump_generation_id(manifest: &BucketDumpManifest) -> String
     for bucket_id in &manifest.bucket_ids {
         digest.update(bucket_id.to_le_bytes());
     }
-    for page_segment_id in &manifest.page_segment_ids {
-        digest.update(page_segment_id.to_le_bytes());
+    for page_slab_id in &manifest.page_slab_ids {
+        digest.update(page_slab_id.to_le_bytes());
     }
     digest.update(manifest.index_sha256.as_bytes());
     if manifest.version >= 3 {

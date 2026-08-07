@@ -1615,7 +1615,7 @@ fn local_recovery_proof_covers_raft_wal_write_ahead_log_indexlog_and_pages() {
             .status
             .ok
     );
-    engine.block_store().roll_segment().unwrap();
+    engine.block_store().roll_slab().unwrap();
     assert!(
         engine
             .execute(ExecuteRequest {
@@ -1641,11 +1641,11 @@ fn local_recovery_proof_covers_raft_wal_write_ahead_log_indexlog_and_pages() {
     assert_eq!(recovery.index_log_records, 2);
     assert!(recovery.index_bytes > 0);
     assert!(recovery.index_write_atomic);
-    assert!(recovery.active_page_segment_ids.len() >= 2);
+    assert!(recovery.active_page_slab_ids.len() >= 2);
     assert!(recovery.total_page_refs >= 2);
     assert_eq!(recovery.readable_page_refs, recovery.total_page_refs);
     assert!(recovery.all_live_pages_readable);
-    assert!(recovery.segment_integrity.integrity_ok);
+    assert!(recovery.slab_integrity.integrity_ok);
     assert!(recovery.feature_page_layout.packed_feature_pages > 1);
     assert_eq!(
         recovered

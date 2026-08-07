@@ -62,7 +62,7 @@ fn replicated_execute_selects_sync_async_or_raft_without_restart() {
         .all(|report| report.accepted && !report.restart_required));
 }
 
-// shared-corpus: context_events_segments_entities_child_refs context_event_index_audit_dirty_models
+// shared-corpus: context_events_slabs_entities_child_refs context_event_index_audit_dirty_models
 #[test]
 fn context_models_match_cpp_keys_timeline_pages_and_filters() {
     let dir = tempfile::tempdir().unwrap();
@@ -922,12 +922,12 @@ fn context_temporal_compression_and_raw_backfill_use_cold_storage_without_cache_
 }
 
 #[test]
-fn live_page_segment_ids_scan_all_index_backed_data_models() {
+fn live_page_slab_ids_scan_all_index_backed_data_models() {
     let mut shard = ShardState::default();
     shard.strings.insert(
         "string".to_string(),
         BlockAddress {
-            page_segment_id: 7,
+            page_slab_id: 7,
             offset: 0,
             length: 1,
             page_id: None,
@@ -941,7 +941,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
     shard.hashes.entry("hash".to_string()).or_default().insert(
         "field".to_string(),
         BlockAddress {
-            page_segment_id: 8,
+            page_slab_id: 8,
             offset: 0,
             length: 1,
             page_id: None,
@@ -955,7 +955,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
     shard.sets.entry("set".to_string()).or_default().insert(
         b"member".to_vec(),
         BlockAddress {
-            page_segment_id: 9,
+            page_slab_id: 9,
             offset: 0,
             length: 1,
             page_id: None,
@@ -973,7 +973,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
         .insert(
             10,
             BlockAddress {
-                page_segment_id: 10,
+                page_slab_id: 10,
                 offset: 0,
                 length: 1,
                 page_id: None,
@@ -991,7 +991,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
         .insert(
             11,
             BlockAddress {
-                page_segment_id: 11,
+                page_slab_id: 11,
                 offset: 0,
                 length: 1,
                 page_id: None,
@@ -1005,7 +1005,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
     shard.ips.entry("ips".to_string()).or_default().insert(
         12,
         BlockAddress {
-            page_segment_id: 12,
+            page_slab_id: 12,
             offset: 0,
             length: 1,
             page_id: None,
@@ -1020,7 +1020,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
         13,
         IpsPointMeta {
             address: BlockAddress {
-                page_segment_id: 13,
+                page_slab_id: 13,
                 offset: 0,
                 length: 1,
                 page_id: None,
@@ -1041,14 +1041,14 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
         .or_default()
         .insert(14, 1);
 
-    let ids = collect_live_page_segment_ids(&shard)
+    let ids = collect_live_page_slab_ids(&shard)
         .into_iter()
         .collect::<Vec<_>>();
     assert_eq!(ids, vec![7, 8, 9, 10, 11, 12]);
 }
 
 #[test]
-fn page_compaction_rewrites_live_addresses_and_allows_old_segment_gc() {
+fn page_compaction_rewrites_live_addresses_and_allows_old_slab_gc() {
     let page_dir = unique_temp_path("compact-pages");
     let index_dir = unique_temp_path("compact-index");
     let block_store = LocalBlockStore::new(&page_dir);
@@ -1096,24 +1096,24 @@ fn page_compaction_rewrites_live_addresses_and_allows_old_segment_gc() {
             .status
             .ok
     );
-    assert_eq!(engine.live_page_segment_ids(1), vec![0]);
+    assert_eq!(engine.live_page_slab_ids(1), vec![0]);
 
     let report = engine.compact_shard_pages(1).unwrap();
-    assert_eq!(report.previous_page_segment_id, 0);
-    assert_eq!(report.compacted_page_segment_id, 1);
+    assert_eq!(report.previous_page_slab_id, 0);
+    assert_eq!(report.compacted_page_slab_id, 1);
     assert_eq!(report.rewritten_page_refs, 2);
-    assert_eq!(report.stale_page_segment_ids, vec![0]);
-    assert_eq!(report.before.live_page_segment_count, 1);
+    assert_eq!(report.stale_page_slab_ids, vec![0]);
+    assert_eq!(report.before.live_page_slab_count, 1);
     assert_eq!(report.before.total_page_count, 3);
     assert_eq!(report.before.live_page_refs, 2);
     assert_eq!(report.before.stale_page_estimate, 1);
     assert_eq!(report.before.live_ref_density_basis_points, 6_666);
-    assert_eq!(report.after.live_page_segment_count, 1);
+    assert_eq!(report.after.live_page_slab_count, 1);
     assert_eq!(report.after.total_page_count, 2);
     assert_eq!(report.after.live_page_refs, 2);
     assert_eq!(report.after.stale_page_estimate, 0);
     assert_eq!(report.after.live_ref_density_basis_points, 10_000);
-    assert_eq!(engine.live_page_segment_ids(1), vec![1]);
+    assert_eq!(engine.live_page_slab_ids(1), vec![1]);
     {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
@@ -1142,10 +1142,10 @@ fn page_compaction_rewrites_live_addresses_and_allows_old_segment_gc() {
     }
 
     let gc = block_store
-        .gc_segments_before_with_live_refs(1, engine.live_page_segment_ids(1))
+        .gc_slabs_before_with_live_refs(1, engine.live_page_slab_ids(1))
         .unwrap();
-    assert_eq!(gc.removed_page_segment_ids, vec![0]);
-    assert_eq!(block_store.segment_ids().unwrap(), vec![1]);
+    assert_eq!(gc.removed_page_slab_ids, vec![0]);
+    assert_eq!(block_store.slab_ids().unwrap(), vec![1]);
 
     let restarted = TemporalEngine::with_cache_block_store_and_index_dir(
         MultiLayerCache::default(),
@@ -1337,10 +1337,10 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
         .any(|item| item.contains("tombstone object ids are preserved")));
     assert_eq!(report.rewritten_object_pages, report.rewritten_page_refs);
     assert!(report.rewritten_object_pages >= 5);
-    assert!(report.reclaimable_stale_page_segment_count >= 1);
+    assert!(report.reclaimable_stale_page_slab_count >= 1);
     assert_eq!(
-        report.reclaimable_stale_page_segment_count,
-        report.stale_page_segment_ids.len()
+        report.reclaimable_stale_page_slab_count,
+        report.stale_page_slab_ids.len()
     );
     assert!(report.model_policy_family_count >= 8);
     assert!(report.tombstone_policy_model_count >= 1);
@@ -1450,8 +1450,8 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
         engine
             .bucket_storage_summaries(1)
             .iter()
-            .flat_map(|summary| summary.page_segment_ids.iter().copied())
-            .all(|segment_id| segment_id == report.compacted_page_segment_id),
+            .flat_map(|summary| summary.page_slab_ids.iter().copied())
+            .all(|slab_id| slab_id == report.compacted_page_slab_id),
         "all index summaries should move to compacted segment: {:?}",
         engine.bucket_storage_summaries(1)
     );
@@ -1586,7 +1586,7 @@ fn storage_data_structure_api_parity_report_covers_stream_block_and_manager_surf
         });
         assert!(response.status.ok, "{response:?}");
     }
-    engine.block_store().roll_segment().unwrap();
+    engine.block_store().roll_slab().unwrap();
     let response = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::FeatureAppend {
@@ -1605,7 +1605,7 @@ fn storage_data_structure_api_parity_report_covers_stream_block_and_manager_surf
     assert!(report.bucket_store_layout_api_ready);
     assert!(report.object_manager_runtime_api_ready);
     assert!(report.block_address_api_ready);
-    assert!(report.block_store_segment_api_ready);
+    assert!(report.block_store_slab_api_ready);
     assert!(report.stream_backed_band_api_ready);
     assert!(report.legacy_page_zone_aliases_ready);
     assert!(report.storage_manager_phase_api_ready);
@@ -1763,9 +1763,9 @@ fn recovery_reports_owner_mismatch_and_compaction_refuses_it() {
 
     let recovery = engine.storage_recovery_report(1);
     assert_eq!(recovery.owner_mismatch_page_refs.len(), 1);
-    assert!(!recovery.segment_integrity.integrity_ok);
-    assert_eq!(recovery.segment_integrity.owner_mismatch_page_ref_count, 1);
-    assert_eq!(recovery.segment_integrity.missing_owner_page_ref_count, 0);
+    assert!(!recovery.slab_integrity.integrity_ok);
+    assert_eq!(recovery.slab_integrity.owner_mismatch_page_ref_count, 1);
+    assert_eq!(recovery.slab_integrity.missing_owner_page_ref_count, 0);
     assert_eq!(recovery.object_lifecycle.live_object_ids, 1);
     assert_eq!(recovery.object_lifecycle.live_page_refs, 1);
     assert_eq!(recovery.object_lifecycle.owner_mismatch_page_refs, 1);
@@ -1862,7 +1862,7 @@ fn crash_recovery_report_covers_oplog_index_page_and_band_manifest() {
             .status
             .ok
     );
-    engine.block_store().roll_segment().unwrap();
+    engine.block_store().roll_slab().unwrap();
     assert!(
         engine
             .execute(ExecuteRequest {
@@ -1885,17 +1885,17 @@ fn crash_recovery_report_covers_oplog_index_page_and_band_manifest() {
     assert!(report.index_write_atomic);
     assert_eq!(report.oplog_records, 2);
     assert_eq!(report.index_log_records, 2);
-    assert_eq!(report.active_page_segment_ids, vec![0, 1]);
-    assert_eq!(report.live_page_segment_ids, vec![0, 1]);
+    assert_eq!(report.active_page_slab_ids, vec![0, 1]);
+    assert_eq!(report.live_page_slab_ids, vec![0, 1]);
     assert_eq!(report.total_page_refs, 2);
     assert_eq!(report.readable_page_refs, 2);
     assert!(report.all_live_pages_readable);
-    assert!(report.segment_integrity.integrity_ok);
-    assert!(!report.segment_integrity.reclaim_required);
-    assert_eq!(report.segment_integrity.indexed_page_segment_count, 2);
-    assert_eq!(report.segment_integrity.discovered_page_segment_count, 2);
-    assert_eq!(report.segment_integrity.live_page_segment_count, 2);
-    assert_eq!(report.segment_integrity.unreadable_page_ref_count, 0);
+    assert!(report.slab_integrity.integrity_ok);
+    assert!(!report.slab_integrity.reclaim_required);
+    assert_eq!(report.slab_integrity.indexed_page_slab_count, 2);
+    assert_eq!(report.slab_integrity.discovered_page_slab_count, 2);
+    assert_eq!(report.slab_integrity.live_page_slab_count, 2);
+    assert_eq!(report.slab_integrity.unreadable_page_ref_count, 0);
     assert_eq!(report.zone_descriptors.len(), 2);
     assert_eq!(
         report.zone_descriptors[0].state,
@@ -1920,30 +1920,30 @@ fn crash_recovery_report_covers_oplog_index_page_and_band_manifest() {
         report.zone_summary.live_physical_bytes,
         report.zone_descriptors[0].physical_bytes + report.zone_descriptors[1].physical_bytes
     );
-    assert_eq!(report.page_segment_live_reports.len(), 2);
-    assert_eq!(report.page_segment_live_reports[0].page_segment_id, 0);
-    assert_eq!(report.page_segment_live_reports[0].page_count, 1);
-    assert_eq!(report.page_segment_live_reports[0].live_page_refs, 1);
+    assert_eq!(report.page_slab_live_reports.len(), 2);
+    assert_eq!(report.page_slab_live_reports[0].page_slab_id, 0);
+    assert_eq!(report.page_slab_live_reports[0].page_count, 1);
+    assert_eq!(report.page_slab_live_reports[0].live_page_refs, 1);
     assert_eq!(
-        report.page_segment_live_reports[0].readable_live_page_refs,
+        report.page_slab_live_reports[0].readable_live_page_refs,
         1
     );
     assert_eq!(
-        report.page_segment_live_reports[0].unreadable_live_page_refs,
+        report.page_slab_live_reports[0].unreadable_live_page_refs,
         0
     );
-    assert_eq!(report.page_segment_live_reports[0].stale_page_estimate, 0);
+    assert_eq!(report.page_slab_live_reports[0].stale_page_estimate, 0);
     assert_eq!(
-        report.page_segment_live_reports[0].live_ref_density_basis_points,
+        report.page_slab_live_reports[0].live_ref_density_basis_points,
         10_000
     );
-    assert_eq!(report.page_segment_live_reports[0].live_object_count, 1);
+    assert_eq!(report.page_slab_live_reports[0].live_object_count, 1);
     assert_eq!(
-        report.page_segment_live_reports[0].live_routing_bucket_count,
+        report.page_slab_live_reports[0].live_routing_bucket_count,
         1
     );
-    assert_eq!(report.page_segment_live_reports[0].live_logical_bytes, 2);
-    assert!(report.page_segment_live_reports[0].live_physical_bytes > 0);
+    assert_eq!(report.page_slab_live_reports[0].live_logical_bytes, 2);
+    assert!(report.page_slab_live_reports[0].live_physical_bytes > 0);
 
     assert_eq!(
         recovered
@@ -1975,7 +1975,7 @@ fn crash_recovery_report_covers_oplog_index_page_and_band_manifest() {
 }
 
 #[test]
-fn crash_recovery_report_marks_stale_segment_density_after_overwrite() {
+fn crash_recovery_report_marks_stale_slab_density_after_overwrite() {
     let cache_dir = unique_temp_path("recovery-density-cache");
     let page_dir = unique_temp_path("recovery-density-pages");
     let index_dir = unique_temp_path("recovery-density-index");
@@ -2010,20 +2010,20 @@ fn crash_recovery_report_marks_stale_segment_density_after_overwrite() {
     let recovered = TemporalEngine::with_local_dirs(256, &cache_dir, &page_dir, &index_dir);
     recovered.load_shard(1);
     let report = recovered.storage_recovery_report(1);
-    let segment = report
-        .page_segment_live_reports
+    let slab = report
+        .page_slab_live_reports
         .iter()
-        .find(|segment| segment.page_segment_id == 0)
+        .find(|slab| slab.page_slab_id == 0)
         .expect("segment 0 live-density report");
 
-    assert_eq!(segment.page_count, 2);
-    assert_eq!(segment.live_page_refs, 1);
-    assert_eq!(segment.readable_live_page_refs, 1);
-    assert_eq!(segment.stale_page_estimate, 1);
-    assert_eq!(segment.live_ref_density_basis_points, 5_000);
-    assert_eq!(segment.live_logical_bytes, 3);
-    assert_eq!(segment.live_object_count, 1);
-    assert_eq!(segment.live_routing_bucket_count, 1);
+    assert_eq!(slab.page_count, 2);
+    assert_eq!(slab.live_page_refs, 1);
+    assert_eq!(slab.readable_live_page_refs, 1);
+    assert_eq!(slab.stale_page_estimate, 1);
+    assert_eq!(slab.live_ref_density_basis_points, 5_000);
+    assert_eq!(slab.live_logical_bytes, 3);
+    assert_eq!(slab.live_object_count, 1);
+    assert_eq!(slab.live_routing_bucket_count, 1);
 }
 
 #[test]
@@ -2053,10 +2053,10 @@ fn cold_index_page_address_reads_from_disk_cache_or_block_store_and_refills_memo
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
         let address = shard.strings.get("cold-key").expect("indexed page address");
-        assert_ne!(address.page_segment_id, HOT_PAGE_SEGMENT_ID);
+        assert_ne!(address.page_slab_id, HOT_PAGE_SLAB_ID);
         CacheKey::page_with_slot(
             1,
-            address.page_segment_id,
+            address.page_slab_id,
             address.offset,
             address.length,
             address.routing_bucket,
@@ -2150,7 +2150,7 @@ fn crash_recovery_rebuilds_missing_band_manifest_from_page_stream() {
             .status
             .ok
     );
-    engine.block_store().roll_segment().unwrap();
+    engine.block_store().roll_slab().unwrap();
     assert!(
         engine
             .execute(ExecuteRequest {
@@ -2171,8 +2171,8 @@ fn crash_recovery_rebuilds_missing_band_manifest_from_page_stream() {
 
     assert_eq!(report.oplog_records, 2);
     assert_eq!(report.index_log_records, 2);
-    assert_eq!(report.active_page_segment_ids, vec![0, 1]);
-    assert_eq!(report.live_page_segment_ids, vec![0, 1]);
+    assert_eq!(report.active_page_slab_ids, vec![0, 1]);
+    assert_eq!(report.live_page_slab_ids, vec![0, 1]);
     assert_eq!(report.total_page_refs, 2);
     assert!(report.all_live_pages_readable);
     assert_eq!(report.zone_descriptors.len(), 2);
@@ -2279,7 +2279,7 @@ fn durable_writes_stamp_stable_object_ids_on_page_addresses() {
     );
     assert_eq!(
         string_address.band_id,
-        Some(string_address.page_segment_id)
+        Some(string_address.page_slab_id)
     );
     assert_eq!(
         hash_address.object_id,
@@ -2289,7 +2289,7 @@ fn durable_writes_stamp_stable_object_ids_on_page_addresses() {
         hash_address.routing_bucket,
         Some(page_routing_bucket("h", 10, 20))
     );
-    assert_eq!(hash_address.band_id, Some(hash_address.page_segment_id));
+    assert_eq!(hash_address.band_id, Some(hash_address.page_slab_id));
     assert_ne!(string_address.object_id, hash_address.object_id);
 }
 

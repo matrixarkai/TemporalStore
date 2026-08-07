@@ -468,7 +468,7 @@ fn replay_report_uses_offset_index(report: &ReplayReport, entry_count: u64) -> b
 
 fn matrixobject_options(persistent_journal_path: Option<&std::path::Path>) -> StoreOptions {
     StoreOptions {
-        segment_size: 4096,
+        slab_size: 4096,
         max_band_bytes: 1024,
         chunk_size: 1024,
         persistent_journal_path: persistent_journal_path

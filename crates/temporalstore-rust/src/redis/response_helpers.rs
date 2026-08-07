@@ -83,9 +83,9 @@ pub(crate) fn ips_snapshot_report_response(result: Result<CommandResponse, Strin
             RespValue::Integer(report.packed_timestamped_page_count as i64),
             RespValue::Array(
                 report
-                    .page_segment_ids
+                    .page_slab_ids
                     .into_iter()
-                    .map(|segment_id| RespValue::Integer(segment_id as i64))
+                    .map(|slab_id| RespValue::Integer(slab_id as i64))
                     .collect(),
             ),
         ]),

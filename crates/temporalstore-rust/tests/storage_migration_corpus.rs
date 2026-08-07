@@ -122,8 +122,8 @@ fn verify_engine_dump_load_recovery(case: &StorageMigrationCase) {
         }],
         page_gc_shared_store_cursors: Vec::new(),
         page_gc_raft_snapshot_refs: Vec::new(),
-        page_gc_checkpoint_floor_segment_id: None,
-        page_gc_raft_install_floor_segment_id: None,
+        page_gc_checkpoint_floor_slab_id: None,
+        page_gc_raft_install_floor_slab_id: None,
         page_gc_delayed_destroy_grace_ms: 0,
         invalidate_cache: true,
         warm_cache: true,
@@ -364,15 +364,15 @@ fn assert_clean_recovery(engine: &TemporalEngine, shard_id: u64, case_name: &str
         case_name, recovery.unreadable_page_refs
     );
     assert!(
-        recovery.segment_integrity.integrity_ok,
+        recovery.slab_integrity.integrity_ok,
         "case={} segment integrity failed: {:?}",
-        case_name, recovery.segment_integrity
+        case_name, recovery.slab_integrity
     );
-    assert_eq!(recovery.segment_integrity.stale_page_ref_count, 0);
-    assert_eq!(recovery.segment_integrity.corrupt_page_segment_count, 0);
-    assert_eq!(recovery.segment_integrity.unreadable_page_ref_count, 0);
-    assert_eq!(recovery.segment_integrity.owner_mismatch_page_ref_count, 0);
-    assert_eq!(recovery.segment_integrity.missing_owner_page_ref_count, 0);
+    assert_eq!(recovery.slab_integrity.stale_page_ref_count, 0);
+    assert_eq!(recovery.slab_integrity.corrupt_page_slab_count, 0);
+    assert_eq!(recovery.slab_integrity.unreadable_page_ref_count, 0);
+    assert_eq!(recovery.slab_integrity.owner_mismatch_page_ref_count, 0);
+    assert_eq!(recovery.slab_integrity.missing_owner_page_ref_count, 0);
     assert_eq!(
         recovery
             .feature_page_layout
