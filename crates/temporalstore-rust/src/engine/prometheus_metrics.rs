@@ -130,9 +130,9 @@ impl TemporalEngine {
                 "temporalstore_shard_records",
                 &[
                     ("shard_id", stats.shard_id.to_string()),
-                    ("kind", "risk".into()),
+                    ("kind", "control_state".into()),
                 ],
-                stats.risk_records as u64,
+                stats.control_state_records as u64,
             );
             for (kind, value) in [
                 ("memory_hits", stats.cache.memory_hits),

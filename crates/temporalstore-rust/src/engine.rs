@@ -39,7 +39,7 @@ mod state;
 
 // shared-corpus: storage_bucket_first_physical_index storage_object_manager_bucketstore_runtime_authority storage_model_layout_compaction_policies storage_merged_dump_load_lifecycle storage_object_manager_cold_hot_reload storage_page_address_disk_cache_shared_store_fallback
 // shared-corpus: storage_stale_page_density_compaction storage_merged_dump_load_restart_interruption storage_gc_eviction_cold_reads storage_manager_real_pressure_signals storage_manager_wal_reclaim_bucket_generation_retention storage_manager_expire_cursor_scan_limits
-// shared-corpus: storage_manager_active_eviction_runtime storage_manager_page_gc_dependency_refusal storage_manager_index_gc_thresholds_recovery storage_risk_context_page_backed_parity
+// shared-corpus: storage_manager_active_eviction_runtime storage_manager_page_gc_dependency_refusal storage_manager_index_gc_thresholds_recovery storage_control_state_context_page_backed_parity
 
 use self::admin_report::*;
 use self::constants::*;
@@ -74,7 +74,7 @@ use crate::types::{
     ContextSummaryDirtyMarker, EventReplicationMode, EventReplicationSelectionReport,
     ExecuteRequest, ExecuteResponse, FeaturePoint, FeatureWritePolicy, InternalContextIndex,
     IpsStats, ReplicatedBatchExecuteRequest, ReplicatedBatchExecuteResponse,
-    ReplicatedExecuteRequest, RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec,
+    ReplicatedExecuteRequest, ControlStateFamily, ControlStateFolType, SequenceFeatureRow, SequenceQuerySpec,
     ShardId, Status, StringSetCondition,
 };
 use crate::wal::{LocalWriteAheadLogStore, WriteAheadLogRecord};
@@ -1224,10 +1224,10 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.ips.remove(key).is_some();
     removed |= shard.ips_meta.remove(key).is_some();
     removed |= shard.ips_request_ids.remove(key).is_some();
-    removed |= shard.risk.remove(key).is_some();
-    removed |= shard.risk_pages.remove(key).is_some();
-    removed |= shard.risk_changes.remove(key).is_some();
-    removed |= shard.risk_fol.remove(key).is_some();
+    removed |= shard.control_state.remove(key).is_some();
+    removed |= shard.control_state_pages.remove(key).is_some();
+    removed |= shard.control_state_changes.remove(key).is_some();
+    removed |= shard.control_state_fol.remove(key).is_some();
     removed |= shard.context_nodes.remove(key).is_some();
     removed |= shard.context_events.remove(key).is_some();
     removed |= shard.context_indexes.remove(key).is_some();
@@ -1355,13 +1355,13 @@ fn mark_bucket_index_page_deleted(
 }
 
 fn associated_record_keys(key: &str) -> Vec<String> {
-    if key.starts_with("risk:") {
+    if key.starts_with("control_state:") {
         return vec![key.to_string()];
     }
     let mut keys = Vec::with_capacity(4);
     keys.push(key.to_string());
-    for family in [RiskFamily::H, RiskFamily::Cpc, RiskFamily::Fol] {
-        keys.push(risk_family_key(family, key));
+    for family in [ControlStateFamily::H, ControlStateFamily::Cpc, ControlStateFamily::Fol] {
+        keys.push(control_state_family_key(family, key));
     }
     keys
 }
@@ -1464,7 +1464,7 @@ fn append_value(
     Ok(address)
 }
 
-fn persist_risk_page(
+fn persist_control_state_page(
     cache: &MultiLayerCache,
     page_store: &LocalBlockStore,
     shard_id: ShardId,
@@ -1474,14 +1474,14 @@ fn persist_risk_page(
     end_routing_bucket: u32,
     async_storage: bool,
 ) -> bool {
-    let Some(series) = shard.risk.get(key) else {
-        shard.risk_pages.remove(key);
+    let Some(series) = shard.control_state.get(key) else {
+        shard.control_state_pages.remove(key);
         return false;
     };
     let Ok(bytes) = serde_json::to_vec(series) else {
         return false;
     };
-    let object_id = stable_page_object_id(shard_id, "risk", key, None);
+    let object_id = stable_page_object_id(shard_id, "control_state", key, None);
     let routing_bucket = page_routing_bucket(key, start_routing_bucket, end_routing_bucket);
     if let Ok(address) = append_value(
         cache,
@@ -1492,8 +1492,8 @@ fn persist_risk_page(
         Some(routing_bucket),
         async_storage,
     ) {
-        upsert_bucket_index_page(shard, shard_id, "risk", key, None, address.clone(), true);
-        shard.risk_pages.insert(key.to_string(), address);
+        upsert_bucket_index_page(shard, shard_id, "control_state", key, None, address.clone(), true);
+        shard.control_state_pages.insert(key.to_string(), address);
         true
     } else {
         false
@@ -1550,10 +1550,10 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.features.contains_key(key)
         || shard.sequences.contains_key(key)
         || shard.ips.contains_key(key)
-        || shard.risk.contains_key(key)
-        || shard.risk_pages.contains_key(key)
-        || shard.risk_changes.contains_key(key)
-        || shard.risk_fol.contains_key(key)
+        || shard.control_state.contains_key(key)
+        || shard.control_state_pages.contains_key(key)
+        || shard.control_state_changes.contains_key(key)
+        || shard.control_state_fol.contains_key(key)
         || shard.context_nodes.contains_key(key)
         || shard.context_events.contains_key(key)
         || shard.context_indexes.contains_key(key)
@@ -1573,7 +1573,7 @@ fn storage_model_kinds() -> &'static [&'static str] {
         "feature",
         "sequence",
         "ips",
-        "risk",
+        "control_state",
         "context_node",
         "context_event",
         "context_index",
@@ -1700,8 +1700,8 @@ fn object_manager_stats(
             + shard.features.len()
             + shard.sequences.len()
             + shard.ips.len()
-            + shard.risk.len()
-            + shard.risk_changes.len()
+            + shard.control_state.len()
+            + shard.control_state_changes.len()
             + shard.context_nodes.len()
             + shard.context_events.len()
             + shard.context_indexes.len()
@@ -1791,7 +1791,7 @@ fn object_manager_stats(
         + shard.features.len()
         + shard.sequences.len()
         + shard.ips.len()
-        + shard.risk.len()
+        + shard.control_state.len()
         + shard.context_nodes.len()
         + shard.context_events.len()
         + shard.context_indexes.len()

@@ -84,8 +84,8 @@ pub(super) fn model_compaction_policy_reports(
             "sequence"
         } else if shard.ips.contains_key(key) {
             "ips"
-        } else if shard.risk_pages.contains_key(key) {
-            "risk"
+        } else if shard.control_state_pages.contains_key(key) {
+            "control_state"
         } else if shard.context_nodes.contains_key(key) {
             "context_node"
         } else if shard.context_entities.contains_key(key) {
@@ -134,7 +134,7 @@ pub(super) fn model_compaction_policy_reports(
                     layout_policy,
                     "timestamped_chunked_pages" | "context_timeline_or_sidecar_pages"
                 )
-                || model_id == "risk";
+                || model_id == "control_state";
             ModelCompactionPolicyReport {
                 layout_policy: layout_policy.to_string(),
                 object_page_packing_enabled,
@@ -164,7 +164,7 @@ pub(super) fn model_compaction_policy_reports(
 
 pub(super) fn compaction_layout_policy_for_model(model_id: &str) -> &'static str {
     match model_id {
-        "string" | "risk" | "context_node" | "context_entity" | "context_embedding" => {
+        "string" | "control_state" | "context_node" | "context_entity" | "context_embedding" => {
             "single_page_object"
         }
         "hash" | "set" => "component_page_object",

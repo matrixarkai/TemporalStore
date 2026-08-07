@@ -1241,19 +1241,19 @@ pub(crate) fn execute_on_shard(
                 ),
             }
         }
-        Command::RiskIncrement {
+        Command::ControlStateIncrement {
             key,
             timestamp_ms,
             amount,
         } => {
             remove_if_expired(shard, &key);
             *shard
-                .risk
+                .control_state
                 .entry(key.clone())
                 .or_default()
                 .entry(timestamp_ms)
                 .or_default() += amount;
-            persist_risk_page(
+            persist_control_state_page(
                 cache,
                 page_store,
                 shard_id,
@@ -1266,7 +1266,7 @@ pub(crate) fn execute_on_shard(
             mutated = true;
             CommandResponse::Empty
         }
-        Command::RiskIncrementWithOptions {
+        Command::ControlStateIncrementWithOptions {
             key,
             timestamp_ms,
             amount,
@@ -1279,7 +1279,7 @@ pub(crate) fn execute_on_shard(
                 .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
                 .unwrap_or(timestamp_ms);
             *shard
-                .risk
+                .control_state
                 .entry(key.clone())
                 .or_default()
                 .entry(bucket_ms)
@@ -1289,7 +1289,7 @@ pub(crate) fn execute_on_shard(
                     .expires_at_ms
                     .insert(key.clone(), resolve_now_ms().saturating_add(ttl_ms));
             }
-            persist_risk_page(
+            persist_control_state_page(
                 cache,
                 page_store,
                 shard_id,
@@ -1302,7 +1302,7 @@ pub(crate) fn execute_on_shard(
             mutated = true;
             CommandResponse::Empty
         }
-        Command::RiskChangeAdd {
+        Command::ControlStateChangeAdd {
             key,
             timestamp_ms,
             value,
@@ -1315,7 +1315,7 @@ pub(crate) fn execute_on_shard(
                 .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
                 .unwrap_or(timestamp_ms);
             shard
-                .risk_changes
+                .control_state_changes
                 .entry(key.clone())
                 .or_default()
                 .entry(bucket_ms)
@@ -1329,7 +1329,7 @@ pub(crate) fn execute_on_shard(
             mutated = true;
             CommandResponse::Empty
         }
-        Command::RiskCount {
+        Command::ControlStateCount {
             key,
             start_ms,
             end_ms,
@@ -1342,7 +1342,7 @@ pub(crate) fn execute_on_shard(
                 };
             }
             let value = shard
-                .risk
+                .control_state
                 .get(&key)
                 .map(|series| {
                     series
@@ -1353,7 +1353,7 @@ pub(crate) fn execute_on_shard(
                 .unwrap_or_default();
             CommandResponse::Integer { value }
         }
-        Command::RiskQuery {
+        Command::ControlStateQuery {
             key,
             start_ms,
             end_ms,
@@ -1366,13 +1366,13 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            if is_risk_change_aggregator(&aggregator) {
+            if is_control_state_change_aggregator(&aggregator) {
                 CommandResponse::Integer {
-                    value: count_risk_changes(shard, &key, start_ms, end_ms),
+                    value: count_control_state_changes(shard, &key, start_ms, end_ms),
                 }
             } else {
                 let values = shard
-                    .risk
+                    .control_state
                     .get(&key)
                     .map(|series| {
                         series
@@ -1382,11 +1382,11 @@ pub(crate) fn execute_on_shard(
                     })
                     .unwrap_or_default();
                 CommandResponse::Integer {
-                    value: aggregate_risk_values(&values, &aggregator),
+                    value: aggregate_control_state_values(&values, &aggregator),
                 }
             }
         }
-        Command::RiskDetail {
+        Command::ControlStateDetail {
             key,
             start_ms,
             end_ms,
@@ -1400,7 +1400,7 @@ pub(crate) fn execute_on_shard(
                 };
             }
             let points = shard
-                .risk
+                .control_state
                 .get(&key)
                 .map(|series| {
                     series
@@ -1415,21 +1415,21 @@ pub(crate) fn execute_on_shard(
                 .unwrap_or_default();
             CommandResponse::FeaturePoints { points }
         }
-        Command::RiskSet {
+        Command::ControlStateSet {
             family,
             key,
             timestamp_ms,
             amount,
         } => {
             remove_if_expired(shard, &key);
-            let key = risk_family_key(family, &key);
+            let key = control_state_family_key(family, &key);
             *shard
-                .risk
+                .control_state
                 .entry(key.clone())
                 .or_default()
                 .entry(timestamp_ms)
                 .or_default() += amount;
-            persist_risk_page(
+            persist_control_state_page(
                 cache,
                 page_store,
                 shard_id,
@@ -1442,7 +1442,7 @@ pub(crate) fn execute_on_shard(
             mutated = true;
             CommandResponse::Empty
         }
-        Command::RiskSetAndGet {
+        Command::ControlStateSetAndGet {
             family,
             key,
             timestamp_ms,
@@ -1452,14 +1452,14 @@ pub(crate) fn execute_on_shard(
             aggregator,
         } => {
             remove_if_expired(shard, &key);
-            let key = risk_family_key(family, &key);
-            let series = shard.risk.entry(key.clone()).or_default();
+            let key = control_state_family_key(family, &key);
+            let series = shard.control_state.entry(key.clone()).or_default();
             *series.entry(timestamp_ms).or_default() += amount;
             let values = series
                 .range(start_ms..=end_ms)
                 .map(|(_, value)| *value)
                 .collect::<Vec<_>>();
-            persist_risk_page(
+            persist_control_state_page(
                 cache,
                 page_store,
                 shard_id,
@@ -1471,10 +1471,10 @@ pub(crate) fn execute_on_shard(
             );
             mutated = true;
             CommandResponse::Integer {
-                value: aggregate_risk_values(&values, &aggregator),
+                value: aggregate_control_state_values(&values, &aggregator),
             }
         }
-        Command::RiskFamilyQuery {
+        Command::ControlStateFamilyQuery {
             family,
             key,
             start_ms,
@@ -1488,14 +1488,14 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            let key = risk_family_key(family, &key);
-            if is_risk_change_aggregator(&aggregator) {
+            let key = control_state_family_key(family, &key);
+            if is_control_state_change_aggregator(&aggregator) {
                 CommandResponse::Integer {
-                    value: count_risk_changes(shard, &key, start_ms, end_ms),
+                    value: count_control_state_changes(shard, &key, start_ms, end_ms),
                 }
             } else {
                 let values = shard
-                    .risk
+                    .control_state
                     .get(&key)
                     .map(|series| {
                         series
@@ -1505,11 +1505,11 @@ pub(crate) fn execute_on_shard(
                     })
                     .unwrap_or_default();
                 CommandResponse::Integer {
-                    value: aggregate_risk_values(&values, &aggregator),
+                    value: aggregate_control_state_values(&values, &aggregator),
                 }
             }
         }
-        Command::RiskFolSet {
+        Command::ControlStateFolSet {
             key,
             value,
             occur_time_ms,
@@ -1518,17 +1518,17 @@ pub(crate) fn execute_on_shard(
         } => {
             remove_if_expired(shard, &key);
             let should_store = shard
-                .risk_fol
+                .control_state_fol
                 .get(&key)
                 .map(|existing| match fol_type {
-                    RiskFolType::First => occur_time_ms < existing.occur_time_ms,
-                    RiskFolType::Last => occur_time_ms > existing.occur_time_ms,
+                    ControlStateFolType::First => occur_time_ms < existing.occur_time_ms,
+                    ControlStateFolType::Last => occur_time_ms > existing.occur_time_ms,
                 })
                 .unwrap_or(true);
             if should_store {
-                shard.risk_fol.insert(
+                shard.control_state_fol.insert(
                     key.clone(),
-                    RiskFolValue {
+                    ControlStateFolValue {
                         occur_time_ms,
                         value,
                         fol_type,
@@ -1543,7 +1543,7 @@ pub(crate) fn execute_on_shard(
             mutated = true;
             CommandResponse::Empty
         }
-        Command::RiskFolQuery { key } => {
+        Command::ControlStateFolQuery { key } => {
             if remove_if_expired(shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
@@ -1552,10 +1552,10 @@ pub(crate) fn execute_on_shard(
                 };
             }
             CommandResponse::Bytes {
-                value: shard.risk_fol.get(&key).map(|stored| stored.value.clone()),
+                value: shard.control_state_fol.get(&key).map(|stored| stored.value.clone()),
             }
         }
-        Command::RiskManager { key } => {
+        Command::ControlStateManager { key } => {
             if remove_if_expired(shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
@@ -1566,23 +1566,23 @@ pub(crate) fn execute_on_shard(
                 };
             }
             let mut entries = Vec::new();
-            for family in [RiskFamily::H, RiskFamily::Cpc, RiskFamily::Fol] {
-                let family_key = risk_family_key(family, &key);
+            for family in [ControlStateFamily::H, ControlStateFamily::Cpc, ControlStateFamily::Fol] {
+                let family_key = control_state_family_key(family, &key);
                 let values = shard
-                    .risk
+                    .control_state
                     .get(&family_key)
                     .map(|series| series.values().copied().collect::<Vec<_>>())
                     .unwrap_or_default();
                 entries.push((
-                    format!("{}_events", risk_family_name(family)),
+                    format!("{}_events", control_state_family_name(family)),
                     values.len().to_string().into_bytes(),
                 ));
                 entries.push((
-                    format!("{}_sum", risk_family_name(family)),
+                    format!("{}_sum", control_state_family_name(family)),
                     values.iter().sum::<i64>().to_string().into_bytes(),
                 ));
             }
-            if let Some(fol) = shard.risk_fol.get(&key) {
+            if let Some(fol) = shard.control_state_fol.get(&key) {
                 entries.push(("fol_value".to_string(), fol.value.clone()));
                 entries.push((
                     "fol_occur_time_ms".to_string(),
@@ -1591,14 +1591,14 @@ pub(crate) fn execute_on_shard(
                 entries.push((
                     "fol_type".to_string(),
                     match fol.fol_type {
-                        RiskFolType::First => b"first".to_vec(),
-                        RiskFolType::Last => b"last".to_vec(),
+                        ControlStateFolType::First => b"first".to_vec(),
+                        ControlStateFolType::Last => b"last".to_vec(),
                     },
                 ));
             }
             CommandResponse::HashEntries { entries }
         }
-        Command::RiskDebug {
+        Command::ControlStateDebug {
             key,
             start_ms,
             end_ms,
@@ -1616,10 +1616,10 @@ pub(crate) fn execute_on_shard(
             entries.push(("key".to_string(), key.as_bytes().to_vec()));
             entries.push(("start_ms".to_string(), start_ms.to_string().into_bytes()));
             entries.push(("end_ms".to_string(), end_ms.to_string().into_bytes()));
-            for family in [RiskFamily::H, RiskFamily::Cpc, RiskFamily::Fol] {
-                let family_key = risk_family_key(family, &key);
-                let name = risk_family_name(family);
-                let series = shard.risk.get(&family_key);
+            for family in [ControlStateFamily::H, ControlStateFamily::Cpc, ControlStateFamily::Fol] {
+                let family_key = control_state_family_key(family, &key);
+                let name = control_state_family_name(family);
+                let series = shard.control_state.get(&family_key);
                 let all_values = series
                     .map(|series| series.values().copied().collect::<Vec<_>>())
                     .unwrap_or_default();
@@ -1669,7 +1669,7 @@ pub(crate) fn execute_on_shard(
                         .into_bytes(),
                 ));
             }
-            if let Some(fol) = shard.risk_fol.get(&key) {
+            if let Some(fol) = shard.control_state_fol.get(&key) {
                 entries.push(("fol_value".to_string(), fol.value.clone()));
                 entries.push((
                     "fol_occur_time_ms".to_string(),
@@ -1678,8 +1678,8 @@ pub(crate) fn execute_on_shard(
                 entries.push((
                     "fol_type".to_string(),
                     match fol.fol_type {
-                        RiskFolType::First => b"first".to_vec(),
-                        RiskFolType::Last => b"last".to_vec(),
+                        ControlStateFolType::First => b"first".to_vec(),
+                        ControlStateFolType::Last => b"last".to_vec(),
                     },
                 ));
             }

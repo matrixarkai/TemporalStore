@@ -561,12 +561,12 @@ fn is_raft_read_command(command: &Command) -> bool {
             | Command::IpsSnapshot { .. }
             | Command::IpsStat { .. }
             | Command::IpsFilter { .. }
-            | Command::RiskCount { .. }
-            | Command::RiskQuery { .. }
-            | Command::RiskDetail { .. }
-            | Command::RiskSetAndGet { .. }
-            | Command::RiskFamilyQuery { .. }
-            | Command::RiskManager { .. }
+            | Command::ControlStateCount { .. }
+            | Command::ControlStateQuery { .. }
+            | Command::ControlStateDetail { .. }
+            | Command::ControlStateSetAndGet { .. }
+            | Command::ControlStateFamilyQuery { .. }
+            | Command::ControlStateManager { .. }
     )
 }
 

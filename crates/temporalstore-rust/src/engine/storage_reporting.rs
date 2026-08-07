@@ -236,7 +236,7 @@ pub(super) fn storage_model_code(kind: &str) -> u8 {
         "feature" => 4,
         "sequence" => 5,
         "ips" => 6,
-        "risk" => 7,
+        "control_state" => 7,
         "context_node" => 8,
         "context_event" => 9,
         "context_index" => 10,

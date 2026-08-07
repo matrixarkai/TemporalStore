@@ -1696,7 +1696,7 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
             end_ms: *end_ms,
             limit: count.unwrap_or(0).min(u32::MAX as usize) as u32,
         }),
-        Command::RiskIncrement {
+        Command::ControlStateIncrement {
             key,
             timestamp_ms,
             amount,
@@ -1706,7 +1706,7 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
             delta: *amount,
             timestamp_ms: *timestamp_ms,
         }),
-        Command::RiskQuery {
+        Command::ControlStateQuery {
             key,
             start_ms,
             end_ms,

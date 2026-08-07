@@ -60,7 +60,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "client retry classifier separates budget-free safe topology retries from unsafe write retries that require explicit write retry budget"
                     .to_string(),
-                "shared C++/Rust corpus runs through the typed table client API and direct engine path for common, feature, sequence, IPS, risk, context, and restart reads"
+                "shared C++/Rust corpus runs through the typed table client API and direct engine path for common, feature, sequence, IPS, control_state, context, and restart reads"
                     .to_string(),
                 "versioned Rust-native SDK contract committed in proto/temporalstore/v1 with validation in the local parity gate"
                     .to_string(),
@@ -91,7 +91,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "C++ service-name admin aliases expose proxy info, heartbeat/config, and embedded client preflight"
                     .to_string(),
-                "C++ command-shaped proxy HTTP/JSON aliases cover Get, Set, FeatureAdd, RiskHset, HMGet, HMSet, HGetAll, and HLen through the normal routed client path"
+                "C++ command-shaped proxy HTTP/JSON aliases cover Get, Set, FeatureAdd, ControlStateHset, HMGet, HMSet, HGetAll, and HLen through the normal routed client path"
                     .to_string(),
                 "Rust-native service discovery replacement for consul via proxy auto-register, heartbeat TTL, admin inspection, and Prometheus stale/registered metrics"
                     .to_string(),
@@ -261,7 +261,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "local combined recovery proof covers Raft WAL restore plus oplog, index-log, page-file, and packed timestamped KV recovery"
                     .to_string(),
-                "Prometheus alert rules and fault runbook cover stuck replica, split-brain risk, slow follower, and storage pressure triage"
+                "Prometheus alert rules and fault runbook cover stuck replica, split-brain control_state, slow follower, and storage pressure triage"
                     .to_string(),
                 "external_chaos_gate composes OS-process Raft kill/restart, stale-read partition, lag/heal, rolling restart, networked membership/snapshot, and storage replay harnesses"
                     .to_string(),
@@ -354,15 +354,15 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "feature/sequence C++ protobuf golden corpus exercises filters, aggregates, sequence queries, and packed timestamped KV page layout"
                     .to_string(),
-                "full Rust-local C++ API golden corpus covers feature, sequence, IPS, Risk, Redis-compatible core commands, and admin storage readiness"
+                "full Rust-local C++ API golden corpus covers feature, sequence, IPS, ControlState, Redis-compatible core commands, and admin storage readiness"
                     .to_string(),
-                "IPS load/snapshot/stat/filter subset and Risk subset with typed client and RESP coverage"
+                "IPS load/snapshot/stat/filter subset and ControlState subset with typed client and RESP coverage"
                     .to_string(),
                 "IPS production snapshot report exposes range metadata, returned versus total counts, action/table server aggregations, and packed timestamped page evidence"
                     .to_string(),
-                "Risk debug report exposes H/CPC/FOL full and window counters plus FOL selection metadata through engine, typed client, and RESP"
+                "ControlState debug report exposes H/CPC/FOL full and window counters plus FOL selection metadata through engine, typed client, and RESP"
                     .to_string(),
-                "feature module production readiness covers golden C++ corpus replay, exact Feature nested point/proto semantics, deployment-specific time-range behavior, Risk CPC/list internals, manager/debug APIs, and engine/client/RESP coverage"
+                "feature module production readiness covers golden C++ corpus replay, exact Feature nested point/proto semantics, deployment-specific time-range behavior, ControlState CPC/list internals, manager/debug APIs, and engine/client/RESP coverage"
                     .to_string(),
             ],
             missing: feature_modules.missing,
@@ -428,7 +428,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "distributed Raft harness covers lag, catch-up, election, membership scale up/down, leader transfer, snapshot bootstrap, and secondary reads under load"
                     .to_string(),
-                "unified C++/Rust workload corpus covers Feature, IPS, Risk, Redis, Context, and admin API replay evidence"
+                "unified C++/Rust workload corpus covers Feature, IPS, ControlState, Redis, Context, and admin API replay evidence"
                     .to_string(),
                 "Docker/AWS SLO report covers metaserver, proxy, client, data-node, Raft failover, storage pressure, cache pressure, proxy convergence, workload replay, p50/p95/p99, throughput, error budget, CPU/memory/disk/network collectors, replica lag, failover count, and scale events"
                     .to_string(),
@@ -660,8 +660,8 @@ pub(crate) fn evidence_field_for(area: &str, capability: &str) -> &'static str {
         "feature_modules" if capability.contains("Feature") => {
             "feature_module_corpus.exact_feature_semantics_ready"
         }
-        "feature_modules" if capability.contains("Risk") => {
-            "feature_module_corpus.risk_production_semantics_ready"
+        "feature_modules" if capability.contains("ControlState") => {
+            "feature_module_corpus.control_state_production_semantics_ready"
         }
         "context_workflow" if capability.contains("corpus") => {
             "context_workflow_corpus.openviking_replay_ready"
@@ -717,7 +717,7 @@ pub(crate) fn service_next_action(service: &str, blocker_classes: &[String]) -> 
             "finish matrixcache-class async writeback/backpressure and mature latency metrics"
         }
         ("feature_modules", "feature_module_cpp_parity") => {
-            "finish exact C++ feature/risk corpus coverage and deployment-specific module edge cases"
+            "finish exact C++ feature/control_state corpus coverage and deployment-specific module edge cases"
         }
         ("context_workflow", "context_model_provider_parity") => {
             "finish C++/OpenViking corpus replay and production policy controls"

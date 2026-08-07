@@ -2283,19 +2283,19 @@ fn common_delete_removes_all_data_types_for_key() {
 }
 
 #[test]
-fn common_delete_removes_cpp_risk_family_records_for_logical_key() {
+fn common_delete_removes_cpp_control_state_family_records_for_logical_key() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     for (family, amount) in [
-        (RiskFamily::H, 5),
-        (RiskFamily::Cpc, 7),
-        (RiskFamily::Fol, 11),
+        (ControlStateFamily::H, 5),
+        (ControlStateFamily::Cpc, 7),
+        (ControlStateFamily::Fol, 11),
     ] {
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
-            command: Command::RiskSet {
+            command: Command::ControlStateSet {
                 family,
-                key: "risk-cpp".to_string(),
+                key: "control_state-cpp".to_string(),
                 timestamp_ms: 10,
                 amount,
             },
@@ -2308,7 +2308,7 @@ fn common_delete_removes_cpp_risk_family_records_for_logical_key() {
             .execute(ExecuteRequest {
                 shard_id: 1,
                 command: Command::CommonExists {
-                    key: "risk-cpp".to_string(),
+                    key: "control_state-cpp".to_string(),
                 },
             })
             .response,
@@ -2319,20 +2319,20 @@ fn common_delete_removes_cpp_risk_family_records_for_logical_key() {
             .execute(ExecuteRequest {
                 shard_id: 1,
                 command: Command::CommonDelete {
-                    key: "risk-cpp".to_string(),
+                    key: "control_state-cpp".to_string(),
                 },
             })
             .response,
         CommandResponse::Empty
     );
-    for family in [RiskFamily::H, RiskFamily::Cpc, RiskFamily::Fol] {
+    for family in [ControlStateFamily::H, ControlStateFamily::Cpc, ControlStateFamily::Fol] {
         assert_eq!(
             engine
                 .execute(ExecuteRequest {
                     shard_id: 1,
-                    command: Command::RiskFamilyQuery {
+                    command: Command::ControlStateFamilyQuery {
                         family,
-                        key: "risk-cpp".to_string(),
+                        key: "control_state-cpp".to_string(),
                         start_ms: 0,
                         end_ms: 20,
                         aggregator: "sum".to_string(),
@@ -2390,14 +2390,14 @@ fn common_expire_missing_key_matches_cpp_not_found() {
 }
 
 #[test]
-fn common_expire_and_ttl_cover_cpp_risk_family_records_for_logical_key() {
+fn common_expire_and_ttl_cover_cpp_control_state_family_records_for_logical_key() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     let response = engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::RiskSet {
-            family: RiskFamily::Cpc,
-            key: "risk-expire".to_string(),
+        command: Command::ControlStateSet {
+            family: ControlStateFamily::Cpc,
+            key: "control_state-expire".to_string(),
             timestamp_ms: 10,
             amount: 3,
         },
@@ -2409,7 +2409,7 @@ fn common_expire_and_ttl_cover_cpp_risk_family_records_for_logical_key() {
             .execute(ExecuteRequest {
                 shard_id: 1,
                 command: Command::CommonTtl {
-                    key: "risk-expire".to_string(),
+                    key: "control_state-expire".to_string(),
                 },
             })
             .response,
@@ -2420,7 +2420,7 @@ fn common_expire_and_ttl_cover_cpp_risk_family_records_for_logical_key() {
             .execute(ExecuteRequest {
                 shard_id: 1,
                 command: Command::CommonExpire {
-                    key: "risk-expire".to_string(),
+                    key: "control_state-expire".to_string(),
                     ttl_ms: 0,
                 },
             })
@@ -2432,7 +2432,7 @@ fn common_expire_and_ttl_cover_cpp_risk_family_records_for_logical_key() {
             .execute(ExecuteRequest {
                 shard_id: 1,
                 command: Command::CommonTtl {
-                    key: "risk-expire".to_string(),
+                    key: "control_state-expire".to_string(),
                 },
             })
             .response,
@@ -2442,9 +2442,9 @@ fn common_expire_and_ttl_cover_cpp_risk_family_records_for_logical_key() {
         engine
             .execute(ExecuteRequest {
                 shard_id: 1,
-                command: Command::RiskFamilyQuery {
-                    family: RiskFamily::Cpc,
-                    key: "risk-expire".to_string(),
+                command: Command::ControlStateFamilyQuery {
+                    family: ControlStateFamily::Cpc,
+                    key: "control_state-expire".to_string(),
                     start_ms: 0,
                     end_ms: 20,
                     aggregator: "sum".to_string(),
@@ -2580,14 +2580,14 @@ fn ips_query_last_returns_recent_instances() {
 }
 
 #[test]
-fn risk_count_sums_window() {
+fn control_state_count_sums_window() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     for (timestamp_ms, amount) in [(10, 1), (20, 2), (30, 4)] {
         engine.execute(ExecuteRequest {
             shard_id: 1,
-            command: Command::RiskIncrement {
-                key: "risk".to_string(),
+            command: Command::ControlStateIncrement {
+                key: "control_state".to_string(),
                 timestamp_ms,
                 amount,
             },
@@ -2597,8 +2597,8 @@ fn risk_count_sums_window() {
         engine
             .execute(ExecuteRequest {
                 shard_id: 1,
-                command: Command::RiskCount {
-                    key: "risk".to_string(),
+                command: Command::ControlStateCount {
+                    key: "control_state".to_string(),
                     start_ms: 15,
                     end_ms: 30,
                 },

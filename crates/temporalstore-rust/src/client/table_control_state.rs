@@ -1,21 +1,21 @@
-//! TemporalStoreTable risk methods, split from client.rs.
+//! TemporalStoreTable control_state methods, split from client.rs.
 use super::*;
 
 impl TemporalStoreTable {
-    pub fn risk_increment(
+    pub fn control_state_increment(
         &self,
         key: impl Into<String>,
         timestamp_ms: u64,
         amount: i64,
     ) -> Result<(), ClientError> {
-        self.expect_empty(Command::RiskIncrement {
+        self.expect_empty(Command::ControlStateIncrement {
             key: key.into(),
             timestamp_ms,
             amount,
         })
     }
 
-    pub fn risk_increment_with_options(
+    pub fn control_state_increment_with_options(
         &self,
         key: impl Into<String>,
         timestamp_ms: u64,
@@ -23,7 +23,7 @@ impl TemporalStoreTable {
         precision_ms: Option<u64>,
         ttl_ms: Option<u64>,
     ) -> Result<(), ClientError> {
-        self.expect_empty(Command::RiskIncrementWithOptions {
+        self.expect_empty(Command::ControlStateIncrementWithOptions {
             key: key.into(),
             timestamp_ms,
             amount,
@@ -32,7 +32,7 @@ impl TemporalStoreTable {
         })
     }
 
-    pub fn risk_change_add(
+    pub fn control_state_change_add(
         &self,
         key: impl Into<String>,
         timestamp_ms: u64,
@@ -40,7 +40,7 @@ impl TemporalStoreTable {
         precision_ms: Option<u64>,
         ttl_ms: Option<u64>,
     ) -> Result<(), ClientError> {
-        self.expect_empty(Command::RiskChangeAdd {
+        self.expect_empty(Command::ControlStateChangeAdd {
             key: key.into(),
             timestamp_ms,
             value: value.into(),
@@ -49,14 +49,14 @@ impl TemporalStoreTable {
         })
     }
 
-    pub fn risk_count(
+    pub fn control_state_count(
         &self,
         key: impl Into<String>,
         start_ms: u64,
         end_ms: u64,
     ) -> Result<i64, ClientError> {
         match self
-            .execute(Command::RiskCount {
+            .execute(Command::ControlStateCount {
                 key: key.into(),
                 start_ms,
                 end_ms,
@@ -65,13 +65,13 @@ impl TemporalStoreTable {
         {
             CommandResponse::Integer { value } => Ok(value),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "risk_count",
+                operation: "control_state_count",
                 response,
             }),
         }
     }
 
-    pub fn risk_query(
+    pub fn control_state_query(
         &self,
         key: impl Into<String>,
         start_ms: u64,
@@ -79,7 +79,7 @@ impl TemporalStoreTable {
         aggregator: impl Into<String>,
     ) -> Result<i64, ClientError> {
         match self
-            .execute(Command::RiskQuery {
+            .execute(Command::ControlStateQuery {
                 key: key.into(),
                 start_ms,
                 end_ms,
@@ -89,13 +89,13 @@ impl TemporalStoreTable {
         {
             CommandResponse::Integer { value } => Ok(value),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "risk_query",
+                operation: "control_state_query",
                 response,
             }),
         }
     }
 
-    pub fn risk_detail(
+    pub fn control_state_detail(
         &self,
         key: impl Into<String>,
         start_ms: u64,
@@ -103,7 +103,7 @@ impl TemporalStoreTable {
         count: Option<usize>,
     ) -> Result<Vec<FeaturePoint>, ClientError> {
         match self
-            .execute(Command::RiskDetail {
+            .execute(Command::ControlStateDetail {
                 key: key.into(),
                 start_ms,
                 end_ms,
@@ -113,20 +113,20 @@ impl TemporalStoreTable {
         {
             CommandResponse::FeaturePoints { points } => Ok(points),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "risk_detail",
+                operation: "control_state_detail",
                 response,
             }),
         }
     }
 
-    pub fn risk_family_set(
+    pub fn control_state_family_set(
         &self,
-        family: RiskFamily,
+        family: ControlStateFamily,
         key: impl Into<String>,
         timestamp_ms: u64,
         amount: i64,
     ) -> Result<(), ClientError> {
-        self.expect_empty(Command::RiskSet {
+        self.expect_empty(Command::ControlStateSet {
             family,
             key: key.into(),
             timestamp_ms,
@@ -134,16 +134,16 @@ impl TemporalStoreTable {
         })
     }
 
-    pub fn risk_family_query(
+    pub fn control_state_family_query(
         &self,
-        family: RiskFamily,
+        family: ControlStateFamily,
         key: impl Into<String>,
         start_ms: u64,
         end_ms: u64,
         aggregator: impl Into<String>,
     ) -> Result<i64, ClientError> {
         match self
-            .execute(Command::RiskFamilyQuery {
+            .execute(Command::ControlStateFamilyQuery {
                 family,
                 key: key.into(),
                 start_ms,
@@ -154,15 +154,15 @@ impl TemporalStoreTable {
         {
             CommandResponse::Integer { value } => Ok(value),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "risk_family_query",
+                operation: "control_state_family_query",
                 response,
             }),
         }
     }
 
-    pub fn risk_family_set_and_get(
+    pub fn control_state_family_set_and_get(
         &self,
-        family: RiskFamily,
+        family: ControlStateFamily,
         key: impl Into<String>,
         timestamp_ms: u64,
         amount: i64,
@@ -171,7 +171,7 @@ impl TemporalStoreTable {
         aggregator: impl Into<String>,
     ) -> Result<i64, ClientError> {
         match self
-            .execute(Command::RiskSetAndGet {
+            .execute(Command::ControlStateSetAndGet {
                 family,
                 key: key.into(),
                 timestamp_ms,
@@ -184,21 +184,21 @@ impl TemporalStoreTable {
         {
             CommandResponse::Integer { value } => Ok(value),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "risk_family_set_and_get",
+                operation: "control_state_family_set_and_get",
                 response,
             }),
         }
     }
 
-    pub fn risk_fol_set(
+    pub fn control_state_fol_set(
         &self,
         key: impl Into<String>,
         value: impl Into<Vec<u8>>,
         occur_time_ms: u64,
         ttl_ms: u64,
-        fol_type: RiskFolType,
+        fol_type: ControlStateFolType,
     ) -> Result<(), ClientError> {
-        self.expect_empty(Command::RiskFolSet {
+        self.expect_empty(Command::ControlStateFolSet {
             key: key.into(),
             value: value.into(),
             occur_time_ms,
@@ -207,43 +207,43 @@ impl TemporalStoreTable {
         })
     }
 
-    pub fn risk_fol_query(&self, key: impl Into<String>) -> Result<Option<Vec<u8>>, ClientError> {
+    pub fn control_state_fol_query(&self, key: impl Into<String>) -> Result<Option<Vec<u8>>, ClientError> {
         match self
-            .execute(Command::RiskFolQuery { key: key.into() })?
+            .execute(Command::ControlStateFolQuery { key: key.into() })?
             .response
         {
             CommandResponse::Bytes { value } => Ok(value),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "risk_fol_query",
+                operation: "control_state_fol_query",
                 response,
             }),
         }
     }
 
-    pub fn risk_manager(
+    pub fn control_state_manager(
         &self,
         key: impl Into<String>,
     ) -> Result<Vec<(String, Vec<u8>)>, ClientError> {
         match self
-            .execute(Command::RiskManager { key: key.into() })?
+            .execute(Command::ControlStateManager { key: key.into() })?
             .response
         {
             CommandResponse::HashEntries { entries } => Ok(entries),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "risk_manager",
+                operation: "control_state_manager",
                 response,
             }),
         }
     }
 
-    pub fn risk_debug(
+    pub fn control_state_debug(
         &self,
         key: impl Into<String>,
         start_ms: u64,
         end_ms: u64,
     ) -> Result<Vec<(String, Vec<u8>)>, ClientError> {
         match self
-            .execute(Command::RiskDebug {
+            .execute(Command::ControlStateDebug {
                 key: key.into(),
                 start_ms,
                 end_ms,
@@ -252,7 +252,7 @@ impl TemporalStoreTable {
         {
             CommandResponse::HashEntries { entries } => Ok(entries),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "risk_debug",
+                operation: "control_state_debug",
                 response,
             }),
         }

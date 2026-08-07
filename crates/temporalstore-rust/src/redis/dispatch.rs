@@ -1,7 +1,7 @@
 //! Redis command dispatcher (execute_redis_command_with_state), extracted from redis.rs.
 
 use super::*;
-use crate::types::{Command, CommandResponse, FeatureFilterOp, FeatureWritePolicy, RiskFamily, StringSetCondition};
+use crate::types::{Command, CommandResponse, FeatureFilterOp, FeatureWritePolicy, ControlStateFamily, StringSetCondition};
 
 pub fn execute_redis_command_with_state(
     args: Vec<Vec<u8>>,
@@ -1624,7 +1624,7 @@ pub fn execute_redis_command_with_state(
                 end_ms,
             }))
         }
-        "RISKINCR" if args.len() == 4 => {
+        "CONTROLSTATEINCR" if args.len() == 4 => {
             let timestamp_ms = match parse_u64(&args[2], "timestamp_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1633,13 +1633,13 @@ pub fn execute_redis_command_with_state(
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
             };
-            status_ok(execute(Command::RiskIncrement {
+            status_ok(execute(Command::ControlStateIncrement {
                 key: string_arg(&args[1]),
                 timestamp_ms,
                 amount,
             }))
         }
-        "RISKINCROPT" if args.len() == 6 => {
+        "CONTROLSTATEINCROPT" if args.len() == 6 => {
             let timestamp_ms = match parse_u64(&args[2], "timestamp_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1656,7 +1656,7 @@ pub fn execute_redis_command_with_state(
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
             };
-            status_ok(execute(Command::RiskIncrementWithOptions {
+            status_ok(execute(Command::ControlStateIncrementWithOptions {
                 key: string_arg(&args[1]),
                 timestamp_ms,
                 amount,
@@ -1664,7 +1664,7 @@ pub fn execute_redis_command_with_state(
                 ttl_ms: Some(ttl_ms),
             }))
         }
-        "RISKCHANGE" | "HCHANGE" if args.len() == 4 || args.len() == 6 => {
+        "CONTROLSTATECHANGE" | "HCHANGE" if args.len() == 4 || args.len() == 6 => {
             let timestamp_ms = match parse_u64(&args[2], "timestamp_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1683,11 +1683,11 @@ pub fn execute_redis_command_with_state(
                 (None, None)
             };
             let key = if command == "HCHANGE" {
-                risk_family_key_for_resp(RiskFamily::H, &string_arg(&args[1]))
+                control_state_family_key_for_resp(ControlStateFamily::H, &string_arg(&args[1]))
             } else {
                 string_arg(&args[1])
             };
-            status_ok(execute(Command::RiskChangeAdd {
+            status_ok(execute(Command::ControlStateChangeAdd {
                 key,
                 timestamp_ms,
                 value: args[3].clone(),
@@ -1695,7 +1695,7 @@ pub fn execute_redis_command_with_state(
                 ttl_ms,
             }))
         }
-        "RISKCOUNT" if args.len() == 4 => {
+        "CONTROLSTATECOUNT" if args.len() == 4 => {
             let start_ms = match parse_u64(&args[2], "start_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1704,13 +1704,13 @@ pub fn execute_redis_command_with_state(
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
             };
-            integer_response(execute(Command::RiskCount {
+            integer_response(execute(Command::ControlStateCount {
                 key: string_arg(&args[1]),
                 start_ms,
                 end_ms,
             }))
         }
-        "RISKQUERY" if args.len() == 5 => {
+        "CONTROLSTATEQUERY" if args.len() == 5 => {
             let start_ms = match parse_u64(&args[2], "start_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1719,14 +1719,14 @@ pub fn execute_redis_command_with_state(
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
             };
-            integer_response(execute(Command::RiskQuery {
+            integer_response(execute(Command::ControlStateQuery {
                 key: string_arg(&args[1]),
                 start_ms,
                 end_ms,
                 aggregator: string_arg(&args[4]),
             }))
         }
-        "RISKDETAIL" if args.len() == 4 || args.len() == 5 => {
+        "CONTROLSTATEDETAIL" if args.len() == 4 || args.len() == 5 => {
             let start_ms = match parse_u64(&args[2], "start_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1742,14 +1742,14 @@ pub fn execute_redis_command_with_state(
                 },
                 None => None,
             };
-            feature_points_response(execute(Command::RiskDetail {
+            feature_points_response(execute(Command::ControlStateDetail {
                 key: string_arg(&args[1]),
                 start_ms,
                 end_ms,
                 count,
             }))
         }
-        "RISKHSET" | "CPCSET" | "FOLSET" if args.len() == 4 => {
+        "CONTROLSTATEHSET" | "CPCSET" | "FOLSET" if args.len() == 4 => {
             let timestamp_ms = match parse_u64(&args[2], "timestamp_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1758,8 +1758,8 @@ pub fn execute_redis_command_with_state(
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
             };
-            status_ok(execute(Command::RiskSet {
-                family: risk_family_for_command(&command),
+            status_ok(execute(Command::ControlStateSet {
+                family: control_state_family_for_command(&command),
                 key: string_arg(&args[1]),
                 timestamp_ms,
                 amount,
@@ -1775,11 +1775,11 @@ pub fn execute_redis_command_with_state(
                 Err(err) => return RespValue::Error(err),
             };
             let fol_type = match upper(&args[5]).as_str() {
-                "FIRST" => RiskFolType::First,
-                "LAST" => RiskFolType::Last,
+                "FIRST" => ControlStateFolType::First,
+                "LAST" => ControlStateFolType::Last,
                 value => return RespValue::Error(format!("ERR unsupported fol_type: {value}")),
             };
-            status_ok(execute(Command::RiskFolSet {
+            status_ok(execute(Command::ControlStateFolSet {
                 key: string_arg(&args[1]),
                 value: args[2].clone(),
                 occur_time_ms,
@@ -1787,7 +1787,7 @@ pub fn execute_redis_command_with_state(
                 fol_type,
             }))
         }
-        "FOLQUERY" if args.len() == 2 => bytes_response(execute(Command::RiskFolQuery {
+        "FOLQUERY" if args.len() == 2 => bytes_response(execute(Command::ControlStateFolQuery {
             key: string_arg(&args[1]),
         })),
         "HQUERY" | "CPCQUERY" | "FOLQUERY" if args.len() == 5 => {
@@ -1799,8 +1799,8 @@ pub fn execute_redis_command_with_state(
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
             };
-            integer_response(execute(Command::RiskFamilyQuery {
-                family: risk_family_for_command(&command),
+            integer_response(execute(Command::ControlStateFamilyQuery {
+                family: control_state_family_for_command(&command),
                 key: string_arg(&args[1]),
                 start_ms,
                 end_ms,
@@ -1824,8 +1824,8 @@ pub fn execute_redis_command_with_state(
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
             };
-            integer_response(execute(Command::RiskSetAndGet {
-                family: risk_family_for_command(&command),
+            integer_response(execute(Command::ControlStateSetAndGet {
+                family: control_state_family_for_command(&command),
                 key: string_arg(&args[1]),
                 timestamp_ms,
                 amount,
@@ -1834,10 +1834,10 @@ pub fn execute_redis_command_with_state(
                 aggregator: string_arg(&args[6]),
             }))
         }
-        "RISKMANAGER" if args.len() == 2 => hash_entries_response(execute(Command::RiskManager {
+        "CONTROLSTATEMANAGER" if args.len() == 2 => hash_entries_response(execute(Command::ControlStateManager {
             key: string_arg(&args[1]),
         })),
-        "RISKDEBUG" if args.len() == 4 => {
+        "CONTROLSTATEDEBUG" if args.len() == 4 => {
             let start_ms = match parse_u64(&args[2], "start_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1846,7 +1846,7 @@ pub fn execute_redis_command_with_state(
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
             };
-            hash_entries_response(execute(Command::RiskDebug {
+            hash_entries_response(execute(Command::ControlStateDebug {
                 key: string_arg(&args[1]),
                 start_ms,
                 end_ms,

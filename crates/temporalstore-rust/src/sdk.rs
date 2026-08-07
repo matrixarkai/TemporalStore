@@ -376,12 +376,12 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             end_ms: command.end_ms,
             count: nonzero_limit(command.limit),
         },
-        v1::command::Kind::RiskIncrement(command) => types::Command::RiskIncrement {
+        v1::command::Kind::RiskIncrement(command) => types::Command::ControlStateIncrement {
             key: command.key,
             timestamp_ms: command.timestamp_ms,
             amount: command.delta,
         },
-        v1::command::Kind::RiskQuery(command) => types::Command::RiskQuery {
+        v1::command::Kind::RiskQuery(command) => types::Command::ControlStateQuery {
             key: command.key,
             start_ms: command.start_ms,
             end_ms: command.end_ms,

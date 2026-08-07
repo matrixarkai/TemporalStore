@@ -180,7 +180,7 @@ fn client_exposes_neptune_placement_hooks_and_migration_scope() {
         .iter()
         .any(|blocker| blocker.contains("legacy C++ wire")));
     for family in [
-        "common", "string", "hash", "set", "feature", "sequence", "ips", "risk", "redis", "admin",
+        "common", "string", "hash", "set", "feature", "sequence", "ips", "control_state", "redis", "admin",
         "context",
     ] {
         assert!(migration
@@ -640,13 +640,13 @@ fn table_typed_methods_and_pipeline_match_cpp_client_shape() {
     assert_eq!(snapshot_report.table_id_counts, vec![(42, 1)]);
     assert_eq!(snapshot_report.packed_timestamped_page_count, 2);
 
-    table.risk_increment("risk", 10, 5).unwrap();
-    table.risk_increment("risk", 20, -2).unwrap();
-    table.risk_increment("risk", 30, 7).unwrap();
-    assert_eq!(table.risk_query("risk", 0, 40, "sum").unwrap(), 10);
-    assert_eq!(table.risk_query("risk", 0, 40, "last").unwrap(), 7);
+    table.control_state_increment("control_state", 10, 5).unwrap();
+    table.control_state_increment("control_state", 20, -2).unwrap();
+    table.control_state_increment("control_state", 30, 7).unwrap();
+    assert_eq!(table.control_state_query("control_state", 0, 40, "sum").unwrap(), 10);
+    assert_eq!(table.control_state_query("control_state", 0, 40, "last").unwrap(), 7);
     assert_eq!(
-        table.risk_detail("risk", 15, 40, Some(2)).unwrap(),
+        table.control_state_detail("control_state", 15, 40, Some(2)).unwrap(),
         vec![
             FeaturePoint {
                 timestamp_ms: 20,
@@ -659,96 +659,96 @@ fn table_typed_methods_and_pipeline_match_cpp_client_shape() {
         ]
     );
     table
-        .risk_family_set(RiskFamily::H, "risk-cpp", 10, 5)
+        .control_state_family_set(ControlStateFamily::H, "control_state-cpp", 10, 5)
         .unwrap();
     assert_eq!(
         table
-            .risk_family_set_and_get(RiskFamily::H, "risk-cpp", 20, 7, 0, 30, "sum")
+            .control_state_family_set_and_get(ControlStateFamily::H, "control_state-cpp", 20, 7, 0, 30, "sum")
             .unwrap(),
         12
     );
     table
-        .risk_family_set(RiskFamily::Cpc, "risk-cpp", 10, 3)
+        .control_state_family_set(ControlStateFamily::Cpc, "control_state-cpp", 10, 3)
         .unwrap();
     assert_eq!(
         table
-            .risk_family_set_and_get(RiskFamily::Cpc, "risk-cpp", 20, 4, 0, 30, "sum")
+            .control_state_family_set_and_get(ControlStateFamily::Cpc, "control_state-cpp", 20, 4, 0, 30, "sum")
             .unwrap(),
         7
     );
     table
-        .risk_family_set(RiskFamily::Fol, "risk-cpp", 10, 11)
+        .control_state_family_set(ControlStateFamily::Fol, "control_state-cpp", 10, 11)
         .unwrap();
     assert_eq!(
         table
-            .risk_family_query(RiskFamily::Fol, "risk-cpp", 0, 30, "sum")
+            .control_state_family_query(ControlStateFamily::Fol, "control_state-cpp", 0, 30, "sum")
             .unwrap(),
         11
     );
     table
-        .risk_fol_set(
-            "risk-fol-first",
+        .control_state_fol_set(
+            "control_state-fol-first",
             b"middle".to_vec(),
             20,
             60_000,
-            RiskFolType::First,
+            ControlStateFolType::First,
         )
         .unwrap();
     table
-        .risk_fol_set(
-            "risk-fol-first",
+        .control_state_fol_set(
+            "control_state-fol-first",
             b"first".to_vec(),
             10,
             60_000,
-            RiskFolType::First,
+            ControlStateFolType::First,
         )
         .unwrap();
     table
-        .risk_fol_set(
-            "risk-fol-first",
+        .control_state_fol_set(
+            "control_state-fol-first",
             b"last".to_vec(),
             30,
             60_000,
-            RiskFolType::First,
+            ControlStateFolType::First,
         )
         .unwrap();
     assert_eq!(
-        table.risk_fol_query("risk-fol-first").unwrap(),
+        table.control_state_fol_query("control_state-fol-first").unwrap(),
         Some(b"first".to_vec())
     );
     table
-        .risk_fol_set(
-            "risk-fol-last",
+        .control_state_fol_set(
+            "control_state-fol-last",
             b"middle".to_vec(),
             20,
             60_000,
-            RiskFolType::Last,
+            ControlStateFolType::Last,
         )
         .unwrap();
     table
-        .risk_fol_set(
-            "risk-fol-last",
+        .control_state_fol_set(
+            "control_state-fol-last",
             b"first".to_vec(),
             10,
             60_000,
-            RiskFolType::Last,
+            ControlStateFolType::Last,
         )
         .unwrap();
     table
-        .risk_fol_set(
-            "risk-fol-last",
+        .control_state_fol_set(
+            "control_state-fol-last",
             b"last".to_vec(),
             30,
             60_000,
-            RiskFolType::Last,
+            ControlStateFolType::Last,
         )
         .unwrap();
     assert_eq!(
-        table.risk_fol_query("risk-fol-last").unwrap(),
+        table.control_state_fol_query("control_state-fol-last").unwrap(),
         Some(b"last".to_vec())
     );
     assert_eq!(
-        table.risk_manager("risk-cpp").unwrap(),
+        table.control_state_manager("control_state-cpp").unwrap(),
         vec![
             ("h_events".to_string(), b"2".to_vec()),
             ("h_sum".to_string(), b"12".to_vec()),
@@ -758,8 +758,8 @@ fn table_typed_methods_and_pipeline_match_cpp_client_shape() {
             ("fol_sum".to_string(), b"11".to_vec()),
         ]
     );
-    let debug = table.risk_debug("risk-cpp", 0, 15).unwrap();
-    assert!(debug.contains(&("key".to_string(), b"risk-cpp".to_vec())));
+    let debug = table.control_state_debug("control_state-cpp", 0, 15).unwrap();
+    assert!(debug.contains(&("key".to_string(), b"control_state-cpp".to_vec())));
     assert!(debug.contains(&("h_window_events".to_string(), b"1".to_vec())));
     assert!(debug.contains(&("cpc_window_sum".to_string(), b"3".to_vec())));
     assert!(debug.contains(&("fol_window_last_timestamp_ms".to_string(), b"10".to_vec())));
