@@ -445,6 +445,11 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
         shard_id: 1,
         command: Command::ControlStateManager {
             key: "control_state-golden".to_string(),
+            op_type: None,
+            field_list: Vec::new(),
+            start_offset: String::new(),
+            end_offset: String::new(),
+            is_cpc: false,
         },
     });
     record_golden_case(

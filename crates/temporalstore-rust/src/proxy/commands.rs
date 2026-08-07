@@ -101,7 +101,7 @@ fn proxy_command_key(command: &Command) -> Option<&str> {
         | Command::ControlStateFamilyQuery { key, .. }
         | Command::ControlStateFolSet { key, .. }
         | Command::ControlStateFolQuery { key }
-        | Command::ControlStateManager { key }
+        | Command::ControlStateManager { key, .. }
         | Command::ControlStateDebug { key, .. } => Some(key),
         Command::IpsBatchQueryLast { .. }
         | Command::SequenceBatchQuery { .. }

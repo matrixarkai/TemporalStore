@@ -2608,6 +2608,89 @@ fn control_state_count_sums_window() {
     );
 }
 
+// C++ MANAGER op-code parity: QUERY(2) / FIELD_LIST(5) / FIELD_COUNT(6) / ALL_DATA_VALUE(7)
+// over the H family series, plus the default summary path.
+#[test]
+fn control_state_manager_op_codes_match_cpp_hash_manager() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    for (timestamp_ms, amount) in [(10u64, 1i64), (20, 2), (30, 4)] {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ControlStateSet {
+                family: ControlStateFamily::H,
+                key: "cs".to_string(),
+                timestamp_ms,
+                amount,
+            },
+        });
+    }
+    let manager = |op_type: Option<&str>,
+                   field_list: Vec<(String, String)>,
+                   start_offset: &str,
+                   end_offset: &str| {
+        match engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ControlStateManager {
+                    key: "cs".to_string(),
+                    op_type: op_type.map(str::to_string),
+                    field_list,
+                    start_offset: start_offset.to_string(),
+                    end_offset: end_offset.to_string(),
+                    is_cpc: false,
+                },
+            })
+            .response
+        {
+            CommandResponse::HashEntries { entries } => entries,
+            other => panic!("expected HashEntries, got {other:?}"),
+        }
+    };
+    let text = |entries: &[(String, Vec<u8>)], field: &str| -> Option<String> {
+        entries
+            .iter()
+            .find(|(name, _)| name == field)
+            .map(|(_, value)| String::from_utf8_lossy(value).into_owned())
+    };
+
+    // FIELD_COUNT(6) -> number of buckets in the H series.
+    assert_eq!(
+        text(&manager(Some("6"), Vec::new(), "", ""), "size").as_deref(),
+        Some("3")
+    );
+    // FIELD_LIST(5) over an inclusive [start,end] -> comma-joined timestamps, ascending.
+    assert_eq!(
+        text(&manager(Some("FIELD_LIST"), Vec::new(), "0", "100"), "key_list").as_deref(),
+        Some("10,20,30")
+    );
+    // FIELD_LIST bounded to [15,25] -> only the ts=20 bucket.
+    assert_eq!(
+        text(&manager(Some("5"), Vec::new(), "15", "25"), "key_list").as_deref(),
+        Some("20")
+    );
+    // QUERY(2) exact field lookups.
+    let q = manager(
+        Some("2"),
+        vec![("20".to_string(), String::new()), ("30".to_string(), String::new())],
+        "",
+        "",
+    );
+    assert_eq!(text(&q, "20").as_deref(), Some("2"));
+    assert_eq!(text(&q, "30").as_deref(), Some("4"));
+    // QUERY for an absent field yields no entry.
+    assert!(manager(Some("2"), vec![("99".to_string(), String::new())], "", "").is_empty());
+    // ALL_DATA_VALUE(7) -> every (timestamp, value) pair.
+    let all = manager(Some("7"), Vec::new(), "", "");
+    assert_eq!(all.len(), 3);
+    assert_eq!(text(&all, "10").as_deref(), Some("1"));
+    assert_eq!(text(&all, "30").as_deref(), Some("4"));
+    // Default (no op_type) still returns the cross-family summary.
+    let summary = manager(None, Vec::new(), "", "");
+    assert_eq!(text(&summary, "h_events").as_deref(), Some("3"));
+    assert_eq!(text(&summary, "h_sum").as_deref(), Some("7"));
+}
+
 // shared-corpus: engine_lifecycle_load_config_membership_unload
 #[test]
 fn control_api_load_config_info_stats_membership_and_unload() {

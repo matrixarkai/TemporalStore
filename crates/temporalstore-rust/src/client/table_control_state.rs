@@ -225,7 +225,14 @@ impl TemporalStoreTable {
         key: impl Into<String>,
     ) -> Result<Vec<(String, Vec<u8>)>, ClientError> {
         match self
-            .execute(Command::ControlStateManager { key: key.into() })?
+            .execute(Command::ControlStateManager {
+                key: key.into(),
+                op_type: None,
+                field_list: Vec::new(),
+                start_offset: String::new(),
+                end_offset: String::new(),
+                is_cpc: false,
+            })?
             .response
         {
             CommandResponse::HashEntries { entries } => Ok(entries),
