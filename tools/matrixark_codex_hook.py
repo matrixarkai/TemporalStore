@@ -6164,6 +6164,9 @@ def main() -> int:
                         "lifecycle_stage": "before_llm_retrieve" if args.event == "UserPromptSubmit" else "explicit_query_retrieve",
                     },
                     **({"local_context": agent_context.get("local_context", [])} if agent_context.get("local_context") else {}),
+                    # Flag synthetic/debug probes so retrieve serves them from the remote
+                    # TemporalStore pack only; real prompts keep local + remote.
+                    "synthetic": is_synthetic_hook_text(query),
                 },
                 trace,
             )

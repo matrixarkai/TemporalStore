@@ -31,6 +31,7 @@ try:
         first_string_at,
         generated_session_id,
         hook_idempotency_key,
+        is_synthetic_hook_text,
         payload_session_candidate,
         payload_text,
         read_stdin_payload,
@@ -58,6 +59,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         codex_retrieve_ranking_options,
         default_hook_backend,
         first_string_at,
+        is_synthetic_hook_text,
         generated_session_id,
         hook_idempotency_key,
         payload_session_candidate,
@@ -324,6 +326,9 @@ def agent_retrieve_args(
     }
     if local_context:
         retrieve_args["local_context"] = local_context
+    # Flag synthetic/debug probes so the retrieve budget policy serves them from the remote
+    # TemporalStore pack only (no local reservation); real prompts keep local + remote.
+    retrieve_args["synthetic"] = is_synthetic_hook_text(query)
     return retrieve_args
 
 
