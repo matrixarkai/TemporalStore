@@ -55,6 +55,73 @@ def native_candidate_prefilter_required(*, backend_label: str = "") -> bool:
     return backend_label != "local"
 
 DEFAULT_MAX_CONTEXT_TOKENS = int(os.environ.get("MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS", "128000"))
+
+# Context-source policy: which context the agent's prompt is assembled from.
+#   auto (default)   -> synthetic/debug requests (retrieve arg synthetic=true) use the
+#                       remote TemporalStore pack ONLY; real Codex/Claude sessions keep
+#                       local + remote (legacy local-first-fill-remaining behavior).
+#   remote_only      -> global flip: EVERY request drops the local reservation and uses
+#                       the remote pack only. Set this once TemporalStore recall is proven
+#                       good enough to replace local replay for real sessions too.
+#   local_and_remote -> force legacy local-first for every request (disables the flip).
+# Per-request override: pass "context_source_mode" in the retrieve args.
+DEFAULT_CONTEXT_SOURCE_MODE = os.environ.get("MATRIXARK_CONTEXT_SOURCE_MODE", "auto").strip().lower()
+
+
+def resolve_context_source_mode(args: dict | None, *, default_mode: str | None = None) -> str:
+    """Resolve a retrieve request to 'remote_only' or 'local_and_remote'.
+
+    remote_only reserves zero local-context budget so the remote (TemporalStore) pack
+    receives the whole token window and no local refs are injected. 'auto' keys off the
+    request's synthetic flag: synthetic/debug -> remote_only, real sessions -> local+remote.
+    An explicit per-request "context_source_mode" wins over the env default.
+    """
+    args = args if isinstance(args, dict) else {}
+    raw = args.get("context_source_mode")
+    mode = str(raw or default_mode or DEFAULT_CONTEXT_SOURCE_MODE or "auto").strip().lower()
+    if mode in {"remote_only", "local_and_remote"}:
+        return mode
+    # auto (or any unrecognized value): decide from the synthetic flag.
+    return "remote_only" if bool(args.get("synthetic")) else "local_and_remote"
+
+
+# Remote-only safety floor: if a remote_only retrieve produces a pack below this many
+# tokens (cold start, or a sparse-topic retrieval miss like the q_storage empty-pack case),
+# fall back to the request's local context for that turn so the agent is never left blind.
+# Makes the eventual global flip safe by construction. 0 disables the fallback.
+DEFAULT_REMOTE_ONLY_LOCAL_FALLBACK_FLOOR_TOKENS = int(
+    os.environ.get("MATRIXARK_REMOTE_ONLY_LOCAL_FALLBACK_FLOOR_TOKENS", "256")
+)
+
+
+def apply_remote_only_local_fallback(
+    local_budget: dict,
+    used_remote_tokens: int,
+    *,
+    floor_tokens: int | None = None,
+) -> bool:
+    """Re-admit local context when a remote_only pack came back too sparse.
+
+    Only fires when the request was resolved to remote_only (local was set aside, not
+    absent). Restores the stashed local items + token estimate so the downstream local-ref
+    assembly includes them, and flips the recorded mode to 'remote_only_local_fallback' for
+    telemetry. Returns True when the fallback was applied. Real local+remote requests and
+    remote_only requests with an adequate remote pack are untouched.
+    """
+    if not isinstance(local_budget, dict):
+        return False
+    if local_budget.get("context_source_mode") != "remote_only":
+        return False
+    floor = DEFAULT_REMOTE_ONLY_LOCAL_FALLBACK_FLOOR_TOKENS if floor_tokens is None else int(floor_tokens)
+    if floor <= 0:
+        return False
+    fallback_items = local_budget.get("_remote_only_fallback_items") or []
+    if int(used_remote_tokens or 0) >= floor or not fallback_items:
+        return False
+    local_budget["items"] = list(fallback_items)
+    local_budget["token_estimate"] = int(local_budget.get("observed_local_token_estimate", 0))
+    local_budget["context_source_mode"] = "remote_only_local_fallback"
+    return True
 CONTEXT_PACK_DEBUG_REFS = os.environ.get("MATRIXARK_CONTEXT_PACK_DEBUG_REFS", "0").strip().lower() in {"1", "true", "yes"}
 AUDIT_DEBUG_PAYLOAD = os.environ.get("MATRIXARK_AUDIT_DEBUG_PAYLOAD", "0").strip().lower() in {"1", "true", "yes"}
 

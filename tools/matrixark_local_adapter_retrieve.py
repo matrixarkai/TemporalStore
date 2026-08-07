@@ -6,6 +6,19 @@ try:  # package path
 except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
 
+# Context-source policy resolver + remote-only local fallback floor
+# (runtime_config is a leaf module -> no import cycle).
+try:  # package path
+    from tools.matrixark_mcp_runtime_config import (
+        apply_remote_only_local_fallback,
+        resolve_context_source_mode,
+    )  # noqa: F401
+except ImportError:
+    from matrixark_mcp_runtime_config import (  # noqa: F401
+        apply_remote_only_local_fallback,
+        resolve_context_source_mode,
+    )
+
 try:  # names owned by the parent module
     from tools.matrixark_mcp_local_adapter import (
     Any,
@@ -266,6 +279,20 @@ class _LocalAdapterRetrieveMixin:
         if not isinstance(max_context_tokens, int) or max_context_tokens <= 0:
             raise MatrixArkError("max_context_tokens must be a positive integer")
         local_budget = local_context_budget(args)
+        # Context-source policy: synthetic/debug requests (or a global flip) use the remote
+        # TemporalStore pack ONLY -- reserve zero local budget so remote gets the whole window
+        # and inject no local refs. Real sessions keep local + remote (unchanged). Mutating the
+        # shared local_budget here means the deadline fallback packer inherits the same policy.
+        context_source_mode = resolve_context_source_mode(args)
+        if context_source_mode == "remote_only":
+            # Set local aside (not discard): the remote-only safety floor can re-admit it
+            # for this turn if the remote pack comes back too sparse (see below).
+            local_budget["_remote_only_fallback_items"] = list(local_budget.get("items") or [])
+            local_budget["observed_local_token_estimate"] = int(local_budget.get("token_estimate", 0))
+            local_budget["token_estimate"] = 0
+            local_budget["items"] = []
+            local_budget["text_hashes"] = set()
+        local_budget["context_source_mode"] = context_source_mode
         local_tokens = int(local_budget.get("token_estimate", 0))
         safety_margin_tokens = int(local_budget.get("safety_margin_tokens", 0))
         remote_context_budget_tokens = max(0, max_context_tokens - local_tokens - safety_margin_tokens)
@@ -705,6 +732,15 @@ class _LocalAdapterRetrieveMixin:
                         "created_at_ms": now_ms(),
                     })
                 )
+            # Remote-only safety floor (native/production path): if the native remote pack came
+            # back too sparse, re-admit the request's local context so a retrieval miss never
+            # leaves the agent blind. Only fires for remote_only requests below the token floor.
+            native_used_remote = int(
+                native_pack.get("used_remote_context_tokens", native_pack.get("used_context_tokens", 0)) or 0
+            )
+            if apply_remote_only_local_fallback(local_budget, native_used_remote):
+                native_pack["local_context_refs"] = compact_local_context_refs(local_budget)
+                native_pack["context_source_mode"] = "remote_only_local_fallback"
             serving_selected_refs = compact_context_pack_refs(selected_refs, include_debug=debug_refs)
             native_pack["selected_refs"] = serving_selected_refs
             native_pack["remote_context_refs"] = serving_selected_refs
@@ -3138,6 +3174,10 @@ class _LocalAdapterRetrieveMixin:
             "node_scope_recovered_count": len(node_scope_by_hash),
             "compact_scope_recovery_enabled": True,
         }
+        # Remote-only safety floor: if this was a remote_only request and the remote pack came
+        # back too sparse, re-admit the request's local context so the agent is never blind.
+        if apply_remote_only_local_fallback(local_budget, used_context_tokens):
+            local_tokens = int(local_budget.get("token_estimate", 0))
         pack = {
             "context_pack_id": str(context_pack_id),
             "context_sources_order": ["local_context", "matrixark_remote_context"],
