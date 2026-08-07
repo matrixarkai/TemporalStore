@@ -1102,6 +1102,61 @@ fn eviction_ranks_victims_least_recently_used_first_like_cpp() {
 }
 
 #[test]
+fn wal_replay_gap_refuses_load_like_cpp_dataloss() {
+    // C++ ObjectManager::ReplayOplog returns DataLoss and aborts Load on a hole in the
+    // retained oplog. Rust must likewise refuse the load (not-loaded) rather than
+    // silently serve a truncated prefix.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    // Seed the WAL with a sequence hole {1,2,4} (missing 3) before loading the shard;
+    // there is no served index, so recovery replays from watermark 0.
+    let wal = engine.write_ahead_log_store();
+    for seq in [1u64, 2, 4] {
+        wal.append_replayed_record(WriteAheadLogRecord {
+            shard_id: 1,
+            sequence: seq,
+            command: Command::StringSet {
+                key: format!("k{seq}"),
+                value: b"v".to_vec(),
+            },
+            metadata: None,
+        })
+        .unwrap();
+    }
+    let response = engine.load_shard_with(LoadShardRequest {
+        shard_id: 1,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: 0,
+        end_routing_bucket: u32::MAX,
+        readonly: false,
+        table_name: String::new(),
+    });
+    assert!(
+        !response.status.ok,
+        "load must refuse on a WAL sequence gap: {response:?}"
+    );
+    assert_eq!(response.status.code, "wal_replay_sequence_gap");
+    // The shard must be left NOT loaded (unwound).
+    let get = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "k1".to_string(),
+        },
+    });
+    assert!(
+        !get.status.ok,
+        "a refused load must leave the shard not-loaded: {get:?}"
+    );
+}
+
+#[test]
 fn expiry_sweep_emits_wal_tombstone_like_cpp() {
     // C++ parity (object_manager DoExpireObject -> op_logger_->DeleteObject; expirer.cc
     // Commit): active expiry is a logged, replicated delete. Rust's sweep must append a

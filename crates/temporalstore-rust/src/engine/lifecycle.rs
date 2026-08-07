@@ -133,7 +133,13 @@ impl TemporalEngine {
         // then WAL-GC'd). C++ analog: index_->Load() restores the dumped index before
         // ObjectManager::Load() replays the oplog on top.
         let installed_manifest_watermark =
-            self.install_latest_manifest_if_newer_on_load(request.shard_id);
+            match self.install_latest_manifest_if_newer_on_load(request.shard_id) {
+                Ok(watermark) => watermark,
+                // C++ parity: index_->Load() failure is fatal. A newer durable manifest
+                // that will not install means the served snapshot + (possibly reclaimed)
+                // WAL cannot be trusted to hold the records it covers -- refuse the load.
+                Err(status) => return LoadShardResponse { status },
+            };
         let loaded = self.load_index(request.shard_id);
         // WAL replay watermark, mirroring C++ ObjectManager::Load() reading
         // index_->GetDumpedLogId(): installed manifest -> its oplog_sequence; no index
@@ -193,7 +199,29 @@ impl TemporalEngine {
         // in-memory state the way C++ ObjectManager::Load() replays the oplog. Without
         // this an async_storage write (WAL entry recorded, page/index deferred to the
         // dump) is silently lost on restart if the crash beats the dump.
-        self.replay_wal_into_shard(request.shard_id, replay_watermark);
+        if let Err(status) = self.replay_wal_into_shard(request.shard_id, replay_watermark) {
+            // C++ ReplayOplog returns DataLoss on a WAL hole and aborts Load. Unwind the
+            // partially-loaded shard and refuse the load rather than serve truncated
+            // state -- a not-loaded shard is recoverable/re-routable; silent truncation
+            // is not.
+            self.shards
+                .write()
+                .expect("engine lock poisoned")
+                .remove(&request.shard_id);
+            self.infos
+                .write()
+                .expect("info lock poisoned")
+                .remove(&request.shard_id);
+            self.configs
+                .write()
+                .expect("config lock poisoned")
+                .remove(&request.shard_id);
+            self.admissions
+                .write()
+                .expect("admission lock poisoned")
+                .remove(&AdmissionScope::Shard(request.shard_id));
+            return LoadShardResponse { status };
+        }
         LoadShardResponse {
             status: Status::ok(),
         }
@@ -201,23 +229,29 @@ impl TemporalEngine {
 
     /// If the latest durable bucket-dump manifest is newer than the served index,
     /// install it (validate + preflight + restore embedded index) and return its
-    /// oplog_sequence as the WAL replay watermark. `None` when nothing newer exists or
-    /// the install is refused, so the caller falls back to the served index + replay.
+    /// oplog_sequence as the WAL replay watermark. `Ok(None)` when nothing newer exists.
+    /// `Err` when a newer manifest IS present but will not install: C++ treats
+    /// index_->Load() failure as fatal (partition.cc), because once the served snapshot
+    /// lags the manifest the intervening WAL records may already be reclaimed, so a
+    /// silent fall-back to the stale snapshot would drop them. The caller refuses the
+    /// load instead.
     pub(super) fn install_latest_manifest_if_newer_on_load(
         &self,
         shard_id: ShardId,
-    ) -> Option<u64> {
-        let manifest = latest_bucket_dump_manifest_at(&self.index_dir, shard_id)?;
+    ) -> Result<Option<u64>, Status> {
+        let Some(manifest) = latest_bucket_dump_manifest_at(&self.index_dir, shard_id) else {
+            return Ok(None);
+        };
         let served_anchor = self
             .load_index(shard_id)
             .and_then(|state| state.applied_wal_sequence)
             .unwrap_or(0);
         if manifest.oplog_sequence <= served_anchor {
-            return None;
+            return Ok(None);
         }
         match self.install_bucket_dump_manifest(&manifest) {
-            Ok(()) => Some(manifest.oplog_sequence),
-            Err(_) => None,
+            Ok(()) => Ok(Some(manifest.oplog_sequence)),
+            Err(status) => Err(status),
         }
     }
 
@@ -226,10 +260,14 @@ impl TemporalEngine {
     /// re-appending to the WAL or re-persisting the index per record, then anchor and
     /// persist the reconstructed index once. Mirrors C++ ObjectManager::ReplayOplog,
     /// including its strict sequence-continuity check.
-    pub(super) fn replay_wal_into_shard(&self, shard_id: ShardId, watermark: u64) {
+    pub(super) fn replay_wal_into_shard(
+        &self,
+        shard_id: ShardId,
+        watermark: u64,
+    ) -> Result<(), Status> {
         let records = match self.wal_store.scan(shard_id, 0, u64::MAX, u64::MAX) {
             Ok(records) => records,
-            Err(_) => return,
+            Err(_) => return Ok(()),
         };
         let mut pending: Vec<WriteAheadLogRecord> = records
             .into_iter()
@@ -237,7 +275,7 @@ impl TemporalEngine {
             .filter(|record| record.sequence > watermark)
             .collect();
         if pending.is_empty() {
-            return;
+            return Ok(());
         }
         pending.sort_by_key(|record| record.sequence);
 
@@ -245,17 +283,28 @@ impl TemporalEngine {
         let mut expected = watermark.saturating_add(1);
         let mut replayed_through = watermark;
         for record in pending {
-            // Strict sequence continuity, matching C++ ReplayOplog (a gap is data
-            // loss): stop at the first missing sequence and keep what we have.
+            // Strict sequence continuity, matching C++ ObjectManager::ReplayOplog, which
+            // returns DataLoss and aborts Load on a hole in the retained WAL. A gap means
+            // a WAL record was lost (partial-GC crash / corruption); refuse the load
+            // rather than silently serve a truncated prefix.
             if record.sequence != expected {
-                break;
+                return Err(Status::error(
+                    "wal_replay_sequence_gap",
+                    format!(
+                        "WAL replay hole during recovery: expected sequence {expected}, found {}",
+                        record.sequence
+                    ),
+                ));
             }
             let response = self.execute(ExecuteRequest {
                 shard_id,
                 command: record.command,
             });
             if !response.status.ok {
-                break;
+                return Err(Status::error(
+                    "wal_replay_failed",
+                    format!("WAL replay command at sequence {} failed", record.sequence),
+                ));
             }
             replayed_through = record.sequence;
             expected = expected.saturating_add(1);
@@ -276,6 +325,7 @@ impl TemporalEngine {
                 let _ = self.persist_index_bytes(shard_id, &index_bytes);
             }
         }
+        Ok(())
     }
 
     pub fn unload_shard(&self, shard_id: ShardId) {
