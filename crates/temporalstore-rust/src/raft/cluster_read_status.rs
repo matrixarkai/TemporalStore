@@ -143,11 +143,25 @@ impl RaftCluster {
             leader_commit_index: status.commit_index,
             max_stale_index_lag: 0,
         });
-        if !decision.allowed {
+        // The external read-safety decision only flags a stale leader lease for the
+        // LeaseRead operation; a plain ReadIndex issued after the lease has expired
+        // (majority still present) is otherwise allowed. Linearizable reads must
+        // block until the next heartbeat renews the lease, mirroring the write path
+        // (propose_one rejects on !leader_lease_valid), so enforce and count it here.
+        // leader_lease_valid() is `lease_duration_ms == 0 || time <= deadline`, so
+        // `!leader_lease_valid` already means the lease is enabled and expired.
+        let stale_leader_lease = !status.leader_lease_valid;
+        if !decision.allowed || stale_leader_lease {
             let replica_commit_index = node.commit_index;
             inner
                 .read_safety_state
                 .record_matrixraft_runtime_decision(&decision);
+            if stale_leader_lease && !decision.stale_leader_lease_rejected {
+                inner.read_safety_state.stale_leader_lease_rejected = inner
+                    .read_safety_state
+                    .stale_leader_lease_rejected
+                    .saturating_add(1);
+            }
             inner.read_safety_state.read_index_rejected = inner
                 .read_safety_state
                 .read_index_rejected
@@ -159,6 +173,9 @@ impl RaftCluster {
                     .saturating_add(1);
             }
             inner.persist_configured_wal()?;
+            if stale_leader_lease {
+                return Err(RaftError::LeaderUnavailable);
+            }
             return match decision.reason.as_str() {
                 "stale_leader_lease" | "minority_partition" => Err(RaftError::LeaderUnavailable),
                 "replica_lagging" => Err(RaftError::ReplicaLagging {

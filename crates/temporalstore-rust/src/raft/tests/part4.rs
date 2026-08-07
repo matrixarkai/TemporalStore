@@ -1138,7 +1138,7 @@ fn metaserver_raft_apply_health_reports_commit_to_apply_lag() {
         }]
     );
     assert!(meta.prometheus_metrics().contains(
-        "temporalstore_raft_node_apply_lag{kind=\"meta\",node_id=\"11\",role=\"follower\"} 1"
+        "temporalstore_raft_node_apply_lag{kind=\"meta\",node_id=\"11\",role=\"follower\",replica_role=\"voter\"} 1"
     ));
 
     meta.catch_up(11).unwrap();

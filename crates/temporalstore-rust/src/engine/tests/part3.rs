@@ -644,7 +644,11 @@ fn recovery_validates_all_timestamped_kv_page_families() {
     );
 
     let report = engine.storage_recovery_report(1);
-    assert_eq!(report.feature_page_layout.indexed_timestamped_points, 28);
+    // context_dirty tracking was intentionally moved to an ephemeral in-memory
+    // coalesced index (commit 9390d110), so it no longer contributes a persisted
+    // timestamped page: feature 8 + sequence 8 + ips 8 + context_event/index/audit
+    // 1 each = 27 (was 28 when a context_dirty page was persisted).
+    assert_eq!(report.feature_page_layout.indexed_timestamped_points, 27);
     assert!(report.feature_page_layout.packed_timestamped_pages >= 10);
     assert!(
         report

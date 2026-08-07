@@ -281,6 +281,15 @@ impl TemporalEngine {
                     ],
                     value,
                 );
+                push_metric(
+                    &mut out,
+                    "temporalstore_block_store_extent_count",
+                    &[
+                        ("shard_id", stats.shard_id.to_string()),
+                        ("state", state.into()),
+                    ],
+                    value,
+                );
             }
             for (kind, value) in [
                 ("active", stats.page_store_zones.active_physical_bytes),
@@ -337,6 +346,15 @@ impl TemporalEngine {
                         ],
                         value,
                     );
+                    push_metric(
+                        &mut out,
+                        "temporalstore_block_store_extent_oldest_unix_ms",
+                        &[
+                            ("shard_id", stats.shard_id.to_string()),
+                            ("scope", scope.into()),
+                        ],
+                        value,
+                    );
                 }
             }
             for (scope, value) in [
@@ -351,6 +369,15 @@ impl TemporalEngine {
                     push_metric(
                         &mut out,
                         "temporalstore_page_store_zone_oldest_age_ms",
+                        &[
+                            ("shard_id", stats.shard_id.to_string()),
+                            ("scope", scope.into()),
+                        ],
+                        value,
+                    );
+                    push_metric(
+                        &mut out,
+                        "temporalstore_block_store_extent_oldest_age_ms",
                         &[
                             ("shard_id", stats.shard_id.to_string()),
                             ("scope", scope.into()),
