@@ -61,7 +61,7 @@ pub enum BlockStoreError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BlockAddress {
-    #[serde(alias = "page_segment_id")]
+    #[serde(rename = "page_segment_id")]
     pub page_slab_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -179,7 +179,7 @@ pub struct BlockStoreGcReport {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreGcUtilityCandidate {
-    #[serde(alias = "page_segment_id")]
+    #[serde(rename = "page_segment_id")]
     pub page_slab_id: u64,
     pub bytes: u64,
     #[serde(default)]
@@ -249,7 +249,7 @@ pub struct BlockStoreGcPolicyPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreDelayedDestroySlabReport {
-    #[serde(alias = "page_segment_id")]
+    #[serde(rename = "page_segment_id")]
     pub page_slab_id: u64,
     pub physical_bytes: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -276,7 +276,7 @@ pub enum BlockStoreBandState {
 pub struct BlockStoreBandDescriptor {
     #[serde(alias = "extent_id", alias = "zone_id")]
     pub band_id: u64,
-    #[serde(alias = "page_segment_id")]
+    #[serde(rename = "page_segment_id")]
     pub page_slab_id: u64,
     pub state: BlockStoreBandState,
     pub physical_bytes: u64,
@@ -358,7 +358,7 @@ pub struct BlockStoreBandSummary {
 pub struct BlockStoreBandUsage {
     #[serde(alias = "extent_id", alias = "zone_id")]
     pub band_id: u64,
-    #[serde(alias = "page_segment_id")]
+    #[serde(rename = "page_segment_id")]
     pub page_slab_id: u64,
     #[serde(default)]
     pub storage_zone_id: u64,
@@ -452,7 +452,7 @@ pub struct StreamBackedBandRuntimeReport {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreSlabReport {
-    #[serde(alias = "page_segment_id")]
+    #[serde(rename = "page_segment_id")]
     pub page_slab_id: u64,
     pub physical_bytes: u64,
     pub logical_bytes: u64,

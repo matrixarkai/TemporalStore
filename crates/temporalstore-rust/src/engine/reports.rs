@@ -268,7 +268,7 @@ pub struct StorageRecoveryReport {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageRecoveryPageError {
-    #[serde(alias = "page_segment_id")]
+    #[serde(rename = "page_segment_id")]
     pub page_slab_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -278,7 +278,7 @@ pub struct StorageRecoveryPageError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageRecoveryPageOwnerMismatch {
     pub object_key: String,
-    #[serde(alias = "page_segment_id")]
+    #[serde(rename = "page_segment_id")]
     pub page_slab_id: u64,
     pub offset: u64,
     pub expected_object_id: u64,
@@ -346,7 +346,7 @@ pub struct StorageFeaturePageError {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub kind: String,
     pub key: String,
-    #[serde(alias = "page_segment_id")]
+    #[serde(rename = "page_segment_id")]
     pub page_slab_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -359,7 +359,7 @@ pub struct StorageFeaturePageTimestampMismatch {
     pub kind: String,
     pub key: String,
     pub timestamp_ms: u64,
-    #[serde(alias = "page_segment_id")]
+    #[serde(rename = "page_segment_id")]
     pub page_slab_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -388,7 +388,7 @@ impl StorageObjectLifecycleReport {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageRecoverySlabLiveReport {
-    #[serde(alias = "page_segment_id")]
+    #[serde(rename = "page_segment_id")]
     pub page_slab_id: u64,
     pub physical_bytes: u64,
     pub logical_bytes: u64,
@@ -453,7 +453,7 @@ pub struct StoragePhysicalPageIndex {
     pub component: Option<String>,
     #[serde(rename = "routing_slot")]
     pub routing_bucket: u32,
-    #[serde(alias = "page_segment_id")]
+    #[serde(rename = "page_segment_id")]
     pub page_slab_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -826,7 +826,7 @@ pub struct StorageLifecyclePlan {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageReclaimCandidate {
-    #[serde(alias = "page_segment_id")]
+    #[serde(rename = "page_segment_id")]
     pub page_slab_id: u64,
     pub physical_bytes: u64,
     pub live_physical_bytes: u64,
@@ -851,7 +851,7 @@ pub struct StoragePageGcReplayCursor {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoragePageGcDependencyBlock {
-    #[serde(alias = "page_segment_id")]
+    #[serde(rename = "page_segment_id")]
     pub page_slab_id: u64,
     pub dependency: String,
     #[serde(default)]
