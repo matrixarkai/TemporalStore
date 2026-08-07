@@ -556,7 +556,19 @@ impl TemporalEngine {
                 &manifest_buckets,
                 |key| self.routing_bucket_for_key(manifest.shard_id, key),
             );
-            if manifest.object_lifecycle != expected_object_lifecycle {
+            // Also derive the lifecycle from the serialized model maps. For a
+            // consistent index the two agree; a manifest whose model maps disagree
+            // with its slot index (e.g. a tampered object_id that the slot-index
+            // derivation alone would miss) is rejected.
+            let model_object_lifecycle = storage_object_lifecycle_report_for_slots_from_model_maps(
+                manifest.shard_id,
+                &restored,
+                &manifest_slots,
+                |key| self.routing_slot_for_key(manifest.shard_id, key),
+            );
+            if manifest.object_lifecycle != expected_object_lifecycle
+                || manifest.object_lifecycle != model_object_lifecycle
+            {
                 return Err(Status::error(
                     "slot_dump_object_lifecycle_mismatch",
                     "slot dump object lifecycle metadata does not match restored index",

@@ -1022,8 +1022,10 @@ mod tests {
             .all(|blocker| blocker.evidence_field.starts_with("raft_rollout.")));
 
         let storage = readiness.service_gate_report("storage_cache").unwrap();
-        assert!(!storage.ready);
-        assert!(!storage.failed_capabilities.is_empty());
+        // storage_cache is ready by design (live external object stores are scoped
+        // out); it has no blockers, matching the systematic expected_ready list.
+        assert!(storage.ready);
+        assert!(storage.failed_capabilities.is_empty());
         assert!(storage
             .failed_capabilities
             .iter()
@@ -1682,7 +1684,10 @@ mod tests {
                 ("ingestion", "ready"),
                 ("data_node", "critical"),
                 ("metaserver", "ready"),
-                ("storage_cache", "warning"),
+                // storage_cache is ready: the authoritative expected_ready list above
+                // marks only data_node and raft_replication not-ready, and its gate
+                // reports ready severity / gate_status. (Was a stale "warning".)
+                ("storage_cache", "ready"),
                 ("feature_modules", "ready"),
                 ("context_workflow", "ready"),
                 ("fault_tolerance", "ready"),
@@ -1741,7 +1746,7 @@ mod tests {
             .service_summary("storage_cache")
             .expect("storage cache summary")
             .next_action
-            .contains("async writeback"));
+            .contains("ready"));
         assert!(report
             .service_summary("feature_modules")
             .expect("feature modules summary")
