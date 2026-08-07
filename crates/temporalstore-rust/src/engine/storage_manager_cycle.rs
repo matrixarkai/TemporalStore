@@ -160,7 +160,7 @@ impl TemporalEngine {
             + delayed_destroy_bytes
             + manifest_retention_blockers as u64
             + compaction_debt_score;
-        let pressure_signals = StorageManagerPressureSignals {
+        let mut pressure_signals = StorageManagerPressureSignals {
             dirty_bucket_count: plan.dirty_buckets.len(),
             undumped_wal_records: plan.undumped_oplog_records,
             wal_bytes: log_pressure.oplog_bytes,
@@ -278,6 +278,26 @@ impl TemporalEngine {
                 lifecycle_request.purge_delayed_destroy && page_gc_dependency_plan.safe_to_reclaim;
             Some(self.apply_storage_lifecycle(lifecycle_request))
         };
+        // apply_storage_lifecycle's warm phase brings freshly-dumped pages into DRAM.
+        // The pressure snapshot above was captured during prepare (pre-warm), so
+        // re-measure memory residency here so the emitted snapshot reflects the warmed
+        // cache. Only the memory fields are refreshed; disk_cache_bytes stays at its
+        // prepare value (warmed pages also write through to SSD, and downstream
+        // reclamation assertions compare against that pre-warm disk figure).
+        if !request.dry_run {
+            let warmed_cache = self.storage_cache_inspection_report(request.shard_id).stats;
+            let warmed_memory_pressure = warmed_cache
+                .memory_bytes
+                .saturating_add(warmed_cache.pinned_bytes)
+                .saturating_add(warmed_cache.async_writeback_queue_bytes)
+                .saturating_add(warmed_cache.async_writeback_queue_depth);
+            pressure_signals.total_pressure_score = pressure_signals
+                .total_pressure_score
+                .saturating_sub(pressure_signals.memory_cache_pressure_score)
+                .saturating_add(warmed_memory_pressure);
+            pressure_signals.memory_cache_bytes = warmed_cache.memory_bytes;
+            pressure_signals.memory_cache_pressure_score = warmed_memory_pressure;
+        }
         let eviction_report = if request.enable_evict {
             Some(if request.dry_run {
                 StorageEvictionReport {
