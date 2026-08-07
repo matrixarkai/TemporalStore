@@ -243,10 +243,16 @@ impl TemporalEngine {
                 .max()
                 .unwrap_or_default()
                 .saturating_add(1);
-            match self.page_store.gc_slabs_before_with_live_refs_utility(
+            match self.page_store.gc_slabs_before_with_live_refs_policy(
                 retain_from_page_slab_id,
                 plan.live_page_slab_ids.clone(),
-                plan.reclaim_candidates.len(),
+                // C++ garbage-ratio GC victim selection (zone_manager.cpp): reclaim the
+                // highest-garbage bands first, keeping bands below the garbage floor.
+                // Floor 0 (the default) reclaims every eligible band as before.
+                BlockStoreGcPolicy::with_band_garbage_floor(
+                    request.page_gc_min_band_garbage_basis_points,
+                    None,
+                ),
                 true,
             ) {
                 Ok(report) => {
@@ -957,8 +963,14 @@ impl TemporalEngine {
         let replay_boundary_safe = manifest
             .as_ref()
             .map(|manifest| {
-                boundary.selected_replay_oplog_sequence >= manifest.oplog_sequence
-                    && boundary.selected_replay_index_log_sequence >= manifest.index_log_sequence
+                // The replay base is the dumped checkpoint (which covers up to its own
+                // sequence) plus the retained WAL tail above it. Once the WAL is
+                // legitimately reclaimed past a dump (the C++ SetDumpedLogId + oplog
+                // Truncate step), latest_safe_* -- and thus selected_replay_* -- can sit
+                // below the manifest; the manifest checkpoint still covers it, so gate on
+                // the dump frontier rather than the possibly-reclaimed WAL tail.
+                boundary.latest_dump_oplog_sequence >= manifest.oplog_sequence
+                    && boundary.latest_dump_index_log_sequence >= manifest.index_log_sequence
             })
             .unwrap_or(false);
         let index_gc_ready = install_roll_forward_reports.iter().all(|report| {

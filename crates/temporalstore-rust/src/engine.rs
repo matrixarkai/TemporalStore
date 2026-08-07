@@ -66,7 +66,7 @@ use crate::control::{
     UnloadShardRequest, UnloadShardResponse,
 };
 use crate::index_log::LocalIndexLogStore;
-use crate::block_store::{LocalBlockStore, BlockAddress, BlockStoreError, BlockStoreOptions};
+use crate::block_store::{LocalBlockStore, BlockAddress, BlockStoreError, BlockStoreGcPolicy, BlockStoreOptions};
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextCompressionEvent,
     ContextEmbedding,
@@ -77,7 +77,7 @@ use crate::types::{
     ReplicatedExecuteRequest, RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec,
     ShardId, Status, StringSetCondition,
 };
-use crate::wal::LocalWriteAheadLogStore;
+use crate::wal::{LocalWriteAheadLogStore, WriteAheadLogRecord};
 use context::{context_index_ref_identity, validate_context_index_lookup};
 use matrixcache::{CacheEntryInfo, CacheGcReport, CacheKey, MultiLayerCache};
 
@@ -262,6 +262,16 @@ impl TemporalEngine {
             shard,
             command.clone(),
         );
+        // LRU recency (C++ SlotNode GetLastUsed): record that this command touched its
+        // bucket(s), read or write, so eviction can prefer least-recently-used buckets.
+        {
+            let now = now_ms();
+            for key in command_touched_keys(&command) {
+                let recency_bucket =
+                    page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+                shard.bucket_recency.insert(recency_bucket, now);
+            }
+        }
         if outcome.mutated {
             let object_keys = command_object_keys(&command);
             if object_keys.is_empty() {
@@ -321,13 +331,18 @@ impl TemporalEngine {
             // async_storage only changes whether the commit BLOCKS: sync -> fsync,
             // async (or bulk backfill) -> buffered, no fsync (op_logger_->Commit
             // (nullptr, nullptr)). Page/index materialization stays deferred to dump.
-            if write_command {
+            if write_command && !replaying_wal() {
                 let sync = !config.async_storage && !bulk_ingest_mode();
                 let _ = self
                     .wal_store
                     .append_with_sync(request.shard_id, command, sync);
             }
-            if !config.async_storage && !bulk_ingest_mode() {
+            if !config.async_storage && !bulk_ingest_mode() && !replaying_wal() {
+                // Anchor the served index to the WAL sequence it now reflects, so a
+                // later load replays only records written after this point (the analog
+                // of C++ index_->SetDumpedLogId / GetDumpedLogId).
+                shard.applied_wal_sequence =
+                    Some(self.wal_store.stats(request.shard_id).last_sequence);
                 let index_bytes = serialize_index(shard);
                 let _ = self
                     .index_log_store
@@ -948,6 +963,33 @@ fn bulk_ingest_mode() -> bool {
 
 fn serialize_index(shard: &ShardState) -> Vec<u8> {
     serde_json::to_vec(shard).expect("shard index should serialize")
+}
+
+thread_local! {
+    // Set while replaying the WAL into a shard on load. Writes issued during replay
+    // must NOT re-append to the WAL (they are already logged) and must not re-persist
+    // the index per record; the reconstructed index is persisted once when replay
+    // finishes. Thread-local because replay runs synchronously on the loading thread.
+    static REPLAYING_WAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn replaying_wal() -> bool {
+    REPLAYING_WAL.with(|cell| cell.get())
+}
+
+struct WalReplayGuard;
+
+impl WalReplayGuard {
+    fn enter() -> Self {
+        REPLAYING_WAL.with(|cell| cell.set(true));
+        WalReplayGuard
+    }
+}
+
+impl Drop for WalReplayGuard {
+    fn drop(&mut self) {
+        REPLAYING_WAL.with(|cell| cell.set(false));
+    }
 }
 
 fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {

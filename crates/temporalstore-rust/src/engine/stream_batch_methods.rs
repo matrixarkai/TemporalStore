@@ -168,7 +168,7 @@ impl TemporalEngine {
             reconcile_secondary_views_from_bucket_index(&self.page_store, shard);
         }
         let mut mutated_any = false;
-        let mut sync_wal_commands = Vec::new();
+        let mut wal_commands = Vec::new();
         for command in request.commands {
             let write_command = is_write_command(&command);
             if readonly && write_command {
@@ -227,6 +227,16 @@ impl TemporalEngine {
                 shard,
                 command,
             );
+            // LRU recency (C++ SlotNode GetLastUsed): stamp the bucket(s) this command
+            // touched, read or write, so eviction can prefer least-recently-used buckets.
+            {
+                let now = now_ms();
+                for key in command_touched_keys(&command_for_post_write) {
+                    let recency_bucket =
+                        page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+                    shard.bucket_recency.insert(recency_bucket, now);
+                }
+            }
             if outcome.mutated {
                 mutated_any = true;
                 let object_keys = command_object_keys(&command_for_post_write);
@@ -258,8 +268,8 @@ impl TemporalEngine {
                         end_routing_bucket,
                     );
                 }
-                if write_command && !config.async_storage {
-                    sync_wal_commands.push(command_for_post_write);
+                if write_command {
+                    wal_commands.push(command_for_post_write);
                 }
             }
             responses.push(ExecuteResponse {
@@ -269,10 +279,24 @@ impl TemporalEngine {
         }
         if mutated_any {
             refresh_bucket_runtime_flags(shard);
-            if !config.async_storage {
-                for command in sync_wal_commands {
-                    let _ = self.wal_store.append(request.shard_id, command);
-                }
+            // Parity with C++ TemporalStore (partition.h OnExecuteCmdDone): every
+            // write records an oplog/WAL entry (StringModel::SetValue -> WritePage).
+            // async_storage only changes whether the commit BLOCKS: sync -> fsync,
+            // async (or bulk backfill) -> buffered, no fsync (op_logger_->Commit
+            // (nullptr, nullptr)). Mirrors the single-command execute path.
+            let sync = !config.async_storage && !bulk_ingest_mode();
+            for command in wal_commands {
+                let _ = self
+                    .wal_store
+                    .append_with_sync(request.shard_id, command, sync);
+            }
+            // Page/index materialization stays deferred to the background dump in
+            // async and bulk modes (index_log/persist already no-op under bulk).
+            if !config.async_storage && !bulk_ingest_mode() {
+                // Anchor the served index to the WAL sequence it reflects (see the
+                // single-command path) so shard load replays only records after it.
+                shard.applied_wal_sequence =
+                    Some(self.wal_store.stats(request.shard_id).last_sequence);
                 let index_bytes = serialize_index(shard);
                 let _ = self
                     .index_log_store

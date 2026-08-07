@@ -1,6 +1,36 @@
 //! Command inspection, admission control, and precondition validation helpers, split from engine.rs.
 use super::*;
 
+/// Keys READ (not written) by a command, for LRU recency tracking. Covers the
+/// key-addressed read commands; the hash-addressed context queries are omitted (their
+/// buckets refresh recency on the next write -- acceptable, eviction is memory-only).
+pub(super) fn command_read_keys(command: &Command) -> Vec<String> {
+    match command {
+        Command::CommonTtl { key, .. }
+        | Command::CommonExists { key, .. }
+        | Command::StringGet { key, .. }
+        | Command::HashGet { key, .. }
+        | Command::HashMultiGet { key, .. }
+        | Command::HashGetAll { key, .. }
+        | Command::HashLen { key, .. }
+        | Command::SetMembers { key, .. }
+        | Command::FeatureQuery { key, .. }
+        | Command::SequenceQuery { key, .. }
+        | Command::IpsQueryLast { key, .. } => vec![key.clone()],
+        _ => Vec::new(),
+    }
+}
+
+/// Keys a command touched, read or write -- used to stamp per-bucket LRU recency.
+pub(super) fn command_touched_keys(command: &Command) -> Vec<String> {
+    let keys = command_object_keys(command);
+    if keys.is_empty() {
+        command_read_keys(command)
+    } else {
+        keys
+    }
+}
+
 pub(super) fn command_object_keys(command: &Command) -> Vec<String> {
     match command {
         Command::CommonDelete { key } => associated_record_keys(key),

@@ -124,7 +124,13 @@ impl LocalBlockStore {
                 .min_age_ms
                 .map(|min_age| candidate.age_ms.unwrap_or_default() >= min_age)
                 .unwrap_or(true);
-            if !utility_allowed || !age_allowed {
+            // Garbage-ratio gate (C++ GetGarbageRate threshold): keep bands whose
+            // garbage ratio is below the floor. garbage = 10_000 - live-fraction.
+            let garbage_allowed = policy
+                .min_band_garbage_basis_points
+                .map(|floor| 10_000u64.saturating_sub(candidate.utility_basis_points) >= floor)
+                .unwrap_or(true);
+            if !utility_allowed || !age_allowed || !garbage_allowed {
                 skipped_by_policy_count += 1;
                 skipped_by_policy_physical_bytes =
                     skipped_by_policy_physical_bytes.saturating_add(candidate.bytes);
@@ -255,8 +261,15 @@ impl LocalBlockStore {
             }
         }
         candidates.sort_by(|left, right| {
-            left.utility_score
-                .cmp(&right.utility_score)
+            // Reclaim the highest-garbage band first: a lower band live-fraction
+            // (utility_basis_points) means more garbage, so ascending live-fraction ==
+            // descending garbage ratio. This is the C++ GC victim order (zone_manager.
+            // cpp gc_list_ sorted by GetGarbageRate() descending), which the previous
+            // key (a categorical utility_score, uniformly 0 for all candidates) never
+            // actually applied.
+            left.utility_basis_points
+                .cmp(&right.utility_basis_points)
+                .then_with(|| left.utility_score.cmp(&right.utility_score))
                 .then_with(|| right.bytes.cmp(&left.bytes))
                 .then_with(|| {
                     right

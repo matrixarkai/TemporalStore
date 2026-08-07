@@ -80,6 +80,21 @@ pub(super) struct ShardState {
     #[serde(default)]
     #[serde(rename = "slot_index")]
     pub(super) bucket_index: CoreIndex,
+    /// Highest WAL/oplog sequence whose effect is already materialized in this
+    /// serialized index. On shard load, WAL records with sequence greater than this
+    /// are replayed to rebuild in-memory state, mirroring C++ ObjectManager::Load()
+    /// replaying the oplog from index_->GetDumpedLogId(). `None` marks an index
+    /// written before this anchor existed (treated as fully authoritative -> no
+    /// replay); a missing index file replays the whole retained WAL onto empty state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) applied_wal_sequence: Option<u64>,
+    /// Per-bucket LRU recency: wall-clock ms of the last read/write that touched the
+    /// bucket. In-memory and ephemeral (serde-skipped, like context_dirty_index); on
+    /// restart every bucket resets to 0 (== never touched == evicted first), which
+    /// self-corrects as traffic re-warms hot buckets. Mirrors C++ SlotNode last_used
+    /// without persisting it.
+    #[serde(skip)]
+    pub(super) bucket_recency: HashMap<u32, u64>,
     #[serde(skip)]
     pub(super) dirty_objects: BTreeSet<String>,
 }

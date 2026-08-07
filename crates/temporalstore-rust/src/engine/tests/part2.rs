@@ -945,6 +945,163 @@ fn durable_index_survives_restart_and_points_to_page_file() {
 }
 
 #[test]
+fn async_write_survives_restart_via_wal_replay_like_cpp() {
+    // C++ parity: an async_storage write records an oplog/WAL entry but defers page/
+    // index materialization to the background dump. If the crash beats the dump, C++
+    // ObjectManager::Load() replays the oplog and recovers the write. Rust must replay
+    // its WAL on shard load the same way, or the async write is silently lost.
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-a"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config {
+                    version: 2,
+                    async_storage: true,
+                    ..Config::default()
+                },
+            })
+            .ok
+    );
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "k".to_string(),
+            value: b"async-durable".to_vec(),
+        },
+    });
+    assert_eq!(engine.block_store().stats().writes, 0);
+    assert_eq!(engine.write_ahead_log_store().stats(1).writes, 1);
+    drop(engine);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    restarted.load_shard(1);
+    let response = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "k".to_string(),
+        },
+    });
+    assert_eq!(
+        response.response,
+        CommandResponse::Bytes {
+            value: Some(b"async-durable".to_vec())
+        },
+        "async write must be recovered by replaying the WAL on shard load"
+    );
+}
+
+#[test]
+fn async_storage_batch_write_records_wal_without_sync_or_index() {
+    // Batch analog of the single-command async parity: the batch path (used by
+    // ingestion) must also record a WAL entry per async write, unfsynced, with page/
+    // index materialization deferred.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config {
+                    version: 2,
+                    async_storage: true,
+                    ..Config::default()
+                },
+            })
+            .ok
+    );
+    let batch = engine.batch_execute(BatchExecuteRequest {
+        shard_id: 1,
+        commands: vec![
+            Command::StringSet {
+                key: "a".to_string(),
+                value: b"a".to_vec(),
+            },
+            Command::StringSet {
+                key: "b".to_string(),
+                value: b"b".to_vec(),
+            },
+        ],
+    });
+    assert!(batch.status.ok);
+    assert_eq!(engine.block_store().stats().writes, 0);
+    assert_eq!(engine.write_ahead_log_store().stats(1).writes, 2);
+    assert_eq!(engine.write_ahead_log_store().stats(1).syncs, 0);
+    assert_eq!(engine.index_log_store().stats(1).writes, 0);
+}
+
+#[test]
+fn eviction_ranks_victims_least_recently_used_first_like_cpp() {
+    // C++ PolicyLru: eviction victims are ordered least-recently-used first, so a
+    // repeatedly-read hot bucket is evicted last. Rust stamps per-bucket recency on
+    // every read/write and sorts victims oldest-first.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for key in ["cold-a", "cold-b", "cold-c", "cold-d", "hot"] {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: key.to_string(),
+                value: b"value".to_vec(),
+            },
+        });
+    }
+    std::thread::sleep(std::time::Duration::from_millis(3));
+    for _ in 0..3 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "hot".to_string(),
+            },
+        });
+    }
+    let report = engine.apply_storage_eviction(1, 0, 0, false, false);
+    assert!(
+        report.selected_victims.len() >= 2,
+        "expected multiple victim buckets: {report:?}"
+    );
+    let recencies: Vec<u64> = report
+        .selected_victims
+        .iter()
+        .map(|victim| victim.last_touched_ms)
+        .collect();
+    assert!(
+        recencies.windows(2).all(|pair| pair[0] <= pair[1]),
+        "victims must be ordered least-recently-used first: {report:?}"
+    );
+    assert!(
+        recencies.last() > recencies.first(),
+        "the hot bucket must have the newest recency and sort last: {report:?}"
+    );
+}
+
+#[test]
 fn hash_incrby_rejects_non_integer_and_overflow_like_cpp() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);

@@ -128,7 +128,28 @@ impl TemporalEngine {
                 status: Status::error("already_exists", "shard already exists"),
             };
         }
-        let mut state = self.load_index(request.shard_id).unwrap_or_default();
+        // If the latest durable dump manifest is newer than the served index, install
+        // it as the load base first (recovers data already dumped into a manifest and
+        // then WAL-GC'd). C++ analog: index_->Load() restores the dumped index before
+        // ObjectManager::Load() replays the oplog on top.
+        let installed_manifest_watermark =
+            self.install_latest_manifest_if_newer_on_load(request.shard_id);
+        let loaded = self.load_index(request.shard_id);
+        // WAL replay watermark, mirroring C++ ObjectManager::Load() reading
+        // index_->GetDumpedLogId(): installed manifest -> its oplog_sequence; no index
+        // file -> 0 (fresh/async-only shard, replay whole retained WAL); anchored index
+        // -> its anchor; unanchored (pre-field) index -> current last_sequence (replay
+        // nothing, safe upgrade).
+        let replay_watermark = match installed_manifest_watermark {
+            Some(manifest_watermark) => manifest_watermark,
+            None => match &loaded {
+                None => 0,
+                Some(state) => state
+                    .applied_wal_sequence
+                    .unwrap_or_else(|| self.wal_store.stats(request.shard_id).last_sequence),
+            },
+        };
+        let mut state = loaded.unwrap_or_default();
         promote_model_maps_to_bucket_index_authority(
             request.shard_id,
             &mut state,
@@ -168,8 +189,92 @@ impl TemporalEngine {
                 leader_node_id: None,
             },
         );
+        // Replay any WAL records not yet reflected in the loaded index, rebuilding
+        // in-memory state the way C++ ObjectManager::Load() replays the oplog. Without
+        // this an async_storage write (WAL entry recorded, page/index deferred to the
+        // dump) is silently lost on restart if the crash beats the dump.
+        self.replay_wal_into_shard(request.shard_id, replay_watermark);
         LoadShardResponse {
             status: Status::ok(),
+        }
+    }
+
+    /// If the latest durable bucket-dump manifest is newer than the served index,
+    /// install it (validate + preflight + restore embedded index) and return its
+    /// oplog_sequence as the WAL replay watermark. `None` when nothing newer exists or
+    /// the install is refused, so the caller falls back to the served index + replay.
+    pub(super) fn install_latest_manifest_if_newer_on_load(
+        &self,
+        shard_id: ShardId,
+    ) -> Option<u64> {
+        let manifest = latest_bucket_dump_manifest_at(&self.index_dir, shard_id)?;
+        let served_anchor = self
+            .load_index(shard_id)
+            .and_then(|state| state.applied_wal_sequence)
+            .unwrap_or(0);
+        if manifest.oplog_sequence <= served_anchor {
+            return None;
+        }
+        match self.install_bucket_dump_manifest(&manifest) {
+            Ok(()) => Some(manifest.oplog_sequence),
+            Err(_) => None,
+        }
+    }
+
+    /// Replay WAL records with sequence greater than `watermark`, re-driving each
+    /// through execute (which rebuilds the bucket index + model maps) WITHOUT
+    /// re-appending to the WAL or re-persisting the index per record, then anchor and
+    /// persist the reconstructed index once. Mirrors C++ ObjectManager::ReplayOplog,
+    /// including its strict sequence-continuity check.
+    pub(super) fn replay_wal_into_shard(&self, shard_id: ShardId, watermark: u64) {
+        let records = match self.wal_store.scan(shard_id, 0, u64::MAX, u64::MAX) {
+            Ok(records) => records,
+            Err(_) => return,
+        };
+        let mut pending: Vec<WriteAheadLogRecord> = records
+            .into_iter()
+            .filter_map(|(_, line)| serde_json::from_slice::<WriteAheadLogRecord>(&line).ok())
+            .filter(|record| record.sequence > watermark)
+            .collect();
+        if pending.is_empty() {
+            return;
+        }
+        pending.sort_by_key(|record| record.sequence);
+
+        let _guard = WalReplayGuard::enter();
+        let mut expected = watermark.saturating_add(1);
+        let mut replayed_through = watermark;
+        for record in pending {
+            // Strict sequence continuity, matching C++ ReplayOplog (a gap is data
+            // loss): stop at the first missing sequence and keep what we have.
+            if record.sequence != expected {
+                break;
+            }
+            let response = self.execute(ExecuteRequest {
+                shard_id,
+                command: record.command,
+            });
+            if !response.status.ok {
+                break;
+            }
+            replayed_through = record.sequence;
+            expected = expected.saturating_add(1);
+        }
+
+        if replayed_through > watermark {
+            let index_bytes = {
+                let mut shards = self.shards.write().expect("engine lock poisoned");
+                match shards.get_mut(&shard_id) {
+                    Some(shard) => {
+                        shard.applied_wal_sequence = Some(replayed_through);
+                        Some(serialize_index(shard))
+                    }
+                    None => None,
+                }
+            };
+            if let Some(index_bytes) = index_bytes {
+                let _ = self.persist_index_bytes(shard_id, &index_bytes);
+            }
         }
     }
 

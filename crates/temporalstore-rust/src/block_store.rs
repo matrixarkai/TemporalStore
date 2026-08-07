@@ -210,6 +210,12 @@ pub struct BlockStoreGcPolicy {
     pub max_utility_score: Option<u64>,
     #[serde(default)]
     pub min_age_ms: Option<u64>,
+    /// Reclaim only bands whose garbage ratio (10_000 - utility_basis_points) is at
+    /// least this many basis points. `None`/0 reclaims every eligible band (today's
+    /// behavior). The C++ garbage-ratio gate (reclaim the most-garbage zones),
+    /// expressed against Rust bands.
+    #[serde(default)]
+    pub min_band_garbage_basis_points: Option<u64>,
 }
 
 impl BlockStoreGcPolicy {
@@ -219,6 +225,23 @@ impl BlockStoreGcPolicy {
             max_destroy_physical_bytes: 0,
             max_utility_score: None,
             min_age_ms: None,
+            min_band_garbage_basis_points: None,
+        }
+    }
+
+    /// Reclaim eligible bands whose garbage ratio is at least
+    /// `min_band_garbage_basis_points`, highest-garbage first, optionally bounded by a
+    /// minimum band age. Mirrors C++ selecting the maximum-garbage-rate zone under GC.
+    pub fn with_band_garbage_floor(
+        min_band_garbage_basis_points: u64,
+        min_age_ms: Option<u64>,
+    ) -> Self {
+        Self {
+            max_destroy_slabs: 0,
+            max_destroy_physical_bytes: 0,
+            max_utility_score: None,
+            min_age_ms,
+            min_band_garbage_basis_points: Some(min_band_garbage_basis_points),
         }
     }
 }
@@ -2130,6 +2153,36 @@ mod tests {
     }
 
     #[test]
+    fn band_garbage_floor_gates_reclaim_by_garbage_ratio() {
+        // C++ garbage-ratio GC parity: reclaim is gated on a minimum band garbage ratio
+        // (garbage = 10_000 - band live-fraction). Floor 0 (the default) reclaims every
+        // eligible band as before; a floor above a band's garbage ratio excludes it.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        store.install_slab(0, b"stale-a").unwrap();
+        store.install_slab(1, b"stale-b").unwrap();
+        store.install_slab(2, b"kept-above-floor").unwrap();
+        let floor_zero = store
+            .gc_policy_plan(
+                2,
+                Vec::<u64>::new(),
+                &BlockStoreGcPolicy::with_band_garbage_floor(0, None),
+            )
+            .unwrap();
+        assert_eq!(floor_zero.selected_page_slab_ids, vec![0, 1]);
+        assert_eq!(floor_zero.skipped_by_policy_count, 0);
+        let floor_impossible = store
+            .gc_policy_plan(
+                2,
+                Vec::<u64>::new(),
+                &BlockStoreGcPolicy::with_band_garbage_floor(10_001, None),
+            )
+            .unwrap();
+        assert!(floor_impossible.selected_page_slab_ids.is_empty());
+        assert_eq!(floor_impossible.skipped_by_policy_count, 2);
+    }
+
+    #[test]
     fn policy_gc_plans_and_applies_byte_bounded_destroy() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
@@ -2143,6 +2196,7 @@ mod tests {
             max_destroy_physical_bytes: b"small".len() as u64,
             max_utility_score: Some(0),
             min_age_ms: Some(0),
+            min_band_garbage_basis_points: None,
         };
         let plan = store.gc_policy_plan(3, [2_u64], &policy).unwrap();
         assert_eq!(plan.retain_from_page_slab_id, 3);

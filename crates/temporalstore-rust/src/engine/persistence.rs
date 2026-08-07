@@ -125,6 +125,10 @@ impl TemporalEngine {
                     }
                     rebuild_bucket_first_index(shard_id, shard, 0, u32::MAX);
                     refresh_bucket_runtime_flags(shard);
+                    // Anchor the flushed index to the WAL sequence it reflects so a
+                    // later load replays only records written after this flush.
+                    shard.applied_wal_sequence =
+                        Some(self.wal_store.stats(shard_id).last_sequence);
                     serialize_index(shard)
                 }
                 None => return,
