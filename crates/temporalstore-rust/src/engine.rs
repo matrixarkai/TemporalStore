@@ -975,6 +975,28 @@ fn replaying_wal() -> bool {
     REPLAYING_WAL.with(|cell| cell.get())
 }
 
+thread_local! {
+    // During a replayed command, the leader's wall-clock timestamp captured in the
+    // replayed record's metadata. Time-dependent resolution (TTL deadlines, context
+    // event time) reads this instead of the live clock so a re-executed command
+    // resolves the SAME absolute value the leader did (C++ resolve-then-log), keeping
+    // replay deterministic across crash recovery and followers instead of drifting to a
+    // later restart-time deadline.
+    static REPLAY_CLOCK_MS: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+pub(super) fn set_replay_clock_ms(clock_ms: Option<u64>) {
+    REPLAY_CLOCK_MS.with(|cell| cell.set(clock_ms));
+}
+
+/// Wall-clock time for deadline / event-time stamping. Returns the replay clock (the
+/// leader timestamp of the record being replayed) when set, otherwise the live clock.
+pub(super) fn resolve_now_ms() -> u64 {
+    REPLAY_CLOCK_MS
+        .with(|cell| cell.get())
+        .unwrap_or_else(now_ms)
+}
+
 struct WalReplayGuard;
 
 impl WalReplayGuard {
@@ -987,6 +1009,7 @@ impl WalReplayGuard {
 impl Drop for WalReplayGuard {
     fn drop(&mut self) {
         REPLAYING_WAL.with(|cell| cell.set(false));
+        REPLAY_CLOCK_MS.with(|cell| cell.set(None));
     }
 }
 

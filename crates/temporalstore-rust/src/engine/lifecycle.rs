@@ -296,6 +296,11 @@ impl TemporalEngine {
                     ),
                 ));
             }
+            // Resolve TTL deadlines / event times against the LEADER's timestamp
+            // captured when this record was written, not the (later) restart clock, so
+            // recovery reconstructs the identical absolute deadlines the leader logged
+            // (C++ resolve-then-log) instead of extending every recently-SETEX'd key.
+            set_replay_clock_ms(record.metadata.as_ref().map(|meta| meta.timestamp_ms));
             let response = self.execute(ExecuteRequest {
                 shard_id,
                 command: record.command,

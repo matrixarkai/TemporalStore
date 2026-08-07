@@ -20,7 +20,7 @@ pub(crate) fn execute_on_shard(
             CommandResponse::Empty
         }
         Command::CommonExpire { key, ttl_ms } => {
-            let expires_at = now_ms().saturating_add(ttl_ms);
+            let expires_at = resolve_now_ms().saturating_add(ttl_ms);
             for record_key in associated_record_keys(&key) {
                 if record_exists_exact(shard, &record_key) {
                     shard.expires_at_ms.insert(record_key, expires_at);
@@ -106,7 +106,7 @@ pub(crate) fn execute_on_shard(
                 shard.strings.insert(key.clone(), address);
                 shard
                     .expires_at_ms
-                    .insert(key.clone(), now_ms().saturating_add(ttl_ms));
+                    .insert(key.clone(), resolve_now_ms().saturating_add(ttl_ms));
                 mutated = true;
             }
             invalidate_cache_key(cache, CacheKey::string(shard_id, &key), async_storage);
@@ -155,7 +155,7 @@ pub(crate) fn execute_on_shard(
                     if let Some(ttl_ms) = ttl_ms {
                         shard
                             .expires_at_ms
-                            .insert(key.clone(), now_ms().saturating_add(ttl_ms));
+                            .insert(key.clone(), resolve_now_ms().saturating_add(ttl_ms));
                     } else {
                         shard.expires_at_ms.remove(&key);
                     }
@@ -1287,7 +1287,7 @@ pub(crate) fn execute_on_shard(
             if let Some(ttl_ms) = ttl_ms {
                 shard
                     .expires_at_ms
-                    .insert(key.clone(), now_ms().saturating_add(ttl_ms));
+                    .insert(key.clone(), resolve_now_ms().saturating_add(ttl_ms));
             }
             persist_risk_page(
                 cache,
@@ -1324,7 +1324,7 @@ pub(crate) fn execute_on_shard(
             if let Some(ttl_ms) = ttl_ms {
                 shard
                     .expires_at_ms
-                    .insert(key, now_ms().saturating_add(ttl_ms));
+                    .insert(key, resolve_now_ms().saturating_add(ttl_ms));
             }
             mutated = true;
             CommandResponse::Empty
@@ -1538,7 +1538,7 @@ pub(crate) fn execute_on_shard(
             if ttl_ms > 0 {
                 shard
                     .expires_at_ms
-                    .insert(key, now_ms().saturating_add(ttl_ms));
+                    .insert(key, resolve_now_ms().saturating_add(ttl_ms));
             }
             mutated = true;
             CommandResponse::Empty

@@ -1197,6 +1197,68 @@ fn expiry_sweep_emits_wal_tombstone_like_cpp() {
 }
 
 #[test]
+fn wal_replay_uses_leader_timestamp_for_ttl_deadline_like_cpp() {
+    // C++ resolves a TTL to an ABSOLUTE deadline on the leader before logging it
+    // (common_module.h ttl = request.ttl_ms + GetCurrentTimeInMs()); replay uses that
+    // value. Rust must resolve replayed TTLs against the leader's logged timestamp, not
+    // the (later) restart clock -- otherwise crash recovery resurrects a key past its
+    // deadline with a fresh restart-time+ttl lifetime.
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-a"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+    // async so the SETEX lives only in the WAL, forcing a replay on reload.
+    assert!(
+        engine
+            .set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config {
+                    version: 2,
+                    async_storage: true,
+                    ..Config::default()
+                },
+            })
+            .ok
+    );
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSetEx {
+            key: "k".to_string(),
+            value: b"v".to_vec(),
+            ttl_ms: 40,
+        },
+    });
+    // Sleep well past the 40ms TTL so the leader deadline is in the past at reload.
+    std::thread::sleep(std::time::Duration::from_millis(160));
+    drop(engine);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    restarted.load_shard(1);
+    let get = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "k".to_string(),
+        },
+    });
+    assert_eq!(
+        get.response,
+        CommandResponse::Bytes { value: None },
+        "a key past its leader TTL deadline must not be resurrected with a replay-time deadline"
+    );
+}
+
+#[test]
 fn hash_incrby_rejects_non_integer_and_overflow_like_cpp() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
