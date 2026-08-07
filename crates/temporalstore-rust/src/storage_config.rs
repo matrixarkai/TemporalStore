@@ -11,7 +11,10 @@ pub const TS_BLOCK_INDEX_CACHE_BYTES: &str = "TS_BLOCK_INDEX_CACHE_BYTES";
 
 pub const DEFAULT_CONTEXT_PAGE_TARGET_BYTES: usize = 64 * 1024;
 pub const DEFAULT_BLOCK_SLAB_TARGET_BYTES: u64 = 1 << 30;
-pub const DEFAULT_STORAGE_ZONE_SIZE: u64 = 10 * 1024 * 1024;
+// Match the data-slab seal size (block_slab_target) so one slab maps to one band
+// (band_id_for_slab stays 1:1), mirroring C++ where group_size == zone_size
+// (device.cpp) and a zone seals at the device zone_size (~1GiB large mode).
+pub const DEFAULT_STORAGE_ZONE_SIZE: u64 = 1 << 30;
 pub const DEFAULT_STREAM_MAX_BLOB_SIZE: u64 = 10 * 1024 * 1024;
 pub const DEFAULT_COMPACTION_WATERMARK_BYTES: u64 = 256 * 1024 * 1024;
 pub const DEFAULT_COLD_SCAN_NO_CACHE_FILL: bool = true;
@@ -91,8 +94,13 @@ impl StorageTuningConfig {
     }
 
     pub fn effective_slab_target_bytes(self) -> u64 {
+        // A slab must be able to hold the largest blob it stores, so the max blob
+        // size is a FLOOR, not a ceiling. C++ asserts a record fits within a zone
+        // (zone_manager.cpp: size <= zone_size), i.e. seal >= max_blob. The previous
+        // `.min` inverted this, clamping the 1GiB seal target down to the 10MiB blob
+        // size and sealing slabs 100x too small.
         self.block_slab_target_bytes
-            .min(self.stream_max_blob_size)
+            .max(self.stream_max_blob_size)
     }
 
     pub fn env_names() -> [&'static str; 8] {
@@ -213,7 +221,8 @@ mod tests {
         assert_eq!(config.block_slab_target_bytes, 10 * 1024 * 1024);
         assert_eq!(config.storage_zone_size, 10 * 1024 * 1024);
         assert_eq!(config.stream_max_blob_size, 8 * 1024 * 1024);
-        assert_eq!(config.effective_slab_target_bytes(), 8 * 1024 * 1024);
+        // Seal = max(block_slab_target 10MiB, max_blob 8MiB) = 10MiB (blob is a floor).
+        assert_eq!(config.effective_slab_target_bytes(), 10 * 1024 * 1024);
         assert_eq!(config.compaction_watermark_bytes, 4096);
         assert!(!config.cold_scan_no_cache_fill);
         assert_eq!(config.page_index_cache_bytes, 2 * 1024 * 1024);

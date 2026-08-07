@@ -916,6 +916,58 @@ fn bucket_dump_manifest_prune_keeps_latest_parent_chain_and_removes_obsolete_for
 }
 
 #[test]
+fn dump_clears_dumped_buckets_so_they_are_not_redumped() {
+    // Parity with C++ SlotStore::DumpSlotInMemory -> Index::ClearSlotDirty: once a
+    // dirty bucket is dumped it is no longer dirty, so the storage cycle does not
+    // re-select and re-dump the same buckets (and re-export the whole index) forever.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for i in 0..4 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("k{i}"),
+                value: b"v".to_vec(),
+            },
+        });
+    }
+    let dirty_before: u64 = engine
+        .bucket_storage_summaries(1)
+        .iter()
+        .map(|summary| summary.dirty_object_count)
+        .sum();
+    assert!(dirty_before > 0, "writes should leave dirty objects to dump");
+
+    engine.apply_storage_lifecycle(StorageLifecycleRequest {
+        shard_id: 1,
+        selected_dump_buckets: Vec::new(),
+        max_dump_buckets_per_round: 0,
+        min_undumped_oplog_records: 0,
+        ..StorageLifecycleRequest::default()
+    });
+    assert!(
+        !engine.list_bucket_dump_manifests(1).is_empty(),
+        "a dump manifest should have been produced for the dirty buckets"
+    );
+
+    let dirty_after: u64 = engine
+        .bucket_storage_summaries(1)
+        .iter()
+        .map(|summary| summary.dirty_object_count)
+        .sum();
+    assert_eq!(
+        dirty_after, 0,
+        "dumped buckets must be cleared, not left dirty to be re-dumped every cycle"
+    );
+}
+
+#[test]
 fn bucket_dump_manifest_prune_is_blocked_by_lagging_follower_cursor() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(

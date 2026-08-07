@@ -365,6 +365,68 @@ impl TemporalEngine {
         }
     }
 
+    /// Clear the dirty state of buckets just captured by `manifest` (C++ SlotStore::
+    /// DumpSlotInMemory -> Index::ClearSlotDirty), so the storage cycle does not
+    /// re-select and re-dump them every round. A bucket re-dirtied since the manifest
+    /// snapshot (its current derived generation no longer equals the captured one) is
+    /// left dirty, so reclaim never advances past an undumped write. The bucket's
+    /// generation is held at the captured (derived) value and its live pages are
+    /// untouched, so bucket_dump_summary_matches_current_generation keeps matching and
+    /// WAL/index reclaim gating is unchanged.
+    pub(super) fn clear_dumped_bucket_dirty_state(
+        &self,
+        shard_id: ShardId,
+        manifest: &BucketDumpManifest,
+    ) {
+        let (start_routing_bucket, end_routing_bucket) = self
+            .infos
+            .read()
+            .expect("info lock poisoned")
+            .get(&shard_id)
+            .map(|info| (info.start_routing_bucket, info.end_routing_bucket))
+            .unwrap_or((0, u32::MAX));
+        let mut shards = self.shards.write().expect("engine lock poisoned");
+        let Some(shard) = shards.get_mut(&shard_id) else {
+            return;
+        };
+        // Per-bucket derived generation the manifest captured (base + dirty count) --
+        // exactly what the reclaim fingerprint compares.
+        let captured: std::collections::HashMap<u32, u64> = manifest
+            .bucket_summaries
+            .iter()
+            .map(|summary| (summary.routing_bucket, summary.dirty_generation))
+            .collect();
+        // Current derived generation BEFORE mutation: detects writes that landed after
+        // the dump snapshot (those buckets must stay dirty for the next dump).
+        let current: std::collections::HashMap<u32, u64> =
+            bucket_storage_summaries(shard, start_routing_bucket, end_routing_bucket)
+                .into_iter()
+                .map(|summary| (summary.routing_bucket, summary.dirty_generation))
+                .collect();
+        for bucket_id in manifest.bucket_ids.iter().copied() {
+            let Some(&captured_generation) = captured.get(&bucket_id) else {
+                continue;
+            };
+            if current.get(&bucket_id).copied().unwrap_or_default() != captured_generation {
+                continue;
+            }
+            shard.dirty_objects.retain(|key| {
+                page_routing_bucket(key, start_routing_bucket, end_routing_bucket) != bucket_id
+            });
+            if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&bucket_id) {
+                // Hold the generation at the captured (derived) value so the reclaim
+                // fingerprint still matches once the dirty objects are cleared.
+                bucket.dirty_generation = bucket.dirty_generation.max(captured_generation);
+                // C++ SetDumpedLogId analog (informational; not part of the fingerprint).
+                bucket.last_dump_sequence = bucket.last_dump_sequence.max(manifest.oplog_sequence);
+                bucket.dirty = false;
+                for page in bucket.page_index.values_mut() {
+                    page.dirty = false;
+                }
+            }
+        }
+    }
+
     pub fn apply_storage_lifecycle(
         &self,
         request: StorageLifecycleRequest,
@@ -376,6 +438,14 @@ impl TemporalEngine {
             self.create_bucket_dump_manifest(request.shard_id, plan.selected_dump_buckets.clone())
                 .ok()
         };
+        if let Some(manifest) = &dump_manifest {
+            // Parity with C++ SlotStore::DumpSlotInMemory -> Index::ClearSlotDirty: a
+            // dumped bucket is no longer dirty, so the storage cycle stops re-selecting
+            // and re-dumping it every round. Dumped-state is anchored by the oplog
+            // watermark (last_dump_sequence / manifest.oplog_sequence, the C++
+            // SetDumpedLogId analog), not by the dirty flag.
+            self.clear_dumped_bucket_dirty_state(request.shard_id, manifest);
+        }
         let (cache_entries_removed, cache_disk_bytes_removed) = if request.invalidate_cache {
             self.cache
                 .invalidate_shard(request.shard_id)
@@ -820,6 +890,13 @@ impl TemporalEngine {
             .iter()
             .map(|summary| (summary.routing_bucket, summary.clone()))
             .collect::<BTreeMap<_, _>>();
+        let recency_by_bucket = {
+            let shards = self.shards.read().expect("engine lock poisoned");
+            shards
+                .get(&shard_id)
+                .map(|shard| shard.bucket_recency.clone())
+                .unwrap_or_default()
+        };
         let mut victims = self
             .bucket_storage_summaries(shard_id)
             .into_iter()
@@ -840,14 +917,22 @@ impl TemporalEngine {
                         .saturating_add(cache_disk_bytes.saturating_mul(2))
                         .saturating_add(summary.physical_bytes)
                         .saturating_add(summary.dirty_object_count.saturating_mul(1024)),
+                    last_touched_ms: recency_by_bucket
+                        .get(&summary.routing_bucket)
+                        .copied()
+                        .unwrap_or(0),
                 }
             })
             .filter(|victim| victim.weight > 0)
             .collect::<Vec<_>>();
+        // C++ PolicyLru (evicter.cc GetBestObjects sorts by slot->GetLastUsed()): evict
+        // least-recently-used buckets first. Never-touched buckets (last_touched_ms ==
+        // 0) are coldest and go first; ties fall back to the heavier bucket, then the
+        // lower routing_bucket for determinism.
         victims.sort_by(|left, right| {
-            right
-                .weight
-                .cmp(&left.weight)
+            left.last_touched_ms
+                .cmp(&right.last_touched_ms)
+                .then_with(|| right.weight.cmp(&left.weight))
                 .then_with(|| left.routing_bucket.cmp(&right.routing_bucket))
         });
         if batch_limit > 0 && victims.len() > batch_limit {
