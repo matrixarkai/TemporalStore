@@ -9,6 +9,10 @@
 # its own on-disk persistence on restart, so the daemon skips it (see the
 # recover-from-persistence guard below) — restarts never re-ingest from logs.
 #
+# Override: MATRIXARK_BACKFILL_FORCE=1 forces a re-ingest from the agents' OWN
+# logs (Claude/Codex transcripts, rollouts, resources) even when the store is
+# already populated — for re-importing agent history on demand. It is dedup-safe.
+#
 # Safe to run repeatedly: a lockfile prevents overlap, a per-agent offset marker
 # makes it resume where it left off after a teardown, and the engine dedups by
 # content hash so re-processed records never duplicate.
@@ -39,10 +43,11 @@ LOCK="$WORK/.lock"
 DONE="$WORK/.done"
 LOG="$WORK/daemon.log"
 
+FORCE="${MATRIXARK_BACKFILL_FORCE:-0}"     # =1: force re-ingest from agent logs, overriding the guard
 mkdir -p "$WORK"
 exec 9>"$LOCK" 2>/dev/null || exit 0
 flock -n 9 || exit 0                      # another daemon already running
-[[ -f "$DONE" ]] && exit 0                # already fully backfilled
+[[ -f "$DONE" && "$FORCE" != "1" ]] && exit 0   # already backfilled (a forced run ignores this)
 
 log() { echo "[$(date -u +%FT%TZ)] $*" >>"$LOG"; }
 log "daemon start (chunk=$CHUNK agents='$AGENTS')"
@@ -57,12 +62,21 @@ log "daemon start (chunk=$CHUNK agents='$AGENTS')"
 # is nothing to backfill.
 agent_root() { echo "/tmp/temporalstore-rust-$1-hook"; }
 store_has_memory() { [[ -d "$1" ]] && [[ -n "$(find "$1" -type f -print -quit 2>/dev/null)" ]]; }
-need_backfill=0
-for AG in $AGENTS; do store_has_memory "$(agent_root "$AG")" || need_backfill=1; done
-if (( ! need_backfill )); then
-  log "all agent stores already populated on disk; recovering from persistence, skipping local-context backfill"
-  touch "$DONE"
-  exit 0
+if [[ "$FORCE" == "1" ]]; then
+  # User forced a re-ingest from the AGENTS' own logs (Claude/Codex transcripts,
+  # rollouts, resources — not TemporalStore's own logs). Bypass the
+  # recover-from-persistence guard and re-read from the start; the engine dedups
+  # by content hash, so records already present are not duplicated.
+  log "MATRIXARK_BACKFILL_FORCE=1: forcing backfill from agent logs (bypassing recover-from-persistence guard)"
+  rm -f "$DONE" "$WORK/.emitted" "$WORK"/.offset.*
+else
+  need_backfill=0
+  for AG in $AGENTS; do store_has_memory "$(agent_root "$AG")" || need_backfill=1; done
+  if (( ! need_backfill )); then
+    log "all agent stores already populated on disk; recovering from persistence, skipping local-context backfill"
+    touch "$DONE"
+    exit 0
+  fi
 fi
 
 # 1) Ensure the load-once batch bin exists (offline build; deps are cached).
@@ -105,7 +119,7 @@ backfill_agent() {
   local SRC="$WORK/backfill.$AG.jsonl"
   local ROOT; ROOT="$(agent_root "$AG")"
   [[ -f "$SRC" ]] || { echo skipped >"$WORK/.status.$AG"; return 0; }
-  if store_has_memory "$ROOT"; then
+  if [[ "$FORCE" != "1" ]] && store_has_memory "$ROOT"; then
     log "$AG: store already populated ($ROOT); recovering from persistence, skipping local-context backfill"
     echo skipped >"$WORK/.status.$AG"; return 0
   fi
