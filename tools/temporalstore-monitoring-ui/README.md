@@ -10,7 +10,7 @@ On the MatrixArk test server, both public paths should serve this same console:
 
 - `/monitoring/`
 - `/observation/`
-- `/studio/` as an optional OpenViking-style operations alias
+- `/studio/` as an optional studio operations alias
 
 Covered views:
 
