@@ -433,7 +433,10 @@ impl RaftCluster {
                 append_entry(node, entry);
             }
             let last_index = node_last_log_or_snapshot_index(node);
-            node.commit_index = leader_commit.min(last_index);
+            // Raft: commitIndex is monotonic and never decreases. Take the max with the
+            // current value so a smaller (reordered / in-flight) leader_commit, or a
+            // shrunk last_index, cannot move it backwards.
+            node.commit_index = node.commit_index.max(leader_commit.min(last_index));
             if node.replica_role.can_serve_data() {
                 node.pipeline_state.apply_inflight_tasks =
                     node.pipeline_state.apply_inflight_tasks.saturating_add(1);
