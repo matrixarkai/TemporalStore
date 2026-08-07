@@ -10,11 +10,11 @@ impl LocalBlockStore {
         if !inner.relaxed_dirty {
             return Ok(());
         }
-        let path = segment_path(&inner.root, inner.page_segment_id);
+        let path = slab_path(&inner.root, inner.page_slab_id);
         if let Ok(file) = OpenOptions::new().append(true).open(&path) {
             file.sync_data()?;
         }
-        persist_extent_manifest(&inner.root, &inner.extents)?;
+        persist_band_manifest(&inner.root, &inner.bands)?;
         inner.relaxed_dirty = false;
         Ok(())
     }
