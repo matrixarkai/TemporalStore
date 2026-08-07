@@ -837,8 +837,12 @@ fn async_storage_string_write_stays_on_hot_memory_path() {
         },
     });
     assert!(write.status.ok);
+    // C++ parity (StringModel::SetValue -> OpLogger::WritePage): the write records
+    // an oplog/WAL entry even in async mode; async only means the commit does not
+    // block (no fsync -> syncs == 0), and page/index materialization is deferred.
     assert_eq!(engine.block_store().stats().writes, 0);
-    assert_eq!(engine.write_ahead_log_store().stats(1).writes, 0);
+    assert_eq!(engine.write_ahead_log_store().stats(1).writes, 1);
+    assert_eq!(engine.write_ahead_log_store().stats(1).syncs, 0);
     assert_eq!(engine.index_log_store().stats(1).writes, 0);
 
     let read = engine.execute(ExecuteRequest {

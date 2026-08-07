@@ -225,6 +225,20 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         command: Command,
     ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
+        self.append_with_sync(shard_id, command, !wal_bulk_relaxed_durability())
+    }
+
+    /// Append a WAL/oplog record. `sync=true` fsyncs before returning (durable);
+    /// `sync=false` writes the record but defers the fsync. Mirrors C++ OpLogger:
+    /// StringModel::SetValue -> OpLogger::WritePage ALWAYS records the entry;
+    /// EVENT_REPLICATION_SYNC vs ASYNC_STORAGE only changes whether the commit
+    /// blocks (partition.h OnExecuteCmdDone: op_logger_->Commit(ctrl) vs (nullptr)).
+    pub fn append_with_sync(
+        &self,
+        shard_id: ShardId,
+        command: Command,
+        sync: bool,
+    ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
@@ -242,11 +256,7 @@ impl LocalWriteAheadLogStore {
             metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
             command,
         };
-        // Bulk backfill defers the WAL fsync to an explicit flush(shard_id) at
-        // chunk end (mirrors the block-store relaxed path). Recovery for backfill
-        // is the resumable source offset; flush bounds power-loss exposure to one
-        // chunk. Live path (env unset) keeps the per-append fsync.
-        let report = append_record_locked(&mut inner, &record, !wal_bulk_relaxed_durability())?;
+        let report = append_record_locked(&mut inner, &record, sync)?;
         inner.stats.last_sequence = report.current_sequence;
         inner.stats.last_flushed_sequence = report.current_sequence;
         inner.last_sequence_by_shard.insert(shard_id, next_sequence);
