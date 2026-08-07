@@ -1102,6 +1102,46 @@ fn eviction_ranks_victims_least_recently_used_first_like_cpp() {
 }
 
 #[test]
+fn expiry_sweep_emits_wal_tombstone_like_cpp() {
+    // C++ parity (object_manager DoExpireObject -> op_logger_->DeleteObject; expirer.cc
+    // Commit): active expiry is a logged, replicated delete. Rust's sweep must append a
+    // WAL tombstone per expired key so followers / WAL replay observe the deletion,
+    // instead of removing only in-memory + index.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "k".to_string(),
+            value: b"v".to_vec(),
+        },
+    });
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::CommonExpire {
+            key: "k".to_string(),
+            ttl_ms: 1,
+        },
+    });
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let wal_before_sweep = engine.write_ahead_log_store().stats(1).writes;
+    let report = engine.sweep_expired_records(1).unwrap();
+    assert_eq!(report.expired_records_removed, 1);
+    let wal_after_sweep = engine.write_ahead_log_store().stats(1).writes;
+    assert_eq!(
+        wal_after_sweep - wal_before_sweep,
+        1,
+        "the expiry sweep must append one WAL delete (tombstone) per expired key"
+    );
+}
+
+#[test]
 fn hash_incrby_rejects_non_integer_and_overflow_like_cpp() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
