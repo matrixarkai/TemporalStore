@@ -100,6 +100,18 @@ impl TemporalEngine {
         let bytes = fs::read(self.index_path(shard_id)).ok()?;
         let mut shard = serde_json::from_slice::<ShardState>(&bytes).ok()?;
         reconcile_secondary_views_from_bucket_index(&self.page_store, &mut shard);
+        // Reloaded data is durable, hence clean: clear the transient per-page/bucket
+        // dirty flags that were persisted before unload (the durable dirty_generation
+        // identity is preserved). refresh_bucket_runtime_flags below then recomputes
+        // dirty purely from the live (empty on load) dirty_objects set. This mirrors
+        // the C++ ClearSlotDirty-on-load contract and keeps `bucket.dirty |= ...` from
+        // resurrecting a stale persisted dirty flag.
+        for bucket in shard.bucket_index.bucket_map.values_mut() {
+            bucket.dirty = false;
+            for page in bucket.page_index.values_mut() {
+                page.dirty = false;
+            }
+        }
         refresh_bucket_runtime_flags(&mut shard);
         Some(shard)
     }
