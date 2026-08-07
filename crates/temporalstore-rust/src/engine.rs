@@ -228,7 +228,13 @@ impl TemporalEngine {
         if write_command
             && config
                 .maxmemory_bytes
-                .map(|limit| self.page_store.stats().bytes_written >= limit)
+                // Gate on the CURRENT on-disk footprint (decremented by GC/compaction/
+                // purge), not the cumulative-ever `bytes_written` counter. The old gate
+                // was a monotonic tripwire that reclamation could never clear, so a
+                // long-running node permanently rejected all writes once it tripped.
+                // C++ compares live resident size and evicts; this at least lets
+                // reclamation re-admit writes.
+                .map(|limit| self.page_store.zone_summary().total_known_physical_bytes >= limit)
                 .unwrap_or(false)
         {
             return ExecuteResponse {

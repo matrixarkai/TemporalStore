@@ -12,11 +12,15 @@ pub(super) fn admission_limits(
     info: &Option<ShardInfo>,
 ) -> Vec<AdmissionLimit> {
     let mut limits = Vec::new();
-    if let Some(limit) = if write_command {
+    if let Some(limit) = (if write_command {
         config.write_qps
     } else {
         config.read_qps
-    } {
+    })
+    // C++ QuotaManager treats qps == 0 as UNLIMITED (no limiter), not deny-all; only a
+    // positive value installs a rate limit.
+    .filter(|&limit| limit > 0)
+    {
         limits.push(AdmissionLimit {
             scope: AdmissionScope::Shard(shard_id),
             limit,
@@ -32,11 +36,13 @@ pub(super) fn admission_limits(
         .map(|info| info.table_name.trim())
         .filter(|table_name| !table_name.is_empty())
     {
-        if let Some(limit) = if write_command {
+        if let Some(limit) = (if write_command {
             config.table_write_qps
         } else {
             config.table_read_qps
-        } {
+        })
+        .filter(|&limit| limit > 0)
+        {
             limits.push(AdmissionLimit {
                 scope: AdmissionScope::Table(table_name.to_string()),
                 limit,
@@ -54,11 +60,13 @@ pub(super) fn admission_limits(
         .map(str::trim)
         .filter(|tenant_name| !tenant_name.is_empty())
     {
-        if let Some(limit) = if write_command {
+        if let Some(limit) = (if write_command {
             config.tenant_write_qps
         } else {
             config.tenant_read_qps
-        } {
+        })
+        .filter(|&limit| limit > 0)
+        {
             limits.push(AdmissionLimit {
                 scope: AdmissionScope::Tenant(tenant_name.to_string()),
                 limit,
