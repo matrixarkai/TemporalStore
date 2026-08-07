@@ -57,7 +57,10 @@ fn context_get_nodes_batches_summary_lookup_for_retrieval() {
             assert_eq!(nodes[0].node_hash, 11);
             assert_eq!(nodes[1].node_hash, 22);
             assert!(nodes[0].l0.contains("node 11"));
-            assert!(nodes[1].l1_ref.contains("node 22"));
+            // l1_ref is a deprecated hot-schema field dropped from the persisted wire
+            // (its L1 summary now lives in ContextSummary records); assert the
+            // surviving l0 summary content for node 22 instead.
+            assert!(nodes[1].l0.contains("node 22"));
         }
         other => panic!("unexpected response: {other:?}"),
     }

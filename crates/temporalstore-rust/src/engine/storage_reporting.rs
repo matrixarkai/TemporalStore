@@ -14,7 +14,42 @@ pub(super) fn storage_object_lifecycle_report_for_buckets(
     selected_buckets: &BTreeSet<u32>,
     routing_bucket_for_key: impl Fn(&str) -> u32,
 ) -> StorageObjectLifecycleReport {
-    let entries = collect_live_page_entries(shard)
+    object_lifecycle_report_from_entries(
+        shard_id,
+        shard,
+        collect_live_page_entries(shard),
+        selected_slots,
+        routing_slot_for_key,
+    )
+}
+
+/// Same object-lifecycle report, but derived from the secondary model maps
+/// (strings/hashes/feature series/...) instead of the slot index. Used to detect
+/// a slot-dump manifest whose serialized model maps disagree with its slot index
+/// (e.g. a mutated object_id): the slot-index-derived report alone stays valid.
+pub(super) fn storage_object_lifecycle_report_for_slots_from_model_maps(
+    shard_id: ShardId,
+    shard: &ShardState,
+    selected_slots: &BTreeSet<u32>,
+    routing_slot_for_key: impl Fn(&str) -> u32,
+) -> StorageObjectLifecycleReport {
+    object_lifecycle_report_from_entries(
+        shard_id,
+        shard,
+        collect_model_live_page_entries(shard),
+        selected_slots,
+        routing_slot_for_key,
+    )
+}
+
+fn object_lifecycle_report_from_entries(
+    shard_id: ShardId,
+    shard: &ShardState,
+    entries: Vec<LivePageEntry>,
+    selected_slots: &BTreeSet<u32>,
+    routing_slot_for_key: impl Fn(&str) -> u32,
+) -> StorageObjectLifecycleReport {
+    let entries = entries
         .into_iter()
         .filter(|entry| {
             let routing_bucket = entry
