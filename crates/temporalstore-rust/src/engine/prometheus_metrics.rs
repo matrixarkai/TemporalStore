@@ -283,7 +283,7 @@ impl TemporalEngine {
                 );
                 push_metric(
                     &mut out,
-                    "temporalstore_block_store_extent_count",
+                    "temporalstore_block_store_band_count",
                     &[
                         ("shard_id", stats.shard_id.to_string()),
                         ("state", state.into()),
@@ -348,7 +348,7 @@ impl TemporalEngine {
                     );
                     push_metric(
                         &mut out,
-                        "temporalstore_block_store_extent_oldest_unix_ms",
+                        "temporalstore_block_store_band_oldest_unix_ms",
                         &[
                             ("shard_id", stats.shard_id.to_string()),
                             ("scope", scope.into()),
@@ -377,7 +377,7 @@ impl TemporalEngine {
                     );
                     push_metric(
                         &mut out,
-                        "temporalstore_block_store_extent_oldest_age_ms",
+                        "temporalstore_block_store_band_oldest_age_ms",
                         &[
                             ("shard_id", stats.shard_id.to_string()),
                             ("scope", scope.into()),
