@@ -1051,6 +1051,87 @@ fn raft_transport_rejects_stale_append_entries_and_behind_vote() {
     );
 }
 
+#[test]
+fn append_entry_only_truncates_on_term_conflict_and_never_reapplies() {
+    // Raft §5.3 + exactly-once: a stale/duplicate/reordered AppendEntries that is a
+    // prefix of the committed log must NOT truncate committed entries or re-execute
+    // them (double-applying non-idempotent commands). Truncation happens only on a
+    // genuine term conflict, and the monotonic applied floor blocks re-execution.
+    let mut node = new_node(1, RaftRole::Follower, 7);
+    for index in 1..=5 {
+        append_entry(
+            &mut node,
+            RaftLogEntry {
+                term: 1,
+                index,
+                shard_id: 7,
+                command: Command::StringSet {
+                    key: format!("k{index}"),
+                    value: b"v".to_vec(),
+                },
+            },
+        );
+    }
+    node.commit_index = 5;
+    apply_committed(&mut node);
+    assert_eq!(node.applied_index, 5);
+    assert_eq!(node.max_applied_index, 5);
+    assert_eq!(node.log.len(), 5);
+
+    // Stale SAME-term entry at an already-committed index: no truncation, no re-apply.
+    append_entry(
+        &mut node,
+        RaftLogEntry {
+            term: 1,
+            index: 3,
+            shard_id: 7,
+            command: Command::StringSet {
+                key: "k3".to_string(),
+                value: b"v".to_vec(),
+            },
+        },
+    );
+    assert_eq!(
+        node.log.len(),
+        5,
+        "a same-term stale entry must not truncate the committed log"
+    );
+    assert_eq!(node.applied_index, 5);
+    assert!(
+        apply_committed(&mut node).is_none(),
+        "already-applied indices must not re-execute (monotonic floor)"
+    );
+
+    // A genuine term conflict at an UNCOMMITTED index truncates and replaces.
+    append_entry(
+        &mut node,
+        RaftLogEntry {
+            term: 1,
+            index: 6,
+            shard_id: 7,
+            command: Command::StringSet {
+                key: "k6".to_string(),
+                value: b"a".to_vec(),
+            },
+        },
+    );
+    assert_eq!(node.log.len(), 6);
+    append_entry(
+        &mut node,
+        RaftLogEntry {
+            term: 2,
+            index: 6,
+            shard_id: 7,
+            command: Command::StringSet {
+                key: "k6".to_string(),
+                value: b"b".to_vec(),
+            },
+        },
+    );
+    assert_eq!(node.log.len(), 6, "term conflict replaces, not appends");
+    assert_eq!(node.log.last().map(|entry| entry.term), Some(2));
+}
+
 // shared-corpus: raft_matrixraft_replication_backpressure
 // shared-corpus: raft_matrixraft_pipeline_reorder_backpressure_matrix raft_matrixraft_replication_backpressure
 #[test]

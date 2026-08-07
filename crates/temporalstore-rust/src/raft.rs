@@ -3140,6 +3140,11 @@ struct RaftNode {
     installed_snapshot: Option<RaftSnapshot>,
     applied_index: u64,
     applied: BTreeSet<u64>,
+    // Monotonic exactly-once floor, mirroring the C++ applier's `applied_raft_index_`
+    // (data_raft_replication.cc): the highest raft index ever applied. It is NEVER
+    // lowered by a log truncation, so an entry at or below it is never re-executed even
+    // if `applied`/`applied_index` were rewound.
+    max_applied_index: u64,
     engine: TemporalEngine,
     pipeline_state: RaftPeerPipelineRuntimeState,
 }
@@ -3691,6 +3696,7 @@ impl RaftCluster {
                         node.current_term = node.current_term.max(snapshot.last_included_term);
                         node.commit_index = node.commit_index.max(snapshot.last_included_index);
                         node.applied_index = snapshot.last_included_index;
+                        node.max_applied_index = node.max_applied_index.max(snapshot.last_included_index);
                         node.installed_snapshot = Some(snapshot);
                     }
                 }
@@ -4451,6 +4457,7 @@ fn new_node(id: RaftNodeId, role: RaftRole, shard_id: ShardId) -> RaftNode {
         installed_snapshot: None,
         applied_index: 0,
         applied: BTreeSet::new(),
+        max_applied_index: 0,
         engine,
         pipeline_state: RaftPeerPipelineRuntimeState {
             next_index: 1,
@@ -4564,10 +4571,19 @@ fn append_entry(node: &mut RaftNode, entry: RaftLogEntry) {
     {
         return;
     }
-    if node.log.last().map(|last| last.index) >= Some(entry.index) {
+    // Raft §5.3: truncate ONLY on a genuine term conflict (same index, different term).
+    // An entry already present with the SAME term is a no-op -- unconditionally
+    // truncating on index<=last (a stale/duplicate/reordered AppendEntries that is a
+    // prefix of the committed log) would delete committed suffix entries, rewind
+    // applied state, and double-execute non-idempotent commands on re-apply.
+    if let Some(existing) = node.log.iter().find(|existing| existing.index == entry.index) {
+        if existing.term == entry.term {
+            return;
+        }
         node.log.retain(|existing| existing.index < entry.index);
         node.applied.retain(|applied| *applied < entry.index);
         node.applied_index = node.applied.iter().next_back().copied().unwrap_or_default();
+        // max_applied_index is intentionally NOT lowered (monotonic exactly-once floor).
     }
     node.log.push(entry);
 }
@@ -4662,6 +4678,16 @@ fn apply_committed(node: &mut RaftNode) -> Option<CommandResponse> {
         .iter()
         .take_while(|entry| entry.index <= node.commit_index)
     {
+        // Monotonic exactly-once floor (C++ applied_raft_index_ guard): never
+        // re-execute an index that was already applied, even if `applied`/applied_index
+        // were rewound by a truncation. Still advance the apply cursor so health/lag
+        // reflects that the entry IS applied -- catch-up after a rewind reconciles the
+        // cursor without double-executing.
+        if entry.index <= node.max_applied_index {
+            node.applied_index = node.applied_index.max(entry.index);
+            node.applied.insert(entry.index);
+            continue;
+        }
         if node.applied.insert(entry.index) {
             let response = node
                 .engine
@@ -4671,6 +4697,7 @@ fn apply_committed(node: &mut RaftNode) -> Option<CommandResponse> {
                 })
                 .response;
             node.applied_index = entry.index;
+            node.max_applied_index = node.max_applied_index.max(entry.index);
             last_response = Some(response);
         }
     }
@@ -4695,6 +4722,7 @@ fn install_snapshot_state(node: &mut RaftNode, snapshot: RaftSnapshot) {
     node.applied
         .extend(snapshot.entries.iter().map(|entry| entry.index));
     node.applied_index = snapshot.last_included_index;
+    node.max_applied_index = node.max_applied_index.max(snapshot.last_included_index);
     node.installed_snapshot = Some(snapshot);
 }
 
@@ -4708,6 +4736,7 @@ fn install_snapshot_state_for_role(node: &mut RaftNode, snapshot: RaftSnapshot) 
             .retain(|entry| entry.index > snapshot.last_included_index);
         node.applied.clear();
         node.applied_index = snapshot.last_included_index;
+        node.max_applied_index = node.max_applied_index.max(snapshot.last_included_index);
         node.installed_snapshot = Some(snapshot);
     }
 }

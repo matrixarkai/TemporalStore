@@ -792,6 +792,7 @@ impl RaftCluster {
             node.applied
                 .extend(snapshot.entries.iter().map(|entry| entry.index));
             node.applied_index = snapshot.last_included_index;
+            node.max_applied_index = node.max_applied_index.max(snapshot.last_included_index);
             node.installed_snapshot = Some(snapshot);
         }
         if let Some(snapshot_ref) = external_snapshot_ref {
