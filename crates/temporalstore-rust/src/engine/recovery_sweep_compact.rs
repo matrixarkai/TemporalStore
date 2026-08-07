@@ -226,11 +226,13 @@ impl TemporalEngine {
         let mut expired_records_removed = 0;
         let mut skipped_records = 0usize;
         let mut loaded_for_expire = 0usize;
+        let mut expired_keys: Vec<String> = Vec::new();
         for (key, expires_at) in hot_selected.iter() {
             if *expires_at <= now {
                 if delete_record(shard, key) {
                     invalidate_record_all(&self.cache, request.shard_id, key);
                     expired_records_removed += 1;
+                    expired_keys.push(key.clone());
                 }
             } else {
                 skipped_records = skipped_records.saturating_add(1);
@@ -243,6 +245,7 @@ impl TemporalEngine {
                     if delete_record(shard, key) {
                         invalidate_record_all(&self.cache, request.shard_id, key);
                         expired_records_removed += 1;
+                        expired_keys.push(key.clone());
                     } else {
                         shard.expires_at_ms.remove(key);
                     }
@@ -254,6 +257,25 @@ impl TemporalEngine {
             }
         }
         if expired_records_removed > 0 {
+            // C++ parity (object_manager.h DoExpireObject -> op_logger_->DeleteObject +
+            // expirer.cc TryExpire -> Commit(nullptr,nullptr)): expiry IS a logged,
+            // replicated delete. Emit a WAL tombstone per expired key -- buffered and
+            // unfsynced, mirroring the C++ fire-and-forget commit -- so followers and WAL
+            // replay observe the deletion instead of relying on each node running its own
+            // sweep with its own clock/enable_expire. Then anchor the served snapshot past
+            // the tombstones so a restart does not resurrect the key by replaying the
+            // earlier SET/EXPIRE records.
+            if !replaying_wal() {
+                for key in &expired_keys {
+                    let _ = self.wal_store.append_with_sync(
+                        request.shard_id,
+                        Command::CommonDelete { key: key.clone() },
+                        false,
+                    );
+                }
+                shard.applied_wal_sequence =
+                    Some(self.wal_store.stats(request.shard_id).last_sequence);
+            }
             let index_bytes = serde_json::to_vec_pretty(shard)
                 .map_err(|err| Status::error("expire_sweep_failed", err.to_string()))?;
             self.persist_index_bytes(request.shard_id, &index_bytes)
