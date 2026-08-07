@@ -23,7 +23,7 @@ pub(super) fn context_event_key(tenant_hash: u64, node_hash: u64) -> String {
 
 pub(super) fn normalize_context_event_storage_keys(node_hash: u64, event: &mut ContextEvent) {
     if event.event_time_ms == 0 {
-        event.event_time_ms = super::now_ms().max(1);
+        event.event_time_ms = super::resolve_now_ms().max(1);
     }
     if event.ingestion_time_ms == 0 {
         event.ingestion_time_ms = event.event_time_ms;
