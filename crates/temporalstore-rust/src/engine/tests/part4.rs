@@ -920,6 +920,42 @@ fn bucket_dump_manifest_prune_keeps_latest_parent_chain_and_removes_obsolete_for
 }
 
 #[test]
+fn torn_manifest_does_not_hide_valid_manifests() {
+    // Crash-consistency: a torn/corrupt manifest .json (from a crash mid-write, now
+    // prevented by the atomic write) must not fail the whole manifest listing and
+    // silently drop all dumped state on load. list_bucket_dump_manifests skips the bad
+    // file and keeps the valid one.
+    let dir = tempfile::tempdir().unwrap();
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        &index_dir,
+    );
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "k".to_string(),
+            value: b"v".to_vec(),
+        },
+    });
+    let manifest = engine
+        .create_bucket_dump_manifest(1, Vec::<u32>::new())
+        .unwrap();
+    let manifest_dir = index_dir.join("slot-dumps").join("shard-1");
+    std::fs::write(manifest_dir.join("torn-9999.json"), b"{ not valid json").unwrap();
+    let listed = engine.list_bucket_dump_manifests(1);
+    assert!(
+        listed
+            .iter()
+            .any(|entry| entry.manifest_id == manifest.manifest_id),
+        "a valid manifest must survive a torn sibling file: {listed:?}"
+    );
+}
+
+#[test]
 fn dump_clears_dumped_buckets_so_they_are_not_redumped() {
     // Parity with C++ SlotStore::DumpSlotInMemory -> Index::ClearSlotDirty: once a
     // dirty bucket is dumped it is no longer dirty, so the storage cycle does not

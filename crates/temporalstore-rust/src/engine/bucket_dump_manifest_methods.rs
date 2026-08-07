@@ -7,6 +7,13 @@ impl TemporalEngine {
         shard_id: ShardId,
         selected_buckets: impl IntoIterator<Item = u32>,
     ) -> Result<BucketDumpManifest, Status> {
+        // Make the pages + WAL the manifest is about to reference durable before we
+        // capture their slab ids / oplog_sequence. In live mode each append already
+        // fsyncs, but under MATRIXARK_BULK_INGEST appends defer fsync, so a dump firing
+        // mid-bulk would otherwise name slabs whose bytes are not yet on disk (C++
+        // DumpSlots always page_store_->Commit before UpdateIndex; slot_store.cc).
+        let _ = self.page_store.sync_durable();
+        let _ = self.wal_store.flush(shard_id);
         let selected_buckets = selected_buckets.into_iter().collect::<BTreeSet<_>>();
         let summaries = self.bucket_storage_summaries(shard_id);
         if summaries.is_empty()
