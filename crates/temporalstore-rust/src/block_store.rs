@@ -1258,6 +1258,10 @@ mod tests {
             "page_id": address.page_id,
             "object_id": address.object_id,
             "routing_slot": address.routing_slot,
+            // generation is a canonical, always-present field on write (append sets
+            // Some(page_id)) and on read (record decode derives it), so the legacy
+            // alias JSON must carry it or the round-trip deserializes to None.
+            "generation": address.generation,
             "extent_id": address.extent_id,
             "checksum": address.sha256,
         });

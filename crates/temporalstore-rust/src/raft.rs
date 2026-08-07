@@ -4539,8 +4539,10 @@ fn refresh_node_pipeline_state(
     };
     node.pipeline_state.snapshot_sending = snapshot_installed_index > 0 && node.id != leader_id;
     node.pipeline_state.snapshot_installed_index = snapshot_installed_index;
-    node.pipeline_state.transfer_leader_target =
-        node.id == leader_id && node.role == RaftRole::Leader;
+    // transfer_leader_target is owned by begin_leader_transfer / transfer_leader /
+    // refresh_leader_transfer_timeouts. The per-refresh recompute here clobbered a
+    // pending transfer target (so it never timed out) and wrongly marked the leader
+    // itself as its own transfer target; leave the field untouched during refresh.
     node.pipeline_state.pre_vote_rejections = if config.enable_pre_vote && !node.alive {
         node.pipeline_state.pre_vote_rejections.max(1)
     } else {

@@ -551,6 +551,25 @@ pub(super) fn object_manager_runtime_report(
             .blockers
             .push("page refs disagree with expected object owners".to_string());
     }
+    // Count live timestamped-kv pages (feature/sequence/ips and the context
+    // timeline families). collect_live_page_entries already dedupes packed series
+    // pages via unique_timestamped_kv_page_addresses, so this is the packed page
+    // count. Previously this field was left at its default (0).
+    const TIMESTAMPED_KINDS: [&str; 9] = [
+        "feature",
+        "sequence",
+        "ips",
+        "context_event",
+        "context_index",
+        "context_audit",
+        "context_child",
+        "context_summary",
+        "context_compression",
+    ];
+    report.packed_timestamped_page_count = collect_live_page_entries(shard)
+        .iter()
+        .filter(|entry| TIMESTAMPED_KINDS.contains(&entry.kind.as_str()))
+        .count() as u64;
     report.runtime_ready = report.blockers.is_empty();
     report
 }

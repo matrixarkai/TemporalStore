@@ -340,7 +340,7 @@ fn raft_apply_health_reports_commit_to_apply_lag() {
         }]
     );
     assert!(cluster.prometheus_metrics().contains(
-        "temporalstore_raft_node_apply_lag{kind=\"data\",node_id=\"2\",role=\"follower\"} 1"
+        "temporalstore_raft_node_apply_lag{kind=\"data\",node_id=\"2\",role=\"follower\",replica_role=\"voter\"} 1"
     ));
 
     cluster.catch_up(2).unwrap();
