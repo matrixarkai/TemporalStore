@@ -1419,6 +1419,23 @@ pub enum Command {
     },
     ControlStateManager {
         key: String,
+        /// Optional manager op-code for C++ `MANAGER` parity: QUERY(2), FIELD_LIST(5),
+        /// FIELD_COUNT(6), ALL_DATA_VALUE(7). `None` / unknown returns the family summary.
+        #[serde(default)]
+        op_type: Option<String>,
+        /// Exact field keys (timestamp_ms) for QUERY; the second tuple element is unused
+        /// (kept for wire symmetry with the C++ KvPair field_list).
+        #[serde(default)]
+        field_list: Vec<(String, String)>,
+        /// Inclusive range start for FIELD_LIST (timestamp_ms as string).
+        #[serde(default)]
+        start_offset: String,
+        /// Inclusive range end for FIELD_LIST (timestamp_ms as string).
+        #[serde(default)]
+        end_offset: String,
+        /// Select the Cpc family series instead of the default H family.
+        #[serde(default)]
+        is_cpc: bool,
     },
     ControlStateDebug {
         key: String,

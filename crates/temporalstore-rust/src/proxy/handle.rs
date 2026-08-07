@@ -536,7 +536,14 @@ impl ProxyService {
                 match parse_json::<ProxyKeyCommandRequest>(&request.body) {
                     Ok(req) => json_response(
                         200,
-                        &self.table_command(req, |key| Command::ControlStateManager { key }),
+                        &self.table_command(req, |key| Command::ControlStateManager {
+                            key,
+                            op_type: None,
+                            field_list: Vec::new(),
+                            start_offset: String::new(),
+                            end_offset: String::new(),
+                            is_cpc: false,
+                        }),
                     ),
                     Err(err) => self.bad_execute_request(err),
                 }

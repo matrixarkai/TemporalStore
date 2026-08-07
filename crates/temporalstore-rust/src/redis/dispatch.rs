@@ -1836,7 +1836,43 @@ pub fn execute_redis_command_with_state(
         }
         "CONTROLSTATEMANAGER" if args.len() == 2 => hash_entries_response(execute(Command::ControlStateManager {
             key: string_arg(&args[1]),
+            op_type: None,
+            field_list: Vec::new(),
+            start_offset: String::new(),
+            end_offset: String::new(),
+            is_cpc: false,
         })),
+        // C++ MANAGER op parity: CONTROLSTATEMANAGER key op_type is_cpc [start_offset end_offset | field...]
+        // op_type: QUERY(2)|FIELD_LIST(5)|FIELD_COUNT(6)|ALL_DATA_VALUE(7). is_cpc: 0/1.
+        "CONTROLSTATEMANAGER" if args.len() >= 4 => {
+            let op_type = string_arg(&args[2]);
+            let is_cpc = matches!(string_arg(&args[3]).as_str(), "1" | "cpc" | "true");
+            let op = op_type.trim().to_ascii_uppercase();
+            let is_field_list = op == "5" || op == "FIELD_LIST";
+            let is_query = op == "2" || op == "QUERY";
+            let (field_list, start_offset, end_offset) = if is_field_list && args.len() >= 6 {
+                (Vec::new(), string_arg(&args[4]), string_arg(&args[5]))
+            } else if is_query {
+                (
+                    args[4..]
+                        .iter()
+                        .map(|arg| (string_arg(arg), String::new()))
+                        .collect(),
+                    String::new(),
+                    String::new(),
+                )
+            } else {
+                (Vec::new(), String::new(), String::new())
+            };
+            hash_entries_response(execute(Command::ControlStateManager {
+                key: string_arg(&args[1]),
+                op_type: Some(op_type),
+                field_list,
+                start_offset,
+                end_offset,
+                is_cpc,
+            }))
+        }
         "CONTROLSTATEDEBUG" if args.len() == 4 => {
             let start_ms = match parse_u64(&args[2], "start_ms") {
                 Ok(value) => value,

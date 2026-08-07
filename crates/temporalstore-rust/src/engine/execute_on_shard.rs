@@ -1555,7 +1555,14 @@ pub(crate) fn execute_on_shard(
                 value: shard.control_state_fol.get(&key).map(|stored| stored.value.clone()),
             }
         }
-        Command::ControlStateManager { key } => {
+        Command::ControlStateManager {
+            key,
+            op_type,
+            field_list,
+            start_offset,
+            end_offset,
+            is_cpc,
+        } => {
             if remove_if_expired(shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
@@ -1565,37 +1572,15 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            let mut entries = Vec::new();
-            for family in [ControlStateFamily::H, ControlStateFamily::Cpc, ControlStateFamily::Fol] {
-                let family_key = control_state_family_key(family, &key);
-                let values = shard
-                    .control_state
-                    .get(&family_key)
-                    .map(|series| series.values().copied().collect::<Vec<_>>())
-                    .unwrap_or_default();
-                entries.push((
-                    format!("{}_events", control_state_family_name(family)),
-                    values.len().to_string().into_bytes(),
-                ));
-                entries.push((
-                    format!("{}_sum", control_state_family_name(family)),
-                    values.iter().sum::<i64>().to_string().into_bytes(),
-                ));
-            }
-            if let Some(fol) = shard.control_state_fol.get(&key) {
-                entries.push(("fol_value".to_string(), fol.value.clone()));
-                entries.push((
-                    "fol_occur_time_ms".to_string(),
-                    fol.occur_time_ms.to_string().into_bytes(),
-                ));
-                entries.push((
-                    "fol_type".to_string(),
-                    match fol.fol_type {
-                        ControlStateFolType::First => b"first".to_vec(),
-                        ControlStateFolType::Last => b"last".to_vec(),
-                    },
-                ));
-            }
+            let entries = control_state_manager_entries(
+                shard,
+                &key,
+                op_type.as_deref(),
+                &field_list,
+                &start_offset,
+                &end_offset,
+                is_cpc,
+            );
             CommandResponse::HashEntries { entries }
         }
         Command::ControlStateDebug {

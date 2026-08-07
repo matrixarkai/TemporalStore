@@ -270,6 +270,11 @@ fn main() {
         },
         "control_statemanager" if args.len() == 3 => Command::ControlStateManager {
             key: args[2].clone(),
+            op_type: None,
+            field_list: Vec::new(),
+            start_offset: String::new(),
+            end_offset: String::new(),
+            is_cpc: false,
         },
         _ => {
             usage();
