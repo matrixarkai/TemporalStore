@@ -12,12 +12,16 @@ impl TemporalEngine {
     ) -> Result<(), std::io::Error> {
         let path =
             bucket_dump_manifest_path(&self.index_dir, manifest.shard_id, &manifest.manifest_id);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
         let bytes = serde_json::to_vec_pretty(manifest)
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
-        fs::write(path, bytes)
+        // The manifest is the durable reclaim watermark (oplog_sequence) + recovery
+        // index; WAL reclaim durably truncates the WAL based on it. It MUST be written
+        // durably and atomically -- a bare fs::write left it in the page cache, so a
+        // crash after the (durable) WAL reclaim but before the manifest reached disk
+        // lost the records in between (C++ commits the dumped index before advancing
+        // the dumped-log-id; slot_store.cc OnCommitDone waits both). Atomic temp+rename
+        // also prevents a torn manifest from hiding the whole listing on load.
+        atomic_write_bytes(&path, &bytes)
     }
 
     pub(super) fn persist_bucket_dump_install_marker(

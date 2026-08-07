@@ -44,12 +44,11 @@ pub(super) fn write_bucket_dump_install_marker(
     marker: &BucketDumpInstallMarker,
 ) -> Result<(), std::io::Error> {
     let path = bucket_dump_install_marker_path(index_dir, marker);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
     let bytes = serde_json::to_vec_pretty(marker)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
-    fs::write(path, bytes)
+    // Install roll-forward recovery keys off these markers; write durably + atomically
+    // so a crash cannot leave a torn/lost commit-phase marker (was a bare fs::write).
+    atomic_write_bytes(&path, &bytes)
 }
 
 pub(super) fn bucket_dump_install_marker_files_at(
@@ -340,8 +339,23 @@ pub(super) fn list_bucket_dump_manifests_at(
         {
             continue;
         }
-        let manifest = serde_json::from_slice::<BucketDumpManifest>(&fs::read(entry.path())?)
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+        // A torn (crash-interrupted) or bit-rotted manifest must NOT fail the whole
+        // listing -- previously `?` on parse turned one bad file into an empty listing,
+        // which on load silently dropped all dumped state. Skip unreadable/unparseable
+        // files and reject checksum mismatches, keeping every valid manifest.
+        let bytes = match fs::read(entry.path()) {
+            Ok(bytes) => bytes,
+            Err(_) => continue,
+        };
+        let Ok(manifest) = serde_json::from_slice::<BucketDumpManifest>(&bytes) else {
+            continue;
+        };
+        if !manifest.checksum.is_empty() {
+            match bucket_dump_manifest_checksum(&manifest) {
+                Ok(expected) if expected == manifest.checksum => {}
+                _ => continue,
+            }
+        }
         manifests.push(manifest);
     }
     manifests.sort_by_key(|manifest| (manifest.index_log_sequence, manifest.created_unix_ms));
