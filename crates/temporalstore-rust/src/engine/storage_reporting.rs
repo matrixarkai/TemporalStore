@@ -18,8 +18,8 @@ pub(super) fn storage_object_lifecycle_report_for_buckets(
         shard_id,
         shard,
         collect_live_page_entries(shard),
-        selected_slots,
-        routing_slot_for_key,
+        selected_buckets,
+        routing_bucket_for_key,
     )
 }
 
@@ -30,15 +30,15 @@ pub(super) fn storage_object_lifecycle_report_for_buckets(
 pub(super) fn storage_object_lifecycle_report_for_slots_from_model_maps(
     shard_id: ShardId,
     shard: &ShardState,
-    selected_slots: &BTreeSet<u32>,
-    routing_slot_for_key: impl Fn(&str) -> u32,
+    selected_buckets: &BTreeSet<u32>,
+    routing_bucket_for_key: impl Fn(&str) -> u32,
 ) -> StorageObjectLifecycleReport {
     object_lifecycle_report_from_entries(
         shard_id,
         shard,
         collect_model_live_page_entries(shard),
-        selected_slots,
-        routing_slot_for_key,
+        selected_buckets,
+        routing_bucket_for_key,
     )
 }
 
@@ -46,8 +46,8 @@ fn object_lifecycle_report_from_entries(
     shard_id: ShardId,
     shard: &ShardState,
     entries: Vec<LivePageEntry>,
-    selected_slots: &BTreeSet<u32>,
-    routing_slot_for_key: impl Fn(&str) -> u32,
+    selected_buckets: &BTreeSet<u32>,
+    routing_bucket_for_key: impl Fn(&str) -> u32,
 ) -> StorageObjectLifecycleReport {
     let entries = entries
         .into_iter()
@@ -185,7 +185,16 @@ pub(super) fn bucket_storage_summaries(
         }
     }
     for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-        if !bucket.dirty {
+        // object_count and the base dirty_generation are durable-generation IDENTITY
+        // fields (compared by bucket_dump_summary_matches_current_generation to anchor
+        // WAL/index reclaim). They must reflect durable bucket content, not the
+        // transient `dirty` flag -- so a bucket that was dumped and then had its dirty
+        // flag cleared (C++ Index::ClearSlotDirty) but still owns live pages keeps its
+        // reclaim fingerprint. Populate whenever the bucket is dirty OR already has a
+        // live-page summary; behaviour is unchanged for every pre-clear state (a bucket
+        // with content is dirty today, so the branch was always taken).
+        let has_live_summary = buckets.contains_key(routing_bucket);
+        if !bucket.dirty && !has_live_summary {
             continue;
         }
         let summary = buckets.entry(*routing_bucket).or_insert(BucketStorageSummary {
