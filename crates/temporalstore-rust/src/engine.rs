@@ -316,8 +316,16 @@ impl TemporalEngine {
             if !bulk_ingest_mode() {
                 refresh_slot_runtime_flags(shard);
             }
-            if write_command && !config.async_storage {
-                let _ = self.wal_store.append(request.shard_id, command);
+            // Parity with C++ TemporalStore (partition.h OnExecuteCmdDone): every
+            // write records an oplog/WAL entry (StringModel::SetValue -> WritePage).
+            // async_storage only changes whether the commit BLOCKS: sync -> fsync,
+            // async (or bulk backfill) -> buffered, no fsync (op_logger_->Commit
+            // (nullptr, nullptr)). Page/index materialization stays deferred to dump.
+            if write_command {
+                let sync = !config.async_storage && !bulk_ingest_mode();
+                let _ = self
+                    .wal_store
+                    .append_with_sync(request.shard_id, command, sync);
             }
             if !config.async_storage && !bulk_ingest_mode() {
                 let index_bytes = serialize_index(shard);
