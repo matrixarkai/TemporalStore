@@ -77,6 +77,15 @@ pub(super) fn status_is_cpp_retryable(status: &Status) -> bool {
             | "not_serving"
             | "staleloadversion"
             | "stale_load_version"
+            // A request that lands on a node that no longer owns the shard (post-
+            // migration) must re-resolve the route, mirroring C++ treating the not-owner
+            // TopomError as "force topology re-sync".
+            | "shardnotloaded"
+            | "shard_not_loaded"
+            | "shardnotfound"
+            | "shard_not_found"
+            | "loadversionmismatch"
+            | "load_version_mismatch"
     )
 }
 
@@ -97,6 +106,13 @@ pub(super) fn status_is_cpp_topology_retryable(status: &Status) -> bool {
             | "not_serving"
             | "staleloadversion"
             | "stale_load_version"
+            // Not-owner after a shard move -> re-resolve route (C++ TopomError re-sync).
+            | "shardnotloaded"
+            | "shard_not_loaded"
+            | "shardnotfound"
+            | "shard_not_found"
+            | "loadversionmismatch"
+            | "load_version_mismatch"
     )
 }
 
