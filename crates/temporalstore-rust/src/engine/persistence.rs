@@ -208,7 +208,7 @@ impl TemporalEngine {
             let feature_records = state.features.len();
             let sequence_records = state.sequences.len();
             let ips_records = state.ips.len();
-            let risk_records = state.risk.len() + state.risk_changes.len();
+            let control_state_records = state.control_state.len() + state.control_state_changes.len();
             let loaded = info.as_ref().map(|info| info.loaded).unwrap_or(true);
             let readonly = info.as_ref().map(|info| info.readonly).unwrap_or(false);
             let load_version = info
@@ -238,7 +238,7 @@ impl TemporalEngine {
                 + feature_records
                 + sequence_records
                 + ips_records
-                + risk_records;
+                + control_state_records;
             let total_records = if state.bucket_index.bucket_map.is_empty() {
                 secondary_view_total_records
             } else {
@@ -298,7 +298,7 @@ impl TemporalEngine {
                 feature_records,
                 sequence_records,
                 ips_records,
-                risk_records,
+                control_state_records,
                 storage_bytes: page_store.bytes_written,
                 object_manager,
                 shard_stat_info,

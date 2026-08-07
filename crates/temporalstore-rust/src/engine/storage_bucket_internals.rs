@@ -921,9 +921,9 @@ pub(super) fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePag
     }
     entries.extend(
         shard
-            .risk_pages
+            .control_state_pages
             .iter()
-            .map(|(key, address)| live_page_entry(key.clone(), "risk", None, address.clone())),
+            .map(|(key, address)| live_page_entry(key.clone(), "control_state", None, address.clone())),
     );
     entries.extend(
         shard.context_nodes.iter().map(|(key, address)| {
@@ -1433,7 +1433,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(page_store: &LocalBloc
     let mut saw_features = false;
     let mut saw_sequences = false;
     let mut saw_ips = false;
-    let mut saw_risk = false;
+    let mut saw_control_state = false;
     let mut saw_context_events = false;
     let mut saw_context_indexes = false;
     let mut saw_context_audits = false;
@@ -1449,8 +1449,8 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(page_store: &LocalBloc
     let mut features = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut sequences = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut ips = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
-    let mut risk = HashMap::<String, BTreeMap<u64, i64>>::new();
-    let mut risk_pages = HashMap::new();
+    let mut control_state = HashMap::<String, BTreeMap<u64, i64>>::new();
+    let mut control_state_pages = HashMap::new();
     let mut context_events = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut context_indexes = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut context_audits = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
@@ -1511,14 +1511,14 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(page_store: &LocalBloc
                     entry.address,
                 );
             }
-            "risk" => {
-                saw_risk = true;
+            "control_state" => {
+                saw_control_state = true;
                 if let Ok(bytes) = page_store.read(&entry.address) {
                     if let Ok(series) = serde_json::from_slice::<BTreeMap<u64, i64>>(&bytes) {
-                        risk.insert(entry.object_key.clone(), series);
+                        control_state.insert(entry.object_key.clone(), series);
                     }
                 }
-                risk_pages.insert(entry.object_key, entry.address);
+                control_state_pages.insert(entry.object_key, entry.address);
             }
             "context_event" => {
                 saw_context_events = true;
@@ -1604,9 +1604,9 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(page_store: &LocalBloc
     if saw_ips {
         shard.ips = ips;
     }
-    if saw_risk {
-        shard.risk = risk;
-        shard.risk_pages = risk_pages;
+    if saw_control_state {
+        shard.control_state = control_state;
+        shard.control_state_pages = control_state_pages;
     }
     if saw_context_events {
         shard.context_events = context_events;

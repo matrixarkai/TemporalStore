@@ -1036,8 +1036,8 @@ fn live_page_slab_ids_scan_all_index_backed_data_models() {
         },
     );
     shard
-        .risk
-        .entry("risk".to_string())
+        .control_state
+        .entry("control_state".to_string())
         .or_default()
         .insert(14, 1);
 
@@ -1251,9 +1251,9 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
                 },
             ],
         },
-        Command::RiskSet {
-            family: RiskFamily::Cpc,
-            key: "compact-risk".to_string(),
+        Command::ControlStateSet {
+            family: ControlStateFamily::Cpc,
+            key: "compact-control_state".to_string(),
             timestamp_ms: 45,
             amount: 3,
         },
@@ -1396,7 +1396,7 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
     assert!(policy("feature").layout_aware_rewrite_required);
     assert!(policy("sequence").layout_aware_rewrite_required);
     assert!(policy("ips").layout_aware_rewrite_required);
-    assert!(policy("risk").layout_aware_rewrite_required);
+    assert!(policy("control_state").layout_aware_rewrite_required);
     assert!(policy("context_event").layout_aware_rewrite_required);
     assert!(policy("context_embedding").layout_aware_rewrite_required);
     assert!(policy("context_summary").layout_aware_rewrite_required);
@@ -1420,7 +1420,7 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
         "hash",
         "feature",
         "ips",
-        "risk",
+        "control_state",
         "context_event",
         "context_embedding",
         "context_summary",

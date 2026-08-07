@@ -309,9 +309,9 @@ pub struct FeatureModuleProductionReadinessReport {
     pub golden_cpp_corpus_ready: bool,
     pub exact_feature_nested_point_proto_ready: bool,
     pub deployment_time_range_ready: bool,
-    pub risk_cpc_internals_ready: bool,
-    pub risk_list_internals_ready: bool,
-    pub risk_manager_debug_api_ready: bool,
+    pub control_state_cpc_internals_ready: bool,
+    pub control_state_list_internals_ready: bool,
+    pub control_state_manager_debug_api_ready: bool,
     pub engine_client_resp_coverage_ready: bool,
     pub production_ready: bool,
     pub missing: Vec<String>,
@@ -341,16 +341,16 @@ pub fn feature_module_production_readiness_report() -> FeatureModuleProductionRe
     let golden_cpp_corpus_ready = true;
     let exact_feature_nested_point_proto_ready = true;
     let deployment_time_range_ready = true;
-    let risk_cpc_internals_ready = true;
-    let risk_list_internals_ready = true;
-    let risk_manager_debug_api_ready = true;
+    let control_state_cpc_internals_ready = true;
+    let control_state_list_internals_ready = true;
+    let control_state_manager_debug_api_ready = true;
     let engine_client_resp_coverage_ready = true;
     let production_ready = golden_cpp_corpus_ready
         && exact_feature_nested_point_proto_ready
         && deployment_time_range_ready
-        && risk_cpc_internals_ready
-        && risk_list_internals_ready
-        && risk_manager_debug_api_ready
+        && control_state_cpc_internals_ready
+        && control_state_list_internals_ready
+        && control_state_manager_debug_api_ready
         && engine_client_resp_coverage_ready;
     let missing = if production_ready {
         Vec::new()
@@ -358,7 +358,7 @@ pub fn feature_module_production_readiness_report() -> FeatureModuleProductionRe
         vec![
             "exact C++ Feature nested point/proto semantics and deployment-specific time-range edge cases"
                 .to_string(),
-            "Risk production CPC/list internals and deployment-specific manager/debug APIs"
+            "ControlState production CPC/list internals and deployment-specific manager/debug APIs"
                 .to_string(),
         ]
     };
@@ -367,9 +367,9 @@ pub fn feature_module_production_readiness_report() -> FeatureModuleProductionRe
         golden_cpp_corpus_ready,
         exact_feature_nested_point_proto_ready,
         deployment_time_range_ready,
-        risk_cpc_internals_ready,
-        risk_list_internals_ready,
-        risk_manager_debug_api_ready,
+        control_state_cpc_internals_ready,
+        control_state_list_internals_ready,
+        control_state_manager_debug_api_ready,
         engine_client_resp_coverage_ready,
         production_ready,
         missing,
@@ -975,7 +975,7 @@ mod tests {
         assert!(scale_testing
             .covered
             .iter()
-            .any(|item| item.contains("Feature, IPS, Risk, Redis, Context, and admin")));
+            .any(|item| item.contains("Feature, IPS, ControlState, Redis, Context, and admin")));
         assert!(scale_testing.covered.iter().any(|item| {
             item.contains("Docker/AWS SLO report")
                 && item.contains("metaserver, proxy, client, data-node")
@@ -1424,9 +1424,9 @@ mod tests {
         assert!(feature.golden_cpp_corpus_ready);
         assert!(feature.exact_feature_nested_point_proto_ready);
         assert!(feature.deployment_time_range_ready);
-        assert!(feature.risk_cpc_internals_ready);
-        assert!(feature.risk_list_internals_ready);
-        assert!(feature.risk_manager_debug_api_ready);
+        assert!(feature.control_state_cpc_internals_ready);
+        assert!(feature.control_state_list_internals_ready);
+        assert!(feature.control_state_manager_debug_api_ready);
         assert!(feature.engine_client_resp_coverage_ready);
         assert!(feature.production_ready);
         assert!(feature.missing.is_empty());

@@ -811,14 +811,14 @@ fn ips_compaction_rewrites_shared_timestamped_page_once() {
 }
 
 #[test]
-fn risk_change_matches_cpp_distinct_field_semantics() {
+fn control_state_change_matches_cpp_distinct_field_semantics() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     for (timestamp_ms, value) in [(10, "device-a"), (20, "device-a"), (30, "device-b")] {
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
-            command: Command::RiskChangeAdd {
-                key: "risk-change".to_string(),
+            command: Command::ControlStateChangeAdd {
+                key: "control_state-change".to_string(),
                 timestamp_ms,
                 value: value.as_bytes().to_vec(),
                 precision_ms: Some(10),
@@ -831,8 +831,8 @@ fn risk_change_matches_cpp_distinct_field_semantics() {
         engine
             .execute(ExecuteRequest {
                 shard_id: 1,
-                command: Command::RiskQuery {
-                    key: "risk-change".to_string(),
+                command: Command::ControlStateQuery {
+                    key: "control_state-change".to_string(),
                     start_ms: 0,
                     end_ms: 40,
                     aggregator: "change".to_string(),
@@ -845,8 +845,8 @@ fn risk_change_matches_cpp_distinct_field_semantics() {
     for (timestamp_ms, value) in [(10, "buyer-1"), (20, "buyer-1"), (30, "buyer-2")] {
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
-            command: Command::RiskChangeAdd {
-                key: risk_family_key(RiskFamily::H, "risk-change"),
+            command: Command::ControlStateChangeAdd {
+                key: control_state_family_key(ControlStateFamily::H, "control_state-change"),
                 timestamp_ms,
                 value: value.as_bytes().to_vec(),
                 precision_ms: None,
@@ -859,9 +859,9 @@ fn risk_change_matches_cpp_distinct_field_semantics() {
         engine
             .execute(ExecuteRequest {
                 shard_id: 1,
-                command: Command::RiskFamilyQuery {
-                    family: RiskFamily::H,
-                    key: "risk-change".to_string(),
+                command: Command::ControlStateFamilyQuery {
+                    family: ControlStateFamily::H,
+                    key: "control_state-change".to_string(),
                     start_ms: 0,
                     end_ms: 40,
                     aggregator: "change".to_string(),
@@ -873,14 +873,14 @@ fn risk_change_matches_cpp_distinct_field_semantics() {
 }
 
 #[test]
-fn risk_query_supports_first_last_and_detail_list() {
+fn control_state_query_supports_first_last_and_detail_list() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     for (timestamp_ms, amount) in [(10, 5), (20, -2), (30, 7)] {
         engine.execute(ExecuteRequest {
             shard_id: 1,
-            command: Command::RiskIncrement {
-                key: "risk".to_string(),
+            command: Command::ControlStateIncrement {
+                key: "control_state".to_string(),
                 timestamp_ms,
                 amount,
             },
@@ -891,8 +891,8 @@ fn risk_query_supports_first_last_and_detail_list() {
             engine
                 .execute(ExecuteRequest {
                     shard_id: 1,
-                    command: Command::RiskQuery {
-                        key: "risk".to_string(),
+                    command: Command::ControlStateQuery {
+                        key: "control_state".to_string(),
                         start_ms: 0,
                         end_ms: 40,
                         aggregator: aggregator.to_string(),
@@ -906,8 +906,8 @@ fn risk_query_supports_first_last_and_detail_list() {
         engine
             .execute(ExecuteRequest {
                 shard_id: 1,
-                command: Command::RiskDetail {
-                    key: "risk".to_string(),
+                command: Command::ControlStateDetail {
+                    key: "control_state".to_string(),
                     start_ms: 15,
                     end_ms: 40,
                     count: Some(2),
@@ -930,7 +930,7 @@ fn risk_query_supports_first_last_and_detail_list() {
 }
 
 #[test]
-fn risk_fol_matches_cpp_first_last_string_semantics() {
+fn control_state_fol_matches_cpp_first_last_string_semantics() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
 
@@ -939,12 +939,12 @@ fn risk_fol_matches_cpp_first_last_string_semantics() {
             engine
                 .execute(ExecuteRequest {
                     shard_id: 1,
-                    command: Command::RiskFolSet {
-                        key: "risk-fol-first".to_string(),
+                    command: Command::ControlStateFolSet {
+                        key: "control_state-fol-first".to_string(),
                         value: value.as_bytes().to_vec(),
                         occur_time_ms,
                         ttl_ms: 60_000,
-                        fol_type: RiskFolType::First,
+                        fol_type: ControlStateFolType::First,
                     },
                 })
                 .status
@@ -954,12 +954,12 @@ fn risk_fol_matches_cpp_first_last_string_semantics() {
             engine
                 .execute(ExecuteRequest {
                     shard_id: 1,
-                    command: Command::RiskFolSet {
-                        key: "risk-fol-last".to_string(),
+                    command: Command::ControlStateFolSet {
+                        key: "control_state-fol-last".to_string(),
                         value: value.as_bytes().to_vec(),
                         occur_time_ms,
                         ttl_ms: 60_000,
-                        fol_type: RiskFolType::Last,
+                        fol_type: ControlStateFolType::Last,
                     },
                 })
                 .status
@@ -971,8 +971,8 @@ fn risk_fol_matches_cpp_first_last_string_semantics() {
         engine
             .execute(ExecuteRequest {
                 shard_id: 1,
-                command: Command::RiskFolQuery {
-                    key: "risk-fol-first".to_string(),
+                command: Command::ControlStateFolQuery {
+                    key: "control_state-fol-first".to_string(),
                 },
             })
             .response,
@@ -984,8 +984,8 @@ fn risk_fol_matches_cpp_first_last_string_semantics() {
         engine
             .execute(ExecuteRequest {
                 shard_id: 1,
-                command: Command::RiskFolQuery {
-                    key: "risk-fol-last".to_string(),
+                command: Command::ControlStateFolQuery {
+                    key: "control_state-fol-last".to_string(),
                 },
             })
             .response,
@@ -996,7 +996,7 @@ fn risk_fol_matches_cpp_first_last_string_semantics() {
 }
 
 #[test]
-fn feature_write_policy_sequence_batch_ips_dimensions_and_risk_precision_work() {
+fn feature_write_policy_sequence_batch_ips_dimensions_and_control_state_precision_work() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
 
@@ -1194,8 +1194,8 @@ fn feature_write_policy_sequence_batch_ips_dimensions_and_risk_precision_work() 
 
     engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::RiskIncrementWithOptions {
-            key: "risk-bucket".to_string(),
+        command: Command::ControlStateIncrementWithOptions {
+            key: "control_state-bucket".to_string(),
             timestamp_ms: 1_234,
             amount: 3,
             precision_ms: Some(1_000),
@@ -1204,8 +1204,8 @@ fn feature_write_policy_sequence_batch_ips_dimensions_and_risk_precision_work() 
     });
     engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::RiskIncrementWithOptions {
-            key: "risk-bucket".to_string(),
+        command: Command::ControlStateIncrementWithOptions {
+            key: "control_state-bucket".to_string(),
             timestamp_ms: 1_999,
             amount: 4,
             precision_ms: Some(1_000),
@@ -1216,8 +1216,8 @@ fn feature_write_policy_sequence_batch_ips_dimensions_and_risk_precision_work() 
         engine
             .execute(ExecuteRequest {
                 shard_id: 1,
-                command: Command::RiskDetail {
-                    key: "risk-bucket".to_string(),
+                command: Command::ControlStateDetail {
+                    key: "control_state-bucket".to_string(),
                     start_ms: 0,
                     end_ms: 2_000,
                     count: None,
@@ -1236,7 +1236,7 @@ fn feature_write_policy_sequence_batch_ips_dimensions_and_risk_precision_work() 
             .execute(ExecuteRequest {
                 shard_id: 1,
                 command: Command::CommonTtl {
-                    key: "risk-bucket".to_string(),
+                    key: "control_state-bucket".to_string(),
                 },
             })
             .response,
@@ -1407,7 +1407,7 @@ fn table_write_qps_config_is_shared_across_loaded_table_shards() {
 #[test]
 fn tenant_read_qps_config_is_shared_across_tables() {
     let engine = TemporalEngine::default();
-    for (shard_id, table_name, key) in [(1, "feature_table", "k1"), (2, "risk_table", "k2")] {
+    for (shard_id, table_name, key) in [(1, "feature_table", "k1"), (2, "control_state_table", "k2")] {
         assert!(
             engine
                 .load_shard_with(LoadShardRequest {
@@ -1546,9 +1546,9 @@ fn stats_include_cpp_style_partition_and_object_manager_accounting() {
             timestamp_ms: 30,
             instance: b"i".to_vec(),
         },
-        Command::RiskSet {
-            family: RiskFamily::Cpc,
-            key: "risk-key".to_string(),
+        Command::ControlStateSet {
+            family: ControlStateFamily::Cpc,
+            key: "control_state-key".to_string(),
             timestamp_ms: 40,
             amount: 5,
         },

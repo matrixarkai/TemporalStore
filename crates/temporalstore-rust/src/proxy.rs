@@ -34,7 +34,7 @@ use crate::meta::{
 };
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, ExecuteRequest, ExecuteResponse,
-    FeatureFilter, FeatureWritePolicy, RiskFolType, ShardId, Status,
+    FeatureFilter, FeatureWritePolicy, ControlStateFolType, ShardId, Status,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -609,7 +609,7 @@ pub struct ProxyIpsQueryLastCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyRiskIncrementCommandRequest {
+pub struct ProxyControlStateIncrementCommandRequest {
     pub namespace: String,
     pub table_name: String,
     pub key: String,
@@ -622,7 +622,7 @@ pub struct ProxyRiskIncrementCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyRiskCountCommandRequest {
+pub struct ProxyControlStateCountCommandRequest {
     pub namespace: String,
     pub table_name: String,
     pub key: String,
@@ -631,7 +631,7 @@ pub struct ProxyRiskCountCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyRiskHsetCommandRequest {
+pub struct ProxyControlStateHsetCommandRequest {
     pub namespace: String,
     pub table_name: String,
     pub key: String,
@@ -640,14 +640,14 @@ pub struct ProxyRiskHsetCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyRiskFolSetCommandRequest {
+pub struct ProxyControlStateFolSetCommandRequest {
     pub namespace: String,
     pub table_name: String,
     pub key: String,
     pub value: Vec<u8>,
     pub occur_time_ms: u64,
     pub ttl_ms: u64,
-    pub fol_type: RiskFolType,
+    pub fol_type: ControlStateFolType,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -2344,11 +2344,11 @@ mod tests {
         );
         assert!(
             command_alias(
-                "/ProxyService/RiskHset",
-                serde_json::to_vec(&ProxyRiskHsetCommandRequest {
+                "/ProxyService/ControlStateHset",
+                serde_json::to_vec(&ProxyControlStateHsetCommandRequest {
                     namespace: "ns".to_string(),
                     table_name: "tbl".to_string(),
-                    key: "cpp-proxy-risk".to_string(),
+                    key: "cpp-proxy-control_state".to_string(),
                     timestamp_ms: 10,
                     amount: 5,
                 })

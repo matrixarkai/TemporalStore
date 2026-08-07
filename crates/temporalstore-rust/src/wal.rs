@@ -118,7 +118,7 @@ pub enum WriteAheadLogModel {
     Feature,
     Sequence,
     Ips,
-    Risk,
+    ControlState,
     Context,
     Admin,
     Unknown,
@@ -674,8 +674,8 @@ fn command_model(command: &Command) -> WriteAheadLogModel {
         WriteAheadLogModel::Sequence
     } else if name.starts_with("ips_") {
         WriteAheadLogModel::Ips
-    } else if name.starts_with("risk_") {
-        WriteAheadLogModel::Risk
+    } else if name.starts_with("control_state_") {
+        WriteAheadLogModel::ControlState
     } else if name.starts_with("context_") {
         WriteAheadLogModel::Context
     } else {

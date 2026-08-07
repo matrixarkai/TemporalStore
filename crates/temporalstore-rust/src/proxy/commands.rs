@@ -25,12 +25,12 @@ pub(super) fn proxy_command_is_write(command: &Command) -> bool {
             | Command::IpsLoad { .. }
             | Command::IpsRemove { .. }
             | Command::IpsDelete { .. }
-            | Command::RiskIncrement { .. }
-            | Command::RiskIncrementWithOptions { .. }
-            | Command::RiskChangeAdd { .. }
-            | Command::RiskSet { .. }
-            | Command::RiskSetAndGet { .. }
-            | Command::RiskFolSet { .. }
+            | Command::ControlStateIncrement { .. }
+            | Command::ControlStateIncrementWithOptions { .. }
+            | Command::ControlStateChangeAdd { .. }
+            | Command::ControlStateSet { .. }
+            | Command::ControlStateSetAndGet { .. }
+            | Command::ControlStateFolSet { .. }
             | Command::ContextUpsertNode { .. }
             | Command::ContextWriteEvent { .. }
             | Command::ContextWriteExtractedEvent { .. }
@@ -90,19 +90,19 @@ fn proxy_command_key(command: &Command) -> Option<&str> {
         | Command::IpsRemove { key, .. }
         | Command::IpsDelete { key }
         | Command::IpsCount { key, .. }
-        | Command::RiskIncrement { key, .. }
-        | Command::RiskIncrementWithOptions { key, .. }
-        | Command::RiskChangeAdd { key, .. }
-        | Command::RiskCount { key, .. }
-        | Command::RiskQuery { key, .. }
-        | Command::RiskDetail { key, .. }
-        | Command::RiskSet { key, .. }
-        | Command::RiskSetAndGet { key, .. }
-        | Command::RiskFamilyQuery { key, .. }
-        | Command::RiskFolSet { key, .. }
-        | Command::RiskFolQuery { key }
-        | Command::RiskManager { key }
-        | Command::RiskDebug { key, .. } => Some(key),
+        | Command::ControlStateIncrement { key, .. }
+        | Command::ControlStateIncrementWithOptions { key, .. }
+        | Command::ControlStateChangeAdd { key, .. }
+        | Command::ControlStateCount { key, .. }
+        | Command::ControlStateQuery { key, .. }
+        | Command::ControlStateDetail { key, .. }
+        | Command::ControlStateSet { key, .. }
+        | Command::ControlStateSetAndGet { key, .. }
+        | Command::ControlStateFamilyQuery { key, .. }
+        | Command::ControlStateFolSet { key, .. }
+        | Command::ControlStateFolQuery { key }
+        | Command::ControlStateManager { key }
+        | Command::ControlStateDebug { key, .. } => Some(key),
         Command::IpsBatchQueryLast { .. }
         | Command::SequenceBatchQuery { .. }
         | Command::ContextUpsertNode { .. }

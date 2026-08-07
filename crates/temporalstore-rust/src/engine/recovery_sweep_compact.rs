@@ -419,8 +419,8 @@ impl TemporalEngine {
             &self.page_store,
             &self.cache,
             shard_id,
-            "risk",
-            shard.risk_pages.values_mut(),
+            "control_state",
+            shard.control_state_pages.values_mut(),
             &mut rewrite_stats,
         )?;
         compact_page_addresses(

@@ -55,12 +55,12 @@ pub(super) fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::IpsLoad { key, .. }
         | Command::IpsRemove { key, .. }
         | Command::IpsDelete { key }
-        | Command::RiskIncrement { key, .. }
-        | Command::RiskIncrementWithOptions { key, .. }
-        | Command::RiskChangeAdd { key, .. }
-        | Command::RiskFolSet { key, .. } => vec![key.clone()],
-        Command::RiskSet { family, key, .. } | Command::RiskSetAndGet { family, key, .. } => {
-            vec![risk_family_key(*family, key)]
+        | Command::ControlStateIncrement { key, .. }
+        | Command::ControlStateIncrementWithOptions { key, .. }
+        | Command::ControlStateChangeAdd { key, .. }
+        | Command::ControlStateFolSet { key, .. } => vec![key.clone()],
+        Command::ControlStateSet { family, key, .. } | Command::ControlStateSetAndGet { family, key, .. } => {
+            vec![control_state_family_key(*family, key)]
         }
         Command::ContextUpsertNode { tenant_hash, node } => {
             vec![context_node_key(*tenant_hash, node.node_hash)]
@@ -208,13 +208,13 @@ pub(super) fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::IpsSnapshotReport { .. }
         | Command::IpsStat { .. }
         | Command::IpsFilter { .. }
-        | Command::RiskCount { .. }
-        | Command::RiskQuery { .. }
-        | Command::RiskDetail { .. }
-        | Command::RiskFamilyQuery { .. }
-        | Command::RiskFolQuery { .. }
-        | Command::RiskManager { .. }
-        | Command::RiskDebug { .. }
+        | Command::ControlStateCount { .. }
+        | Command::ControlStateQuery { .. }
+        | Command::ControlStateDetail { .. }
+        | Command::ControlStateFamilyQuery { .. }
+        | Command::ControlStateFolQuery { .. }
+        | Command::ControlStateManager { .. }
+        | Command::ControlStateDebug { .. }
         | Command::ContextGetNode { .. }
         | Command::ContextGetNodes { .. }
         | Command::ContextQueryEvents { .. }
@@ -247,10 +247,10 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             | Command::HashDelete { .. }
             | Command::SetAdd { .. }
             | Command::SetRemove { .. }
-            | Command::RiskIncrement { .. }
-            | Command::RiskIncrementWithOptions { .. }
-            | Command::RiskSet { .. }
-            | Command::RiskSetAndGet { .. }
+            | Command::ControlStateIncrement { .. }
+            | Command::ControlStateIncrementWithOptions { .. }
+            | Command::ControlStateSet { .. }
+            | Command::ControlStateSetAndGet { .. }
     )
 }
 
@@ -279,12 +279,12 @@ pub(super) fn is_write_command(command: &Command) -> bool {
             | Command::IpsLoad { .. }
             | Command::IpsRemove { .. }
             | Command::IpsDelete { .. }
-            | Command::RiskIncrement { .. }
-            | Command::RiskIncrementWithOptions { .. }
-            | Command::RiskChangeAdd { .. }
-            | Command::RiskSet { .. }
-            | Command::RiskSetAndGet { .. }
-            | Command::RiskFolSet { .. }
+            | Command::ControlStateIncrement { .. }
+            | Command::ControlStateIncrementWithOptions { .. }
+            | Command::ControlStateChangeAdd { .. }
+            | Command::ControlStateSet { .. }
+            | Command::ControlStateSetAndGet { .. }
+            | Command::ControlStateFolSet { .. }
             | Command::ContextUpsertNode { .. }
             | Command::ContextWriteEvent { .. }
             | Command::ContextWriteExtractedEvent { .. }

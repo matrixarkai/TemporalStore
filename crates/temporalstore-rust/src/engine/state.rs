@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use serde::{Deserialize, Serialize};
 
 use crate::block_store::BlockAddress;
-use crate::types::{CommandResponse, FeaturePoint, RiskFolType, ShardId};
+use crate::types::{CommandResponse, FeaturePoint, ControlStateFolType, ShardId};
 
 /// In-memory, coalesced summary-dirty entry.
 ///
@@ -37,13 +37,13 @@ pub(super) struct ShardState {
     pub(super) ips_meta: HashMap<String, BTreeMap<u64, IpsPointMeta>>,
     #[serde(default)]
     pub(super) ips_request_ids: HashMap<String, BTreeSet<String>>,
-    pub(super) risk: HashMap<String, BTreeMap<u64, i64>>,
+    pub(super) control_state: HashMap<String, BTreeMap<u64, i64>>,
     #[serde(default)]
-    pub(super) risk_pages: HashMap<String, BlockAddress>,
+    pub(super) control_state_pages: HashMap<String, BlockAddress>,
     #[serde(default)]
-    pub(super) risk_changes: HashMap<String, BTreeMap<u64, BTreeSet<Vec<u8>>>>,
+    pub(super) control_state_changes: HashMap<String, BTreeMap<u64, BTreeSet<Vec<u8>>>>,
     #[serde(default)]
-    pub(super) risk_fol: HashMap<String, RiskFolValue>,
+    pub(super) control_state_fol: HashMap<String, ControlStateFolValue>,
     #[serde(default)]
     pub(super) context_nodes: HashMap<String, BlockAddress>,
     #[serde(default)]
@@ -331,10 +331,10 @@ fn same_page_address(left: &BlockAddress, right: &BlockAddress) -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct RiskFolValue {
+pub(super) struct ControlStateFolValue {
     pub(super) occur_time_ms: u64,
     pub(super) value: Vec<u8>,
-    pub(super) fol_type: RiskFolType,
+    pub(super) fol_type: ControlStateFolType,
 }
 
 #[derive(Debug, Default, Clone)]

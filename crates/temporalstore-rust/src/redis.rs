@@ -22,7 +22,7 @@ pub use dispatch::execute_redis_command_with_state;
 use crate::client::{bucket_id_for_key, stable_key_hash};
 use crate::types::{
     parse_cpp_feature_filters, Command, CommandResponse, FeatureFilter, FeatureFilterOp,
-    FeaturePoint, FeatureWritePolicy, RiskFamily, RiskFolType, ShardId, StringSetCondition,
+    FeaturePoint, FeatureWritePolicy, ControlStateFamily, ControlStateFolType, ShardId, StringSetCondition,
 };
 
 use encoding::{REDIS_LIST_ENCODING_PREFIX, REDIS_ZSET_ENCODING_PREFIX};
@@ -45,23 +45,23 @@ pub fn execute_redis_command(
 }
 
 
-fn risk_family_for_command(command: &str) -> RiskFamily {
+fn control_state_family_for_command(command: &str) -> ControlStateFamily {
     if command.starts_with("CPC") {
-        RiskFamily::Cpc
+        ControlStateFamily::Cpc
     } else if command.starts_with("FOL") {
-        RiskFamily::Fol
+        ControlStateFamily::Fol
     } else {
-        RiskFamily::H
+        ControlStateFamily::H
     }
 }
 
-fn risk_family_key_for_resp(family: RiskFamily, key: &str) -> String {
+fn control_state_family_key_for_resp(family: ControlStateFamily, key: &str) -> String {
     let family_name = match family {
-        RiskFamily::H => "h",
-        RiskFamily::Cpc => "cpc",
-        RiskFamily::Fol => "fol",
+        ControlStateFamily::H => "h",
+        ControlStateFamily::Cpc => "cpc",
+        ControlStateFamily::Fol => "fol",
     };
-    format!("risk:{family_name}:{key}")
+    format!("control_state:{family_name}:{key}")
 }
 
 fn redis_config_response(args: &[Vec<u8>], state: &mut RedisCommandState) -> RespValue {
@@ -1404,31 +1404,31 @@ mod tests {
         );
 
         assert_eq!(
-            run(vec!["RISKINCR", "risk", "10", "5"]),
+            run(vec!["CONTROLSTATEINCR", "control_state", "10", "5"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["RISKINCR", "risk", "20", "-2"]),
+            run(vec!["CONTROLSTATEINCR", "control_state", "20", "-2"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["RISKINCR", "risk", "30", "7"]),
+            run(vec!["CONTROLSTATEINCR", "control_state", "30", "7"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["RISKCOUNT", "risk", "0", "40"]),
+            run(vec!["CONTROLSTATECOUNT", "control_state", "0", "40"]),
             RespValue::Integer(10)
         );
         assert_eq!(
-            run(vec!["RISKQUERY", "risk", "0", "40", "events"]),
+            run(vec!["CONTROLSTATEQUERY", "control_state", "0", "40", "events"]),
             RespValue::Integer(3)
         );
         assert_eq!(
-            run(vec!["RISKQUERY", "risk", "0", "40", "last"]),
+            run(vec!["CONTROLSTATEQUERY", "control_state", "0", "40", "last"]),
             RespValue::Integer(7)
         );
         assert_eq!(
-            run(vec!["RISKDETAIL", "risk", "15", "40", "2"]),
+            run(vec!["CONTROLSTATEDETAIL", "control_state", "15", "40", "2"]),
             RespValue::Array(vec![
                 RespValue::Array(vec![
                     RespValue::Integer(20),
@@ -1442,8 +1442,8 @@ mod tests {
         );
         assert_eq!(
             run(vec![
-                "RISKINCROPT",
-                "risk-bucket",
+                "CONTROLSTATEINCROPT",
+                "control_state-bucket",
                 "1234",
                 "3",
                 "1000",
@@ -1453,8 +1453,8 @@ mod tests {
         );
         assert_eq!(
             run(vec![
-                "RISKINCROPT",
-                "risk-bucket",
+                "CONTROLSTATEINCROPT",
+                "control_state-bucket",
                 "1999",
                 "4",
                 "1000",
@@ -1463,24 +1463,24 @@ mod tests {
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["RISKDETAIL", "risk-bucket", "0", "2000", "10"]),
+            run(vec!["CONTROLSTATEDETAIL", "control_state-bucket", "0", "2000", "10"]),
             RespValue::Array(vec![RespValue::Array(vec![
                 RespValue::Integer(1000),
                 RespValue::Bulk(Some(b"7".to_vec())),
             ])])
         );
         assert_eq!(
-            run(vec!["RISKCHANGE", "risk-change", "10", "device-a"]),
+            run(vec!["CONTROLSTATECHANGE", "control_state-change", "10", "device-a"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["RISKCHANGE", "risk-change", "20", "device-a"]),
+            run(vec!["CONTROLSTATECHANGE", "control_state-change", "20", "device-a"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
             run(vec![
-                "RISKCHANGE",
-                "risk-change",
+                "CONTROLSTATECHANGE",
+                "control_state-change",
                 "30",
                 "device-b",
                 "10",
@@ -1489,41 +1489,41 @@ mod tests {
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["RISKQUERY", "risk-change", "0", "40", "change"]),
+            run(vec!["CONTROLSTATEQUERY", "control_state-change", "0", "40", "change"]),
             RespValue::Integer(2)
         );
         assert_eq!(
-            run(vec!["RISKHSET", "risk-cpp", "10", "5"]),
+            run(vec!["CONTROLSTATEHSET", "control_state-cpp", "10", "5"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["HCHANGE", "risk-cpp", "10", "buyer-a"]),
+            run(vec!["HCHANGE", "control_state-cpp", "10", "buyer-a"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["HCHANGE", "risk-cpp", "20", "buyer-a"]),
+            run(vec!["HCHANGE", "control_state-cpp", "20", "buyer-a"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["HCHANGE", "risk-cpp", "30", "buyer-b"]),
+            run(vec!["HCHANGE", "control_state-cpp", "30", "buyer-b"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["HQUERY", "risk-cpp", "0", "40", "change"]),
+            run(vec!["HQUERY", "control_state-cpp", "0", "40", "change"]),
             RespValue::Integer(2)
         );
         assert_eq!(
-            run(vec!["HSETANDGET", "risk-cpp", "20", "7", "0", "30", "sum"]),
+            run(vec!["HSETANDGET", "control_state-cpp", "20", "7", "0", "30", "sum"]),
             RespValue::Integer(12)
         );
         assert_eq!(
-            run(vec!["CPCSET", "risk-cpp", "10", "3"]),
+            run(vec!["CPCSET", "control_state-cpp", "10", "3"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
             run(vec![
                 "CPCSETANDGET",
-                "risk-cpp",
+                "control_state-cpp",
                 "20",
                 "4",
                 "0",
@@ -1533,15 +1533,15 @@ mod tests {
             RespValue::Integer(7)
         );
         assert_eq!(
-            run(vec!["FOLSET", "risk-cpp", "10", "11"]),
+            run(vec!["FOLSET", "control_state-cpp", "10", "11"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["FOLQUERY", "risk-cpp", "0", "30", "sum"]),
+            run(vec!["FOLQUERY", "control_state-cpp", "0", "30", "sum"]),
             RespValue::Integer(11)
         );
         assert_eq!(
-            run(vec!["RISKMANAGER", "risk-cpp"]),
+            run(vec!["CONTROLSTATEMANAGER", "control_state-cpp"]),
             RespValue::Array(vec![
                 RespValue::Bulk(Some(b"h_events".to_vec())),
                 RespValue::Bulk(Some(b"2".to_vec())),
@@ -1557,14 +1557,14 @@ mod tests {
                 RespValue::Bulk(Some(b"11".to_vec())),
             ])
         );
-        let debug = run(vec!["RISKDEBUG", "risk-cpp", "0", "15"]);
+        let debug = run(vec!["CONTROLSTATEDEBUG", "control_state-cpp", "0", "15"]);
         let RespValue::Array(debug_entries) = debug else {
-            panic!("RISKDEBUG should return array");
+            panic!("CONTROLSTATEDEBUG should return array");
         };
         assert!(debug_entries.windows(2).any(|pair| pair
             == [
                 RespValue::Bulk(Some(b"key".to_vec())),
-                RespValue::Bulk(Some(b"risk-cpp".to_vec()))
+                RespValue::Bulk(Some(b"control_state-cpp".to_vec()))
             ]));
         assert!(debug_entries.windows(2).any(|pair| pair
             == [
@@ -1579,7 +1579,7 @@ mod tests {
         assert_eq!(
             run(vec![
                 "FOLSET",
-                "risk-fol-str",
+                "control_state-fol-str",
                 "middle",
                 "20",
                 "60000",
@@ -1590,7 +1590,7 @@ mod tests {
         assert_eq!(
             run(vec![
                 "FOLSET",
-                "risk-fol-str",
+                "control_state-fol-str",
                 "first",
                 "10",
                 "60000",
@@ -1601,7 +1601,7 @@ mod tests {
         assert_eq!(
             run(vec![
                 "FOLSET",
-                "risk-fol-str",
+                "control_state-fol-str",
                 "last",
                 "30",
                 "60000",
@@ -1610,13 +1610,13 @@ mod tests {
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["FOLQUERY", "risk-fol-str"]),
+            run(vec!["FOLQUERY", "control_state-fol-str"]),
             RespValue::Bulk(Some(b"first".to_vec()))
         );
         assert_eq!(
             run(vec![
                 "FOLSET",
-                "risk-fol-last",
+                "control_state-fol-last",
                 "middle",
                 "20",
                 "60000",
@@ -1627,7 +1627,7 @@ mod tests {
         assert_eq!(
             run(vec![
                 "FOLSET",
-                "risk-fol-last",
+                "control_state-fol-last",
                 "first",
                 "10",
                 "60000",
@@ -1638,7 +1638,7 @@ mod tests {
         assert_eq!(
             run(vec![
                 "FOLSET",
-                "risk-fol-last",
+                "control_state-fol-last",
                 "last",
                 "30",
                 "60000",
@@ -1647,7 +1647,7 @@ mod tests {
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["FOLQUERY", "risk-fol-last"]),
+            run(vec!["FOLQUERY", "control_state-fol-last"]),
             RespValue::Bulk(Some(b"last".to_vec()))
         );
     }

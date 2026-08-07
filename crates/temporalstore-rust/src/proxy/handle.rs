@@ -430,11 +430,11 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskIncrement") => {
-                match parse_json::<ProxyRiskIncrementCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/ControlStateIncrement") => {
+                match parse_json::<ProxyControlStateIncrementCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = if req.precision_ms.is_some() || req.ttl_ms.is_some() {
-                            Command::RiskIncrementWithOptions {
+                            Command::ControlStateIncrementWithOptions {
                                 key: req.key,
                                 timestamp_ms: req.timestamp_ms,
                                 amount: req.amount,
@@ -442,7 +442,7 @@ impl ProxyService {
                                 ttl_ms: req.ttl_ms,
                             }
                         } else {
-                            Command::RiskIncrement {
+                            Command::ControlStateIncrement {
                                 key: req.key,
                                 timestamp_ms: req.timestamp_ms,
                                 amount: req.amount,
@@ -460,10 +460,10 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskCount") => {
-                match parse_json::<ProxyRiskCountCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/ControlStateCount") => {
+                match parse_json::<ProxyControlStateCountCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::RiskCount {
+                        let command = Command::ControlStateCount {
                             key: req.key,
                             start_ms: req.start_ms,
                             end_ms: req.end_ms,
@@ -480,11 +480,11 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskHset") => {
-                match parse_json::<ProxyRiskHsetCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/ControlStateHset") => {
+                match parse_json::<ProxyControlStateHsetCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::RiskSet {
-                            family: crate::types::RiskFamily::H,
+                        let command = Command::ControlStateSet {
+                            family: crate::types::ControlStateFamily::H,
                             key: req.key,
                             timestamp_ms: req.timestamp_ms,
                             amount: req.amount,
@@ -501,10 +501,10 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskFolSet") => {
-                match parse_json::<ProxyRiskFolSetCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/ControlStateFolSet") => {
+                match parse_json::<ProxyControlStateFolSetCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::RiskFolSet {
+                        let command = Command::ControlStateFolSet {
                             key: req.key,
                             value: req.value,
                             occur_time_ms: req.occur_time_ms,
@@ -523,20 +523,20 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskFolQuery") => {
+            ("POST", "/ProxyService/ControlStateFolQuery") => {
                 match parse_json::<ProxyKeyCommandRequest>(&request.body) {
                     Ok(req) => json_response(
                         200,
-                        &self.table_command(req, |key| Command::RiskFolQuery { key }),
+                        &self.table_command(req, |key| Command::ControlStateFolQuery { key }),
                     ),
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskManager") => {
+            ("POST", "/ProxyService/ControlStateManager") => {
                 match parse_json::<ProxyKeyCommandRequest>(&request.body) {
                     Ok(req) => json_response(
                         200,
-                        &self.table_command(req, |key| Command::RiskManager { key }),
+                        &self.table_command(req, |key| Command::ControlStateManager { key }),
                     ),
                     Err(err) => self.bad_execute_request(err),
                 }

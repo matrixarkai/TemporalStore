@@ -202,7 +202,7 @@ pub struct ShardStats {
     pub feature_records: usize,
     pub sequence_records: usize,
     pub ips_records: usize,
-    pub risk_records: usize,
+    pub control_state_records: usize,
     pub storage_bytes: u64,
     pub object_manager: ObjectManagerStats,
     #[serde(alias = "partition_info")]
