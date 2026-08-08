@@ -191,12 +191,21 @@ pub(super) fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> D
                 .engine
                 .create_bucket_dump_manifest(request.shard_id, selected_buckets.clone())
                 .ok();
-            let dirty_objects_flushed = clear_dirty_shard_buckets(
-                &inner.dirty,
-                &inner.engine,
-                request.shard_id,
-                &selected_buckets,
-            );
+            // Only clear the worker's scheduling dirty set when the dump actually succeeded.
+            // A failed dump (durability barrier / capture error) returns None and leaves the
+            // engine dirty + the reclaim frontier unadvanced (apply_storage_lifecycle skips its
+            // dirty-clear on None); clearing the worker set here would stop re-scheduling these
+            // still-undumped buckets on a persistently failing disk.
+            let dirty_objects_flushed = if bucket_dump_manifest.is_some() {
+                clear_dirty_shard_buckets(
+                    &inner.dirty,
+                    &inner.engine,
+                    request.shard_id,
+                    &selected_buckets,
+                )
+            } else {
+                0
+            };
             inner
                 .stats
                 .lock()
