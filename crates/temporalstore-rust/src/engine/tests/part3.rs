@@ -996,6 +996,78 @@ fn control_state_fol_matches_cpp_first_last_string_semantics() {
 }
 
 #[test]
+fn control_state_fol_omitted_occur_time_resolves_to_now_like_cpp() {
+    // C++ FirstOrLastSet substitutes occur_time==0 with the current time before the FIRST/LAST
+    // comparison; an omitted-occur-time FIRST set must NOT beat an earlier explicit record.
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    assert!(engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ControlStateFolSet {
+                key: "k".to_string(),
+                value: b"early".to_vec(),
+                occur_time_ms: 5000,
+                ttl_ms: 0,
+                fol_type: ControlStateFolType::First,
+            },
+        })
+        .status
+        .ok);
+    // occur_time 0 resolves to now (>> 5000), so this FIRST set must not overwrite.
+    assert!(engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ControlStateFolSet {
+                key: "k".to_string(),
+                value: b"late".to_vec(),
+                occur_time_ms: 0,
+                ttl_ms: 0,
+                fol_type: ControlStateFolType::First,
+            },
+        })
+        .status
+        .ok);
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ControlStateFolQuery {
+                    key: "k".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Bytes {
+            value: Some(b"early".to_vec()),
+        },
+        "an omitted occur_time (0 -> now) FIRST set must not beat an earlier explicit record"
+    );
+}
+
+#[test]
+fn live_page_slab_ids_includes_control_state_pages() {
+    // control_state_pages is page-backed; omitting it from the GC live set let a slab holding
+    // only a control-state page be reclaimed while still index-referenced -> DataLoss on read.
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let resp = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ControlStateSet {
+            family: ControlStateFamily::H,
+            key: "cs".to_string(),
+            timestamp_ms: 1000,
+            amount: 1,
+        },
+    });
+    assert!(resp.status.ok, "{:?}", resp.status);
+    assert!(
+        !engine.live_page_slab_ids(1).is_empty(),
+        "the control-state page's slab must be in the GC live set, else GC can reclaim a slab \
+         still referenced by control_state_pages"
+    );
+}
+
+#[test]
 fn feature_write_policy_sequence_batch_ips_dimensions_and_control_state_precision_work() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);

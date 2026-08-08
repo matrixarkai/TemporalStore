@@ -1542,6 +1542,16 @@ pub(crate) fn execute_on_shard(
             fol_type,
         } => {
             remove_if_expired(shard, &key);
+            // C++ FirstOrLastSet substitutes occur_time==0 with the current time BEFORE the
+            // FIRST/LAST comparison (implement.cc: `if (occur_time == 0) time(&occur_time)`).
+            // occur_time defaults to 0 on the proto, so a caller that omits it must compare as
+            // "now" -- taking 0 literally made an omitted-time FIRST set always win (0 < any)
+            // and an omitted-time LAST set always lose.
+            let occur_time_ms = if occur_time_ms == 0 {
+                resolve_now_ms()
+            } else {
+                occur_time_ms
+            };
             let should_store = shard
                 .control_state_fol
                 .get(&key)
