@@ -1259,6 +1259,94 @@ fn wal_replay_uses_leader_timestamp_for_ttl_deadline_like_cpp() {
 }
 
 #[test]
+fn wal_replay_conditional_write_uses_leader_clock_for_lazy_expiry_like_cpp() {
+    // A logged conditional write (SET XX) that fired on the leader because the key was
+    // live must fire identically on replay. The implicit lazy-expiry gate
+    // (remove_if_expired) runs first inside the handler; if it consults the real restart
+    // clock instead of the per-record leader timestamp, a key that was live at leader time
+    // (but whose ORIGINAL deadline has since passed) is dropped during replay, the SET XX
+    // takes the "not exists" branch, and a durably-committed write is silently lost --
+    // diverging the recovered node from the leader. Regression for that hole: replay must
+    // reproduce the leader's branch.
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-a"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+    // async so both records live only in the WAL, forcing a replay on reload.
+    assert!(
+        engine
+            .set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config {
+                    version: 2,
+                    async_storage: true,
+                    ..Config::default()
+                },
+            })
+            .ok
+    );
+    // Record 1: create k with a SHORT deadline (~120ms from now).
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSetEx {
+            key: "k".to_string(),
+            value: b"v1".to_vec(),
+            ttl_ms: 120,
+        },
+    });
+    // Record 2: immediately (k still live on the leader) a SET XX that refreshes k=v2 with
+    // a FAR-future deadline. On the leader this fires because k exists.
+    let cond = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSetConditional {
+            key: "k".to_string(),
+            value: b"v2".to_vec(),
+            ttl_ms: Some(10 * 60 * 1000),
+            condition: StringSetCondition::IfExists,
+            return_old: false,
+        },
+    });
+    assert_eq!(
+        cond.response,
+        CommandResponse::Integer { value: 1 },
+        "SET XX must fire on the leader while k is live"
+    );
+
+    // Downtime longer than record 1's original 120ms deadline (but far under the refreshed
+    // 10-minute deadline the SET XX installed).
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    drop(engine);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    restarted.load_shard(1);
+    let get = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "k".to_string(),
+        },
+    });
+    assert_eq!(
+        get.response,
+        CommandResponse::Bytes {
+            value: Some(b"v2".to_vec())
+        },
+        "replay must reproduce the leader's SET XX branch (k live at leader time), not drop \
+         the committed write because the original deadline lapsed during downtime"
+    );
+}
+
+#[test]
 fn hash_incrby_rejects_non_integer_and_overflow_like_cpp() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);

@@ -1132,6 +1132,72 @@ fn append_entry_only_truncates_on_term_conflict_and_never_reapplies() {
     assert_eq!(node.log.last().map(|entry| entry.term), Some(2));
 }
 
+#[test]
+fn append_entries_commit_clamps_to_last_new_entry_not_whole_log_tail() {
+    // Raft Figure 2: a follower advances commitIndex only to min(leaderCommit, index of
+    // the last NEW entry in THIS AppendEntries) -- never to its whole-log tail. A divergent
+    // UNCOMMITTED suffix left by a failed prior-term leader must not be committed just
+    // because it still sits in the log. Regression for the safety hole where the commit
+    // line used node_last_log_or_snapshot_index (whole log) instead of the batch endpoint,
+    // committing an entry the cluster never agreed on.
+    let cluster =
+        RaftCluster::new_single_shard_with_config(1, [1, 2, 3], RaftConfig::default()).unwrap();
+
+    let seed = |term: u64,
+                prev_index: u64,
+                prev_term: u64,
+                entries: Vec<RaftLogEntry>,
+                leader_commit: u64| {
+        cluster
+            .receive_append_entries(AppendEntriesRequest {
+                rpc: None,
+                shard_id: 1,
+                term,
+                leader_id: 1,
+                target_id: 3,
+                prev_log_index: prev_index,
+                prev_log_term: prev_term,
+                entries,
+                leader_commit,
+            })
+            .unwrap()
+    };
+    let entry = |term: u64, index: u64, key: &str| RaftLogEntry {
+        term,
+        index,
+        shard_id: 1,
+        command: Command::StringSet {
+            key: key.to_string(),
+            value: b"v".to_vec(),
+        },
+    };
+
+    // Committed prefix 1..=3 @ term 1.
+    seed(
+        1,
+        0,
+        0,
+        vec![entry(1, 1, "k1"), entry(1, 2, "k2"), entry(1, 3, "k3")],
+        3,
+    );
+    // Divergent UNCOMMITTED suffix from a failed term-3 then term-5 leader (leader_commit
+    // stays 3, so these never commit).
+    seed(3, 3, 1, vec![entry(3, 4, "k4-stale")], 3);
+    seed(5, 4, 3, vec![entry(5, 5, "k5-stale")], 3);
+    assert_eq!(cluster.commit_index(3).unwrap(), 3);
+
+    // The real leader now re-sends a matching-term entry 4 with a HIGH leader_commit (6).
+    // Entry 4 matches by term so append is a no-op; the divergent entry 5 survives in the
+    // log. commitIndex must clamp to 4 (this batch's last new entry), NOT 5 (whole-log tail).
+    seed(5, 3, 1, vec![entry(3, 4, "k4-stale")], 6);
+
+    assert_eq!(
+        cluster.commit_index(3).unwrap(),
+        4,
+        "commitIndex must clamp to the last new entry (4), not the divergent whole-log tail (5)"
+    );
+}
+
 // shared-corpus: raft_matrixraft_replication_backpressure
 // shared-corpus: raft_matrixraft_pipeline_reorder_backpressure_matrix raft_matrixraft_replication_backpressure
 #[test]

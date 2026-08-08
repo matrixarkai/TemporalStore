@@ -165,6 +165,22 @@ impl TemporalEngine {
         atomic_write_bytes(&self.index_path(shard_id), bytes)
     }
 
+    /// Unconditional (bulk-gate-bypassing) index write for recovery-critical paths such as
+    /// manifest install-on-load. `persist_index_bytes` is deliberately a no-op under bulk
+    /// mode to avoid O(n^2) per-record writes, but install is a one-shot recovery step: if
+    /// it skips the write, `load_index()` reads the stale pre-manifest index while the
+    /// returned watermark advances past the records the manifest embeds -- and replay only
+    /// applies records beyond the watermark, so those records (already WAL-GC'd, living only
+    /// in the manifest) are permanently lost. Always materialize the restored index here.
+    pub(super) fn persist_index_bytes_durable(
+        &self,
+        shard_id: ShardId,
+        bytes: &[u8],
+    ) -> Result<(), std::io::Error> {
+        fs::create_dir_all(&self.index_dir)?;
+        atomic_write_bytes(&self.index_path(shard_id), bytes)
+    }
+
     pub(super) fn validate_load_version(&self, shard_id: ShardId, load_version: u64) -> Result<(), Status> {
         let infos = self.infos.read().expect("info lock poisoned");
         let Some(info) = infos.get(&shard_id) else {

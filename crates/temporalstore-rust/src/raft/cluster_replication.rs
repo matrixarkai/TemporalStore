@@ -432,11 +432,23 @@ impl RaftCluster {
             for entry in entries.iter().cloned() {
                 append_entry(node, entry);
             }
+            // Raft Figure 2: commitIndex = min(leaderCommit, index of the last NEW entry
+            // in THIS AppendEntries) -- NOT the whole-log tail. A divergent UNCOMMITTED
+            // suffix that sits beyond this batch (e.g. an entry from a failed prior-term
+            // leader) must not be committed just because it is present in the log. Using
+            // node_last_log_or_snapshot_index here would commit/apply such an entry the
+            // cluster never committed. commitIndex also stays monotonic (max with current).
+            let last_new_entry_index = entries
+                .iter()
+                .map(|entry| entry.index)
+                .max()
+                .unwrap_or(request.prev_log_index);
+            node.commit_index = node
+                .commit_index
+                .max(leader_commit.min(last_new_entry_index));
+            // Reported match_index reflects the follower's WHOLE log tail (how far its log
+            // now matches the leader after this append), independent of the commit clamp.
             let last_index = node_last_log_or_snapshot_index(node);
-            // Raft: commitIndex is monotonic and never decreases. Take the max with the
-            // current value so a smaller (reordered / in-flight) leader_commit, or a
-            // shrunk last_index, cannot move it backwards.
-            node.commit_index = node.commit_index.max(leader_commit.min(last_index));
             if node.replica_role.can_serve_data() {
                 node.pipeline_state.apply_inflight_tasks =
                     node.pipeline_state.apply_inflight_tasks.saturating_add(1);
