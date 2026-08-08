@@ -426,6 +426,13 @@ impl RaftCluster {
                 inner.persist_configured_wal()?;
                 return Ok(response);
             }
+            // votedFor is scoped to a single term (Raft Fig-2): observing a higher term in
+            // any RPC -- including AppendEntries -- must clear it, else a stale vote from the
+            // old term wrongly suppresses this node's vote in the new term (split-vote
+            // liveness bug). The vote and snapshot-install paths already do this.
+            if term > node.current_term {
+                node.voted_for = None;
+            }
             node.current_term = term;
             node.role = RaftRole::Follower;
             let before_reorder_depth = node.pipeline_state.reorder_queue_depth;
@@ -533,16 +540,12 @@ impl RaftCluster {
             .nodes
             .get(&candidate_id)
             .ok_or(RaftError::NodeNotFound(candidate_id))?;
-        let last_log_index = candidate
-            .log
-            .last()
-            .map(|entry| entry.index)
-            .unwrap_or_default();
-        let last_log_term = candidate
-            .log
-            .last()
-            .map(|entry| entry.term)
-            .unwrap_or_default();
+        // Advertise the snapshot-aware tail: a fully-snapshotted candidate has an empty
+        // `log`, so raw `log.last()` would advertise (0,0) and lose every election it
+        // should win. Use the same helper as the AppendEntries / meta-raft paths.
+        let last_log_index = node_last_log_or_snapshot_index(candidate);
+        let last_log_term =
+            node_term_at_log_or_snapshot_index(candidate, last_log_index).unwrap_or_default();
         Ok(VoteRequest {
             rpc: None,
             shard_id: inner.shard_id,
@@ -602,8 +605,12 @@ impl RaftCluster {
             node.voted_for = None;
             node.role = RaftRole::Follower;
         }
-        let local_last_index = node.log.last().map(|entry| entry.index).unwrap_or_default();
-        let local_last_term = node.log.last().map(|entry| entry.term).unwrap_or_default();
+        // Snapshot-aware voter tail: a fully-snapshotted voter has an empty `log`; comparing
+        // raw `log.last()` (-> (0,0)) would grant a vote to a candidate missing committed
+        // entries this voter already holds in its snapshot (leader-completeness violation).
+        let local_last_index = node_last_log_or_snapshot_index(node);
+        let local_last_term =
+            node_term_at_log_or_snapshot_index(node, local_last_index).unwrap_or_default();
         let log_up_to_date =
             (request.last_log_term, request.last_log_index) >= (local_last_term, local_last_index);
         if !log_up_to_date {

@@ -1133,6 +1133,102 @@ fn append_entry_only_truncates_on_term_conflict_and_never_reapplies() {
 }
 
 #[test]
+fn election_up_to_date_check_is_snapshot_aware() {
+    // After log compaction a caught-up replica's committed tail lives in its installed
+    // snapshot, not `log`. The election "up-to-date" comparison must use the snapshot tail.
+    // Otherwise a fully-snapshotted-but-caught-up replica advertises (0,0), loses to peers
+    // that still hold uncompacted logs, and cannot win an election it is fully eligible for
+    // (liveness) -- while also, symmetrically, granting votes to genuinely lagging
+    // candidates (safety). The sibling meta-raft election path already does this correctly.
+    let cluster =
+        RaftCluster::new_single_shard_with_config(1, [1, 2, 3], RaftConfig::default()).unwrap();
+    cluster.elect_leader(1).unwrap();
+    for i in 0..6 {
+        cluster
+            .propose(Command::StringSet {
+                key: format!("k{i}"),
+                value: b"v".to_vec(),
+            })
+            .unwrap();
+    }
+    let commit = cluster.commit_index(1).unwrap();
+    assert!(commit >= 6, "cluster should have committed the proposals");
+
+    // Compact ONLY node 2 up to the committed index: its `log` empties while its committed
+    // tail moves into the installed snapshot. It remains fully caught up (commit == leader).
+    let snapshot_req = cluster.build_install_snapshot_request(2).unwrap();
+    let snapshot_resp = cluster.receive_install_snapshot(snapshot_req).unwrap();
+    assert!(snapshot_resp.success);
+    assert_eq!(cluster.commit_index(2).unwrap(), commit);
+
+    // The snapshotted-but-caught-up replica must be electable (pre-fix: ReplicaLagging
+    // because its empty log advertised tail (0,0)).
+    cluster
+        .elect_leader(2)
+        .expect("a fully-snapshotted, fully-caught-up replica must be electable");
+    assert_eq!(cluster.leader_id(), 2);
+}
+
+#[test]
+fn append_entries_higher_term_clears_stale_vote() {
+    // votedFor is per-term (Raft Fig-2): observing a higher term in AppendEntries must
+    // reset it, else a stale vote from the old term wrongly suppresses this node's vote in
+    // the new term (split-vote liveness bug). Mirrors the vote/snapshot-install paths.
+    let cluster =
+        RaftCluster::new_single_shard_with_config(1, [1, 2, 3], RaftConfig::default()).unwrap();
+
+    // Node 3 grants its term-5 vote to candidate 1.
+    let granted = cluster
+        .receive_vote_request(VoteRequest {
+            rpc: None,
+            shard_id: 1,
+            term: 5,
+            candidate_id: 1,
+            target_id: 3,
+            last_log_index: 0,
+            last_log_term: 0,
+        })
+        .unwrap();
+    assert!(granted.vote_granted, "term-5 vote for candidate 1 should be granted");
+
+    // A term-6 AppendEntries (from leader 2) advances node 3's term; the stale term-5 vote
+    // for candidate 1 must be cleared.
+    cluster
+        .receive_append_entries(AppendEntriesRequest {
+            rpc: None,
+            shard_id: 1,
+            term: 6,
+            leader_id: 2,
+            target_id: 3,
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: Vec::new(),
+            leader_commit: 0,
+        })
+        .unwrap();
+
+    // Node 3 must now be free to vote for a DIFFERENT candidate (2) in term 6. Pre-fix the
+    // carried-over voted_for=1 rejected this as "already_voted".
+    let regrant = cluster
+        .receive_vote_request(VoteRequest {
+            rpc: None,
+            shard_id: 1,
+            term: 6,
+            candidate_id: 2,
+            target_id: 3,
+            last_log_index: 0,
+            last_log_term: 0,
+        })
+        .unwrap();
+    assert!(
+        regrant.vote_granted,
+        "a higher-term AppendEntries must clear the stale per-term vote so a new term's \
+         election is not blocked (got reject: {:?})",
+        regrant.reject_reason
+    );
+}
+
+#[test]
 fn append_entries_commit_clamps_to_last_new_entry_not_whole_log_tail() {
     // Raft Figure 2: a follower advances commitIndex only to min(leaderCommit, index of
     // the last NEW entry in THIS AppendEntries) -- never to its whole-log tail. A divergent
