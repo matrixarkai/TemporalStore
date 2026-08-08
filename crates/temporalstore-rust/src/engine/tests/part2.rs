@@ -1465,6 +1465,126 @@ fn hdel_last_field_removes_key_like_cpp() {
 }
 
 #[test]
+fn timestamped_models_survive_unload_reload_round_trip() {
+    // Regression net for the membership-authoritative reconcile + serde round-trip: write a
+    // string plus the reconcile page-reading timestamped kinds (feature + sequence), then
+    // unload + reload and assert every value comes back intact (no loss, no resurrection).
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "s".to_string(),
+            value: b"string-value".to_vec(),
+        },
+    });
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureAppend {
+            key: "f".to_string(),
+            points: vec![
+                FeaturePoint {
+                    timestamp_ms: 10,
+                    value: b"a".to_vec(),
+                },
+                FeaturePoint {
+                    timestamp_ms: 20,
+                    value: b"b".to_vec(),
+                },
+            ],
+        },
+    });
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::SequenceAdd {
+            key: "seq".to_string(),
+            rows: vec![SequenceFeatureRow {
+                timestamp_ms: 5,
+                gid: 1,
+                action_type: 2,
+                duration: 3,
+                author_id: 4,
+            }],
+        },
+    });
+
+    let feature_timestamps = |engine: &TemporalEngine| -> Vec<u64> {
+        match engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::FeatureQuery {
+                    key: "f".to_string(),
+                    start_ms: 0,
+                    end_ms: u64::MAX,
+                    count: Some(100),
+                },
+            })
+            .response
+        {
+            CommandResponse::FeaturePoints { points } => {
+                points.iter().map(|p| p.timestamp_ms).collect()
+            }
+            other => panic!("expected FeaturePoints, got {other:?}"),
+        }
+    };
+    let sequence_len = |engine: &TemporalEngine| -> usize {
+        match engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::SequenceQuery {
+                    key: "seq".to_string(),
+                    start_ms: 0,
+                    end_ms: u64::MAX,
+                    count: 100,
+                    filters: Vec::new(),
+                },
+            })
+            .response
+        {
+            CommandResponse::SequenceRows { rows } => rows.len(),
+            other => panic!("expected SequenceRows, got {other:?}"),
+        }
+    };
+    let features_before = feature_timestamps(&engine);
+    assert_eq!(features_before, vec![10, 20]);
+    assert_eq!(sequence_len(&engine), 1);
+
+    engine.unload_shard(1);
+    engine.load_shard(1);
+
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: "s".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Bytes {
+            value: Some(b"string-value".to_vec()),
+        },
+        "string must survive reload"
+    );
+    assert_eq!(
+        feature_timestamps(&engine),
+        features_before,
+        "feature series must survive reload unchanged"
+    );
+    assert_eq!(
+        sequence_len(&engine),
+        1,
+        "sequence row must survive reload"
+    );
+}
+
+#[test]
 fn reconcile_does_not_resurrect_evicted_feature_points_on_reload() {
     // A single FeatureAppend packs all timestamps into one page; the feature_max_size trim
     // drops the oldest from the in-memory series, but the page still physically holds them.

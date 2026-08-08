@@ -1068,6 +1068,62 @@ fn live_page_slab_ids_includes_control_state_pages() {
 }
 
 #[test]
+fn control_state_values_survive_unload_reload() {
+    // Locks in the control_state reconcile merge (persisted-authoritative) together with the
+    // control_state_pages GC live-set fix: control-state values must round-trip through a
+    // reload unchanged.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for (timestamp_ms, amount) in [(10, 5), (20, -2), (30, 7)] {
+        assert!(engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ControlStateIncrement {
+                    key: "cs".to_string(),
+                    timestamp_ms,
+                    amount,
+                },
+            })
+            .status
+            .ok);
+    }
+    let query = |engine: &TemporalEngine, aggregator: &str| -> i64 {
+        match engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ControlStateQuery {
+                    key: "cs".to_string(),
+                    start_ms: 0,
+                    end_ms: 40,
+                    aggregator: aggregator.to_string(),
+                },
+            })
+            .response
+        {
+            CommandResponse::Integer { value } => value,
+            other => panic!("expected Integer, got {other:?}"),
+        }
+    };
+    let before = ["sum", "first", "last", "count"].map(|agg| query(&engine, agg));
+    assert_eq!(query(&engine, "sum"), 10, "5 - 2 + 7 = 10");
+
+    engine.unload_shard(1);
+    engine.load_shard(1);
+
+    let after = ["sum", "first", "last", "count"].map(|agg| query(&engine, agg));
+    assert_eq!(
+        after, before,
+        "control-state aggregates must survive reload unchanged"
+    );
+}
+
+#[test]
 fn feature_write_policy_sequence_batch_ips_dimensions_and_control_state_precision_work() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
@@ -1821,6 +1877,54 @@ fn bucket_storage_summaries_track_live_refs_dirty_buckets_and_manifest_sequence(
         .iter()
         .filter(|summary| summary.routing_bucket == dirty_bucket)
         .all(|summary| summary.last_dump_sequence == manifest.index_log_sequence));
+}
+
+#[test]
+fn rebuild_bucket_page_ownership_preserves_dirty_watermarks() {
+    // rebuild clears + rebuilds bucket_map from the model maps; it must carry over the durable
+    // per-bucket dirty_generation / last_dump_sequence. Rebuilding them from BucketNode::default()
+    // (as manifest-install / promote do) zeroed the watermarks, making a restored shard mismatch
+    // its own dump-manifest generation and forcing unnecessary re-dumps.
+    let mut shard = ShardState::default();
+    shard.strings.insert(
+        "k".to_string(),
+        BlockAddress {
+            page_slab_id: 1,
+            offset: 0,
+            length: 4,
+            page_id: Some(1),
+            object_id: Some(30),
+            routing_bucket: Some(3),
+            band_id: None,
+            generation: Some(1),
+            sha256: None,
+        },
+    );
+    shard.bucket_index.bucket_map.insert(
+        3,
+        BucketNode {
+            routing_bucket: 3,
+            meta_loaded: true,
+            dirty_generation: 7,
+            last_dump_sequence: 4,
+            ..BucketNode::default()
+        },
+    );
+    rebuild_bucket_page_ownership(1, &mut shard, 0, u32::MAX);
+    let bucket = shard
+        .bucket_index
+        .bucket_map
+        .get(&3)
+        .expect("bucket 3 should be rebuilt from the string page");
+    assert!(!bucket.page_index.is_empty(), "the page should be re-indexed");
+    assert_eq!(
+        bucket.dirty_generation, 7,
+        "dirty_generation must survive the rebuild"
+    );
+    assert_eq!(
+        bucket.last_dump_sequence, 4,
+        "last_dump_sequence must survive the rebuild"
+    );
 }
 
 // shared-corpus: storage_dump_load_recovery

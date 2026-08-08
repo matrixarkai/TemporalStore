@@ -771,6 +771,22 @@ pub(super) fn rebuild_bucket_page_ownership(
     start_routing_bucket: u32,
     end_routing_bucket: u32,
 ) {
+    // Preserve the durable per-bucket watermarks across the clear+rebuild. load_index keeps
+    // dirty_generation / last_dump_sequence; rebuilding with a fresh BucketNode::default()
+    // would zero them, making a restored shard (e.g. after a manifest install) mismatch its
+    // own dump-manifest generation and forcing unnecessary re-dumps (and mis-driving the
+    // index/GC reclaim watermarks). Carry the prior values over via the snapshot below.
+    let preserved_bucket_watermarks: HashMap<u32, (u64, u64)> = shard
+        .bucket_index
+        .bucket_map
+        .iter()
+        .map(|(routing_bucket, bucket)| {
+            (
+                *routing_bucket,
+                (bucket.dirty_generation, bucket.last_dump_sequence),
+            )
+        })
+        .collect();
     shard.bucket_index.bucket_map.clear();
     for entry in collect_model_live_page_entries(shard) {
         let routing_bucket = entry.address.routing_bucket.unwrap_or_else(|| {
@@ -791,11 +807,19 @@ pub(super) fn rebuild_bucket_page_ownership(
             .bucket_index
             .bucket_map
             .entry(routing_bucket)
-            .or_insert_with(|| BucketNode {
-                routing_bucket,
-                meta_loaded: true,
-                in_memory: true,
-                ..BucketNode::default()
+            .or_insert_with(|| {
+                let (dirty_generation, last_dump_sequence) = preserved_bucket_watermarks
+                    .get(&routing_bucket)
+                    .copied()
+                    .unwrap_or_default();
+                BucketNode {
+                    routing_bucket,
+                    meta_loaded: true,
+                    in_memory: true,
+                    dirty_generation,
+                    last_dump_sequence,
+                    ..BucketNode::default()
+                }
             });
         bucket.object_index.insert(object_id);
         bucket.page_index.insert(
