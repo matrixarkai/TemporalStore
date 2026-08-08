@@ -812,17 +812,23 @@ impl ContextWire for ContextAuditRef {
 impl ContextWire for ContextPackAudit {
     fn encode_cpp_context_value(&self) -> Vec<u8> {
         let mut out = Vec::new();
+        // Field numbers MUST match the C++ proto (context interface.proto ContextPackAudit):
+        // query_id=1, session_hash=2, request_time_ms=3, max_prompt_tokens=4,
+        // selected_tokens=5, selected_refs=6. Rust-only fields go AFTER C++'s max tag so
+        // they never shift a C++ field (previously query_hash sat at 4, shifting three C++
+        // fields and dropping selected_refs on cross-impl decode).
         encode_bytes_field(&mut out, 1, self.query_id.as_bytes());
         encode_varint_field(&mut out, 2, self.session_hash);
         encode_varint_field(&mut out, 3, self.request_time_ms);
-        encode_varint_field(&mut out, 4, self.query_hash);
-        encode_varint_field(&mut out, 5, u64::from(self.max_prompt_tokens));
-        encode_varint_field(&mut out, 6, u64::from(self.selected_tokens));
+        encode_varint_field(&mut out, 4, u64::from(self.max_prompt_tokens));
+        encode_varint_field(&mut out, 5, u64::from(self.selected_tokens));
         for selected in &self.selected_refs {
-            encode_bytes_field(&mut out, 7, &selected.encode_cpp_context_value());
+            encode_bytes_field(&mut out, 6, &selected.encode_cpp_context_value());
         }
+        // Rust-only extensions (no C++ counterpart), on non-colliding tags.
+        encode_varint_field(&mut out, 9, self.query_hash);
         for blocked in &self.blocked_refs {
-            encode_bytes_field(&mut out, 8, &blocked.encode_cpp_context_value());
+            encode_bytes_field(&mut out, 10, &blocked.encode_cpp_context_value());
         }
         out
     }
@@ -845,22 +851,22 @@ impl ContextWire for ContextPackAudit {
                 (1, 2) => value.query_id = decode_string(bytes, &mut cursor)?,
                 (2, 0) => value.session_hash = decode_varint(bytes, &mut cursor)?,
                 (3, 0) => value.request_time_ms = decode_varint(bytes, &mut cursor)?,
-                (4, 0) => value.query_hash = decode_varint(bytes, &mut cursor)?,
-                (5, 0) => {
+                (4, 0) => {
                     value.max_prompt_tokens =
                         u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?
                 }
-                (6, 0) => {
+                (5, 0) => {
                     value.selected_tokens =
                         u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?
                 }
-                (7, 2) => value
+                (6, 2) => value
                     .selected_refs
                     .push(ContextAuditRef::decode_context_value(&decode_bytes(
                         bytes,
                         &mut cursor,
                     )?)?),
-                (8, 2) => value
+                (9, 0) => value.query_hash = decode_varint(bytes, &mut cursor)?,
+                (10, 2) => value
                     .blocked_refs
                     .push(ContextAuditRef::decode_context_value(&decode_bytes(
                         bytes,
@@ -876,10 +882,13 @@ impl ContextWire for ContextPackAudit {
 impl ContextWire for ContextSummaryDirtyMarker {
     fn encode_cpp_context_value(&self) -> Vec<u8> {
         let mut out = Vec::new();
+        // C++ SummaryDirtyMarker (context interface.proto): node_hash=1, event_time_ms=2,
+        // propagate_depth=3. Rust's extra `reason` must NOT sit at 3 (it would land in C++'s
+        // propagate_depth); place it at 4.
         encode_varint_field(&mut out, 1, self.node_hash);
         encode_varint_field(&mut out, 2, self.event_time_ms);
-        encode_varint_field(&mut out, 3, u64::from(self.reason));
-        encode_varint_field(&mut out, 4, u64::from(self.propagate_depth));
+        encode_varint_field(&mut out, 3, u64::from(self.propagate_depth));
+        encode_varint_field(&mut out, 4, u64::from(self.reason));
         out
     }
 
@@ -896,11 +905,11 @@ impl ContextWire for ContextSummaryDirtyMarker {
             match (tag >> 3, tag & 0x7) {
                 (1, 0) => value.node_hash = decode_varint(bytes, &mut cursor)?,
                 (2, 0) => value.event_time_ms = decode_varint(bytes, &mut cursor)?,
-                (3, 0) => value.reason = u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?,
-                (4, 0) => {
+                (3, 0) => {
                     value.propagate_depth =
                         u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?
                 }
+                (4, 0) => value.reason = u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?,
                 (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
             }
         }
@@ -2011,6 +2020,61 @@ mod tests {
         assert!(!EventReplicationMode::AsyncStorage.requires_restart());
         assert!(!EventReplicationMode::SyncStorage.requires_restart());
         assert!(!EventReplicationMode::Raft.requires_restart());
+    }
+
+    #[test]
+    fn context_pack_audit_wire_matches_cpp_field_numbers() {
+        // C++ ContextPackAudit proto: query_id=1, session_hash=2, request_time_ms=3,
+        // max_prompt_tokens=4, selected_tokens=5, selected_refs=6. Rust-only fields must NOT
+        // occupy tag 4 (query_hash previously did, shifting three C++ fields and dropping
+        // selected_refs entirely on a cross-impl decode).
+        let audit = ContextPackAudit {
+            query_id: "q".to_string(),
+            session_hash: 7,
+            request_time_ms: 8,
+            query_hash: 9999,
+            max_prompt_tokens: 4444,
+            selected_tokens: 5555,
+            selected_refs: Vec::new(),
+            blocked_refs: Vec::new(),
+        };
+        let bytes = audit.encode_cpp_context_value();
+        // Collect top-level varint fields as (field_number -> value).
+        let mut cursor = 0;
+        let mut varint_fields = std::collections::HashMap::new();
+        while cursor < bytes.len() {
+            let tag = decode_varint(&bytes, &mut cursor).unwrap();
+            match tag & 0x7 {
+                0 => {
+                    let v = decode_varint(&bytes, &mut cursor).unwrap();
+                    varint_fields.insert(tag >> 3, v);
+                }
+                2 => {
+                    decode_bytes(&bytes, &mut cursor).unwrap();
+                }
+                other => panic!("unexpected wire type {other}"),
+            }
+        }
+        assert_eq!(
+            varint_fields.get(&4),
+            Some(&4444),
+            "field 4 must be max_prompt_tokens (C++ proto), not the Rust-only query_hash"
+        );
+        assert_eq!(
+            varint_fields.get(&5),
+            Some(&5555),
+            "field 5 must be selected_tokens (C++ proto)"
+        );
+        assert_eq!(
+            varint_fields.get(&9),
+            Some(&9999),
+            "Rust-only query_hash must live on a non-C++ tag (9)"
+        );
+        // Encoder and decoder agree on the C++ layout (round-trip).
+        let decoded = ContextPackAudit::decode_cpp_context_value(&bytes).unwrap();
+        assert_eq!(decoded.max_prompt_tokens, 4444);
+        assert_eq!(decoded.selected_tokens, 5555);
+        assert_eq!(decoded.query_hash, 9999);
     }
 
     // shared-corpus: context_cpp_wire_model_descriptor_roundtrip
