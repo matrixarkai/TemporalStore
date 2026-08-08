@@ -21,6 +21,7 @@ pub mod rebalance;
 pub mod redis;
 pub mod sdk;
 pub mod shared_store;
+pub mod storage_backend;
 pub mod storage_config;
 pub mod types;
 pub mod wal;
@@ -197,6 +198,9 @@ pub use shared_store::{
     SharedStoreReplicationError, SharedStoreReplicator, SharedStoreRetryPolicy,
     SharedStoreWalAppendMode,
     SharedStoreStorageMode, SharedStoreStorageWriter, SharedStoreWriteReport,
+};
+pub use storage_backend::{
+    matrixobject_feature_compiled, StorageBackend, StorageBackendConfig,
 };
 pub use types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextAuditModel,
