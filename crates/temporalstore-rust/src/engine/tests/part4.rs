@@ -310,6 +310,83 @@ fn bucket_dump_manifest_validation_rejects_checksum_and_missing_slabs() {
 }
 
 #[test]
+fn bucket_dump_manifest_watermark_tracks_embedded_index_not_wal_tail() {
+    // Regression for silent data loss. create_bucket_dump_manifest embeds the on-disk index, but
+    // under MATRIXARK_BULK_INGEST that index lags the WAL tail (per-command index persist is a
+    // no-op in bulk mode). It used to stamp the manifest's oplog_sequence from the LIVE WAL tail,
+    // so on reload install set replay_watermark past records the embedded index never captured
+    // and WAL replay skipped them -> gone. C++ couples the two: Load replays from the DumpedLogId
+    // stored inside the dumped index (object_manager.cc). We reproduce the same tail-ahead-of-index
+    // divergence deterministically (no bulk env) by appending straight to the WAL.
+    let dir = tempfile::tempdir().unwrap();
+    let pages = dir.path().join("pages");
+    let indexes = dir.path().join("indexes");
+    let engine =
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-a"), &pages, &indexes);
+    engine.load_shard(1);
+    // Applied + persisted normally: on-disk index anchored to WAL seq 1, containing k1.
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "k1".to_string(),
+            value: b"v1".to_vec(),
+        },
+    });
+    // Advance the WAL tail past the persisted index anchor WITHOUT touching the on-disk index --
+    // exactly the state bulk mode produces (deferred index persist, live WAL).
+    engine
+        .write_ahead_log_store()
+        .append_with_sync(
+            1,
+            Command::StringSet {
+                key: "k2".to_string(),
+                value: b"v2".to_vec(),
+            },
+            true,
+        )
+        .expect("direct wal append");
+    let manifest = engine
+        .create_bucket_dump_manifest(1, Vec::new())
+        .expect("manifest should persist");
+    assert_eq!(
+        manifest.oplog_sequence, 1,
+        "manifest watermark must track the embedded index anchor (1), not the live WAL tail (2)"
+    );
+
+    // Fresh engine over the SAME pages+index dirs: load installs the manifest + replays the WAL.
+    let reloaded =
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-b"), &pages, &indexes);
+    reloaded.load_shard(1);
+    assert_eq!(
+        reloaded
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: "k2".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Bytes {
+            value: Some(b"v2".to_vec())
+        },
+        "a WAL record past the embedded index anchor must be replayed on reload, not skipped"
+    );
+    assert_eq!(
+        reloaded
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: "k1".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Bytes {
+            value: Some(b"v1".to_vec())
+        },
+    );
+}
+
+#[test]
 fn bucket_dump_manifest_install_restores_index_and_rejects_partial_or_stale() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
