@@ -2671,6 +2671,18 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
 
     def _init_local_runtime_state(self) -> None:
         self.event_log.parent.mkdir(parents=True, exist_ok=True)
+        # Per-instance JSONL toggle. The proxy/direct-backed adapters persist
+        # durably through their Rust client and construct the base adapter with a
+        # sentinel "…-unused-…" event_log path to signal that the local JSONL
+        # mirror should not be used. Honor that intent: without this, the global
+        # LOCAL_JSONL_ENABLED default left the inherited append()/read_all() writing
+        # and, crucially, re-reading + re-compacting that redundant log on every
+        # call. It grew to the rotation cap (hundreds of MB / tens of thousands of
+        # records) and made each retrieve/ingest take tens of seconds -- blowing the
+        # request deadline so context never committed. The pure-local adapter (real
+        # event_log path) keeps the JSONL; MATRIXARK_LOCAL_JSONL_ENABLED still forces
+        # it off globally.
+        self._local_jsonl_enabled = LOCAL_JSONL_ENABLED and "-unused-" not in self.event_log.name
         self._write_batch_local = threading.local()
         self._event_log_lock = threading.RLock()
         self._resource_import_worker_count = max(1, int(os.environ.get("MATRIXARK_RESOURCE_IMPORT_WORKERS", "2")))
@@ -2725,7 +2737,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
 
     def _local_jsonl_guardrails(self) -> Json:
         return {
-            "enabled": LOCAL_JSONL_ENABLED,
+            "enabled": self._local_jsonl_enabled,
             "max_bytes": LOCAL_JSONL_MAX_BYTES,
             "retention_count": LOCAL_JSONL_RETENTION_COUNT,
             "retention_age_ms": LOCAL_JSONL_RETENTION_AGE_MS,
@@ -2750,6 +2762,8 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         return self.event_log.with_name(f"{self.event_log.name}.{index}")
 
     def _retained_jsonl_paths(self) -> list[Path]:
+        if not self._local_jsonl_enabled:
+            return []
         max_rotated = max(0, LOCAL_JSONL_RETENTION_COUNT - 1)
         paths = [self._jsonl_rotated_path(index) for index in range(max_rotated, 0, -1)]
         paths.append(self.event_log)
@@ -2802,7 +2816,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 continue
 
     def _rotate_jsonl_if_needed_locked(self, incoming_bytes: int) -> None:
-        if not LOCAL_JSONL_ENABLED:
+        if not self._local_jsonl_enabled:
             return
         self._prune_jsonl_retention_locked()
         max_bytes = max(1, LOCAL_JSONL_MAX_BYTES)
@@ -2927,7 +2941,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             return
         jsonl_records = [self._sanitize_jsonl_record(item) for item in records]
         jsonl_lines = [json.dumps(item, separators=(",", ":")) + "\n" for item in jsonl_records]
-        if LOCAL_JSONL_ENABLED:
+        if self._local_jsonl_enabled:
             with self._event_log_lock:
                 self._rotate_jsonl_if_needed_locked(sum(len(line.encode("utf-8")) for line in jsonl_lines))
                 with self.event_log.open("a", encoding="utf-8") as handle:
@@ -2945,7 +2959,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             return
         jsonl_records = [self._sanitize_jsonl_record(record) for record in records]
         jsonl_lines = [json.dumps(record, separators=(",", ":")) + "\n" for record in jsonl_records]
-        if LOCAL_JSONL_ENABLED:
+        if self._local_jsonl_enabled:
             with self._event_log_lock:
                 self._rotate_jsonl_if_needed_locked(sum(len(line.encode("utf-8")) for line in jsonl_lines))
                 with self.event_log.open("a", encoding="utf-8") as handle:
