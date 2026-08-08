@@ -387,6 +387,52 @@ fn bucket_dump_manifest_watermark_tracks_embedded_index_not_wal_tail() {
 }
 
 #[test]
+fn sync_write_surfaces_wal_commit_failure_instead_of_acking_ok() {
+    // Durability parity: a synchronous write whose durable WAL commit fails must NOT be acked ok.
+    // The WAL is the recovery source of truth, so a swallowed append error would tell the client a
+    // write that is gone after a crash succeeded. C++ surfaces the oplog Commit failure
+    // (partition.h OnExecuteCmdDone). We inject the failure by replacing the WAL file with a
+    // directory so the next durable append cannot open it for writing (EISDIR fails even for
+    // root, unlike a chmod which root bypasses).
+    let dir = tempfile::tempdir().unwrap();
+    let indexes = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        &indexes,
+    );
+    engine.load_shard(1);
+    let baseline = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "k1".to_string(),
+            value: b"v1".to_vec(),
+        },
+    });
+    assert!(
+        baseline.status.ok,
+        "baseline write should succeed: {:?}",
+        baseline.status
+    );
+    let wal_path = indexes.join("wals").join("shard-1.wal.jsonl");
+    fs::remove_file(&wal_path).unwrap();
+    fs::create_dir(&wal_path).unwrap();
+    let failed = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "k2".to_string(),
+            value: b"v2".to_vec(),
+        },
+    });
+    assert_eq!(
+        failed.status.code, "wal_commit_failed",
+        "a sync write whose durable WAL commit failed must return an error, got {:?}",
+        failed.status
+    );
+}
+
+#[test]
 fn bucket_dump_manifest_install_restores_index_and_rejects_partial_or_stale() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(

@@ -382,9 +382,31 @@ impl TemporalEngine {
             // (nullptr, nullptr)). Page/index materialization stays deferred to dump.
             if write_command && !replaying_wal() {
                 let sync = !config.async_storage && !bulk_ingest_mode();
-                let _ = self
-                    .wal_store
-                    .append_with_sync(request.shard_id, command, sync);
+                if let Err(err) =
+                    self.wal_store
+                        .append_with_sync(request.shard_id, command, sync)
+                {
+                    if sync {
+                        // A synchronous write whose durable WAL commit failed is NOT durable: the
+                        // WAL is the recovery source of truth (replayed on load), so returning ok
+                        // would tell the client a write that is gone after a crash succeeded. C++
+                        // surfaces the oplog Commit failure to the client (partition.h
+                        // OnExecuteCmdDone: it copies the failed commit status into the response)
+                        // rather than acking a non-durable write. Match that instead of swallowing
+                        // the error. (async/bulk mode is fire-and-forget -- C++
+                        // op_logger_->Commit(nullptr,nullptr) -- so its append errors stay
+                        // best-effort and do not fail the command.) We also skip the index anchor
+                        // + persist below, so durable state never advances past a write the WAL
+                        // did not accept.
+                        return ExecuteResponse {
+                            status: Status::error(
+                                "wal_commit_failed",
+                                format!("durable WAL commit failed: {err}"),
+                            ),
+                            response: CommandResponse::Empty,
+                        };
+                    }
+                }
             }
             if !config.async_storage && !bulk_ingest_mode() && !replaying_wal() {
                 // Anchor the served index to the WAL sequence it now reflects, so a
