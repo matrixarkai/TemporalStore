@@ -57,7 +57,6 @@ impl TemporalEngine {
             .into_iter()
             .collect::<Vec<_>>();
         page_slab_ids.sort_unstable();
-        let oplog_sequence = self.wal_store.stats(shard_id).last_sequence;
         let index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
         let index_bytes = self
             .export_index_bytes(shard_id)
@@ -65,6 +64,20 @@ impl TemporalEngine {
         let index_sha256 = sha256_hex_bytes(&index_bytes);
         let dump_index_state = serde_json::from_slice::<ShardState>(&index_bytes)
             .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
+        // The manifest's replay watermark MUST equal the WAL sequence the EMBEDDED index
+        // actually reflects -- NOT the live WAL tail. Under MATRIXARK_BULK_INGEST the on-disk
+        // index (what export_index_bytes returns) stays frozen at the last flush_shard_index
+        // anchor while the WAL tail races ahead (per-command index persist is a no-op in bulk
+        // mode). Taking the live tail here made install set replay_watermark PAST records the
+        // embedded index never captured, so on reload WAL replay skipped them and reclaim
+        // truncated them -> silent data loss. C++ couples the two by construction: Load replays
+        // from the DumpedLogId stored INSIDE the dumped index (object_manager.cc:41), so the
+        // replay cursor always equals the state the index captured. Derive the watermark from the
+        // embedded index's own anchor so reload replays exactly the WAL suffix it lacks. (None
+        // only for a shard never written/flushed -> empty index -> fall back to the tail, 0.)
+        let oplog_sequence = dump_index_state
+            .applied_wal_sequence
+            .unwrap_or_else(|| self.wal_store.stats(shard_id).last_sequence);
         let created_unix_ms = now_ms();
         let manifest_id = format!("{shard_id}-{index_log_sequence}-{created_unix_ms}");
         let parent_manifest_id = latest_bucket_dump_manifest_at(&self.index_dir, shard_id)
