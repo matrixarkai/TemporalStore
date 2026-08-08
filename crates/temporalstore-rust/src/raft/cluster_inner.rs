@@ -398,24 +398,23 @@ impl RaftClusterInner {
             .nodes
             .get(&candidate_id)
             .ok_or(RaftError::NodeNotFound(candidate_id))?;
-        let candidate_last_index = candidate
-            .log
-            .last()
-            .map(|entry| entry.index)
-            .unwrap_or_default();
-        let candidate_last_term = candidate
-            .log
-            .last()
-            .map(|entry| entry.term)
-            .unwrap_or_default();
+        // Snapshot-aware tail: after log compaction the last committed entry lives in the
+        // installed snapshot, not `log`. Comparing raw `log.last()` (which is None -> (0,0)
+        // for a fully-snapshotted node) would let a lagging candidate look "up to date"
+        // against a caught-up replica (safety) and stop the healthiest node from winning
+        // (liveness). Mirrors the meta-raft election path.
+        let candidate_last_index = node_last_log_or_snapshot_index(candidate);
+        let candidate_last_term =
+            node_term_at_log_or_snapshot_index(candidate, candidate_last_index).unwrap_or_default();
         let votes = self
             .nodes
             .values()
             .filter(|node| node.alive)
             .filter(|node| node.replica_role.participates_in_quorum())
             .filter(|node| {
-                let local_last_index = node.log.last().map(|entry| entry.index).unwrap_or_default();
-                let local_last_term = node.log.last().map(|entry| entry.term).unwrap_or_default();
+                let local_last_index = node_last_log_or_snapshot_index(node);
+                let local_last_term =
+                    node_term_at_log_or_snapshot_index(node, local_last_index).unwrap_or_default();
                 (candidate_last_term, candidate_last_index) >= (local_last_term, local_last_index)
             })
             .count();
@@ -437,24 +436,23 @@ impl RaftClusterInner {
             .nodes
             .get(&candidate_id)
             .ok_or(RaftError::NodeNotFound(candidate_id))?;
-        let candidate_last_index = candidate
-            .log
-            .last()
-            .map(|entry| entry.index)
-            .unwrap_or_default();
-        let candidate_last_term = candidate
-            .log
-            .last()
-            .map(|entry| entry.term)
-            .unwrap_or_default();
+        // Snapshot-aware tail: after log compaction the last committed entry lives in the
+        // installed snapshot, not `log`. Comparing raw `log.last()` (which is None -> (0,0)
+        // for a fully-snapshotted node) would let a lagging candidate look "up to date"
+        // against a caught-up replica (safety) and stop the healthiest node from winning
+        // (liveness). Mirrors the meta-raft election path.
+        let candidate_last_index = node_last_log_or_snapshot_index(candidate);
+        let candidate_last_term =
+            node_term_at_log_or_snapshot_index(candidate, candidate_last_index).unwrap_or_default();
         Ok(voters
             .iter()
             .filter_map(|node_id| self.nodes.get(node_id))
             .filter(|node| node.alive)
             .filter(|node| node.replica_role.participates_in_quorum())
             .filter(|node| {
-                let local_last_index = node.log.last().map(|entry| entry.index).unwrap_or_default();
-                let local_last_term = node.log.last().map(|entry| entry.term).unwrap_or_default();
+                let local_last_index = node_last_log_or_snapshot_index(node);
+                let local_last_term =
+                    node_term_at_log_or_snapshot_index(node, local_last_index).unwrap_or_default();
                 (candidate_last_term, candidate_last_index) >= (local_last_term, local_last_index)
             })
             .count())
