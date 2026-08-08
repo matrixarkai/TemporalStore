@@ -655,6 +655,7 @@ fn emit_json(results: &[ScenarioResult], opt: &Options, total_elapsed_s: f64) ->
         s.push_str(&format!("      \"name\": \"{}\",\n", json_escape(&r.name)));
         s.push_str(&format!("      \"ops\": {},\n", r.ops));
         s.push_str(&format!("      \"violations\": {},\n", r.violations));
+        s.push_str(&format!("      \"elapsed_s\": {:.4},\n", r.elapsed_s));
         s.push_str(&format!(
             "      \"throughput_ops_s\": {:.1},\n",
             r.throughput

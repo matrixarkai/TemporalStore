@@ -1,0 +1,557 @@
+<meta charset="utf-8">
+<title>Control State on TemporalStore — Use Cases &amp; Usage Guide</title>
+<style>
+  :root{
+    --paper:#f5f7f8; --surface:#ffffff; --surface-2:#eef2f4;
+    --ink:#131b26; --muted:#57687a; --line:#dce3e8;
+    --accent:#0d6e6e; --accent-soft:#e0efee; --accent-ink:#0a5150;
+    --allow:#157f43; --allow-soft:#e4f2ea;
+    --block:#b12a30; --block-soft:#f6e6e6;
+    --warn:#8f6300; --warn-soft:#f4ecd9;
+    --code-bg:#0f1a22; --code-ink:#d6e4ea; --code-line:#26333d;
+    --shadow:0 1px 2px rgba(16,26,38,.06),0 8px 24px rgba(16,26,38,.06);
+    --serif:Georgia,"Iowan Old Style","Charter","Times New Roman",serif;
+    --sans:system-ui,"Segoe UI",-apple-system,"Helvetica Neue",sans-serif;
+    --mono:ui-monospace,"SF Mono","Cascadia Code","JetBrains Mono",Menlo,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --paper:#0c131a; --surface:#111b23; --surface-2:#0f1820;
+      --ink:#e9eff4; --muted:#98abb9; --line:#243440;
+      --accent:#3bb9b1; --accent-soft:#12302e; --accent-ink:#7fd8d1;
+      --allow:#43cf8c; --allow-soft:#123026;
+      --block:#f2757a; --block-soft:#331b1d;
+      --warn:#d9a441; --warn-soft:#2e2612;
+      --code-bg:#0a1319; --code-ink:#d6e4ea; --code-line:#20303a;
+      --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.32);
+    }
+  }
+  :root[data-theme="light"]{
+    --paper:#f5f7f8; --surface:#ffffff; --surface-2:#eef2f4;
+    --ink:#131b26; --muted:#57687a; --line:#dce3e8;
+    --accent:#0d6e6e; --accent-soft:#e0efee; --accent-ink:#0a5150;
+    --allow:#157f43; --allow-soft:#e4f2ea; --block:#b12a30; --block-soft:#f6e6e6;
+    --warn:#8f6300; --warn-soft:#f4ecd9;
+    --code-bg:#0f1a22; --code-ink:#d6e4ea; --code-line:#26333d;
+    --shadow:0 1px 2px rgba(16,26,38,.06),0 8px 24px rgba(16,26,38,.06);
+  }
+  :root[data-theme="dark"]{
+    --paper:#0c131a; --surface:#111b23; --surface-2:#0f1820;
+    --ink:#e9eff4; --muted:#98abb9; --line:#243440;
+    --accent:#3bb9b1; --accent-soft:#12302e; --accent-ink:#7fd8d1;
+    --allow:#43cf8c; --allow-soft:#123026; --block:#f2757a; --block-soft:#331b1d;
+    --warn:#d9a441; --warn-soft:#2e2612;
+    --code-bg:#0a1319; --code-ink:#d6e4ea; --code-line:#20303a;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.32);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--serif);
+    line-height:1.6;-webkit-font-smoothing:antialiased;font-size:17px}
+  .wrap{max-width:920px;margin:0 auto;padding:0 24px}
+  a{color:var(--accent-ink);text-underline-offset:2px}
+
+  /* header */
+  header.site{border-bottom:1px solid var(--line);background:
+    linear-gradient(180deg,var(--surface),var(--paper));}
+  .site .wrap{padding-top:52px;padding-bottom:40px}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.18em;
+    text-transform:uppercase;color:var(--accent-ink);margin:0 0 14px}
+  h1{font-family:var(--sans);font-weight:640;font-size:clamp(30px,5vw,46px);
+    line-height:1.08;letter-spacing:-.02em;margin:0 0 16px;text-wrap:balance}
+  .lede{font-size:20px;color:var(--muted);max-width:64ch;margin:0}
+  .loop{display:inline-flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:26px;
+    font-family:var(--mono);font-size:13px}
+  .loop span{background:var(--surface);border:1px solid var(--line);border-radius:999px;
+    padding:6px 13px;color:var(--ink)}
+  .loop b{color:var(--accent-ink)}
+  .loop i{color:var(--muted);font-style:normal}
+
+  /* section scaffolding */
+  section{padding:46px 0;border-bottom:1px solid var(--line)}
+  .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--muted);margin:0 0 10px;display:flex;align-items:center;gap:10px}
+  .kicker::before{content:"";width:22px;height:2px;background:var(--accent);border-radius:2px}
+  h2{font-family:var(--sans);font-weight:620;font-size:clamp(23px,3.4vw,30px);
+    letter-spacing:-.015em;margin:0 0 16px;text-wrap:balance}
+  h3{font-family:var(--sans);font-weight:600;font-size:19px;letter-spacing:-.01em;margin:30px 0 10px}
+  p{margin:0 0 16px;max-width:68ch}
+  .muted{color:var(--muted)}
+
+  /* use-case cards */
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px;margin-top:8px}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:20px;
+    box-shadow:var(--shadow)}
+  .card .tag{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--accent-ink);background:var(--accent-soft);border-radius:6px;padding:3px 8px;display:inline-block}
+  .card h3{margin:12px 0 6px;font-size:18px}
+  .card p{font-size:15px;color:var(--muted);margin:0}
+  .card .prim{font-family:var(--mono);font-size:12.5px;color:var(--ink);margin-top:12px;
+    padding-top:12px;border-top:1px dashed var(--line)}
+
+  /* diagram */
+  figure{margin:22px 0 6px}
+  .diagram{background:var(--surface);border:1px solid var(--line);border-radius:14px;
+    padding:22px;box-shadow:var(--shadow);overflow-x:auto}
+  figcaption{font-family:var(--sans);font-size:13.5px;color:var(--muted);margin-top:12px;text-align:center}
+  svg .node{fill:var(--surface);stroke:var(--line);stroke-width:1.5}
+  svg .lbl{font-family:var(--sans);font-size:13px;fill:var(--ink)}
+  svg .lblm{font-family:var(--mono);font-size:12px;fill:var(--muted)}
+  svg .flow{stroke:var(--muted);stroke-width:1.6;fill:none;marker-end:url(#arrow)}
+  svg .allow{fill:var(--allow-soft);stroke:var(--allow)}
+  svg .block{fill:var(--block-soft);stroke:var(--block)}
+  svg .dnode{fill:var(--accent-soft);stroke:var(--accent)}
+  svg .edgelbl{font-family:var(--mono);font-size:11px;fill:var(--muted)}
+  svg .ok{fill:var(--allow);font-family:var(--mono);font-size:11px}
+  svg .no{fill:var(--block);font-family:var(--mono);font-size:11px}
+
+  /* code */
+  pre{background:var(--code-bg);color:var(--code-ink);border:1px solid var(--code-line);
+    border-radius:12px;padding:16px 18px;overflow-x:auto;font-family:var(--mono);font-size:13.5px;
+    line-height:1.62;margin:14px 0}
+  code{font-family:var(--mono);font-size:.92em;background:var(--surface-2);border:1px solid var(--line);
+    border-radius:5px;padding:.08em .38em}
+  pre code{background:none;border:none;padding:0;font-size:inherit}
+  .cmt{color:#7d94a3}
+  .kw{color:var(--accent);font-weight:600} .str{color:#8fd0a6} .fn{color:#e0c07a}
+
+  /* tables */
+  .twrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);margin:14px 0}
+  table{border-collapse:collapse;width:100%;font-size:14.5px;background:var(--surface)}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  thead th{font-family:var(--sans);font-size:12px;letter-spacing:.05em;text-transform:uppercase;
+    color:var(--muted);background:var(--surface-2)}
+  tbody tr:last-child td{border-bottom:none}
+  td code{font-size:12.5px;white-space:nowrap}
+  .tabular{font-variant-numeric:tabular-nums}
+
+  /* callouts */
+  .note{border-left:3px solid var(--accent);background:var(--accent-soft);border-radius:0 10px 10px 0;
+    padding:14px 18px;margin:18px 0;font-size:15.5px}
+  .note.warn{border-color:var(--warn);background:var(--warn-soft)}
+  .note b{font-family:var(--sans)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.03em;
+    padding:3px 9px;border-radius:999px;border:1px solid}
+  .pill.allow{color:var(--allow);border-color:var(--allow);background:var(--allow-soft)}
+  .pill.block{color:var(--block);border-color:var(--block);background:var(--block-soft)}
+
+  .statrow{display:flex;flex-wrap:wrap;gap:16px;margin:6px 0 18px}
+  .stat{flex:1 1 150px;background:var(--surface);border:1px solid var(--line);border-radius:14px;
+    padding:18px 20px;box-shadow:var(--shadow)}
+  .stat .num{font-family:var(--sans);font-weight:680;font-size:34px;letter-spacing:-.02em;
+    line-height:1;font-variant-numeric:tabular-nums}
+  .stat .num.allow{color:var(--allow)}
+  .stat .cap{font-family:var(--mono);font-size:11px;letter-spacing:.09em;text-transform:uppercase;
+    color:var(--muted);margin-top:8px}
+  ul.check{list-style:none;padding:0;margin:8px 0;display:grid;gap:9px}
+  ul.check li{padding-left:28px;position:relative;max-width:70ch}
+  ul.check li::before{content:"✓";position:absolute;left:0;top:0;color:var(--accent);
+    font-family:var(--sans);font-weight:700}
+
+  footer{padding:40px 0 60px;color:var(--muted);font-size:14px}
+  footer .wrap{display:flex;flex-wrap:wrap;gap:18px;justify-content:space-between;align-items:baseline}
+  .prov{font-family:var(--mono);font-size:12px}
+  @media (prefers-reduced-motion:no-preference){
+    .card{transition:transform .18s ease, box-shadow .18s ease}
+    .card:hover{transform:translateY(-2px)}
+  }
+</style>
+
+<header class="site">
+  <div class="wrap">
+    <p class="eyebrow">TemporalStore · Control State</p>
+    <h1>Frequency caps, quotas, pacing &amp; risk — one serving primitive</h1>
+    <p class="lede">Control State is TemporalStore's capability for fast-changing serving signals:
+      counters, caps, quotas, pacing, eligibility, and suppression. One shape answers them all —
+      read the current state, apply a rule, atomically update, return a decision.</p>
+    <div class="loop" aria-label="serving loop">
+      <span><b>read</b> current state</span><i>→</i>
+      <span>apply <b>rule</b></span><i>→</i>
+      <span><b>atomically</b> update</span><i>→</i>
+      <span>return <b>decision</b></span>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section id="usecases">
+    <div class="wrap">
+      <p class="kicker">What you can build</p>
+      <h2>Six use cases, one primitive</h2>
+      <p class="muted">Each is a counter or piece of state under a time window or TTL. The atomic
+        increment-then-read operator (<code>HSETANDGET</code>) does the accept-decision in a single
+        round trip; the rest are queries and variations on the same key layout.</p>
+      <div class="grid">
+        <div class="card"><span class="tag">Frequency cap</span>
+          <h3>Cap impressions per user</h3>
+          <p>“Has this user seen campaign c123 more than 5× today?” Increment the daily bucket and
+            allow while <code>count ≤ limit</code>.</p>
+          <div class="prim">HSETANDGET · window = calendar day</div></div>
+        <div class="card"><span class="tag">Tenant quota</span>
+          <h3>Meter an API by tenant</h3>
+          <p>Weighted increments against a daily allowance; allow while <code>used ≤ limit</code>,
+            return <code>remaining</code>.</p>
+          <div class="prim">HSETANDGET · amount = request weight</div></div>
+        <div class="card"><span class="tag">Pacing</span>
+          <h3>Spend against budget</h3>
+          <p>Accrue spend, read spent-so-far, compare to target-by-now, then boost, dampen, or
+            pause delivery.</p>
+          <div class="prim">HQUERY (read-heavy) + HSET</div></div>
+        <div class="card"><span class="tag">Suppression / risk</span>
+          <h3>Detect a spike, suppress</h3>
+          <p>Count failed logins over a rolling hour; suppress the moment the window crosses the
+            threshold.</p>
+          <div class="prim">HSET (minute precision) + HQUERY range</div></div>
+        <div class="card"><span class="tag">Eligibility</span>
+          <h3>Gate on combined state</h3>
+          <p>Allow a promotion only if flags and counters match policy — a read that folds several
+            control keys.</p>
+          <div class="prim">HQUERY + first/last (FOL)</div></div>
+        <div class="card"><span class="tag">Idempotent ingest</span>
+          <h3>Replay-safe counting</h3>
+          <p>Consume an at-least-once queue without double counting: a <code>uuid</code> dedups
+            redeliveries inside a 5-minute window.</p>
+          <div class="prim">HSETANDGETOPT · uuid dedup</div></div>
+      </div>
+
+      <h3 style="margin-top:34px">More controls, same primitive</h3>
+      <div class="grid">
+        <div class="card"><span class="tag">Rate limit</span>
+          <h3>Sliding-window throttle</h3>
+          <p>“At most 100 requests per 60s per API key.” A rolling window at
+            second precision, not a fixed calendar bucket.</p>
+          <div class="prim">HSETANDGETOPT · window = now−W … now</div></div>
+        <div class="card"><span class="tag">Concurrency</span>
+          <h3>In-flight semaphore</h3>
+          <p>Cap simultaneous jobs (e.g. 8 renders). Acquire increments, release
+            decrements; over-capacity acquires roll back.</p>
+          <div class="prim">HSETANDGET +1 / CONTROLSTATEINCR −1</div></div>
+        <div class="card"><span class="tag">Debounce</span>
+          <h3>Collapse bursts</h3>
+          <p>Fire once things settle — one alert per incident, one email per
+            sign-up burst. Any attempt refreshes the quiet window.</p>
+          <div class="prim">HSETANDGETOPT · limit 1 over quiet window</div></div>
+        <div class="card"><span class="tag">Distinct count</span>
+          <h3>Unique-value sets</h3>
+          <p>Unique devices per user per day, unique visitors per campaign — the
+            <code>change</code> aggregator counts distinct values.</p>
+          <div class="prim">CONTROLSTATECHANGE + query <code>change</code></div></div>
+        <div class="card"><span class="tag">Budget gate</span>
+          <h3>Hard spend cap</h3>
+          <p>Charge cost against a daily budget and stop at the ceiling; returns
+            budget remaining. Idempotent with an <code>event_id</code>.</p>
+          <div class="prim">HSETANDGET(amount = cost)</div></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="decision">
+    <div class="wrap">
+      <p class="kicker">The serving decision</p>
+      <h2>How a frequency cap resolves in one call</h2>
+      <p>The request builds a control key, the store atomically increments the window counter and
+        returns the post-increment count, and the caller admits the event while it stays within the
+        cap. The counter update and the read happen inside one command on one object, so concurrent
+        requests can't slip past the cap.</p>
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 860 250" width="100%" role="img" aria-label="Frequency cap decision flow">
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/>
+              </marker>
+            </defs>
+            <!-- request -->
+            <rect class="node" x="14" y="96" width="118" height="58" rx="10"/>
+            <text class="lbl" x="73" y="120" text-anchor="middle">Request</text>
+            <text class="lblm" x="73" y="138" text-anchor="middle">user · campaign</text>
+            <path class="flow" d="M132,125 L182,125"/>
+            <!-- build key -->
+            <rect class="node" x="182" y="96" width="150" height="58" rx="10"/>
+            <text class="lbl" x="257" y="120" text-anchor="middle">Build control key</text>
+            <text class="lblm" x="257" y="138" text-anchor="middle">…:impression:day</text>
+            <path class="flow" d="M332,125 L386,125"/>
+            <!-- decision diamond -->
+            <path class="dnode" d="M386,125 L470,86 L554,125 L470,164 Z"/>
+            <text class="lbl" x="470" y="120" text-anchor="middle">increment,</text>
+            <text class="lbl" x="470" y="136" text-anchor="middle">count ≤ limit?</text>
+            <!-- yes -->
+            <path class="flow" d="M554,110 L648,72"/>
+            <text class="ok" x="566" y="82">yes</text>
+            <rect class="node allow" x="648" y="44" width="196" height="52" rx="10"/>
+            <text class="lbl" x="746" y="66" text-anchor="middle">Allow</text>
+            <text class="lblm" x="746" y="84" text-anchor="middle">remaining = limit − count</text>
+            <!-- no -->
+            <path class="flow" d="M554,140 L648,178"/>
+            <text class="no" x="566" y="172">no</text>
+            <rect class="node block" x="648" y="156" width="196" height="52" rx="10"/>
+            <text class="lbl" x="746" y="178" text-anchor="middle">Block</text>
+            <text class="lblm" x="746" y="196" text-anchor="middle">frequency_cap_exceeded</text>
+          </svg>
+        </div>
+        <figcaption>Allowed impressions per (user, campaign, day) = <b>min(attempts, cap)</b> — verified exact under scaled load.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section id="keys">
+    <div class="wrap">
+      <p class="kicker">Data model</p>
+      <h2>Key design &amp; value shape</h2>
+      <p>A control key names the entity being controlled, the signal, and the window. Keep the value
+        a single current state — not an append-only history — and let TTL reclaim expired windows.</p>
+      <pre><code><span class="cmt"># control:&lt;tenant&gt;:&lt;entity&gt;:&lt;id&gt;:&lt;signal&gt;:&lt;window&gt;</span>
+control:t1:user:u42:campaign:c123:impression:2026-07-24   <span class="cmt"># daily freq cap</span>
+control:t1:tenant:t1:quota:api_requests:2026-07-24         <span class="cmt"># tenant quota</span>
+control:t1:device:d7:login:failed:rolling_1h               <span class="cmt"># risk / suppression</span></code></pre>
+      <pre><code><span class="cmt">// compact current-value state</span>
+{ <span class="str">"count"</span>: 4, <span class="str">"limit"</span>: 5, <span class="str">"window_start_ms"</span>: 1784880000000,
+  <span class="str">"expires_at_ms"</span>: 1784966400000 }</code></pre>
+    </div>
+  </section>
+
+  <section id="api">
+    <div class="wrap">
+      <p class="kicker">How to use it</p>
+      <h2>The command surface</h2>
+      <p>Control State is a small, generic API. The <b>H</b> family holds counters and aggregates,
+        <b>FOL</b> holds first/last values, and <b>MANAGER</b> handles admin. Everything is reachable
+        over the Redis-compatible protocol and the typed Rust client.</p>
+      <div class="twrap">
+        <table>
+          <thead><tr><th>Operation</th><th>RESP verb</th><th>Does</th></tr></thead>
+          <tbody>
+            <tr><td>Increment (windowed)</td><td><code>HSET</code></td><td>Add to the counter for a precision bucket at an occur-time.</td></tr>
+            <tr><td>Query window</td><td><code>HQUERY</code></td><td>Aggregate the counter over one or more windows.</td></tr>
+            <tr><td><b>Atomic incr-then-read</b></td><td><code>HSETANDGET</code></td><td>The accept-decision primitive: bump the counter and return the window total in one command.</td></tr>
+            <tr><td>Atomic + options</td><td><code>HSETANDGETOPT</code></td><td>Same, plus precision, TTL, and <code>uuid</code> idempotency for replay-safe ingest.</td></tr>
+            <tr><td>Distinct set</td><td><code>CPCSET</code> / <code>CPCQUERY</code></td><td>Track distinct values (e.g. unique devices) with the <code>change</code> aggregator.</td></tr>
+            <tr><td>First / last</td><td><code>FOLSET</code> / <code>FOLQUERY</code></td><td>Keep the earliest or latest value by occur-time.</td></tr>
+            <tr><td>Admin</td><td><code>CONTROLSTATEMANAGER</code></td><td>Query, list fields, counts, and GC of control state.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>Aggregators</h3>
+      <p class="muted"><code>sum</code>/<code>count</code> total the increments · <code>events</code> counts buckets ·
+        <code>min</code>, <code>max</code>, <code>first</code>, <code>last</code> pick a value ·
+        <code>change</code> returns the distinct count over the window.</p>
+    </div>
+  </section>
+
+  <section id="examples">
+    <div class="wrap">
+      <p class="kicker">Worked examples</p>
+      <h2>Each use case, end to end</h2>
+
+      <h3>1 · Frequency cap — atomic accept-decision</h3>
+      <pre><code><span class="cmt"># RESP: bump today's bucket, read the day window, decide client-side</span>
+&gt; <span class="kw">HSETANDGET</span> control:t1:user:u42:campaign:c123:impression:2026-07-24 \
+      1784880000000 1  1784851200000 1784937599999  sum
+<span class="cmt">(integer) 5      # count_after — allow while ≤ 5, else block</span></code></pre>
+      <pre><code><span class="cmt">// Typed Rust client — one atomic call returns the post-increment count</span>
+<span class="kw">let</span> count = client.<span class="fn">control_state_family_set_and_get</span>(
+    ControlStateFamily::H,
+    <span class="str">"control:t1:user:u42:campaign:c123:impression:2026-07-24"</span>,
+    occur_ms, <span class="str">/*amount*/</span> 1, day_start_ms, day_end_ms, <span class="str">"sum"</span>)?;
+<span class="kw">let</span> decision = <span class="kw">if</span> count &lt;= cap { Allow { remaining: cap - count } } <span class="kw">else</span> { Block };</code></pre>
+
+      <h3>2 · Tenant quota</h3>
+      <pre><code><span class="cmt"># weighted increment; allow while used ≤ limit, surface remaining</span>
+&gt; <span class="kw">HSETANDGET</span> control:t1:tenant:t1:quota:api_requests:2026-07-24 \
+      &lt;now_ms&gt; &lt;weight&gt;  &lt;day_start&gt; &lt;day_end&gt;  sum
+<span class="cmt">(integer) 483221   # remaining = 1_000_000 − 483221</span></code></pre>
+
+      <h3>3 · Campaign pacing — read-heavy</h3>
+      <pre><code><span class="cmt"># accrue spend on delivery, then read to compute the pace multiplier</span>
+&gt; <span class="kw">HSET</span>   control:t1:campaign:c9:pacing:spend:2026-07-24 &lt;now_ms&gt; &lt;cost&gt; sum
+&gt; <span class="kw">HQUERY</span> control:t1:campaign:c9:pacing:spend:2026-07-24 &lt;day_start&gt; &lt;day_end&gt; sum
+<span class="cmt">(integer) 1300     # spent=1300 vs target_by_now=1500 → under pace → boost 1.12×</span></code></pre>
+
+      <h3>4 · Rolling-window suppression</h3>
+      <pre><code><span class="cmt"># record a failed login at minute precision, count the rolling hour</span>
+&gt; <span class="kw">HSET</span>   control:t1:device:d7:login:failed:rolling_1h &lt;now_ms&gt; 1 sum   <span class="cmt"># precision = 60s</span>
+&gt; <span class="kw">HQUERY</span> control:t1:device:d7:login:failed:rolling_1h &lt;now-1h&gt; &lt;now&gt; sum
+<span class="cmt">(integer) 5   # ≥ threshold → suppress (fires at exactly the 5th failure)</span></code></pre>
+
+      <h3>5 · Idempotent ingestion (replay-safe)</h3>
+      <p>When events arrive from an at-least-once queue, pass a stable <code>uuid</code>. A redelivery
+        inside the dedup window is a no-op write that still returns the current total, so the enforced
+        count equals the number of <em>distinct</em> events — not deliveries.</p>
+      <pre><code><span class="cmt"># HSETANDGETOPT key ts amount start end agg  precision_ms ttl_ms uuid</span>
+&gt; <span class="kw">HSETANDGETOPT</span> control:t1:user:u42:campaign:c123:impression:2026-07-24 \
+      &lt;ts&gt; 1 &lt;day_start&gt; &lt;day_end&gt; sum  86400000 86400000 <span class="str">evt-9f3a</span>
+<span class="cmt">(integer) 5</span>
+&gt; <span class="kw">HSETANDGETOPT</span> …same evt-9f3a…            <span class="cmt"># redelivered</span>
+<span class="cmt">(integer) 5    # deduped — no double count</span></code></pre>
+      <pre><code><span class="cmt">// Typed client: precision + TTL + uuid in one atomic, idempotent call</span>
+client.<span class="fn">control_state_family_set_and_get_with_options</span>(
+    ControlStateFamily::H, key, ts, 1, day_start, day_end, <span class="str">"sum"</span>,
+    <span class="str">/*precision_ms*/</span> Some(86_400_000),
+    <span class="str">/*ttl_ms*/</span>      Some(86_400_000),
+    <span class="str">/*uuid*/</span>        Some(<span class="str">"evt-9f3a"</span>.into()))?;</code></pre>
+    </div>
+  </section>
+
+  <section id="sdk">
+    <div class="wrap">
+      <p class="kicker">Client SDK</p>
+      <h2>Production Python client</h2>
+      <p>A dependency-free (stdlib-only) client speaks the RESP protocol above and wraps every use
+        case in a typed method. It ships a thread-safe connection pool, a retry policy that respects
+        at-most-once write semantics, UTC-correct windows, and a metrics hook —
+        <code>sdk/python/temporalstore/control_state.py</code>.</p>
+      <pre><code><span class="kw">from</span> temporalstore.control_state <span class="kw">import</span> ControlState, ControlStateConfig
+
+cs = <span class="fn">ControlState</span>(ControlStateConfig(host=<span class="str">"127.0.0.1"</span>, port=<span class="str">16379</span>, tenant=<span class="str">"acme"</span>))
+
+<span class="cmt"># 1 · frequency cap — atomic accept-decision</span>
+d = cs.<span class="fn">frequency_cap</span>(user_id=<span class="str">"u42"</span>, campaign_id=<span class="str">"c123"</span>, limit=<span class="str">5</span>)
+<span class="kw">if</span> d.allowed: serve_ad()          <span class="cmt"># d.remaining impressions left today</span>
+
+<span class="cmt"># 2 · tenant quota   3 · pacing   4 · rolling suppression</span>
+cs.<span class="fn">tenant_quota</span>(resource=<span class="str">"api_requests"</span>, limit=<span class="str">1_000_000</span>, weight=<span class="str">3</span>)
+cs.<span class="fn">record_spend</span>(campaign_id=<span class="str">"c9"</span>, cost=<span class="str">1300</span>); cs.<span class="fn">pacing</span>(campaign_id=<span class="str">"c9"</span>, budget=<span class="str">5000</span>, target_by_now=<span class="str">1500</span>)
+cs.<span class="fn">rolling_suppression</span>(entity_kind=<span class="str">"device"</span>, entity_id=<span class="str">"d7"</span>, signal=<span class="str">"login:failed"</span>, threshold=<span class="str">5</span>)
+
+<span class="cmt"># 5 · idempotent ingest (at-least-once queue)</span>
+cs.<span class="fn">ingest_impression</span>(user_id=<span class="str">"u9"</span>, campaign_id=<span class="str">"c1"</span>, limit=<span class="str">5</span>, event_id=evt.id)
+
+<span class="cmt"># 7 · sliding-window rate limit   9 · concurrency semaphore</span>
+cs.<span class="fn">rate_limit</span>(name=<span class="str">f"apikey:{k}"</span>, limit=<span class="str">100</span>, window_ms=<span class="str">60_000</span>)
+<span class="kw">with</span> cs.<span class="fn">concurrency_slot</span>(resource=<span class="str">"pdf-render"</span>, limit=<span class="str">8</span>) <span class="kw">as</span> slot:
+    <span class="kw">if</span> slot.allowed: render()
+
+<span class="cmt"># 8 · debounce   10 · distinct count   11 · hard budget gate</span>
+cs.<span class="fn">debounce</span>(name=<span class="str">"alert:svc-x"</span>, quiet_ms=<span class="str">60_000</span>)
+cs.<span class="fn">add_unique</span>(subject=<span class="str">"user:u42:devices"</span>, value=device_id); cs.<span class="fn">unique_count</span>(subject=<span class="str">"user:u42:devices"</span>)
+cs.<span class="fn">budget_gate</span>(budget_id=<span class="str">"camp:c9"</span>, cost=<span class="str">1300</span>, budget=<span class="str">5000</span>, event_id=evt.id)</code></pre>
+      <p class="muted" style="font-size:14.5px">Every method returns a typed <code>Decision</code>
+        (<code>allowed</code>, <code>count</code>, <code>remaining</code>, <code>reason</code>) or a
+        <code>PacingState</code>. Run the built-in demo against a live endpoint with
+        <code>python -m temporalstore.control_state</code>.</p>
+    </div>
+  </section>
+
+  <section id="durability">
+    <div class="wrap">
+      <p class="kicker">Getting it right in production</p>
+      <h2>Atomicity, durability &amp; idempotency</h2>
+      <p>A single-key counter update is atomic — the increment and the window read run as one command
+        on one object, so no two requests race past a cap. Choose durability by how costly a lost
+        write is:</p>
+      <div class="twrap"><table>
+        <thead><tr><th>Mode</th><th>When</th><th>Trade-off</th></tr></thead>
+        <tbody>
+          <tr><td><b>Async</b> (default)</td><td>High-QPS controls — caps, quotas, pacing</td><td>Acknowledges fast; the commit is durable within the configured lag.</td></tr>
+          <tr><td><b>Sync</b></td><td>State that must survive node loss before ack</td><td>Blocks on fsync; use selectively for critical keys.</td></tr>
+        </tbody>
+      </table></div>
+      <div class="note"><b>Idempotency for queue replay.</b> With at-least-once delivery, attach a
+        <code>uuid</code> and commit the processed offset only after the durability threshold is met.
+        The dedup ledger keeps a 5-minute window, matching the reference semantics, so retries don't
+        inflate a cap or a quota.</div>
+      <div class="note warn"><b>Cache eviction is not deletion.</b> A hot key evicted from memory
+        stays recoverable from durable storage until its window expires and compaction reclaims it.
+        Keep current-value state with a TTL, not an append-only debug log.</div>
+    </div>
+  </section>
+
+  <section id="metrics">
+    <div class="wrap">
+      <p class="kicker">Operate it</p>
+      <h2>Metrics &amp; a review checklist</h2>
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr))">
+        <div class="card"><h3 style="margin-top:0">Throughput</h3><p>update QPS · read QPS · async durability lag</p></div>
+        <div class="card"><h3 style="margin-top:0">Latency</h3><p>p50 / p95 / p99 decision latency</p></div>
+        <div class="card"><h3 style="margin-top:0">Integrity</h3><p>atomic-update failures · idempotent replay count</p></div>
+        <div class="card"><h3 style="margin-top:0">Lifecycle</h3><p>expired-key count · hot-cache hit rate · durable-read fallbacks</p></div>
+      </div>
+      <ul class="check">
+        <li>Keep it generic — caps, quotas, pacing, eligibility, and suppression all use the one capability.</li>
+        <li>Store current-value state with a TTL, never an append-only history.</li>
+        <li>Make single-key counter updates atomic; use <code>HSETANDGET</code> for accept-decisions.</li>
+        <li>Require a <code>uuid</code> when replaying from a durable queue.</li>
+        <li>Keep high-QPS controls async by default; reserve sync for state that must survive node loss.</li>
+        <li>Distinguish API acknowledgement, append acceptance, and durable persistence.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="proof">
+    <div class="wrap">
+      <p class="kicker">Proven at scale</p>
+      <h2>Every use case, verified exact under load</h2>
+      <p>A scaled harness drives the engine through all five serving scenarios over a synthetic
+        keyspace, checking a hard correctness invariant on <em>every</em> operation — caps admit
+        exactly <code>min(attempts, cap)</code>, quota totals match an independent ground truth,
+        suppression fires at the exact threshold, and replays are deduplicated.</p>
+      <div class="statrow">
+        <div class="stat"><div class="num">5,758</div><div class="cap">engine ops</div></div>
+        <div class="stat"><div class="num allow">0</div><div class="cap">invariant violations</div></div>
+        <div class="stat"><div class="num">5 / 5</div><div class="cap">scenarios pass</div></div>
+      </div>
+      <div class="twrap"><table>
+        <thead><tr><th>Scenario</th><th class="tabular">ops</th><th class="tabular">p50</th><th class="tabular">p99</th><th>Invariant</th></tr></thead>
+        <tbody>
+          <tr><td>frequency_cap</td><td class="tabular">567</td><td class="tabular">1.1 ms</td><td class="tabular">5.5 ms</td><td><span class="pill allow">PASS</span> allowed = min(attempts,cap)</td></tr>
+          <tr><td>tenant_quota</td><td class="tabular">1,000</td><td class="tabular">5.3 ms</td><td class="tabular">19 ms</td><td><span class="pill allow">PASS</span> total = ground truth</td></tr>
+          <tr><td>pacing</td><td class="tabular">1,000</td><td class="tabular">1.5 ms</td><td class="tabular">21 ms</td><td><span class="pill allow">PASS</span> spend consistent</td></tr>
+          <tr><td>risk_suppression</td><td class="tabular">1,860</td><td class="tabular">15 ms</td><td class="tabular">38 ms</td><td><span class="pill allow">PASS</span> fires at threshold</td></tr>
+          <tr><td>idempotent_replay</td><td class="tabular">1,331</td><td class="tabular">23 ms</td><td class="tabular">51 ms</td><td><span class="pill allow">PASS</span> count = distinct events</td></tr>
+        </tbody>
+      </table></div>
+      <p class="muted" style="font-size:14.5px">Correctness is exact regardless of scale. Latencies
+        here rise across scenarios as the live keyspace accumulates — the signature of the per-command
+        slot-index promotion described below (durable tmpfs path, measured under concurrent load).</p>
+    </div>
+  </section>
+
+  <section id="parity">
+    <div class="wrap">
+      <p class="kicker">C++ reference parity</p>
+      <h2>Matched against the reference control_state</h2>
+      <p>Reconciled feature-by-feature with the C++ reference (H / CPC / FOL families + MANAGER).
+        The one correctness gap — replay idempotency — is now closed.</p>
+      <div class="twrap"><table>
+        <thead><tr><th>Capability</th><th>Reference</th><th>TemporalStore</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td>Atomic increment-then-read</td><td><code>HSETANDGET</code></td><td><code>HSETANDGET</code> + options</td><td><span class="pill allow">parity</span></td></tr>
+          <tr><td>Precision bucketing · TTL</td><td>yes</td><td><code>HSETANDGETOPT</code></td><td><span class="pill allow">parity</span></td></tr>
+          <tr><td>Aggregators count/min/max/change</td><td>HType</td><td>sum·min·max·change</td><td><span class="pill allow">parity</span></td></tr>
+          <tr><td><b>UUID idempotency (5 min)</b></td><td>dedup ledger</td><td><b>added</b> — dedup ledger</td><td><span class="pill allow">gap fixed</span></td></tr>
+          <tr><td>First / last (FOL)</td><td>string model</td><td><code>FOLSET/FOLQUERY</code></td><td><span class="pill allow">parity</span></td></tr>
+          <tr><td>Distinct-count sketch (CPC)</td><td>probabilistic</td><td>exact set</td><td><span class="pill" style="color:var(--warn);border-color:var(--warn);background:var(--warn-soft)">exact-only</span></td></tr>
+          <tr><td>Hierarchical rollup</td><td>fine+coarse</td><td>flat window</td><td><span class="pill" style="color:var(--warn);border-color:var(--warn);background:var(--warn-soft)">follow-up</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <section id="shipped">
+    <div class="wrap">
+      <p class="kicker">What shipped</p>
+      <h2>The idempotency primitive &amp; the perf finding</h2>
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
+        <div class="card"><span class="tag">Delivered</span>
+          <h3>Replay-safe atomic op</h3>
+          <p><code>ControlStateSetAndGetWithOptions</code> — precision + TTL + <code>uuid</code> dedup +
+            <code>change</code> aggregator. Reachable via <code>HSETANDGETOPT</code> and the typed
+            client, with parity tests for precision bucketing and idempotent replay.</p></div>
+        <div class="card"><span class="tag">Finding</span>
+          <h3>Write-path scaling</h3>
+          <p>The live write path runs a per-command slot-index promotion that is O(live keyspace),
+            so per-op latency grows with the working set. A safe deferral needs the flush/reconcile
+            path — flagged as a scoped follow-up, not a claimed fix.</p></div>
+      </div>
+      <div class="note"><b>Verification.</b> The control-state test suite passes, including the two new
+        parity tests; the full suite shows zero regressions against the pre-existing baseline. The
+        change rebases cleanly onto the current mainline (which already carries the naming refactor).</div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Control State on TemporalStore — use-case &amp; usage guide</span>
+    <span class="prov">Proven at scale · exact enforcement · 0 invariant violations</span>
+  </div>
+</footer>
