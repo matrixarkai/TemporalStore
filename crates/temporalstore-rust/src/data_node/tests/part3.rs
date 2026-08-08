@@ -1530,6 +1530,83 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
 }
 
 #[test]
+fn operator_gc_retains_slabs_referenced_by_dump_manifest() {
+    // The /gc operator RPC must not delete a page slab a durable bucket-dump manifest still
+    // references, even when retain_page_slabs_from_id would sweep it and it is no longer in
+    // the resident live set. Deleting it makes the manifest uninstallable and loses data on
+    // a lagging follower's replay / snapshot-install. The gated storage-manager cycle blocks
+    // this via storage_page_gc_dependency_plan; the operator path must mirror the guard.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "gc-key".to_string(),
+            value: b"v1".to_vec(),
+        },
+    });
+    // Dump: the manifest captures the slab (id 0) holding v1.
+    let manifest = engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
+    assert!(
+        !manifest.page_slab_ids.is_empty(),
+        "dump manifest should reference the slab holding v1"
+    );
+    // Roll to a new slab and overwrite: slab 0 becomes stale (not live) but is still named
+    // by the manifest.
+    engine.block_store().roll_slab().unwrap();
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "gc-key".to_string(),
+            value: b"v2".to_vec(),
+        },
+    });
+    let live = engine.live_page_slab_ids(1);
+    assert!(
+        !manifest.page_slab_ids.iter().any(|s| live.contains(s)),
+        "manifest slab must be stale (not live) to exercise the guard; live={live:?}"
+    );
+
+    let runtime = DataNodeRuntime::new(
+        engine.clone(),
+        DataNodeRuntimeOptions {
+            worker_threads: 1,
+            max_queue_depth: 8,
+            max_background_queue_depth: 8,
+        },
+    );
+    // Aggressive operator sweep that would delete the stale manifest slab.
+    let submitted = runtime.submit_gc(
+        GcRequest {
+            shard_id: 1,
+            retain_oplog_from_sequence: None,
+            retain_index_log_from_sequence: None,
+            retain_page_slabs_from_id: Some(u64::MAX),
+        },
+        RequestController { timeout_ms: 1000 },
+    );
+    let finished = wait_for_job(&runtime, submitted.job_id);
+    let Some(DataNodeTaskOutput::Gc(output)) = finished.output else {
+        panic!("expected gc output");
+    };
+    assert!(output.status.ok, "{:?}", output.status);
+    let remaining = engine.block_store().slab_ids().unwrap();
+    for slab in &manifest.page_slab_ids {
+        assert!(
+            remaining.contains(slab),
+            "operator /gc deleted slab {slab} still referenced by a dump manifest \
+             (remaining={remaining:?})"
+        );
+    }
+}
+
+#[test]
 fn runtime_cancels_queued_job_before_worker_executes_it() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
