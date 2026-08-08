@@ -598,7 +598,7 @@ impl LocalBlockStore {
         let root = root.into();
         let _ = fs::create_dir_all(&root);
         let page_slab_id = latest_slab_id_at(&root).unwrap_or_default();
-        let write_offset = slab_path(&root, page_slab_id)
+        let mut write_offset = slab_path(&root, page_slab_id)
             .metadata()
             .map(|metadata| metadata.len())
             .unwrap_or_default();
@@ -622,6 +622,37 @@ impl LocalBlockStore {
             page_slab_id,
             BlockStoreBandState::Active,
         );
+        // Fence a torn tail on the ACTIVE slab. After a crash mid-append the raw file length
+        // includes uncommitted/partial bytes past the last intact record; reconcile computed
+        // the intact `readable_prefix`. Resuming appends at raw EOF would embed the torn record
+        // permanently mid-slab and, via the early-halting page-id scan, regress next_page_id ->
+        // page-id/generation reuse -> stale reads. Mirror C++'s resume-at-committed-length:
+        // physically truncate the active slab to its readable prefix and resume there.
+        let active_readable_prefix = bands
+            .get(&page_slab_id)
+            .map(|band| band.readable_prefix_physical_bytes);
+        if let Some(readable_prefix) = active_readable_prefix {
+            if readable_prefix < write_offset {
+                if let Ok(file) = OpenOptions::new()
+                    .write(true)
+                    .open(slab_path(&root, page_slab_id))
+                {
+                    if file.set_len(readable_prefix).is_ok() {
+                        let _ = file.sync_all();
+                        if let Ok(dir) = File::open(&root) {
+                            let _ = dir.sync_all();
+                        }
+                        write_offset = readable_prefix;
+                        if let Some(band) = bands.get_mut(&page_slab_id) {
+                            band.physical_bytes = readable_prefix;
+                            band.has_corruption = false;
+                            band.first_error_offset = None;
+                        }
+                        manifest_rebuilt = true;
+                    }
+                }
+            }
+        }
         if manifest_rebuilt {
             let _ = persist_band_manifest(&root, &bands);
         }
@@ -957,6 +988,46 @@ impl Default for LocalBlockStore {
 
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_slab_torn_tail_is_fenced_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let a1 = store.append(b"record-one").unwrap();
+        let a2 = store.append(b"record-two").unwrap();
+        drop(store);
+        // Simulate a crash that left a partial/torn record (no valid envelope) on the ACTIVE
+        // slab past the last committed record.
+        let slab = slab_path(dir.path(), a2.page_slab_id);
+        let clean_len = std::fs::metadata(&slab).unwrap().len();
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&slab)
+                .unwrap();
+            file.write_all(b"\x01\x02 torn partial record without a valid envelope")
+                .unwrap();
+            file.sync_all().unwrap();
+        }
+        assert!(std::fs::metadata(&slab).unwrap().len() > clean_len);
+        // Reopen: the torn tail must be physically fenced back to the readable prefix (mirrors
+        // C++ resume-at-committed-length), not left embedded mid-slab.
+        let reopened = LocalBlockStore::new(dir.path());
+        assert_eq!(
+            std::fs::metadata(&slab).unwrap().len(),
+            clean_len,
+            "torn active-slab tail must be truncated to the readable prefix on reopen"
+        );
+        // Committed records survive and remain readable.
+        assert_eq!(reopened.read(&a1).unwrap(), b"record-one");
+        assert_eq!(reopened.read(&a2).unwrap(), b"record-two");
+        // A new append lands right after the fenced prefix and does not reuse a page id.
+        let a3 = reopened.append(b"record-three").unwrap();
+        assert_ne!(a3.page_id, a1.page_id);
+        assert_ne!(a3.page_id, a2.page_id);
+        assert_eq!(reopened.read(&a3).unwrap(), b"record-three");
+    }
 
     #[test]
     fn gc_slabs_removes_old_non_current_slabs() {

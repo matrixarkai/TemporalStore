@@ -254,7 +254,10 @@ impl LocalWriteAheadLogStore {
         };
         let report = append_record_locked(&mut inner, &record, sync)?;
         inner.stats.last_sequence = report.current_sequence;
-        inner.stats.last_flushed_sequence = report.current_sequence;
+        // last_flushed_sequence is advanced by append_record_locked ONLY when the record was
+        // actually fsynced (sync=true). An unconditional overwrite here reported an async /
+        // bulk-mode (unsynced) record as durable -- overstating durability, a latent trap for
+        // any future reclaim/ack gate that reads it. Let the flush-gated path own it.
         inner.last_sequence_by_shard.insert(shard_id, next_sequence);
         Ok(record)
     }
@@ -397,7 +400,15 @@ impl LocalWriteAheadLogStore {
         }
 
         let bytes_before = path.metadata()?.len();
-        let _ = last_wal_sequence_at(&inner.root, shard_id)?;
+        let last_sequence = last_wal_sequence_at(&inner.root, shard_id)?;
+        // Never delete the highest-sequence record. The WAL file is the sequence-generator
+        // source on restart (append seeds last_sequence_by_shard from last_wal_sequence_at), so
+        // emptying it entirely on a full reclaim (retain_from > max) would regress the next
+        // append to sequence 1 -> sequence REUSE + silent loss: the re-used seq is <= the
+        // persisted applied_wal_sequence anchor, so replay's `sequence > watermark` filter drops
+        // it. C++'s zone-aligned oplog Truncate always retains the tail zone holding the highest
+        // sequence for exactly this continuity reason. Clamp the retain floor to keep the tail.
+        let effective_retain = retain_from_sequence.min(last_sequence);
         let file = File::open(&path)?;
         let reader = BufReader::new(file);
         let mut records_before = 0usize;
@@ -409,7 +420,7 @@ impl LocalWriteAheadLogStore {
             }
             records_before += 1;
             let record: WriteAheadLogRecord = serde_json::from_str(&line)?;
-            if record.sequence >= retain_from_sequence {
+            if record.sequence >= effective_retain {
                 retained.push(record);
             }
         }
@@ -584,9 +595,15 @@ fn last_wal_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, WriteAhea
             good_offset = offset;
             continue;
         }
-        let Ok(record) = serde_json::from_slice::<WriteAheadLogRecord>(&line) else {
-            break;
-        };
+        // A fully newline-terminated line that fails to parse is COMMITTED corruption, not a
+        // torn tail: WAL records are single-line JSON with no embedded newline, so a complete
+        // (\n-terminated) line is a complete write. Surface it as an error instead of breaking
+        // -- treating interior corruption as end-of-log would set_len the file down to the last
+        // parseable record, silently dropping every durable record after the corrupt one and
+        // defeating the strict replay-continuity DataLoss guard (C++ ReplayOplog returns
+        // DataLoss on a CRC failure / hole rather than trimming). A genuine torn tail lacks the
+        // trailing '\n' and is still handled by the break above.
+        let record = serde_json::from_slice::<WriteAheadLogRecord>(&line)?;
         last = last.max(record.sequence);
         good_offset = offset;
     }
@@ -732,6 +749,82 @@ fn unique_temp_path(kind: &str) -> PathBuf {
 mod tests {
     use super::*;
     use crate::types::Command;
+
+    #[test]
+    fn wal_full_reclaim_retains_tail_so_sequence_does_not_regress_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        for i in 0..5 {
+            store
+                .append(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{i}"),
+                        value: b"v".to_vec(),
+                    },
+                )
+                .unwrap();
+        }
+        assert_eq!(store.stats(1).last_sequence, 5);
+        // Full reclaim: retain floor past the max sequence would empty the file.
+        store.gc_before_sequence(1, 6).unwrap();
+        drop(store);
+        // Restart: the sequence generator is seeded from the file. The tail record must have
+        // survived so the next sequence is 6, not a regressed 1 (which would reuse a sequence
+        // <= the durable anchor and be dropped by replay).
+        let restarted = LocalWriteAheadLogStore::new(dir.path());
+        let next = restarted
+            .append(
+                1,
+                Command::StringSet {
+                    key: "after".to_string(),
+                    value: b"v".to_vec(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            next.sequence, 6,
+            "sequence must continue at 6 after a full reclaim + restart, not regress"
+        );
+    }
+
+    #[test]
+    fn wal_interior_corruption_is_fatal_not_silent_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        for i in 0..4 {
+            store
+                .append(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{i}"),
+                        value: b"v".to_vec(),
+                    },
+                )
+                .unwrap();
+        }
+        drop(store);
+        // Corrupt the 2nd record IN PLACE, keeping it newline-terminated and leaving records
+        // 3 & 4 intact after it. A newline-terminated line that fails to parse is committed
+        // corruption, not a torn tail.
+        let path = write_ahead_log_path(dir.path(), 1);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 4);
+        let corrupted = format!(
+            "{}\ncorrupt-not-json\n{}\n{}\n",
+            lines[0], lines[2], lines[3]
+        );
+        std::fs::write(&path, corrupted).unwrap();
+        // scan drives last_wal_sequence_at, which must surface the interior corruption as an
+        // error rather than silently truncating away records 3 & 4 (which would defeat the
+        // strict replay-continuity DataLoss guard).
+        let restarted = LocalWriteAheadLogStore::new(dir.path());
+        assert!(
+            restarted.scan(1, 0, u64::MAX, u64::MAX).is_err(),
+            "interior WAL corruption must be fatal, not silently truncated to the last good record"
+        );
+    }
 
     // rust-internal: verifies Rust WAL alias exports remain wired to the local mutation log API.
     #[test]
