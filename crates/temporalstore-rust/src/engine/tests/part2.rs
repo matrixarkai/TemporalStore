@@ -1465,6 +1465,87 @@ fn hdel_last_field_removes_key_like_cpp() {
 }
 
 #[test]
+fn reconcile_does_not_resurrect_evicted_feature_points_on_reload() {
+    // A single FeatureAppend packs all timestamps into one page; the feature_max_size trim
+    // drops the oldest from the in-memory series, but the page still physically holds them.
+    // reconcile-from-pages must keep the persisted (trimmed) membership -- the evicted points
+    // must NOT resurrect on reload (C++ writes per-timestamp deleted tombstones for this).
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache-a"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config {
+                    version: 2,
+                    feature_max_size: 3,
+                    ..Config::default()
+                },
+            })
+            .ok
+    );
+    // One append of 5 points; the max_size=3 trim keeps the newest 3 in the series.
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureAppend {
+            key: "f".to_string(),
+            points: (1..=5)
+                .map(|i| FeaturePoint {
+                    timestamp_ms: i * 10,
+                    value: vec![i as u8],
+                })
+                .collect(),
+        },
+    });
+    let live_timestamps = |engine: &TemporalEngine| -> Vec<u64> {
+        match engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::FeatureQuery {
+                    key: "f".to_string(),
+                    start_ms: 0,
+                    end_ms: u64::MAX,
+                    count: Some(100),
+                },
+            })
+            .response
+        {
+            CommandResponse::FeaturePoints { points } => {
+                points.iter().map(|point| point.timestamp_ms).collect()
+            }
+            other => panic!("expected FeaturePoints, got {other:?}"),
+        }
+    };
+    let before = live_timestamps(&engine);
+    assert!(
+        before.contains(&50) && !before.contains(&10),
+        "trim should keep the newest points and drop the oldest: {before:?}"
+    );
+    drop(engine);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    restarted.load_shard(1);
+    assert_eq!(
+        live_timestamps(&restarted),
+        before,
+        "reload must not resurrect the evicted feature points that still physically live in the page"
+    );
+}
+
+#[test]
 fn hash_incrby_rejects_non_integer_and_overflow_like_cpp() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
