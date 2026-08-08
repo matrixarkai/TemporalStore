@@ -296,8 +296,21 @@ pub(crate) fn call_openai_compatible_context_provider(
             )
         })?)
     };
+    // Data-adaptive richness hint so the model scales L1 to how much the source
+    // actually carries -- thin sources get a minimal L1 (no token padding), rich
+    // sources get a full synthesis. This keeps generation frugal.
+    let l1_guidance = if context_source_warrants_l1(&request.body) {
+        "l1: a richer semantic synthesis for tree-first retrieval -- fold the source's key facts, named entities, and CURRENT state into <=1200 characters. Prefer current state and resolved contradictions over stale facts."
+    } else {
+        "l1: this source is thin; keep l1 minimal (a single distilled fact line, <=220 characters). Do NOT pad or repeat l0."
+    };
     let prompt = format!(
-        "Extract TemporalStore context for source_kind={:?}, source_id={}, title={}. Return JSON with string fields l0 and l1. Body:\n{}",
+        "Generate OpenViking/VikingMem ContextNode traversal summaries for source_kind={:?}, source_id={}, title={}.\n\
+         Return ONLY JSON with string fields l0 and l1.\n\
+         l0: a compact routing abstract (<=220 characters) used for embedding-scored tree traversal.\n\
+         {l1_guidance}\n\
+         Do not invent facts beyond the source.\n\
+         Source body:\n{}",
         request.source_kind, request.source_id, request.title, request.body
     );
     let completion_request = OpenAiChatCompletionRequest {
@@ -305,7 +318,10 @@ pub(crate) fn call_openai_compatible_context_provider(
         messages: vec![
             OpenAiChatMessage {
                 role: "system",
-                content: "You are a context extraction engine. Keep l0 short and l1 structured."
+                content: "You generate TemporalStore/OpenViking ContextNode traversal summaries. \
+                          Be faithful to the supplied source; prefer current state and resolved \
+                          contradictions; never invent facts. l0 is a compact routing abstract; \
+                          l1 is a richer synthesis whose length scales to the source's information."
                     .to_string(),
             },
             OpenAiChatMessage {

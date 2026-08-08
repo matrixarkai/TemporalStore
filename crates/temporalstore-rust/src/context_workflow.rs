@@ -1384,9 +1384,23 @@ pub struct ContextWorkflowPolicyReport {
     pub sanitized_text: String,
 }
 
+/// Single-source extraction (codex-hook path). Gates L1 by source richness so
+/// thin events do not pay for the richer L1 tier.
 pub fn extract_context(
     engine: &TemporalEngine,
     request: ContextExtractRequest,
+) -> ContextExtractReport {
+    extract_context_gated(engine, request, true)
+}
+
+/// Extraction with explicit control over L1 gating. The batch ingest path
+/// (`ingest_extract_context`) passes `gate_l1 = false` so bulk resource/skill
+/// docs always produce L1 and keep their fixed fanout contract (2 summaries +
+/// 3 embeddings per extract).
+pub(crate) fn extract_context_gated(
+    engine: &TemporalEngine,
+    request: ContextExtractRequest,
+    gate_l1: bool,
 ) -> ContextExtractReport {
     let provider = normalize_provider(request.provider.clone());
     let summaries = match context_summaries_for_extract(&provider, &request) {
@@ -1460,7 +1474,15 @@ pub fn extract_context(
     let event_id_hash = stable_hash64(&format!("event:{}:{}", request.source_id, request.body));
     let timestamp_ms = request.timestamp_ms.max(1);
     let l0 = summaries.l0;
-    let l1 = summaries.l1;
+    // Emit L1 when not gating (bulk ingest) or when the source is rich enough to
+    // warrant the richer, more expensive L1 tier. Thin gated nodes keep only L0
+    // (no l1_ref, no l1 summary, no l1 embedding) -- the frugal path.
+    let emit_l1 = !gate_l1 || context_source_warrants_l1(&request.body);
+    let l1 = if emit_l1 {
+        summaries.l1
+    } else {
+        String::new()
+    };
     let l2_ref = summaries.l2_ref;
     let node = ContextNode {
         node_hash,
@@ -1498,10 +1520,10 @@ pub fn extract_context(
         primary_event_time_ms: timestamp_ms,
         event_id_hash,
     };
-    let summary_refs = vec![
-        format!("summary:{node_hash}:l0"),
-        format!("summary:{node_hash}:l1"),
-    ];
+    let mut summary_refs = vec![format!("summary:{node_hash}:l0")];
+    if emit_l1 {
+        summary_refs.push(format!("summary:{node_hash}:l1"));
+    }
     let dirty_marker = ContextSummaryDirtyMarker {
         node_hash,
         event_time_ms: timestamp_ms,
@@ -1515,17 +1537,18 @@ pub fn extract_context(
         text: l0.clone(),
         valid_from_ms: timestamp_ms,
     };
-    let summary_l1 = ContextSummary {
+    let summary_l1 = emit_l1.then(|| ContextSummary {
         node_hash,
         level: 2,
         text: l1.clone(),
         valid_from_ms: timestamp_ms,
-    };
-    let embedding_inputs = [
-        ("node_l0", node_hash, 1, l0.as_str()),
-        ("node_l1", node_hash, 2, l1.as_str()),
-        ("event_text", event_id_hash, 3, request.body.as_str()),
-    ];
+    });
+    let mut embedding_inputs: Vec<(&str, u64, u32, &str)> =
+        vec![("node_l0", node_hash, 1, l0.as_str())];
+    if emit_l1 {
+        embedding_inputs.push(("node_l1", node_hash, 2, l1.as_str()));
+    }
+    embedding_inputs.push(("event_text", event_id_hash, 3, request.body.as_str()));
     let (embedding_vectors, embedding_generation) =
         match context_embeddings_for_extract(&provider, &embedding_inputs) {
             Ok(value) => value,
@@ -1567,22 +1590,27 @@ pub fn extract_context(
         vector: embedding_vectors[0].clone(),
         updated_at_ms: timestamp_ms,
     };
-    let embedding_l1 = ContextEmbedding {
-        ref_hash: context_embedding_ref_hash(request.tenant_hash, node_hash, "node_l1"),
-        level: 2,
-        model_hash: context_embedding_model_hash(&provider.model),
-        vector: embedding_vectors[1].clone(),
-        updated_at_ms: timestamp_ms,
+    let embedding_l1 = if emit_l1 {
+        Some(ContextEmbedding {
+            ref_hash: context_embedding_ref_hash(request.tenant_hash, node_hash, "node_l1"),
+            level: 2,
+            model_hash: context_embedding_model_hash(&provider.model),
+            vector: embedding_vectors[1].clone(),
+            updated_at_ms: timestamp_ms,
+        })
+    } else {
+        None
     };
+    let event_vector_index = if emit_l1 { 2 } else { 1 };
     let embedding_event = ContextEmbedding {
         ref_hash: context_embedding_ref_hash(request.tenant_hash, event_id_hash, "event_text"),
         level: 3,
         model_hash: context_embedding_model_hash(&provider.model),
-        vector: embedding_vectors[2].clone(),
+        vector: embedding_vectors[event_vector_index].clone(),
         updated_at_ms: timestamp_ms,
     };
 
-    for command in [
+    let mut commands = vec![
         Command::ContextUpsertNode {
             tenant_hash: request.tenant_hash,
             node: node.clone(),
@@ -1610,23 +1638,29 @@ pub fn extract_context(
             tenant_hash: request.tenant_hash,
             summary: summary_l0,
         },
-        Command::ContextUpsertSummary {
+    ];
+    // L1 summary + embedding are written only when L1 was emitted (see `emit_l1`).
+    if let Some(summary_l1) = summary_l1 {
+        commands.push(Command::ContextUpsertSummary {
             tenant_hash: request.tenant_hash,
             summary: summary_l1,
-        },
-        Command::ContextUpsertEmbedding {
-            tenant_hash: request.tenant_hash,
-            embedding: embedding_l0,
-        },
-        Command::ContextUpsertEmbedding {
+        });
+    }
+    commands.push(Command::ContextUpsertEmbedding {
+        tenant_hash: request.tenant_hash,
+        embedding: embedding_l0,
+    });
+    if let Some(embedding_l1) = embedding_l1 {
+        commands.push(Command::ContextUpsertEmbedding {
             tenant_hash: request.tenant_hash,
             embedding: embedding_l1,
-        },
-        Command::ContextUpsertEmbedding {
-            tenant_hash: request.tenant_hash,
-            embedding: embedding_event,
-        },
-    ] {
+        });
+    }
+    commands.push(Command::ContextUpsertEmbedding {
+        tenant_hash: request.tenant_hash,
+        embedding: embedding_event,
+    });
+    for command in commands {
         let response = engine.execute_durable(ExecuteRequest {
             shard_id: request.shard_id,
             command,
@@ -2197,23 +2231,92 @@ fn normalize_provider(mut provider: ContextModelProviderConfig) -> ContextModelP
     provider
 }
 
-fn summarize_l0(title: &str, body: &str) -> String {
-    let first = body
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or(body);
-    truncate_words(&format!("{title}: {first}"), 32)
+fn context_sentences(body: &str) -> Vec<&str> {
+    body.split(['.', '\n', '!', '?'])
+        .map(str::trim)
+        .filter(|sentence| !sentence.is_empty())
+        .collect()
 }
 
+/// Whether a source carries enough to justify the (more expensive) richer L1
+/// synthesis; thin sources skip it and stay cheap. Thresholds mirror the
+/// OpenViking `node_l1_generation_policy` (>=3 events / >=180 tokens); at
+/// extract time sentences stand in for events.
+pub(crate) fn context_source_warrants_l1(body: &str) -> bool {
+    context_sentences(body).len() >= 3 || body.split_whitespace().count() >= 180
+}
+
+/// L0: the short routing/preview summary (OpenViking/VikingMem "required
+/// traversal summary"). Title plus the single leading sentence, kept short --
+/// just enough to route and recall. L1 is a strict superset that carries more
+/// content; raw event evidence lives in the separate L2 tier.
+fn summarize_l0(title: &str, body: &str) -> String {
+    let lead = context_sentences(body)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| body.trim());
+    truncate_words(&format!("{title}: {lead}"), 18)
+}
+
+/// Rank a sentence by how much concrete detail it carries: figures, proper
+/// nouns, and temporal/correction markers are what queries actually target.
+fn context_fact_score(sentence: &str) -> i32 {
+    let lower = sentence.to_ascii_lowercase();
+    let mut score = 0;
+    if sentence.chars().any(|ch| ch.is_ascii_digit()) {
+        score += 3;
+    }
+    score += sentence
+        .split_whitespace()
+        .skip(1)
+        .filter(|word| word.chars().next().is_some_and(|ch| ch.is_ascii_uppercase()))
+        .count() as i32;
+    for marker in [
+        "now",
+        "changed",
+        "updated",
+        "corrected",
+        "correction",
+        "instead",
+        "no longer",
+        "moved",
+        "switched",
+        "rescheduled",
+        "deadline",
+        "because",
+        "after",
+        "before",
+    ] {
+        if lower.contains(marker) {
+            score += 2;
+        }
+    }
+    score
+}
+
+/// L1: the richer summary that "carries more content for broader traversal"
+/// (OpenViking/VikingMem). It is a strict **superset** of L0 -- the same leading
+/// sentence L0 previews, followed by the most information-dense remaining
+/// sentences ranked by `context_fact_score`. So L0 and L1 never merely reformat
+/// the same facts: L1 always adds detail on top of L0. Raw event evidence stays
+/// in the separate L2 tier.
 fn summarize_l1(kind: ContextSourceKind, title: &str, body: &str) -> String {
-    let facts = body
-        .split(['.', '\n'])
-        .filter_map(|part| {
-            let trimmed = part.trim();
-            (!trimmed.is_empty()).then(|| truncate_words(trimmed, 24))
-        })
-        .take(4)
+    let sentences = context_sentences(body);
+    let lead = sentences.first().copied();
+    let mut ranked = sentences
+        .iter()
+        .enumerate()
+        .skip(1)
+        .map(|(index, sentence)| (context_fact_score(sentence), index, *sentence))
         .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.cmp(&right.1)));
+    let mut facts = Vec::new();
+    if let Some(lead) = lead {
+        facts.push(truncate_words(lead, 32));
+    }
+    for (_, _, sentence) in ranked.into_iter().take(7) {
+        facts.push(truncate_words(sentence, 32));
+    }
     format!(
         "kind={kind:?}; title={title}; key_facts={}",
         facts.join(" | ")
