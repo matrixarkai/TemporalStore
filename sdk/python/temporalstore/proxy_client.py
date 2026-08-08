@@ -63,8 +63,16 @@ class ProxyClient:
         self._post("/ProxyService/HSet", body)
 
     def batch_hset(self, entries: Iterable[Dict[str, Any]]) -> None:
+        grouped: Dict[str, List[List[Any]]] = {}
         for entry in entries:
-            self.hset(str(entry["key"]), str(entry["field"]), str(entry.get("value", "")))
+            key = str(entry["key"])
+            grouped.setdefault(key, []).append(
+                [str(entry["field"]), _bytes_value(str(entry.get("value", "")))]
+            )
+        for key, kv in grouped.items():
+            body = self._key_body(key)
+            body["entries"] = kv
+            self._post("/ProxyService/HMSet", body)
 
     def matrixark_batch_append_records(
         self,
@@ -300,7 +308,7 @@ class ProxyClient:
             }
         )
         body["command"] = {
-            "kind": "risk_increment",
+            "kind": "control_state_increment",
             "key": key,
             "timestamp_ms": int(occur_time_seconds * 1000) if occur_time_seconds else 0,
             "amount": int(amount),
@@ -324,9 +332,48 @@ class ProxyClient:
                 "window_unit": int(window_unit),
             }
         )
-        body["command"] = {"kind": "risk_count", "key": key, "start_ms": int(window_start), "end_ms": int(window_end)}
+        body["command"] = {"kind": "control_state_count", "key": key, "start_ms": int(window_start), "end_ms": int(window_end)}
         data = self._post("/ProxyService/ExecuteTableCmd", body)
         return int(data.get("count", 0))
+
+    def feature_agg_query(
+        self,
+        key: str,
+        start_ts: int,
+        end_ts: int,
+        aggregator: str = "count",
+        count: Optional[int] = None,
+    ) -> int:
+        """Exact serving-time aggregate (count/sum/min/max/avg/first/last)."""
+        body = self._key_body(key)
+        body.update({"start_ms": int(start_ts), "end_ms": int(end_ts), "aggregator": str(aggregator)})
+        if count is not None:
+            body["count"] = int(count)
+        data = self._post("/ProxyService/FeatureAggQuery", body)
+        return int(data.get("value", data.get("count", 0)))
+
+    def control_state_increment(
+        self,
+        key: str,
+        amount: int = 1,
+        ttl_seconds: int = 24 * 3600,
+        precision: RiskPrecision = RiskPrecision.ONE_MINUTE,
+        uuid: str = "",
+        occur_time_seconds: int = 0,
+    ) -> None:
+        """Canonical name for the renamed Control State counter increment."""
+        self.risk_increment(key, amount, ttl_seconds, precision, uuid, occur_time_seconds)
+
+    def control_state_count(
+        self,
+        key: str,
+        precision: RiskPrecision = RiskPrecision.ONE_MINUTE,
+        window_start: int = -1,
+        window_end: int = 0,
+        window_unit: WindowUnit = WindowUnit.HOUR,
+    ) -> int:
+        """Canonical name for the renamed Control State windowed count."""
+        return self.risk_count(key, precision, window_start, window_end, window_unit)
 
     def _key_body(self, key: str) -> Dict[str, Any]:
         return {
