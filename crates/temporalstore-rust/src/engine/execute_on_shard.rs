@@ -849,10 +849,19 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 async_storage,
             ) {
-                let address = addresses
+                let Some(address) = addresses
                     .into_iter()
                     .find_map(|(timestamp, address)| (timestamp == timestamp_ms).then_some(address))
-                    .expect("single IPS timestamped page ref should exist");
+                else {
+                    // The freshly-written IPS page ref should always be present. Panicking
+                    // here would happen while holding shards.write() and POISON the engine
+                    // lock -- turning a single malformed IPS write into a permanent
+                    // whole-engine outage. Degrade gracefully instead of cascading.
+                    return ExecuteOutcome {
+                        response: CommandResponse::Empty,
+                        mutated,
+                    };
+                };
                 shard
                     .ips
                     .entry(key.clone())
@@ -912,10 +921,19 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 async_storage,
             ) {
-                let address = addresses
+                let Some(address) = addresses
                     .into_iter()
                     .find_map(|(timestamp, address)| (timestamp == timestamp_ms).then_some(address))
-                    .expect("single IPS timestamped page ref should exist");
+                else {
+                    // The freshly-written IPS page ref should always be present. Panicking
+                    // here would happen while holding shards.write() and POISON the engine
+                    // lock -- turning a single malformed IPS write into a permanent
+                    // whole-engine outage. Degrade gracefully instead of cascading.
+                    return ExecuteOutcome {
+                        response: CommandResponse::Empty,
+                        mutated,
+                    };
+                };
                 shard
                     .ips
                     .entry(key.clone())
@@ -1934,7 +1952,11 @@ pub(crate) fn execute_on_shard(
                             context_timeline_start(start_time_ms)
                                 ..context_timeline_end(end_time_ms),
                         )
-                        .take(context_limit(limit))
+                        // Bound the SCAN (C++ kMaxLimit), NOT the result: the caller's
+                        // `limit` must be applied AFTER filtering (C++ LimitOrDefault runs
+                        // post-filter). Taking `limit` here would drop matching events when
+                        // the earliest-by-time window entries are filtered out.
+                        .take(CONTEXT_MAX_LIMIT)
                         .filter_map(|(timeline_key, address)| {
                             read_context_value_cached::<ContextEvent>(
                                 cache,
@@ -1957,6 +1979,7 @@ pub(crate) fn execute_on_shard(
                                 min_importance,
                             )
                         })
+                        .take(context_limit(limit))
                         .collect()
                 })
                 .unwrap_or_default();
