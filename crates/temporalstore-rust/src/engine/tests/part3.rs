@@ -1305,6 +1305,50 @@ fn write_qps_config_rejects_writes_after_admission_limit() {
 }
 
 #[test]
+fn write_qps_zero_means_unlimited_not_deny_all_like_cpp() {
+    // C++ QuotaManager treats a configured qps of 0 as UNLIMITED (it installs no limiter
+    // and ConsumeQuota always succeeds), NOT deny-all. The live admission path must not
+    // push a limit==0 (which the downstream gate rejects as "is zero"). Regression for the
+    // case where the >0 filter existed only in an orphaned, never-compiled module.
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 2,
+            write_qps: Some(0),
+            read_qps: Some(0),
+            ..Config::default()
+        },
+    });
+    wait_for_fresh_admission_second();
+    for i in 0..5 {
+        let resp = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("k{i}"),
+                value: b"v".to_vec(),
+            },
+        });
+        assert!(
+            resp.status.ok,
+            "write_qps=0 must be unlimited, not deny-all (got {:?})",
+            resp.status
+        );
+    }
+    // read_qps=0 likewise unlimited.
+    for i in 0..5 {
+        let resp = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: format!("k{i}"),
+            },
+        });
+        assert!(resp.status.ok, "read_qps=0 must be unlimited (got {:?})", resp.status);
+    }
+}
+
+#[test]
 fn read_qps_config_rejects_reads_after_admission_limit() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);

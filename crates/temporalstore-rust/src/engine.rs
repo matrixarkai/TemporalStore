@@ -245,17 +245,26 @@ impl TemporalEngine {
                 response: CommandResponse::Empty,
             };
         }
-        if let Err(status) = validate_command_preconditions(
-            &self.cache,
-            &self.page_store,
-            request.shard_id,
-            shard,
-            &command,
-        ) {
-            return ExecuteResponse {
-                status,
-                response: CommandResponse::Empty,
-            };
+        // Command preconditions are a LEADER-time gate: a command only reaches the WAL after
+        // passing them on the leader. WAL replay re-applies already-committed effects (like
+        // C++ ReplayOplog, which does not re-check preconditions), so re-validating here
+        // against reconstructed state + the restart clock is both redundant and unsafe --
+        // e.g. a replayed EXPIRE whose earlier deadline has since lapsed would fail the
+        // liveness precondition and abort the whole shard load. Skip validation during
+        // replay, mirroring the WAL-append / index-anchor guards below.
+        if !replaying_wal() {
+            if let Err(status) = validate_command_preconditions(
+                &self.cache,
+                &self.page_store,
+                request.shard_id,
+                shard,
+                &command,
+            ) {
+                return ExecuteResponse {
+                    status,
+                    response: CommandResponse::Empty,
+                };
+            }
         }
         let outcome = execute_on_shard(
             &self.cache,
