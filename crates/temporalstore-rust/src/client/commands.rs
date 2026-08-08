@@ -3,43 +3,15 @@ use crate::types::Command;
 use super::routing::key_is_dropped_by_percent;
 
 pub(super) fn is_write(command: &Command) -> bool {
-    matches!(
-        command,
-        Command::CommonDelete { .. }
-            | Command::CommonExpire { .. }
-            | Command::StringSet { .. }
-            | Command::StringSetEx { .. }
-            | Command::StringSetConditional { .. }
-            | Command::StringDelete { .. }
-            | Command::HashSet { .. }
-            | Command::HashMultiSet { .. }
-            | Command::HashIncrBy { .. }
-            | Command::HashDelete { .. }
-            | Command::SetAdd { .. }
-            | Command::SetRemove { .. }
-            | Command::FeatureAppend { .. }
-            | Command::FeatureAppendWithPolicy { .. }
-            | Command::FeatureReplace { .. }
-            | Command::FeatureDelete { .. }
-            | Command::SequenceAdd { .. }
-            | Command::IpsAdd { .. }
-            | Command::IpsAddWithOptions { .. }
-            | Command::IpsLoad { .. }
-            | Command::IpsRemove { .. }
-            | Command::IpsDelete { .. }
-            | Command::ControlStateIncrement { .. }
-            | Command::ControlStateIncrementWithOptions { .. }
-            | Command::ControlStateChangeAdd { .. }
-            | Command::ControlStateSet { .. }
-            | Command::ControlStateSetAndGet { .. }
-            | Command::ControlStateSetAndGetWithOptions { .. }
-            | Command::ControlStateFolSet { .. }
-            | Command::ContextUpsertNode { .. }
-            | Command::ContextWriteEvent { .. }
-            | Command::ContextWriteIndexRef { .. }
-            | Command::ContextWritePackAudit { .. }
-            | Command::ContextMarkSummaryDirty { .. }
-    )
+    // Delegate to the engine's canonical write-command classifier (the same one that gates WAL
+    // persistence + dirty marking). The client uses this to refresh table topology before a write
+    // (route to the current leader) and to pick the write retry budget, so it MUST agree with the
+    // server on what mutates. A hand-maintained subset here had already drifted -- it omitted
+    // seven context write commands the engine treats as writes (ContextWriteExtractedEvent,
+    // ContextUpsertEntity/ChildRef/Embedding/Summary, ContextWriteCompressionEvent,
+    // ContextCompressEvents) -- so issuing one of those through the public execute() API skipped
+    // the pre-write topology refresh and got the read retry budget. Delegating keeps them in lockstep.
+    crate::engine::is_write_command(command)
 }
 
 pub(super) fn command_is_dropped(command: &Command, drop_percent: u8) -> bool {
@@ -351,4 +323,44 @@ pub(super) fn context_summary_key(tenant_hash: u64, node_hash: u64, level: u32) 
 
 pub(super) fn context_compression_key(tenant_hash: u64, node_hash: u64) -> String {
     format!("ctx:compress:{tenant_hash}:{node_hash}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_write_agrees_with_the_engine_for_context_writes() {
+        // Regression: client is_write drives pre-write topology refresh + write retry budget and
+        // must match the engine's is_write_command. A previously-omitted context write must now
+        // classify as a write; a context read must still be a read.
+        let context_write = Command::ContextCompressEvents {
+            tenant_hash: 1,
+            node_hash: 2,
+            source_start_ms: 0,
+            source_end_ms: 100,
+            compressed_time_ms: 50,
+            max_source_events: None,
+            min_confidence: 0.0,
+            min_importance: 0.0,
+        };
+        assert!(
+            is_write(&context_write),
+            "ContextCompressEvents mutates; the client must treat it as a write"
+        );
+        assert_eq!(
+            is_write(&context_write),
+            crate::engine::is_write_command(&context_write),
+            "client is_write must stay in lockstep with the engine's is_write_command"
+        );
+
+        let context_read = Command::ContextGetNode {
+            tenant_hash: 1,
+            node_hash: 2,
+        };
+        assert!(
+            !is_write(&context_read),
+            "ContextGetNode is read-only; the client must not treat it as a write"
+        );
+    }
 }
