@@ -307,11 +307,16 @@ pub(super) fn admission_limits(
     info: &Option<ShardInfo>,
 ) -> Vec<AdmissionLimit> {
     let mut limits = Vec::new();
-    if let Some(limit) = if write_command {
+    // A configured qps of 0 means UNLIMITED (C++ QuotaManager: a 0 qps installs no limiter
+    // and ConsumeQuota always succeeds), NOT deny-all. Filtering out 0 here keeps the
+    // downstream `limit == 0` reject from ever firing on an intended "no limit" setting.
+    if let Some(limit) = (if write_command {
         config.write_qps
     } else {
         config.read_qps
-    } {
+    })
+    .filter(|&limit| limit > 0)
+    {
         limits.push(AdmissionLimit {
             scope: AdmissionScope::Shard(shard_id),
             limit,

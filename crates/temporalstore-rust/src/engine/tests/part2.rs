@@ -1347,6 +1347,90 @@ fn wal_replay_conditional_write_uses_leader_clock_for_lazy_expiry_like_cpp() {
 }
 
 #[test]
+fn wal_replay_rearmed_expire_does_not_abort_recovery_like_cpp() {
+    // A committed EXPIRE that re-arms a key's TTL must replay cleanly even if the key's
+    // ORIGINAL (pre-re-arm) deadline has lapsed by restart time. Command preconditions are
+    // a LEADER-time gate; re-running them during replay against the restart clock made a
+    // replayed EXPIRE fail "not_found" and abort the WHOLE shard load (data unavailability
+    // for every key on the shard). C++ ReplayOplog re-applies logged effects without
+    // re-checking preconditions. The canary below proves the shard actually recovered.
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-a"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+    // async so every record lives only in the WAL, forcing a full replay on reload.
+    assert!(
+        engine
+            .set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config {
+                    version: 2,
+                    async_storage: true,
+                    ..Config::default()
+                },
+            })
+            .ok
+    );
+    // Durable canary that survives iff replay runs to completion (not aborted mid-way).
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "canary".to_string(),
+            value: b"present".to_vec(),
+        },
+    });
+    // Create k with a short deadline, then re-arm it via EXPIRE (also short). Both logged.
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSetEx {
+            key: "k".to_string(),
+            value: b"v".to_vec(),
+            ttl_ms: 100,
+        },
+    });
+    let rearmed = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::CommonExpire {
+            key: "k".to_string(),
+            ttl_ms: 100,
+        },
+    });
+    assert!(rearmed.status.ok, "EXPIRE on a live key should succeed on the leader");
+
+    // Downtime longer than k's deadline: at replay time k's original deadline has lapsed.
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    drop(engine);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    restarted.load_shard(1);
+    let canary = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "canary".to_string(),
+        },
+    });
+    assert_eq!(
+        canary.response,
+        CommandResponse::Bytes {
+            value: Some(b"present".to_vec())
+        },
+        "shard must recover: a replayed re-arming EXPIRE whose original deadline lapsed must \
+         not abort the whole WAL replay"
+    );
+}
+
+#[test]
 fn hash_incrby_rejects_non_integer_and_overflow_like_cpp() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
