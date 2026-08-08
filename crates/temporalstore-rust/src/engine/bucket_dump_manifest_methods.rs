@@ -1195,7 +1195,11 @@ impl TemporalEngine {
         let restored_index_bytes = serialize_index(&restored);
         self.persist_bucket_dump_install_marker(manifest, "prepare")
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
-        self.persist_index_bytes(manifest.shard_id, &restored_index_bytes)
+        // Durable (bulk-gate-bypassing) write: under bulk-ingest mode the ordinary
+        // persist_index_bytes is a no-op, which would leave the stale pre-manifest index on
+        // disk while the advanced replay watermark suppresses replay of the records this
+        // manifest embeds -- silently losing them. Recovery install must always materialize.
+        self.persist_index_bytes_durable(manifest.shard_id, &restored_index_bytes)
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
         self.persist_bucket_dump_install_marker(manifest, "install")
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;

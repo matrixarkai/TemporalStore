@@ -1195,7 +1195,12 @@ fn select_expiry_cursor_window(
 }
 
 fn remove_if_expired(shard: &mut ShardState, key: &str) -> bool {
-    let now = now_ms();
+    // Use the replay-aware clock: during WAL replay this resolves to the per-record leader
+    // timestamp so lazy expiry reproduces the leader's original branch. Using the real
+    // restart clock here would let a key that was live at leader-time (and thus took the
+    // "exists" branch of a logged conditional write) appear expired on recovery, silently
+    // dropping a durably-committed write and diverging the recovered state from the leader.
+    let now = resolve_now_ms();
     let mut removed = false;
     for record_key in associated_record_keys(key) {
         if shard
