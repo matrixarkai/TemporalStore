@@ -44,6 +44,7 @@ with Client(options) as client:
     )
     print(rows)
 
-    risk_key = "python:user:42:risk"
-    client.risk_increment(risk_key, precision=RiskPrecision.ONE_MINUTE, uuid="python-risk-1")
-    print("risk_count=", client.risk_count(risk_key, window_unit=WindowUnit.HOUR))
+    # Control State (formerly "Risk"): rolling counters / caps.
+    cs_key = "python:user:42:control_state"
+    client.control_state_increment(cs_key, precision=RiskPrecision.ONE_MINUTE, uuid="python-cs-1")
+    print("control_state_count=", client.control_state_count(cs_key, window_unit=WindowUnit.HOUR))

@@ -11,6 +11,12 @@ from .client import (
     WindowUnit,
 )
 from .proxy_client import ProxyClient, ProxyOptions
+from .features import (
+    CapDecision,
+    Config as FeatureStoreConfig,
+    Observation,
+    TemporalFeatureStore,
+)
 
 __all__ = [
     "Client",
@@ -21,6 +27,10 @@ __all__ = [
     "Options",
     "ProxyClient",
     "ProxyOptions",
+    "TemporalFeatureStore",
+    "FeatureStoreConfig",
+    "Observation",
+    "CapDecision",
     "RiskPrecision",
     "SequenceFeatureRow",
     "TemporalStoreError",

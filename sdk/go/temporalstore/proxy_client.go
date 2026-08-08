@@ -228,7 +228,7 @@ func (c *ProxyClient) RiskIncrement(
 	body["uuid"] = uuid
 	body["occur_time_seconds"] = occurTimeSeconds
 	body["timestamp_ms"] = proxyTimestampMs(occurTimeSeconds)
-	return c.post("/ProxyService/RiskIncrement", body, nil)
+	return c.post("/ProxyService/ControlStateIncrement", body, nil)
 }
 
 func (c *ProxyClient) RiskCount(
@@ -249,7 +249,7 @@ func (c *ProxyClient) RiskCount(
 	var data struct {
 		Count int64 `json:"count"`
 	}
-	err := c.post("/ProxyService/RiskCount", body, &data)
+	err := c.post("/ProxyService/ControlStateCount", body, &data)
 	return data.Count, err
 }
 
