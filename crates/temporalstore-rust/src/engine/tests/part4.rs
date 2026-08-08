@@ -387,6 +387,75 @@ fn bucket_dump_manifest_watermark_tracks_embedded_index_not_wal_tail() {
 }
 
 #[test]
+fn dump_selection_prioritizes_the_least_recently_dumped_bucket_not_the_lowest_id() {
+    // C++ ReclaimOpLogWithLimit dumps dirty slots oldest-first (by first-dirty-log-id,
+    // storage_manager.cc). Rust selected dirty buckets by ascending routing_bucket id then
+    // truncated to the per-round cap, so a high-id bucket dirtied once was starved forever by
+    // low-id buckets re-dirtied every round. The fix orders by last_dump_sequence (0 = never
+    // dumped) ascending. Here we dump the LOW-id bucket (raising its last_dump_sequence) then
+    // re-dirty it; a cap-1 plan must now pick the never-dumped HIGH-id bucket, not the low-id one.
+    use std::collections::BTreeMap;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    // Find one key in each of two distinct routing buckets.
+    let mut key_by_bucket: BTreeMap<u32, String> = BTreeMap::new();
+    for i in 0..200 {
+        let key = format!("k{i}");
+        let bucket = engine.routing_bucket_for_key(1, &key);
+        key_by_bucket.entry(bucket).or_insert(key);
+        if key_by_bucket.len() >= 2 {
+            break;
+        }
+    }
+    assert!(key_by_bucket.len() >= 2, "need two distinct routing buckets");
+    let mut buckets = key_by_bucket.into_iter();
+    let (low_bucket, low_key) = buckets.next().unwrap();
+    let (high_bucket, high_key) = buckets.next().unwrap();
+
+    for key in [&low_key, &high_key] {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: key.clone(),
+                value: b"v1".to_vec(),
+            },
+        });
+    }
+    // Dump ONLY the low-id bucket: raises its last_dump_sequence and clears its dirty flag.
+    engine.apply_storage_lifecycle(StorageLifecycleRequest {
+        shard_id: 1,
+        selected_dump_buckets: vec![low_bucket],
+        ..Default::default()
+    });
+    // Re-dirty the low-id bucket so both buckets are dirty, but low was just dumped.
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: low_key.clone(),
+            value: b"v2".to_vec(),
+        },
+    });
+
+    let plan = engine.storage_lifecycle_plan(StorageLifecycleRequest {
+        shard_id: 1,
+        max_dump_buckets_per_round: 1,
+        ..Default::default()
+    });
+    assert_eq!(
+        plan.selected_dump_buckets,
+        vec![high_bucket],
+        "the overdue never-dumped bucket ({high_bucket}) must be selected before the just-dumped \
+         low-id bucket ({low_bucket}) under the per-round cap"
+    );
+}
+
+#[test]
 fn delete_drop_eviction_emits_a_wal_tombstone_and_does_not_resurrect() {
     // A delete_drop eviction is a logical delete and must emit a WAL tombstone + advance the
     // replay anchor like the expiry sweep, or the deletion is unreplicated and (under bulk mode)
