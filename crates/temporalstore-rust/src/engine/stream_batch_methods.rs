@@ -191,7 +191,7 @@ impl TemporalEngine {
             start_routing_bucket,
             end_routing_bucket,
         ) {
-            reconcile_secondary_views_from_bucket_index(&self.page_store, shard);
+            reconcile_secondary_views_from_bucket_index(&self.page_store, shard, None);
         }
         let mut mutated_any = false;
         let mut wal_commands = Vec::new();

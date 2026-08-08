@@ -140,7 +140,7 @@ impl TemporalEngine {
                 // WAL cannot be trusted to hold the records it covers -- refuse the load.
                 Err(status) => return LoadShardResponse { status },
             };
-        let loaded = self.load_index(request.shard_id);
+        let loaded = self.load_index(request.shard_id, eager_cache_warm_on_load());
         // WAL replay watermark, mirroring C++ ObjectManager::Load() reading
         // index_->GetDumpedLogId(): installed manifest -> its oplog_sequence; no index
         // file -> 0 (fresh/async-only shard, replay whole retained WAL); anchored index
@@ -242,17 +242,11 @@ impl TemporalEngine {
         {
             info.recovering = false;
         }
-        // Eager disk->memory promotion on a normal restart. load_index() above already
-        // read every live page from the page store to rebuild the secondary views, so
-        // those bytes are hot in the OS page cache -- but the engine's in-memory cache
-        // tier is left cold, and every early retrieval after a restart otherwise pays a
-        // cold-cache page read. Promote the live pages into the cache tier once here so
-        // the shard comes back not just ready but warm. No-op on a fresh/empty shard
-        // (nothing live to warm), so it never slows a cold ingestion start. Opt out with
-        // MATRIXARK_EAGER_CACHE_WARM_ON_LOAD=0.
-        if eager_cache_warm_on_load() {
-            let _ = self.warm_cache_from_page_index(request.shard_id, std::iter::empty::<u32>());
-        }
+        // Disk->memory promotion on a normal restart is folded directly into
+        // load_index()/reconcile above (gated by eager_cache_warm_on_load()): the pages
+        // reconcile reads to rebuild the secondary views are promoted into the cache
+        // tier in the same pass, so we avoid a second warm pass re-reading every page
+        // under the mutex-serialized block store. No-op on a fresh/empty shard.
         LoadShardResponse {
             status: Status::ok(),
         }
@@ -274,7 +268,7 @@ impl TemporalEngine {
             return Ok(None);
         };
         let served_anchor = self
-            .load_index(shard_id)
+            .load_index(shard_id, false)
             .and_then(|state| state.applied_wal_sequence)
             .unwrap_or(0);
         if manifest.oplog_sequence <= served_anchor {

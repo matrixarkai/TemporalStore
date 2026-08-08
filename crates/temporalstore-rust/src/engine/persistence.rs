@@ -100,10 +100,20 @@ impl TemporalEngine {
         Ok(())
     }
 
-    pub(super) fn load_index(&self, shard_id: ShardId) -> Option<ShardState> {
+    pub(super) fn load_index(&self, shard_id: ShardId, warm_cache: bool) -> Option<ShardState> {
         let bytes = fs::read(self.index_path(shard_id)).ok()?;
         let mut shard = serde_json::from_slice::<ShardState>(&bytes).ok()?;
-        reconcile_secondary_views_from_bucket_index(&self.page_store, &mut shard);
+        // Fold disk->memory cache promotion into reconcile's page reads on a warming
+        // load (normal restart): the pages reconcile reads to rebuild the secondary
+        // views are promoted into the cache tier in the same pass, so no second warm
+        // pass re-reads them under the mutex-serialized block store. Callers that only
+        // need the index (e.g. the manifest anchor probe) pass warm_cache=false.
+        let warm = if warm_cache {
+            Some((&self.cache, shard_id))
+        } else {
+            None
+        };
+        reconcile_secondary_views_from_bucket_index(&self.page_store, &mut shard, warm);
         // Reloaded data is durable, hence clean: clear the transient per-page/bucket
         // dirty flags that were persisted before unload (the durable dirty_generation
         // identity is preserved). refresh_bucket_runtime_flags below then recomputes
@@ -142,7 +152,7 @@ impl TemporalEngine {
                 Some(shard) => {
                     if promote_model_maps_to_bucket_index_authority(shard_id, shard, 0, u32::MAX)
                     {
-                        reconcile_secondary_views_from_bucket_index(&self.page_store, shard);
+                        reconcile_secondary_views_from_bucket_index(&self.page_store, shard, None);
                     }
                     rebuild_bucket_first_index(shard_id, shard, 0, u32::MAX);
                     refresh_bucket_runtime_flags(shard);
