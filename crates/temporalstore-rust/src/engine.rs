@@ -1733,7 +1733,17 @@ fn cache_entry_routing_bucket(entry: &CacheEntryInfo) -> Option<u32> {
 }
 
 fn parse_i64(bytes: &Vec<u8>) -> Option<i64> {
-    std::str::from_utf8(bytes).ok()?.parse().ok()
+    // Match C++ ParseInt64Value / strtoll (extension/string/implement.cc:22, hash/implement.cc:138):
+    // strtoll skips leading whitespace, so a stored counter like " 5" is the valid integer 5.
+    // Rust's str::parse rejects leading whitespace; trim it (ASCII only, so we do not accept
+    // Unicode whitespace strtoll's isspace would reject). Trailing/embedded garbage still fails on
+    // both sides (C++ checks *end != '\0'), so only the previously-erroring leading-space case
+    // changes.
+    std::str::from_utf8(bytes)
+        .ok()?
+        .trim_start_matches(|c: char| c.is_ascii_whitespace())
+        .parse()
+        .ok()
 }
 
 fn object_manager_stats(
