@@ -409,6 +409,23 @@ impl TemporalEngine {
         if !read_command {
             return None;
         }
+        // A shard replaying its WAL on load is present but not yet serving (C++ keeps it in
+        // PartitionLoadStage::LOADING). The durable / replicated read routes reach this fast
+        // path BEFORE execute_with_storage_override's recovering gate, so without this a read
+        // would be served from half-reconstructed state (and skip admission). Decline the fast
+        // path while recovering so the slow path rejects uniformly with a retryable
+        // shard_not_loaded. The replay thread reads under replaying_wal(), which bypasses this.
+        if !replaying_wal()
+            && self
+                .infos
+                .read()
+                .expect("info lock poisoned")
+                .get(&request.shard_id)
+                .map(|info| info.recovering)
+                .unwrap_or(false)
+        {
+            return None;
+        }
         let shards = self.shards.read().expect("engine lock poisoned");
         let Some(shard) = shards.get(&request.shard_id) else {
             return Some(ExecuteResponse {
@@ -1489,6 +1506,18 @@ fn collect_live_page_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
     for series in shard.context_compressions.values() {
         ids.extend(series.values().map(|address| address.page_slab_id));
     }
+    // control_state_pages is the page-backed control-state (Risk) model and MUST be in the
+    // GC live set: it feeds both the reclaim live-slab set and the page-gc dependency plan.
+    // Omitting it let a slab holding only a control-state page be reclaimed while the index
+    // still referenced it -> DataLoss on the next read. C++ keeps any model's live pages
+    // counted in the zone's used_bytes so the zone is never destroyed while referenced. The
+    // sibling collect_model_live_page_entries already includes it -- the two lists had drifted.
+    ids.extend(
+        shard
+            .control_state_pages
+            .values()
+            .map(|address| address.page_slab_id),
+    );
     ids
 }
 
