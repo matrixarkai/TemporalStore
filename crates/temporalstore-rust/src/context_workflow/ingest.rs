@@ -37,7 +37,11 @@ pub fn ingest_extract_context(
             continue;
         }
         let source_id = source.source_id.clone();
-        let extract = extract_context(engine, source);
+        // Batch/bulk ingest keeps L1 unconditionally: resource/skill docs are
+        // substantial (L1 rollup is valuable) and this path carries a fixed
+        // fanout contract (2 summaries + 3 embeddings per extract). L1 gating
+        // applies only to the single-source `extract_context` (codex-hook) path.
+        let extract = extract_context_gated(engine, source, false);
         if extract.status.ok {
             node_hashes.push(extract.node.node_hash);
             extracts.push(extract);

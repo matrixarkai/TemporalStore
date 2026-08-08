@@ -367,6 +367,49 @@ fn context_query_plan_matches_legacy_match_and_score_helpers() {
     }
 }
 
+#[test]
+fn context_extract_gates_l1_for_thin_sources() {
+    let engine = test_engine();
+    // Thin single-sentence source: L1 is gated -> L0 only, 2 embeddings.
+    let thin = extract_context(
+        &engine,
+        ContextExtractRequest {
+            shard_id: 1,
+            tenant_hash: 5,
+            source_kind: ContextSourceKind::Chat,
+            source_id: "thin".to_string(),
+            title: "note".to_string(),
+            body: "Checkout failed once.".to_string(),
+            timestamp_ms: 1,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(thin.status.ok, "{:?}", thin.status);
+    assert!(!thin.l0.is_empty());
+    assert!(thin.l1.is_empty(), "thin source should skip L1: {:?}", thin.l1);
+    assert!(thin.node.l1_ref.is_empty());
+    assert_eq!(thin.embedding_generation.requested_vector_count, 2);
+
+    // Richer multi-sentence source: L1 is warranted -> L0 + L1, 3 embeddings.
+    let rich = extract_context(
+        &engine,
+        ContextExtractRequest {
+            shard_id: 1,
+            tenant_hash: 5,
+            source_kind: ContextSourceKind::Chat,
+            source_id: "rich".to_string(),
+            title: "note".to_string(),
+            body: "Checkout failed during payment. The risk score spiked sharply. The fraud team paused the account."
+                .to_string(),
+            timestamp_ms: 2,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(rich.status.ok, "{:?}", rich.status);
+    assert!(!rich.l1.is_empty());
+    assert_eq!(rich.embedding_generation.requested_vector_count, 3);
+}
+
 // shared-corpus: context_compression_secondary_index_query_debug_flow
 #[test]
 fn context_workflow_extracts_retrieves_and_injects_mock_context() {
@@ -749,7 +792,7 @@ fn context_benchmark_injection_uses_entity_slab_l0_l1_and_secondary_index() {
                 source_kind: ContextSourceKind::Chat,
                 source_id: "locomo-conv-7-session-3-turn-18".to_string(),
                 title: "Caroline medical appointment update".to_string(),
-                body: "Caroline told Maya on March 12 that her cardiology appointment moved after the museum visit, and Maya should remind her brother Leo before Friday.".to_string(),
+                body: "Caroline told Maya on March 12 that her cardiology appointment moved after the museum visit. Maya should remind her brother Leo before Friday. The updated cardiology appointment is now confirmed for the following week.".to_string(),
                 timestamp_ms: 1_712_300_000_000,
                 provider: ContextModelProviderConfig::default(),
             },
@@ -1616,7 +1659,7 @@ fn context_workflow_extracts_with_openai_compatible_provider() {
             source_kind: ContextSourceKind::Document,
             source_id: "doc".to_string(),
             title: "doc".to_string(),
-            body: "body".to_string(),
+            body: "Customer checkout failed during payment. The risk score spiked sharply. The fraud team paused the account.".to_string(),
             timestamp_ms: 1,
             provider: ContextModelProviderConfig {
                 provider_name: "live-test".to_string(),
