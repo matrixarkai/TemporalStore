@@ -101,6 +101,31 @@ fn main() {
             load_response.status.message
         );
     }
+    // Resolve the distributed storage/replication backend for this node:
+    // matrixobject shared storage when detected, else a configured shared object
+    // store, else raft replication (the default when nothing is configured).
+    let storage_backend = temporalstore_rust::StorageBackendConfig::from_env().resolve();
+    println!(
+        "storage backend: {} (replication {:?})",
+        storage_backend.describe(),
+        storage_backend.replication_mode()
+    );
+    // Construct the shared object store early so a broken shared-storage config
+    // fails fast at startup rather than on the first write.
+    match storage_backend.build_shared_object_store() {
+        Ok(Some(_shared_store)) => println!(
+            "shared-storage backend ready: {} — shard durability served by shared storage",
+            storage_backend.describe()
+        ),
+        Ok(None) => {}
+        Err(err) => {
+            eprintln!(
+                "configured storage backend {} is unusable: {err}",
+                storage_backend.describe()
+            );
+            std::process::exit(1);
+        }
+    }
     let runtime = DataNodeRuntime::new(
         engine.clone(),
         DataNodeRuntimeOptions {
@@ -197,6 +222,7 @@ fn main() {
                 let mut metrics = engine.prometheus_metrics();
                 append_ingestion_metrics(&mut metrics, &engine);
                 append_runtime_metrics(&mut metrics, &runtime);
+                append_storage_backend_metric(&mut metrics, &storage_backend);
                 if let Some(raft_state) = &raft_state {
                     metrics.push_str(&raft_state.runtime.cluster().prometheus_metrics());
                 }
