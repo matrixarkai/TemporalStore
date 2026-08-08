@@ -1124,6 +1124,54 @@ fn control_state_values_survive_unload_reload() {
 }
 
 #[test]
+fn insert_if_absent_keeps_the_first_in_batch_duplicate_timestamp() {
+    // C++ feature ADD FIRST policy (extension/feature/implement.cc:122-131) walks point_list in
+    // request order and skips a timestamp already present, so for an in-batch duplicate the FIRST
+    // value wins. Rust previously pre-collapsed the batch by timestamp (last-wins) before the
+    // policy loop, silently keeping the LAST duplicate. Same batch, same timestamp, InsertIfAbsent
+    // on a not-yet-present key must land the first value ("A"), not the last ("B").
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureAppendWithPolicy {
+            key: "first-wins".to_string(),
+            points: vec![
+                FeaturePoint {
+                    timestamp_ms: 5,
+                    value: b"A".to_vec(),
+                },
+                FeaturePoint {
+                    timestamp_ms: 5,
+                    value: b"B".to_vec(),
+                },
+            ],
+            policy: FeatureWritePolicy::InsertIfAbsent,
+        },
+    });
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::FeatureQuery {
+                    key: "first-wins".to_string(),
+                    start_ms: 0,
+                    end_ms: 10,
+                    count: None,
+                },
+            })
+            .response,
+        CommandResponse::FeaturePoints {
+            points: vec![FeaturePoint {
+                timestamp_ms: 5,
+                value: b"A".to_vec(),
+            }]
+        },
+        "InsertIfAbsent must keep the FIRST in-batch duplicate value (C++ FIRST policy), not the last"
+    );
+}
+
+#[test]
 fn feature_write_policy_sequence_batch_ips_dimensions_and_control_state_precision_work() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);

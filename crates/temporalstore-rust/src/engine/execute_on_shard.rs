@@ -514,7 +514,13 @@ pub(crate) fn execute_on_shard(
             let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             let mut accepted_points = Vec::new();
             let mut accepted_timestamps = BTreeSet::new();
-            for point in sorted_feature_points(points) {
+            // Process points in REQUEST order, NOT pre-collapsed by timestamp. C++ feature ADD
+            // FIRST policy (extension/feature/implement.cc:122-131) walks point_list in order and
+            // skips any ts already present, so for an in-batch duplicate timestamp the FIRST
+            // value wins. Pre-collapsing here via sorted_feature_points (last-wins) would silently
+            // keep the LAST duplicate under InsertIfAbsent. accepted_points is sorted+collapsed
+            // just before the append below (UPSERT/ReplaceExisting keep last-wins, matching C++).
+            for point in points {
                 let exists = series.contains_key(&point.timestamp_ms)
                     || accepted_timestamps.contains(&point.timestamp_ms);
                 let should_write = match policy {
@@ -535,7 +541,7 @@ pub(crate) fn execute_on_shard(
                     shard_id,
                     "feature",
                     &key,
-                    accepted_points,
+                    sorted_feature_points(accepted_points),
                     routing_bucket,
                     async_storage,
                 ) {
