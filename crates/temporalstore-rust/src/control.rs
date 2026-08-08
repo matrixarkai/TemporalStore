@@ -124,6 +124,14 @@ pub struct ShardInfo {
     pub membership_valid: bool,
     pub replica_node_ids: Vec<u64>,
     pub leader_node_id: Option<u64>,
+    // True only while the shard's WAL is being replayed on load. C++ keeps a partition in
+    // PartitionLoadStage::LOADING (not serving) until ObjectManager::Load()/ReplayOplog
+    // finishes; Rust must likewise refuse client commands during replay so a concurrent
+    // write cannot interleave with replay and regress the WAL anchor (double-apply on the
+    // next restart) or expose a stale mid-replay read. The replay thread itself bypasses
+    // this gate via replaying_wal().
+    #[serde(default)]
+    pub recovering: bool,
 }
 
 fn default_membership_valid() -> bool {
