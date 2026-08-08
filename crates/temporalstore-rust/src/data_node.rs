@@ -1732,7 +1732,7 @@ impl DataNodeRuntime {
             mark_dirty(
                 &self.inner.dirty,
                 request.shard_id,
-                command_key(&request.command),
+                command_key(&request.command).as_deref(),
             );
         }
         response
@@ -1757,7 +1757,7 @@ impl DataNodeRuntime {
             mark_dirty(
                 &self.inner.dirty,
                 request.shard_id,
-                command_key(&request.command),
+                command_key(&request.command).as_deref(),
             );
         }
         response

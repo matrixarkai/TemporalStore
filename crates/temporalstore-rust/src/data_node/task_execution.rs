@@ -69,7 +69,12 @@ pub(super) fn run_compaction_inner(
 }
 
 pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> GcResponse {
-    let collected_objects = clear_dirty_shard(&inner.dirty, request.shard_id);
+    // GC must NOT touch the dirty-scheduling tracker. C++ GC (ReclaimPage/ReclaimIndex,
+    // storage_manager.cc) never clears dirty slots -- a slot leaves the dirty set only via a
+    // completed dump/replay (Index::ClearSlotDirty). Clearing it here (at task start, before
+    // any GC work and regardless of whether GC then fails) dropped the re-dump scheduling
+    // state, so schedule_dirty_shard_dumps would stop scheduling those still-undumped objects.
+    let collected_objects = 0;
     let mut status = Status::ok();
     let mut cache_entries_removed = 0;
     let mut cache_disk_bytes_removed = 0;

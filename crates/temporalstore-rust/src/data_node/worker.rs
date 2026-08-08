@@ -122,7 +122,7 @@ pub(super) fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> D
                 mark_dirty(
                     &inner.dirty,
                     request.shard_id,
-                    command_key(&request.command),
+                    command_key(&request.command).as_deref(),
                 );
             }
             DataNodeTaskOutput::Execute(response)
@@ -146,7 +146,7 @@ pub(super) fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> D
                 mark_dirty(
                     &inner.dirty,
                     request.shard_id,
-                    command_key(&request.command),
+                    command_key(&request.command).as_deref(),
                 );
             }
             DataNodeTaskOutput::CheckedExecute(response)

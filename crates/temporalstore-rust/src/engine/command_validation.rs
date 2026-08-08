@@ -31,7 +31,7 @@ pub(super) fn command_touched_keys(command: &Command) -> Vec<String> {
     }
 }
 
-pub(super) fn command_object_keys(command: &Command) -> Vec<String> {
+pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
     match command {
         Command::CommonDelete { key } => associated_record_keys(key),
         Command::CommonExpire { key, .. }
@@ -254,7 +254,7 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
     )
 }
 
-pub(super) fn is_write_command(command: &Command) -> bool {
+pub(crate) fn is_write_command(command: &Command) -> bool {
     matches!(
         command,
         Command::CommonDelete { .. }
