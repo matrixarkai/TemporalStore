@@ -87,8 +87,13 @@ export TEMPORALSTORE_AGENT_NAME="claude"
 export MATRIXARK_ACCOUNT_ID="${MATRIXARK_ACCOUNT_ID:-acct_claude}"
 export MATRIXARK_TENANT_ID="${MATRIXARK_TENANT_ID:-tenant_claude}"
 export MATRIXARK_USER_ID="${MATRIXARK_USER_ID:-${USER:-claude_user}}"
-export TEMPORALSTORE_RUST_CODEX_HOOK_ROOT="${TEMPORALSTORE_RUST_CLAUDE_HOOK_ROOT:-${TEMPORALSTORE_RUST_CODEX_HOOK_ROOT:-/tmp/temporalstore-rust-claude-hook}}"
-export TEMPORALSTORE_RUST_CODEX_EVENT_LOG="${TEMPORALSTORE_RUST_CLAUDE_EVENT_LOG:-${TEMPORALSTORE_RUST_CODEX_EVENT_LOG:-/tmp/temporalstore-rust-claude-hook.jsonl}}"
+# Persistent, unified per-agent store base. /tmp is wiped on reboot and scattered
+# claude context across ephemeral dirs (one per backend); anchor storage under the
+# durable MatrixArk dir instead. Override with MATRIXARK_CLAUDE_HOOK_STORE_BASE.
+CLAUDE_STORE_BASE="${MATRIXARK_CLAUDE_HOOK_STORE_BASE:-/root/.matrixark/temporalstore-hooks/claude}"
+mkdir -p "$CLAUDE_STORE_BASE" 2>/dev/null || true
+export TEMPORALSTORE_RUST_CODEX_HOOK_ROOT="${TEMPORALSTORE_RUST_CLAUDE_HOOK_ROOT:-${TEMPORALSTORE_RUST_CODEX_HOOK_ROOT:-$CLAUDE_STORE_BASE/rust}}"
+export TEMPORALSTORE_RUST_CODEX_EVENT_LOG="${TEMPORALSTORE_RUST_CLAUDE_EVENT_LOG:-${TEMPORALSTORE_RUST_CODEX_EVENT_LOG:-$CLAUDE_STORE_BASE/rust.jsonl}}"
 
 # Resolve the event + session from the payload when not passed as an argument.
 # Data arrives on stdin; the program is passed via -c (no stdin conflict).
@@ -132,7 +137,7 @@ if [[ "$BACKEND" == "python" ]]; then
   export MATRIXARK_MCP_BACKEND="${MATRIXARK_MCP_BACKEND:-temporalstore-rust}"
   export MATRIXARK_LOCAL_MODE="${MATRIXARK_LOCAL_MODE:-no-metaserver}"
   export MATRIXARK_TEMPORALSTORE_METASERVER="${MATRIXARK_TEMPORALSTORE_METASERVER:-local}"
-  export MATRIXARK_TEMPORALSTORE_RUST_ROOT="${MATRIXARK_TEMPORALSTORE_RUST_ROOT:-/tmp/temporalstore-claude-hook-store}"
+  export MATRIXARK_TEMPORALSTORE_RUST_ROOT="${MATRIXARK_TEMPORALSTORE_RUST_ROOT:-$CLAUDE_STORE_BASE/store}"
   export MATRIXARK_RUST_PROXY_ASYNC_STORAGE="${MATRIXARK_RUST_PROXY_ASYNC_STORAGE:-true}"
   export MATRIXARK_HOOK_STORAGE_ROUTE="${MATRIXARK_HOOK_STORAGE_ROUTE:-shared_store_async}"
   PY_REPORT="$("$PYTHON" tools/matrixark_agent_hook.py \
