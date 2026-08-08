@@ -1414,6 +1414,51 @@ pub(super) fn rebuild_bucket_first_index(
     shard.bucket_index = bucket_index;
 }
 
+/// Merge a page-derived timestamped-series view against the pre-existing (deserialized /
+/// in-memory) model map, which is AUTHORITATIVE for membership. reconcile re-reads packed
+/// pages, but a page physically holds timestamps that may have been evicted (feature
+/// max_size trim) from the model map, and a page read can transiently fail. So:
+///  - a key present in the persisted map keeps EXACTLY its persisted timestamps (no
+///    resurrection of evicted points, no loss on a failed page read), refreshing each
+///    address from the page-derived view when available;
+///  - a key absent from the persisted map is rebuilt from the page (the legitimate
+///    rebuild-from-bucket-index case, e.g. a bucket_index entry with no model-map counterpart).
+/// This is why `promote` never clears the model maps: they remain the membership source.
+fn reconcile_timestamped_series_membership(
+    persisted: &HashMap<String, BTreeMap<u64, BlockAddress>>,
+    page_derived: HashMap<String, BTreeMap<u64, BlockAddress>>,
+) -> HashMap<String, BTreeMap<u64, BlockAddress>> {
+    let mut result: HashMap<String, BTreeMap<u64, BlockAddress>> = HashMap::new();
+    for (key, page_series) in page_derived {
+        match persisted.get(&key) {
+            Some(persisted_series) => {
+                let merged = persisted_series
+                    .iter()
+                    .map(|(timestamp_ms, persisted_address)| {
+                        let address = page_series
+                            .get(timestamp_ms)
+                            .cloned()
+                            .unwrap_or_else(|| persisted_address.clone());
+                        (*timestamp_ms, address)
+                    })
+                    .collect();
+                result.insert(key, merged);
+            }
+            None => {
+                result.insert(key, page_series);
+            }
+        }
+    }
+    // Preserve persisted keys entirely absent from the page-derived view (page unreadable or
+    // not in bucket_index) so a transient read failure never drops a durable series.
+    for (key, persisted_series) in persisted {
+        result
+            .entry(key.clone())
+            .or_insert_with(|| persisted_series.clone());
+    }
+    result
+}
+
 pub(super) fn reconcile_secondary_views_from_bucket_index(page_store: &LocalBlockStore, shard: &mut ShardState) {
     if shard.bucket_index.bucket_map.is_empty() {
         return;
@@ -1596,41 +1641,61 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(page_store: &LocalBloc
         shard.sets = sets;
     }
     if saw_features {
-        shard.features = features;
+        let persisted = std::mem::take(&mut shard.features);
+        shard.features = reconcile_timestamped_series_membership(&persisted, features);
     }
     if saw_sequences {
-        shard.sequences = sequences;
+        let persisted = std::mem::take(&mut shard.sequences);
+        shard.sequences = reconcile_timestamped_series_membership(&persisted, sequences);
     }
     if saw_ips {
-        shard.ips = ips;
+        let persisted = std::mem::take(&mut shard.ips);
+        shard.ips = reconcile_timestamped_series_membership(&persisted, ips);
     }
     if saw_control_state {
-        shard.control_state = control_state;
+        // The serialized i64 series is authoritative (the page is a copy of it): keep the
+        // persisted series where present and use the page-derived series only for keys the
+        // persisted map does not have, so a transient page-read failure never drops a durable
+        // control-state key.
+        let persisted = std::mem::take(&mut shard.control_state);
+        let mut merged = control_state;
+        merged.extend(persisted);
+        shard.control_state = merged;
         shard.control_state_pages = control_state_pages;
     }
     if saw_context_events {
-        shard.context_events = context_events;
+        let persisted = std::mem::take(&mut shard.context_events);
+        shard.context_events = reconcile_timestamped_series_membership(&persisted, context_events);
     }
     if saw_context_indexes {
-        shard.context_indexes = context_indexes;
+        let persisted = std::mem::take(&mut shard.context_indexes);
+        shard.context_indexes =
+            reconcile_timestamped_series_membership(&persisted, context_indexes);
     }
     if saw_context_audits {
-        shard.context_audits = context_audits;
+        let persisted = std::mem::take(&mut shard.context_audits);
+        shard.context_audits = reconcile_timestamped_series_membership(&persisted, context_audits);
     }
     if saw_context_entities {
         shard.context_entities = context_entities;
     }
     if saw_context_children {
-        shard.context_children = context_children;
+        let persisted = std::mem::take(&mut shard.context_children);
+        shard.context_children =
+            reconcile_timestamped_series_membership(&persisted, context_children);
     }
     if saw_context_embeddings {
         shard.context_embeddings = context_embeddings;
     }
     if saw_context_summaries {
-        shard.context_summaries = context_summaries;
+        let persisted = std::mem::take(&mut shard.context_summaries);
+        shard.context_summaries =
+            reconcile_timestamped_series_membership(&persisted, context_summaries);
     }
     if saw_context_compressions {
-        shard.context_compressions = context_compressions;
+        let persisted = std::mem::take(&mut shard.context_compressions);
+        shard.context_compressions =
+            reconcile_timestamped_series_membership(&persisted, context_compressions);
     }
 
     for bucket in shard.bucket_index.bucket_map.values_mut() {
