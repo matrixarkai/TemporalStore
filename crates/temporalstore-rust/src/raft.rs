@@ -4714,6 +4714,11 @@ fn install_snapshot_state(node: &mut RaftNode, snapshot: RaftSnapshot) {
         });
     }
     node.engine = engine;
+    // votedFor is per-term (Raft Fig-2): clear a stale vote when a snapshot raises the term,
+    // so a same-new-term candidate is not wrongly rejected as already_voted.
+    if snapshot.last_included_term > node.current_term {
+        node.voted_for = None;
+    }
     node.current_term = node.current_term.max(snapshot.last_included_term);
     node.commit_index = node.commit_index.max(snapshot.last_included_index);
     node.log

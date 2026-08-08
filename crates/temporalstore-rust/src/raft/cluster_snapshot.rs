@@ -784,6 +784,14 @@ impl RaftCluster {
             }
 
             node.engine = engine;
+            // votedFor is per-term (Raft Fig-2): raising the term via a snapshot must clear a
+            // stale vote, else a same-new-term candidate is wrongly rejected as already_voted
+            // (split-vote liveness stall). The receive_install_snapshot RPC wrappers pre-clear
+            // it, but the public install_snapshot / lifecycle / external-bootstrap paths reach
+            // here directly.
+            if snapshot.last_included_term > node.current_term {
+                node.voted_for = None;
+            }
             node.current_term = node.current_term.max(snapshot.last_included_term);
             node.commit_index = snapshot.last_included_index;
             node.log

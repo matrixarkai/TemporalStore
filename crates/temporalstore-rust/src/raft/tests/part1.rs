@@ -1229,6 +1229,78 @@ fn append_entries_higher_term_clears_stale_vote() {
 }
 
 #[test]
+fn install_snapshot_clears_stale_vote_on_term_raise() {
+    // votedFor is per-term (Raft Fig-2). Installing a snapshot that raises the term via the
+    // public install_snapshot path (not the receive_install_snapshot RPC wrapper, which
+    // pre-clears) must reset a stale vote, else a same-new-term candidate is wrongly rejected
+    // as already_voted -> split-vote liveness stall.
+    let cluster =
+        RaftCluster::new_single_shard_with_config(1, [1, 2, 3], RaftConfig::default()).unwrap();
+    // Node 3 grants a term-3 vote to candidate 1.
+    let granted = cluster
+        .receive_vote_request(VoteRequest {
+            rpc: None,
+            shard_id: 1,
+            term: 3,
+            candidate_id: 1,
+            target_id: 3,
+            last_log_index: 0,
+            last_log_term: 0,
+        })
+        .unwrap();
+    assert!(granted.vote_granted);
+    assert_eq!(cluster.hard_state(3).unwrap().voted_for, Some(1));
+
+    // Install a term-5 snapshot directly on node 3.
+    cluster
+        .install_snapshot(
+            3,
+            RaftSnapshot {
+                shard_id: 1,
+                last_included_term: 5,
+                last_included_index: 1,
+                external_snapshot_ref: None,
+                entries: vec![RaftLogEntry {
+                    term: 5,
+                    index: 1,
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "k".to_string(),
+                        value: b"v".to_vec(),
+                    },
+                }],
+            },
+        )
+        .unwrap();
+
+    // The stale term-3 vote must be cleared by the term raise to 5.
+    assert_eq!(
+        cluster.hard_state(3).unwrap().voted_for,
+        None,
+        "snapshot term-raise must clear the per-term vote"
+    );
+    assert_eq!(cluster.hard_state(3).unwrap().current_term, 5);
+
+    // A DIFFERENT candidate can now win node 3's vote in term 5.
+    let regrant = cluster
+        .receive_vote_request(VoteRequest {
+            rpc: None,
+            shard_id: 1,
+            term: 5,
+            candidate_id: 2,
+            target_id: 3,
+            last_log_index: 1,
+            last_log_term: 5,
+        })
+        .unwrap();
+    assert!(
+        regrant.vote_granted,
+        "cleared vote must let a new term-5 candidate win (got reject: {:?})",
+        regrant.reject_reason
+    );
+}
+
+#[test]
 fn append_entries_commit_clamps_to_last_new_entry_not_whole_log_tail() {
     // Raft Figure 2: a follower advances commitIndex only to min(leaderCommit, index of
     // the last NEW entry in THIS AppendEntries) -- never to its whole-log tail. A divergent
