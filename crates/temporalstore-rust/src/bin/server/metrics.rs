@@ -1,6 +1,25 @@
 // Prometheus metrics appenders (runtime/storage-manager/ingestion), split from
 // server.rs (textual include!, shared flat scope + use-imports; no mod wrapper).
 
+fn append_storage_backend_metric(
+    out: &mut String,
+    backend: &temporalstore_rust::StorageBackend,
+) {
+    use temporalstore_rust::StorageBackend;
+    let (kind, replication) = match backend {
+        StorageBackend::MatrixObject { .. } => ("matrixobject", "shared_store"),
+        StorageBackend::SharedPath { .. } => ("shared_path", "shared_store"),
+        StorageBackend::RaftReplication => ("raft", "raft"),
+    };
+    out.push_str(
+        "# HELP temporalstore_storage_backend Selected distributed storage backend (1 = active).\n",
+    );
+    out.push_str("# TYPE temporalstore_storage_backend gauge\n");
+    out.push_str(&format!(
+        "temporalstore_storage_backend{{backend=\"{kind}\",replication=\"{replication}\"}} 1\n"
+    ));
+}
+
 fn append_runtime_metrics(out: &mut String, runtime: &DataNodeRuntime) {
     let stats = runtime.stats();
     out.push_str("# HELP temporalstore_data_node_runtime_jobs_total Data node runtime job counters by kind.\n");
