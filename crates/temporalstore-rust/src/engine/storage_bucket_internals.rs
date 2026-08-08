@@ -1483,7 +1483,11 @@ fn reconcile_timestamped_series_membership(
     result
 }
 
-pub(super) fn reconcile_secondary_views_from_bucket_index(page_store: &LocalBlockStore, shard: &mut ShardState) {
+pub(super) fn reconcile_secondary_views_from_bucket_index(
+    page_store: &LocalBlockStore,
+    shard: &mut ShardState,
+    warm: Option<(&MultiLayerCache, ShardId)>,
+) {
     if shard.bucket_index.bucket_map.is_empty() {
         return;
     }
@@ -1495,6 +1499,12 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(page_store: &LocalBloc
     if entries.is_empty() {
         return;
     }
+
+    // Disk->memory promotion accumulator (normal restart). When warming, each page
+    // read below also collects (cache_key, bytes) here; a single cache.put_batch()
+    // at the end promotes them all under one lock instead of one lock cycle per page.
+    let warm_shard = warm.map(|(_, shard_id)| shard_id);
+    let mut warm_batch: Vec<(CacheKey, Vec<u8>)> = Vec::new();
 
     let mut saw_strings = false;
     let mut saw_hashes = false;
@@ -1557,6 +1567,8 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(page_store: &LocalBloc
                 saw_features = true;
                 insert_timestamped_secondary_view(
                     page_store,
+                    warm_shard,
+                    &mut warm_batch,
                     &mut features,
                     entry.object_key,
                     entry.address,
@@ -1566,6 +1578,8 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(page_store: &LocalBloc
                 saw_sequences = true;
                 insert_timestamped_secondary_view(
                     page_store,
+                    warm_shard,
+                    &mut warm_batch,
                     &mut sequences,
                     entry.object_key,
                     entry.address,
@@ -1575,6 +1589,8 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(page_store: &LocalBloc
                 saw_ips = true;
                 insert_timestamped_secondary_view(
                     page_store,
+                    warm_shard,
+                    &mut warm_batch,
                     &mut ips,
                     entry.object_key,
                     entry.address,
@@ -1583,6 +1599,16 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(page_store: &LocalBloc
             "control_state" => {
                 saw_control_state = true;
                 if let Ok(bytes) = page_store.read(&entry.address) {
+                    if let Some(shard_id) = warm_shard {
+                        let key = CacheKey::page_with_slot(
+                            shard_id,
+                            entry.address.page_slab_id,
+                            entry.address.offset,
+                            entry.address.length,
+                            entry.address.routing_bucket,
+                        );
+                        warm_batch.push((key, bytes.clone()));
+                    }
                     if let Ok(series) = serde_json::from_slice::<BTreeMap<u64, i64>>(&bytes) {
                         control_state.insert(entry.object_key.clone(), series);
                     }
@@ -1593,6 +1619,8 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(page_store: &LocalBloc
                 saw_context_events = true;
                 insert_timestamped_secondary_view(
                     page_store,
+                    warm_shard,
+                    &mut warm_batch,
                     &mut context_events,
                     entry.object_key,
                     entry.address,
@@ -1602,6 +1630,8 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(page_store: &LocalBloc
                 saw_context_indexes = true;
                 insert_timestamped_secondary_view(
                     page_store,
+                    warm_shard,
+                    &mut warm_batch,
                     &mut context_indexes,
                     entry.object_key,
                     entry.address,
@@ -1611,6 +1641,8 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(page_store: &LocalBloc
                 saw_context_audits = true;
                 insert_timestamped_secondary_view(
                     page_store,
+                    warm_shard,
+                    &mut warm_batch,
                     &mut context_audits,
                     entry.object_key,
                     entry.address,
@@ -1624,6 +1656,8 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(page_store: &LocalBloc
                 saw_context_children = true;
                 insert_timestamped_secondary_view(
                     page_store,
+                    warm_shard,
+                    &mut warm_batch,
                     &mut context_children,
                     entry.object_key,
                     entry.address,
@@ -1637,6 +1671,8 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(page_store: &LocalBloc
                 saw_context_summaries = true;
                 insert_timestamped_secondary_view(
                     page_store,
+                    warm_shard,
+                    &mut warm_batch,
                     &mut context_summaries,
                     entry.object_key,
                     entry.address,
@@ -1646,6 +1682,8 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(page_store: &LocalBloc
                 saw_context_compressions = true;
                 insert_timestamped_secondary_view(
                     page_store,
+                    warm_shard,
+                    &mut warm_batch,
                     &mut context_compressions,
                     entry.object_key,
                     entry.address,
@@ -1725,17 +1763,42 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(page_store: &LocalBloc
     for bucket in shard.bucket_index.bucket_map.values_mut() {
         update_bucket_layout(bucket);
     }
+
+    // Promote all pages read above into the cache tier in a single batched put (one
+    // lock acquire + one eviction drain vs one per page). No-op when not warming.
+    if let Some((cache, _)) = warm {
+        if !warm_batch.is_empty() {
+            let _ = cache.put_batch(warm_batch);
+        }
+    }
 }
 
 pub(super) fn insert_timestamped_secondary_view(
     page_store: &LocalBlockStore,
+    warm_shard: Option<ShardId>,
+    warm_batch: &mut Vec<(CacheKey, Vec<u8>)>,
     target: &mut HashMap<String, BTreeMap<u64, BlockAddress>>,
     object_key: String,
     address: BlockAddress,
 ) {
-    let timestamps = page_store
-        .read(&address)
-        .ok()
+    let bytes = page_store.read(&address).ok();
+    // Fold the disk->memory promotion into the load read we already perform here.
+    // page_store.read is mutex-serialized, so a separate post-load warm pass would
+    // re-read every page under the same lock; collect the bytes we just read for a
+    // single batched cache.put_batch() at the end of reconcile (24k individual
+    // cache.put lock cycles -> one). The key MUST match the retrieval read path
+    // (read_page_bytes) or the entries never get hit.
+    if let (Some(shard_id), Some(bytes)) = (warm_shard, bytes.as_ref()) {
+        let key = CacheKey::page_with_slot(
+            shard_id,
+            address.page_slab_id,
+            address.offset,
+            address.length,
+            address.routing_bucket,
+        );
+        warm_batch.push((key, bytes.clone()));
+    }
+    let timestamps = bytes
         .and_then(|bytes| match decode_feature_page_strict(&bytes) {
             PackedFeaturePageDecode::Packed(points) => Some(
                 points

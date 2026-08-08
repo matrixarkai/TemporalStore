@@ -238,7 +238,7 @@ impl TemporalEngine {
                 end_routing_bucket,
             )
         {
-            reconcile_secondary_views_from_bucket_index(&self.page_store, shard);
+            reconcile_secondary_views_from_bucket_index(&self.page_store, shard, None);
         }
         let write_command = is_write_command(&command);
         if let Err(status) = self.check_admission(request.shard_id, write_command, &config, &info) {
