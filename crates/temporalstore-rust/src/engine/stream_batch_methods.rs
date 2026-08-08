@@ -131,6 +131,32 @@ impl TemporalEngine {
                 responses,
             };
         };
+        // Mirror execute_with_storage_override: a shard replaying its WAL on load is present
+        // but not yet serving. Reject the whole batch with a retryable status so batch writes
+        // cannot interleave with replay (anchor regression / double-apply) -- the batch path
+        // must not be a hole around the single-execute recovery gate. Replay itself never
+        // routes through batch_execute, but replaying_wal() is checked for symmetry.
+        if !replaying_wal()
+            && self
+                .infos
+                .read()
+                .expect("info lock poisoned")
+                .get(&request.shard_id)
+                .map(|info| info.recovering)
+                .unwrap_or(false)
+        {
+            responses.extend((0..command_count).map(|_| ExecuteResponse {
+                status: Status::error(
+                    "shard_not_loaded",
+                    "shard is recovering (WAL replay in progress)",
+                ),
+                response: CommandResponse::Empty,
+            }));
+            return BatchExecuteResponse {
+                status: Status::ok(),
+                responses,
+            };
+        }
         let readonly = self
             .infos
             .read()
