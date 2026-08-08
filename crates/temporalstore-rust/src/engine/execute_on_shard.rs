@@ -395,6 +395,13 @@ pub(crate) fn execute_on_shard(
             mutated |= mark_bucket_index_page_deleted(shard, "hash", &key, Some(field.as_str()));
             if let Some(fields) = shard.hashes.get_mut(&key) {
                 mutated |= fields.remove(&field).is_some();
+                // Mirror C++ hash2::Del: deleting the last field removes the whole key
+                // (DeleteObject on empty). Leaving an empty field map behind makes the key
+                // still report as existing (EXISTS=1, TYPE=hash) -- a phantom hash. (Sets do
+                // NOT do this on either side, so only Hash needs the cleanup.)
+                if fields.is_empty() {
+                    shard.hashes.remove(&key);
+                }
             }
             invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
             CommandResponse::Empty

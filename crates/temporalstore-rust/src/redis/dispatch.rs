@@ -430,13 +430,19 @@ pub fn execute_redis_command_with_state(
             response
         }
         "DECRBY" if args.len() == 3 => match parse_i64_arg(&args[2], "decrement") {
-            Ok(decrement) => {
-                let response = string_increment_response(&args[1], -decrement, &mut execute);
-                if matches!(response, RespValue::Integer(_)) {
-                    state.keyspace.insert(string_arg(&args[1]));
+            // C++ rejects DECRBY i64::MIN ("decrement would overflow"): negating it
+            // overflows i64. Plain `-decrement` panics in debug and wraps to i64::MIN in
+            // release (then silently stores a wrong value). Guard with checked_neg.
+            Ok(decrement) => match decrement.checked_neg() {
+                Some(neg) => {
+                    let response = string_increment_response(&args[1], neg, &mut execute);
+                    if matches!(response, RespValue::Integer(_)) {
+                        state.keyspace.insert(string_arg(&args[1]));
+                    }
+                    response
                 }
-                response
-            }
+                None => RespValue::Error("ERR decrement would overflow".to_string()),
+            },
             Err(err) => RespValue::Error(err),
         },
         "HINCRBYFLOAT" if args.len() == 4 => {
@@ -796,7 +802,11 @@ pub fn execute_redis_command_with_state(
                             .collect(),
                     ),
                     Some(count) => {
-                        let take = count.unsigned_abs() as usize;
+                        // Negative count = |count| members WITH repetition. C++ computes
+                        // n = -count; for i64::MIN that overflows to a negative n so the
+                        // fill loop runs zero times. unsigned_abs() would instead yield
+                        // 2^63 here and attempt an unbounded allocation (hang / OOM DoS).
+                        let take = count.checked_neg().map(|n| n as usize).unwrap_or(0);
                         let mut out = Vec::new();
                         for index in 0..take {
                             if members.is_empty() {

@@ -367,6 +367,55 @@ mod tests {
     use crate::types::{ExecuteRequest, SequenceFeatureRow};
 
     #[test]
+    fn decrby_and_srandmember_guard_i64_min_like_cpp() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut state = RedisCommandState::default();
+        let run = |state: &mut RedisCommandState, args: Vec<&str>| {
+            execute_redis_command_with_state(
+                args.into_iter().map(|arg| arg.as_bytes().to_vec()).collect(),
+                1,
+                state,
+                |command| {
+                    let response = engine.execute(ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    });
+                    if response.status.ok {
+                        Ok(response.response)
+                    } else {
+                        Err(response.status.message)
+                    }
+                },
+            )
+        };
+
+        // DECRBY i64::MIN: negating it overflows i64. C++ returns an overflow error; Rust
+        // must not panic (debug) or wrap-and-store a wrong value (release).
+        run(&mut state, vec!["SET", "n", "0"]);
+        assert!(matches!(
+            run(&mut state, vec!["DECRBY", "n", "-9223372036854775808"]),
+            RespValue::Error(_)
+        ));
+        assert_eq!(
+            run(&mut state, vec!["GET", "n"]),
+            RespValue::Bulk(Some(b"0".to_vec())),
+            "the failed DECRBY must not have mutated the key"
+        );
+
+        // SRANDMEMBER with the i64::MIN negative count must be BOUNDED (C++ fills zero
+        // elements). unsigned_abs() would attempt ~2^63 iterations (hang / OOM).
+        run(&mut state, vec!["SADD", "s", "a", "b", "c"]);
+        assert!(
+            matches!(
+                run(&mut state, vec!["SRANDMEMBER", "s", "-9223372036854775808"]),
+                RespValue::Array(ref members) if members.len() <= 3
+            ),
+            "SRANDMEMBER with i64::MIN count must be bounded, not an unbounded allocation"
+        );
+    }
+
+    #[test]
     fn resp_parser_reads_array_command() {
         let mut input = BufReader::new(&b"*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n"[..]);
         assert_eq!(
