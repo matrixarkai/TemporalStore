@@ -242,6 +242,17 @@ impl TemporalEngine {
         {
             info.recovering = false;
         }
+        // Eager disk->memory promotion on a normal restart. load_index() above already
+        // read every live page from the page store to rebuild the secondary views, so
+        // those bytes are hot in the OS page cache -- but the engine's in-memory cache
+        // tier is left cold, and every early retrieval after a restart otherwise pays a
+        // cold-cache page read. Promote the live pages into the cache tier once here so
+        // the shard comes back not just ready but warm. No-op on a fresh/empty shard
+        // (nothing live to warm), so it never slows a cold ingestion start. Opt out with
+        // MATRIXARK_EAGER_CACHE_WARM_ON_LOAD=0.
+        if eager_cache_warm_on_load() {
+            let _ = self.warm_cache_from_page_index(request.shard_id, std::iter::empty::<u32>());
+        }
         LoadShardResponse {
             status: Status::ok(),
         }
