@@ -1716,6 +1716,60 @@ fn hash_incrby_rejects_non_integer_and_overflow_like_cpp() {
 }
 
 #[test]
+fn hash_incrby_skips_leading_whitespace_in_stored_value_like_cpp() {
+    // C++ hash IncrBy parses the stored field via strtoll (extension/hash/implement.cc:138), which
+    // skips leading whitespace, so a field stored as " 5" is the valid integer 5. Rust parse_i64
+    // previously used str::parse (rejects leading whitespace) and wrongly failed it as
+    // "not an integer". A leading-space integer must now increment like C++.
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashSet {
+            key: "h".to_string(),
+            field: "padded".to_string(),
+            value: b" 5".to_vec(),
+        },
+    });
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashIncrBy {
+            key: "h".to_string(),
+            field: "padded".to_string(),
+            increment: 1,
+        },
+    });
+    assert!(
+        response.status.ok,
+        "leading-whitespace integer must parse like C++ strtoll, got {:?}",
+        response.status
+    );
+    assert_eq!(response.response, CommandResponse::Integer { value: 6 });
+
+    // Trailing garbage must still be rejected on both sides (C++ *end != '\0').
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashSet {
+            key: "h".to_string(),
+            field: "trailing".to_string(),
+            value: b"5 ".to_vec(),
+        },
+    });
+    let rejected = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashIncrBy {
+            key: "h".to_string(),
+            field: "trailing".to_string(),
+            increment: 1,
+        },
+    });
+    assert_eq!(
+        rejected.status.code, "unmatched",
+        "trailing whitespace must still be rejected like C++"
+    );
+}
+
+#[test]
 fn feature_append_packs_many_timestamp_values_into_one_page() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);

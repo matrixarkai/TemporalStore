@@ -403,7 +403,3 @@ pub(super) fn cache_entry_routing_bucket(entry: &CacheEntryInfo) -> Option<u32> 
         .parse()
         .ok()
 }
-
-pub(super) fn parse_i64(bytes: &Vec<u8>) -> Option<i64> {
-    std::str::from_utf8(bytes).ok()?.parse().ok()
-}
