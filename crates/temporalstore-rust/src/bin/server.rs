@@ -1395,6 +1395,61 @@ mod tests {
 
     const TEST_CACHE_BYTES: usize = 1024;
 
+    #[test]
+    fn control_state_set_and_get_is_a_replicated_write_not_a_local_read() {
+        // Regression: a mutating command must never be classified as a raft *read*. Reads are
+        // served locally via read_via_server_raft (execute_via_server_raft), which skips the raft
+        // log; only non-reads are proposed + replicated. ControlStateSetAndGet MUTATES (adds
+        // `amount` to the series and persists a control-state page) and the engine's
+        // is_write_command treats it as a write -- matching C++ registering HSETANDGET as Write
+        // (extension/control_state/implement.cc). Classifying it as a read applied the mutation
+        // only on the leader and dropped it from the raft log, so followers diverged and the
+        // write was lost on failover. It must fall through to `propose`.
+        let mutating = Command::ControlStateSetAndGet {
+            family: temporalstore_rust::types::ControlStateFamily::Cpc,
+            key: "k".to_string(),
+            timestamp_ms: 10,
+            amount: 4,
+            start_ms: 0,
+            end_ms: 100,
+            aggregator: "sum".to_string(),
+        };
+        assert!(
+            !is_raft_read_command(&mutating),
+            "ControlStateSetAndGet mutates; it must be proposed to raft, not served as a local read"
+        );
+
+        // Same for the options variant (it also mutates + persists).
+        let mutating_with_options = Command::ControlStateSetAndGetWithOptions {
+            family: temporalstore_rust::types::ControlStateFamily::Cpc,
+            key: "k".to_string(),
+            timestamp_ms: 10,
+            amount: 4,
+            start_ms: 0,
+            end_ms: 100,
+            aggregator: "sum".to_string(),
+            precision_ms: None,
+            ttl_ms: None,
+            uuid: None,
+        };
+        assert!(
+            !is_raft_read_command(&mutating_with_options),
+            "ControlStateSetAndGetWithOptions mutates; it must be proposed to raft, not a local read"
+        );
+
+        // Contrast: a genuine read-only ControlState command must remain locally servable.
+        let read_only = Command::ControlStateQuery {
+            key: "k".to_string(),
+            start_ms: 0,
+            end_ms: 100,
+            aggregator: "sum".to_string(),
+        };
+        assert!(
+            is_raft_read_command(&read_only),
+            "ControlStateQuery is read-only and must remain locally servable"
+        );
+    }
+
     fn test_engine(root: &Path, role: &str) -> TemporalEngine {
         test_engine_with_cache(root, role, TEST_CACHE_BYTES)
     }
