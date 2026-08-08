@@ -487,6 +487,67 @@ mod tests {
     }
 
     #[test]
+    fn set_zero_expiry_and_zrandmember_min_match_cpp() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut state = RedisCommandState::default();
+        let run = |state: &mut RedisCommandState, args: Vec<&str>| {
+            execute_redis_command_with_state(
+                args.into_iter().map(|arg| arg.as_bytes().to_vec()).collect(),
+                1,
+                state,
+                |command| {
+                    let response = engine.execute(ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    });
+                    if response.status.ok {
+                        Ok(response.response)
+                    } else {
+                        Err(response.status.message)
+                    }
+                },
+            )
+        };
+
+        // Non-positive expiry is rejected on SETEX / PSETEX / SET EX (would otherwise write
+        // an already-expired key). Matches C++ and real Redis.
+        assert!(matches!(
+            run(&mut state, vec!["SETEX", "a", "0", "v"]),
+            RespValue::Error(_)
+        ));
+        assert!(matches!(
+            run(&mut state, vec!["PSETEX", "b", "0", "v"]),
+            RespValue::Error(_)
+        ));
+        assert!(matches!(
+            run(&mut state, vec!["SET", "c", "v", "EX", "0"]),
+            RespValue::Error(_)
+        ));
+        assert_eq!(run(&mut state, vec!["GET", "a"]), RespValue::Bulk(None));
+        // A positive expiry still works.
+        assert_eq!(
+            run(&mut state, vec!["SETEX", "d", "100", "v"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+
+        // ZRANDMEMBER with the i64::MIN negative count must be BOUNDED (not a 2^63 alloc).
+        run(&mut state, vec!["ZADD", "z", "1", "a", "2", "b"]);
+        assert!(
+            matches!(
+                run(&mut state, vec!["ZRANDMEMBER", "z", "-9223372036854775808"]),
+                RespValue::Array(ref members) if members.len() <= 2
+            ),
+            "ZRANDMEMBER i64::MIN count must be bounded, not an unbounded allocation"
+        );
+        // A huge POSITIVE count returns at most the set size (distinct), no busy loop.
+        assert!(matches!(
+            run(&mut state, vec!["ZRANDMEMBER", "z", "9223372036854775807"]),
+            RespValue::Array(ref members) if members.len() == 2
+        ));
+    }
+
+    #[test]
     fn resp_parser_reads_array_command() {
         let mut input = BufReader::new(&b"*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n"[..]);
         assert_eq!(
