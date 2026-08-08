@@ -4,9 +4,27 @@ use super::*;
 impl TemporalEngine {
     pub fn storage_lifecycle_plan(&self, request: StorageLifecycleRequest) -> StorageLifecyclePlan {
         let bucket_summaries = self.bucket_storage_summaries(request.shard_id);
-        let dirty_buckets = bucket_summaries
+        // Select the least-recently-dumped (most overdue) dirty buckets first, matching C++
+        // ReclaimOpLogWithLimit's oldest-first-dirty ordering (storage_manager.cc:234-245:
+        // GetLastDirtySlot/PopLastDirtySlot consume slots in non-decreasing first-dirty-log-id).
+        // bucket_summaries arrives in ascending routing_bucket order (a BTreeMap), so truncating to
+        // max_dump_buckets_per_round always dropped the same high-id buckets -- a bucket dirtied
+        // once could be starved forever by low-id buckets re-dirtied every round, never
+        // checkpointed and pinning the WAL reclaim floor. Ordering by last_dump_sequence (the WAL
+        // sequence at the bucket's last dump; 0 = never dumped) ascending makes an overdue bucket
+        // rise to the top and guarantees every dirty bucket is eventually selected; routing_bucket
+        // is a stable tiebreaker.
+        let mut dirty_bucket_summaries = bucket_summaries
             .iter()
             .filter(|summary| summary.dirty_object_count > 0)
+            .collect::<Vec<_>>();
+        dirty_bucket_summaries.sort_by(|left, right| {
+            left.last_dump_sequence
+                .cmp(&right.last_dump_sequence)
+                .then_with(|| left.routing_bucket.cmp(&right.routing_bucket))
+        });
+        let dirty_buckets = dirty_bucket_summaries
+            .iter()
             .map(|summary| summary.routing_bucket)
             .collect::<Vec<_>>();
         let latest_dump_oplog_sequence =
