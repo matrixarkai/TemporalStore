@@ -520,6 +520,94 @@ fn context_models_match_cpp_keys_timeline_pages_and_filters() {
     );
 }
 
+#[test]
+fn context_query_events_applies_limit_after_filter_like_cpp() {
+    // C++ QueryEvents filters within the (bounded) scan and applies `limit` AFTER filtering.
+    // Rust previously took `limit` off the raw timeline first, so matching events beyond the
+    // first `limit` timeline entries were silently dropped -- e.g. many earlier
+    // low-confidence events hid the high-confidence matches on the live retrieval path.
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let base = ContextEvent {
+        event_id_hash: 0,
+        event_time_ms: 0,
+        ingestion_time_ms: 0,
+        kind: 9,
+        event_type: 2,
+        actor_hash: 77,
+        status: 1,
+        valid_until_ms: 0,
+        confidence: 0.1,
+        importance: 0.7,
+        text: String::new(),
+        source_ref: "s".to_string(),
+        related_node_hashes: vec![42],
+        compact_attrs: vec![],
+    };
+    // 100 low-confidence events at earlier timestamps, then 5 high-confidence ones later.
+    for i in 0..100u64 {
+        let mut event = base.clone();
+        event.event_id_hash = i + 1;
+        event.event_time_ms = 1_000 + i;
+        event.ingestion_time_ms = 1_000 + i;
+        event.confidence = 0.1;
+        event.text = format!("low{i}");
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextWriteEvent {
+                tenant_hash: 11,
+                node_hash: 42,
+                event,
+                first_write_only: false,
+                cold_storage: false,
+            },
+        });
+    }
+    for i in 0..5u64 {
+        let mut event = base.clone();
+        event.event_id_hash = 1_000 + i;
+        event.event_time_ms = 1_200 + i;
+        event.ingestion_time_ms = 1_200 + i;
+        event.confidence = 0.9;
+        event.text = format!("high{i}");
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextWriteEvent {
+                tenant_hash: 11,
+                node_hash: 42,
+                event,
+                first_write_only: false,
+                cold_storage: false,
+            },
+        });
+    }
+    let queried = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextQueryEvents {
+            tenant_hash: 11,
+            node_hash: 42,
+            start_time_ms: 0,
+            end_time_ms: 100_000,
+            limit: Some(100),
+            current_valid_only: false,
+            as_of_ms: 0,
+            kinds: Vec::new(),
+            statuses: Vec::new(),
+            min_confidence: 0.6,
+            min_importance: 0.0,
+        },
+    });
+    let CommandResponse::ContextEvents { events, .. } = queried.response else {
+        panic!("expected ContextEvents");
+    };
+    assert_eq!(
+        events.len(),
+        5,
+        "the 5 high-confidence events must survive limit-after-filter, not be hidden by the \
+         100 earlier low-confidence events"
+    );
+}
+
 // shared-corpus: context_tree_embedding_summary_compression
 #[test]
 fn context_tree_embedding_summary_and_compression_match_cpp_round_trip() {

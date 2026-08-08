@@ -162,20 +162,13 @@ impl TemporalEngine {
             request.start_routing_bucket,
             request.end_routing_bucket,
         );
-        self.shards
-            .write()
-            .expect("engine lock poisoned")
-            .insert(request.shard_id, state);
-        self.configs
-            .write()
-            .expect("config lock poisoned")
-            .entry(request.shard_id)
-            .or_default();
-        self.admissions
-            .write()
-            .expect("admission lock poisoned")
-            .entry(AdmissionScope::Shard(request.shard_id))
-            .or_default();
+        // Publish the info row WITH recovering:true BEFORE inserting into `shards`. A
+        // concurrent execute() acquires shards.write() first, so if it observes the shard
+        // present it is guaranteed (happens-before via the shards lock) to also observe
+        // recovering:true and reject the write. Inserting into `shards` first would open a
+        // window where the shard is visible but the info row is absent -> the gate defaults
+        // to false -> a concurrent write interleaves with replay (the double-apply this gate
+        // exists to prevent).
         self.infos.write().expect("info lock poisoned").insert(
             request.shard_id,
             ShardInfo {
@@ -197,6 +190,20 @@ impl TemporalEngine {
                 recovering: true,
             },
         );
+        self.shards
+            .write()
+            .expect("engine lock poisoned")
+            .insert(request.shard_id, state);
+        self.configs
+            .write()
+            .expect("config lock poisoned")
+            .entry(request.shard_id)
+            .or_default();
+        self.admissions
+            .write()
+            .expect("admission lock poisoned")
+            .entry(AdmissionScope::Shard(request.shard_id))
+            .or_default();
         // Replay any WAL records not yet reflected in the loaded index, rebuilding
         // in-memory state the way C++ ObjectManager::Load() replays the oplog. Without
         // this an async_storage write (WAL entry recorded, page/index deferred to the
