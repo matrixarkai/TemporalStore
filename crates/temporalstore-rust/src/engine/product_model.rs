@@ -121,6 +121,25 @@ pub(super) fn is_control_state_change_aggregator(aggregator: &str) -> bool {
     aggregator.eq_ignore_ascii_case("change")
 }
 
+/// UUID idempotency dedup window for control-state writes (300s), matching the
+/// C++ control_state `kUUIDExpiredTime` production value.
+pub(super) const CONTROL_STATE_UUID_DEDUP_MS: u64 = 300_000;
+
+/// Soft cap on the in-memory UUID dedup ledger before a reclaiming sweep runs.
+/// Expired entries are already ignored by the dedup check (an entry past its
+/// expiry is treated as absent), so this sweep is purely for memory reclamation
+/// and only fires when the ledger grows large — keeping per-write cost O(1)
+/// amortized instead of O(n) on every write.
+const CONTROL_STATE_UUID_LEDGER_SOFT_CAP: usize = 2_000_000;
+
+/// Reclaim expired UUID dedup entries, but only once the ledger exceeds the soft
+/// cap so the common path stays allocation-free and O(1).
+pub(super) fn gc_control_state_uuid(shard: &mut ShardState, now_ms: u64) {
+    if shard.control_state_uuid.len() > CONTROL_STATE_UUID_LEDGER_SOFT_CAP {
+        shard.control_state_uuid.retain(|_, expiry| *expiry > now_ms);
+    }
+}
+
 pub(super) fn count_control_state_changes(shard: &ShardState, key: &str, start_ms: u64, end_ms: u64) -> i64 {
     let mut unique = BTreeSet::new();
     if let Some(series) = shard.control_state_changes.get(key) {

@@ -1499,6 +1499,79 @@ pub(crate) fn execute_on_shard(
                 value: aggregate_control_state_values(&values, &aggregator),
             }
         }
+        Command::ControlStateSetAndGetWithOptions {
+            family,
+            key,
+            timestamp_ms,
+            amount,
+            start_ms,
+            end_ms,
+            aggregator,
+            precision_ms,
+            ttl_ms,
+            uuid,
+        } => {
+            remove_if_expired(shard, &key);
+            let key = control_state_family_key(family, &key);
+            // UUID idempotency: dedup at-least-once replays within a bounded window,
+            // mirroring the C++ control_state dedup ledger. A duplicate is a no-op
+            // write that still returns the current windowed aggregate (idempotent).
+            let now = resolve_now_ms();
+            let is_duplicate = if let Some(uuid) = uuid.as_ref().filter(|u| !u.is_empty()) {
+                let dedup_key = format!("{key}\u{1}{uuid}");
+                gc_control_state_uuid(shard, now);
+                let dup =
+                    matches!(shard.control_state_uuid.get(&dedup_key), Some(expiry) if *expiry > now);
+                if !dup {
+                    shard
+                        .control_state_uuid
+                        .insert(dedup_key, now.saturating_add(CONTROL_STATE_UUID_DEDUP_MS));
+                }
+                dup
+            } else {
+                false
+            };
+            let bucket_ms = precision_ms
+                .filter(|precision_ms| *precision_ms > 0)
+                .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
+                .unwrap_or(timestamp_ms);
+            let series = shard.control_state.entry(key.clone()).or_default();
+            if !is_duplicate {
+                *series.entry(bucket_ms).or_default() += amount;
+            }
+            let value = if is_control_state_change_aggregator(&aggregator) {
+                count_control_state_changes(shard, &key, start_ms, end_ms)
+            } else {
+                let values = shard
+                    .control_state
+                    .get(&key)
+                    .map(|series| {
+                        series
+                            .range(start_ms..=end_ms)
+                            .map(|(_, value)| *value)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                aggregate_control_state_values(&values, &aggregator)
+            };
+            if let Some(ttl_ms) = ttl_ms {
+                shard
+                    .expires_at_ms
+                    .insert(key.clone(), now.saturating_add(ttl_ms));
+            }
+            persist_control_state_page(
+                cache,
+                page_store,
+                shard_id,
+                shard,
+                &key,
+                start_routing_bucket,
+                end_routing_bucket,
+                async_storage,
+            );
+            mutated = true;
+            CommandResponse::Integer { value }
+        }
         Command::ControlStateFamilyQuery {
             family,
             key,

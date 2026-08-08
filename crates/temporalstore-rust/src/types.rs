@@ -1409,6 +1409,26 @@ pub enum Command {
         end_ms: u64,
         aggregator: String,
     },
+    /// Full-parity analog of the C++ control_state `HSETANDGET` operator: an
+    /// atomic increment-then-read that additionally supports precision bucketing,
+    /// per-key TTL, and UUID idempotency (dedup within a bounded window so
+    /// at-least-once queue replays do not double-count). `aggregator` accepts the
+    /// same verbs as `ControlStateFamilyQuery`, including `change` (distinct count).
+    ControlStateSetAndGetWithOptions {
+        family: ControlStateFamily,
+        key: String,
+        timestamp_ms: u64,
+        amount: i64,
+        start_ms: u64,
+        end_ms: u64,
+        aggregator: String,
+        #[serde(default)]
+        precision_ms: Option<u64>,
+        #[serde(default)]
+        ttl_ms: Option<u64>,
+        #[serde(default)]
+        uuid: Option<String>,
+    },
     ControlStateFamilyQuery {
         family: ControlStateFamily,
         key: String,

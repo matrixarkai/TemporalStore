@@ -190,6 +190,48 @@ impl TemporalStoreTable {
         }
     }
 
+    /// Full-parity control-state atomic increment-then-read (C++ `HSETANDGET`
+    /// analog) with precision bucketing, per-key TTL, and UUID idempotency.
+    /// A repeated `uuid` within the dedup window is a no-op write that still
+    /// returns the current windowed aggregate, so at-least-once queue replays do
+    /// not double-count.
+    #[allow(clippy::too_many_arguments)]
+    pub fn control_state_family_set_and_get_with_options(
+        &self,
+        family: ControlStateFamily,
+        key: impl Into<String>,
+        timestamp_ms: u64,
+        amount: i64,
+        start_ms: u64,
+        end_ms: u64,
+        aggregator: impl Into<String>,
+        precision_ms: Option<u64>,
+        ttl_ms: Option<u64>,
+        uuid: Option<String>,
+    ) -> Result<i64, ClientError> {
+        match self
+            .execute(Command::ControlStateSetAndGetWithOptions {
+                family,
+                key: key.into(),
+                timestamp_ms,
+                amount,
+                start_ms,
+                end_ms,
+                aggregator: aggregator.into(),
+                precision_ms,
+                ttl_ms,
+                uuid,
+            })?
+            .response
+        {
+            CommandResponse::Integer { value } => Ok(value),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "control_state_family_set_and_get_with_options",
+                response,
+            }),
+        }
+    }
+
     pub fn control_state_fol_set(
         &self,
         key: impl Into<String>,

@@ -44,6 +44,12 @@ pub(super) struct ShardState {
     pub(super) control_state_changes: HashMap<String, BTreeMap<u64, BTreeSet<Vec<u8>>>>,
     #[serde(default)]
     pub(super) control_state_fol: HashMap<String, ControlStateFolValue>,
+    // UUID idempotency ledger for control-state writes: uuid -> expiry_ms. Mirrors
+    // the C++ control_state 300s dedup window so at-least-once queue replays do not
+    // double-count. Lazily garbage-collected on write; in-memory + serde-default so
+    // it is rebuilt via command replay and never blocks recovery.
+    #[serde(default)]
+    pub(super) control_state_uuid: HashMap<String, u64>,
     #[serde(default)]
     pub(super) context_nodes: HashMap<String, BlockAddress>,
     #[serde(default)]
