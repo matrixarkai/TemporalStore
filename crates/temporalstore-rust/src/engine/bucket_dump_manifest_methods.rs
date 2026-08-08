@@ -12,8 +12,26 @@ impl TemporalEngine {
         // fsyncs, but under MATRIXARK_BULK_INGEST appends defer fsync, so a dump firing
         // mid-bulk would otherwise name slabs whose bytes are not yet on disk (C++
         // DumpSlots always page_store_->Commit before UpdateIndex; slot_store.cc).
-        let _ = self.page_store.sync_durable();
-        let _ = self.wal_store.flush(shard_id);
+        // The durability barrier MUST succeed before we capture slab ids / oplog_sequence and
+        // advance the dumped-log frontier -- C++ OnCommitDone (slot_store.cc) refuses to touch
+        // the index if the page/oplog commit failed. Swallowing these errors let a dump whose
+        // pages never reached disk (e.g. a sync_data EIO/ENOSPC under bulk mode) still clear
+        // the bucket dirty and let WAL reclaim truncate the records backing those pages ->
+        // silent data loss on crash. Propagate: an Err here skips clear_dumped_bucket_dirty_state
+        // (apply_storage_lifecycle consumes the manifest via .ok()), so the bucket stays dirty
+        // and the reclaim frontier does not advance.
+        self.page_store.sync_durable().map_err(|err| {
+            Status::error(
+                "slot_dump_failed",
+                format!("page durability barrier failed before dump capture: {err}"),
+            )
+        })?;
+        self.wal_store.flush(shard_id).map_err(|err| {
+            Status::error(
+                "slot_dump_failed",
+                format!("wal flush failed before dump capture: {err}"),
+            )
+        })?;
         let selected_buckets = selected_buckets.into_iter().collect::<BTreeSet<_>>();
         let summaries = self.bucket_storage_summaries(shard_id);
         if summaries.is_empty()
