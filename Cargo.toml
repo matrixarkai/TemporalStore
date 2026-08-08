@@ -1,5 +1,9 @@
 [workspace]
-members = ["crates/temporalstore-snapshot", "crates/temporalstore-rust"]
+members = [
+    "crates/matrixobject",
+    "crates/temporalstore-snapshot",
+    "crates/temporalstore-rust",
+]
 resolver = "2"
 
 [workspace.package]
