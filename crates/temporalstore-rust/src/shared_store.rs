@@ -2433,8 +2433,8 @@ mod tests {
             MatrixObjectObjectStore::new(
                 "temporalstore-shared",
                 StoreOptions {
-                    slab_size: 16,
-                    max_band_bytes: 4,
+                    segment_size: 16,
+                    max_extent_bytes: 4,
                     chunk_size: 4,
                     ..StoreOptions::default()
                 },
@@ -2502,7 +2502,7 @@ mod tests {
             .get_object("temporalstore-shared", blob_key)
             .unwrap();
         assert!(
-            matrixobject_blob.metadata.bands.len() > 1,
+            matrixobject_blob.metadata.extents.len() > 1,
             "protobuf WAL frames should be appended into one MatrixObject blob"
         );
 

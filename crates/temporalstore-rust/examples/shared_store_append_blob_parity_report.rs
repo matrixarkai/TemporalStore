@@ -468,8 +468,8 @@ fn replay_report_uses_offset_index(report: &ReplayReport, entry_count: u64) -> b
 
 fn matrixobject_options(persistent_journal_path: Option<&std::path::Path>) -> StoreOptions {
     StoreOptions {
-        slab_size: 4096,
-        max_band_bytes: 1024,
+        segment_size: 4096,
+        max_extent_bytes: 1024,
         chunk_size: 1024,
         persistent_journal_path: persistent_journal_path
             .map(|path| path.to_string_lossy().to_string())
@@ -526,7 +526,7 @@ async fn run_direct_publish(
         append_receipts,
         offset_metadata_mappings,
         blob_object_length: metadata.length,
-        blob_physical_band_count: metadata.bands.len(),
+        blob_physical_band_count: metadata.extents.len(),
         offset_frame_validation,
         offset_index_validation,
         authoritative_offset_lookup,
@@ -578,7 +578,7 @@ async fn run_sync_writer(
         write_reports,
         offset_metadata_mappings,
         blob_object_length: metadata.length,
-        blob_physical_band_count: metadata.bands.len(),
+        blob_physical_band_count: metadata.extents.len(),
         authoritative_offset_lookup,
         replay: replay_and_retrieve(root, replicator, shard_id, entry_count, "sync").await,
     }
@@ -633,7 +633,7 @@ async fn run_async_writer(
         flush_report,
         offset_metadata_mappings,
         blob_object_length: metadata.length,
-        blob_physical_band_count: metadata.bands.len(),
+        blob_physical_band_count: metadata.extents.len(),
         authoritative_offset_lookup,
         replay: replay_and_retrieve(root, replicator, shard_id, entry_count, "async").await,
     }
