@@ -5,6 +5,14 @@ SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOT="${MATRIXARK_REPO_ROOT:-${SCRIPT_ROOT}}"
 cd "$ROOT"
 
+# Persistent, unified per-agent store base. /tmp is wiped on reboot and scattered
+# codex context across ephemeral dirs; anchor storage under the durable MatrixArk
+# dir instead. Override with MATRIXARK_CODEX_HOOK_STORE_BASE.
+CODEX_STORE_BASE="${MATRIXARK_CODEX_HOOK_STORE_BASE:-/root/.matrixark/temporalstore-hooks/codex}"
+mkdir -p "$CODEX_STORE_BASE" 2>/dev/null || true
+export MATRIXARK_TEMPORALSTORE_RUST_ROOT="${MATRIXARK_TEMPORALSTORE_RUST_ROOT:-$CODEX_STORE_BASE/store}"
+export TEMPORALSTORE_RUST_CODEX_HOOK_ROOT="${TEMPORALSTORE_RUST_CODEX_HOOK_ROOT:-$CODEX_STORE_BASE/rust}"
+
 export MATRIXARK_MCP_BACKEND="${MATRIXARK_MCP_BACKEND:-temporalstore-rust}"
 export MATRIXARK_RUST_TEMPORALSTORE_MODE="${MATRIXARK_RUST_TEMPORALSTORE_MODE:-local}"
 export MATRIXARK_RUST_SERVICE_META_ADDR="${MATRIXARK_RUST_SERVICE_META_ADDR:-127.0.0.1:17101}"
