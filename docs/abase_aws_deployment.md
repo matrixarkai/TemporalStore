@@ -88,7 +88,7 @@ ABase should use local block storage for its core database files. ABase-style sy
 
 - Raft logs or replication logs
 - WAL files
-- RocksDB/TerarkDB/LSM files
+- RocksDB/LSM files
 - compaction output
 - snapshots
 - high-throughput random reads and writes
