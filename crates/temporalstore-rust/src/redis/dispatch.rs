@@ -354,7 +354,16 @@ pub fn execute_redis_command_with_state(
         "TTL" if args.len() == 2 => match execute(Command::CommonTtl {
             key: string_arg(&args[1]),
         }) {
-            Ok(CommandResponse::Integer { value }) => RespValue::Integer(value / 1000),
+            // C++ TTL: the negative sentinels (-2 missing, -1 no-expiry) pass through
+            // unchanged; a positive remaining-ms value rounds UP to seconds ((ms+999)/1000).
+            // The old `value / 1000` turned -1/-2 into 0 and floored sub-second remainders.
+            Ok(CommandResponse::Integer { value }) => {
+                if value < 0 {
+                    RespValue::Integer(value)
+                } else {
+                    RespValue::Integer((value + 999) / 1000)
+                }
+            }
             Ok(_) => RespValue::Error("ERR invalid ttl response".to_string()),
             Err(err) => RespValue::Error(format!("ERR {err}")),
         },
@@ -1121,11 +1130,11 @@ pub fn execute_redis_command_with_state(
         }
         "ZPOPMAX" if args.len() == 2 || args.len() == 3 => zpop_response(&args, true, &mut execute),
         "ZCOUNT" if args.len() == 4 => {
-            let min = match parse_f64_arg(&args[2], "min") {
+            let min = match parse_score_bound(&args[2], "min") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
             };
-            let max = match parse_f64_arg(&args[3], "max") {
+            let max = match parse_score_bound(&args[3], "max") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
             };

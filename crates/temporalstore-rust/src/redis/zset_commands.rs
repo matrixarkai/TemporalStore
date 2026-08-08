@@ -95,6 +95,11 @@ pub(super) fn zincrby_response(
             values.push((args[3].clone(), increment));
             increment
         };
+    // C++ ZIncrBy rejects a non-finite result ("resulting score is not a valid float") and
+    // leaves the set unchanged; Rust previously stored inf and returned "inf".
+    if !next_score.is_finite() {
+        return RespValue::Error("ERR resulting score is not a valid float".to_string());
+    }
     match store_redis_zset(&key, &values, execute) {
         Ok(()) => RespValue::Bulk(Some(format_redis_score(next_score).into_bytes())),
         Err(err) => RespValue::Error(err),
@@ -105,11 +110,11 @@ pub(super) fn zrange_by_score_response(
     args: &[Vec<u8>],
     execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
 ) -> RespValue {
-    let min = match parse_f64_arg(&args[2], "min") {
+    let min = match parse_score_bound(&args[2], "min") {
         Ok(value) => value,
         Err(err) => return RespValue::Error(err),
     };
-    let max = match parse_f64_arg(&args[3], "max") {
+    let max = match parse_score_bound(&args[3], "max") {
         Ok(value) => value,
         Err(err) => return RespValue::Error(err),
     };
@@ -188,11 +193,11 @@ pub(super) fn zremrangebyscore_response(
     args: &[Vec<u8>],
     execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
 ) -> RespValue {
-    let min = match parse_f64_arg(&args[2], "min") {
+    let min = match parse_score_bound(&args[2], "min") {
         Ok(value) => value,
         Err(err) => return RespValue::Error(err),
     };
-    let max = match parse_f64_arg(&args[3], "max") {
+    let max = match parse_score_bound(&args[3], "max") {
         Ok(value) => value,
         Err(err) => return RespValue::Error(err),
     };

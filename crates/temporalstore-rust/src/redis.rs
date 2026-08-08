@@ -416,6 +416,77 @@ mod tests {
     }
 
     #[test]
+    fn ttl_expire_and_zset_score_bounds_match_cpp() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut state = RedisCommandState::default();
+        let run = |state: &mut RedisCommandState, args: Vec<&str>| {
+            execute_redis_command_with_state(
+                args.into_iter().map(|arg| arg.as_bytes().to_vec()).collect(),
+                1,
+                state,
+                |command| {
+                    let response = engine.execute(ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    });
+                    if response.status.ok {
+                        Ok(response.response)
+                    } else {
+                        Err(response.status.message)
+                    }
+                },
+            )
+        };
+
+        // TTL sentinels pass through; positive ms rounds UP to seconds.
+        assert_eq!(run(&mut state, vec!["TTL", "missing"]), RespValue::Integer(-2));
+        run(&mut state, vec!["SET", "k", "v"]);
+        assert_eq!(run(&mut state, vec!["TTL", "k"]), RespValue::Integer(-1));
+        run(&mut state, vec!["PEXPIRE", "k", "1500"]);
+        assert_eq!(
+            run(&mut state, vec!["TTL", "k"]),
+            RespValue::Integer(2),
+            "TTL must ceil 1500ms -> 2s"
+        );
+
+        // EXPIRE on a missing key returns 0; on an existing key returns 1.
+        assert_eq!(
+            run(&mut state, vec!["EXPIRE", "nope", "100"]),
+            RespValue::Integer(0),
+            "EXPIRE on a missing key must return 0"
+        );
+        assert_eq!(run(&mut state, vec!["EXPIRE", "k", "100"]), RespValue::Integer(1));
+
+        // ZSet score ranges accept the -inf/+inf idiom.
+        run(
+            &mut state,
+            vec!["ZADD", "z", "1", "a", "2", "b", "3", "c"],
+        );
+        assert!(
+            matches!(run(&mut state, vec!["ZRANGEBYSCORE", "z", "-inf", "+inf"]),
+                RespValue::Array(ref m) if m.len() == 3),
+            "ZRANGEBYSCORE -inf +inf must return all members"
+        );
+        assert_eq!(
+            run(&mut state, vec!["ZCOUNT", "z", "-inf", "+inf"]),
+            RespValue::Integer(3)
+        );
+
+        // ZINCRBY overflow to infinity errors and leaves the score unchanged.
+        run(&mut state, vec!["ZADD", "z2", "1e308", "m"]);
+        assert!(matches!(
+            run(&mut state, vec!["ZINCRBY", "z2", "1e308", "m"]),
+            RespValue::Error(_)
+        ));
+        assert!(
+            matches!(run(&mut state, vec!["ZSCORE", "z2", "m"]),
+                RespValue::Bulk(Some(ref b)) if b != b"inf"),
+            "ZINCRBY overflow must not corrupt the stored score to inf"
+        );
+    }
+
+    #[test]
     fn resp_parser_reads_array_command() {
         let mut input = BufReader::new(&b"*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n"[..]);
         assert_eq!(

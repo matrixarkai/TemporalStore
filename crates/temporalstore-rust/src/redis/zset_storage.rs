@@ -167,3 +167,19 @@ pub(crate) fn parse_f64_arg(value: &[u8], name: &str) -> Result<f64, String> {
     }
 }
 
+/// Parse a ZSet score-RANGE bound. Unlike a stored score (parse_f64_arg, must be finite),
+/// range bounds accept the canonical -inf / +inf / inf tokens (C++ ParseZRangeBound), so the
+/// idiomatic `ZRANGEBYSCORE key -inf +inf` (and ZCOUNT / ZREMRANGEBYSCORE) work.
+pub(crate) fn parse_score_bound(value: &[u8], name: &str) -> Result<f64, String> {
+    let text = std::str::from_utf8(value).map_err(|_| format!("ERR {name} must be a float"))?;
+    match text.trim().to_ascii_lowercase().as_str() {
+        "-inf" => Ok(f64::NEG_INFINITY),
+        "+inf" | "inf" => Ok(f64::INFINITY),
+        other => other
+            .parse::<f64>()
+            .ok()
+            .filter(|parsed| parsed.is_finite())
+            .ok_or_else(|| format!("ERR {name} must be a float")),
+    }
+}
+
