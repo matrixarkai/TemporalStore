@@ -357,6 +357,11 @@ impl TemporalEngine {
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         let mut rewrite_stats = CompactionRewriteStats::default();
 
+        // Relocate every model's live pages onto the freshly rolled slab. A mid-way failure
+        // (append ENOSPC / an unreadable torn page) is caught below so we can durably commit the
+        // consistent partial state instead of leaving the volatile index half-advanced but
+        // unpersisted -- see the `if let Err(err)` handler after this block for why.
+        let relocation_result: Result<(), Status> = (|| {
         compact_page_addresses(
             &self.page_store,
             &self.cache,
@@ -507,6 +512,11 @@ impl TemporalEngine {
             shard.context_entities.values_mut(),
             &mut rewrite_stats,
         )?;
+            Ok(())
+        })();
+        // ips_meta mirrors the ips page addresses; it is infallible, so run it regardless of
+        // whether a relocation failed above so the index we may persist below stays internally
+        // consistent with the (possibly partially) rewritten ips addresses.
         for (key, meta_series) in &mut shard.ips_meta {
             if let Some(address_series) = shard.ips.get(key) {
                 for (timestamp, meta) in meta_series {
@@ -515,6 +525,39 @@ impl TemporalEngine {
                     }
                 }
             }
+        }
+        if let Err(err) = relocation_result {
+            // A relocation failed partway. The in-memory index is now a CONSISTENT partial
+            // snapshot -- pages already moved point at the fresh durable slab, the rest still point
+            // at their old slabs -- but it has DIVERGED from the on-disk index, which still
+            // references the now-vacated old slabs. Returning here without persisting (the old
+            // behavior) let the independent next-cycle reclaim trust this volatile index, see a
+            // fully-vacated old slab as stale, quarantine+purge it, and a later reload of the STALE
+            // on-disk index would then dangle at the deleted slab -> silent durable data loss. C++
+            // avoids the desync structurally (page_compactor.cc leaves the index unchanged on
+            // failure -- update_index=false -- and commits the rewrite atomically). We instead
+            // durably commit the consistent partial: rebuild the secondary views so the serialized
+            // index is internally consistent, fsync the relocated bytes so the index never names a
+            // non-durable page, then persist -- leaving volatile == durable so reclaim is safe --
+            // and propagate the original error so the caller knows compaction did not fully
+            // complete (a later run retries the not-yet-moved pages).
+            rebuild_bucket_first_index(shard_id, shard, 0, u32::MAX);
+            refresh_bucket_runtime_flags(shard);
+            rebuild_bucket_page_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
+            self.page_store.sync_durable().map_err(|barrier| {
+                Status::error(
+                    "page_compaction_failed",
+                    format!(
+                        "durability barrier failed while committing a partial compaction: {barrier}"
+                    ),
+                )
+            })?;
+            let partial_index_bytes = serde_json::to_vec_pretty(shard)
+                .map_err(|serialize| Status::error("page_compaction_failed", serialize.to_string()))?;
+            self.persist_index_bytes(shard_id, &partial_index_bytes)
+                .map_err(|persist| Status::error("page_compaction_failed", persist.to_string()))?;
+            let _ = self.index_log_store.append_json(shard_id, &partial_index_bytes);
+            return Err(err);
         }
 
         rebuild_bucket_first_index(shard_id, shard, 0, u32::MAX);
