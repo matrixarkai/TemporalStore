@@ -119,7 +119,16 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
     }
     if status.ok {
         if let Some(retain_from_page_slab_id) = request.retain_page_slabs_from_id {
-            let live_page_slab_ids = inner.engine.live_page_slab_ids(request.shard_id);
+            let mut live_page_slab_ids = inner.engine.live_page_slab_ids(request.shard_id);
+            // Retain any page slab still referenced by a durable bucket-dump manifest. The
+            // operator /gc RPC must not delete a slab a retained manifest needs: a lagging
+            // follower's replay or a snapshot-install reads it, and deleting it makes the
+            // manifest uninstallable (replica data loss). The gated storage-manager cycle
+            // already blocks this via storage_page_gc_dependency_plan; mirror that manifest
+            // guard here so the operator path cannot bypass it.
+            for manifest in inner.engine.list_bucket_dump_manifests(request.shard_id) {
+                live_page_slab_ids.extend(manifest.page_slab_ids.iter().copied());
+            }
             match inner
                 .engine
                 .block_store()
