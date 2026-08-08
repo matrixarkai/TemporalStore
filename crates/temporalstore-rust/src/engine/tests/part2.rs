@@ -1431,6 +1431,40 @@ fn wal_replay_rearmed_expire_does_not_abort_recovery_like_cpp() {
 }
 
 #[test]
+fn hdel_last_field_removes_key_like_cpp() {
+    // C++ hash2::Del removes the whole object once the last field is deleted; Rust left an
+    // empty field map behind, so the key still reported as existing (EXISTS=1, TYPE=hash).
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashSet {
+            key: "h".to_string(),
+            field: "f".to_string(),
+            value: b"v".to_vec(),
+        },
+    });
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashDelete {
+            key: "h".to_string(),
+            field: "f".to_string(),
+        },
+    });
+    let exists = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::CommonExists {
+            key: "h".to_string(),
+        },
+    });
+    assert_eq!(
+        exists.response,
+        CommandResponse::Integer { value: 0 },
+        "an emptied hash must not leave a phantom key (C++ deletes the object on last HDEL)"
+    );
+}
+
+#[test]
 fn hash_incrby_rejects_non_integer_and_overflow_like_cpp() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
