@@ -387,6 +387,74 @@ fn bucket_dump_manifest_watermark_tracks_embedded_index_not_wal_tail() {
 }
 
 #[test]
+fn partial_compaction_failure_durably_persists_the_consistent_partial_index() {
+    // CP4 regression. A mid-compaction read failure used to return with the in-memory index
+    // half-advanced (relocated pages point at the fresh slab) but UNPERSISTED, so it diverged from
+    // the on-disk index -- and the independent reclaim path could then physically purge a
+    // fully-vacated old slab the durable index still referenced -> silent data loss on reload. The
+    // fix durably commits the consistent partial state before propagating the error. C++ avoids the
+    // desync structurally (page_compactor.cc: update_index=false on failure + one atomic Commit).
+    //
+    // Setup: k1 (string, relocated FIRST by compact_shard_pages) lives in an earlier slab; k2 (hash,
+    // relocated after) lives in a later slab. We corrupt ONLY the latest slab (k2's), so compaction
+    // relocates k1 (vacating its old slab) and then FAILS reading k2. A tiny cache forces the reads
+    // to hit disk. Assert the on-disk index CHANGED -- i.e. the relocated partial state was durably
+    // persisted (it stays byte-identical without the fix).
+    let dir = tempfile::tempdir().unwrap();
+    let pages = dir.path().join("pages");
+    let indexes = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(16, dir.path().join("cache"), &pages, &indexes);
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "k1".to_string(),
+            value: b"v1".to_vec(),
+        },
+    });
+    // Force k2 into a later slab than k1 so corrupting it cannot touch k1's slab.
+    engine.block_store().roll_slab().unwrap();
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashSet {
+            key: "h".to_string(),
+            field: "f".to_string(),
+            value: b"v2".to_vec(),
+        },
+    });
+
+    let index_before = fs::read(engine.index_path(1)).unwrap();
+
+    // Corrupt only the newest page slab (k2's): truncate it to empty so k2's page cannot be read.
+    let mut slabs = fs::read_dir(&pages)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.starts_with("page_segment_") && name.ends_with(".seg"))
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    slabs.sort();
+    let k2_slab = slabs.last().expect("at least two page slabs after the roll").clone();
+    fs::write(&k2_slab, b"").unwrap();
+
+    let result = engine.compact_shard_pages(1);
+    assert!(
+        result.is_err(),
+        "compaction must fail when a live page's slab is unreadable, got {result:?}"
+    );
+    let index_after = fs::read(engine.index_path(1)).unwrap();
+    assert_ne!(
+        index_before, index_after,
+        "a partial-failure compaction must durably persist the relocated partial index (CP4), \
+         so the volatile and on-disk indexes cannot diverge and let reclaim purge a needed slab"
+    );
+}
+
+#[test]
 fn sync_write_surfaces_wal_commit_failure_instead_of_acking_ok() {
     // Durability parity: a synchronous write whose durable WAL commit fails must NOT be acked ok.
     // The WAL is the recovery source of truth, so a swallowed append error would tell the client a
