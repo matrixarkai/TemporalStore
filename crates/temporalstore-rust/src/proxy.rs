@@ -2997,4 +2997,165 @@ mod tests {
         }
         panic!("server {addr} did not start");
     }
+
+    #[test]
+    fn proxy_control_state_and_feature_endpoints_round_trip_like_sdk() {
+        // Locks the HTTP/JSON wire contract the Python/Go SDKs depend on:
+        // /ProxyService/{FeatureAdd, FeatureAggQuery, ControlStateIncrement,
+        // ControlStateCount, ControlStateFolSet, ControlStateFolQuery}.
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        start_server(test_addr(18_360), engine.clone());
+        let meta = crate::meta::SingleNodeMeta::default();
+        assert!(meta
+            .add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "tbl".to_string(),
+                first_shard_id: 1,
+                shard_count: 1,
+                replica_count: 1,
+                use_cpp_partition_ids: false,
+                partition_version: 0,
+                serving_options: crate::meta::TableServingOptions::default(),
+            })
+            .status
+            .ok);
+        assert!(meta
+            .register(RegisterShardRequest {
+                shard_id: 1,
+                server_addr: test_addr(18_360),
+            })
+            .status
+            .ok);
+        start_meta_service(test_addr(18_361), meta);
+        wait_for_http(&test_addr(18_360));
+        wait_for_http(&test_addr(18_361));
+
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_361),
+            route_cache_ttl_ms: 60_000,
+            ..ProxyOptions::default()
+        });
+
+        let post = |path: &str, body: Vec<u8>| -> crate::types::ExecuteResponse {
+            let (code, out) = proxy.handle(HttpRequest {
+                method: "POST".to_string(),
+                path: path.to_string(),
+                body,
+            });
+            assert_eq!(code, 200, "{path} returned {code}");
+            parse_json::<crate::types::ExecuteResponse>(&out).unwrap()
+        };
+
+        // Feature: append raw observations, then exact serving-time aggregates.
+        let add = post(
+            "/ProxyService/FeatureAdd",
+            serde_json::to_vec(&ProxyFeatureAddCommandRequest {
+                namespace: "ns".to_string(),
+                table_name: "tbl".to_string(),
+                key: "itest:feat".to_string(),
+                policy: None,
+                points: vec![
+                    crate::types::FeaturePoint { timestamp_ms: 10, value: b"10".to_vec() },
+                    crate::types::FeaturePoint { timestamp_ms: 20, value: b"20".to_vec() },
+                    crate::types::FeaturePoint { timestamp_ms: 30, value: b"30".to_vec() },
+                ],
+            })
+            .unwrap(),
+        );
+        assert!(add.status.ok, "{add:?}");
+
+        for (agg, expected) in [("count", 3i64), ("sum", 60), ("max", 30)] {
+            let resp = post(
+                "/ProxyService/FeatureAggQuery",
+                serde_json::to_vec(&ProxyFeatureAggQueryCommandRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "tbl".to_string(),
+                    key: "itest:feat".to_string(),
+                    start_ms: 0,
+                    end_ms: 100,
+                    aggregator: agg.to_string(),
+                    count: None,
+                })
+                .unwrap(),
+            );
+            assert_eq!(
+                resp.response,
+                CommandResponse::Aggregate { value: expected },
+                "aggregator {agg}"
+            );
+        }
+
+        // Control State: increment a counter, then read the windowed count.
+        for ts in [10u64, 20u64] {
+            let inc = post(
+                "/ProxyService/ControlStateIncrement",
+                serde_json::to_vec(&ProxyControlStateIncrementCommandRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "tbl".to_string(),
+                    key: "itest:cs".to_string(),
+                    timestamp_ms: ts,
+                    amount: 1,
+                    precision_ms: None,
+                    ttl_ms: None,
+                })
+                .unwrap(),
+            );
+            assert!(inc.status.ok, "{inc:?}");
+        }
+        let count = post(
+            "/ProxyService/ControlStateCount",
+            serde_json::to_vec(&ProxyControlStateCountCommandRequest {
+                namespace: "ns".to_string(),
+                table_name: "tbl".to_string(),
+                key: "itest:cs".to_string(),
+                start_ms: 0,
+                end_ms: 100,
+            })
+            .unwrap(),
+        );
+        match count.response {
+            CommandResponse::Integer { value } | CommandResponse::Aggregate { value } => {
+                assert_eq!(value, 2, "control-state windowed count")
+            }
+            other => panic!("unexpected control-state count response: {other:?}"),
+        }
+
+        // Control State: last-value (FOL) round-trip.
+        let fol_set = post(
+            "/ProxyService/ControlStateFolSet",
+            serde_json::to_vec(&ProxyControlStateFolSetCommandRequest {
+                namespace: "ns".to_string(),
+                table_name: "tbl".to_string(),
+                key: "itest:fol".to_string(),
+                value: b"alice".to_vec(),
+                occur_time_ms: 20,
+                ttl_ms: 60_000,
+                fol_type: crate::types::ControlStateFolType::Last,
+            })
+            .unwrap(),
+        );
+        assert!(fol_set.status.ok, "{fol_set:?}");
+        let fol_get = post(
+            "/ProxyService/ControlStateFolQuery",
+            serde_json::to_vec(&ProxyKeyCommandRequest {
+                namespace: "ns".to_string(),
+                table_name: "tbl".to_string(),
+                key: "itest:fol".to_string(),
+            })
+            .unwrap(),
+        );
+        match fol_get.response {
+            CommandResponse::Bytes { value: Some(v) } => {
+                assert!(String::from_utf8_lossy(&v).contains("alice"), "fol value {v:?}")
+            }
+            other => panic!("unexpected fol query response: {other:?}"),
+        }
+    }
 }
