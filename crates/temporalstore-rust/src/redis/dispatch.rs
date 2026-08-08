@@ -1861,6 +1861,54 @@ pub fn execute_redis_command_with_state(
                 aggregator: string_arg(&args[6]),
             }))
         }
+        "HSETANDGETOPT" | "CPCSETANDGETOPT" | "FOLSETANDGETOPT" if args.len() == 10 => {
+            let timestamp_ms = match parse_u64(&args[2], "timestamp_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let amount = match parse_i64_arg(&args[3], "amount") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let start_ms = match parse_u64(&args[4], "start_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let end_ms = match parse_u64(&args[5], "end_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let precision_ms = match parse_u64(&args[7], "precision_ms") {
+                Ok(0) => None,
+                Ok(value) => Some(value),
+                Err(err) => return RespValue::Error(err),
+            };
+            let ttl_ms = match parse_u64(&args[8], "ttl_ms") {
+                Ok(0) => None,
+                Ok(value) => Some(value),
+                Err(err) => return RespValue::Error(err),
+            };
+            let uuid = {
+                let raw = string_arg(&args[9]);
+                if raw.is_empty() {
+                    None
+                } else {
+                    Some(raw)
+                }
+            };
+            integer_response(execute(Command::ControlStateSetAndGetWithOptions {
+                family: control_state_family_for_command(&command),
+                key: string_arg(&args[1]),
+                timestamp_ms,
+                amount,
+                start_ms,
+                end_ms,
+                aggregator: string_arg(&args[6]),
+                precision_ms,
+                ttl_ms,
+                uuid,
+            }))
+        }
         "CONTROLSTATEMANAGER" if args.len() == 2 => hash_entries_response(execute(Command::ControlStateManager {
             key: string_arg(&args[1]),
             op_type: None,

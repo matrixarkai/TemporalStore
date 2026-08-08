@@ -59,7 +59,9 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::ControlStateIncrementWithOptions { key, .. }
         | Command::ControlStateChangeAdd { key, .. }
         | Command::ControlStateFolSet { key, .. } => vec![key.clone()],
-        Command::ControlStateSet { family, key, .. } | Command::ControlStateSetAndGet { family, key, .. } => {
+        Command::ControlStateSet { family, key, .. }
+        | Command::ControlStateSetAndGet { family, key, .. }
+        | Command::ControlStateSetAndGetWithOptions { family, key, .. } => {
             vec![control_state_family_key(*family, key)]
         }
         Command::ContextUpsertNode { tenant_hash, node } => {
@@ -251,6 +253,7 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             | Command::ControlStateIncrementWithOptions { .. }
             | Command::ControlStateSet { .. }
             | Command::ControlStateSetAndGet { .. }
+            | Command::ControlStateSetAndGetWithOptions { .. }
     )
 }
 
@@ -284,6 +287,7 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::ControlStateChangeAdd { .. }
             | Command::ControlStateSet { .. }
             | Command::ControlStateSetAndGet { .. }
+            | Command::ControlStateSetAndGetWithOptions { .. }
             | Command::ControlStateFolSet { .. }
             | Command::ContextUpsertNode { .. }
             | Command::ContextWriteEvent { .. }

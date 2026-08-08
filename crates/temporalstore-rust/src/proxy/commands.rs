@@ -30,6 +30,7 @@ pub(super) fn proxy_command_is_write(command: &Command) -> bool {
             | Command::ControlStateChangeAdd { .. }
             | Command::ControlStateSet { .. }
             | Command::ControlStateSetAndGet { .. }
+            | Command::ControlStateSetAndGetWithOptions { .. }
             | Command::ControlStateFolSet { .. }
             | Command::ContextUpsertNode { .. }
             | Command::ContextWriteEvent { .. }
@@ -98,6 +99,7 @@ fn proxy_command_key(command: &Command) -> Option<&str> {
         | Command::ControlStateDetail { key, .. }
         | Command::ControlStateSet { key, .. }
         | Command::ControlStateSetAndGet { key, .. }
+        | Command::ControlStateSetAndGetWithOptions { key, .. }
         | Command::ControlStateFamilyQuery { key, .. }
         | Command::ControlStateFolSet { key, .. }
         | Command::ControlStateFolQuery { key }

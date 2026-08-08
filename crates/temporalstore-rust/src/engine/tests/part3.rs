@@ -2537,4 +2537,92 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
     assert_eq!(report.max_dirty_generation, 7);
 }
 
+#[test]
+fn control_state_set_and_get_with_options_buckets_by_precision() {
+    // C++ HSETANDGET parity: precision floors the write into a single bucket, and
+    // the atomic increment-then-read returns the post-increment windowed aggregate.
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let day = 1_784_851_200_000u64;
+    let precision = 86_400_000u64; // one-day buckets
+    let mut last = 0;
+    for ts in [day + 10, day + 5_000, day + 86_000_000] {
+        last = match engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ControlStateSetAndGetWithOptions {
+                    family: ControlStateFamily::H,
+                    key: "cap:u1:c1".to_string(),
+                    timestamp_ms: ts,
+                    amount: 1,
+                    start_ms: day,
+                    end_ms: day + precision - 1,
+                    aggregator: "sum".to_string(),
+                    precision_ms: Some(precision),
+                    ttl_ms: Some(precision),
+                    uuid: None,
+                },
+            })
+            .response
+        {
+            CommandResponse::Integer { value } => value,
+            other => panic!("expected Integer, got {other:?}"),
+        };
+    }
+    // Three increments in the same day window -> count 3, all folded into one bucket.
+    assert_eq!(last, 3);
+    let series_buckets = engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ControlStateDetail {
+                key: "control_state:h:cap:u1:c1".to_string(),
+                start_ms: 0,
+                end_ms: u64::MAX,
+                count: None,
+            },
+        })
+        .response;
+    match series_buckets {
+        CommandResponse::FeaturePoints { points } => assert_eq!(points.len(), 1),
+        other => panic!("expected FeaturePoints, got {other:?}"),
+    }
+}
+
+#[test]
+fn control_state_set_and_get_with_options_is_idempotent_on_uuid_replay() {
+    // At-least-once queue replay: the same uuid within the dedup window must not
+    // double-count, and must return the current windowed aggregate unchanged.
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let day = 1_784_851_200_000u64;
+    let call = |uuid: &str| {
+        match engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ControlStateSetAndGetWithOptions {
+                    family: ControlStateFamily::H,
+                    key: "quota:t1".to_string(),
+                    timestamp_ms: day + 1,
+                    amount: 1,
+                    start_ms: day,
+                    end_ms: day + 86_400_000,
+                    aggregator: "sum".to_string(),
+                    precision_ms: Some(86_400_000),
+                    ttl_ms: None,
+                    uuid: Some(uuid.to_string()),
+                },
+            })
+            .response
+        {
+            CommandResponse::Integer { value } => value,
+            other => panic!("expected Integer, got {other:?}"),
+        }
+    };
+    assert_eq!(call("evt-1"), 1); // first delivery
+    assert_eq!(call("evt-1"), 1); // duplicate replay -> no double count
+    assert_eq!(call("evt-1"), 1); // still deduped
+    assert_eq!(call("evt-2"), 2); // distinct event increments
+    assert_eq!(call("evt-2"), 2); // its replay deduped
+}
+
 // shared-corpus: storage_object_page_bucket_parity_surfaces storage_object_hot_cold_reload;

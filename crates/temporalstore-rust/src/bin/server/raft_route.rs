@@ -565,6 +565,7 @@ fn is_raft_read_command(command: &Command) -> bool {
             | Command::ControlStateQuery { .. }
             | Command::ControlStateDetail { .. }
             | Command::ControlStateSetAndGet { .. }
+            | Command::ControlStateSetAndGetWithOptions { .. }
             | Command::ControlStateFamilyQuery { .. }
             | Command::ControlStateManager { .. }
     )

@@ -433,6 +433,7 @@ fn is_write(command: &Command) -> bool {
             | Command::ControlStateIncrementWithOptions { .. }
             | Command::ControlStateSet { .. }
             | Command::ControlStateSetAndGet { .. }
+            | Command::ControlStateSetAndGetWithOptions { .. }
     )
 }
 
