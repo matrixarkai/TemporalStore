@@ -130,6 +130,10 @@ pub fn execute_redis_command_with_state(
                 Ok(options) => options,
                 Err(err) => return RespValue::Error(err),
             };
+            // NOTE: C++'s redis bridge rejects TTL+NX/XX ("not supported ... yet"), but that
+            // is a stopgap limitation, not a semantic -- real Redis supports SET k v NX EX 10
+            // and Rust deliberately does too (see the redis_string_hash_set_and_feature test).
+            // We keep the more-capable Rust behavior rather than match a C++ shim's TODO.
             match execute(Command::StringSetConditional {
                 key: key.clone(),
                 value,
@@ -227,6 +231,9 @@ pub fn execute_redis_command_with_state(
             }
         }
         "SETEX" if args.len() == 4 => match parse_u64(&args[2], "seconds") {
+            // C++ rejects a non-positive expiry ("invalid expire time"); Rust otherwise
+            // stored a key with deadline now+0 that vanishes on the next access.
+            Ok(0) => RespValue::Error("ERR invalid expire time in setex".to_string()),
             Ok(seconds) => match execute(Command::StringSetEx {
                 key: string_arg(&args[1]),
                 value: args[3].clone(),
@@ -241,6 +248,7 @@ pub fn execute_redis_command_with_state(
             Err(err) => RespValue::Error(err),
         },
         "PSETEX" if args.len() == 4 => match parse_u64(&args[2], "milliseconds") {
+            Ok(0) => RespValue::Error("ERR invalid expire time in psetex".to_string()),
             Ok(ttl_ms) => match execute(Command::StringSetEx {
                 key: string_arg(&args[1]),
                 value: args[3].clone(),

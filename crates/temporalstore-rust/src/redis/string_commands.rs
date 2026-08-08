@@ -23,11 +23,12 @@ pub(crate) fn parse_set_options(args: &[Vec<u8>]) -> Result<SetOptions, String> 
                 let Some(value) = args.get(index + 1) else {
                     return Err("ERR syntax error".to_string());
                 };
-                if options
-                    .ttl_ms
-                    .replace(parse_u64(value, "seconds")?.saturating_mul(1000))
-                    .is_some()
-                {
+                let seconds = parse_u64(value, "seconds")?;
+                // C++ rejects a non-positive expiry rather than writing an already-expired key.
+                if seconds == 0 {
+                    return Err("ERR invalid expire time in set".to_string());
+                }
+                if options.ttl_ms.replace(seconds.saturating_mul(1000)).is_some() {
                     return Err("ERR syntax error".to_string());
                 }
                 index += 2;
@@ -36,11 +37,11 @@ pub(crate) fn parse_set_options(args: &[Vec<u8>]) -> Result<SetOptions, String> 
                 let Some(value) = args.get(index + 1) else {
                     return Err("ERR syntax error".to_string());
                 };
-                if options
-                    .ttl_ms
-                    .replace(parse_u64(value, "milliseconds")?)
-                    .is_some()
-                {
+                let milliseconds = parse_u64(value, "milliseconds")?;
+                if milliseconds == 0 {
+                    return Err("ERR invalid expire time in set".to_string());
+                }
+                if options.ttl_ms.replace(milliseconds).is_some() {
                     return Err("ERR syntax error".to_string());
                 }
                 index += 2;
@@ -142,8 +143,14 @@ pub(crate) fn parse_getex_ttl_ms(args: &[Vec<u8>]) -> Result<Option<u64>, String
         return Err("ERR syntax error".to_string());
     }
     match upper(&args[0]).as_str() {
-        "EX" => parse_u64(&args[1], "seconds").map(|value| Some(value.saturating_mul(1000))),
-        "PX" => parse_u64(&args[1], "milliseconds").map(Some),
+        "EX" => match parse_u64(&args[1], "seconds")? {
+            0 => Err("ERR invalid expire time in getex".to_string()),
+            seconds => Ok(Some(seconds.saturating_mul(1000))),
+        },
+        "PX" => match parse_u64(&args[1], "milliseconds")? {
+            0 => Err("ERR invalid expire time in getex".to_string()),
+            milliseconds => Ok(Some(milliseconds)),
+        },
         "EXAT" => {
             let deadline = parse_u64(&args[1], "timestamp")?.saturating_mul(1000);
             Ok(Some(deadline.saturating_sub(unix_time_ms()).max(1)))

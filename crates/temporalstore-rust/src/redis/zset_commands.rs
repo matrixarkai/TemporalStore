@@ -265,24 +265,28 @@ pub(super) fn zrandmember_response(
             sort_zset_values(&mut values);
             match count {
                 Some(count) => {
-                    let take = count.unsigned_abs() as usize;
                     let mut selected = Vec::new();
-                    for index in 0..take {
-                        if values.is_empty() {
-                            break;
+                    let mut push = |member: Vec<u8>, score: f64| {
+                        selected.push(RespValue::Bulk(Some(member)));
+                        if with_scores {
+                            selected
+                                .push(RespValue::Bulk(Some(format_redis_score(score).into_bytes())));
                         }
-                        let entry = if count >= 0 {
-                            values.get(index).cloned()
-                        } else {
-                            values.get(index % values.len()).cloned()
-                        };
-                        if let Some((member, score)) = entry {
-                            selected.push(RespValue::Bulk(Some(member)));
-                            if with_scores {
-                                selected.push(RespValue::Bulk(Some(
-                                    format_redis_score(score).into_bytes(),
-                                )));
-                            }
+                    };
+                    if count >= 0 {
+                        // Positive: up to `count` DISTINCT members, naturally bounded by the
+                        // set size (iterating `values`), so a huge count can't busy-loop.
+                        for (member, score) in values.into_iter().take(count as usize) {
+                            push(member, score);
+                        }
+                    } else if !values.is_empty() {
+                        // Negative: |count| members WITH repetition. checked_neg guards
+                        // i64::MIN (C++ n=-count stays negative -> zero fill) instead of
+                        // unsigned_abs()'s 2^63 unbounded allocation (OOM DoS).
+                        let repeat = count.checked_neg().map(|n| n as usize).unwrap_or(0);
+                        for index in 0..repeat {
+                            let (member, score) = values[index % values.len()].clone();
+                            push(member, score);
                         }
                     }
                     RespValue::Array(selected)
