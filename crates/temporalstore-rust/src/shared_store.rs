@@ -2199,8 +2199,12 @@ mod tests {
             .restore_checkpoint(&manifest, &follower, &follower.block_store())
             .await
             .unwrap();
-        follower.load_shard(1);
+        // Capture the baseline BEFORE load_shard: eager cache warm-on-load (default ON,
+        // MATRIXARK_EAGER_CACHE_WARM_ON_LOAD) reads the checkpointed disk-backed segments into
+        // cache during load, so the subsequent StringGet may be served from that warm cache.
+        // Counting from before load makes the assertion robust to warm-on-load either way.
         let reads_before = follower.block_store().stats().reads;
+        follower.load_shard(1);
         assert_eq!(
             follower
                 .execute(ExecuteRequest {
@@ -2216,7 +2220,8 @@ mod tests {
         );
         assert!(
             follower.block_store().stats().reads > reads_before,
-            "restored follower should read checkpointed bytes from disk-backed block segments"
+            "restored follower should read checkpointed bytes from disk-backed block segments \
+             (via eager cache warm on load and/or the read)"
         );
 
         let replay = replicator.replay_wal_strict(1, 1, &follower).await.unwrap();
