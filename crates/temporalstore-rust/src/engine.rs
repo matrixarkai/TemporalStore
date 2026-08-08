@@ -350,8 +350,16 @@ impl TemporalEngine {
                     }
                 }
             }
-            if (!command_updates_bucket_index_directly(&command) && !bulk_ingest_mode())
-                || shard.bucket_index.bucket_map.is_empty()
+            // Rebuild the first-index only outside bulk backfill. In bulk mode the
+            // promote step that would populate bucket_map is deferred to
+            // flush_shard_index(), so bucket_map stays empty for the whole backfill;
+            // the `is_empty()` clause would then fire a full O(store) rebuild on
+            // EVERY record -> O(n^2) (the context path never updates bucket_index
+            // directly, so it hit this every time). flush_shard_index() rebuilds the
+            // first-index once at the end, so deferring here is correctness-preserving.
+            if !bulk_ingest_mode()
+                && (!command_updates_bucket_index_directly(&command)
+                    || shard.bucket_index.bucket_map.is_empty())
             {
                 rebuild_bucket_first_index(
                     request.shard_id,
@@ -993,6 +1001,20 @@ fn bulk_ingest_mode() -> bool {
             .to_ascii_lowercase()
             .as_str(),
         "1" | "true" | "yes" | "on"
+    )
+}
+
+/// Whether load_shard should eagerly warm the in-memory cache tier from the page
+/// store after reconstructing the index (disk->memory promotion on restart).
+/// Defaults ON; set MATRIXARK_EAGER_CACHE_WARM_ON_LOAD to 0/false/off/no to disable.
+fn eager_cache_warm_on_load() -> bool {
+    !matches!(
+        std::env::var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "0" | "false" | "no" | "off"
     )
 }
 
