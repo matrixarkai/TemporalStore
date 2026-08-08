@@ -366,9 +366,15 @@ fn last_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, IndexLogError
             good_offset = offset;
             continue;
         }
-        let Ok(record) = serde_json::from_slice::<IndexLogRecord>(&line) else {
-            break;
-        };
+        // A fully newline-terminated line that fails to parse is COMMITTED corruption, not a
+        // torn tail (index-log records are single-line JSON with no embedded newline). Treating
+        // it as end-of-log would set_len the file down to the last parseable record -- silently
+        // dropping durable index-log records after the corrupt one AND rewinding the sequence
+        // counter (the next append reuses a sequence that dump manifests already reference).
+        // Surface it as an error (C++ Index::ReplayIndexLog returns DataLoss on a hole / CRC
+        // mismatch, never trims). A genuine torn tail lacks the trailing '\n' (break above).
+        // Mirrors the WAL fix in wal.rs::last_wal_sequence_at.
+        let record = serde_json::from_slice::<IndexLogRecord>(&line)?;
         last = last.max(record.sequence);
         good_offset = offset;
     }
@@ -463,5 +469,37 @@ mod tests {
         let record = reopened.append_json(5, b"{\"value\":3}").unwrap();
         assert_eq!(record.sequence, 3);
         assert_eq!(reopened.scan(5, 0, u64::MAX, u64::MAX).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn interior_corruption_is_fatal_not_silent_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        for i in 1..=4 {
+            store
+                .append_json(5, format!("{{\"value\":{i}}}").as_bytes())
+                .unwrap();
+        }
+        drop(store);
+        // Corrupt the 2nd record IN PLACE, keeping it newline-terminated with records 3 & 4
+        // intact after it. A newline-terminated line that fails to parse is committed
+        // corruption, not a torn tail.
+        let path = index_log_path(dir.path(), 5);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 4);
+        let corrupted = format!(
+            "{}\ncorrupt-not-json\n{}\n{}\n",
+            lines[0], lines[2], lines[3]
+        );
+        std::fs::write(&path, corrupted).unwrap();
+        // scan drives last_sequence_at, which must surface interior corruption as an error
+        // rather than silently truncating records 3 & 4 and rewinding the sequence counter
+        // (which durable dump manifests reference via index_log_sequence).
+        let reopened = LocalIndexLogStore::new(dir.path());
+        assert!(
+            reopened.scan(5, 0, u64::MAX, u64::MAX).is_err(),
+            "interior index-log corruption must be fatal, not silently truncated"
+        );
     }
 }
