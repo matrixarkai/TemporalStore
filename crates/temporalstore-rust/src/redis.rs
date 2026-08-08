@@ -1833,6 +1833,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn redis_hsetandgetopt_is_idempotent_and_precision_bucketed() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let run = |args: Vec<&str>| {
+            execute_redis_command(
+                args.into_iter()
+                    .map(|arg| arg.as_bytes().to_vec())
+                    .collect(),
+                1,
+                |command| {
+                    let response = engine.execute(ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    });
+                    if response.status.ok {
+                        Ok(response.response)
+                    } else {
+                        Err(response.status.message)
+                    }
+                },
+            )
+        };
+        // HSETANDGETOPT key ts amount start end agg precision_ms ttl_ms uuid.
+        // One-day window/precision so every sub-day write folds into one bucket.
+        let day = "86400000";
+        assert_eq!(
+            run(vec![
+                "HSETANDGETOPT", "cap:u1", "10", "1", "0", day, "sum", day, day, "e1",
+            ]),
+            RespValue::Integer(1)
+        );
+        // Same uuid within the dedup window -> no double count (idempotent replay).
+        assert_eq!(
+            run(vec![
+                "HSETANDGETOPT", "cap:u1", "5000", "1", "0", day, "sum", day, day, "e1",
+            ]),
+            RespValue::Integer(1)
+        );
+        // Distinct uuid at a different sub-day ts increments the same precision bucket.
+        assert_eq!(
+            run(vec![
+                "HSETANDGETOPT", "cap:u1", "80000000", "1", "0", day, "sum", day, day, "e2",
+            ]),
+            RespValue::Integer(2)
+        );
+        // Empty uuid disables dedup -> each call counts.
+        assert_eq!(
+            run(vec![
+                "HSETANDGETOPT", "cap:u1", "100", "1", "0", day, "sum", day, day, "",
+            ]),
+            RespValue::Integer(3)
+        );
+        assert_eq!(
+            run(vec![
+                "HSETANDGETOPT", "cap:u1", "200", "1", "0", day, "sum", day, day, "",
+            ]),
+            RespValue::Integer(4)
+        );
+    }
+
     // shared-corpus: redis_engine_product_command_flow;
     #[test]
     fn redis_feature_query_filterstr_uses_cpp_filter_syntax() {

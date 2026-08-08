@@ -206,10 +206,16 @@ before send), UTC-correct windows, typed results, and a metrics hook. It exposes
 | 10 | `add_unique` / `unique_count` | distinct-value counting | `CONTROLSTATECHANGE` + `change` query |
 | 11 | `budget_gate` | hard spend/credit cap | `HSETANDGET` (amount = cost) |
 
-All eleven are verified end-to-end over a real socket (exact cap enforcement,
-idempotent replay/charging, concurrency rollback, debounce, distinct counting).
-Run the built-in demo against a live endpoint with
-`python -m temporalstore.control_state`.
+All eleven are covered by `sdk/python/tests/test_control_state.py`, which spins up
+an in-process mock RESP server and asserts each use case end-to-end over a real
+socket (exact cap enforcement, idempotent replay/charging, concurrency rollback,
+debounce, distinct counting). Run them with `python sdk/python/tests/test_control_state.py`
+(no pytest required) or `python -m pytest sdk/python/tests/`. Run the built-in demo
+against a live endpoint with `python -m temporalstore.control_state`.
+
+The RESP wire path for the idempotent operator is additionally covered by the
+Rust test `redis_hsetandgetopt_is_idempotent_and_precision_bucketed`. A rendered
+walkthrough of all use cases lives at `docs/control_state_guide.html`.
 
 ---
 
