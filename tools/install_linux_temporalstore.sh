@@ -81,8 +81,20 @@ step() {
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
     echo "missing required command: $1" >&2
+    [[ -n "${2:-}" ]] && echo "  install it with:  $2" >&2
     exit 1
   }
+}
+
+# Print a checklist line for a tool and return non-zero if it is missing.
+report_tool() {
+  local name="$1" fix="$2"
+  if command -v "$name" >/dev/null 2>&1; then
+    printf '  [ ok ]    %s\n' "$name"
+    return 0
+  fi
+  printf '  [MISSING] %-8s install: %s\n' "$name" "$fix"
+  return 1
 }
 
 json_post() {
@@ -154,17 +166,46 @@ cursor_dir="$data_dir/replica-replay-cursors"
 
 step "Resolve dependencies"
 print_plan
-need_cmd python3
-need_cmd git
-if [[ "$do_build" -eq 1 || "$skip_build" -eq 0 || "$check_prereqs" -eq 1 ]]; then
-  command -v cargo >/dev/null 2>&1 || echo "warning: cargo not found; required when release binaries are missing or --build is used" >&2
-  command -v rustc >/dev/null 2>&1 || echo "warning: rustc not found; required when release binaries are missing or --build is used" >&2
-  # The engine depends on the matrixcache crate (rocksdb-ssd), which builds
-  # RocksDB from source via librocksdb-sys/bindgen. That needs clang/libclang
-  # and cmake in addition to a C/C++ toolchain.
-  command -v clang >/dev/null 2>&1 || echo "warning: clang not found; required to build RocksDB via the matrixcache crate (apt-get install clang libclang-dev)" >&2
-  command -v cmake >/dev/null 2>&1 || echo "warning: cmake not found; required to build RocksDB via the matrixcache crate (apt-get install cmake)" >&2
+
+# Decide up front whether a build will happen, so the checklist covers the right
+# tools: a build is needed when --build is passed, or when binaries are missing
+# and --skip-build was not requested.
+if [[ "$do_build" -eq 0 && "$skip_build" -eq 0 && ! -x "$repo/target/release/matrixark_rust_metaserver" ]]; then
+  do_build=1
 fi
+need_build=0
+[[ "$do_build" -eq 1 || "$check_prereqs" -eq 1 ]] && need_build=1
+
+echo "Checking prerequisites:"
+prereqs_missing=0
+report_tool git     "sudo apt-get install -y git"                        || prereqs_missing=1
+report_tool python3 "sudo apt-get install -y python3"                    || prereqs_missing=1
+if [[ "$need_build" -eq 1 ]]; then
+  # The engine depends on the matrixcache crate (rocksdb-ssd), which compiles
+  # RocksDB from source (librocksdb-sys/bindgen) — hence clang + cmake + a C/C++
+  # toolchain, on top of Rust.
+  report_tool cargo "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh" || prereqs_missing=1
+  report_tool rustc "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh" || prereqs_missing=1
+  report_tool cc    "sudo apt-get install -y build-essential"            || prereqs_missing=1
+  report_tool clang "sudo apt-get install -y clang libclang-dev"         || prereqs_missing=1
+  report_tool cmake "sudo apt-get install -y cmake"                      || prereqs_missing=1
+fi
+
+if [[ "$check_prereqs" -eq 1 ]]; then
+  echo
+  if [[ "$prereqs_missing" -eq 1 ]]; then
+    echo "Some prerequisites are missing. Install the ones marked [MISSING] above, then re-run:"
+    echo "  ./tools/install_linux_temporalstore.sh --check-prereqs"
+    echo "Tip (Ubuntu, all build deps at once):"
+    echo "  sudo apt-get install -y git python3 build-essential pkg-config libssl-dev clang libclang-dev cmake"
+    exit 1
+  fi
+  echo "All prerequisites present. Next:  ./tools/install_linux_temporalstore.sh --build"
+  exit 0
+fi
+
+need_cmd git     "sudo apt-get install -y git"
+need_cmd python3 "sudo apt-get install -y python3"
 
 if [[ ! -f "$repo/Cargo.toml" ]]; then
   echo "repo does not look like a TemporalStore checkout: $repo" >&2
@@ -174,21 +215,15 @@ if [[ ! -f "$repo/Cargo.toml" ]]; then
   exit 1
 fi
 
-if [[ "$do_build" -eq 0 && "$skip_build" -eq 0 ]]; then
-  if [[ ! -x "$repo/target/release/matrixark_rust_metaserver" ]]; then
-    do_build=1
-  fi
-fi
-
-if [[ "$check_prereqs" -eq 1 ]]; then
-  echo "Prerequisite check complete. Next: ./tools/install_linux_temporalstore.sh --build"
-  exit 0
-fi
-
 if [[ "$do_build" -eq 1 ]]; then
-  need_cmd cargo
-  need_cmd rustc
-  step "Build Rust TemporalStore release binaries"
+  # Fail fast with a clear message instead of a cryptic RocksDB build error.
+  if [[ "$prereqs_missing" -eq 1 ]]; then
+    echo "Cannot build: install the tools marked [MISSING] above first." >&2
+    echo "  Ubuntu build deps:  sudo apt-get install -y build-essential pkg-config libssl-dev clang libclang-dev cmake" >&2
+    echo "  Rust toolchain:     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh && source \"\$HOME/.cargo/env\"" >&2
+    exit 1
+  fi
+  step "Build Rust TemporalStore release binaries (first build compiles RocksDB; this can take a few minutes)"
   (cd "$repo" && git fetch origin main && cargo build --release -p temporalstore-rust --bins)
 fi
 
