@@ -387,6 +387,57 @@ fn bucket_dump_manifest_watermark_tracks_embedded_index_not_wal_tail() {
 }
 
 #[test]
+fn delete_drop_eviction_emits_a_wal_tombstone_and_does_not_resurrect() {
+    // A delete_drop eviction is a logical delete and must emit a WAL tombstone + advance the
+    // replay anchor like the expiry sweep, or the deletion is unreplicated and (under bulk mode)
+    // resurrects on reload. Assert the eviction appends a CommonDelete to the WAL (observable as a
+    // WAL sequence advance) and that a reload -- which replays the WAL past the anchor -- does not
+    // bring the key back.
+    let dir = tempfile::tempdir().unwrap();
+    let pages = dir.path().join("pages");
+    let indexes = dir.path().join("indexes");
+    let engine =
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-a"), &pages, &indexes);
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "evict-me".to_string(),
+            value: b"v1".to_vec(),
+        },
+    });
+    let wal_before = engine.write_ahead_log_store().stats(1).last_sequence;
+    // memory_pressure_threshold = 0 forces the eviction to run; delete_drop = true.
+    let report = engine.apply_storage_eviction(1, 0, 1024, false, true);
+    assert!(
+        report.dropped_object_count >= 1,
+        "delete_drop eviction should have dropped the record: {report:?}"
+    );
+    let wal_after = engine.write_ahead_log_store().stats(1).last_sequence;
+    assert!(
+        wal_after > wal_before,
+        "delete_drop must emit a WAL tombstone (sequence must advance): {wal_before} -> {wal_after}"
+    );
+
+    // Reload over the same dirs: WAL replay past the anchor must NOT resurrect the deleted key.
+    let reloaded =
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-b"), &pages, &indexes);
+    reloaded.load_shard(1);
+    assert_eq!(
+        reloaded
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: "evict-me".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Bytes { value: None },
+        "a delete_drop-evicted key must stay deleted after reload, not resurrect"
+    );
+}
+
+#[test]
 fn partial_compaction_failure_durably_persists_the_consistent_partial_index() {
     // CP4 regression. A mid-compaction read failure used to return with the in-memory index
     // half-advanced (relocated pages point at the fresh slab) but UNPERSISTED, so it diverged from

@@ -983,13 +983,38 @@ impl TemporalEngine {
                         victim_buckets.contains(&bucket).then_some(entry.object_key)
                     })
                     .collect::<BTreeSet<_>>();
+                let mut deleted_keys = Vec::new();
                 for key in object_keys {
                     if delete_record(shard, &key) {
                         dropped_object_count = dropped_object_count.saturating_add(1);
                         invalidate_record_all(&self.cache, shard_id, &key);
+                        deleted_keys.push(key);
                     }
                 }
                 if dropped_object_count > 0 {
+                    // A delete_drop eviction is a LOGICAL delete, so it must follow the same
+                    // durability discipline as the expiry sweep (recovery_sweep_compact.rs), which
+                    // is the codebase's other logged deletion. Emitting no WAL tombstone here left
+                    // the deletion (a) invisible to followers (never replicated), and (b) under
+                    // MATRIXARK_BULK_INGEST -- where persist_index_bytes is a no-op -- neither
+                    // persisted NOR recoverable from the WAL, so the key resurrected on reload when
+                    // replay reapplied the earlier SET. Emit a CommonDelete tombstone per dropped
+                    // key (buffered/unfsynced, mirroring the expiry sweep) and anchor
+                    // applied_wal_sequence past them so replay observes the deletion instead of the
+                    // stale write. (C++ eviction never deletes -- evicter.cc DumpActuator -- so
+                    // there is no C++ analog; this aligns the Rust-only delete_drop path with the
+                    // engine's own tombstone discipline.)
+                    if !replaying_wal() {
+                        for key in &deleted_keys {
+                            let _ = self.wal_store.append_with_sync(
+                                shard_id,
+                                Command::CommonDelete { key: key.clone() },
+                                false,
+                            );
+                        }
+                        shard.applied_wal_sequence =
+                            Some(self.wal_store.stats(shard_id).last_sequence);
+                    }
                     if let Ok(index_bytes) = serde_json::to_vec_pretty(shard) {
                         let _ = self.persist_index_bytes(shard_id, &index_bytes);
                         let _ = self.index_log_store.append_json(shard_id, &index_bytes);
