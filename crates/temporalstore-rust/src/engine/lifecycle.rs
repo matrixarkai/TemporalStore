@@ -193,6 +193,8 @@ impl TemporalEngine {
                 membership_valid: true,
                 replica_node_ids: Vec::new(),
                 leader_node_id: None,
+                // Serving is gated off until replay below completes.
+                recovering: true,
             },
         );
         // Replay any WAL records not yet reflected in the loaded index, rebuilding
@@ -221,6 +223,17 @@ impl TemporalEngine {
                 .expect("admission lock poisoned")
                 .remove(&AdmissionScope::Shard(request.shard_id));
             return LoadShardResponse { status };
+        }
+        // Replay succeeded and the shard is consistent: open it for serving. While
+        // `recovering` was set, client commands were rejected with a retryable status so no
+        // write could interleave with replay and regress the WAL anchor.
+        if let Some(info) = self
+            .infos
+            .write()
+            .expect("info lock poisoned")
+            .get_mut(&request.shard_id)
+        {
+            info.recovering = false;
         }
         LoadShardResponse {
             status: Status::ok(),
@@ -409,6 +422,9 @@ impl TemporalEngine {
                 membership_valid: existing.membership_valid,
                 replica_node_ids: existing.replica_node_ids,
                 leader_node_id: existing.leader_node_id,
+                // Reload updates metadata only; it does not replay the WAL, so it serves
+                // immediately.
+                recovering: false,
             },
         );
         LoadShardResponse {

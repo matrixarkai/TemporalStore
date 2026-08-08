@@ -164,6 +164,28 @@ impl TemporalEngine {
                 response: CommandResponse::Empty,
             };
         };
+        // While a shard is replaying its WAL on load it is present in `shards` but not yet
+        // serving (C++ keeps it in PartitionLoadStage::LOADING). Reject client commands with
+        // a retryable status so a concurrent write cannot interleave with replay -- which
+        // would regress the WAL anchor and double-apply on the next restart. The replay
+        // thread re-drives records under replaying_wal(), which bypasses this gate.
+        if !replaying_wal()
+            && self
+                .infos
+                .read()
+                .expect("info lock poisoned")
+                .get(&request.shard_id)
+                .map(|info| info.recovering)
+                .unwrap_or(false)
+        {
+            return ExecuteResponse {
+                status: Status::error(
+                    "shard_not_loaded",
+                    "shard is recovering (WAL replay in progress)",
+                ),
+                response: CommandResponse::Empty,
+            };
+        }
         let command = request.command;
         if self
             .infos
