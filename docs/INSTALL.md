@@ -210,8 +210,10 @@ cd TemporalStore
 ./tools/install_linux_temporalstore.sh --build
 ```
 
-The script starts local services and runs a write/read smoke test. A successful
-run prints health responses for ports `17101` and `17102`.
+`--check-prereqs` prints a checklist and the exact command to install anything
+that's `[MISSING]` — run it first. Then `--build` builds and starts local services
+and runs a write/read smoke test; a successful run prints health responses for
+ports `17101` and `17102`.
 
 ### Enable agent hooks — Codex and Claude Code (optional)
 
@@ -275,6 +277,10 @@ cd TemporalStore
 ./tools/install_macos_temporalstore.sh --check-prereqs
 ./tools/install_macos_temporalstore.sh --build
 ```
+
+`--check-prereqs` prints a checklist and the exact command to install anything
+that's `[MISSING]` — run it first. `--build` then builds, starts local services,
+and runs a write/read smoke test.
 
 ### Enable agent hooks — Codex and Claude Code (optional)
 
