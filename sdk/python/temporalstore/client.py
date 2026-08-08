@@ -1063,6 +1063,29 @@ class Client:
         finally:
             self._native.lib.temporalstore_ips_feature_array_free(ctypes.byref(out))
 
+    def control_state_increment(
+        self,
+        key: str,
+        amount: int = 1,
+        ttl_seconds: int = 24 * 3600,
+        precision: RiskPrecision = RiskPrecision.ONE_MINUTE,
+        uuid: str = "",
+        occur_time_seconds: int = 0,
+    ) -> None:
+        """Canonical name for the renamed Control State counter increment."""
+        self.risk_increment(key, amount, ttl_seconds, precision, uuid, occur_time_seconds)
+
+    def control_state_count(
+        self,
+        key: str,
+        precision: RiskPrecision = RiskPrecision.ONE_MINUTE,
+        window_start: int = -1,
+        window_end: int = 0,
+        window_unit: WindowUnit = WindowUnit.HOUR,
+    ) -> int:
+        """Canonical name for the renamed Control State windowed count."""
+        return self.risk_count(key, precision, window_start, window_end, window_unit)
+
     def risk_increment(
         self,
         key: str,
