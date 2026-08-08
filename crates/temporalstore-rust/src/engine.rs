@@ -30,6 +30,10 @@ mod recovery_sweep_compact;
 mod persistence;
 mod bucket_dump_io;
 mod command_validation;
+// Single source of truth for write-command classification (shared with the data_node layer,
+// which previously kept a drifted subset that mis-classified context/control-state/ips writes
+// as reads -> lifecycle-write-barrier bypass + missing dump scheduling).
+pub(crate) use command_validation::{command_object_keys, is_write_command};
 mod storage_bucket_internals;
 mod compaction;
 mod storage_reporting;

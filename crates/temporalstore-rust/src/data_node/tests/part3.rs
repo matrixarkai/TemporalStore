@@ -591,6 +591,88 @@ fn runtime_dump_can_flush_only_selected_dirty_buckets() {
 }
 
 #[test]
+fn previously_misclassified_writes_mark_shard_dirty() {
+    // The data_node write classifier delegates to the engine's authoritative one, so writes it
+    // used to omit (context / control-state change+fol / ips load/remove/delete / conditional
+    // string) now correctly mark the shard dirty (and hit the lifecycle write gate). Regression:
+    // a ControlStateFolSet -- previously classified READ here -- must mark the shard dirty.
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 1,
+            max_queue_depth: 8,
+            max_background_queue_depth: 8,
+        },
+    );
+    let job = runtime.submit_execute(
+        ExecuteRequest {
+            shard_id: 1,
+            command: Command::ControlStateFolSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+                occur_time_ms: 1,
+                ttl_ms: 0,
+                fol_type: crate::types::ControlStateFolType::First,
+            },
+        },
+        RequestController { timeout_ms: 1000 },
+    );
+    assert!(wait_for_job(&runtime, job.job_id).status.ok);
+    assert_eq!(
+        runtime.dirty_shards(),
+        vec![1],
+        "a control-state FOL write must be classified as a write and mark the shard dirty"
+    );
+}
+
+#[test]
+fn gc_does_not_clear_the_dirty_scheduling_tracker() {
+    // C++ GC (ReclaimPage/ReclaimIndex) never touches the dirty-slot set -- a slot leaves it
+    // only via a completed dump/replay (Index::ClearSlotDirty). GC must not drop the re-dump
+    // scheduling state, or schedule_dirty_shard_dumps would stop scheduling those objects.
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 1,
+            max_queue_depth: 8,
+            max_background_queue_depth: 8,
+        },
+    );
+    let write = runtime.submit_execute(
+        ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        },
+        RequestController { timeout_ms: 1000 },
+    );
+    assert!(wait_for_job(&runtime, write.job_id).status.ok);
+    assert_eq!(runtime.dirty_shards(), vec![1]);
+
+    let gc = runtime.submit_gc(
+        GcRequest {
+            shard_id: 1,
+            retain_oplog_from_sequence: None,
+            retain_index_log_from_sequence: None,
+            retain_page_slabs_from_id: None,
+        },
+        RequestController { timeout_ms: 1000 },
+    );
+    assert!(wait_for_job(&runtime, gc.job_id).status.ok);
+    assert_eq!(
+        runtime.dirty_shards(),
+        vec![1],
+        "GC must not clear the dirty-scheduling tracker (only a completed dump does)"
+    );
+}
+
+#[test]
 fn runtime_schedules_dumps_for_dirty_shards() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);

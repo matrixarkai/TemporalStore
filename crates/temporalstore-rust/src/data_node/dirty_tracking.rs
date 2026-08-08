@@ -31,15 +31,6 @@ pub(super) fn mark_dirty(dirty: &Mutex<DirtyTracker>, shard_id: ShardId, key: Op
     }
 }
 
-pub(super) fn clear_dirty_shard(dirty: &Mutex<DirtyTracker>, shard_id: ShardId) -> usize {
-    let mut dirty = dirty.lock().expect("dirty tracker lock poisoned");
-    let before = dirty.by_key.len();
-    dirty
-        .by_key
-        .retain(|(dirty_shard_id, _), _| *dirty_shard_id != shard_id);
-    before - dirty.by_key.len()
-}
-
 pub(super) fn clear_dirty_shard_buckets(
     dirty: &Mutex<DirtyTracker>,
     engine: &TemporalEngine,
@@ -79,63 +70,26 @@ pub(super) fn mark_dirty_for_successful_commands(
 ) {
     for (command, response) in commands.iter().zip(responses.iter()) {
         if response.status.ok && is_write_command(command) {
-            mark_dirty(dirty, shard_id, command_key(command));
+            mark_dirty(dirty, shard_id, command_key(command).as_deref());
         }
     }
 }
 
-pub(super) fn command_key(command: &Command) -> Option<&str> {
-    match command {
-        Command::CommonDelete { key }
-        | Command::CommonExpire { key, .. }
-        | Command::StringSet { key, .. }
-        | Command::StringSetEx { key, .. }
-        | Command::StringDelete { key }
-        | Command::HashSet { key, .. }
-        | Command::HashMultiSet { key, .. }
-        | Command::HashIncrBy { key, .. }
-        | Command::HashDelete { key, .. }
-        | Command::SetAdd { key, .. }
-        | Command::SetRemove { key, .. }
-        | Command::FeatureAppend { key, .. }
-        | Command::FeatureAppendWithPolicy { key, .. }
-        | Command::FeatureReplace { key, .. }
-        | Command::FeatureDelete { key }
-        | Command::SequenceAdd { key, .. }
-        | Command::IpsAdd { key, .. }
-        | Command::IpsAddWithOptions { key, .. }
-        | Command::ControlStateIncrement { key, .. }
-        | Command::ControlStateIncrementWithOptions { key, .. }
-        | Command::ControlStateSet { key, .. }
-        | Command::ControlStateSetAndGet { key, .. } => Some(key),
-        _ => None,
-    }
+// Delegate to the engine's canonical object-key extractor (same one used for validation), so
+// the dirty tracker records a key for EVERY write command -- including the ones this used to
+// omit (context, control-state change/fol, ips load/remove/delete, conditional string). Those
+// omissions left such writes untracked, so their shard was never scheduled for a dirty-driven
+// dump and its WAL grew unbounded. Returns the first (primary) object key.
+pub(super) fn command_key(command: &Command) -> Option<String> {
+    crate::engine::command_object_keys(command).into_iter().next()
 }
 
+// Delegate to the engine's authoritative write-command classifier (the same one that gates WAL
+// persistence). The data_node lifecycle write-barrier, dirty tracking and dump scheduling MUST
+// use it so they can never drift: a stale subset here mis-classified context / control-state
+// (change/fol) / ips (load/remove/delete) / conditional-string writes as READS, letting them
+// bypass the lifecycle write gate (execute against a shard being torn down) and never mark the
+// shard dirty (so it was never scheduled for a dump and its WAL grew unbounded).
 pub(super) fn is_write_command(command: &Command) -> bool {
-    matches!(
-        command,
-        Command::CommonDelete { .. }
-            | Command::CommonExpire { .. }
-            | Command::StringSet { .. }
-            | Command::StringSetEx { .. }
-            | Command::StringDelete { .. }
-            | Command::HashSet { .. }
-            | Command::HashMultiSet { .. }
-            | Command::HashIncrBy { .. }
-            | Command::HashDelete { .. }
-            | Command::SetAdd { .. }
-            | Command::SetRemove { .. }
-            | Command::FeatureAppend { .. }
-            | Command::FeatureAppendWithPolicy { .. }
-            | Command::FeatureReplace { .. }
-            | Command::FeatureDelete { .. }
-            | Command::SequenceAdd { .. }
-            | Command::IpsAdd { .. }
-            | Command::IpsAddWithOptions { .. }
-            | Command::ControlStateIncrement { .. }
-            | Command::ControlStateIncrementWithOptions { .. }
-            | Command::ControlStateSet { .. }
-            | Command::ControlStateSetAndGet { .. }
-    )
+    crate::engine::is_write_command(command)
 }
