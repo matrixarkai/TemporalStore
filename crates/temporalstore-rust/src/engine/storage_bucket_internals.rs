@@ -1705,6 +1705,9 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     if saw_features {
         let persisted = std::mem::take(&mut shard.features);
         shard.features = reconcile_timestamped_series_membership(&persisted, features);
+        // The feature numeric view + rollup are derived from the feature series; drop them so
+        // they rebuild lazily from the series reconcile just materialized.
+        super::control_rollup::feature_clear_all(shard);
     }
     if saw_sequences {
         let persisted = std::mem::take(&mut shard.sequences);

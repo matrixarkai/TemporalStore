@@ -1349,7 +1349,10 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.strings.remove(key).is_some();
     removed |= shard.hashes.remove(key).is_some();
     removed |= shard.sets.remove(key).is_some();
-    removed |= shard.features.remove(key).is_some();
+    if shard.features.remove(key).is_some() {
+        removed = true;
+        control_rollup::feature_forget(shard, key);
+    }
     removed |= shard.sequences.remove(key).is_some();
     removed |= shard.ips.remove(key).is_some();
     removed |= shard.ips_meta.remove(key).is_some();

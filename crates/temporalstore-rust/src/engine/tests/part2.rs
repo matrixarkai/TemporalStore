@@ -3141,6 +3141,86 @@ fn control_state_count_sums_window() {
     );
 }
 
+// The gated feature-aggregate rollup (FeatureAggQuery routed through the shared rollup
+// primitive) must return exactly the same sum-family window aggregates as the ungated raw
+// scan. Per-point values are folded via aggregate_feature_values, so the rollup is exact.
+#[test]
+fn feature_agg_rollup_matches_raw_scan() {
+    fn run(rollup_gate: bool) -> (Vec<i64>, u64) {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut config = Config {
+            version: 2,
+            feature_max_size: 30_000,
+            ..Config::default()
+        };
+        if rollup_gate {
+            config
+                .extend_config
+                .insert("control_rollup".to_string(), "on".to_string());
+        }
+        assert!(engine.set_config(SetConfigRequest { shard_id: 1, config }).ok);
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            state
+        };
+        let mut points = Vec::new();
+        let mut ts = 1u64;
+        for _ in 0..5000 {
+            ts += 1 + (next() % 60_000); // strictly increasing, distinct-ms, spread over ~days
+            let v = (next() % 200) as i64; // 0..=199
+            points.push(FeaturePoint {
+                timestamp_ms: ts,
+                value: v.to_string().into_bytes(),
+            });
+        }
+        let end = ts;
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAppend {
+                key: "f".to_string(),
+                points,
+            },
+        });
+        let windows = [
+            (0u64, 999u64),
+            (0, 60_000),
+            (0, 3_600_000),
+            (0, 86_400_000),
+            (end / 2, end),
+            (0, end),
+        ];
+        let mut out = Vec::new();
+        for (start_ms, end_ms) in windows {
+            for aggregator in ["", "sum", "count"] {
+                if let CommandResponse::Aggregate { value } = engine
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::FeatureAggQuery {
+                            key: "f".to_string(),
+                            start_ms,
+                            end_ms,
+                            aggregator: aggregator.to_string(),
+                            count: None,
+                        },
+                    })
+                    .response
+                {
+                    out.push(value);
+                }
+            }
+        }
+        (out, end)
+    }
+    let (with_rollup, _) = run(true);
+    let (raw, _) = run(false);
+    assert_eq!(with_rollup, raw, "feature-aggregate rollup diverged from raw scan");
+    assert!(raw.iter().any(|value| *value != 0), "test series should be non-trivial");
+}
+
 // The gated control-state rollup ladder must return exactly the same sum-family window
 // aggregates as the ungated raw scan, through the real execute() path. Functional-parity
 // gate for the O(levels) long-window control-state path (frequency caps / counts).
