@@ -2,16 +2,7 @@
 
 The customer SDK is implemented in:
 
-- C++ API: `src/client/temporalstore_client.h`
-- C++ implementation: `src/client/temporalstore_client.cc`
-- C API: `src/client/temporalstore_c_client.h`
-- C wrapper: `src/client/temporalstore_c_client.cc`
-- C++ example: `src/client/example/customer_client_example.cc`
-- C example: `src/client/example/customer_c_client_example.c`
-- C++ package include: `sdk/cpp/include/temporalstore/client.h`
 - Python SDK: `sdk/python/temporalstore`
-- Go SDK: `sdk/go/temporalstore`
-- Java SDK: `sdk/java/temporalstore`
 - Rust SDK: `sdk/rust/temporalstore`
 - Proxy API contract: `sdk/proxy/openapi.yaml`
 
@@ -20,7 +11,7 @@ There are two SDK modes:
 - Direct SDKs load or link the native client and route directly to data servers.
 - Proxy SDKs are pure-language HTTP clients. They call a TemporalStore proxy that owns routing, topology refresh, retries, auth, quotas, and observability.
 
-Use direct SDKs for the lowest latency backend path. Use proxy SDKs for customer onboarding, Python/Java services that should avoid native library loading, serverless jobs, notebooks, and any deployment where centralized policy is more important than one extra network hop.
+Use direct SDKs for the lowest latency backend path. Use proxy SDKs for customer onboarding, Python services that should avoid native library loading, serverless jobs, notebooks, and any deployment where centralized policy is more important than one extra network hop.
 
 ## Production Defaults
 
@@ -126,12 +117,12 @@ cmake --build build-ubuntu22 --target bcache2-shared -j4
 nm -D output/sdk/lib/libbcache2d.so | grep temporalstore_
 ```
 
-See `sdk/README.md` for Go, Java, Python, C++, and Rust wrapper usage.
+See `sdk/README.md` for Python and Rust wrapper usage.
 
 Full direct SDK smoke test:
 
 ```bash
-RUN_PYTHON_SDK=1 RUN_GO_SDK=1 RUN_JAVA_SDK=1 RUN_RUST_SDK=1 \
+RUN_PYTHON_SDK=1 RUN_RUST_SDK=1 \
   RUN_UNIFIED_TESTS=1 \
   TEMPORALSTORE_PYTHON_LIB=/path/to/libbcache2.so \
   tools/run_sdk_smoke_ubuntu22.sh
@@ -184,13 +175,11 @@ The proxy SDKs use the same logical data model as the direct SDKs:
 - FEATURE: raw timestamped feature points with filters.
 - SEQUENCE FEATURE: typed long-sequence rows with filters.
 - IPS: add/query recent instances.
-- RISK: increment and count over a time window.
+- CONTROL STATE: increment and count over a time window.
 
 Current proxy SDK entry points:
 
 - Python: `sdk/python/temporalstore/proxy_client.py`
-- Go: `sdk/go/temporalstore/proxy_client.go`
-- Java: `sdk/java/temporalstore/src/main/java/com/temporalstore/TemporalStoreProxyClient.java`
 - Rust: `sdk/rust/temporalstore`, built with `--no-default-features --features proxy`
 
 The existing `src/proxy` binary is a brpc/Thrift proxy. The customer-facing proxy SDK contract is HTTP/JSON and is documented in `docs/direct_vs_proxy_sdk.md` plus `sdk/proxy/openapi.yaml`.
@@ -201,5 +190,5 @@ Proxy SDK smoke test:
 tools/run_proxy_sdk_smoke_ubuntu22.sh
 ```
 
-This starts a small mock HTTP gateway and validates the Python, Go, Java, and Rust
+This starts a small mock HTTP gateway and validates the Python and Rust
 proxy SDK examples.

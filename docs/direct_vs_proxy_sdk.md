@@ -19,11 +19,8 @@ Use direct SDKs when:
 
 Current direct SDKs:
 
-- C++: native client, `sdk/cpp`
-- Go: cgo over C ABI, `sdk/go/temporalstore`
-- Java: JNA over C ABI, `sdk/java/temporalstore`
-- Python: `ctypes` over C ABI, `sdk/python/temporalstore`
-- Rust: FFI over C ABI, `sdk/rust/temporalstore`
+- Python: `ctypes` over the C ABI, `sdk/python/temporalstore`
+- Rust: FFI over the C ABI, `sdk/rust/temporalstore`
 
 ## Proxy SDKs
 
@@ -46,10 +43,6 @@ Use proxy SDKs when:
 Current proxy SDKs:
 
 - Python: standard library HTTP/JSON, `sdk/python/temporalstore/proxy_client.py`
-- Go: standard library HTTP/JSON, `sdk/go/temporalstore/proxy_client.go`. The
-  direct cgo client is behind the `temporalstore_direct` build tag so proxy-only
-  applications do not link the native library.
-- Java: Java 11 HTTP client plus Jackson, `sdk/java/temporalstore/.../TemporalStoreProxyClient.java`
 - Rust: stdlib HTTP/JSON, `sdk/rust/temporalstore` with `--no-default-features --features proxy`.
 
 ## Existing Internal Proxy
@@ -114,11 +107,11 @@ Endpoints:
 | Area | Direct SDK | Proxy SDK |
 |---|---|---|
 | Latency | Lowest | One extra hop |
-| Dependencies | Native library / cgo / JNA / ctypes | Pure language HTTP |
+| Dependencies | Native library / ctypes / Rust FFI | Pure language HTTP |
 | Topology | In-process | Centralized in proxy |
 | Ops policy | Per application | Centralized |
 | Auth/quotas | App-side or infra-side | Proxy-side |
-| Best fit | high-QPS backend services | customer apps, serverless, notebooks, Python/Java teams |
+| Best fit | high-QPS backend services | customer apps, serverless, notebooks, Python teams |
 
 ## Recommendation
 

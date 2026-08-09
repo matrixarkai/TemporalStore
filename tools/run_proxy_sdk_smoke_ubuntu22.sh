@@ -37,18 +37,6 @@ PYTHONPATH="${ROOT}/sdk/python" \
   | tee "${RESULT_DIR}/python_proxy.out"
 
 (
-  cd "${ROOT}/sdk/go/temporalstore"
-  go run ./examples/proxy
-) | tee "${RESULT_DIR}/go_proxy.out"
-
-(
-  cd "${ROOT}/sdk/java/temporalstore"
-  mvn -q -DskipTests package
-  java -cp "target/classes:${HOME}/.m2/repository/com/fasterxml/jackson/core/jackson-databind/2.17.1/jackson-databind-2.17.1.jar:${HOME}/.m2/repository/com/fasterxml/jackson/core/jackson-core/2.17.1/jackson-core-2.17.1.jar:${HOME}/.m2/repository/com/fasterxml/jackson/core/jackson-annotations/2.17.1/jackson-annotations-2.17.1.jar:${HOME}/.m2/repository/net/java/dev/jna/jna/5.14.0/jna-5.14.0.jar" \
-    com.temporalstore.example.ProxySequenceFeatures
-) | tee "${RESULT_DIR}/java_proxy.out"
-
-(
   cd "${ROOT}/sdk/rust/temporalstore"
   TEMPORALSTORE_UNIFIED_CORPUS="$(python3 "${ROOT}/tools/resolve_temporalstore_test_corpus.py")" \
     cargo test --no-default-features --features proxy --test unified_corpus
@@ -56,15 +44,9 @@ PYTHONPATH="${ROOT}/sdk/python" \
 
 grep -q "profile=" "${RESULT_DIR}/python_proxy.out"
 grep -q "SequenceFeatureRow" "${RESULT_DIR}/python_proxy.out"
-grep -q "profile=" "${RESULT_DIR}/go_proxy.out"
-grep -q "rows=" "${RESULT_DIR}/go_proxy.out"
-grep -q "profile=" "${RESULT_DIR}/java_proxy.out"
-grep -q "rows=1" "${RESULT_DIR}/java_proxy.out"
 grep -q "unified_corpus_proxy_contract ... ok" "${RESULT_DIR}/rust_proxy.out"
 
 echo "PASS proxy SDK smoke"
 echo "wrote:"
 echo "  ${RESULT_DIR}/python_proxy.out"
-echo "  ${RESULT_DIR}/go_proxy.out"
-echo "  ${RESULT_DIR}/java_proxy.out"
 echo "  ${RESULT_DIR}/rust_proxy.out"
