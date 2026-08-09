@@ -70,6 +70,7 @@ from this README alone. See:
 
 - [Rust vs C++ parity report](docs/rust_vs_cpp_temporalstore_parity_report.md)
 - [Benchmark and readiness evidence](docs/benchmark_readiness_evidence_20260629.md)
+- [Benchmarks: token & quality vs full local replay (3-arm)](docs/benchmarks/README.md)
 - [Storage/Raft readiness plan](docs/storage_raft_production_readiness_plan.md)
 - [Context Management on TemporalStore](docs/context_management_on_temporalstore.md)
 - [Context Management technical blog](docs/blog_context_management_temporalstore.md)

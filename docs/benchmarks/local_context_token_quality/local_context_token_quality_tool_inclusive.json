@@ -1,0 +1,934 @@
+{
+  "schema": "local_context_token_quality_sweep_v1",
+  "generated_at": "2026-08-09T08:08:00.462817+00:00",
+  "tag": "tool_inclusive",
+  "reader": "ollama:qwen2.5:1.5b",
+  "judge": "ollama:qwen2.5:1.5b",
+  "reader_probe": {
+    "ready": true,
+    "models": [
+      "qwen2.5:7b",
+      "qwen2.5:1.5b"
+    ],
+    "error": null
+  },
+  "ingestion": {
+    "codex_root": "/mnt/c/Users/Deeproute/.codex/sessions",
+    "claude_root": "/mnt/c/Users/Deeproute/.claude/projects",
+    "codex_events": 1296,
+    "claude_events": 2800,
+    "total_events": 4096,
+    "codex_sessions": 38,
+    "claude_sessions": 25,
+    "segments": 437,
+    "entities": 15,
+    "summaries": 64,
+    "full_all_tokens": 661347,
+    "roles": [
+      "assistant",
+      "user"
+    ]
+  },
+  "baseline_full_context": {
+    "full_all_tokens": 661347,
+    "fed_tokens": 194981,
+    "fed_event_count": 905
+  },
+  "budgets": [
+    24000,
+    16000,
+    8000,
+    4000,
+    2000,
+    1000
+  ],
+  "aggregate": {
+    "queries_with_match": 6,
+    "queries_total": 6,
+    "avg_baseline_fed_tokens": 194981.0,
+    "avg_min_pack_tokens": 999.333,
+    "avg_token_saving_pct": 99.5,
+    "avg_baseline_score": 8.46,
+    "avg_managed_score": 9.313
+  },
+  "queries": [
+    {
+      "query_id": "q_hooks",
+      "question": "What did the user decide about Rust TemporalStore hooks and real-time Codex prompt ingestion?",
+      "expected_terms": [
+        "hook",
+        "userpromptsubmit",
+        "real",
+        "ingest",
+        "rust",
+        "session"
+      ],
+      "baseline": {
+        "fed_tokens": 194981,
+        "answer": "The Codex History OSS Context Benchmark is designed to measure how well local context affects the performance of different language models, including Qwen/Ollama/vLLM OpenAI-compatible models. This benchmark typically involves using a synthetic corpus or historical data from sessions that have been backfilled with local context. To find where local context actually lives in this benchmark, you would need to look at the following components: 1. **Historical Codex Sessions**: The benchmark likely uses real sessions of codex history. These sessions are often stored and processed offline. 2. **Context Events**: Local context is typically represented as events that have been added to these historical sessions. 3. **Context Segments**: These segments can be used to identify the local context patterns or rules that have been learned over time. 4. **Context Entities**: These entities might represent specific contexts or knowledge points that are relevant in certain situations. 5. **Context Summaries**: These summaries capture the key information from different sessions, which can help understand how local context is represented and used. To find where these elements live in the benchmark data,",
+        "judge": {
+          "ok": true,
+          "correctness": 10,
+          "completeness": 10,
+          "note": "The answer is accurate and comprehensive.",
+          "error": null
+        },
+        "term_coverage": 0.333,
+        "combined_score": 8.666
+      },
+      "sweep": [
+        {
+          "budget": 24000,
+          "pack_tokens": 23999,
+          "ref_count": 17,
+          "answer": "I'm sorry, but I can't assist with that request.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 2,
+            "completeness": 2,
+            "note": "Correctly identifies the user's task and decision regarding Rust TemporalStore hooks and real-time Codex prompt ingestio",
+            "error": null
+          },
+          "term_coverage": 0.0,
+          "combined_score": 1.6,
+          "token_saving_vs_baseline_pct": 87.7
+        },
+        {
+          "budget": 16000,
+          "pack_tokens": 16000,
+          "ref_count": 13,
+          "answer": "The user decided to enable Rust TemporalStore hooks and real-time ingestion for both Codex and Claude. They also wanted the prompt \"QUERY LATEST REAL MESSAGES…\" stored in both Rust and C++ TemporalStore as a non-synthetic `UserPromptSubmit` event with synthetic set to false, ensuring identical records across both backends.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "",
+            "error": null
+          },
+          "term_coverage": 0.833,
+          "combined_score": 9.666,
+          "token_saving_vs_baseline_pct": 91.8
+        },
+        {
+          "budget": 8000,
+          "pack_tokens": 8000,
+          "ref_count": 7,
+          "answer": "The user decided to allow Rust TemporalStore hooks and run it in real-time for both CODEX and CLAUDE.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "The answer accurately reflects the reference's content and details.",
+            "error": null
+          },
+          "term_coverage": 0.5,
+          "combined_score": 9.0,
+          "token_saving_vs_baseline_pct": 95.9
+        },
+        {
+          "budget": 4000,
+          "pack_tokens": 4000,
+          "ref_count": 7,
+          "answer": "The user decided to continue using Rust TemporalStore hooks and real-time Codex prompt ingestion.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "The answer is correct and covers all points from the reference.",
+            "error": null
+          },
+          "term_coverage": 0.667,
+          "combined_score": 9.334,
+          "token_saving_vs_baseline_pct": 97.9
+        },
+        {
+          "budget": 2000,
+          "pack_tokens": 1999,
+          "ref_count": 7,
+          "answer": "The user decided to continue using Rust TemporalStore for both CODEX and CLAUDE, allowing it to run all the time.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "Correct and comprehensive.",
+            "error": null
+          },
+          "term_coverage": 0.167,
+          "combined_score": 8.334,
+          "token_saving_vs_baseline_pct": 99.0
+        },
+        {
+          "budget": 1000,
+          "pack_tokens": 1000,
+          "ref_count": 6,
+          "answer": "The user decided to continue using Rust TemporalStore for both CODEX and CLAUDE prompt ingestion.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "The answer is correct and covers all points from the reference.",
+            "error": null
+          },
+          "term_coverage": 0.333,
+          "combined_score": 8.666,
+          "token_saving_vs_baseline_pct": 99.5
+        }
+      ],
+      "min_tokens_matching_baseline": {
+        "budget": 1000,
+        "pack_tokens": 1000,
+        "ref_count": 6,
+        "answer": "The user decided to continue using Rust TemporalStore for both CODEX and CLAUDE prompt ingestion.",
+        "answer_error": null,
+        "judge": {
+          "ok": true,
+          "correctness": 10,
+          "completeness": 10,
+          "note": "The answer is correct and covers all points from the reference.",
+          "error": null
+        },
+        "term_coverage": 0.333,
+        "combined_score": 8.666,
+        "token_saving_vs_baseline_pct": 99.5
+      }
+    },
+    {
+      "query_id": "q_parity",
+      "question": "What did the user want regarding C++ vs Rust TemporalStore parity and fair performance comparison?",
+      "expected_terms": [
+        "c++",
+        "rust",
+        "parity",
+        "async",
+        "oplog",
+        "wal",
+        "sdk",
+        "latency"
+      ],
+      "baseline": {
+        "fed_tokens": 194981,
+        "answer": "The Codex History OSS Context Benchmark is designed to measure how well local context affects the performance of different language models, including Qwen/Ollama/vLLM OpenAI-compatible models. This benchmark typically involves using a synthetic corpus or historical data from sessions that have been backfilled with local context. ### Key Points: 1. **Synthetic Corpus**: The benchmark uses a synthetic corpus to simulate real-world interactions. 2. **Historical Sessions**: It analyzes sessions where the model has access to local context, such as previous conversations or events. 3. **Local Context Models**: These models are compared against other models without any local context. ### Steps to Measure Local Context: 1. **Backfill Historical Data**: - Use historical Codex sessions that have been backfilled with local context. - This ensures the model has access to relevant information from previous interactions. 2. **Compare Models**: - Compare different language models (e.g., Qwen/Ollama/vLLM) against each other using the same synthetic corpus and session data. - Measure their performance in terms of",
+        "judge": {
+          "ok": true,
+          "correctness": 10,
+          "completeness": 10,
+          "note": "The answer accurately describes the benchmark and its steps to measure local context. It covers all key points from the ",
+          "error": null
+        },
+        "term_coverage": 0.0,
+        "combined_score": 8.0
+      },
+      "sweep": [
+        {
+          "budget": 24000,
+          "pack_tokens": 24000,
+          "ref_count": 11,
+          "answer": "The user wanted a parity comparison and performance benchmark between C++ and Rust implementations of TemporalStore, focusing on the storage side. Specifically, they asked about: - The differences in long-window aggregate functionality. - The impact of control state capabilities on feature sequences. - Any specific changes or gaps that need to be addressed for parity with the C++ reference implementation.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "Correct and comprehensive.",
+            "error": null
+          },
+          "term_coverage": 0.375,
+          "combined_score": 8.75,
+          "token_saving_vs_baseline_pct": 87.7
+        },
+        {
+          "budget": 16000,
+          "pack_tokens": 16000,
+          "ref_count": 8,
+          "answer": "The user wanted to compare the parity and performance of C++ TemporalStore with Rust TemporalStore, focusing on storage-side crash-recovery semantics. Specifically, they requested an audit of WAL recovery-replay parity between the C++ reference implementation and the Rust reimplementation.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "Correct and comprehensive.",
+            "error": null
+          },
+          "term_coverage": 0.5,
+          "combined_score": 9.0,
+          "token_saving_vs_baseline_pct": 91.8
+        },
+        {
+          "budget": 8000,
+          "pack_tokens": 7999,
+          "ref_count": 5,
+          "answer": "The user wanted a fair performance comparison and concrete gaps between C++ and Rust implementations of TemporalStore's TemporalStore.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "The answer accurately reflects the user's request for a fair performance comparison and concrete gaps between C++ and Ru",
+            "error": null
+          },
+          "term_coverage": 0.25,
+          "combined_score": 8.5,
+          "token_saving_vs_baseline_pct": 95.9
+        },
+        {
+          "budget": 4000,
+          "pack_tokens": 4000,
+          "ref_count": 4,
+          "answer": "The user wanted a fair performance comparison between C++ and Rust implementations of TemporalStore.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "The answer accurately reflects the user's request for a fair performance comparison between C++ and Rust implementations",
+            "error": null
+          },
+          "term_coverage": 0.25,
+          "combined_score": 8.5,
+          "token_saving_vs_baseline_pct": 97.9
+        },
+        {
+          "budget": 2000,
+          "pack_tokens": 1999,
+          "ref_count": 4,
+          "answer": "The user wanted a fair performance comparison between C++ and Rust TemporalStore implementations.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "The answer accurately reflects the user's request for a fair performance comparison between C++ and Rust TemporalStore i",
+            "error": null
+          },
+          "term_coverage": 0.25,
+          "combined_score": 8.5,
+          "token_saving_vs_baseline_pct": 99.0
+        },
+        {
+          "budget": 1000,
+          "pack_tokens": 999,
+          "ref_count": 5,
+          "answer": "The user wanted a fair performance comparison between C++ and Rust TemporalStore implementations.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "The answer accurately reflects the user's request for a fair performance comparison between C++ and Rust TemporalStore i",
+            "error": null
+          },
+          "term_coverage": 0.25,
+          "combined_score": 8.5,
+          "token_saving_vs_baseline_pct": 99.5
+        }
+      ],
+      "min_tokens_matching_baseline": {
+        "budget": 1000,
+        "pack_tokens": 999,
+        "ref_count": 5,
+        "answer": "The user wanted a fair performance comparison between C++ and Rust TemporalStore implementations.",
+        "answer_error": null,
+        "judge": {
+          "ok": true,
+          "correctness": 10,
+          "completeness": 10,
+          "note": "The answer accurately reflects the user's request for a fair performance comparison between C++ and Rust TemporalStore i",
+          "error": null
+        },
+        "term_coverage": 0.25,
+        "combined_score": 8.5,
+        "token_saving_vs_baseline_pct": 99.5
+      }
+    },
+    {
+      "query_id": "q_windows",
+      "question": "How should Windows users install TemporalStore, and what about WSL and Docker?",
+      "expected_terms": [
+        "windows",
+        "docker",
+        "wsl",
+        "installer",
+        "image",
+        "powershell"
+      ],
+      "baseline": {
+        "fed_tokens": 194981,
+        "answer": "The Codex History OSS Context Benchmark is designed to measure how well local context affects the performance of different language models, including Qwen/Ollama/vLLM OpenAI-compatible models. This benchmark typically involves using a synthetic corpus or historical data from sessions that have been backfilled with local context. ### Key Points: 1. **Synthetic Corpus**: The benchmark uses a synthetic corpus to simulate real-world interactions. 2. **Historical Sessions**: It analyzes sessions where the model has access to local context, such as previous conversations or events. 3. **Local Context Models**: These models are compared against other models without any local context. ### Steps to Measure Local Context: 1. **Backfill Historical Data**: - Use historical Codex sessions that have been backfilled with local context. - This ensures the model has access to relevant information from previous interactions. 2. **Compare Models**: - Compare different language models (e.g., Qwen/Ollama/vLLM) against each other using the same synthetic corpus and session data. - Measure their performance in terms of",
+        "judge": {
+          "ok": true,
+          "correctness": 10,
+          "completeness": 10,
+          "note": "The answer covers the key points of installing TemporalStore and mentions WSL and Docker.",
+          "error": null
+        },
+        "term_coverage": 0.0,
+        "combined_score": 8.0
+      },
+      "sweep": [
+        {
+          "budget": 24000,
+          "pack_tokens": 24000,
+          "ref_count": 29,
+          "answer": "The assistant has completed the validation of storage engines, ingestion operations parity evidence, and API model parity evidence. The script is running on a Linux environment using WSL (Windows Subsystem for Linux) with Ubuntu 22.04. Here's a summary of what was done: 1. **Validation of Storage Engines**: The script ran several Python scripts to validate the storage engine configurations. - `validate_storage_engine_9_phase_parity`: This checks the parity between different phases and versions of the storage engine. - `validate_ingestion_ops_parity_evidence`: Validates the evidence for ingestion operations. - `validate_api_model_parity_evidence`: Ensures that the API model is consistent across various evidence. 2. **File Creation**: The script created a file named `run_validators.sh` in the user's local directory, indicating it has completed its task and can proceed with other activities. 3. **Query Execution**: It executed several queries related to context token quality, including: - `q_hooks` - `q_parity` - `q_windows",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "The answer provides detailed information about the validation of storage engines and ingestion operations parity evidenc",
+            "error": null
+          },
+          "term_coverage": 0.333,
+          "combined_score": 8.666,
+          "token_saving_vs_baseline_pct": 87.7
+        },
+        {
+          "budget": 16000,
+          "pack_tokens": 16000,
+          "ref_count": 23,
+          "answer": "The provided text appears to be a log entry from an automated system, likely related to the setup and maintenance of a TemporalStore service. The key points include: - A cleanup operation has been performed on Windows 10 Pro with WSL version 2. - The process involved freeing up disk space by removing unnecessary files and workspaces. - It also shut down the WSL environment cleanly, preserving certain directories and logs. The log entry mentions that some of the removed files are not recoverable except through rebuilding or cloning again. This suggests a need for caution when dealing with potentially deleted data in WSL environments. Additionally, it indicates that two WSL Vim windows were opened to work on TemporalStore-related codebases: - One was for C++ TemporalStore (`C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-07\\what-s-the-topology-for-all\\temporalstore-service-fix`) - The other was for Rust TemporalStore (`C:\\Users\\Deeproute\\Documents\\Codex\\2",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "The answer is correct and comprehensive. It covers all key points from the reference text.",
+            "error": null
+          },
+          "term_coverage": 0.333,
+          "combined_score": 8.666,
+          "token_saving_vs_baseline_pct": 91.8
+        },
+        {
+          "budget": 8000,
+          "pack_tokens": 7999,
+          "ref_count": 11,
+          "answer": "Windows users should register the TemporalStore Codex hook as described. For Claude Code on Windows, they need to enable the Claude Code hook and point `-WslRepo` at their clone inside a WSL distro: ```powershell powershell -ExecutionPolicy Bypass -File .\\integrations\\agent-hooks\\install\\install.ps1 -Agent claude -Mode wsl -WslRepo /opt/github-services/TemporalStore ``` For Docker, the installation process is similar to Windows.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "Correct and comprehensive.",
+            "error": null
+          },
+          "term_coverage": 0.667,
+          "combined_score": 9.334,
+          "token_saving_vs_baseline_pct": 95.9
+        },
+        {
+          "budget": 4000,
+          "pack_tokens": 3999,
+          "ref_count": 10,
+          "answer": "Windows users should register the TemporalStore Codex `UserPromptSubmit` hook as described. For enabling Claude Code on Windows, they need to point `-WslRepo` at their clone inside a WSL distro: ```powershell powershell -ExecutionPolicy Bypass -File .\\integrations\\agent-hooks\\install\\install.ps1 -Agent claude -Mode wsl -WslRepo /opt/github-services/TemporalStore ``` For prebuilt images, users can use the following steps: - Ensure Python is installed. - Navigate to the TemporalStore directory on Windows and run: ```bash python3 -c \"import json, glob, os; base=\\\"/mnt/c/Users/Deeproute/.claude/projects/C--Users-Deeproute--claude\\\"; rows=[]; grand=[]; for f in sorted(glob.glob(base+\\\"/*.jsonl\\\")): ins=[]; for line in open(f, encoding=\\\"utf-8\\\", errors=\\\"ignore\\\"): line=line.strip(); if not line: continue; try: d",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "Correct and comprehensive answer.",
+            "error": null
+          },
+          "term_coverage": 0.667,
+          "combined_score": 9.334,
+          "token_saving_vs_baseline_pct": 97.9
+        },
+        {
+          "budget": 2000,
+          "pack_tokens": 1998,
+          "ref_count": 8,
+          "answer": "Windows users should register the TemporalStore command as a Codex `UserPromptSubmit` hook using `%USERPROFILE%\\\\.matrixark\\\\hooks\\\\matrixark-codex-hook-rust-docker.cmd`. For WSL and Docker, they can enable the Claude Code hook by running: ```powershell powershell -ExecutionPolicy Bypass -File .\\integrations\\agent-hooks\\install\\install.ps1 -Agent claude -Mode wsl -WslRepo /opt/github-services/TemporalStore ``` This ensures that the TemporalStore application can be accessed and managed through WSL.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "Correct and comprehensive.",
+            "error": null
+          },
+          "term_coverage": 0.667,
+          "combined_score": 9.334,
+          "token_saving_vs_baseline_pct": 99.0
+        },
+        {
+          "budget": 1000,
+          "pack_tokens": 1000,
+          "ref_count": 6,
+          "answer": "Windows users should register the TemporalStore hook as described in the INSTALL.md file. For Claude Code on Windows, they need to enable the Claude Code hook and point `-WslRepo` at their clone inside a WSL distro using PowerShell. The prebuilt images (optional) can be installed via the provided commands or by cloning the repository into a Docker container.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "",
+            "error": null
+          },
+          "term_coverage": 0.833,
+          "combined_score": 9.666,
+          "token_saving_vs_baseline_pct": 99.5
+        }
+      ],
+      "min_tokens_matching_baseline": {
+        "budget": 1000,
+        "pack_tokens": 1000,
+        "ref_count": 6,
+        "answer": "Windows users should register the TemporalStore hook as described in the INSTALL.md file. For Claude Code on Windows, they need to enable the Claude Code hook and point `-WslRepo` at their clone inside a WSL distro using PowerShell. The prebuilt images (optional) can be installed via the provided commands or by cloning the repository into a Docker container.",
+        "answer_error": null,
+        "judge": {
+          "ok": true,
+          "correctness": 10,
+          "completeness": 10,
+          "note": "",
+          "error": null
+        },
+        "term_coverage": 0.833,
+        "combined_score": 9.666,
+        "token_saving_vs_baseline_pct": 99.5
+      }
+    },
+    {
+      "query_id": "q_context",
+      "question": "What did the user ask about context management data fields, compaction, and backfill?",
+      "expected_terms": [
+        "context",
+        "compact",
+        "backfill",
+        "segment",
+        "summary",
+        "field"
+      ],
+      "baseline": {
+        "fed_tokens": 194981,
+        "answer": "The Codex History OSS Context Benchmark is designed to measure how well local context affects the performance of different language models, including Qwen/Ollama/vLLM OpenAI-compatible models. This benchmark typically involves using a synthetic corpus or historical data from sessions that have been backfilled with local context. ### Key Points: 1. **Synthetic Corpus**: The benchmark uses a synthetic corpus to simulate real-world interactions. 2. **Historical Sessions**: It analyzes sessions where the model has access to local context, such as previous conversations or events. 3. **Local Context Models**: These models are compared against other models without any local context. ### Steps to Measure Local Context: 1. **Backfill Historical Data**: - Use historical Codex sessions that have been backfilled with local context. - This ensures the model has access to relevant information from previous interactions. 2. **Compare Models**: - Compare different language models (e.g., Qwen/Ollama/vLLM) against each other using the same synthetic corpus and session data. - Measure their performance in terms of",
+        "judge": {
+          "ok": true,
+          "correctness": 10,
+          "completeness": 10,
+          "note": "The answer covers the key points of context management data fields, compaction, and backfill as requested by the user.",
+          "error": null
+        },
+        "term_coverage": 0.333,
+        "combined_score": 8.666
+      },
+      "sweep": [
+        {
+          "budget": 24000,
+          "pack_tokens": 23999,
+          "ref_count": 17,
+          "answer": "[tool:Bash] {\"command\": \"wsl -d Ubuntu2204Local -- bash -lc 'echo \\\"WSL OK\\\"; ls -la /root/src/github-services/TemporalStore 2>/dev/null | head -40; echo \\\"---BRANCH---\\\"; git -C /root/src/github-services/TemporalStore branch --show-current 2>/dev/null; echo \\\"---REMOTE---\\\"; git -C /root/src/github-services/TemporalStore remote -v 2>/dev/null'\", \"description\": \"Verify WSL access and TemporalSto [segment:95cc20294960fe02] user: [tool_result] === serve up? === assistant: I'm not sure what you're asking for here. Could you please provide more context or clarify your question?",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "The answer correctly identifies context management data fields, compaction, and backfill as the key points requested by ",
+            "error": null
+          },
+          "term_coverage": 0.333,
+          "combined_score": 8.666,
+          "token_saving_vs_baseline_pct": 87.7
+        },
+        {
+          "budget": 16000,
+          "pack_tokens": 16000,
+          "ref_count": 13,
+          "answer": "The provided answer is incomplete and does not contain the expected response. It appears to be a log entry or output from a system, but it lacks any meaningful content that would allow for an accurate interpretation of what happened or what was asked. Given this context, I will provide a generic response based on typical system behavior: --- **Answer:** It seems there might have been an issue with the command execution. The previous commands did not complete successfully, and the output is truncated. This could be due to various reasons such as network issues, permission errors, or incorrect paths. To resolve this, please ensure that all necessary files are present in their respective directories and that the system has the correct permissions to access them. Additionally, double-check the command syntax and any dependencies required for the commands to run correctly. If you encounter further issues, please provide more details about what was attempted and any error messages or logs generated during the execution of these commands. This information will help in diagnosing the problem more effectively. --- This response is designed to be helpful by suggesting steps that might resolve the issue without providing a specific",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 2,
+            "completeness": 2,
+            "note": "- The answer is partially correct but incomplete. It does not cover the specific context management data fields, compact",
+            "error": null
+          },
+          "term_coverage": 0.167,
+          "combined_score": 1.934,
+          "token_saving_vs_baseline_pct": 91.8
+        },
+        {
+          "budget": 8000,
+          "pack_tokens": 7998,
+          "ref_count": 5,
+          "answer": "The user asked about context management data fields, compaction, and backfill.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "The answer accurately reflects the key points from the reference.",
+            "error": null
+          },
+          "term_coverage": 0.667,
+          "combined_score": 9.334,
+          "token_saving_vs_baseline_pct": 95.9
+        },
+        {
+          "budget": 4000,
+          "pack_tokens": 4000,
+          "ref_count": 5,
+          "answer": "The user asked about context management data fields, compaction, and backfill.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "The answer accurately reflects the key points from the reference.",
+            "error": null
+          },
+          "term_coverage": 0.667,
+          "combined_score": 9.334,
+          "token_saving_vs_baseline_pct": 97.9
+        },
+        {
+          "budget": 2000,
+          "pack_tokens": 1999,
+          "ref_count": 5,
+          "answer": "The user asked about context management data fields, compaction, and backfill.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "The answer accurately reflects the key points from the reference.",
+            "error": null
+          },
+          "term_coverage": 0.667,
+          "combined_score": 9.334,
+          "token_saving_vs_baseline_pct": 99.0
+        },
+        {
+          "budget": 1000,
+          "pack_tokens": 999,
+          "ref_count": 5,
+          "answer": "The user asked about context management data fields, compaction, and backfill.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "The answer accurately reflects the key points from the reference.",
+            "error": null
+          },
+          "term_coverage": 0.667,
+          "combined_score": 9.334,
+          "token_saving_vs_baseline_pct": 99.5
+        }
+      ],
+      "min_tokens_matching_baseline": {
+        "budget": 1000,
+        "pack_tokens": 999,
+        "ref_count": 5,
+        "answer": "The user asked about context management data fields, compaction, and backfill.",
+        "answer_error": null,
+        "judge": {
+          "ok": true,
+          "correctness": 10,
+          "completeness": 10,
+          "note": "The answer accurately reflects the key points from the reference.",
+          "error": null
+        },
+        "term_coverage": 0.667,
+        "combined_score": 9.334,
+        "token_saving_vs_baseline_pct": 99.5
+      }
+    },
+    {
+      "query_id": "q_bench",
+      "question": "What did the user ask about Qwen, Ollama, vLLM, LoCoMo, LongMemEval, and OSS benchmarking?",
+      "expected_terms": [
+        "qwen",
+        "ollama",
+        "vllm",
+        "locomo",
+        "longmemeval",
+        "benchmark",
+        "oss"
+      ],
+      "baseline": {
+        "fed_tokens": 194981,
+        "answer": "The Codex History OSS Context Benchmark is designed to measure how well local context affects the performance of different language models, including Qwen/Ollama/vLLM OpenAI-compatible models. This benchmark typically involves using a synthetic corpus or historical data from sessions that have been backfilled with local context. ### Key Points: 1. **Synthetic Corpus**: The benchmark uses a synthetic corpus to simulate real-world interactions. 2. **Historical Sessions**: It analyzes sessions where the model has access to local context, such as previous conversations or events. 3. **Local Context Models**: These models are compared against other models without any local context. ### Steps to Measure Local Context: 1. **Backfill Historical Data**: - Use historical Codex sessions that have been backfilled with local context. - This ensures the model has access to relevant information from previous interactions. 2. **Compare Models**: - Compare different language models (e.g., Qwen/Ollama/vLLM) against each other using the same synthetic corpus and session data. - Measure their performance in terms of",
+        "judge": {
+          "ok": true,
+          "correctness": 10,
+          "completeness": 10,
+          "note": "Correct and comprehensive answer.",
+          "error": null
+        },
+        "term_coverage": 0.714,
+        "combined_score": 9.428
+      },
+      "sweep": [
+        {
+          "budget": 24000,
+          "pack_tokens": 23998,
+          "ref_count": 22,
+          "answer": "The answer is not provided yet. Please check back soon or try again later. --- **Note:** The assistant has been instructed to provide an answer, but it seems there was a technical issue with the previous attempt. If you have any specific questions or need further assistance, feel free to ask!",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "The answer is provided and covers all key points from the reference.",
+            "error": null
+          },
+          "term_coverage": 0.0,
+          "combined_score": 8.0,
+          "token_saving_vs_baseline_pct": 87.7
+        },
+        {
+          "budget": 16000,
+          "pack_tokens": 15998,
+          "ref_count": 11,
+          "answer": "The user asked about benchmarking Qwen, Ollama, vLLM, LoCoMo, LongMemEval, and VikingMem. Specifically, the question was to generate comprehensive benchmarking results for these models between Rust TemporalStore (BJMEETSFO GitHub) and OpenViking (Open Source from GitHub), using OSS models with fair datasets and shared embeddings.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "The answer correctly identifies the benchmarking of Qwen, Ollama, vLLM, LoCoMo, LongMemEval, and VikingMem as per the re",
+            "error": null
+          },
+          "term_coverage": 1.0,
+          "combined_score": 10.0,
+          "token_saving_vs_baseline_pct": 91.8
+        },
+        {
+          "budget": 8000,
+          "pack_tokens": 7998,
+          "ref_count": 6,
+          "answer": "The user asked about Qwen, Ollama, vLLM, LoCoMo, LongMemEval, and VikingMem benchmarking.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "Correct and comprehensive.",
+            "error": null
+          },
+          "term_coverage": 0.857,
+          "combined_score": 9.714,
+          "token_saving_vs_baseline_pct": 95.9
+        },
+        {
+          "budget": 4000,
+          "pack_tokens": 3999,
+          "ref_count": 5,
+          "answer": "The user asked about Qwen, Ollama, vLLM, LoCoMo, LongMemEval, and VikingMem benchmarking.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "Correct and complete.",
+            "error": null
+          },
+          "term_coverage": 0.857,
+          "combined_score": 9.714,
+          "token_saving_vs_baseline_pct": 97.9
+        },
+        {
+          "budget": 2000,
+          "pack_tokens": 1999,
+          "ref_count": 5,
+          "answer": "The user asked about benchmarking Qwen, Ollama, vLLM, LoCoMo, LongMemEval, and VikingMem.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "",
+            "error": null
+          },
+          "term_coverage": 0.857,
+          "combined_score": 9.714,
+          "token_saving_vs_baseline_pct": 99.0
+        },
+        {
+          "budget": 1000,
+          "pack_tokens": 999,
+          "ref_count": 5,
+          "answer": "The user asked about Qwen, Ollama, vLLM, LoCoMo, LongMemEval, and VikingMem benchmarking.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "Correct and complete.",
+            "error": null
+          },
+          "term_coverage": 0.857,
+          "combined_score": 9.714,
+          "token_saving_vs_baseline_pct": 99.5
+        }
+      ],
+      "min_tokens_matching_baseline": {
+        "budget": 1000,
+        "pack_tokens": 999,
+        "ref_count": 5,
+        "answer": "The user asked about Qwen, Ollama, vLLM, LoCoMo, LongMemEval, and VikingMem benchmarking.",
+        "answer_error": null,
+        "judge": {
+          "ok": true,
+          "correctness": 10,
+          "completeness": 10,
+          "note": "Correct and complete.",
+          "error": null
+        },
+        "term_coverage": 0.857,
+        "combined_score": 9.714,
+        "token_saving_vs_baseline_pct": 99.5
+      }
+    },
+    {
+      "query_id": "q_storage",
+      "question": "What did the user ask about MatrixObject, shared storage, S3, and object storage?",
+      "expected_terms": [
+        "matrixobject",
+        "s3",
+        "object",
+        "storage",
+        "shared"
+      ],
+      "baseline": {
+        "fed_tokens": 194981,
+        "answer": "The Codex History OSS Context Benchmark is designed to measure how well local context affects the performance of different language models, including Qwen/Ollama/vLLM OpenAI-compatible models. This benchmark typically involves using a synthetic corpus or historical data from sessions that have been backfilled with local context. ### Key Points: 1. **Synthetic Corpus**: The benchmark uses a synthetic corpus to simulate real-world interactions. 2. **Historical Sessions**: It analyzes sessions where the model has access to local context, such as previous conversations or events. 3. **Local Context Models**: These models are compared against other models without any local context. ### Steps to Measure Local Context: 1. **Backfill Historical Data**: - Use historical Codex sessions that have been backfilled with local context. - This ensures the model has access to relevant information from previous interactions. 2. **Compare Models**: - Compare different language models (e.g., Qwen/Ollama/vLLM) against each other using the same synthetic corpus and session data. - Measure their performance in terms of",
+        "judge": {
+          "ok": true,
+          "correctness": 10,
+          "completeness": 10,
+          "note": "Correct and comprehensive.",
+          "error": null
+        },
+        "term_coverage": 0.0,
+        "combined_score": 8.0
+      },
+      "sweep": [
+        {
+          "budget": 24000,
+          "pack_tokens": 23999,
+          "ref_count": 14,
+          "answer": "The command `cargo build --release --bin control_state_scale_harness` is failing because the closure in `parse_args` holds a mutable reference to `i`, but the trailing increment also needs it. This causes a borrow checker error. To fix this, we need to ensure that both parts of the closure hold references to the same mutable variable (`i`). Here's how you can modify the code: ```rust fn parse_args() -> Options { let mut opt = Options::default(); let args: Vec<String> = std::env::args().skip(1).collect(); for i in 0..args.len() { let flag = args[i].as_str(); let val = || { i += 1; args.get(i).cloned().unwrap_or_default() }; match flag { \"users\" => opt.users = Some(val()), // Handle other flags here _ => {} } } opt } ``` This change ensures that both parts of the closure (`val` and `i +=",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "Correct and comprehensive answer.",
+            "error": null
+          },
+          "term_coverage": 0.0,
+          "combined_score": 8.0,
+          "token_saving_vs_baseline_pct": 87.7
+        },
+        {
+          "budget": 16000,
+          "pack_tokens": 15999,
+          "ref_count": 9,
+          "answer": "The user asked about the following topics: - MatrixObject, shared storage, S3, and object storage.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "Correct and comprehensive answer.",
+            "error": null
+          },
+          "term_coverage": 1.0,
+          "combined_score": 10.0,
+          "token_saving_vs_baseline_pct": 91.8
+        },
+        {
+          "budget": 8000,
+          "pack_tokens": 7998,
+          "ref_count": 5,
+          "answer": "The user asked about MatrixObject, shared storage, S3, and object storage.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "The answer accurately reflects the user's request for information about MatrixObject, shared storage, S3, and object sto",
+            "error": null
+          },
+          "term_coverage": 1.0,
+          "combined_score": 10.0,
+          "token_saving_vs_baseline_pct": 95.9
+        },
+        {
+          "budget": 4000,
+          "pack_tokens": 3999,
+          "ref_count": 5,
+          "answer": "The user asked about MatrixObject, shared storage, S3, and object storage.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "The answer accurately covers all the key points from the reference.",
+            "error": null
+          },
+          "term_coverage": 1.0,
+          "combined_score": 10.0,
+          "token_saving_vs_baseline_pct": 97.9
+        },
+        {
+          "budget": 2000,
+          "pack_tokens": 1999,
+          "ref_count": 5,
+          "answer": "The user asked about MatrixObject, shared storage, S3, and object storage.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "The answer accurately covers all the key points from the reference.",
+            "error": null
+          },
+          "term_coverage": 1.0,
+          "combined_score": 10.0,
+          "token_saving_vs_baseline_pct": 99.0
+        },
+        {
+          "budget": 1000,
+          "pack_tokens": 999,
+          "ref_count": 5,
+          "answer": "The user asked about MatrixObject, shared storage, S3, and object storage.",
+          "answer_error": null,
+          "judge": {
+            "ok": true,
+            "correctness": 10,
+            "completeness": 10,
+            "note": "The answer accurately covers all the key points from the reference.",
+            "error": null
+          },
+          "term_coverage": 1.0,
+          "combined_score": 10.0,
+          "token_saving_vs_baseline_pct": 99.5
+        }
+      ],
+      "min_tokens_matching_baseline": {
+        "budget": 1000,
+        "pack_tokens": 999,
+        "ref_count": 5,
+        "answer": "The user asked about MatrixObject, shared storage, S3, and object storage.",
+        "answer_error": null,
+        "judge": {
+          "ok": true,
+          "correctness": 10,
+          "completeness": 10,
+          "note": "The answer accurately covers all the key points from the reference.",
+          "error": null
+        },
+        "term_coverage": 1.0,
+        "combined_score": 10.0,
+        "token_saving_vs_baseline_pct": 99.5
+      }
+    }
+  ]
+}
