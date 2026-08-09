@@ -387,6 +387,45 @@ fn bucket_dump_manifest_watermark_tracks_embedded_index_not_wal_tail() {
 }
 
 #[test]
+fn batch_execute_on_unloaded_shard_returns_a_batch_level_topology_error() {
+    // C++ returns a batch-level topology error with ZERO response entries when the partition is
+    // not loaded (partition_manager.cc), so the topology-retryable client refreshes + retries.
+    // Rust previously returned an OK batch full of per-command shard_not_loaded errors, leaving the
+    // batch-level status ok, so the client (which keys retry on the batch status) never refreshed.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    // Shard 1 is deliberately NOT loaded.
+    let response = engine.batch_execute(BatchExecuteRequest {
+        shard_id: 1,
+        commands: vec![
+            Command::StringSet {
+                key: "a".to_string(),
+                value: b"1".to_vec(),
+            },
+            Command::StringSet {
+                key: "b".to_string(),
+                value: b"2".to_vec(),
+            },
+        ],
+    });
+    assert_eq!(
+        response.status.code, "shard_not_loaded",
+        "an unloaded-shard batch must fail at the batch level, got {:?}",
+        response.status
+    );
+    assert!(
+        response.responses.is_empty(),
+        "a batch-level topology failure must carry zero per-command responses, got {}",
+        response.responses.len()
+    );
+}
+
+#[test]
 fn dump_selection_prioritizes_the_least_recently_dumped_bucket_not_the_lowest_id() {
     // C++ ReclaimOpLogWithLimit dumps dirty slots oldest-first (by first-dirty-log-id,
     // storage_manager.cc). Rust selected dirty buckets by ascending routing_bucket id then
