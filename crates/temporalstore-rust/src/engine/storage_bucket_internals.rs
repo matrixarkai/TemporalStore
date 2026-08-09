@@ -1811,7 +1811,23 @@ pub(super) fn insert_timestamped_secondary_view(
         .unwrap_or_default();
     let series = target.entry(object_key).or_default();
     for timestamp_ms in timestamps {
-        series.insert(timestamp_ms, address.clone());
+        // A timestamp can physically live in MORE THAN ONE page: overwriting a timestamped point
+        // with a new value writes a NEW page (higher, monotonic page_id/generation) while the OLD
+        // page still physically contains that timestamp (kept live by its other points, so its
+        // bucket-index entry is not removed). Reconstruction visits pages in slab/offset order --
+        // NOT write order -- so an unconditional insert let a STALE older page clobber the newer
+        // one for a shared timestamp, and the value silently reverted to the old page's bytes on
+        // reload. Keep the NEWEST page (highest address generation) per timestamp.
+        match series.entry(timestamp_ms) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(address.clone());
+            }
+            std::collections::btree_map::Entry::Occupied(mut slot) => {
+                if address.generation.unwrap_or(0) >= slot.get().generation.unwrap_or(0) {
+                    slot.insert(address.clone());
+                }
+            }
+        }
     }
 }
 
