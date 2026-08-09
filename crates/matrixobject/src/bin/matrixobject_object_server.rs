@@ -90,6 +90,7 @@ const RPC_MAGIC: &[u8; 5] = b"MORP1";
 const RPC_PUT: u8 = 1;
 const RPC_GET: u8 = 2;
 const RPC_DELETE: u8 = 3;
+const RPC_LIST: u8 = 4;
 const RPC_STATUS_OK: u8 = 0;
 const RPC_STATUS_NOT_FOUND: u8 = 1;
 const RPC_STATUS_ERROR: u8 = 2;
@@ -214,6 +215,10 @@ fn handle_rpc_stream(stream: &mut TcpStream, service: ObjectService) -> std::io:
                 Ok(()) => write_rpc_response(stream, RPC_STATUS_OK, &[])?,
                 Err(err) => write_rpc_error(stream, err)?,
             },
+            RPC_LIST => {
+                let keys = service.list(&key);
+                write_rpc_response(stream, RPC_STATUS_OK, keys.join("\n").as_bytes())?;
+            }
             _ => {
                 skip_rpc_value(stream, value_len)?;
                 write_rpc_response(stream, RPC_STATUS_ERROR, b"unknown rpc op")?;

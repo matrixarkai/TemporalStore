@@ -71,20 +71,38 @@ impl ObjectStore for MatrixObjectHttpStore {
     }
 
     async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
-        let response: ListObjectResponse =
-            matrixobject_post(&self.addr, "/v1/object/list", &ListObjectRequest { prefix })?;
-        Ok(response.keys)
+        match self.rpc_request(RPC_LIST, prefix, &[]) {
+            Ok(response) if response.is_empty() => Ok(Vec::new()),
+            Ok(response) => Ok(String::from_utf8_lossy(&response)
+                .split('\n')
+                .filter(|key| !key.is_empty())
+                .map(|key| key.to_string())
+                .collect()),
+            Err(_) => {
+                let response: ListObjectResponse = matrixobject_post(
+                    &self.addr,
+                    "/v1/object/list",
+                    &ListObjectRequest { prefix },
+                )?;
+                Ok(response.keys)
+            }
+        }
     }
 
     async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
-        let response: OkResponse =
-            matrixobject_post(&self.addr, "/v1/object/delete", &KeyRequest { key })?;
-        if !response.ok {
-            return Err(ObjectStoreError::Http(
-                "matrixobject delete failed".to_string(),
-            ));
+        match self.rpc_request(RPC_DELETE, key, &[]) {
+            Ok(_) => Ok(()),
+            Err(_) => {
+                let response: OkResponse =
+                    matrixobject_post(&self.addr, "/v1/object/delete", &KeyRequest { key })?;
+                if !response.ok {
+                    return Err(ObjectStoreError::Http(
+                        "matrixobject delete failed".to_string(),
+                    ));
+                }
+                Ok(())
+            }
         }
-        Ok(())
     }
 
     fn uri(&self, key: &str) -> String {
@@ -115,6 +133,8 @@ struct ListObjectResponse {
 const RPC_MAGIC: &[u8; 5] = b"MORP1";
 const RPC_PUT: u8 = 1;
 const RPC_GET: u8 = 2;
+const RPC_DELETE: u8 = 3;
+const RPC_LIST: u8 = 4;
 const RPC_STATUS_OK: u8 = 0;
 const RPC_STATUS_NOT_FOUND: u8 = 1;
 const RPC_STATUS_ERROR: u8 = 2;
