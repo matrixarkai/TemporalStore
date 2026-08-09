@@ -49,6 +49,22 @@ impl Default for Config {
     }
 }
 
+impl Config {
+    /// Truthy check for an `extend_config` gate flag.
+    pub fn flag(&self, name: &str) -> bool {
+        self.extend_config
+            .get(name)
+            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes" | "enabled"))
+            .unwrap_or(false)
+    }
+
+    /// Gate for the Control State rollup ladder (O(levels) sum-family window aggregates).
+    /// Off by default so the live scan path is unchanged.
+    pub fn control_rollup_enabled(&self) -> bool {
+        self.flag("control_rollup")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LoadShardRequest {
     pub shard_id: ShardId,

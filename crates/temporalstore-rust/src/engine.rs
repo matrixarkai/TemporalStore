@@ -39,6 +39,7 @@ mod compaction;
 mod storage_reporting;
 mod hashing;
 mod bucket_store;
+mod control_rollup;
 mod state;
 
 // shared-corpus: storage_bucket_first_physical_index storage_object_manager_bucketstore_runtime_authority storage_model_layout_compaction_policies storage_merged_dump_load_lifecycle storage_object_manager_cold_hot_reload storage_page_address_disk_cache_shared_store_fallback
@@ -297,6 +298,7 @@ impl TemporalEngine {
             &self.page_store,
             config.feature_max_size,
             config.async_storage,
+            config.control_rollup_enabled(),
             request.shard_id,
             start_routing_bucket,
             end_routing_bucket,
@@ -1351,7 +1353,10 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.ips.remove(key).is_some();
     removed |= shard.ips_meta.remove(key).is_some();
     removed |= shard.ips_request_ids.remove(key).is_some();
-    removed |= shard.control_state.remove(key).is_some();
+    if shard.control_state.remove(key).is_some() {
+        removed = true;
+        control_rollup::forget(shard, key);
+    }
     removed |= shard.control_state_pages.remove(key).is_some();
     removed |= shard.control_state_changes.remove(key).is_some();
     removed |= shard.control_state_fol.remove(key).is_some();

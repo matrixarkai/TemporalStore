@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::block_store::BlockAddress;
 use crate::types::{CommandResponse, FeaturePoint, ControlStateFolType, ShardId};
 
+use super::control_rollup::RollupEntry;
+
 /// In-memory, coalesced summary-dirty entry.
 ///
 /// One entry per dirty object key (`ctx:dirty:{tenant}:{node}`). Repeated
@@ -50,6 +52,12 @@ pub(super) struct ShardState {
     // it is rebuilt via command replay and never blocks recovery.
     #[serde(default)]
     pub(super) control_state_uuid: HashMap<String, u64>,
+    // Derived, in-memory rollup ladder over `control_state` for O(levels) sum-family
+    // window aggregates (frequency caps / long-window counts). Serde-skipped: rebuilt
+    // lazily from the authoritative counter series and never blocks recovery. Gated by
+    // Config.control_rollup_enabled(); empty and inert when the gate is off.
+    #[serde(skip)]
+    pub(super) control_state_rollups: HashMap<String, RollupEntry>,
     #[serde(default)]
     pub(super) context_nodes: HashMap<String, BlockAddress>,
     #[serde(default)]
