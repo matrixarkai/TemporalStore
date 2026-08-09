@@ -307,19 +307,28 @@ fn run_one_sequence(seed: u64, maintenance: bool) -> Result<(), String> {
 
     let before = read_snapshot(&engine);
     engine.unload_shard(1);
-    let reloaded =
-        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-b"), &pages, &indexes);
-    reloaded.load_shard(1);
-    let after = read_snapshot(&reloaded);
 
-    if before != after {
-        let diff = before
-            .iter()
-            .zip(after.iter())
-            .filter(|(b, a)| b != a)
-            .map(|(b, a)| format!("\n  before: {b}\n  after:  {a}"))
-            .collect::<String>();
-        return Err(format!("reload fidelity mismatch:{diff}"));
+    // Two reload cycles: reload-on-load runs reconcile, which may itself persist a rebuilt index.
+    // A single reload can hide a bug where reconstruction PERSISTS a subtly-wrong index that only a
+    // SECOND reload then reads back wrong (accumulation / non-idempotent reconcile). Every reload's
+    // observable state must equal the pre-unload state.
+    let mut prior = before.clone();
+    for (cycle, cache) in ["cache-b", "cache-c"].into_iter().enumerate() {
+        let reloaded =
+            TemporalEngine::with_local_dirs(1 << 20, dir.path().join(cache), &pages, &indexes);
+        reloaded.load_shard(1);
+        let after = read_snapshot(&reloaded);
+        if prior != after {
+            let diff = prior
+                .iter()
+                .zip(after.iter())
+                .filter(|(b, a)| b != a)
+                .map(|(b, a)| format!("\n  before: {b}\n  after:  {a}"))
+                .collect::<String>();
+            return Err(format!("reload fidelity mismatch (cycle {cycle}):{diff}"));
+        }
+        reloaded.unload_shard(1);
+        prior = after;
     }
     Ok(())
 }
