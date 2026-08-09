@@ -1,26 +1,25 @@
-use bytes::Bytes;
-use matrixobject::{
-    ClientDesc, LocalMatrixObjectStore, MatrixObjectConfig, MatrixObjectError, OpenSegmentRequest,
-    QoSRequest, RawSegmentReadRequest, RawSegmentWriteRequest, SegmentId, WriteDurability,
-};
+use matrixobject::{MatrixObjectError, SegmentId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tokio::runtime::Runtime;
 
 #[derive(Clone)]
 struct ObjectService {
-    store: Arc<LocalMatrixObjectStore>,
-    index_path: PathBuf,
-    journal_path: PathBuf,
+    data_path: PathBuf,
     index: Arc<Mutex<BTreeMap<String, ObjectMeta>>>,
-    append_offset: Arc<Mutex<u64>>,
+    append: Arc<Mutex<AppendState>>,
     tenant_id: String,
     volume_id: String,
     append_segment_id: u64,
+}
+
+struct AppendState {
+    file: File,
+    next_offset: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,13 +28,6 @@ struct ObjectMeta {
     #[serde(default)]
     offset: u64,
     len: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
-enum ObjectIndexRecord {
-    Put { key: String, meta: ObjectMeta },
-    Delete { key: String },
 }
 
 #[derive(Deserialize)]
@@ -83,6 +75,11 @@ struct HttpRequest {
     body: Vec<u8>,
 }
 
+const LOG_MAGIC: &[u8; 5] = b"MOBJ1";
+const LOG_PUT: u8 = 1;
+const LOG_DELETE: u8 = 2;
+const LOG_HEADER_LEN: usize = 18;
+
 fn main() {
     let bind_addr =
         std::env::var("MATRIXOBJECT_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:18080".to_string());
@@ -95,28 +92,27 @@ fn main() {
         std::env::var("MATRIXOBJECT_VOLUME_ID").unwrap_or_else(|_| "shared-store".to_string());
 
     std::fs::create_dir_all(&root).expect("failed to create MATRIXOBJECT_ROOT");
-    let runtime = Arc::new(Runtime::new().expect("tokio runtime should start"));
-    let store = runtime
-        .block_on(LocalMatrixObjectStore::open(MatrixObjectConfig::new(
-            root.join("data"),
-        )))
-        .expect("matrixobject store should open");
-    let index_path = root.join("object-index.json");
-    let journal_path = root.join("object-index.journal.jsonl");
-    let index = load_index(&index_path, &journal_path).expect("object index should load");
+    let data_path = root.join("object-data.log");
     let append_segment_id = fnv1a64(b"matrixobject-object-append-v1");
-    let append_offset = index
-        .values()
-        .filter(|meta| meta.segment_id == append_segment_id)
-        .map(|meta| meta.offset.saturating_add(meta.len))
-        .max()
-        .unwrap_or_default();
+    let index = load_index_from_log(&data_path, append_segment_id).expect("object index should load");
+    let data_file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&data_path)
+        .expect("object data log should open");
+    let file_offset = data_file
+        .metadata()
+        .expect("object data log metadata should load")
+        .len();
+    let append_offset = file_offset;
     let service = ObjectService {
-        store: Arc::new(store),
-        index_path,
-        journal_path,
+        data_path,
         index: Arc::new(Mutex::new(index)),
-        append_offset: Arc::new(Mutex::new(append_offset)),
+        append: Arc::new(Mutex::new(AppendState {
+            file: data_file,
+            next_offset: append_offset,
+        })),
         tenant_id,
         volume_id,
         append_segment_id,
@@ -127,20 +123,14 @@ fn main() {
     for stream in listener.incoming() {
         let stream = stream.expect("failed to accept connection");
         let service = service.clone();
-        let runtime = Arc::clone(&runtime);
         let addr = bind_addr.clone();
         std::thread::spawn(move || {
-            let _ = handle_stream(stream, service, runtime, addr);
+            let _ = handle_stream(stream, service, addr);
         });
     }
 }
 
-fn handle_stream(
-    mut stream: TcpStream,
-    service: ObjectService,
-    runtime: Arc<Runtime>,
-    addr: String,
-) -> std::io::Result<()> {
+fn handle_stream(mut stream: TcpStream, service: ObjectService, addr: String) -> std::io::Result<()> {
     let request = match read_request(&mut stream).and_then(parse_request) {
         Ok(request) => request,
         Err(err) => {
@@ -148,7 +138,7 @@ fn handle_stream(
             return Ok(());
         }
     };
-    let (status, body) = match route(request, service, runtime, addr) {
+    let (status, body) = match route(request, service, addr) {
         Ok(body) => (200, body),
         Err(MatrixObjectError::SegmentNotFound(_)) => {
             (404, r#"{"error":"object not found"}"#.as_bytes().to_vec())
@@ -161,7 +151,6 @@ fn handle_stream(
 fn route(
     request: HttpRequest,
     service: ObjectService,
-    runtime: Arc<Runtime>,
     addr: String,
 ) -> matrixobject::Result<Vec<u8>> {
     match (request.method.as_str(), request.path.as_str()) {
@@ -170,14 +159,23 @@ fn route(
             keys: service.index.lock().expect("object index poisoned").len(),
             addr,
         }),
+        ("POST", "/v1/object/put_raw") => {
+            let req = parse_raw_put(&request.body)?;
+            service.put(req)?;
+            json(&OkResponse { ok: true })
+        }
         ("POST", "/v1/object/put") => {
             let req: PutObjectRequest = serde_json::from_slice(&request.body)?;
-            runtime.block_on(service.put(req))?;
+            service.put(req)?;
             json(&OkResponse { ok: true })
+        }
+        ("POST", "/v1/object/get_raw") => {
+            let key = parse_raw_key(&request.body)?;
+            service.get(key)
         }
         ("POST", "/v1/object/get") => {
             let req: KeyRequest = serde_json::from_slice(&request.body)?;
-            let bytes = runtime.block_on(service.get(req.key))?;
+            let bytes = service.get(req.key)?;
             json(&GetObjectResponse { bytes })
         }
         ("POST", "/v1/object/list") => {
@@ -187,7 +185,7 @@ fn route(
         }
         ("POST", "/v1/object/delete") => {
             let req: KeyRequest = serde_json::from_slice(&request.body)?;
-            runtime.block_on(service.delete(req.key))?;
+            service.delete(req.key)?;
             json(&OkResponse { ok: true })
         }
         _ => Ok(r#"{"error":"not found"}"#.as_bytes().to_vec()),
@@ -195,36 +193,17 @@ fn route(
 }
 
 impl ObjectService {
-    async fn put(&self, req: PutObjectRequest) -> matrixobject::Result<()> {
+    fn put(&self, req: PutObjectRequest) -> matrixobject::Result<()> {
         validate_key(&req.key)?;
         let segment_id = self.append_segment_id;
         let offset = {
-            let mut append_offset = self.append_offset.lock().expect("append offset poisoned");
-            let offset = *append_offset;
-            *append_offset = append_offset.saturating_add(req.bytes.len() as u64);
+            let mut append = self.append.lock().expect("append state poisoned");
+            let next_offset = append.next_offset;
+            let offset = append_put_record(&mut append.file, next_offset, &req.key, &req.bytes)?;
+            append.file.sync_data()?;
+            append.next_offset = append.file.stream_position()?;
             offset
         };
-        let segment = SegmentId::new(&self.tenant_id, &self.volume_id, segment_id);
-        self.store
-            .open_segment(OpenSegmentRequest {
-                segment_id: segment.clone(),
-                expected_open_version: None,
-                create_if_missing: true,
-                client: ClientDesc::default(),
-            })
-            .await?;
-        self.store
-            .raw_write(RawSegmentWriteRequest {
-                segment_id: segment,
-                offset,
-                data: Bytes::from(req.bytes.clone()),
-                durability: WriteDurability::SyncAll,
-                sequence_id: now_micros(),
-                open_version: None,
-                client: ClientDesc::default(),
-                qos: QoSRequest::default(),
-            })
-            .await?;
         {
             let mut index = self.index.lock().expect("object index poisoned");
             let key = req.key;
@@ -234,12 +213,11 @@ impl ObjectService {
                 len: req.bytes.len() as u64,
             };
             index.insert(key.clone(), meta.clone());
-            append_index_record(&self.journal_path, &ObjectIndexRecord::Put { key, meta })?;
         }
         Ok(())
     }
 
-    async fn get(&self, key: String) -> matrixobject::Result<Vec<u8>> {
+    fn get(&self, key: String) -> matrixobject::Result<Vec<u8>> {
         validate_key(&key)?;
         let meta = self
             .index
@@ -248,19 +226,11 @@ impl ObjectService {
             .get(&key)
             .cloned()
             .ok_or_else(|| MatrixObjectError::SegmentNotFound(self.segment_id_for_key(&key)))?;
-        let response = self
-            .store
-            .raw_read(RawSegmentReadRequest {
-                segment_id: SegmentId::new(&self.tenant_id, &self.volume_id, meta.segment_id),
-                offset: meta.offset,
-                length: meta.len,
-                sequence_id: now_micros(),
-                open_version: None,
-                client: ClientDesc::default(),
-                qos: QoSRequest::default(),
-            })
-            .await?;
-        Ok(response.data.to_vec())
+        let mut file = File::open(&self.data_path)?;
+        file.seek(SeekFrom::Start(meta.offset))?;
+        let mut bytes = vec![0; meta.len as usize];
+        file.read_exact(&mut bytes)?;
+        Ok(bytes)
     }
 
     fn list(&self, prefix: &str) -> Vec<String> {
@@ -276,7 +246,7 @@ impl ObjectService {
         keys
     }
 
-    async fn delete(&self, key: String) -> matrixobject::Result<()> {
+    fn delete(&self, key: String) -> matrixobject::Result<()> {
         validate_key(&key)?;
         let meta = self
             .index
@@ -284,25 +254,13 @@ impl ObjectService {
             .expect("object index poisoned")
             .remove(&key);
         if meta.is_some() {
-            let index = self.index.lock().expect("object index poisoned");
-            append_index_record(&self.journal_path, &ObjectIndexRecord::Delete { key })?;
-            if self.should_compact_index(&index) {
-                save_index(&self.index_path, &index)?;
-                reset_index_journal(&self.journal_path)?;
-            }
+            let mut append = self.append.lock().expect("append state poisoned");
+            let next_offset = append.next_offset;
+            append_delete_record(&mut append.file, next_offset, &key)?;
+            append.file.sync_data()?;
+            append.next_offset = append.file.stream_position()?;
         }
         Ok(())
-    }
-
-    fn should_compact_index(&self, index: &BTreeMap<String, ObjectMeta>) -> bool {
-        let Ok(journal) = std::fs::metadata(&self.journal_path) else {
-            return false;
-        };
-        let snapshot_size = std::fs::metadata(&self.index_path)
-            .map(|meta| meta.len())
-            .unwrap_or_default();
-        journal.len() > 8 * 1024 * 1024
-            || (index.is_empty() && journal.len() > snapshot_size.saturating_mul(4).max(1))
     }
 
     fn segment_id_for_key(&self, key: &str) -> SegmentId {
@@ -319,64 +277,109 @@ fn validate_key(key: &str) -> matrixobject::Result<()> {
     Ok(())
 }
 
-fn load_index(
+fn parse_raw_put(body: &[u8]) -> matrixobject::Result<PutObjectRequest> {
+    if body.len() < 4 {
+        return Err(MatrixObjectError::SharedStore(
+            "raw put body missing key length".to_string(),
+        ));
+    }
+    let key_len = u32::from_le_bytes(body[..4].try_into().unwrap()) as usize;
+    if body.len() < 4 + key_len {
+        return Err(MatrixObjectError::SharedStore(
+            "raw put body truncated key".to_string(),
+        ));
+    }
+    let key = std::str::from_utf8(&body[4..4 + key_len])
+        .map_err(|err| MatrixObjectError::SharedStore(err.to_string()))?
+        .to_string();
+    Ok(PutObjectRequest {
+        key,
+        bytes: body[4 + key_len..].to_vec(),
+    })
+}
+
+fn parse_raw_key(body: &[u8]) -> matrixobject::Result<String> {
+    std::str::from_utf8(body)
+        .map(|key| key.to_string())
+        .map_err(|err| MatrixObjectError::SharedStore(err.to_string()))
+}
+
+fn load_index_from_log(
     path: &PathBuf,
-    journal_path: &PathBuf,
+    append_segment_id: u64,
 ) -> std::io::Result<BTreeMap<String, ObjectMeta>> {
-    let mut index = if path.exists() {
-        let bytes = std::fs::read(path)?;
-        serde_json::from_slice(&bytes).unwrap_or_default()
-    } else {
-        BTreeMap::new()
+    let mut index = BTreeMap::new();
+    let Ok(mut file) = File::open(path) else {
+        return Ok(index);
     };
-    if journal_path.exists() {
-        let bytes = std::fs::read(journal_path)?;
-        for line in bytes.split(|byte| *byte == b'\n') {
-            if line.is_empty() {
-                continue;
-            }
-            match serde_json::from_slice::<ObjectIndexRecord>(line) {
-                Ok(ObjectIndexRecord::Put { key, meta }) => {
-                    index.insert(key, meta);
+    loop {
+        let record_start = file.stream_position()?;
+        let mut header = [0; LOG_HEADER_LEN];
+        match file.read_exact(&mut header) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(err) => return Err(err),
+        }
+        if &header[..LOG_MAGIC.len()] != LOG_MAGIC {
+            break;
+        }
+        let op = header[5];
+        let key_len = u32::from_le_bytes(header[6..10].try_into().unwrap()) as usize;
+        let value_len = u64::from_le_bytes(header[10..18].try_into().unwrap()) as usize;
+        let mut key_bytes = vec![0; key_len];
+        if file.read_exact(&mut key_bytes).is_err() {
+            break;
+        }
+        let key = String::from_utf8_lossy(&key_bytes).to_string();
+        let value_offset = record_start + LOG_HEADER_LEN as u64 + key_len as u64;
+        match op {
+            LOG_PUT => {
+                if file.seek(SeekFrom::Current(value_len as i64)).is_err() {
+                    break;
                 }
-                Ok(ObjectIndexRecord::Delete { key }) => {
-                    index.remove(&key);
-                }
-                Err(_) => {}
+                index.insert(
+                    key,
+                    ObjectMeta {
+                        segment_id: append_segment_id,
+                        offset: value_offset,
+                        len: value_len as u64,
+                    },
+                );
             }
+            LOG_DELETE => {
+                index.remove(&key);
+            }
+            _ => break,
         }
     }
     Ok(index)
 }
 
-fn save_index(path: &PathBuf, index: &BTreeMap<String, ObjectMeta>) -> std::io::Result<()> {
-    let temp = path.with_extension("json.tmp");
-    let bytes = serde_json::to_vec_pretty(index).map_err(std::io::Error::other)?;
-    std::fs::write(&temp, bytes)?;
-    std::fs::rename(temp, path)?;
-    Ok(())
+fn append_put_record(file: &mut File, offset: u64, key: &str, bytes: &[u8]) -> std::io::Result<u64> {
+    file.seek(SeekFrom::Start(offset))?;
+    write_log_header(file, LOG_PUT, key.len() as u32, bytes.len() as u64)?;
+    file.write_all(key.as_bytes())?;
+    let value_offset = offset + LOG_HEADER_LEN as u64 + key.len() as u64;
+    file.write_all(bytes)?;
+    Ok(value_offset)
 }
 
-fn append_index_record(path: &PathBuf, record: &ObjectIndexRecord) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    serde_json::to_writer(&mut file, record).map_err(std::io::Error::other)?;
-    file.write_all(b"\n")?;
-    file.sync_data()?;
-    Ok(())
+fn append_delete_record(file: &mut File, offset: u64, key: &str) -> std::io::Result<()> {
+    file.seek(SeekFrom::Start(offset))?;
+    write_log_header(file, LOG_DELETE, key.len() as u32, 0)?;
+    file.write_all(key.as_bytes())
 }
 
-fn reset_index_journal(path: &PathBuf) -> std::io::Result<()> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err),
-    }
+fn write_log_header(
+    file: &mut File,
+    op: u8,
+    key_len: u32,
+    value_len: u64,
+) -> std::io::Result<()> {
+    file.write_all(LOG_MAGIC)?;
+    file.write_all(&[op])?;
+    file.write_all(&key_len.to_le_bytes())?;
+    file.write_all(&value_len.to_le_bytes())
 }
 
 fn fnv1a64(bytes: &[u8]) -> u64 {
@@ -386,13 +389,6 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     hash
-}
-
-fn now_micros() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_micros() as u64
 }
 
 fn json<T: Serialize>(value: &T) -> matrixobject::Result<Vec<u8>> {

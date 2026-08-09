@@ -1,8 +1,11 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::HashSet;
+use std::io::{Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 
@@ -14,6 +17,10 @@ pub enum ObjectStoreError {
     InvalidKey(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("http error: {0}")]
+    Http(String),
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 #[async_trait]
@@ -23,6 +30,169 @@ pub trait ObjectStore: Send + Sync {
     async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError>;
     async fn delete(&self, key: &str) -> Result<(), ObjectStoreError>;
     fn uri(&self, key: &str) -> String;
+}
+
+#[derive(Debug, Clone)]
+pub struct MatrixObjectHttpStore {
+    addr: String,
+    uri: String,
+}
+
+impl MatrixObjectHttpStore {
+    pub fn new(uri: &str) -> Result<Self, ObjectStoreError> {
+        let uri = uri.trim();
+        let addr = uri
+            .strip_prefix("matrixobject://")
+            .ok_or_else(|| ObjectStoreError::InvalidKey(uri.to_string()))?
+            .trim_end_matches('/')
+            .to_string();
+        if addr.is_empty() {
+            return Err(ObjectStoreError::InvalidKey(uri.to_string()));
+        }
+        Ok(Self {
+            addr,
+            uri: uri.trim_end_matches('/').to_string(),
+        })
+    }
+}
+
+#[async_trait]
+impl ObjectStore for MatrixObjectHttpStore {
+    async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
+        let mut body = Vec::with_capacity(4 + key.len() + bytes.len());
+        body.extend_from_slice(&(key.len() as u32).to_le_bytes());
+        body.extend_from_slice(key.as_bytes());
+        body.extend_from_slice(bytes.as_ref());
+        let response: OkResponse = serde_json::from_slice(&http_post(
+            &self.addr,
+            "/v1/object/put_raw",
+            &body,
+            "application/octet-stream",
+        )?)?;
+        if !response.ok {
+            return Err(ObjectStoreError::Http(
+                "matrixobject put failed".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
+        let response = http_post(
+            &self.addr,
+            "/v1/object/get_raw",
+            key.as_bytes(),
+            "application/octet-stream",
+        )?;
+        Ok(Bytes::from(response))
+    }
+
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
+        let response: ListObjectResponse =
+            matrixobject_post(&self.addr, "/v1/object/list", &ListObjectRequest { prefix })?;
+        Ok(response.keys)
+    }
+
+    async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
+        let response: OkResponse =
+            matrixobject_post(&self.addr, "/v1/object/delete", &KeyRequest { key })?;
+        if !response.ok {
+            return Err(ObjectStoreError::Http(
+                "matrixobject delete failed".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn uri(&self, key: &str) -> String {
+        format!("{}/{}", self.uri, key)
+    }
+}
+
+#[derive(serde::Serialize)]
+struct PutObjectRequest<'a> {
+    key: &'a str,
+    bytes: &'a [u8],
+}
+
+#[derive(serde::Serialize)]
+struct KeyRequest<'a> {
+    key: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct ListObjectRequest<'a> {
+    prefix: &'a str,
+}
+
+#[derive(serde::Deserialize)]
+struct OkResponse {
+    ok: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct ListObjectResponse {
+    keys: Vec<String>,
+}
+
+fn matrixobject_post<Req, Res>(
+    addr: &str,
+    path: &str,
+    request: &Req,
+) -> Result<Res, ObjectStoreError>
+where
+    Req: serde::Serialize,
+    Res: serde::de::DeserializeOwned,
+{
+    let body = serde_json::to_vec(request)?;
+    let raw = http_post(addr, path, &body, "application/json")?;
+    let response = serde_json::from_slice(&raw)?;
+    Ok(response)
+}
+
+fn http_post(
+    addr: &str,
+    path: &str,
+    body: &[u8],
+    content_type: &str,
+) -> Result<Vec<u8>, ObjectStoreError> {
+    let socket_addr = addr
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| ObjectStoreError::Http(format!("cannot resolve {addr}")))?;
+    let mut stream = TcpStream::connect_timeout(&socket_addr, Duration::from_millis(500))?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+    write!(
+        stream,
+        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )?;
+    stream.write_all(body)?;
+    stream.flush()?;
+
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response)?;
+    let marker = b"\r\n\r\n";
+    let header_end = response
+        .windows(marker.len())
+        .position(|window| window == marker)
+        .ok_or_else(|| ObjectStoreError::Http("missing response headers".to_string()))?;
+    let headers = String::from_utf8_lossy(&response[..header_end]);
+    let status_ok = headers
+        .lines()
+        .next()
+        .is_some_and(|line| line.contains(" 200 "));
+    let body_start = header_end + marker.len();
+    let response_body = response[body_start..].to_vec();
+    if !status_ok {
+        let text = String::from_utf8_lossy(&response_body);
+        if text.contains("not found") {
+            return Err(ObjectStoreError::NotFound(path.to_string()));
+        }
+        return Err(ObjectStoreError::Http(text.to_string()));
+    }
+    Ok(response_body)
 }
 
 #[derive(Debug, Clone)]
