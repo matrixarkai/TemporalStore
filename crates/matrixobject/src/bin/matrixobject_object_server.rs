@@ -9,9 +9,10 @@ use std::sync::{Arc, Condvar, Mutex};
 
 #[derive(Clone)]
 struct ObjectService {
+    data_path: PathBuf,
     index: Arc<Mutex<BTreeMap<String, ObjectMeta>>>,
     append: Arc<AppendLog>,
-    read_file: Arc<Mutex<File>>,
+    read_files: Arc<Mutex<Vec<File>>>,
     tenant_id: String,
     volume_id: String,
     append_segment_id: u64,
@@ -97,6 +98,7 @@ const RPC_STATUS_NOT_FOUND: u8 = 1;
 const RPC_STATUS_ERROR: u8 = 2;
 const RPC_REQUEST_HEADER_LEN: usize = 18;
 const RPC_RESPONSE_HEADER_LEN: usize = 14;
+const READ_FILE_POOL_MAX_IDLE: usize = 64;
 
 fn main() {
     let bind_addr =
@@ -130,6 +132,7 @@ fn main() {
         .len();
     let append_offset = file_offset;
     let service = ObjectService {
+        data_path,
         index: Arc::new(Mutex::new(index)),
         append: Arc::new(AppendLog {
             state: Mutex::new(AppendState {
@@ -140,7 +143,7 @@ fn main() {
             }),
             durable: Condvar::new(),
         }),
-        read_file: Arc::new(Mutex::new(read_file)),
+        read_files: Arc::new(Mutex::new(vec![read_file])),
         tenant_id,
         volume_id,
         append_segment_id,
@@ -316,11 +319,15 @@ impl ObjectService {
             .get(&key)
             .cloned()
             .ok_or_else(|| MatrixObjectError::SegmentNotFound(self.segment_id_for_key(&key)))?;
-        let mut file = self.read_file.lock().expect("object read file poisoned");
-        file.seek(SeekFrom::Start(meta.offset))?;
-        let mut bytes = vec![0; meta.len as usize];
-        file.read_exact(&mut bytes)?;
-        Ok(bytes)
+        let mut file = self.take_read_file()?;
+        let result: std::io::Result<Vec<u8>> = (|| {
+            file.seek(SeekFrom::Start(meta.offset))?;
+            let mut bytes = vec![0; meta.len as usize];
+            file.read_exact(&mut bytes)?;
+            Ok(bytes)
+        })();
+        self.return_read_file(file);
+        Ok(result?)
     }
 
     fn list(&self, prefix: &str) -> Vec<String> {
@@ -358,6 +365,28 @@ impl ObjectService {
 
     fn segment_id_for_key(&self, key: &str) -> SegmentId {
         SegmentId::new(&self.tenant_id, &self.volume_id, fnv1a64(key.as_bytes()))
+    }
+
+    fn take_read_file(&self) -> std::io::Result<File> {
+        if let Some(file) = self
+            .read_files
+            .lock()
+            .expect("object read file pool poisoned")
+            .pop()
+        {
+            return Ok(file);
+        }
+        File::open(&self.data_path)
+    }
+
+    fn return_read_file(&self, file: File) {
+        let mut read_files = self
+            .read_files
+            .lock()
+            .expect("object read file pool poisoned");
+        if read_files.len() < READ_FILE_POOL_MAX_IDLE {
+            read_files.push(file);
+        }
     }
 }
 
