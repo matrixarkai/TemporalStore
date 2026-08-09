@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+async-trait = "0.1"
 bytes = "1"
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }

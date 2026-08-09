@@ -28,6 +28,14 @@ pub trait ObjectStore: Send + Sync {
     async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError>;
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError>;
     async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError>;
+    async fn list_after(&self, prefix: &str, after: &str) -> Result<Vec<String>, ObjectStoreError> {
+        Ok(self
+            .list(prefix)
+            .await?
+            .into_iter()
+            .filter(|key| key.as_str() > after)
+            .collect())
+    }
     async fn delete(&self, key: &str) -> Result<(), ObjectStoreError>;
     fn uri(&self, key: &str) -> String;
 }
@@ -72,12 +80,7 @@ impl ObjectStore for MatrixObjectHttpStore {
 
     async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
         match self.rpc_request(RPC_LIST, prefix, &[]) {
-            Ok(response) if response.is_empty() => Ok(Vec::new()),
-            Ok(response) => Ok(String::from_utf8_lossy(&response)
-                .split('\n')
-                .filter(|key| !key.is_empty())
-                .map(|key| key.to_string())
-                .collect()),
+            Ok(response) => Ok(parse_rpc_list_response(&response)),
             Err(_) => {
                 let response: ListObjectResponse = matrixobject_post(
                     &self.addr,
@@ -85,6 +88,24 @@ impl ObjectStore for MatrixObjectHttpStore {
                     &ListObjectRequest { prefix },
                 )?;
                 Ok(response.keys)
+            }
+        }
+    }
+
+    async fn list_after(&self, prefix: &str, after: &str) -> Result<Vec<String>, ObjectStoreError> {
+        match self.rpc_request(RPC_LIST_AFTER, prefix, after.as_bytes()) {
+            Ok(response) => Ok(parse_rpc_list_response(&response)),
+            Err(_) => {
+                let response: ListObjectResponse = matrixobject_post(
+                    &self.addr,
+                    "/v1/object/list",
+                    &ListObjectRequest { prefix },
+                )?;
+                Ok(response
+                    .keys
+                    .into_iter()
+                    .filter(|key| key.as_str() > after)
+                    .collect())
             }
         }
     }
@@ -135,6 +156,7 @@ const RPC_PUT: u8 = 1;
 const RPC_GET: u8 = 2;
 const RPC_DELETE: u8 = 3;
 const RPC_LIST: u8 = 4;
+const RPC_LIST_AFTER: u8 = 5;
 const RPC_STATUS_OK: u8 = 0;
 const RPC_STATUS_NOT_FOUND: u8 = 1;
 const RPC_STATUS_ERROR: u8 = 2;
@@ -194,6 +216,17 @@ fn rpc_request_on_stream(
 ) -> Result<Vec<u8>, ObjectStoreError> {
     write_rpc_request(stream, op, key.as_bytes(), value)?;
     read_rpc_response(stream)
+}
+
+fn parse_rpc_list_response(response: &[u8]) -> Vec<String> {
+    if response.is_empty() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(response)
+        .split('\n')
+        .filter(|key| !key.is_empty())
+        .map(|key| key.to_string())
+        .collect()
 }
 
 fn connect_rpc(addr: &str) -> Result<TcpStream, ObjectStoreError> {

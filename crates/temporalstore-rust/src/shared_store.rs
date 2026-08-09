@@ -381,7 +381,7 @@ where
         after_oplog_index: u64,
         engine: &TemporalEngine,
     ) -> Result<ReplayReport, SharedStoreReplicationError> {
-        let mut keys = self.object_store.list(&self.oplog_prefix(shard_id)).await?;
+        let mut keys = self.list_oplog_after(shard_id, after_oplog_index).await?;
         keys.sort();
 
         let mut report = ReplayReport {
@@ -418,7 +418,7 @@ where
         after_oplog_index: u64,
         engine: &TemporalEngine,
     ) -> Result<ReplayReport, SharedStoreReplicationError> {
-        let mut keys = self.object_store.list(&self.oplog_prefix(shard_id)).await?;
+        let mut keys = self.list_oplog_after(shard_id, after_oplog_index).await?;
         keys.sort();
 
         let mut expected = after_oplog_index + 1;
@@ -587,6 +587,20 @@ where
 
     fn replay_cursor_key(&self, shard_id: ShardId) -> String {
         format!("{}replay_cursor.json", self.shard_prefix(shard_id))
+    }
+
+    async fn list_oplog_after(
+        &self,
+        shard_id: ShardId,
+        after_oplog_index: u64,
+    ) -> Result<Vec<String>, SharedStoreReplicationError> {
+        let prefix = self.oplog_prefix(shard_id);
+        let after = if after_oplog_index == 0 {
+            prefix.clone()
+        } else {
+            self.oplog_key(shard_id, after_oplog_index)
+        };
+        Ok(self.object_store.list_after(&prefix, &after).await?)
     }
 
     fn checkpoints_prefix(&self, shard_id: ShardId) -> String {

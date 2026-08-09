@@ -91,6 +91,7 @@ const RPC_PUT: u8 = 1;
 const RPC_GET: u8 = 2;
 const RPC_DELETE: u8 = 3;
 const RPC_LIST: u8 = 4;
+const RPC_LIST_AFTER: u8 = 5;
 const RPC_STATUS_OK: u8 = 0;
 const RPC_STATUS_NOT_FOUND: u8 = 1;
 const RPC_STATUS_ERROR: u8 = 2;
@@ -223,6 +224,19 @@ fn handle_rpc_stream(stream: &mut TcpStream, service: ObjectService) -> std::io:
                 let keys = service.list(&key);
                 write_rpc_response(stream, RPC_STATUS_OK, keys.join("\n").as_bytes())?;
             }
+            RPC_LIST_AFTER => {
+                let mut after_bytes = vec![0; value_len as usize];
+                stream.read_exact(&mut after_bytes)?;
+                let after = match String::from_utf8(after_bytes) {
+                    Ok(after) => after,
+                    Err(err) => {
+                        write_rpc_response(stream, RPC_STATUS_ERROR, err.to_string().as_bytes())?;
+                        continue;
+                    }
+                };
+                let keys = service.list_after(&key, &after);
+                write_rpc_response(stream, RPC_STATUS_OK, keys.join("\n").as_bytes())?;
+            }
             _ => {
                 skip_rpc_value(stream, value_len)?;
                 write_rpc_response(stream, RPC_STATUS_ERROR, b"unknown rpc op")?;
@@ -310,16 +324,23 @@ impl ObjectService {
     }
 
     fn list(&self, prefix: &str) -> Vec<String> {
-        let mut keys = self
-            .index
-            .lock()
-            .expect("object index poisoned")
-            .keys()
-            .filter(|key| key.starts_with(prefix))
-            .cloned()
-            .collect::<Vec<_>>();
-        keys.sort();
-        keys
+        let index = self.index.lock().expect("object index poisoned");
+        index
+            .range(prefix.to_string()..)
+            .take_while(|(key, _)| key.starts_with(prefix))
+            .map(|(key, _)| key.clone())
+            .collect()
+    }
+
+    fn list_after(&self, prefix: &str, after: &str) -> Vec<String> {
+        let start = if after > prefix { after } else { prefix };
+        let index = self.index.lock().expect("object index poisoned");
+        index
+            .range(start.to_string()..)
+            .take_while(|(key, _)| key.starts_with(prefix))
+            .filter(|(key, _)| key.as_str() > after)
+            .map(|(key, _)| key.clone())
+            .collect()
     }
 
     fn delete(&self, key: String) -> matrixobject::Result<()> {

@@ -2,6 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use async_trait::async_trait;
+use bytes::Bytes;
 use serde::Serialize;
 use temporalstore_rust::control::{Config, SetConfigRequest};
 use temporalstore_rust::engine::TemporalEngine;
@@ -10,7 +12,9 @@ use temporalstore_rust::shared_store::{SharedStoreReplicator, SharedStoreStorage
 use temporalstore_rust::types::{
     Command, CommandResponse, ExecuteRequest, FeatureFilter, FeatureFilterOp, SequenceFeatureRow,
 };
-use temporalstore_snapshot::object_store::FileObjectStore;
+use temporalstore_snapshot::object_store::{
+    FileObjectStore, MatrixObjectHttpStore, ObjectStore, ObjectStoreError,
+};
 
 #[derive(Debug, Clone)]
 struct HarnessOptions {
@@ -28,6 +32,7 @@ struct HarnessOptions {
     shared_store_ops: usize,
     shared_store_flush_every: usize,
     shared_store_root: Option<PathBuf>,
+    shared_store_uri: Option<String>,
 }
 
 impl Default for HarnessOptions {
@@ -47,6 +52,7 @@ impl Default for HarnessOptions {
             shared_store_ops: 1_000,
             shared_store_flush_every: 25,
             shared_store_root: None,
+            shared_store_uri: None,
         }
     }
 }
@@ -328,6 +334,7 @@ fn parse_options() -> HarnessOptions {
             "--shared-store-ops" => options.shared_store_ops = parse(value, key),
             "--shared-store-flush-every" => options.shared_store_flush_every = parse(value, key),
             "--shared-store-root" => options.shared_store_root = Some(PathBuf::from(value)),
+            "--shared-store-uri" => options.shared_store_uri = Some(value.clone()),
             "--help" | "-h" => usage_and_exit(),
             other => {
                 eprintln!("unknown option: {other}");
@@ -365,6 +372,7 @@ fn usage_and_exit() -> ! {
     eprintln!("  --shared-store-ops <n> default 1000");
     eprintln!("  --shared-store-flush-every <n> default 25");
     eprintln!("  --shared-store-root <path> default temp dir");
+    eprintln!("  --shared-store-uri <matrixobject://host:port> remote object store");
     std::process::exit(2);
 }
 
@@ -394,8 +402,19 @@ fn run_shared_store_comparison(options: &HarnessOptions) -> SharedStoreCompariso
         let root = options.shared_store_root.clone().unwrap_or_else(|| {
             std::env::temp_dir().join(format!("temporalstore-shared-store-scale-{}", now_ms()))
         });
-        let store = Arc::new(FileObjectStore::new(root.join("objects")));
-        let replicator = SharedStoreReplicator::new("scale-harness", store);
+        let store = if let Some(uri) = &options.shared_store_uri {
+            ScaleObjectStore::MatrixObject(
+                MatrixObjectHttpStore::new(uri)
+                    .unwrap_or_else(|err| panic!("invalid --shared-store-uri {uri:?}: {err}")),
+            )
+        } else {
+            ScaleObjectStore::File(FileObjectStore::new(root.join("objects")))
+        };
+        let shared_store_name = options
+            .shared_store_uri
+            .clone()
+            .unwrap_or_else(|| root.display().to_string());
+        let replicator = SharedStoreReplicator::new("scale-harness", Arc::new(store));
 
         let sync = run_shared_store_mode(
             &replicator,
@@ -432,9 +451,60 @@ fn run_shared_store_comparison(options: &HarnessOptions) -> SharedStoreCompariso
             sync_max_lag: sync.max_lag,
             async_max_lag: async_report.max_lag,
             async_flush_every: options.shared_store_flush_every.max(1),
-            shared_store_root: root.display().to_string(),
+            shared_store_root: shared_store_name,
         }
     })
+}
+
+#[derive(Debug, Clone)]
+enum ScaleObjectStore {
+    File(FileObjectStore),
+    MatrixObject(MatrixObjectHttpStore),
+}
+
+#[async_trait]
+impl ObjectStore for ScaleObjectStore {
+    async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
+        match self {
+            Self::File(store) => store.put(key, bytes).await,
+            Self::MatrixObject(store) => store.put(key, bytes).await,
+        }
+    }
+
+    async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
+        match self {
+            Self::File(store) => store.get(key).await,
+            Self::MatrixObject(store) => store.get(key).await,
+        }
+    }
+
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
+        match self {
+            Self::File(store) => store.list(prefix).await,
+            Self::MatrixObject(store) => store.list(prefix).await,
+        }
+    }
+
+    async fn list_after(&self, prefix: &str, after: &str) -> Result<Vec<String>, ObjectStoreError> {
+        match self {
+            Self::File(store) => store.list_after(prefix, after).await,
+            Self::MatrixObject(store) => store.list_after(prefix, after).await,
+        }
+    }
+
+    async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
+        match self {
+            Self::File(store) => store.delete(key).await,
+            Self::MatrixObject(store) => store.delete(key).await,
+        }
+    }
+
+    fn uri(&self, key: &str) -> String {
+        match self {
+            Self::File(store) => store.uri(key),
+            Self::MatrixObject(store) => store.uri(key),
+        }
+    }
 }
 
 #[derive(Debug)]
