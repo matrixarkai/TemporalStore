@@ -67,7 +67,7 @@ fn adversarial_bounds(rng: &mut Rng) -> (u64, u64) {
 }
 
 fn gen_command(rng: &mut Rng) -> Command {
-    match rng.below(16) {
+    match rng.below(20) {
         0 => Command::StringSet {
             key: rng.model_key('s'),
             value: rng.small_bytes(),
@@ -155,6 +155,42 @@ fn gen_command(rng: &mut Rng) -> Command {
             }
         }
         14 => Command::CommonDelete { key: rng.any_key() },
+        15 => Command::SequenceAdd {
+            key: rng.model_key('q'),
+            rows: (0..1 + rng.below(3))
+                .map(|_| SequenceFeatureRow {
+                    timestamp_ms: rng.ts(),
+                    gid: rng.below(1000),
+                    action_type: rng.below(8) as u32,
+                    duration: rng.below(100) as u32,
+                    author_id: rng.below(1000),
+                })
+                .collect(),
+        },
+        16 => {
+            let (start_ms, end_ms) = adversarial_bounds(rng);
+            Command::FeatureReplace {
+                key: rng.model_key('f'),
+                start_ms,
+                end_ms,
+                points: (0..1 + rng.below(3))
+                    .map(|_| FeaturePoint {
+                        timestamp_ms: rng.ts(),
+                        value: rng.small_bytes(),
+                    })
+                    .collect(),
+            }
+        }
+        17 => Command::FeatureDelete {
+            key: rng.model_key('f'),
+        },
+        18 => Command::ControlStateChangeAdd {
+            key: rng.model_key('g'),
+            timestamp_ms: rng.ts(),
+            value: rng.small_bytes(),
+            precision_ms: None,
+            ttl_ms: None,
+        },
         // Large TTL only: sets the expiry path without firing during the test, so the reload
         // fidelity check stays time-independent (active expiry is covered by its own tests).
         _ => Command::CommonExpire {
@@ -206,12 +242,31 @@ fn read_snapshot(engine: &TemporalEngine) -> Vec<String> {
                 count: None,
             },
         );
+        probe(
+            &format!("q{n}"),
+            Command::SequenceQuery {
+                key: format!("q{n}"),
+                start_ms: 0,
+                end_ms: u64::MAX,
+                count: 1_000_000,
+                filters: Vec::new(),
+            },
+        );
+        probe(
+            &format!("g{n}"),
+            Command::ControlStateQuery {
+                key: format!("g{n}"),
+                start_ms: 0,
+                end_ms: u64::MAX,
+                aggregator: "change".to_string(),
+            },
+        );
     }
     drop(probe);
     snapshot
 }
 
-fn run_one_sequence(seed: u64) -> Result<(), String> {
+fn run_one_sequence(seed: u64, maintenance: bool) -> Result<(), String> {
     let dir = tempfile::tempdir().unwrap();
     let pages = dir.path().join("pages");
     let indexes = dir.path().join("indexes");
@@ -222,13 +277,32 @@ fn run_one_sequence(seed: u64) -> Result<(), String> {
     let mut rng = Rng::new(seed);
     let op_count = 20 + rng.below(50);
     for _ in 0..op_count {
-        let command = gen_command(&mut rng);
-        // A returned error status is fine (e.g. not-an-integer HINCRBY); a PANIC is not -- that is
-        // caught by catch_unwind in the caller and reported as a no-panic-invariant violation.
-        let _ = engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command,
-        });
+        // Maintenance ops (real dump/compaction work) are expensive, so they are OFF by default
+        // (fast suite run) and enabled for deep hunts via CONFORMANCE_MAINTENANCE=1.
+        match if maintenance { rng.below(12) } else { 2 + rng.below(10) } {
+            // Interleave storage-lifecycle maintenance so the fuzzer also exercises the dump /
+            // clear-dirty / reclaim / compaction paths against reload fidelity (the CP4 / watermark
+            // / dump-scheduling bug class) -- not only command execution.
+            0 => {
+                let _ = engine.apply_storage_lifecycle(StorageLifecycleRequest {
+                    shard_id: 1,
+                    purge_delayed_destroy: true,
+                    ..Default::default()
+                });
+            }
+            1 => {
+                let _ = engine.compact_shard_pages(1);
+            }
+            _ => {
+                let command = gen_command(&mut rng);
+                // A returned error status is fine (e.g. not-an-integer HINCRBY); a PANIC is not --
+                // caught by catch_unwind in the caller as a no-panic-invariant violation.
+                let _ = engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command,
+                });
+            }
+        }
     }
 
     let before = read_snapshot(&engine);
@@ -261,6 +335,9 @@ fn debug_minimize_seed() {
     let op_count = 20 + rng.below(50);
     let mut commands = Vec::new();
     for _ in 0..op_count {
+        // Mirror run_one_sequence's per-op branch selector (no-maintenance mode) so the rng stream
+        // -- and thus the replayed command sequence -- matches the harness exactly.
+        let _selector = 2 + rng.below(10);
         commands.push(gen_command(&mut rng));
     }
     for prefix_len in 1..=commands.len() {
@@ -303,10 +380,22 @@ fn conformance_random_sequences_never_panic_and_survive_reload() {
     // exists) does not spam stderr; catch_unwind still reports it with the reproducing seed.
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
-    let outcome = (0..128u64)
+    // Default 128 seeds in the suite; a deep hunt can widen without recompiling via
+    // CONFORMANCE_SEEDS / CONFORMANCE_START (e.g. CONFORMANCE_SEEDS=4000 cargo test ...).
+    let count = std::env::var("CONFORMANCE_SEEDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(64);
+    let start = std::env::var("CONFORMANCE_START")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let maintenance = std::env::var("CONFORMANCE_MAINTENANCE").is_ok();
+    let outcome = (start..start.saturating_add(count))
         .map(|seed| {
-            let result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_one_sequence(seed)));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_one_sequence(seed, maintenance)
+            }));
             match result {
                 Ok(Ok(())) => Ok(()),
                 Ok(Err(msg)) => Err(format!("seed {seed}: {msg}")),
