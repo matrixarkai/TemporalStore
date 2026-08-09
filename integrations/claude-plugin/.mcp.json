@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "matrixark": {
+      "command": "${user_config.matrixark_home}/tools/run_matrixark_mcp_server.sh",
+      "args": [],
+      "env": {
+        "MATRIXARK_MCP_SERVER": "${user_config.matrixark_home}/tools/matrixark_mcp_server.py",
+        "MATRIXARK_MCP_BACKEND": "temporalstore-rust"
+      }
+    }
+  }
+}

@@ -1,5 +1,11 @@
 # TemporalStore Agent Hooks
 
+> **Looking for the packaged plugins?** For the modern, one-command installs —
+> a **Claude Code marketplace plugin** and a **Codex `config.toml` (MCP + notify)**
+> integration — see [`../PLUGINS.md`](../PLUGINS.md), [`../claude-plugin/`](../claude-plugin/),
+> and [`../codex-plugin/`](../codex-plugin/). This `agent-hooks/` package is the earlier
+> settings.json-based installer for the same engine and remains supported.
+
 Cross-platform agent hook integration for MatrixArk context memory backed by
 TemporalStore. This package starts in-tree so the install flow, schemas, and
 smoke tests are versioned with TemporalStore. It is designed to be split into a

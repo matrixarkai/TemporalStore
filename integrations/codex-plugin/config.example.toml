@@ -1,0 +1,31 @@
+# MatrixArk / TemporalStore memory for the OpenAI Codex CLI.
+#
+# Merge these blocks into ~/.codex/config.toml (install-codex.sh does this for you and
+# substitutes __MATRIXARK_HOME__ with your TemporalStore checkout path).
+#
+# Two integration surfaces:
+#   1) [mcp_servers.matrixark] — explicit recall/remember memory tools (stdio MCP server).
+#   2) notify                  — automatic memory write after each completed turn.
+
+# --- 1) Explicit memory tools over MCP -------------------------------------------------
+[mcp_servers.matrixark]
+command = "__MATRIXARK_HOME__/tools/run_matrixark_mcp_server.sh"
+args = []
+env = { MATRIXARK_MCP_SERVER = "__MATRIXARK_HOME__/tools/matrixark_mcp_server.py", MATRIXARK_MCP_BACKEND = "temporalstore-rust" }
+startup_timeout_sec = 60
+tool_timeout_sec = 120
+enabled = true
+
+# --- 2) Automatic memory write on each completed turn ----------------------------------
+# Codex invokes `notify` with a single JSON argument (type=agent-turn-complete, thread-id,
+# turn-id, cwd, input-messages, last-assistant-message). The handler ingests the turn into
+# TemporalStore, fire-and-forget. `notify` is only honored in the user-level config.
+notify = ["bash", "__MATRIXARK_HOME__/integrations/codex-plugin/scripts/matrixark-codex-notify.sh"]
+
+# --- 3) (Optional, advanced) lifecycle hooks ------------------------------------------
+# Codex also supports lifecycle hooks when enabled. To wire context injection/ingest through
+# the dedicated Rust codex hook, enable hooks and point a command hook at
+# __MATRIXARK_HOME__/tools/run_rust_codex_context_hook.sh. See https://learn.chatgpt.com/docs
+# (Codex → hooks) for the current event list and schema.
+# [features]
+# hooks = true
