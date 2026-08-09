@@ -123,6 +123,43 @@ class Metrics:
 
 # ----------------------------- text extraction ------------------------------
 
+# Tool events carry real signal but are the bulk of local tokens, so we ingest them in a LEAN
+# form: tool_use -> "[tool:NAME] <key arg>"; tool_result -> head-truncated (pre-analysis, not the
+# full dump). Configurable via MATRIXARK_TOOL_LEAN_CHARS. This is what lets remote context return
+# tool information at a fraction of the local verbose size.
+_TOOL_LEAN_CHARS = int(os.environ.get("MATRIXARK_TOOL_LEAN_CHARS", "240"))
+_TOOL_ARG_KEYS = ("command", "file_path", "path", "pattern", "query", "url", "notebook_path", "description")
+
+
+def _lean_tool_block(block: dict) -> str:
+    t = block.get("type")
+    if t == "tool_use":
+        name = str(block.get("name") or "tool")
+        inp = block.get("input")
+        arg = ""
+        if isinstance(inp, dict):
+            for k in _TOOL_ARG_KEYS:
+                if inp.get(k):
+                    arg = str(inp[k])
+                    break
+            if not arg:
+                try:
+                    arg = json.dumps(inp, ensure_ascii=False)
+                except Exception:
+                    arg = str(inp)
+        arg = " ".join(str(arg).split())[:120]
+        return (f"[tool:{name}] {arg}").rstrip()
+    if t == "tool_result":
+        c = block.get("content")
+        if isinstance(c, list):
+            c = " ".join(b.get("text", "") for b in c if isinstance(b, dict) and isinstance(b.get("text"), str))
+        txt = " ".join(str(c or "").split())
+        if len(txt) > _TOOL_LEAN_CHARS:
+            txt = txt[:_TOOL_LEAN_CHARS] + f" …[+{len(txt) - _TOOL_LEAN_CHARS} chars]"
+        return (f"[tool_result] {txt}").rstrip()
+    return ""
+
+
 def _content_to_text(content) -> str:
     if isinstance(content, str):
         return content.strip()
@@ -135,6 +172,10 @@ def _content_to_text(content) -> str:
                 # claude: {type:text,text}; codex: {type:input_text/output_text,text}
                 if isinstance(block.get("text"), str):
                     parts.append(block["text"])
+                elif block.get("type") in ("tool_use", "tool_result"):
+                    lean = _lean_tool_block(block)  # include tool events, but leaned
+                    if lean:
+                        parts.append(lean)
         return "\n".join(p for p in parts if p).strip()
     return ""
 
