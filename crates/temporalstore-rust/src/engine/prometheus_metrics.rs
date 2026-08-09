@@ -121,15 +121,6 @@ impl TemporalEngine {
                 "temporalstore_shard_records",
                 &[
                     ("shard_id", stats.shard_id.to_string()),
-                    ("kind", "ips".into()),
-                ],
-                stats.ips_records as u64,
-            );
-            push_metric(
-                &mut out,
-                "temporalstore_shard_records",
-                &[
-                    ("shard_id", stats.shard_id.to_string()),
                     ("kind", "control_state".into()),
                 ],
                 stats.control_state_records as u64,

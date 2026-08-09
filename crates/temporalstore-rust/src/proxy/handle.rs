@@ -388,48 +388,6 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/IpsAdd") => {
-                match parse_json::<ProxyIpsAddCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let command = Command::IpsAddWithOptions {
-                            key: req.key,
-                            timestamp_ms: req.timestamp_ms,
-                            instance: req.instance,
-                            action_type: req.action_type,
-                            table_id: req.table_id,
-                            request_id: req.request_id,
-                        };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/IpsQueryLast") => {
-                match parse_json::<ProxyIpsQueryLastCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let command = Command::IpsQueryLast {
-                            key: req.key,
-                            count: req.count,
-                        };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
             ("POST", "/ProxyService/ControlStateIncrement") => {
                 match parse_json::<ProxyControlStateIncrementCommandRequest>(&request.body) {
                     Ok(req) => {

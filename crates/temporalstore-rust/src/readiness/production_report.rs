@@ -60,7 +60,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "client retry classifier separates budget-free safe topology retries from unsafe write retries that require explicit write retry budget"
                     .to_string(),
-                "shared C++/Rust corpus runs through the typed table client API and direct engine path for common, feature, sequence, IPS, control_state, context, and restart reads"
+                "shared C++/Rust corpus runs through the typed table client API and direct engine path for common, feature, sequence, control_state, context, and restart reads"
                     .to_string(),
                 "versioned Rust-native SDK contract committed in proto/temporalstore/v1 with validation in the local parity gate"
                     .to_string(),
@@ -354,11 +354,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "feature/sequence C++ protobuf golden corpus exercises filters, aggregates, sequence queries, and packed timestamped KV page layout"
                     .to_string(),
-                "full Rust-local C++ API golden corpus covers feature, sequence, IPS, ControlState, Redis-compatible core commands, and admin storage readiness"
-                    .to_string(),
-                "IPS load/snapshot/stat/filter subset and ControlState subset with typed client and RESP coverage"
-                    .to_string(),
-                "IPS production snapshot report exposes range metadata, returned versus total counts, action/table server aggregations, and packed timestamped page evidence"
+                "full Rust-local C++ API golden corpus covers feature, sequence, ControlState, Redis-compatible core commands, and admin storage readiness"
                     .to_string(),
                 "ControlState debug report exposes H/CPC/FOL full and window counters plus FOL selection metadata through engine, typed client, and RESP"
                     .to_string(),
@@ -428,7 +424,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "distributed Raft harness covers lag, catch-up, election, membership scale up/down, leader transfer, snapshot bootstrap, and secondary reads under load"
                     .to_string(),
-                "unified C++/Rust workload corpus covers Feature, IPS, ControlState, Redis, Context, and admin API replay evidence"
+                "unified C++/Rust workload corpus covers Feature, ControlState, Redis, Context, and admin API replay evidence"
                     .to_string(),
                 "Docker/AWS SLO report covers metaserver, proxy, client, data-node, Raft failover, storage pressure, cache pressure, proxy convergence, workload replay, p50/p95/p99, throughput, error budget, CPU/memory/disk/network collectors, replica lag, failover count, and scale events"
                     .to_string(),

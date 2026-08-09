@@ -136,24 +136,6 @@ fn gen_command(rng: &mut Rng) -> Command {
                 aggregator: ["sum", "count", "min", "max"][rng.below(4) as usize].to_string(),
             }
         }
-        12 => Command::IpsAdd {
-            key: rng.model_key('i'),
-            timestamp_ms: rng.ts(),
-            instance: rng.small_bytes(),
-        },
-        13 => {
-            let (start_ms, end_ms) = adversarial_bounds(rng);
-            Command::IpsQueryRange {
-                key: rng.model_key('i'),
-                start_ms,
-                end_ms,
-                count: if rng.below(3) == 0 {
-                    None
-                } else {
-                    Some(rng.below(10) as usize)
-                },
-            }
-        }
         14 => Command::CommonDelete { key: rng.any_key() },
         15 => Command::SequenceAdd {
             key: rng.model_key('q'),
@@ -231,15 +213,6 @@ fn read_snapshot(engine: &TemporalEngine) -> Vec<String> {
                 start_ms: 0,
                 end_ms: u64::MAX,
                 aggregator: "sum".to_string(),
-            },
-        );
-        probe(
-            &format!("i{n}"),
-            Command::IpsQueryRange {
-                key: format!("i{n}"),
-                start_ms: 0,
-                end_ms: u64::MAX,
-                count: None,
             },
         );
         probe(
@@ -346,7 +319,6 @@ struct RefModel {
     hashes: HashMap<String, std::collections::BTreeMap<String, Vec<u8>>>,
     sets: HashMap<String, std::collections::BTreeSet<Vec<u8>>>,
     features: HashMap<String, std::collections::BTreeMap<u64, Vec<u8>>>,
-    ips: HashMap<String, std::collections::BTreeMap<u64, Vec<u8>>>,
     sequences: HashMap<String, std::collections::BTreeMap<u64, SequenceFeatureRow>>,
     // ControlStateIncrement accumulates `amount` into a raw-timestamp bucket.
     control_state: HashMap<String, std::collections::BTreeMap<u64, i64>>,
@@ -462,16 +434,6 @@ impl RefModel {
                     .or_default();
                 *slot = slot.wrapping_add(*amount);
             }
-            Command::IpsAdd {
-                key,
-                timestamp_ms,
-                instance,
-            } => {
-                self.ips
-                    .entry(key.clone())
-                    .or_default()
-                    .insert(*timestamp_ms, instance.clone());
-            }
             Command::SequenceAdd { key, rows } => {
                 let series = self.sequences.entry(key.clone()).or_default();
                 // Last-write-wins per timestamp (matches sorted_feature_points collapse).
@@ -516,7 +478,6 @@ impl RefModel {
                 self.hashes.remove(key);
                 self.sets.remove(key);
                 self.features.remove(key);
-                self.ips.remove(key);
                 self.sequences.remove(key);
                 self.control_state.remove(key);
                 self.control_state_changes.remove(key);
@@ -566,11 +527,6 @@ fn gen_oracle_command(rng: &mut Rng) -> Command {
                     value: rng.small_bytes(),
                 })
                 .collect(),
-        },
-        9 | 10 => Command::IpsAdd {
-            key: rng.model_key('i'),
-            timestamp_ms: rng.ts(),
-            instance: rng.small_bytes(),
         },
         11 => Command::CommonDelete { key: rng.any_key() },
         12 => Command::SequenceAdd {
@@ -739,29 +695,6 @@ fn oracle_mismatch(engine: &TemporalEngine, model: &RefModel) -> Option<String> 
             return Some(format!(
                 "feature {key}: engine={engine_points:?} model={expected:?}"
             ));
-        }
-
-        // Ips: all instances, timestamp-ascending (current engine order), exact values.
-        let key = format!("i{n}");
-        let engine_ips = match points_to_pairs(engine_read(
-            engine,
-            Command::IpsQueryRange {
-                key: key.clone(),
-                start_ms: 0,
-                end_ms: u64::MAX,
-                count: None,
-            },
-        )) {
-            Ok(pairs) => pairs,
-            Err(err) => return Some(format!("ips {key}: {err}")),
-        };
-        let expected: Vec<(u64, Vec<u8>)> = model
-            .ips
-            .get(&key)
-            .map(|series| series.iter().map(|(t, v)| (*t, v.clone())).collect())
-            .unwrap_or_default();
-        if engine_ips != expected {
-            return Some(format!("ips {key}: engine={engine_ips:?} model={expected:?}"));
         }
 
         // Sequence: all rows, timestamp-ascending, exact.

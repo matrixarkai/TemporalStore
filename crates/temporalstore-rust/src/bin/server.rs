@@ -1340,7 +1340,6 @@ fn send_heartbeat(
                 + stats.set_records
                 + stats.feature_records
                 + stats.sequence_records
-                + stats.ips_records
                 + stats.control_state_records) as u64,
             memory_bytes: stats.cache.memory_bytes as u64,
         })

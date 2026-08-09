@@ -52,48 +52,6 @@ pub(crate) fn hash_entries_response(result: Result<CommandResponse, String>) -> 
     }
 }
 
-pub(crate) fn ips_stats_response(result: Result<CommandResponse, String>) -> RespValue {
-    match result {
-        Ok(CommandResponse::IpsStats { stats }) => RespValue::Array(vec![
-            RespValue::Integer(stats.total as i64),
-            optional_u64_value(stats.first_timestamp_ms),
-            optional_u64_value(stats.last_timestamp_ms),
-            count_pairs_u32_value(stats.action_type_counts),
-            count_pairs_u64_value(stats.table_id_counts),
-        ]),
-        Ok(_) => RespValue::Error("ERR invalid ips stats response".to_string()),
-        Err(err) => RespValue::Error(format!("ERR {err}")),
-    }
-}
-
-pub(crate) fn ips_snapshot_report_response(result: Result<CommandResponse, String>) -> RespValue {
-    match result {
-        Ok(CommandResponse::IpsSnapshotReport { report }) => RespValue::Array(vec![
-            RespValue::Bulk(Some(report.key.into_bytes())),
-            RespValue::Integer(report.start_ms as i64),
-            RespValue::Integer(report.end_ms as i64),
-            optional_usize_value(report.requested_count),
-            RespValue::Integer(report.returned_count as i64),
-            RespValue::Integer(report.total_in_range as i64),
-            optional_u64_value(report.first_timestamp_ms),
-            optional_u64_value(report.last_timestamp_ms),
-            count_pairs_u32_value(report.action_type_counts),
-            count_pairs_u64_value(report.table_id_counts),
-            RespValue::Integer(report.unique_page_ref_count as i64),
-            RespValue::Integer(report.packed_timestamped_page_count as i64),
-            RespValue::Array(
-                report
-                    .page_slab_ids
-                    .into_iter()
-                    .map(|slab_id| RespValue::Integer(slab_id as i64))
-                    .collect(),
-            ),
-        ]),
-        Ok(_) => RespValue::Error("ERR invalid ips snapshot report response".to_string()),
-        Err(err) => RespValue::Error(format!("ERR {err}")),
-    }
-}
-
 pub(crate) fn optional_u64_value(value: Option<u64>) -> RespValue {
     match value {
         Some(value) => RespValue::Integer(value as i64),

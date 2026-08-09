@@ -390,9 +390,8 @@ fn bucket_dump_manifest_watermark_tracks_embedded_index_not_wal_tail() {
 fn reversed_range_bounds_return_empty_not_a_lock_poisoning_panic() {
     // BTreeMap::range PANICS when start > end, and range queries run under the shard write lock,
     // so a reversed-bounds query would poison the lock and take the whole shard down (every later
-    // lock().expect() panics). C++ RangeGet returns an empty result with OK for min > max
-    // (model/ips/ips_operator.cc). Assert reversed bounds return empty across models AND leave the
-    // engine usable.
+    // lock().expect() panics). C++ RangeGet returns an empty result with OK for min > max. Assert
+    // reversed bounds return empty AND leave the engine usable.
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
@@ -401,28 +400,6 @@ fn reversed_range_bounds_return_empty_not_a_lock_poisoning_panic() {
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
-    engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::IpsAdd {
-            key: "u".to_string(),
-            timestamp_ms: 20,
-            instance: b"v".to_vec(),
-        },
-    });
-    let ips = engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::IpsQueryRange {
-            key: "u".to_string(),
-            start_ms: 100,
-            end_ms: 50,
-            count: None,
-        },
-    });
-    assert_eq!(
-        ips.response,
-        CommandResponse::FeaturePoints { points: vec![] },
-        "a reversed-bounds IPS range must return empty, not panic"
-    );
     engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::FeatureAppend {

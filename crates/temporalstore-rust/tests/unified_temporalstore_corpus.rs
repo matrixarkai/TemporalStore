@@ -350,8 +350,6 @@ fn response_kind(response: &CommandResponse) -> &'static str {
         CommandResponse::Aggregate { .. } => "aggregate",
         CommandResponse::SequenceRows { .. } => "sequence_rows",
         CommandResponse::SequenceRowGroups { .. } => "sequence_row_groups",
-        CommandResponse::IpsStats { .. } => "ips_stats",
-        CommandResponse::IpsSnapshotReport { .. } => "ips_snapshot_report",
         CommandResponse::ContextNode { .. } => "context_node",
         CommandResponse::ContextObjectKey { .. } => "context_object_key",
         CommandResponse::ContextExtractedEventWrite { .. } => "context_extracted_event_write",

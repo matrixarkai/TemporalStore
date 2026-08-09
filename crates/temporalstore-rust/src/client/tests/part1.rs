@@ -180,7 +180,7 @@ fn client_exposes_neptune_placement_hooks_and_migration_scope() {
         .iter()
         .any(|blocker| blocker.contains("legacy C++ wire")));
     for family in [
-        "common", "string", "hash", "set", "feature", "sequence", "ips", "control_state", "redis", "admin",
+        "common", "string", "hash", "set", "feature", "sequence", "control_state", "redis", "admin",
         "context",
     ] {
         assert!(migration
@@ -534,111 +534,6 @@ fn table_typed_methods_and_pipeline_match_cpp_client_shape() {
         .feature_query("feature", 0, 30, None)
         .unwrap()
         .is_empty());
-    table.ips_add("ips-a", 10, b"a10".to_vec()).unwrap();
-    table.ips_add("ips-a", 20, b"a20".to_vec()).unwrap();
-    table.ips_add("ips-b", 15, b"b15".to_vec()).unwrap();
-    assert_eq!(
-        table.ips_query_range("ips-a", 0, 30, Some(1)).unwrap(),
-        vec![FeaturePoint {
-            timestamp_ms: 10,
-            value: b"a10".to_vec(),
-        }]
-    );
-    assert_eq!(table.ips_count("ips-a", 0, 30).unwrap(), 2);
-    assert_eq!(
-        table
-            .ips_batch_query_last(vec!["ips-a".to_string(), "ips-b".to_string()], 1)
-            .unwrap(),
-        vec![
-            (
-                "ips-a".to_string(),
-                vec![FeaturePoint {
-                    timestamp_ms: 20,
-                    value: b"a20".to_vec(),
-                }],
-            ),
-            (
-                "ips-b".to_string(),
-                vec![FeaturePoint {
-                    timestamp_ms: 15,
-                    value: b"b15".to_vec(),
-                }],
-            ),
-        ]
-    );
-    assert!(table.ips_remove("ips-a", 10).unwrap());
-    assert_eq!(table.ips_count("ips-a", 0, 30).unwrap(), 1);
-    assert!(table.ips_delete("ips-a").unwrap());
-    assert_eq!(
-        table
-            .ips_load(
-                "ips-load",
-                vec![
-                    FeaturePoint {
-                        timestamp_ms: 10,
-                        value: b"l10".to_vec(),
-                    },
-                    FeaturePoint {
-                        timestamp_ms: 20,
-                        value: b"l20".to_vec(),
-                    },
-                ],
-            )
-            .unwrap(),
-        2
-    );
-    assert!(table
-        .ips_add_with_options(
-            "ips-load",
-            30,
-            b"opt30".to_vec(),
-            Some(7),
-            Some(42),
-            Some("typed-req".to_string()),
-        )
-        .unwrap());
-    assert_eq!(
-        table.ips_snapshot("ips-load", 0, 25, None).unwrap(),
-        vec![
-            FeaturePoint {
-                timestamp_ms: 10,
-                value: b"l10".to_vec(),
-            },
-            FeaturePoint {
-                timestamp_ms: 20,
-                value: b"l20".to_vec(),
-            },
-        ]
-    );
-    assert_eq!(
-        table
-            .ips_filter("ips-load", 0, 40, Some(10), Some(7), Some(42))
-            .unwrap(),
-        vec![FeaturePoint {
-            timestamp_ms: 30,
-            value: b"opt30".to_vec(),
-        }]
-    );
-    assert_eq!(
-        table.ips_stat("ips-load", 0, 40).unwrap(),
-        IpsStats {
-            total: 3,
-            first_timestamp_ms: Some(10),
-            last_timestamp_ms: Some(30),
-            action_type_counts: vec![(7, 1)],
-            table_id_counts: vec![(42, 1)],
-        }
-    );
-    let snapshot_report = table
-        .ips_snapshot_report("ips-load", 0, 40, Some(2))
-        .unwrap();
-    assert_eq!(snapshot_report.key, "ips-load");
-    assert_eq!(snapshot_report.requested_count, Some(2));
-    assert_eq!(snapshot_report.returned_count, 2);
-    assert_eq!(snapshot_report.total_in_range, 3);
-    assert_eq!(snapshot_report.action_type_counts, vec![(7, 1)]);
-    assert_eq!(snapshot_report.table_id_counts, vec![(42, 1)]);
-    assert_eq!(snapshot_report.packed_timestamped_page_count, 2);
 
     table.control_state_increment("control_state", 10, 5).unwrap();
     table.control_state_increment("control_state", 20, -2).unwrap();

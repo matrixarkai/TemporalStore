@@ -150,7 +150,6 @@ pub(super) fn storage_feature_page_layout_report(
                 entry.kind.as_str(),
                 "feature"
                     | "sequence"
-                    | "ips"
                     | "context_event"
                     | "context_index"
                     | "context_audit"

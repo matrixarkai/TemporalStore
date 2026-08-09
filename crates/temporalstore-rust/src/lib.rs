@@ -210,8 +210,8 @@ pub use types::{
     ContextIndexModel, ContextIndexRef, ContextNode, ContextNodeModel, ContextPackAudit,
     ContextSlab, ContextSummary, ContextSummaryDirtyMarker, ContextSummaryModel,
     ContextTraversedNode, ContextWire, EventReplicationMode, EventReplicationSelectionReport,
-    ExecuteRequest, ExecuteResponse, FeaturePoint, InternalContextIndex, IpsSnapshotReport,
-    IpsStats, ReplicatedBatchExecuteRequest, ReplicatedBatchExecuteResponse, ReplicatedCommand,
+    ExecuteRequest, ExecuteResponse, FeaturePoint, InternalContextIndex,
+    ReplicatedBatchExecuteRequest, ReplicatedBatchExecuteResponse, ReplicatedCommand,
     ReplicatedExecuteRequest, ShardId, Status,
 };
 pub use wal::{

@@ -235,7 +235,6 @@ pub(super) fn storage_model_code(kind: &str) -> u8 {
         "set" => 3,
         "feature" => 4,
         "sequence" => 5,
-        "ips" => 6,
         "control_state" => 7,
         "context_node" => 8,
         "context_event" => 9,
@@ -599,10 +598,9 @@ pub(super) fn object_manager_runtime_report(
     // timeline families). collect_live_page_entries already dedupes packed series
     // pages via unique_timestamped_kv_page_addresses, so this is the packed page
     // count. Previously this field was left at its default (0).
-    const TIMESTAMPED_KINDS: [&str; 9] = [
+    const TIMESTAMPED_KINDS: [&str; 8] = [
         "feature",
         "sequence",
-        "ips",
         "context_event",
         "context_index",
         "context_audit",
@@ -788,9 +786,6 @@ pub(super) fn timestamped_kv_series<'a>(
     for (key, timeline) in &shard.sequences {
         series.push(("sequence", key.as_str(), timeline));
     }
-    for (key, timeline) in &shard.ips {
-        series.push(("ips", key.as_str(), timeline));
-    }
     for (key, timeline) in &shard.context_events {
         series.push(("context_event", key.as_str(), timeline));
     }
@@ -954,7 +949,6 @@ pub(super) fn storage_feature_page_layout_report(
             entry.kind.as_str(),
             "feature"
                 | "sequence"
-                | "ips"
                 | "context_event"
                 | "context_index"
                 | "context_audit"
