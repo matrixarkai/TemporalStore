@@ -113,5 +113,59 @@ class RemoteOnlyLocalFallbackFloorTest(unittest.TestCase):
         self.assertEqual(256, cfg.DEFAULT_REMOTE_ONLY_LOCAL_FALLBACK_FLOOR_TOKENS)
 
 
+import matrixark_mcp_budget_policies as bpol
+
+
+class ModeDependentQuotaTest(unittest.TestCase):
+    """Augment routes the memory budget to cross-session; remote-only keeps it a minority."""
+
+    def _ratio(self, mode):
+        pol = bpol.build_cross_session_policy(
+            {"query": "what did we decide"}, {},
+            question_type="fact", session_scope="prefer",
+            remote_budget_tokens=10000, context_source_mode=mode,
+        )
+        return pol["budget_ratio"]
+
+    def test_flag_off_is_legacy_regardless_of_mode(self):
+        # Default OFF: mode does not change the ratio (preserves existing behavior + tests).
+        orig = bpol.MODE_DEPENDENT_QUOTA_ENABLED
+        bpol.MODE_DEPENDENT_QUOTA_ENABLED = False
+        try:
+            self.assertEqual(0.12, self._ratio("local_and_remote"))
+            self.assertEqual(0.12, self._ratio("remote_only"))
+        finally:
+            bpol.MODE_DEPENDENT_QUOTA_ENABLED = orig
+
+    def test_flag_on_augment_routes_to_cross_session(self):
+        orig = bpol.MODE_DEPENDENT_QUOTA_ENABLED
+        bpol.MODE_DEPENDENT_QUOTA_ENABLED = True
+        try:
+            self.assertEqual(0.60, self._ratio("local_and_remote"))  # cross-session gets the memory budget
+        finally:
+            bpol.MODE_DEPENDENT_QUOTA_ENABLED = orig
+
+    def test_flag_on_remote_only_reserves_for_current_session(self):
+        orig = bpol.MODE_DEPENDENT_QUOTA_ENABLED
+        bpol.MODE_DEPENDENT_QUOTA_ENABLED = True
+        try:
+            self.assertEqual(0.30, self._ratio("remote_only"))       # current-session reconstruction gets the majority
+        finally:
+            bpol.MODE_DEPENDENT_QUOTA_ENABLED = orig
+
+    def test_flag_on_no_mode_is_legacy(self):
+        orig = bpol.MODE_DEPENDENT_QUOTA_ENABLED
+        bpol.MODE_DEPENDENT_QUOTA_ENABLED = True
+        try:
+            self.assertEqual(0.12, self._ratio(""))                  # no mode → unchanged
+        finally:
+            bpol.MODE_DEPENDENT_QUOTA_ENABLED = orig
+
+    def test_quota_constants(self):
+        self.assertEqual(0.60, cfg.DEFAULT_AUGMENT_CROSS_SESSION_BUDGET_RATIO)
+        self.assertEqual(0.30, cfg.DEFAULT_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO)
+        self.assertFalse(cfg.MODE_DEPENDENT_QUOTA_ENABLED)           # ships OFF
+
+
 if __name__ == "__main__":
     unittest.main()

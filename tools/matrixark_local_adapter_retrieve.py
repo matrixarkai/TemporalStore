@@ -303,6 +303,7 @@ class _LocalAdapterRetrieveMixin:
             question_type=question_type,
             session_scope=retrieval_session_scope,
             remote_budget_tokens=remote_context_budget_tokens,
+            context_source_mode=context_source_mode,
         )
         retrieval_scope["_allow_profile_bridge"] = bool(
             cross_session_policy.get("enabled")
