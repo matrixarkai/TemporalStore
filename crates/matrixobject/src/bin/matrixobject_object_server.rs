@@ -479,26 +479,30 @@ fn append_put_record(
     offset: u64,
     key: &str,
     bytes: &[u8],
-) -> std::io::Result<u64> {
+) -> std::io::Result<(u64, u64)> {
     file.seek(SeekFrom::Start(offset))?;
-    write_log_header(file, LOG_PUT, key.len() as u32, bytes.len() as u64)?;
+    let header = log_header(LOG_PUT, key.len() as u32, bytes.len() as u64);
+    file.write_all(&header)?;
     file.write_all(key.as_bytes())?;
-    let value_offset = offset + LOG_HEADER_LEN as u64 + key.len() as u64;
     file.write_all(bytes)?;
-    Ok(value_offset)
+    let value_offset = offset + LOG_HEADER_LEN as u64 + key.len() as u64;
+    let next_offset = value_offset + bytes.len() as u64;
+    Ok((value_offset, next_offset))
 }
 
-fn append_delete_record(file: &mut File, offset: u64, key: &str) -> std::io::Result<()> {
+fn append_delete_record(file: &mut File, offset: u64, key: &str) -> std::io::Result<u64> {
     file.seek(SeekFrom::Start(offset))?;
-    write_log_header(file, LOG_DELETE, key.len() as u32, 0)?;
-    file.write_all(key.as_bytes())
+    let header = log_header(LOG_DELETE, key.len() as u32, 0);
+    file.write_all(&header)?;
+    file.write_all(key.as_bytes())?;
+    Ok(offset + LOG_HEADER_LEN as u64 + key.len() as u64)
 }
 
 fn append_put_record_durable(log: &AppendLog, key: &str, bytes: &[u8]) -> std::io::Result<u64> {
     let mut append = log.state.lock().expect("append state poisoned");
     let offset = append.next_offset;
-    let value_offset = append_put_record(&mut append.file, offset, key, bytes)?;
-    append.next_offset = append.file.stream_position()?;
+    let (value_offset, next_offset) = append_put_record(&mut append.file, offset, key, bytes)?;
+    append.next_offset = next_offset;
     wait_until_durable(log, append.next_offset, append)?;
     Ok(value_offset)
 }
@@ -506,8 +510,7 @@ fn append_put_record_durable(log: &AppendLog, key: &str, bytes: &[u8]) -> std::i
 fn append_delete_record_durable(log: &AppendLog, key: &str) -> std::io::Result<()> {
     let mut append = log.state.lock().expect("append state poisoned");
     let offset = append.next_offset;
-    append_delete_record(&mut append.file, offset, key)?;
-    append.next_offset = append.file.stream_position()?;
+    append.next_offset = append_delete_record(&mut append.file, offset, key)?;
     wait_until_durable(log, append.next_offset, append)
 }
 
@@ -553,11 +556,13 @@ fn wait_until_durable<'a>(
     }
 }
 
-fn write_log_header(file: &mut File, op: u8, key_len: u32, value_len: u64) -> std::io::Result<()> {
-    file.write_all(LOG_MAGIC)?;
-    file.write_all(&[op])?;
-    file.write_all(&key_len.to_le_bytes())?;
-    file.write_all(&value_len.to_le_bytes())
+fn log_header(op: u8, key_len: u32, value_len: u64) -> [u8; LOG_HEADER_LEN] {
+    let mut header = [0; LOG_HEADER_LEN];
+    header[..LOG_MAGIC.len()].copy_from_slice(LOG_MAGIC);
+    header[5] = op;
+    header[6..10].copy_from_slice(&key_len.to_le_bytes());
+    header[10..18].copy_from_slice(&value_len.to_le_bytes());
+    header
 }
 
 fn fnv1a64(bytes: &[u8]) -> u64 {
