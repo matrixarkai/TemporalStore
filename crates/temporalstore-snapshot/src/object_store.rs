@@ -26,6 +26,12 @@ pub enum ObjectStoreError {
 #[async_trait]
 pub trait ObjectStore: Send + Sync {
     async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError>;
+    async fn put_many(&self, objects: &[(String, Bytes)]) -> Result<(), ObjectStoreError> {
+        for (key, bytes) in objects {
+            self.put(key, bytes.clone()).await?;
+        }
+        Ok(())
+    }
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError>;
     async fn get_many(&self, keys: &[String]) -> Result<Vec<(String, Bytes)>, ObjectStoreError> {
         let mut objects = Vec::with_capacity(keys.len());
@@ -78,6 +84,21 @@ impl ObjectStore for MatrixObjectHttpStore {
     async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
         self.rpc_request(RPC_PUT, key, bytes.as_ref())?;
         Ok(())
+    }
+
+    async fn put_many(&self, objects: &[(String, Bytes)]) -> Result<(), ObjectStoreError> {
+        if objects.is_empty() {
+            return Ok(());
+        }
+        match self.rpc_request(RPC_PUT_MANY, "", &encode_rpc_put_many_request(objects)) {
+            Ok(_) => Ok(()),
+            Err(_) => {
+                for (key, bytes) in objects {
+                    self.put(key, bytes.clone()).await?;
+                }
+                Ok(())
+            }
+        }
     }
 
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
@@ -181,6 +202,7 @@ const RPC_DELETE: u8 = 3;
 const RPC_LIST: u8 = 4;
 const RPC_LIST_AFTER: u8 = 5;
 const RPC_GET_MANY: u8 = 6;
+const RPC_PUT_MANY: u8 = 7;
 const RPC_STATUS_OK: u8 = 0;
 const RPC_STATUS_NOT_FOUND: u8 = 1;
 const RPC_STATUS_ERROR: u8 = 2;
@@ -286,6 +308,18 @@ fn parse_rpc_get_many_response(response: &[u8]) -> Result<Vec<(String, Bytes)>, 
         objects.push((key, value));
     }
     Ok(objects)
+}
+
+fn encode_rpc_put_many_request(objects: &[(String, Bytes)]) -> Vec<u8> {
+    let mut body = Vec::new();
+    body.extend_from_slice(&(objects.len() as u32).to_le_bytes());
+    for (key, bytes) in objects {
+        body.extend_from_slice(&(key.len() as u32).to_le_bytes());
+        body.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+        body.extend_from_slice(key.as_bytes());
+        body.extend_from_slice(bytes.as_ref());
+    }
+    body
 }
 
 fn connect_rpc(addr: &str) -> Result<TcpStream, ObjectStoreError> {

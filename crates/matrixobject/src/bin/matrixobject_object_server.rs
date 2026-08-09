@@ -94,6 +94,7 @@ const RPC_DELETE: u8 = 3;
 const RPC_LIST: u8 = 4;
 const RPC_LIST_AFTER: u8 = 5;
 const RPC_GET_MANY: u8 = 6;
+const RPC_PUT_MANY: u8 = 7;
 const RPC_STATUS_OK: u8 = 0;
 const RPC_STATUS_NOT_FOUND: u8 = 1;
 const RPC_STATUS_ERROR: u8 = 2;
@@ -213,6 +214,16 @@ fn handle_rpc_stream(stream: &mut TcpStream, service: ObjectService) -> std::io:
                     Err(err) => write_rpc_error(stream, err)?,
                 }
             }
+            RPC_PUT_MANY => {
+                let mut bytes = vec![0; value_len as usize];
+                stream.read_exact(&mut bytes)?;
+                match decode_rpc_put_many_request(&bytes)
+                    .and_then(|requests| service.put_many(requests))
+                {
+                    Ok(()) => write_rpc_response(stream, RPC_STATUS_OK, &[])?,
+                    Err(err) => write_rpc_error(stream, err)?,
+                }
+            }
             RPC_GET => match service.get(key) {
                 Ok(bytes) => write_rpc_response(stream, RPC_STATUS_OK, &bytes)?,
                 Err(MatrixObjectError::SegmentNotFound(_)) => {
@@ -325,6 +336,29 @@ impl ObjectService {
                 len: req.bytes.len() as u64,
             };
             index.insert(key.clone(), meta.clone());
+        }
+        Ok(())
+    }
+
+    fn put_many(&self, requests: Vec<PutObjectRequest>) -> matrixobject::Result<()> {
+        if requests.is_empty() {
+            return Ok(());
+        }
+        let segment_id = self.append_segment_id;
+        for req in &requests {
+            validate_key(&req.key)?;
+        }
+        let appended = append_put_records_durable(&self.append, &requests)?;
+        let mut index = self.index.lock().expect("object index poisoned");
+        for (req, offset) in requests.into_iter().zip(appended) {
+            index.insert(
+                req.key,
+                ObjectMeta {
+                    segment_id,
+                    offset,
+                    len: req.bytes.len() as u64,
+                },
+            );
         }
         Ok(())
     }
@@ -484,6 +518,51 @@ fn parse_raw_key(body: &[u8]) -> matrixobject::Result<String> {
         .map_err(|err| MatrixObjectError::SharedStore(err.to_string()))
 }
 
+fn decode_rpc_put_many_request(body: &[u8]) -> matrixobject::Result<Vec<PutObjectRequest>> {
+    if body.len() < 4 {
+        return Err(MatrixObjectError::SharedStore(
+            "put_many body missing count".to_string(),
+        ));
+    }
+    let count = u32::from_le_bytes(body[..4].try_into().unwrap()) as usize;
+    let mut offset = 4;
+    let mut requests = Vec::with_capacity(count);
+    for _ in 0..count {
+        if body.len().saturating_sub(offset) < 12 {
+            return Err(MatrixObjectError::SharedStore(
+                "put_many body truncated header".to_string(),
+            ));
+        }
+        let key_len = u32::from_le_bytes(body[offset..offset + 4].try_into().unwrap()) as usize;
+        offset += 4;
+        let value_len = u64::from_le_bytes(body[offset..offset + 8].try_into().unwrap()) as usize;
+        offset += 8;
+        let end = offset
+            .checked_add(key_len)
+            .and_then(|offset| offset.checked_add(value_len))
+            .ok_or_else(|| {
+                MatrixObjectError::SharedStore("put_many body length overflow".to_string())
+            })?;
+        if body.len() < end {
+            return Err(MatrixObjectError::SharedStore(
+                "put_many body truncated payload".to_string(),
+            ));
+        }
+        let key = String::from_utf8(body[offset..offset + key_len].to_vec())
+            .map_err(|err| MatrixObjectError::SharedStore(err.to_string()))?;
+        offset += key_len;
+        let bytes = body[offset..offset + value_len].to_vec();
+        offset += value_len;
+        requests.push(PutObjectRequest { key, bytes });
+    }
+    if offset != body.len() {
+        return Err(MatrixObjectError::SharedStore(
+            "put_many body has trailing bytes".to_string(),
+        ));
+    }
+    Ok(requests)
+}
+
 fn read_rpc_request_header(stream: &mut TcpStream) -> std::io::Result<Option<(u8, u32, u64)>> {
     let mut header = [0; RPC_REQUEST_HEADER_LEN];
     let mut read = 0;
@@ -622,6 +701,24 @@ fn append_put_record_durable(log: &AppendLog, key: &str, bytes: &[u8]) -> std::i
     append.next_offset = next_offset;
     wait_until_durable(log, append.next_offset, append)?;
     Ok(value_offset)
+}
+
+fn append_put_records_durable(
+    log: &AppendLog,
+    requests: &[PutObjectRequest],
+) -> std::io::Result<Vec<u64>> {
+    let mut append = log.state.lock().expect("append state poisoned");
+    let mut offset = append.next_offset;
+    let mut value_offsets = Vec::with_capacity(requests.len());
+    for req in requests {
+        let (value_offset, next_offset) =
+            append_put_record(&mut append.file, offset, &req.key, &req.bytes)?;
+        value_offsets.push(value_offset);
+        offset = next_offset;
+    }
+    append.next_offset = offset;
+    wait_until_durable(log, append.next_offset, append)?;
+    Ok(value_offsets)
 }
 
 fn append_delete_record_durable(log: &AppendLog, key: &str) -> std::io::Result<()> {

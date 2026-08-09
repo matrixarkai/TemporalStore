@@ -471,6 +471,13 @@ impl ObjectStore for ScaleObjectStore {
         }
     }
 
+    async fn put_many(&self, objects: &[(String, Bytes)]) -> Result<(), ObjectStoreError> {
+        match self {
+            Self::File(store) => store.put_many(objects).await,
+            Self::MatrixObject(store) => store.put_many(objects).await,
+        }
+    }
+
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
         match self {
             Self::File(store) => store.get(key).await,

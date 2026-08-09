@@ -186,14 +186,23 @@ where
         entry: SharedStoreOplogEntry,
     ) -> Result<(), SharedStoreReplicationError> {
         let key = self.oplog_key(entry.shard_id, entry.oplog_index);
-        let entry_bytes = serde_json::to_vec(&entry)?;
-        let object = SharedStoreOplogObject {
-            entry,
-            entry_byte_size: entry_bytes.len() as u64,
-            entry_sha256: sha256_hex(&entry_bytes),
-        };
-        self.put_with_retry(&key, Bytes::from(serde_json::to_vec(&object)?))
-            .await?;
+        let bytes = Self::encode_oplog_object(entry)?;
+        self.put_with_retry(&key, bytes).await?;
+        Ok(())
+    }
+
+    pub async fn publish_oplog_entries(
+        &self,
+        entries: &[SharedStoreOplogEntry],
+    ) -> Result<(), SharedStoreReplicationError> {
+        let mut objects = Vec::with_capacity(entries.len());
+        for entry in entries {
+            objects.push((
+                self.oplog_key(entry.shard_id, entry.oplog_index),
+                Self::encode_oplog_object(entry.clone())?,
+            ));
+        }
+        self.put_many_with_retry(&objects).await?;
         Ok(())
     }
 
@@ -683,6 +692,41 @@ where
             .into())
     }
 
+    async fn put_many_with_retry(
+        &self,
+        objects: &[(String, Bytes)],
+    ) -> Result<(), SharedStoreReplicationError> {
+        let attempts = self.retry_policy.max_attempts.max(1);
+        let mut last_error = None;
+        for attempt in 0..attempts {
+            match self.object_store.put_many(objects).await {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    last_error = Some(err);
+                    if attempt + 1 < attempts && self.retry_policy.backoff_ms > 0 {
+                        tokio::time::sleep(Duration::from_millis(self.retry_policy.backoff_ms))
+                            .await;
+                    }
+                }
+            }
+        }
+        Err(last_error
+            .expect("retry loop must record failed object-store error")
+            .into())
+    }
+
+    fn encode_oplog_object(
+        entry: SharedStoreOplogEntry,
+    ) -> Result<Bytes, SharedStoreReplicationError> {
+        let entry_bytes = serde_json::to_vec(&entry)?;
+        let object = SharedStoreOplogObject {
+            entry,
+            entry_byte_size: entry_bytes.len() as u64,
+            entry_sha256: sha256_hex(&entry_bytes),
+        };
+        Ok(Bytes::from(serde_json::to_vec(&object)?))
+    }
+
     async fn delete_prefix(&self, prefix: &str) -> Result<usize, SharedStoreReplicationError> {
         let keys = self.object_store.list(prefix).await?;
         let deleted = keys.len();
@@ -757,15 +801,14 @@ where
             }
         }
 
-        let mut last_oplog_index = 0;
-        for (index, entry) in drained.iter().cloned().enumerate() {
-            last_oplog_index = entry.oplog_index;
-            if let Err(err) = self.replicator.publish_oplog_entry(entry).await {
+        let last_oplog_index = drained.last().map(|entry| entry.oplog_index).unwrap_or(0);
+        if !drained.is_empty() {
+            if let Err(err) = self.replicator.publish_oplog_entries(&drained).await {
                 let mut pending = self
                     .pending
                     .lock()
                     .expect("shared-store async queue lock poisoned");
-                for entry in drained[index..].iter().rev().cloned() {
+                for entry in drained.iter().rev().cloned() {
                     pending.push_front(entry);
                 }
                 return Err(err);
