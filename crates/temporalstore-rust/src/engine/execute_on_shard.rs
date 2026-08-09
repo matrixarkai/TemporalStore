@@ -719,22 +719,64 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            let values = shard
-                .features
-                .get(&key)
-                .map(|series| {
-                    series
-                        .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
-                        .take(count.unwrap_or(feature_max_size))
-                        .filter_map(|(timestamp_ms, address)| {
-                            read_feature_point(cache, page_store, shard_id, *timestamp_ms, address)
-                                .map(|point| point.value)
+            // The additive "sum" aggregate over the full window can be served in O(levels) via
+            // the shared rollup ladder. Only "sum" is summable here: for features "count"/"" mean
+            // element count (aggregate_feature_values), and min/max/first/last are non-additive, so
+            // those stay on the raw path. Gated to no explicit `count` cap so it covers the whole
+            // window, matching the raw scan on the retained series.
+            let use_rollup = control_rollup_enabled
+                && aggregator.trim().eq_ignore_ascii_case("sum")
+                && count.is_none();
+            if use_rollup {
+                // Lazily materialize the numeric view of the feature series. Each point's value
+                // is parsed through the SAME aggregate_feature_values path, so the folded values
+                // are bit-identical to the raw scan; rebuild when the series length changed.
+                let feature_len = shard.features.get(&key).map(|series| series.len()).unwrap_or(0);
+                let stale = shard
+                    .feature_values
+                    .get(&key)
+                    .map(|values| values.len() != feature_len)
+                    .unwrap_or(feature_len > 0);
+                if stale {
+                    let decoded: BTreeMap<u64, i64> = shard
+                        .features
+                        .get(&key)
+                        .map(|series| {
+                            series
+                                .iter()
+                                .filter_map(|(timestamp_ms, address)| {
+                                    read_feature_point(cache, page_store, shard_id, *timestamp_ms, address)
+                                        .map(|point| {
+                                            (*timestamp_ms, aggregate_feature_values(&[point.value], "sum"))
+                                        })
+                                })
+                                .collect()
                         })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            CommandResponse::Aggregate {
-                value: aggregate_feature_values(&values, &aggregator),
+                        .unwrap_or_default();
+                    shard.feature_values.insert(key.clone(), decoded);
+                    shard.feature_rollups.remove(&key);
+                }
+                CommandResponse::Aggregate {
+                    value: control_rollup::feature_windowed_sum(shard, &key, start_ms, end_ms),
+                }
+            } else {
+                let values = shard
+                    .features
+                    .get(&key)
+                    .map(|series| {
+                        series
+                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
+                            .take(count.unwrap_or(feature_max_size))
+                            .filter_map(|(timestamp_ms, address)| {
+                                read_feature_point(cache, page_store, shard_id, *timestamp_ms, address)
+                                    .map(|point| point.value)
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                CommandResponse::Aggregate {
+                    value: aggregate_feature_values(&values, &aggregator),
+                }
             }
         }
         Command::SequenceAdd { key, rows } => {

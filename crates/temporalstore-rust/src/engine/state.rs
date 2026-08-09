@@ -64,6 +64,15 @@ pub(super) struct ShardState {
     // control_state_changes/fol sub-stores already do. Serde-skipped; set on every execute.
     #[serde(skip)]
     pub(super) control_coalesce_persist: bool,
+    // Derived, in-memory feature-aggregate rollup: the numeric view of the feature series
+    // (feature_values, decoded via aggregate_feature_values so it is bit-identical to the raw
+    // aggregate) plus the shared rollup ladder over it. Serde-skipped; rebuilt lazily on the
+    // FeatureAggQuery read path when stale. Gated by Config.control_rollup_enabled(); empty
+    // and inert when off.
+    #[serde(skip)]
+    pub(super) feature_values: HashMap<String, BTreeMap<u64, i64>>,
+    #[serde(skip)]
+    pub(super) feature_rollups: HashMap<String, RollupEntry>,
     #[serde(default)]
     pub(super) context_nodes: HashMap<String, BlockAddress>,
     #[serde(default)]

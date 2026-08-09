@@ -114,29 +114,61 @@ pub(crate) fn record_increment(shard: &mut ShardState, key: &str, bucket_ms: u64
     }
 }
 
-/// Sum-family windowed aggregate via the rollup ladder; equals the raw range scan.
-pub(crate) fn windowed_sum(shard: &mut ShardState, key: &str, start_ms: u64, end_ms: u64) -> i64 {
-    let series_len = shard.control_state.get(key).map(|s| s.len()).unwrap_or(0);
-    let stale = shard
-        .control_state_rollups
+/// Generic sum-family windowed aggregate over any (rollup index map, i64 series) pair.
+/// Rebuilds the key's index from `series` when its recorded length no longer matches the
+/// series (staleness guard), then covers the window with coarse cells + raw edges. This is
+/// the one primitive shared by the control-state counter path and the feature-aggregate path.
+pub(crate) fn windowed_sum_series(
+    rollups: &mut std::collections::HashMap<String, RollupEntry>,
+    series: &BTreeMap<u64, i64>,
+    key: &str,
+    start_ms: u64,
+    end_ms: u64,
+) -> i64 {
+    let series_len = series.len();
+    let stale = rollups
         .get(key)
         .map(|entry| entry.built_len != series_len)
         .unwrap_or(true);
     if stale {
-        let cells = shard.control_state.get(key).map(build).unwrap_or_default();
-        shard
-            .control_state_rollups
-            .insert(key.to_string(), RollupEntry { cells, built_len: series_len });
+        rollups.insert(
+            key.to_string(),
+            RollupEntry {
+                cells: build(series),
+                built_len: series_len,
+            },
+        );
     }
     let empty_cells = BTreeMap::new();
-    let empty_series = BTreeMap::new();
-    let cells = shard
-        .control_state_rollups
-        .get(key)
-        .map(|e| &e.cells)
-        .unwrap_or(&empty_cells);
-    let series = shard.control_state.get(key).unwrap_or(&empty_series);
+    let cells = rollups.get(key).map(|e| &e.cells).unwrap_or(&empty_cells);
     range_sum(cells, series, start_ms, end_ms)
+}
+
+/// Sum-family windowed aggregate over the control-state counter series (O(levels)).
+pub(crate) fn windowed_sum(shard: &mut ShardState, key: &str, start_ms: u64, end_ms: u64) -> i64 {
+    let empty_series = BTreeMap::new();
+    let series = shard.control_state.get(key).unwrap_or(&empty_series);
+    windowed_sum_series(&mut shard.control_state_rollups, series, key, start_ms, end_ms)
+}
+
+/// Sum-family windowed aggregate over the feature numeric view (`feature_values`), served by
+/// the same rollup primitive. Callers must have populated `feature_values[key]` first.
+pub(crate) fn feature_windowed_sum(shard: &mut ShardState, key: &str, start_ms: u64, end_ms: u64) -> i64 {
+    let empty_series = BTreeMap::new();
+    let series = shard.feature_values.get(key).unwrap_or(&empty_series);
+    windowed_sum_series(&mut shard.feature_rollups, series, key, start_ms, end_ms)
+}
+
+/// Drop a feature key's numeric view + rollup (on delete/expire).
+pub(crate) fn feature_forget(shard: &mut ShardState, key: &str) {
+    shard.feature_rollups.remove(key);
+    shard.feature_values.remove(key);
+}
+
+/// Clear all feature numeric views + rollups (on reconcile) so they rebuild lazily.
+pub(crate) fn feature_clear_all(shard: &mut ShardState) {
+    shard.feature_rollups.clear();
+    shard.feature_values.clear();
 }
 
 /// Drop a key's rollup index (on delete/expire) so a later re-creation rebuilds cleanly.
