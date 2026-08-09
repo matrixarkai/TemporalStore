@@ -7,12 +7,16 @@ pub(crate) fn execute_on_shard(
     feature_max_size: usize,
     async_storage: bool,
     control_rollup_enabled: bool,
+    control_coalesce_persist: bool,
     shard_id: ShardId,
     start_routing_bucket: u32,
     end_routing_bucket: u32,
     shard: &mut ShardState,
     command: Command,
 ) -> ExecuteOutcome {
+    // Publish the coalesce hint for persist_control_state_page (avoids threading the flag
+    // through every control-state write arm).
+    shard.control_coalesce_persist = control_coalesce_persist;
     let mut mutated = false;
     let response = match command {
         Command::CommonDelete { key } => {

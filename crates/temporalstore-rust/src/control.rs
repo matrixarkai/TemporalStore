@@ -63,6 +63,13 @@ impl Config {
     pub fn control_rollup_enabled(&self) -> bool {
         self.flag("control_rollup")
     }
+
+    /// Gate for coalesced Control State counter persistence: skip the per-write whole-series
+    /// page rewrite and rely on the index snapshot + WAL replay (same durability model as
+    /// control_state_changes/fol). Effective only with async_storage (WAL) on; off by default.
+    pub fn control_coalesce_persist_enabled(&self) -> bool {
+        self.flag("control_coalesce_persist")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

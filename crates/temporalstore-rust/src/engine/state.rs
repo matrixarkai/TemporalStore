@@ -58,6 +58,12 @@ pub(super) struct ShardState {
     // Config.control_rollup_enabled(); empty and inert when the gate is off.
     #[serde(skip)]
     pub(super) control_state_rollups: HashMap<String, RollupEntry>,
+    // Transient per-execute hint: when true (async_storage + control_coalesce_persist),
+    // control-state counter writes skip the redundant per-write whole-series page rewrite
+    // and rely on the index snapshot + WAL replay for durability, exactly like the
+    // control_state_changes/fol sub-stores already do. Serde-skipped; set on every execute.
+    #[serde(skip)]
+    pub(super) control_coalesce_persist: bool,
     #[serde(default)]
     pub(super) context_nodes: HashMap<String, BlockAddress>,
     #[serde(default)]

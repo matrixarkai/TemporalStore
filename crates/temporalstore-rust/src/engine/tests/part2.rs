@@ -1005,6 +1005,78 @@ fn async_write_survives_restart_via_wal_replay_like_cpp() {
     );
 }
 
+// Coalesced control-state persistence skips the per-write whole-series page rewrite
+// (write-amplification) and relies on the index snapshot + WAL replay for durability, the
+// same model control_state_changes/fol already use. This MUST stay crash-safe: increments
+// recorded only in the WAL (no page materialization, no flush) must be recovered on reload.
+#[test]
+fn control_state_coalesced_write_survives_restart_via_wal_replay() {
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-a"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+    let mut config = Config {
+        version: 2,
+        async_storage: true,
+        ..Config::default()
+    };
+    config
+        .extend_config
+        .insert("control_coalesce_persist".to_string(), "on".to_string());
+    assert!(engine.set_config(SetConfigRequest { shard_id: 1, config }).ok);
+
+    for (timestamp_ms, amount) in [(10u64, 1i64), (20, 2), (30, 4), (40, 8)] {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ControlStateIncrement {
+                key: "cap".to_string(),
+                timestamp_ms,
+                amount,
+            },
+        });
+    }
+    // Coalesced: the per-write control_state page rewrite is skipped; the WAL carries durability.
+    assert_eq!(
+        engine.block_store().stats().writes,
+        0,
+        "coalesced control-state writes must not materialize a per-write page"
+    );
+    assert!(
+        engine.write_ahead_log_store().stats(1).writes >= 4,
+        "each coalesced increment must still be recorded in the WAL"
+    );
+    drop(engine);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    restarted.load_shard(1);
+    let response = restarted
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ControlStateCount {
+                key: "cap".to_string(),
+                start_ms: 0,
+                end_ms: 100,
+            },
+        })
+        .response;
+    assert_eq!(
+        response,
+        CommandResponse::Integer { value: 15 },
+        "coalesced control-state counter must be recovered by WAL replay on reload"
+    );
+}
+
 #[test]
 fn async_storage_batch_write_records_wal_without_sync_or_index() {
     // Batch analog of the single-command async parity: the batch path (used by
