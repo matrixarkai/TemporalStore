@@ -387,6 +387,82 @@ fn bucket_dump_manifest_watermark_tracks_embedded_index_not_wal_tail() {
 }
 
 #[test]
+fn reversed_range_bounds_return_empty_not_a_lock_poisoning_panic() {
+    // BTreeMap::range PANICS when start > end, and range queries run under the shard write lock,
+    // so a reversed-bounds query would poison the lock and take the whole shard down (every later
+    // lock().expect() panics). C++ RangeGet returns an empty result with OK for min > max
+    // (model/ips/ips_operator.cc). Assert reversed bounds return empty across models AND leave the
+    // engine usable.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::IpsAdd {
+            key: "u".to_string(),
+            timestamp_ms: 20,
+            instance: b"v".to_vec(),
+        },
+    });
+    let ips = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::IpsQueryRange {
+            key: "u".to_string(),
+            start_ms: 100,
+            end_ms: 50,
+            count: None,
+        },
+    });
+    assert_eq!(
+        ips.response,
+        CommandResponse::FeaturePoints { points: vec![] },
+        "a reversed-bounds IPS range must return empty, not panic"
+    );
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureAppend {
+            key: "f".to_string(),
+            points: vec![FeaturePoint {
+                timestamp_ms: 20,
+                value: b"x".to_vec(),
+            }],
+        },
+    });
+    let feat = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureQuery {
+            key: "f".to_string(),
+            start_ms: 100,
+            end_ms: 50,
+            count: None,
+        },
+    });
+    assert_eq!(
+        feat.response,
+        CommandResponse::FeaturePoints { points: vec![] },
+        "a reversed-bounds feature range must return empty, not panic"
+    );
+    // The shard lock must not be poisoned: the engine stays usable.
+    let ok = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "k".to_string(),
+            value: b"1".to_vec(),
+        },
+    });
+    assert!(
+        ok.status.ok,
+        "engine must stay usable after a reversed-bounds query (lock not poisoned): {:?}",
+        ok.status
+    );
+}
+
+#[test]
 fn batch_execute_on_unloaded_shard_returns_a_batch_level_topology_error() {
     // C++ returns a batch-level topology error with ZERO response entries when the partition is
     // not loaded (partition_manager.cc), so the topology-retryable client refreshes + retries.
