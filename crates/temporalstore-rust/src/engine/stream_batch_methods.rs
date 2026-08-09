@@ -252,6 +252,7 @@ impl TemporalEngine {
                 config.feature_max_size,
                 config.async_storage,
                 config.control_rollup_enabled(),
+                config.control_coalesce_persist_enabled(),
                 request.shard_id,
                 start_routing_bucket,
                 end_routing_bucket,

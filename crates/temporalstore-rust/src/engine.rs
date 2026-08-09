@@ -299,6 +299,7 @@ impl TemporalEngine {
             config.feature_max_size,
             config.async_storage,
             config.control_rollup_enabled(),
+            config.control_coalesce_persist_enabled(),
             request.shard_id,
             start_routing_bucket,
             end_routing_bucket,
@@ -1622,6 +1623,13 @@ fn persist_control_state_page(
         shard.control_state_pages.remove(key);
         return false;
     };
+    // Coalesced-persistence mode: the counter series is durable via the index snapshot
+    // (flush) + WAL replay — the same model control_state_changes/fol already use — so skip
+    // the O(series) per-write whole-series page rewrite (the write-amplification source).
+    // Gated on async_storage so the WAL actually covers between-flush increments.
+    if async_storage && shard.control_coalesce_persist {
+        return true;
+    }
     let Ok(bytes) = serde_json::to_vec(series) else {
         return false;
     };
