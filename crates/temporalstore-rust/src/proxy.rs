@@ -3000,7 +3000,7 @@ mod tests {
 
     #[test]
     fn proxy_control_state_and_feature_endpoints_round_trip_like_sdk() {
-        // Locks the HTTP/JSON wire contract the Python/Go SDKs depend on:
+        // Locks the HTTP/JSON wire contract the Python/Rust SDKs depend on:
         // /ProxyService/{FeatureAdd, FeatureAggQuery, ControlStateIncrement,
         // ControlStateCount, ControlStateFolSet, ControlStateFolQuery}.
         let dir = tempfile::tempdir().unwrap();
