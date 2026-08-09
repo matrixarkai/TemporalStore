@@ -36,6 +36,7 @@ pub trait ObjectStore: Send + Sync {
 pub struct MatrixObjectHttpStore {
     addr: String,
     uri: String,
+    rpc_streams: Arc<Mutex<Vec<TcpStream>>>,
 }
 
 impl MatrixObjectHttpStore {
@@ -52,6 +53,7 @@ impl MatrixObjectHttpStore {
         Ok(Self {
             addr,
             uri: uri.trim_end_matches('/').to_string(),
+            rpc_streams: Arc::default(),
         })
     }
 }
@@ -59,31 +61,12 @@ impl MatrixObjectHttpStore {
 #[async_trait]
 impl ObjectStore for MatrixObjectHttpStore {
     async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
-        let mut body = Vec::with_capacity(4 + key.len() + bytes.len());
-        body.extend_from_slice(&(key.len() as u32).to_le_bytes());
-        body.extend_from_slice(key.as_bytes());
-        body.extend_from_slice(bytes.as_ref());
-        let response: OkResponse = serde_json::from_slice(&http_post(
-            &self.addr,
-            "/v1/object/put_raw",
-            &body,
-            "application/octet-stream",
-        )?)?;
-        if !response.ok {
-            return Err(ObjectStoreError::Http(
-                "matrixobject put failed".to_string(),
-            ));
-        }
+        self.rpc_request(RPC_PUT, key, bytes.as_ref())?;
         Ok(())
     }
 
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
-        let response = http_post(
-            &self.addr,
-            "/v1/object/get_raw",
-            key.as_bytes(),
-            "application/octet-stream",
-        )?;
+        let response = self.rpc_request(RPC_GET, key, &[])?;
         Ok(Bytes::from(response))
     }
 
@@ -110,12 +93,6 @@ impl ObjectStore for MatrixObjectHttpStore {
 }
 
 #[derive(serde::Serialize)]
-struct PutObjectRequest<'a> {
-    key: &'a str,
-    bytes: &'a [u8],
-}
-
-#[derive(serde::Serialize)]
 struct KeyRequest<'a> {
     key: &'a str,
 }
@@ -133,6 +110,126 @@ struct OkResponse {
 #[derive(serde::Deserialize)]
 struct ListObjectResponse {
     keys: Vec<String>,
+}
+
+const RPC_MAGIC: &[u8; 5] = b"MORP1";
+const RPC_PUT: u8 = 1;
+const RPC_GET: u8 = 2;
+const RPC_STATUS_OK: u8 = 0;
+const RPC_STATUS_NOT_FOUND: u8 = 1;
+const RPC_STATUS_ERROR: u8 = 2;
+const RPC_REQUEST_HEADER_LEN: usize = 18;
+const RPC_RESPONSE_HEADER_LEN: usize = 14;
+const RPC_POOL_MAX_IDLE: usize = 32;
+
+impl MatrixObjectHttpStore {
+    fn rpc_request(&self, op: u8, key: &str, value: &[u8]) -> Result<Vec<u8>, ObjectStoreError> {
+        let mut stream = self.take_rpc_stream()?;
+        match rpc_request_on_stream(&mut stream, op, key, value) {
+            Ok(response) => {
+                self.return_rpc_stream(stream);
+                Ok(response)
+            }
+            Err(first_err) => {
+                let mut retry_stream = connect_rpc(&self.addr)?;
+                match rpc_request_on_stream(&mut retry_stream, op, key, value) {
+                    Ok(response) => {
+                        self.return_rpc_stream(retry_stream);
+                        Ok(response)
+                    }
+                    Err(_) => Err(first_err),
+                }
+            }
+        }
+    }
+
+    fn take_rpc_stream(&self) -> Result<TcpStream, ObjectStoreError> {
+        if let Some(stream) = self
+            .rpc_streams
+            .lock()
+            .expect("matrixobject rpc streams poisoned")
+            .pop()
+        {
+            return Ok(stream);
+        }
+        connect_rpc(&self.addr)
+    }
+
+    fn return_rpc_stream(&self, stream: TcpStream) {
+        let mut streams = self
+            .rpc_streams
+            .lock()
+            .expect("matrixobject rpc streams poisoned");
+        if streams.len() < RPC_POOL_MAX_IDLE {
+            streams.push(stream);
+        }
+    }
+}
+
+fn rpc_request_on_stream(
+    stream: &mut TcpStream,
+    op: u8,
+    key: &str,
+    value: &[u8],
+) -> Result<Vec<u8>, ObjectStoreError> {
+    write_rpc_request(stream, op, key.as_bytes(), value)?;
+    read_rpc_response(stream)
+}
+
+fn connect_rpc(addr: &str) -> Result<TcpStream, ObjectStoreError> {
+    let socket_addr = addr
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| ObjectStoreError::Http(format!("cannot resolve {addr}")))?;
+    let stream = TcpStream::connect_timeout(&socket_addr, Duration::from_millis(500))?;
+    stream.set_nodelay(true)?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+    Ok(stream)
+}
+
+fn write_rpc_request(
+    stream: &mut TcpStream,
+    op: u8,
+    key: &[u8],
+    value: &[u8],
+) -> Result<(), ObjectStoreError> {
+    let mut header = [0; RPC_REQUEST_HEADER_LEN];
+    header[..RPC_MAGIC.len()].copy_from_slice(RPC_MAGIC);
+    header[5] = op;
+    header[6..10].copy_from_slice(&(key.len() as u32).to_le_bytes());
+    header[10..18].copy_from_slice(&(value.len() as u64).to_le_bytes());
+    stream.write_all(&header)?;
+    stream.write_all(key)?;
+    stream.write_all(value)?;
+    stream.flush()?;
+    Ok(())
+}
+
+fn read_rpc_response(stream: &mut TcpStream) -> Result<Vec<u8>, ObjectStoreError> {
+    let mut header = [0; RPC_RESPONSE_HEADER_LEN];
+    stream.read_exact(&mut header)?;
+    if &header[..RPC_MAGIC.len()] != RPC_MAGIC {
+        return Err(ObjectStoreError::Http(
+            "invalid rpc response magic".to_string(),
+        ));
+    }
+    let status = header[5];
+    let body_len = u64::from_le_bytes(header[6..14].try_into().unwrap()) as usize;
+    let mut body = vec![0; body_len];
+    stream.read_exact(&mut body)?;
+    match status {
+        RPC_STATUS_OK => Ok(body),
+        RPC_STATUS_NOT_FOUND => Err(ObjectStoreError::NotFound(
+            String::from_utf8_lossy(&body).to_string(),
+        )),
+        RPC_STATUS_ERROR => Err(ObjectStoreError::Http(
+            String::from_utf8_lossy(&body).to_string(),
+        )),
+        _ => Err(ObjectStoreError::Http(format!(
+            "unknown rpc status {status}"
+        ))),
+    }
 }
 
 fn matrixobject_post<Req, Res>(

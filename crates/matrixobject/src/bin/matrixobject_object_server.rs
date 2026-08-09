@@ -5,21 +5,28 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 #[derive(Clone)]
 struct ObjectService {
     data_path: PathBuf,
     index: Arc<Mutex<BTreeMap<String, ObjectMeta>>>,
-    append: Arc<Mutex<AppendState>>,
+    append: Arc<AppendLog>,
     tenant_id: String,
     volume_id: String,
     append_segment_id: u64,
 }
 
+struct AppendLog {
+    state: Mutex<AppendState>,
+    durable: Condvar,
+}
+
 struct AppendState {
     file: File,
     next_offset: u64,
+    durable_offset: u64,
+    syncing: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +86,15 @@ const LOG_MAGIC: &[u8; 5] = b"MOBJ1";
 const LOG_PUT: u8 = 1;
 const LOG_DELETE: u8 = 2;
 const LOG_HEADER_LEN: usize = 18;
+const RPC_MAGIC: &[u8; 5] = b"MORP1";
+const RPC_PUT: u8 = 1;
+const RPC_GET: u8 = 2;
+const RPC_DELETE: u8 = 3;
+const RPC_STATUS_OK: u8 = 0;
+const RPC_STATUS_NOT_FOUND: u8 = 1;
+const RPC_STATUS_ERROR: u8 = 2;
+const RPC_REQUEST_HEADER_LEN: usize = 18;
+const RPC_RESPONSE_HEADER_LEN: usize = 14;
 
 fn main() {
     let bind_addr =
@@ -94,7 +110,8 @@ fn main() {
     std::fs::create_dir_all(&root).expect("failed to create MATRIXOBJECT_ROOT");
     let data_path = root.join("object-data.log");
     let append_segment_id = fnv1a64(b"matrixobject-object-append-v1");
-    let index = load_index_from_log(&data_path, append_segment_id).expect("object index should load");
+    let index =
+        load_index_from_log(&data_path, append_segment_id).expect("object index should load");
     let data_file = std::fs::OpenOptions::new()
         .create(true)
         .read(true)
@@ -109,10 +126,15 @@ fn main() {
     let service = ObjectService {
         data_path,
         index: Arc::new(Mutex::new(index)),
-        append: Arc::new(Mutex::new(AppendState {
-            file: data_file,
-            next_offset: append_offset,
-        })),
+        append: Arc::new(AppendLog {
+            state: Mutex::new(AppendState {
+                file: data_file,
+                next_offset: append_offset,
+                durable_offset: append_offset,
+                syncing: false,
+            }),
+            durable: Condvar::new(),
+        }),
         tenant_id,
         volume_id,
         append_segment_id,
@@ -130,7 +152,16 @@ fn main() {
     }
 }
 
-fn handle_stream(mut stream: TcpStream, service: ObjectService, addr: String) -> std::io::Result<()> {
+fn handle_stream(
+    mut stream: TcpStream,
+    service: ObjectService,
+    addr: String,
+) -> std::io::Result<()> {
+    stream.set_nodelay(true)?;
+    let mut magic = [0; 5];
+    if stream.peek(&mut magic)? == magic.len() && magic.as_slice() == RPC_MAGIC {
+        return handle_rpc_stream(&mut stream, service);
+    }
     let request = match read_request(&mut stream).and_then(parse_request) {
         Ok(request) => request,
         Err(err) => {
@@ -146,6 +177,49 @@ fn handle_stream(mut stream: TcpStream, service: ObjectService, addr: String) ->
         Err(err) => (500, json_error(&err.to_string())),
     };
     write_response(&mut stream, status, &String::from_utf8_lossy(&body))
+}
+
+fn handle_rpc_stream(stream: &mut TcpStream, service: ObjectService) -> std::io::Result<()> {
+    loop {
+        let Some((op, key_len, value_len)) = read_rpc_request_header(stream)? else {
+            return Ok(());
+        };
+        let mut key_bytes = vec![0; key_len as usize];
+        stream.read_exact(&mut key_bytes)?;
+        let key = match String::from_utf8(key_bytes) {
+            Ok(key) => key,
+            Err(err) => {
+                write_rpc_response(stream, RPC_STATUS_ERROR, err.to_string().as_bytes())?;
+                skip_rpc_value(stream, value_len)?;
+                continue;
+            }
+        };
+        match op {
+            RPC_PUT => {
+                let mut bytes = vec![0; value_len as usize];
+                stream.read_exact(&mut bytes)?;
+                match service.put(PutObjectRequest { key, bytes }) {
+                    Ok(()) => write_rpc_response(stream, RPC_STATUS_OK, &[])?,
+                    Err(err) => write_rpc_error(stream, err)?,
+                }
+            }
+            RPC_GET => match service.get(key) {
+                Ok(bytes) => write_rpc_response(stream, RPC_STATUS_OK, &bytes)?,
+                Err(MatrixObjectError::SegmentNotFound(_)) => {
+                    write_rpc_response(stream, RPC_STATUS_NOT_FOUND, b"object not found")?
+                }
+                Err(err) => write_rpc_error(stream, err)?,
+            },
+            RPC_DELETE => match service.delete(key) {
+                Ok(()) => write_rpc_response(stream, RPC_STATUS_OK, &[])?,
+                Err(err) => write_rpc_error(stream, err)?,
+            },
+            _ => {
+                skip_rpc_value(stream, value_len)?;
+                write_rpc_response(stream, RPC_STATUS_ERROR, b"unknown rpc op")?;
+            }
+        }
+    }
 }
 
 fn route(
@@ -196,14 +270,7 @@ impl ObjectService {
     fn put(&self, req: PutObjectRequest) -> matrixobject::Result<()> {
         validate_key(&req.key)?;
         let segment_id = self.append_segment_id;
-        let offset = {
-            let mut append = self.append.lock().expect("append state poisoned");
-            let next_offset = append.next_offset;
-            let offset = append_put_record(&mut append.file, next_offset, &req.key, &req.bytes)?;
-            append.file.sync_data()?;
-            append.next_offset = append.file.stream_position()?;
-            offset
-        };
+        let offset = append_put_record_durable(&self.append, &req.key, &req.bytes)?;
         {
             let mut index = self.index.lock().expect("object index poisoned");
             let key = req.key;
@@ -254,11 +321,7 @@ impl ObjectService {
             .expect("object index poisoned")
             .remove(&key);
         if meta.is_some() {
-            let mut append = self.append.lock().expect("append state poisoned");
-            let next_offset = append.next_offset;
-            append_delete_record(&mut append.file, next_offset, &key)?;
-            append.file.sync_data()?;
-            append.next_offset = append.file.stream_position()?;
+            append_delete_record_durable(&self.append, &key)?;
         }
         Ok(())
     }
@@ -302,6 +365,62 @@ fn parse_raw_key(body: &[u8]) -> matrixobject::Result<String> {
     std::str::from_utf8(body)
         .map(|key| key.to_string())
         .map_err(|err| MatrixObjectError::SharedStore(err.to_string()))
+}
+
+fn read_rpc_request_header(stream: &mut TcpStream) -> std::io::Result<Option<(u8, u32, u64)>> {
+    let mut header = [0; RPC_REQUEST_HEADER_LEN];
+    let mut read = 0;
+    while read < header.len() {
+        let size = stream.read(&mut header[read..])?;
+        if size == 0 {
+            if read == 0 {
+                return Ok(None);
+            }
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "truncated rpc request header",
+            ));
+        }
+        read += size;
+    }
+    if &header[..RPC_MAGIC.len()] != RPC_MAGIC {
+        return Err(std::io::Error::other("invalid rpc magic"));
+    }
+    let op = header[5];
+    let key_len = u32::from_le_bytes(header[6..10].try_into().unwrap());
+    let value_len = u64::from_le_bytes(header[10..18].try_into().unwrap());
+    Ok(Some((op, key_len, value_len)))
+}
+
+fn skip_rpc_value(stream: &mut TcpStream, value_len: u64) -> std::io::Result<()> {
+    let mut remaining = value_len;
+    let mut buffer = [0; 8192];
+    while remaining > 0 {
+        let want = remaining.min(buffer.len() as u64) as usize;
+        let read = stream.read(&mut buffer[..want])?;
+        if read == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "truncated rpc value",
+            ));
+        }
+        remaining -= read as u64;
+    }
+    Ok(())
+}
+
+fn write_rpc_error(stream: &mut TcpStream, err: MatrixObjectError) -> std::io::Result<()> {
+    write_rpc_response(stream, RPC_STATUS_ERROR, err.to_string().as_bytes())
+}
+
+fn write_rpc_response(stream: &mut TcpStream, status: u8, body: &[u8]) -> std::io::Result<()> {
+    let mut header = [0; RPC_RESPONSE_HEADER_LEN];
+    header[..RPC_MAGIC.len()].copy_from_slice(RPC_MAGIC);
+    header[5] = status;
+    header[6..14].copy_from_slice(&(body.len() as u64).to_le_bytes());
+    stream.write_all(&header)?;
+    stream.write_all(body)?;
+    stream.flush()
 }
 
 fn load_index_from_log(
@@ -355,7 +474,12 @@ fn load_index_from_log(
     Ok(index)
 }
 
-fn append_put_record(file: &mut File, offset: u64, key: &str, bytes: &[u8]) -> std::io::Result<u64> {
+fn append_put_record(
+    file: &mut File,
+    offset: u64,
+    key: &str,
+    bytes: &[u8],
+) -> std::io::Result<u64> {
     file.seek(SeekFrom::Start(offset))?;
     write_log_header(file, LOG_PUT, key.len() as u32, bytes.len() as u64)?;
     file.write_all(key.as_bytes())?;
@@ -370,12 +494,66 @@ fn append_delete_record(file: &mut File, offset: u64, key: &str) -> std::io::Res
     file.write_all(key.as_bytes())
 }
 
-fn write_log_header(
-    file: &mut File,
-    op: u8,
-    key_len: u32,
-    value_len: u64,
+fn append_put_record_durable(log: &AppendLog, key: &str, bytes: &[u8]) -> std::io::Result<u64> {
+    let mut append = log.state.lock().expect("append state poisoned");
+    let offset = append.next_offset;
+    let value_offset = append_put_record(&mut append.file, offset, key, bytes)?;
+    append.next_offset = append.file.stream_position()?;
+    wait_until_durable(log, append.next_offset, append)?;
+    Ok(value_offset)
+}
+
+fn append_delete_record_durable(log: &AppendLog, key: &str) -> std::io::Result<()> {
+    let mut append = log.state.lock().expect("append state poisoned");
+    let offset = append.next_offset;
+    append_delete_record(&mut append.file, offset, key)?;
+    append.next_offset = append.file.stream_position()?;
+    wait_until_durable(log, append.next_offset, append)
+}
+
+fn wait_until_durable<'a>(
+    log: &'a AppendLog,
+    target_offset: u64,
+    mut append: std::sync::MutexGuard<'a, AppendState>,
 ) -> std::io::Result<()> {
+    loop {
+        if append.durable_offset >= target_offset {
+            return Ok(());
+        }
+        if !append.syncing {
+            append.syncing = true;
+            break;
+        }
+        append = log.durable.wait(append).expect("append state poisoned");
+    }
+
+    loop {
+        let sync_target = append.next_offset;
+        let sync_file = append.file.try_clone()?;
+        drop(append);
+
+        let sync_result = sync_file.sync_data();
+
+        append = log.state.lock().expect("append state poisoned");
+        match sync_result {
+            Ok(()) => {
+                append.durable_offset = append.durable_offset.max(sync_target);
+                append.syncing = false;
+                log.durable.notify_all();
+                if append.durable_offset >= target_offset {
+                    return Ok(());
+                }
+            }
+            Err(err) => {
+                append.syncing = false;
+                log.durable.notify_all();
+                return Err(err);
+            }
+        }
+    }
+}
+
+fn write_log_header(file: &mut File, op: u8, key_len: u32, value_len: u64) -> std::io::Result<()> {
     file.write_all(LOG_MAGIC)?;
     file.write_all(&[op])?;
     file.write_all(&key_len.to_le_bytes())?;
