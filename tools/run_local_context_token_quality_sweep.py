@@ -444,6 +444,36 @@ def pack_to_context_str(pack: dict[str, Any]) -> str:
     return "\n\n".join(f"[{r['ref_type']}:{r['ref_id']}] {r['text']}" for r in pack["selected_refs"])
 
 
+def build_judge_reference(query: str, events, max_chars: int = 9000) -> str:
+    """Query-relevant ground truth for the judge.
+
+    The judge grades each arm's answer against source-of-truth material. Using a
+    newest-first slice makes the reference whatever happens to be recent (here: HTML
+    artifact work), which is off-topic for most queries and wrongly nulls the scores.
+    Instead select the most query-relevant events across the WHOLE corpus so the judge
+    sees the actual facts the question is about. This is neutral between arms: it is
+    independent of either the baseline's recency slice or the managed pack's selection,
+    and it correctly rewards whichever answer got the topical facts right.
+    """
+    q_terms = set(keywords(query))
+    scored = []
+    for rank, e in enumerate(reversed(events)):
+        s = score_text(q_terms, e.text, rank)
+        if s > 0:
+            scored.append((s, e.text))
+    scored.sort(key=lambda c: c[0], reverse=True)
+    if not scored:  # no term hits at all -> fall back to newest-first
+        ordered = sorted(events, key=lambda e: e.timestamp_ms, reverse=True)
+        return ("\n\n".join(e.text for e in ordered))[:max_chars]
+    out, used = [], 0
+    for _s, text in scored:
+        out.append(text)
+        used += len(text) + 2
+        if used >= max_chars:
+            break
+    return ("\n\n".join(out))[:max_chars]
+
+
 # --------------------------------------------------------------------------------------
 # Full local-context baseline (the "replay everything" the agent would otherwise hold).
 # --------------------------------------------------------------------------------------
@@ -696,13 +726,14 @@ def main() -> int:
         return 2
 
     full_ctx = build_full_context(events, args.baseline_max_input_tokens)
-    reference_full = full_ctx["text"]  # judge ground-truth reference
 
     query_reports = []
     for q in EVAL_QUERIES:
         print(f"[query] {q.query_id}", flush=True)
+        # Judge against query-relevant ground truth, not a recency slice (see build_judge_reference).
+        reference_q = build_judge_reference(q.question, events)
         base_ans = reader.answer(q.question, full_ctx["text"])
-        base_judge = judge.judge(q.question, base_ans.get("text", ""), reference_full)
+        base_judge = judge.judge(q.question, base_ans.get("text", ""), reference_q)
         base_cov = term_coverage(base_ans.get("text", ""), q.expected_terms)
         base_score = _combined(base_judge, base_cov)
         sweep = []
@@ -710,7 +741,7 @@ def main() -> int:
             pack = retrieve_pack(q.question, events, segments, entities, summaries, b, current_session_ratio=(args.current_session_ratio or None))
             ctx = pack_to_context_str(pack)
             ans = reader.answer(q.question, ctx)
-            jd = judge.judge(q.question, ans.get("text", ""), reference_full)
+            jd = judge.judge(q.question, ans.get("text", ""), reference_q)
             cov = term_coverage(ans.get("text", ""), q.expected_terms)
             sc = _combined(jd, cov)
             sweep.append({
