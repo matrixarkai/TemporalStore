@@ -8,15 +8,17 @@ pub(crate) fn execute_on_shard(
     async_storage: bool,
     control_rollup_enabled: bool,
     control_coalesce_persist: bool,
+    control_distinct_sketch: bool,
     shard_id: ShardId,
     start_routing_bucket: u32,
     end_routing_bucket: u32,
     shard: &mut ShardState,
     command: Command,
 ) -> ExecuteOutcome {
-    // Publish the coalesce hint for persist_control_state_page (avoids threading the flag
-    // through every control-state write arm).
+    // Publish per-execute hints so the write helpers don't need the flags threaded through
+    // every control-state write arm.
     shard.control_coalesce_persist = control_coalesce_persist;
+    shard.control_distinct_sketch = control_distinct_sketch;
     let mut mutated = false;
     let response = match command {
         Command::CommonDelete { key } => {
@@ -1401,13 +1403,7 @@ pub(crate) fn execute_on_shard(
                 .filter(|precision_ms| *precision_ms > 0)
                 .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
                 .unwrap_or(timestamp_ms);
-            shard
-                .control_state_changes
-                .entry(key.clone())
-                .or_default()
-                .entry(bucket_ms)
-                .or_default()
-                .insert(value);
+            hll::record_change(shard, &key, bucket_ms, value);
             if let Some(ttl_ms) = ttl_ms {
                 shard
                     .expires_at_ms

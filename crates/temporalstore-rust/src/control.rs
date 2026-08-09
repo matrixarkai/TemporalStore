@@ -70,6 +70,12 @@ impl Config {
     pub fn control_coalesce_persist_enabled(&self) -> bool {
         self.flag("control_coalesce_persist")
     }
+
+    /// Gate for bounded distinct: convert oversized exact CHANGE sets to fixed-size HLL sketches
+    /// (approximate distinct counts past the threshold). Off by default so distinct stays exact.
+    pub fn control_distinct_sketch_enabled(&self) -> bool {
+        self.flag("control_distinct_sketch")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
