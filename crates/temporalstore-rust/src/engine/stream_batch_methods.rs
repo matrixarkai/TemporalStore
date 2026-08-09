@@ -122,13 +122,16 @@ impl TemporalEngine {
         }
         let mut shards = self.shards.write().expect("engine lock poisoned");
         let Some(shard) = shards.get_mut(&request.shard_id) else {
-            responses.extend((0..command_count).map(|_| ExecuteResponse {
-                status: Status::error("shard_not_loaded", "shard is not loaded on this server"),
-                response: CommandResponse::Empty,
-            }));
+            // C++ returns a BATCH-LEVEL topology error with ZERO CmdResponse entries when the
+            // partition is missing/not-primary (partition_manager.cc: TopomError, "client should
+            // refresh table topo"), not an OK batch full of per-command errors. The Rust client
+            // treats a batch-level shard_not_loaded status as topology-retryable
+            // (client/retry.rs status_is_cpp_topology_retryable) and refreshes + retries -- but it
+            // keys on the batch-level status, which the old ok+N-errors shape left ok, so the
+            // client never refreshed and kept hitting the wrong node. Return it batch-level.
             return BatchExecuteResponse {
-                status: Status::ok(),
-                responses,
+                status: Status::error("shard_not_loaded", "shard is not loaded on this server"),
+                responses: Vec::new(),
             };
         };
         // Mirror execute_with_storage_override: a shard replaying its WAL on load is present
@@ -145,16 +148,15 @@ impl TemporalEngine {
                 .map(|info| info.recovering)
                 .unwrap_or(false)
         {
-            responses.extend((0..command_count).map(|_| ExecuteResponse {
+            // Batch-level topology-retryable error with empty responses, as above (C++ returns a
+            // partition-level error here, not a per-command one), so the client refreshes topology
+            // and retries rather than seeing an ok batch of failed commands.
+            return BatchExecuteResponse {
                 status: Status::error(
                     "shard_not_loaded",
                     "shard is recovering (WAL replay in progress)",
                 ),
-                response: CommandResponse::Empty,
-            }));
-            return BatchExecuteResponse {
-                status: Status::ok(),
-                responses,
+                responses: Vec::new(),
             };
         }
         let readonly = self
