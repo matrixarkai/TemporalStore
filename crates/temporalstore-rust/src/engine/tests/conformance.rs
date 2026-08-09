@@ -347,6 +347,13 @@ struct RefModel {
     sets: HashMap<String, std::collections::BTreeSet<Vec<u8>>>,
     features: HashMap<String, std::collections::BTreeMap<u64, Vec<u8>>>,
     ips: HashMap<String, std::collections::BTreeMap<u64, Vec<u8>>>,
+    sequences: HashMap<String, std::collections::BTreeMap<u64, SequenceFeatureRow>>,
+    // ControlStateIncrement accumulates `amount` into a raw-timestamp bucket.
+    control_state: HashMap<String, std::collections::BTreeMap<u64, i64>>,
+    // ControlStateChangeAdd inserts distinct values into a raw-timestamp bucket; "change" queries
+    // return the distinct-value count over the range (the current, deliberately-distinct semantics).
+    control_state_changes:
+        HashMap<String, std::collections::BTreeMap<u64, std::collections::BTreeSet<Vec<u8>>>>,
 }
 
 impl RefModel {
@@ -426,12 +433,54 @@ impl RefModel {
                     .or_default()
                     .insert(*timestamp_ms, instance.clone());
             }
+            Command::SequenceAdd { key, rows } => {
+                let series = self.sequences.entry(key.clone()).or_default();
+                // Last-write-wins per timestamp (matches sorted_feature_points collapse).
+                for row in rows {
+                    series.insert(row.timestamp_ms, row.clone());
+                }
+            }
+            Command::ControlStateIncrement {
+                key,
+                timestamp_ms,
+                amount,
+            } => {
+                let bucket = self
+                    .control_state
+                    .entry(key.clone())
+                    .or_default()
+                    .entry(*timestamp_ms)
+                    .or_default();
+                *bucket = bucket.wrapping_add(*amount);
+            }
+            Command::ControlStateChangeAdd {
+                key,
+                timestamp_ms,
+                value,
+                precision_ms,
+                ..
+            } => {
+                // precision_ms=None -> raw-timestamp bucket (the oracle generator uses None).
+                let bucket = precision_ms
+                    .filter(|precision| *precision > 0)
+                    .map(|precision| timestamp_ms - timestamp_ms % precision)
+                    .unwrap_or(*timestamp_ms);
+                self.control_state_changes
+                    .entry(key.clone())
+                    .or_default()
+                    .entry(bucket)
+                    .or_default()
+                    .insert(value.clone());
+            }
             Command::CommonDelete { key } => {
                 self.strings.remove(key);
                 self.hashes.remove(key);
                 self.sets.remove(key);
                 self.features.remove(key);
                 self.ips.remove(key);
+                self.sequences.remove(key);
+                self.control_state.remove(key);
+                self.control_state_changes.remove(key);
             }
             // CommonExpire uses a non-firing TTL in the oracle generator -> no observable effect.
             _ => {}
@@ -440,7 +489,7 @@ impl RefModel {
 }
 
 fn gen_oracle_command(rng: &mut Rng) -> Command {
-    match rng.below(13) {
+    match rng.below(16) {
         0 => Command::StringSet {
             key: rng.model_key('s'),
             value: rng.small_bytes(),
@@ -485,6 +534,30 @@ fn gen_oracle_command(rng: &mut Rng) -> Command {
             instance: rng.small_bytes(),
         },
         11 => Command::CommonDelete { key: rng.any_key() },
+        12 => Command::SequenceAdd {
+            key: rng.model_key('q'),
+            rows: (0..1 + rng.below(3))
+                .map(|_| SequenceFeatureRow {
+                    timestamp_ms: rng.ts(),
+                    gid: rng.below(1000),
+                    action_type: rng.below(8) as u32,
+                    duration: rng.below(100) as u32,
+                    author_id: rng.below(1000),
+                })
+                .collect(),
+        },
+        13 => Command::ControlStateIncrement {
+            key: rng.model_key('c'),
+            timestamp_ms: rng.ts(),
+            amount: (rng.below(2001) as i64) - 1000,
+        },
+        14 => Command::ControlStateChangeAdd {
+            key: rng.model_key('g'),
+            timestamp_ms: rng.ts(),
+            value: rng.small_bytes(),
+            precision_ms: None,
+            ttl_ms: None,
+        },
         _ => Command::CommonExpire {
             key: rng.any_key(),
             ttl_ms: 1 << 40,
@@ -607,6 +680,88 @@ fn oracle_mismatch(engine: &TemporalEngine, model: &RefModel) -> Option<String> 
             .unwrap_or_default();
         if engine_ips != expected {
             return Some(format!("ips {key}: engine={engine_ips:?} model={expected:?}"));
+        }
+
+        // Sequence: all rows, timestamp-ascending, exact.
+        let key = format!("q{n}");
+        match engine_read(
+            engine,
+            Command::SequenceQuery {
+                key: key.clone(),
+                start_ms: 0,
+                end_ms: u64::MAX,
+                count: 1_000_000,
+                filters: Vec::new(),
+            },
+        ) {
+            CommandResponse::SequenceRows { rows } => {
+                let expected: Vec<SequenceFeatureRow> = model
+                    .sequences
+                    .get(&key)
+                    .map(|series| series.values().cloned().collect())
+                    .unwrap_or_default();
+                if rows != expected {
+                    return Some(format!("sequence {key}: engine={rows:?} model={expected:?}"));
+                }
+            }
+            other => return Some(format!("sequence {key}: unexpected {other:?}")),
+        }
+
+        // Control-state increment: SUM aggregate over the full range (the sum is the correct
+        // expected value whether the engine takes the raw or the rollup path).
+        let key = format!("c{n}");
+        match engine_read(
+            engine,
+            Command::ControlStateQuery {
+                key: key.clone(),
+                start_ms: 0,
+                end_ms: u64::MAX,
+                aggregator: "sum".to_string(),
+            },
+        ) {
+            CommandResponse::Integer { value } => {
+                let expected = model
+                    .control_state
+                    .get(&key)
+                    .map(|series| series.values().fold(0i64, |acc, v| acc.wrapping_add(*v)))
+                    .unwrap_or(0);
+                if value != expected {
+                    return Some(format!("control_state sum {key}: engine={value} model={expected}"));
+                }
+            }
+            other => return Some(format!("control_state {key}: unexpected {other:?}")),
+        }
+
+        // Control-state change: distinct-value count over the full range.
+        let key = format!("g{n}");
+        match engine_read(
+            engine,
+            Command::ControlStateQuery {
+                key: key.clone(),
+                start_ms: 0,
+                end_ms: u64::MAX,
+                aggregator: "change".to_string(),
+            },
+        ) {
+            CommandResponse::Integer { value } => {
+                let expected = model
+                    .control_state_changes
+                    .get(&key)
+                    .map(|series| {
+                        let mut unique = std::collections::BTreeSet::new();
+                        for set in series.values() {
+                            unique.extend(set.iter().cloned());
+                        }
+                        unique.len() as i64
+                    })
+                    .unwrap_or(0);
+                if value != expected {
+                    return Some(format!(
+                        "control_state change {key}: engine={value} model={expected}"
+                    ));
+                }
+            }
+            other => return Some(format!("control_state change {key}: unexpected {other:?}")),
         }
     }
     None
