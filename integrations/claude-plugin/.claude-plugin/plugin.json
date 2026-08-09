@@ -1,0 +1,25 @@
+{
+  "name": "matrixark-memory",
+  "displayName": "MatrixArk Memory (TemporalStore)",
+  "version": "1.0.0",
+  "description": "Time-aware long-term memory for Claude Code, backed by the Rust TemporalStore engine. Automatically ingests each session and injects a ranked ContextPack on every prompt, and exposes explicit recall/remember tools over MCP.",
+  "author": {
+    "name": "MatrixArkAI",
+    "url": "https://temporalstore.ai"
+  },
+  "homepage": "https://temporalstore.ai/benchmarks.html",
+  "repository": "https://github.com/bjmeetsfo/TemporalStore",
+  "license": "Apache-2.0",
+  "keywords": ["memory", "context", "temporalstore", "matrixark"],
+  "defaultEnabled": false,
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": "./.mcp.json",
+  "userConfig": {
+    "matrixark_home": {
+      "type": "string",
+      "title": "TemporalStore checkout path",
+      "description": "Absolute path to your TemporalStore repo (the directory containing tools/matrixark_claude_hook.sh and tools/run_matrixark_mcp_server.sh). Example: /root/src/github-services/TemporalStore",
+      "required": true
+    }
+  }
+}
