@@ -350,136 +350,6 @@ fn string_set_conditional_supports_nx_xx_and_get() {
 }
 
 #[test]
-fn ips_remove_delete_and_count_are_supported() {
-    let engine = TemporalEngine::default();
-    engine.load_shard(1);
-    for timestamp_ms in [10, 20, 30] {
-        engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::IpsAdd {
-                key: "ips".to_string(),
-                timestamp_ms,
-                instance: timestamp_ms.to_string().into_bytes(),
-            },
-        });
-    }
-    assert_eq!(
-        engine
-            .execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::IpsCount {
-                    key: "ips".to_string(),
-                    start_ms: 0,
-                    end_ms: 25,
-                },
-            })
-            .response,
-        CommandResponse::Integer { value: 2 }
-    );
-    assert_eq!(
-        engine
-            .execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::IpsRemove {
-                    key: "ips".to_string(),
-                    timestamp_ms: 20,
-                },
-            })
-            .response,
-        CommandResponse::Integer { value: 1 }
-    );
-    assert_eq!(
-        engine
-            .execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::IpsDelete {
-                    key: "ips".to_string(),
-                },
-            })
-            .response,
-        CommandResponse::Integer { value: 1 }
-    );
-}
-
-#[test]
-fn ips_pages_store_timestamp_keys_with_values() {
-    let engine = TemporalEngine::default();
-    engine.load_shard(1);
-
-    assert!(
-        engine
-            .execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::IpsLoad {
-                    key: "packed-ips".to_string(),
-                    points: vec![
-                        FeaturePoint {
-                            timestamp_ms: 10,
-                            value: b"ten".to_vec(),
-                        },
-                        FeaturePoint {
-                            timestamp_ms: 20,
-                            value: b"twenty".to_vec(),
-                        },
-                    ],
-                },
-            })
-            .status
-            .ok
-    );
-
-    let (first_address, second_address, meta_address) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("loaded shard");
-        let series = shard.ips.get("packed-ips").expect("IPS series");
-        let meta = shard.ips_meta.get("packed-ips").expect("IPS metadata");
-        (
-            series.get(&10).expect("first IPS point").clone(),
-            series.get(&20).expect("second IPS point").clone(),
-            meta.get(&20).expect("second IPS metadata").address.clone(),
-        )
-    };
-    assert_eq!(first_address, second_address);
-    assert_eq!(second_address, meta_address);
-    assert_eq!(
-        first_address.object_id,
-        Some(stable_page_object_id(1, "ips", "packed-ips", None))
-    );
-
-    let bytes = engine.block_store().read(&first_address).unwrap();
-    let packed_points = decode_feature_page(&bytes).expect("packed IPS page");
-    assert_eq!(
-        packed_points,
-        vec![
-            FeaturePoint {
-                timestamp_ms: 10,
-                value: b"ten".to_vec(),
-            },
-            FeaturePoint {
-                timestamp_ms: 20,
-                value: b"twenty".to_vec(),
-            },
-        ]
-    );
-
-    let query = engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::IpsQueryRange {
-            key: "packed-ips".to_string(),
-            start_ms: 0,
-            end_ms: 30,
-            count: None,
-        },
-    });
-    assert_eq!(
-        query.response,
-        CommandResponse::FeaturePoints {
-            points: packed_points
-        }
-    );
-}
-
-#[test]
 fn recovery_validates_all_timestamped_kv_page_families() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
@@ -525,25 +395,6 @@ fn recovery_validates_all_timestamped_kv_page_families() {
                 command: Command::SequenceAdd {
                     key: "all-family-sequence".to_string(),
                     rows: sequence_rows.clone(),
-                },
-            })
-            .status
-            .ok
-    );
-
-    let ips_points = (0..8)
-        .map(|idx| FeaturePoint {
-            timestamp_ms: 3_000 + idx,
-            value: vec![b'i'; 10 * 1024],
-        })
-        .collect::<Vec<_>>();
-    assert!(
-        engine
-            .execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::IpsLoad {
-                    key: "all-family-ips".to_string(),
-                    points: ips_points.clone(),
                 },
             })
             .status
@@ -646,9 +497,9 @@ fn recovery_validates_all_timestamped_kv_page_families() {
     let report = engine.storage_recovery_report(1);
     // context_dirty tracking was intentionally moved to an ephemeral in-memory
     // coalesced index (commit 9390d110), so it no longer contributes a persisted
-    // timestamped page: feature 8 + sequence 8 + ips 8 + context_event/index/audit
-    // 1 each = 27 (was 28 when a context_dirty page was persisted).
-    assert_eq!(report.feature_page_layout.indexed_timestamped_points, 27);
+    // timestamped page: feature 8 + sequence 8 + context_event/index/audit
+    // 1 each = 19.
+    assert_eq!(report.feature_page_layout.indexed_timestamped_points, 19);
     assert!(report.feature_page_layout.packed_timestamped_pages >= 10);
     assert!(
         report
@@ -683,7 +534,6 @@ fn recovery_validates_all_timestamped_kv_page_families() {
     for kind in [
         "feature",
         "sequence",
-        "ips",
         "context_event",
         "context_index",
         "context_audit",
@@ -701,7 +551,6 @@ fn recovery_validates_all_timestamped_kv_page_families() {
             .unique_page_refs
             > 1
     );
-    assert!(families.get("ips").expect("ips family").unique_page_refs > 1);
 
     assert_eq!(
         engine
@@ -735,78 +584,6 @@ fn recovery_validates_all_timestamped_kv_page_families() {
         CommandResponse::SequenceRows {
             rows: sequence_rows
         }
-    );
-    assert_eq!(
-        engine
-            .execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::IpsQueryRange {
-                    key: "all-family-ips".to_string(),
-                    start_ms: 3_000,
-                    end_ms: 3_010,
-                    count: None,
-                },
-            })
-            .response,
-        CommandResponse::FeaturePoints { points: ips_points }
-    );
-}
-
-#[test]
-fn ips_compaction_rewrites_shared_timestamped_page_once() {
-    let engine = TemporalEngine::default();
-    engine.load_shard(1);
-    assert_eq!(
-        engine
-            .execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::IpsLoad {
-                    key: "compact-ips".to_string(),
-                    points: vec![
-                        FeaturePoint {
-                            timestamp_ms: 10,
-                            value: b"ten".to_vec(),
-                        },
-                        FeaturePoint {
-                            timestamp_ms: 20,
-                            value: b"twenty".to_vec(),
-                        },
-                    ],
-                },
-            })
-            .response,
-        CommandResponse::Integer { value: 2 }
-    );
-
-    let report = engine.compact_shard_pages(1).unwrap();
-    assert_eq!(report.rewritten_page_refs, 1);
-
-    let (first_address, second_address, meta_address) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("loaded shard");
-        let series = shard.ips.get("compact-ips").expect("IPS series");
-        let meta = shard.ips_meta.get("compact-ips").expect("IPS metadata");
-        (
-            series.get(&10).expect("first IPS point").clone(),
-            series.get(&20).expect("second IPS point").clone(),
-            meta.get(&20).expect("second IPS metadata").address.clone(),
-        )
-    };
-    assert_eq!(first_address, second_address);
-    assert_eq!(second_address, meta_address);
-    let bytes = engine.block_store().read(&first_address).unwrap();
-    assert_eq!(
-        decode_feature_page(&bytes).expect("packed IPS page"),
-        vec![
-            FeaturePoint {
-                timestamp_ms: 10,
-                value: b"ten".to_vec(),
-            },
-            FeaturePoint {
-                timestamp_ms: 20,
-                value: b"twenty".to_vec(),
-            },
-        ]
     );
 }
 
@@ -1307,67 +1084,6 @@ fn feature_write_policy_sequence_batch_ips_dimensions_and_control_state_precisio
         }
     );
 
-    for (timestamp_ms, value, action_type, request_id) in [
-        (10, b"a10".to_vec(), Some(1), Some("r1".to_string())),
-        (20, b"a20".to_vec(), Some(2), Some("r2".to_string())),
-        (30, b"a30".to_vec(), Some(1), Some("r3".to_string())),
-    ] {
-        engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::IpsAddWithOptions {
-                key: "ips-dim".to_string(),
-                timestamp_ms,
-                instance: value,
-                action_type,
-                table_id: Some(99),
-                request_id,
-            },
-        });
-    }
-    assert_eq!(
-        engine
-            .execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::IpsAddWithOptions {
-                    key: "ips-dim".to_string(),
-                    timestamp_ms: 40,
-                    instance: b"dup".to_vec(),
-                    action_type: Some(1),
-                    table_id: Some(99),
-                    request_id: Some("r1".to_string()),
-                },
-            })
-            .response,
-        CommandResponse::Integer { value: 0 }
-    );
-    assert_eq!(
-        engine
-            .execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::IpsQueryRangeWithOptions {
-                    key: "ips-dim".to_string(),
-                    start_ms: 0,
-                    end_ms: 40,
-                    count: None,
-                    action_type: Some(1),
-                    table_id: Some(99),
-                },
-            })
-            .response,
-        CommandResponse::FeaturePoints {
-            points: vec![
-                FeaturePoint {
-                    timestamp_ms: 10,
-                    value: b"a10".to_vec(),
-                },
-                FeaturePoint {
-                    timestamp_ms: 30,
-                    value: b"a30".to_vec(),
-                },
-            ]
-        }
-    );
-
     engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::ControlStateIncrementWithOptions {
@@ -1761,11 +1477,6 @@ fn stats_include_cpp_style_partition_and_object_manager_accounting() {
                 },
             ],
         },
-        Command::IpsAdd {
-            key: "ips-key".to_string(),
-            timestamp_ms: 30,
-            instance: b"i".to_vec(),
-        },
         Command::ControlStateSet {
             family: ControlStateFamily::Cpc,
             key: "control_state-key".to_string(),
@@ -1785,12 +1496,12 @@ fn stats_include_cpp_style_partition_and_object_manager_accounting() {
     }
 
     let stats = engine.get_stats(9).stats.unwrap();
-    assert_eq!(stats.total_records, 7);
-    assert_eq!(stats.object_manager.object_count, 7);
-    assert_eq!(stats.object_manager.page_ref_count, 10);
-    assert_eq!(stats.object_manager.dirty_object_count, 7);
+    assert_eq!(stats.total_records, 6);
+    assert_eq!(stats.object_manager.object_count, 6);
+    assert_eq!(stats.object_manager.page_ref_count, 9);
+    assert_eq!(stats.object_manager.dirty_object_count, 6);
     assert!(stats.object_manager.dirty_bucket_count > 0);
-    assert!(stats.object_manager.dirty_bucket_count <= 7);
+    assert!(stats.object_manager.dirty_bucket_count <= 6);
     assert_eq!(stats.object_manager.routing_bucket_count, 11);
     assert_eq!(stats.shard_stat_info.table_name, "feature_table");
     assert_eq!(stats.shard_stat_info.shard_uri, "local://table/shard-9");

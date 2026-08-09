@@ -23,7 +23,6 @@ mod commands;
 mod table_feature;
 mod table_context;
 mod table_control_state;
-mod table_ips;
 mod retry;
 mod routing;
 
@@ -40,7 +39,7 @@ use crate::types::{
     parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
     ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit, ContextSummaryDirtyMarker,
     ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy,
-    IpsSnapshotReport, IpsStats, ControlStateFamily, ControlStateFolType, SequenceFeatureRow, SequenceQuerySpec,
+    ControlStateFamily, ControlStateFolType, SequenceFeatureRow, SequenceQuerySpec,
     ShardId, Status,
 };
 
@@ -327,7 +326,6 @@ impl Default for ClientProductionReplacementContract {
                 "set".to_string(),
                 "feature".to_string(),
                 "sequence".to_string(),
-                "ips".to_string(),
                 "control_state".to_string(),
                 "redis".to_string(),
                 "admin".to_string(),

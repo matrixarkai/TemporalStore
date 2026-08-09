@@ -52,19 +52,6 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::FeatureAggQuery { key, .. }
         | Command::SequenceAdd { key, .. }
         | Command::SequenceQuery { key, .. }
-        | Command::IpsAdd { key, .. }
-        | Command::IpsAddWithOptions { key, .. }
-        | Command::IpsLoad { key, .. }
-        | Command::IpsQueryLast { key, .. }
-        | Command::IpsQueryRange { key, .. }
-        | Command::IpsQueryRangeWithOptions { key, .. }
-        | Command::IpsSnapshot { key, .. }
-        | Command::IpsSnapshotReport { key, .. }
-        | Command::IpsStat { key, .. }
-        | Command::IpsFilter { key, .. }
-        | Command::IpsRemove { key, .. }
-        | Command::IpsDelete { key }
-        | Command::IpsCount { key, .. }
         | Command::ControlStateIncrement { key, .. }
         | Command::ControlStateIncrementWithOptions { key, .. }
         | Command::ControlStateChangeAdd { key, .. }
@@ -79,8 +66,7 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::ControlStateFolQuery { key }
         | Command::ControlStateManager { key, .. }
         | Command::ControlStateDebug { key, .. } => Some(key),
-        Command::IpsBatchQueryLast { .. }
-        | Command::SequenceBatchQuery { .. }
+        Command::SequenceBatchQuery { .. }
         | Command::ContextUpsertNode { .. }
         | Command::ContextGetNode { .. }
         | Command::ContextGetNodes { .. }

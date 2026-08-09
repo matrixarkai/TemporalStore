@@ -1676,26 +1676,6 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
             end_ms: *end_ms,
             limit: (*count).min(u32::MAX as usize) as u32,
         }),
-        Command::IpsAdd {
-            key,
-            timestamp_ms,
-            instance,
-        } => v1::command::Kind::IpsAdd(v1::IpsAdd {
-            key: key.clone(),
-            timestamp_ms: *timestamp_ms,
-            payload: instance.clone(),
-        }),
-        Command::IpsQueryRange {
-            key,
-            start_ms,
-            end_ms,
-            count,
-        } => v1::command::Kind::IpsQuery(v1::IpsQuery {
-            key: key.clone(),
-            start_ms: *start_ms,
-            end_ms: *end_ms,
-            limit: count.unwrap_or(0).min(u32::MAX as usize) as u32,
-        }),
         Command::ControlStateIncrement {
             key,
             timestamp_ms,

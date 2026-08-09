@@ -199,33 +199,6 @@ pub struct SequenceQuerySpec {
     pub filters: Vec<FeatureFilter>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct IpsStats {
-    pub total: u64,
-    pub first_timestamp_ms: Option<u64>,
-    pub last_timestamp_ms: Option<u64>,
-    pub action_type_counts: Vec<(u32, u64)>,
-    pub table_id_counts: Vec<(u64, u64)>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct IpsSnapshotReport {
-    pub key: String,
-    pub start_ms: u64,
-    pub end_ms: u64,
-    pub requested_count: Option<usize>,
-    pub returned_count: usize,
-    pub total_in_range: u64,
-    pub first_timestamp_ms: Option<u64>,
-    pub last_timestamp_ms: Option<u64>,
-    pub action_type_counts: Vec<(u32, u64)>,
-    pub table_id_counts: Vec<(u64, u64)>,
-    pub unique_page_ref_count: usize,
-    pub packed_timestamped_page_count: usize,
-    #[serde(alias = "page_segment_ids")]
-    pub page_slab_ids: Vec<u64>,
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlStateFamily {
@@ -1265,94 +1238,6 @@ pub enum Command {
     SequenceBatchQuery {
         queries: Vec<SequenceQuerySpec>,
     },
-    IpsAdd {
-        key: String,
-        timestamp_ms: u64,
-        instance: Vec<u8>,
-    },
-    IpsAddWithOptions {
-        key: String,
-        timestamp_ms: u64,
-        instance: Vec<u8>,
-        #[serde(default)]
-        action_type: Option<u32>,
-        #[serde(default)]
-        table_id: Option<u64>,
-        #[serde(default)]
-        request_id: Option<String>,
-    },
-    IpsLoad {
-        key: String,
-        points: Vec<FeaturePoint>,
-    },
-    IpsQueryLast {
-        key: String,
-        count: usize,
-    },
-    IpsQueryRange {
-        key: String,
-        start_ms: u64,
-        end_ms: u64,
-        #[serde(default)]
-        count: Option<usize>,
-    },
-    IpsBatchQueryLast {
-        keys: Vec<String>,
-        count: usize,
-    },
-    IpsRemove {
-        key: String,
-        timestamp_ms: u64,
-    },
-    IpsDelete {
-        key: String,
-    },
-    IpsCount {
-        key: String,
-        start_ms: u64,
-        end_ms: u64,
-    },
-    IpsQueryRangeWithOptions {
-        key: String,
-        start_ms: u64,
-        end_ms: u64,
-        #[serde(default)]
-        count: Option<usize>,
-        #[serde(default)]
-        action_type: Option<u32>,
-        #[serde(default)]
-        table_id: Option<u64>,
-    },
-    IpsSnapshot {
-        key: String,
-        start_ms: u64,
-        end_ms: u64,
-        #[serde(default)]
-        count: Option<usize>,
-    },
-    IpsSnapshotReport {
-        key: String,
-        start_ms: u64,
-        end_ms: u64,
-        #[serde(default)]
-        count: Option<usize>,
-    },
-    IpsStat {
-        key: String,
-        start_ms: u64,
-        end_ms: u64,
-    },
-    IpsFilter {
-        key: String,
-        start_ms: u64,
-        end_ms: u64,
-        #[serde(default)]
-        count: Option<usize>,
-        #[serde(default)]
-        action_type: Option<u32>,
-        #[serde(default)]
-        table_id: Option<u64>,
-    },
     ControlStateIncrement {
         key: String,
         timestamp_ms: u64,
@@ -1784,12 +1669,6 @@ pub enum CommandResponse {
     },
     SequenceRowGroups {
         groups: Vec<(String, Vec<SequenceFeatureRow>)>,
-    },
-    IpsStats {
-        stats: IpsStats,
-    },
-    IpsSnapshotReport {
-        report: IpsSnapshotReport,
     },
     ContextNode {
         object_key: String,

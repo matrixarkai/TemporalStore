@@ -67,7 +67,6 @@ pub(super) fn read_feature_points_in_range(
     let series = match model_id {
         "feature" => shard.features.get(key),
         "sequence" => shard.sequences.get(key),
-        "ips" => shard.ips.get(key),
         _ => None,
     };
     series
@@ -141,51 +140,3 @@ pub(super) fn read_feature_aggregate(
     aggregate_feature_values(&values, aggregator)
 }
 
-pub(super) fn read_ips_count_in_range(
-    cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
-    shard_id: ShardId,
-    shard: &ShardState,
-    key: &str,
-    start_ms: u64,
-    end_ms: u64,
-) -> i64 {
-    shard
-        .ips
-        .get(key)
-        .map(|series| series.range(crate::engine::timestamp_range_bounds(start_ms, end_ms)).count() as i64)
-        .unwrap_or_else(|| {
-            let addresses = bucket_index_object_page_addresses(shard, "ips", key);
-            read_feature_points_from_pages_in_range(
-                cache,
-                page_store,
-                shard_id,
-                &addresses,
-                start_ms,
-                end_ms,
-                usize::MAX,
-            )
-            .len() as i64
-        })
-}
-
-pub(super) fn read_ips_points_last(
-    cache: &MultiLayerCache,
-    page_store: &LocalBlockStore,
-    shard_id: ShardId,
-    shard: &ShardState,
-    key: &str,
-    count: usize,
-) -> Vec<FeaturePoint> {
-    shard
-        .ips
-        .get(key)
-        .map(|series| {
-            let refs = timestamp_page_refs_last(series, count);
-            read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
-        })
-        .unwrap_or_else(|| {
-            let addresses = bucket_index_object_page_addresses(shard, "ips", key);
-            read_feature_points_from_pages_last(cache, page_store, shard_id, &addresses, count)
-        })
-}

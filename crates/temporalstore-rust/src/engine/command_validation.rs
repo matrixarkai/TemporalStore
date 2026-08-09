@@ -15,8 +15,7 @@ pub(super) fn command_read_keys(command: &Command) -> Vec<String> {
         | Command::HashLen { key, .. }
         | Command::SetMembers { key, .. }
         | Command::FeatureQuery { key, .. }
-        | Command::SequenceQuery { key, .. }
-        | Command::IpsQueryLast { key, .. } => vec![key.clone()],
+        | Command::SequenceQuery { key, .. } => vec![key.clone()],
         _ => Vec::new(),
     }
 }
@@ -50,11 +49,6 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::FeatureReplace { key, .. }
         | Command::FeatureDelete { key }
         | Command::SequenceAdd { key, .. }
-        | Command::IpsAdd { key, .. }
-        | Command::IpsAddWithOptions { key, .. }
-        | Command::IpsLoad { key, .. }
-        | Command::IpsRemove { key, .. }
-        | Command::IpsDelete { key }
         | Command::ControlStateIncrement { key, .. }
         | Command::ControlStateIncrementWithOptions { key, .. }
         | Command::ControlStateChangeAdd { key, .. }
@@ -201,15 +195,6 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::FeatureQueryFiltered { .. }
         | Command::FeatureAggQuery { .. }
         | Command::SequenceQuery { .. }
-        | Command::IpsQueryLast { .. }
-        | Command::IpsQueryRange { .. }
-        | Command::IpsBatchQueryLast { .. }
-        | Command::IpsCount { .. }
-        | Command::IpsQueryRangeWithOptions { .. }
-        | Command::IpsSnapshot { .. }
-        | Command::IpsSnapshotReport { .. }
-        | Command::IpsStat { .. }
-        | Command::IpsFilter { .. }
         | Command::ControlStateCount { .. }
         | Command::ControlStateQuery { .. }
         | Command::ControlStateDetail { .. }
@@ -277,11 +262,6 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::FeatureReplace { .. }
             | Command::FeatureDelete { .. }
             | Command::SequenceAdd { .. }
-            | Command::IpsAdd { .. }
-            | Command::IpsAddWithOptions { .. }
-            | Command::IpsLoad { .. }
-            | Command::IpsRemove { .. }
-            | Command::IpsDelete { .. }
             | Command::ControlStateIncrement { .. }
             | Command::ControlStateIncrementWithOptions { .. }
             | Command::ControlStateChangeAdd { .. }

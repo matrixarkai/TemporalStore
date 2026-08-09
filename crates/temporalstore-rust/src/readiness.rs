@@ -975,7 +975,7 @@ mod tests {
         assert!(scale_testing
             .covered
             .iter()
-            .any(|item| item.contains("Feature, IPS, ControlState, Redis, Context, and admin")));
+            .any(|item| item.contains("Feature, ControlState, Redis, Context, and admin")));
         assert!(scale_testing.covered.iter().any(|item| {
             item.contains("Docker/AWS SLO report")
                 && item.contains("metaserver, proxy, client, data-node")

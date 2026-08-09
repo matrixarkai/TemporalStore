@@ -35,11 +35,6 @@ pub(super) struct ShardState {
     pub(super) sets: HashMap<String, BTreeMap<Vec<u8>, BlockAddress>>,
     pub(super) features: HashMap<String, BTreeMap<u64, BlockAddress>>,
     pub(super) sequences: HashMap<String, BTreeMap<u64, BlockAddress>>,
-    pub(super) ips: HashMap<String, BTreeMap<u64, BlockAddress>>,
-    #[serde(default)]
-    pub(super) ips_meta: HashMap<String, BTreeMap<u64, IpsPointMeta>>,
-    #[serde(default)]
-    pub(super) ips_request_ids: HashMap<String, BTreeSet<String>>,
     pub(super) control_state: HashMap<String, BTreeMap<u64, i64>>,
     #[serde(default)]
     pub(super) control_state_pages: HashMap<String, BlockAddress>,
@@ -395,14 +390,6 @@ pub(super) struct AdmissionLimit {
     pub(super) scope: AdmissionScope,
     pub(super) limit: u64,
     pub(super) label: &'static str,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct IpsPointMeta {
-    pub(super) address: BlockAddress,
-    pub(super) action_type: Option<u32>,
-    pub(super) table_id: Option<u64>,
-    pub(super) request_id: Option<String>,
 }
 
 pub(super) struct ExecuteOutcome {

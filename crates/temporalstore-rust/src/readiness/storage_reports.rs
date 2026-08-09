@@ -304,7 +304,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
     let model_layout_compaction_evidence = vec![
         "ShardCompactionReport exposes model_layout_compaction_ready".to_string(),
         "compaction rewrites live page refs by model family".to_string(),
-        "packed timestamped Feature/Sequence/IPS/Context layouts preserve shared page refs"
+        "packed timestamped Feature/Sequence/Context layouts preserve shared page refs"
             .to_string(),
         "tombstone object ids are preserved across compaction".to_string(),
         "stale page density and slot layout transition counts are reported".to_string(),

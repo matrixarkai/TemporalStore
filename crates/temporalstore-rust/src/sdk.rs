@@ -365,17 +365,6 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             count: command.limit.max(1) as usize,
             filters: Vec::new(),
         },
-        v1::command::Kind::IpsAdd(command) => types::Command::IpsAdd {
-            key: command.key,
-            timestamp_ms: command.timestamp_ms,
-            instance: command.payload,
-        },
-        v1::command::Kind::IpsQuery(command) => types::Command::IpsQueryRange {
-            key: command.key,
-            start_ms: command.start_ms,
-            end_ms: command.end_ms,
-            count: nonzero_limit(command.limit),
-        },
         v1::command::Kind::ControlStateIncrement(command) => types::Command::ControlStateIncrement {
             key: command.key,
             timestamp_ms: command.timestamp_ms,

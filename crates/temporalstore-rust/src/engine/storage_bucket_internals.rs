@@ -730,7 +730,6 @@ pub(super) fn model_id_for_kind(kind: &str) -> u16 {
         "set" => 3,
         "feature" => 4,
         "sequence" => 5,
-        "ips" => 6,
         "context_node" => 20,
         "context_event" => 21,
         "context_index" => 22,
@@ -934,13 +933,6 @@ pub(super) fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePag
             unique_timestamped_kv_page_addresses(series)
                 .into_iter()
                 .map(|address| live_page_entry(key.clone(), "sequence", None, address)),
-        );
-    }
-    for (key, series) in &shard.ips {
-        entries.extend(
-            unique_timestamped_kv_page_addresses(series)
-                .into_iter()
-                .map(|address| live_page_entry(key.clone(), "ips", None, address)),
         );
     }
     entries.extend(
@@ -1511,7 +1503,6 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut saw_sets = false;
     let mut saw_features = false;
     let mut saw_sequences = false;
-    let mut saw_ips = false;
     let mut saw_control_state = false;
     let mut saw_context_events = false;
     let mut saw_context_indexes = false;
@@ -1527,7 +1518,6 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut sets = HashMap::<String, BTreeMap<Vec<u8>, BlockAddress>>::new();
     let mut features = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut sequences = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
-    let mut ips = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut control_state = HashMap::<String, BTreeMap<u64, i64>>::new();
     let mut control_state_pages = HashMap::new();
     let mut context_events = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
@@ -1581,17 +1571,6 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                     warm_shard,
                     &mut warm_batch,
                     &mut sequences,
-                    entry.object_key,
-                    entry.address,
-                );
-            }
-            "ips" => {
-                saw_ips = true;
-                insert_timestamped_secondary_view(
-                    page_store,
-                    warm_shard,
-                    &mut warm_batch,
-                    &mut ips,
                     entry.object_key,
                     entry.address,
                 );
@@ -1712,10 +1691,6 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     if saw_sequences {
         let persisted = std::mem::take(&mut shard.sequences);
         shard.sequences = reconcile_timestamped_series_membership(&persisted, sequences);
-    }
-    if saw_ips {
-        let persisted = std::mem::take(&mut shard.ips);
-        shard.ips = reconcile_timestamped_series_membership(&persisted, ips);
     }
     if saw_control_state {
         // The serialized i64 series is authoritative (the page is a copy of it): keep the

@@ -593,7 +593,7 @@ fn runtime_dump_can_flush_only_selected_dirty_buckets() {
 #[test]
 fn previously_misclassified_writes_mark_shard_dirty() {
     // The data_node write classifier delegates to the engine's authoritative one, so writes it
-    // used to omit (context / control-state change+fol / ips load/remove/delete / conditional
+    // used to omit (context / control-state change+fol / conditional
     // string) now correctly mark the shard dirty (and hit the lifecycle write gate). Regression:
     // a ControlStateFolSet -- previously classified READ here -- must mark the shard dirty.
     let engine = TemporalEngine::default();

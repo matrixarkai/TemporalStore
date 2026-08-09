@@ -553,14 +553,6 @@ fn is_raft_read_command(command: &Command) -> bool {
             | Command::FeatureAggQuery { .. }
             | Command::SequenceQuery { .. }
             | Command::SequenceBatchQuery { .. }
-            | Command::IpsQueryLast { .. }
-            | Command::IpsQueryRange { .. }
-            | Command::IpsBatchQueryLast { .. }
-            | Command::IpsCount { .. }
-            | Command::IpsQueryRangeWithOptions { .. }
-            | Command::IpsSnapshot { .. }
-            | Command::IpsStat { .. }
-            | Command::IpsFilter { .. }
             | Command::ControlStateCount { .. }
             | Command::ControlStateQuery { .. }
             | Command::ControlStateDetail { .. }

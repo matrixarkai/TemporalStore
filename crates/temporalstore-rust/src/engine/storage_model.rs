@@ -5,7 +5,6 @@ pub(super) fn storage_model_code(kind: &str) -> u8 {
         "set" => 3,
         "feature" => 4,
         "sequence" => 5,
-        "ips" => 6,
         "control_state" => 7,
         "context_node" => 8,
         "context_event" => 9,
@@ -26,7 +25,7 @@ pub(super) fn compaction_layout_policy_for_model(model_id: &str) -> &'static str
             "single_page_object"
         }
         "hash" | "set" => "component_page_object",
-        "feature" | "sequence" | "ips" => "timestamped_chunked_pages",
+        "feature" | "sequence" => "timestamped_chunked_pages",
         model if model.starts_with("context_") => "context_timeline_or_sidecar_pages",
         _ => "generic_page_object",
     }

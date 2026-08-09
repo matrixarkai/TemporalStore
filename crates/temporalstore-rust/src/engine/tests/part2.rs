@@ -2631,7 +2631,7 @@ fn cpp_feature_sequence_golden_corpus_passes() {
 fn cpp_api_golden_corpus_passes() {
     let report = cpp_api_golden_corpus_report();
     assert_eq!(report.corpus, "cpp_api_golden_corpus_v1");
-    assert_eq!(report.total_cases, 16);
+    assert_eq!(report.total_cases, 14);
     assert!(report.passed(), "{report:#?}");
     assert_eq!(report.passed_cases, report.total_cases);
     assert_eq!(report.failed_cases, 0);
@@ -3071,45 +3071,6 @@ fn long_sequence_query_keeps_timestamp_order_and_applies_random_filters() {
             .all(|pair| pair[0].timestamp_ms < pair[1].timestamp_ms));
         assert!(rows.len() <= count);
     }
-}
-
-#[test]
-fn ips_query_last_returns_recent_instances() {
-    let engine = TemporalEngine::default();
-    engine.load_shard(1);
-    for (timestamp_ms, value) in [(1, b"a".to_vec()), (2, b"b".to_vec()), (3, b"c".to_vec())] {
-        engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::IpsAdd {
-                key: "ips".to_string(),
-                timestamp_ms,
-                instance: value,
-            },
-        });
-    }
-    assert_eq!(
-        engine
-            .execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::IpsQueryLast {
-                    key: "ips".to_string(),
-                    count: 2,
-                },
-            })
-            .response,
-        CommandResponse::FeaturePoints {
-            points: vec![
-                FeaturePoint {
-                    timestamp_ms: 3,
-                    value: b"c".to_vec(),
-                },
-                FeaturePoint {
-                    timestamp_ms: 2,
-                    value: b"b".to_vec(),
-                }
-            ]
-        }
-    );
 }
 
 #[test]

@@ -197,33 +197,6 @@ fn main() {
                 value: args[8].parse().expect("filter value must be u64"),
             }],
         },
-        "ipsadd" if args.len() == 5 => Command::IpsAdd {
-            key: args[2].clone(),
-            timestamp_ms: args[3].parse().expect("timestamp must be u64"),
-            instance: args[4].as_bytes().to_vec(),
-        },
-        "ipslast" if args.len() == 4 => Command::IpsQueryLast {
-            key: args[2].clone(),
-            count: args[3].parse().expect("count must be usize"),
-        },
-        "ipsrange" if args.len() == 5 || args.len() == 6 => Command::IpsQueryRange {
-            key: args[2].clone(),
-            start_ms: args[3].parse().expect("start must be u64"),
-            end_ms: args[4].parse().expect("end must be u64"),
-            count: args.get(5).map(|v| v.parse().expect("count must be usize")),
-        },
-        "ipsremove" if args.len() == 4 => Command::IpsRemove {
-            key: args[2].clone(),
-            timestamp_ms: args[3].parse().expect("timestamp must be u64"),
-        },
-        "ipsdel" if args.len() == 3 => Command::IpsDelete {
-            key: args[2].clone(),
-        },
-        "ipscount" if args.len() == 5 => Command::IpsCount {
-            key: args[2].clone(),
-            start_ms: args[3].parse().expect("start must be u64"),
-            end_ms: args[4].parse().expect("end must be u64"),
-        },
         "control_stateinc" if args.len() == 5 => Command::ControlStateIncrement {
             key: args[2].clone(),
             timestamp_ms: args[3].parse().expect("timestamp must be u64"),

@@ -1090,39 +1090,6 @@ fn live_page_slab_ids_scan_all_index_backed_data_models() {
                 sha256: None,
             },
         );
-    shard.ips.entry("ips".to_string()).or_default().insert(
-        12,
-        BlockAddress {
-            page_slab_id: 12,
-            offset: 0,
-            length: 1,
-            page_id: None,
-            object_id: None,
-            routing_bucket: None,
-            band_id: None,
-            generation: None,
-            sha256: None,
-        },
-    );
-    shard.ips_meta.entry("ips".to_string()).or_default().insert(
-        13,
-        IpsPointMeta {
-            address: BlockAddress {
-                page_slab_id: 13,
-                offset: 0,
-                length: 1,
-                page_id: None,
-                object_id: None,
-                routing_bucket: None,
-                band_id: None,
-                generation: None,
-                sha256: None,
-            },
-            action_type: Some(1),
-            table_id: Some(2),
-            request_id: Some("r".to_string()),
-        },
-    );
     shard
         .control_state
         .entry("control_state".to_string())
@@ -1132,7 +1099,7 @@ fn live_page_slab_ids_scan_all_index_backed_data_models() {
     let ids = collect_live_page_slab_ids(&shard)
         .into_iter()
         .collect::<Vec<_>>();
-    assert_eq!(ids, vec![7, 8, 9, 10, 11, 12]);
+    assert_eq!(ids, vec![7, 8, 9, 10, 11]);
 }
 
 #[test]
@@ -1326,19 +1293,6 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
                 },
             ],
         },
-        Command::IpsLoad {
-            key: "compact-ips-layout".to_string(),
-            points: vec![
-                FeaturePoint {
-                    timestamp_ms: 30,
-                    value: b"thirty".to_vec(),
-                },
-                FeaturePoint {
-                    timestamp_ms: 40,
-                    value: b"forty".to_vec(),
-                },
-            ],
-        },
         Command::ControlStateSet {
             family: ControlStateFamily::Cpc,
             key: "compact-control_state".to_string(),
@@ -1460,8 +1414,6 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
     assert_eq!(layout("sequence").index_refs, 2);
     assert_eq!(layout("sequence").unique_page_refs, 1);
     assert_eq!(layout("sequence").packed_timestamped_pages, 1);
-    assert_eq!(layout("ips").index_refs, 2);
-    assert_eq!(layout("ips").unique_page_refs, 1);
     assert_eq!(layout("context_event").index_refs, 1);
     assert_eq!(layout("context_embedding").unique_page_refs, 1);
     assert_eq!(layout("context_summary").index_refs, 1);
@@ -1483,7 +1435,6 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
     assert!(policy("hash").layout_aware_rewrite_required);
     assert!(policy("feature").layout_aware_rewrite_required);
     assert!(policy("sequence").layout_aware_rewrite_required);
-    assert!(policy("ips").layout_aware_rewrite_required);
     assert!(policy("control_state").layout_aware_rewrite_required);
     assert!(policy("context_event").layout_aware_rewrite_required);
     assert!(policy("context_embedding").layout_aware_rewrite_required);
@@ -1507,7 +1458,6 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
         "string",
         "hash",
         "feature",
-        "ips",
         "control_state",
         "context_event",
         "context_embedding",

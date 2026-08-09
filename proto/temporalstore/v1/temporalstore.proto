@@ -235,8 +235,6 @@ message Command {
     FeatureQuery feature_query = 11;
     SequenceAppend sequence_append = 12;
     SequenceQuery sequence_query = 13;
-    IpsAdd ips_add = 14;
-    IpsQuery ips_query = 15;
     ControlStateIncrement control_state_increment = 16;
     ControlStateQuery control_state_query = 17;
     ContextNodeUpsert context_node_upsert = 18;
@@ -337,19 +335,6 @@ message SequenceAppend {
 }
 
 message SequenceQuery {
-  string key = 1;
-  uint64 start_ms = 2;
-  uint64 end_ms = 3;
-  uint32 limit = 4;
-}
-
-message IpsAdd {
-  string key = 1;
-  uint64 timestamp_ms = 2;
-  bytes payload = 3;
-}
-
-message IpsQuery {
   string key = 1;
   uint64 start_ms = 2;
   uint64 end_ms = 3;

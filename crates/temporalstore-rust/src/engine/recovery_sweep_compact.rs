@@ -410,16 +410,6 @@ impl TemporalEngine {
                 &mut rewrite_stats,
             )?;
         }
-        for series in shard.ips.values_mut() {
-            compact_feature_page_addresses(
-                &self.page_store,
-                &self.cache,
-                shard_id,
-                "ips",
-                series,
-                &mut rewrite_stats,
-            )?;
-        }
         compact_page_addresses(
             &self.page_store,
             &self.cache,
@@ -514,18 +504,6 @@ impl TemporalEngine {
         )?;
             Ok(())
         })();
-        // ips_meta mirrors the ips page addresses; it is infallible, so run it regardless of
-        // whether a relocation failed above so the index we may persist below stays internally
-        // consistent with the (possibly partially) rewritten ips addresses.
-        for (key, meta_series) in &mut shard.ips_meta {
-            if let Some(address_series) = shard.ips.get(key) {
-                for (timestamp, meta) in meta_series {
-                    if let Some(address) = address_series.get(timestamp) {
-                        meta.address = address.clone();
-                    }
-                }
-            }
-        }
         if let Err(err) = relocation_result {
             // A relocation failed partway. The in-memory index is now a CONSISTENT partial
             // snapshot -- pages already moved point at the fresh durable slab, the rest still point

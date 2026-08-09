@@ -585,29 +585,6 @@ pub struct ProxySequenceQueryCommandRequest {
     pub filters: Vec<FeatureFilter>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyIpsAddCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub key: String,
-    pub timestamp_ms: u64,
-    pub instance: Vec<u8>,
-    #[serde(default)]
-    pub action_type: Option<u32>,
-    #[serde(default)]
-    pub table_id: Option<u64>,
-    #[serde(default)]
-    pub request_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyIpsQueryLastCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub key: String,
-    pub count: usize,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyControlStateIncrementCommandRequest {
     pub namespace: String,
