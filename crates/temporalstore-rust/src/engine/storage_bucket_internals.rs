@@ -1724,6 +1724,9 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         merged.extend(persisted);
         shard.control_state = merged;
         shard.control_state_pages = control_state_pages;
+        // The rollup ladder is a derived view of control_state; drop it so it rebuilds
+        // lazily from the series reconcile just materialized.
+        super::control_rollup::clear_all(shard);
     }
     if saw_context_events {
         let persisted = std::mem::take(&mut shard.context_events);

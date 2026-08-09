@@ -6,6 +6,7 @@ pub(crate) fn execute_on_shard(
     page_store: &LocalBlockStore,
     feature_max_size: usize,
     async_storage: bool,
+    control_rollup_enabled: bool,
     shard_id: ShardId,
     start_routing_bucket: u32,
     end_routing_bucket: u32,
@@ -586,7 +587,10 @@ pub(crate) fn execute_on_shard(
                         // readable when it occupies its own page.
                         series
                             .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
-                            .take(count.unwrap_or(5000))
+                            // Default read bound follows feature_max_size so raising the
+                            // retention cap (long-sequence use) also lifts the read limit;
+                            // identical to the historical 5000 at the default cap.
+                            .take(count.unwrap_or(feature_max_size))
                             .filter_map(|(timestamp_ms, address)| {
                                 read_feature_point_cached(
                                     cache,
@@ -717,7 +721,7 @@ pub(crate) fn execute_on_shard(
                 .map(|series| {
                     series
                         .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
-                        .take(count.unwrap_or(5000))
+                        .take(count.unwrap_or(feature_max_size))
                         .filter_map(|(timestamp_ms, address)| {
                             read_feature_point(cache, page_store, shard_id, *timestamp_ms, address)
                                 .map(|point| point.value)
@@ -1294,6 +1298,9 @@ pub(crate) fn execute_on_shard(
                 end_routing_bucket,
                 async_storage,
             );
+            if control_rollup_enabled {
+                control_rollup::record_increment(shard, &key, timestamp_ms, amount);
+            }
             mutated = true;
             CommandResponse::Empty
         }
@@ -1330,6 +1337,9 @@ pub(crate) fn execute_on_shard(
                 end_routing_bucket,
                 async_storage,
             );
+            if control_rollup_enabled {
+                control_rollup::record_increment(shard, &key, bucket_ms, amount);
+            }
             mutated = true;
             CommandResponse::Empty
         }
@@ -1372,16 +1382,20 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            let value = shard
-                .control_state
-                .get(&key)
-                .map(|series| {
-                    series
-                        .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
-                        .map(|(_, value)| *value)
-                        .sum()
-                })
-                .unwrap_or_default();
+            let value = if control_rollup_enabled {
+                control_rollup::windowed_sum(shard, &key, start_ms, end_ms)
+            } else {
+                shard
+                    .control_state
+                    .get(&key)
+                    .map(|series| {
+                        series
+                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
+                            .map(|(_, value)| *value)
+                            .sum()
+                    })
+                    .unwrap_or_default()
+            };
             CommandResponse::Integer { value }
         }
         Command::ControlStateQuery {
@@ -1400,6 +1414,10 @@ pub(crate) fn execute_on_shard(
             if is_control_state_change_aggregator(&aggregator) {
                 CommandResponse::Integer {
                     value: count_control_state_changes(shard, &key, start_ms, end_ms),
+                }
+            } else if control_rollup_enabled && control_rollup::is_sum_family(&aggregator) {
+                CommandResponse::Integer {
+                    value: control_rollup::windowed_sum(shard, &key, start_ms, end_ms),
                 }
             } else {
                 let values = shard
@@ -1470,6 +1488,9 @@ pub(crate) fn execute_on_shard(
                 end_routing_bucket,
                 async_storage,
             );
+            if control_rollup_enabled {
+                control_rollup::record_increment(shard, &key, timestamp_ms, amount);
+            }
             mutated = true;
             CommandResponse::Empty
         }
@@ -1500,6 +1521,9 @@ pub(crate) fn execute_on_shard(
                 end_routing_bucket,
                 async_storage,
             );
+            if control_rollup_enabled {
+                control_rollup::record_increment(shard, &key, timestamp_ms, amount);
+            }
             mutated = true;
             CommandResponse::Integer {
                 value: aggregate_control_state_values(&values, &aggregator),
@@ -1575,6 +1599,9 @@ pub(crate) fn execute_on_shard(
                 end_routing_bucket,
                 async_storage,
             );
+            if control_rollup_enabled && !is_duplicate {
+                control_rollup::record_increment(shard, &key, bucket_ms, amount);
+            }
             mutated = true;
             CommandResponse::Integer { value }
         }
@@ -1596,6 +1623,10 @@ pub(crate) fn execute_on_shard(
             if is_control_state_change_aggregator(&aggregator) {
                 CommandResponse::Integer {
                     value: count_control_state_changes(shard, &key, start_ms, end_ms),
+                }
+            } else if control_rollup_enabled && control_rollup::is_sum_family(&aggregator) {
+                CommandResponse::Integer {
+                    value: control_rollup::windowed_sum(shard, &key, start_ms, end_ms),
                 }
             } else {
                 let values = shard

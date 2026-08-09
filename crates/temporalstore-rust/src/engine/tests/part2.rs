@@ -3069,6 +3069,99 @@ fn control_state_count_sums_window() {
     );
 }
 
+// The gated control-state rollup ladder must return exactly the same sum-family window
+// aggregates as the ungated raw scan, through the real execute() path. Functional-parity
+// gate for the O(levels) long-window control-state path (frequency caps / counts).
+#[test]
+fn control_state_rollup_matches_raw_scan_through_engine() {
+    fn run(rollup_gate: bool) -> Vec<i64> {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        if rollup_gate {
+            let mut config = Config {
+                version: 2,
+                ..Config::default()
+            };
+            config
+                .extend_config
+                .insert("control_rollup".to_string(), "on".to_string());
+            assert!(
+                engine
+                    .set_config(SetConfigRequest {
+                        shard_id: 1,
+                        config,
+                    })
+                    .ok
+            );
+        }
+        let mut state: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            state
+        };
+        for _ in 0..1500 {
+            let timestamp_ms = next() % (3 * 86_400_000);
+            let amount = (next() % 21) as i64 - 10; // -10..=10, incl. negatives and zero
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ControlStateIncrement {
+                    key: "cs".to_string(),
+                    timestamp_ms,
+                    amount,
+                },
+            });
+        }
+        let windows = [
+            (0u64, 999u64),
+            (0, 60_000),
+            (500, 3_600_000),
+            (0, 86_400_000),
+            (1_000, 7 * 86_400_000),
+            (37_000_000, 91_000_000),
+            (0, 3 * 86_400_000),
+        ];
+        let mut out = Vec::new();
+        for (start_ms, end_ms) in windows {
+            for aggregator in ["", "sum", "count"] {
+                if let CommandResponse::Integer { value } = engine
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::ControlStateQuery {
+                            key: "cs".to_string(),
+                            start_ms,
+                            end_ms,
+                            aggregator: aggregator.to_string(),
+                        },
+                    })
+                    .response
+                {
+                    out.push(value);
+                }
+            }
+            if let CommandResponse::Integer { value } = engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::ControlStateCount {
+                        key: "cs".to_string(),
+                        start_ms,
+                        end_ms,
+                    },
+                })
+                .response
+            {
+                out.push(value);
+            }
+        }
+        out
+    }
+    let with_rollup = run(true);
+    let raw = run(false);
+    assert_eq!(with_rollup, raw, "rollup path diverged from raw scan");
+    assert!(raw.iter().any(|value| *value != 0), "test series should be non-trivial");
+}
+
 // C++ MANAGER op-code parity: QUERY(2) / FIELD_LIST(5) / FIELD_COUNT(6) / ALL_DATA_VALUE(7)
 // over the H family series, plus the default summary path.
 #[test]
