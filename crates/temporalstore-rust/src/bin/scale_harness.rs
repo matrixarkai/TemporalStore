@@ -478,6 +478,13 @@ impl ObjectStore for ScaleObjectStore {
         }
     }
 
+    async fn get_many(&self, keys: &[String]) -> Result<Vec<(String, Bytes)>, ObjectStoreError> {
+        match self {
+            Self::File(store) => store.get_many(keys).await,
+            Self::MatrixObject(store) => store.get_many(keys).await,
+        }
+    }
+
     async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
         match self {
             Self::File(store) => store.list(prefix).await,

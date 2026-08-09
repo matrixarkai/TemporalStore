@@ -93,6 +93,7 @@ const RPC_GET: u8 = 2;
 const RPC_DELETE: u8 = 3;
 const RPC_LIST: u8 = 4;
 const RPC_LIST_AFTER: u8 = 5;
+const RPC_GET_MANY: u8 = 6;
 const RPC_STATUS_OK: u8 = 0;
 const RPC_STATUS_NOT_FOUND: u8 = 1;
 const RPC_STATUS_ERROR: u8 = 2;
@@ -219,6 +220,24 @@ fn handle_rpc_stream(stream: &mut TcpStream, service: ObjectService) -> std::io:
                 }
                 Err(err) => write_rpc_error(stream, err)?,
             },
+            RPC_GET_MANY => {
+                let mut key_list_bytes = vec![0; value_len as usize];
+                stream.read_exact(&mut key_list_bytes)?;
+                let key_list = match String::from_utf8(key_list_bytes) {
+                    Ok(key_list) => key_list,
+                    Err(err) => {
+                        write_rpc_response(stream, RPC_STATUS_ERROR, err.to_string().as_bytes())?;
+                        continue;
+                    }
+                };
+                match service.get_many(key_list.lines().filter(|key| !key.is_empty())) {
+                    Ok(body) => write_rpc_response(stream, RPC_STATUS_OK, &body)?,
+                    Err(MatrixObjectError::SegmentNotFound(_)) => {
+                        write_rpc_response(stream, RPC_STATUS_NOT_FOUND, b"object not found")?
+                    }
+                    Err(err) => write_rpc_error(stream, err)?,
+                }
+            }
             RPC_DELETE => match service.delete(key) {
                 Ok(()) => write_rpc_response(stream, RPC_STATUS_OK, &[])?,
                 Err(err) => write_rpc_error(stream, err)?,
@@ -328,6 +347,45 @@ impl ObjectService {
         })();
         self.return_read_file(file);
         Ok(result?)
+    }
+
+    fn get_many<'a>(&self, keys: impl Iterator<Item = &'a str>) -> matrixobject::Result<Vec<u8>> {
+        let mut file = self.take_read_file()?;
+        let mut records = Vec::new();
+        let mut count = 0u32;
+        records.extend_from_slice(&0u32.to_le_bytes());
+        for key in keys {
+            let bytes = match self.get_with_file(key, &mut file) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    self.return_read_file(file);
+                    return Err(err);
+                }
+            };
+            records.extend_from_slice(&(key.len() as u32).to_le_bytes());
+            records.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+            records.extend_from_slice(key.as_bytes());
+            records.extend_from_slice(&bytes);
+            count += 1;
+        }
+        self.return_read_file(file);
+        records[..4].copy_from_slice(&count.to_le_bytes());
+        Ok(records)
+    }
+
+    fn get_with_file(&self, key: &str, file: &mut File) -> matrixobject::Result<Vec<u8>> {
+        validate_key(key)?;
+        let meta = self
+            .index
+            .lock()
+            .expect("object index poisoned")
+            .get(key)
+            .cloned()
+            .ok_or_else(|| MatrixObjectError::SegmentNotFound(self.segment_id_for_key(key)))?;
+        file.seek(SeekFrom::Start(meta.offset))?;
+        let mut bytes = vec![0; meta.len as usize];
+        file.read_exact(&mut bytes)?;
+        Ok(bytes)
     }
 
     fn list(&self, prefix: &str) -> Vec<String> {

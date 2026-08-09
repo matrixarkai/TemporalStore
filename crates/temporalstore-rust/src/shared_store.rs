@@ -384,10 +384,7 @@ where
         let mut keys = self.list_oplog_after(shard_id, after_oplog_index).await?;
         keys.sort();
 
-        let mut report = ReplayReport {
-            applied: 0,
-            last_oplog_index: after_oplog_index,
-        };
+        let mut selected = Vec::new();
         for key in keys {
             let Some(oplog_index) = parse_oplog_index(&key) else {
                 continue;
@@ -395,7 +392,15 @@ where
             if oplog_index <= after_oplog_index {
                 continue;
             }
-            let entry = self.read_oplog_entry(&key).await?;
+            selected.push((oplog_index, key));
+        }
+        let entries = self.read_oplog_entries(&selected).await?;
+
+        let mut report = ReplayReport {
+            applied: 0,
+            last_oplog_index: after_oplog_index,
+        };
+        for ((oplog_index, _), entry) in selected.into_iter().zip(entries) {
             let response = engine.execute(ExecuteRequest {
                 shard_id,
                 command: entry.command,
@@ -422,10 +427,7 @@ where
         keys.sort();
 
         let mut expected = after_oplog_index + 1;
-        let mut report = ReplayReport {
-            applied: 0,
-            last_oplog_index: after_oplog_index,
-        };
+        let mut selected = Vec::new();
         for key in keys {
             let Some(oplog_index) = parse_oplog_index(&key) else {
                 continue;
@@ -439,7 +441,16 @@ where
                     actual: oplog_index,
                 });
             }
-            let entry = self.read_oplog_entry(&key).await?;
+            selected.push((oplog_index, key));
+            expected += 1;
+        }
+        let entries = self.read_oplog_entries(&selected).await?;
+
+        let mut report = ReplayReport {
+            applied: 0,
+            last_oplog_index: after_oplog_index,
+        };
+        for ((oplog_index, _), entry) in selected.into_iter().zip(entries) {
             let response = engine.execute(ExecuteRequest {
                 shard_id,
                 command: entry.command,
@@ -452,7 +463,6 @@ where
             }
             report.applied += 1;
             report.last_oplog_index = oplog_index;
-            expected += 1;
         }
         Ok(report)
     }
@@ -618,11 +628,24 @@ where
         )
     }
 
-    async fn read_oplog_entry(
+    async fn read_oplog_entries(
+        &self,
+        keys: &[(u64, String)],
+    ) -> Result<Vec<SharedStoreOplogEntry>, SharedStoreReplicationError> {
+        let object_keys = keys.iter().map(|(_, key)| key.clone()).collect::<Vec<_>>();
+        let objects = self.object_store.get_many(&object_keys).await?;
+        let mut entries = Vec::with_capacity(objects.len());
+        for (key, bytes) in objects {
+            entries.push(self.parse_oplog_entry_object(&key, &bytes)?);
+        }
+        Ok(entries)
+    }
+
+    fn parse_oplog_entry_object(
         &self,
         key: &str,
+        bytes: &[u8],
     ) -> Result<SharedStoreOplogEntry, SharedStoreReplicationError> {
-        let bytes = self.object_store.get(key).await?;
         if let Ok(object) = serde_json::from_slice::<SharedStoreOplogObject>(&bytes) {
             let entry_bytes = serde_json::to_vec(&object.entry)?;
             verify_checksum(
