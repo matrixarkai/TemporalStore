@@ -6,6 +6,7 @@ use crate::block_store::BlockAddress;
 use crate::types::{CommandResponse, FeaturePoint, ControlStateFolType, ShardId};
 
 use super::control_rollup::RollupEntry;
+use super::hll::Hll;
 
 /// In-memory, coalesced summary-dirty entry.
 ///
@@ -44,6 +45,12 @@ pub(super) struct ShardState {
     pub(super) control_state_pages: HashMap<String, BlockAddress>,
     #[serde(default)]
     pub(super) control_state_changes: HashMap<String, BTreeMap<u64, BTreeSet<Vec<u8>>>>,
+    // Bounded distinct: per (key, bucket) HyperLogLog sketch. A bucket lives in EITHER
+    // control_state_changes (exact set, small) OR here (fixed-size HLL, converted once the
+    // exact set exceeds the threshold), so high-cardinality distinct counts stay memory-bounded.
+    // Serde-default + durable (rides the index snapshot + WAL, like control_state_changes).
+    #[serde(default)]
+    pub(super) control_state_change_sketch: HashMap<String, BTreeMap<u64, Hll>>,
     #[serde(default)]
     pub(super) control_state_fol: HashMap<String, ControlStateFolValue>,
     // UUID idempotency ledger for control-state writes: uuid -> expiry_ms. Mirrors
@@ -64,6 +71,10 @@ pub(super) struct ShardState {
     // control_state_changes/fol sub-stores already do. Serde-skipped; set on every execute.
     #[serde(skip)]
     pub(super) control_coalesce_persist: bool,
+    // Transient per-execute hint: gate for converting oversized exact distinct sets to HLL
+    // sketches on the CHANGE write path. Serde-skipped; set on every execute.
+    #[serde(skip)]
+    pub(super) control_distinct_sketch: bool,
     // Derived, in-memory feature-aggregate rollup: the numeric view of the feature series
     // (feature_values, decoded via aggregate_feature_values so it is bit-identical to the raw
     // aggregate) plus the shared rollup ladder over it. Serde-skipped; rebuilt lazily on the

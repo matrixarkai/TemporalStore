@@ -141,13 +141,9 @@ pub(super) fn gc_control_state_uuid(shard: &mut ShardState, now_ms: u64) {
 }
 
 pub(super) fn count_control_state_changes(shard: &ShardState, key: &str, start_ms: u64, end_ms: u64) -> i64 {
-    let mut unique = BTreeSet::new();
-    if let Some(series) = shard.control_state_changes.get(key) {
-        for (_, values) in series.range(crate::engine::timestamp_range_bounds(start_ms, end_ms)) {
-            unique.extend(values.iter().cloned());
-        }
-    }
-    unique.len() as i64
+    // Exact when no bucket in the window is sketched; HLL estimate once any bucket has been
+    // converted to a bounded sketch (high-cardinality distinct).
+    super::hll::count_changes(shard, key, start_ms, end_ms)
 }
 
 pub(super) fn control_state_family_key(family: ControlStateFamily, key: &str) -> String {

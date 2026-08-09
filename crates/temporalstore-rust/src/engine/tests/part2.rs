@@ -3141,6 +3141,129 @@ fn control_state_count_sums_window() {
     );
 }
 
+// Bounded distinct: small distinct sets stay exact (gate on or off); a high-cardinality set is
+// converted to a fixed-size HLL sketch past the threshold, so the count becomes a bounded
+// estimate (within tolerance) instead of an unbounded exact set.
+#[test]
+fn control_state_distinct_sketch_bounds_high_cardinality() {
+    fn distinct_count(gate: bool, n: usize) -> i64 {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        if gate {
+            let mut config = Config {
+                version: 2,
+                ..Config::default()
+            };
+            config
+                .extend_config
+                .insert("control_distinct_sketch".to_string(), "on".to_string());
+            assert!(engine.set_config(SetConfigRequest { shard_id: 1, config }).ok);
+        }
+        for i in 0..n {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ControlStateChangeAdd {
+                    key: "d".to_string(),
+                    timestamp_ms: 1000,
+                    value: format!("v{i}").into_bytes(),
+                    precision_ms: None,
+                    ttl_ms: None,
+                },
+            });
+        }
+        match engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ControlStateQuery {
+                    key: "d".to_string(),
+                    start_ms: 0,
+                    end_ms: 10_000,
+                    aggregator: "change".to_string(),
+                },
+            })
+            .response
+        {
+            CommandResponse::Integer { value } => value,
+            other => panic!("expected Integer, got {other:?}"),
+        }
+    }
+    // Below the threshold: exact regardless of the gate.
+    assert_eq!(distinct_count(true, 100), 100);
+    assert_eq!(distinct_count(false, 100), 100);
+    // Above the threshold (4096): exact path stays exact; sketch path is a bounded estimate.
+    let n = 5_000usize;
+    assert_eq!(distinct_count(false, n), n as i64, "exact distinct must be exact");
+    let approx = distinct_count(true, n);
+    let err = ((approx - n as i64).abs() as f64) / n as f64;
+    assert!(err < 0.05, "sketch estimate {approx} not within 5% of {n}");
+}
+
+// The bounded distinct sketch must be durable: after conversion + flush, the estimate survives a
+// restart (loaded from the index snapshot), not just the exact sets.
+#[test]
+fn control_state_distinct_sketch_survives_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-a"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+    // ChangeAdd is in-memory (no per-write page); durability here comes from the index-snapshot
+    // flush, so sync mode is enough and avoids a per-write WAL fsync for every distinct value.
+    let mut config = Config {
+        version: 2,
+        ..Config::default()
+    };
+    config
+        .extend_config
+        .insert("control_distinct_sketch".to_string(), "on".to_string());
+    assert!(engine.set_config(SetConfigRequest { shard_id: 1, config }).ok);
+    let n = 5_000usize; // just over the 4096 threshold to force conversion to a sketch
+    for i in 0..n {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ControlStateChangeAdd {
+                key: "d".to_string(),
+                timestamp_ms: 1000,
+                value: format!("v{i}").into_bytes(),
+                precision_ms: None,
+                ttl_ms: None,
+            },
+        });
+    }
+    engine.flush_shard_index(1); // checkpoint the sketch into the durable index snapshot
+    drop(engine);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    restarted.load_shard(1);
+    let value = match restarted
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ControlStateQuery {
+                key: "d".to_string(),
+                start_ms: 0,
+                end_ms: 10_000,
+                aggregator: "change".to_string(),
+            },
+        })
+        .response
+    {
+        CommandResponse::Integer { value } => value,
+        other => panic!("expected Integer, got {other:?}"),
+    };
+    let err = ((value - n as i64).abs() as f64) / n as f64;
+    assert!(err < 0.05, "restored sketch estimate {value} not within 5% of {n}");
+}
+
 // The gated feature-aggregate rollup (FeatureAggQuery routed through the shared rollup
 // primitive) must return exactly the same sum-family window aggregates as the ungated raw
 // scan. Per-point values are folded via aggregate_feature_values, so the rollup is exact.
