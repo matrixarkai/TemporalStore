@@ -9,9 +9,9 @@ use std::sync::{Arc, Condvar, Mutex};
 
 #[derive(Clone)]
 struct ObjectService {
-    data_path: PathBuf,
     index: Arc<Mutex<BTreeMap<String, ObjectMeta>>>,
     append: Arc<AppendLog>,
+    read_file: Arc<Mutex<File>>,
     tenant_id: String,
     volume_id: String,
     append_segment_id: u64,
@@ -119,13 +119,16 @@ fn main() {
         .write(true)
         .open(&data_path)
         .expect("object data log should open");
+    let read_file = std::fs::OpenOptions::new()
+        .read(true)
+        .open(&data_path)
+        .expect("object data log read handle should open");
     let file_offset = data_file
         .metadata()
         .expect("object data log metadata should load")
         .len();
     let append_offset = file_offset;
     let service = ObjectService {
-        data_path,
         index: Arc::new(Mutex::new(index)),
         append: Arc::new(AppendLog {
             state: Mutex::new(AppendState {
@@ -136,6 +139,7 @@ fn main() {
             }),
             durable: Condvar::new(),
         }),
+        read_file: Arc::new(Mutex::new(read_file)),
         tenant_id,
         volume_id,
         append_segment_id,
@@ -298,7 +302,7 @@ impl ObjectService {
             .get(&key)
             .cloned()
             .ok_or_else(|| MatrixObjectError::SegmentNotFound(self.segment_id_for_key(&key)))?;
-        let mut file = File::open(&self.data_path)?;
+        let mut file = self.read_file.lock().expect("object read file poisoned");
         file.seek(SeekFrom::Start(meta.offset))?;
         let mut bytes = vec![0; meta.len as usize];
         file.read_exact(&mut bytes)?;
