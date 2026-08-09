@@ -62,7 +62,7 @@ pub(super) fn sequence_rows_in_range(
         .get(key)
         .map(|series| {
             series
-                .range(start_ms..=end_ms)
+                .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                 .take(count)
                 .filter_map(|(timestamp_ms, address)| {
                     read_sequence_row(cache, block_store, shard_id, *timestamp_ms, address)
@@ -143,7 +143,7 @@ pub(super) fn gc_control_state_uuid(shard: &mut ShardState, now_ms: u64) {
 pub(super) fn count_control_state_changes(shard: &ShardState, key: &str, start_ms: u64, end_ms: u64) -> i64 {
     let mut unique = BTreeSet::new();
     if let Some(series) = shard.control_state_changes.get(key) {
-        for (_, values) in series.range(start_ms..=end_ms) {
+        for (_, values) in series.range(crate::engine::timestamp_range_bounds(start_ms, end_ms)) {
             unique.extend(values.iter().cloned());
         }
     }
@@ -223,7 +223,7 @@ pub(super) fn control_state_manager_entries(
             let start = start_offset.parse::<u64>().unwrap_or(0);
             let end = end_offset.parse::<u64>().unwrap_or(u64::MAX);
             let value = series
-                .range(start..=end)
+                .range(crate::engine::timestamp_range_bounds(start, end))
                 .map(|(timestamp_ms, _)| timestamp_ms.to_string())
                 .collect::<Vec<_>>()
                 .join(",");
@@ -303,7 +303,7 @@ pub(super) fn ips_points_in_range(
         .get(key)
         .map(|series| {
             series
-                .range(start_ms..=end_ms)
+                .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                 .take(count.unwrap_or(usize::MAX))
                 .filter_map(|(timestamp_ms, address)| {
                     read_feature_point(cache, block_store, shard_id, *timestamp_ms, address)
@@ -338,7 +338,7 @@ pub(super) fn ips_points_in_range_with_options(
         );
     };
     series
-        .range(start_ms..=end_ms)
+        .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
         .filter(|(_, meta)| {
             action_type
                 .map(|expected| meta.action_type == Some(expected))
@@ -402,7 +402,7 @@ pub(super) fn ips_snapshot_report_in_range(
     let mut page_slab_ids = BTreeSet::<u64>::new();
     let mut packed_timestamped_page_count = 0usize;
     if let Some(series) = shard.ips.get(&key) {
-        for (_, address) in series.range(start_ms..=end_ms) {
+        for (_, address) in series.range(crate::engine::timestamp_range_bounds(start_ms, end_ms)) {
             if page_refs.insert(address.clone()) {
                 page_slab_ids.insert(address.page_slab_id);
                 if read_page_bytes(cache, block_store, shard_id, address)
@@ -449,14 +449,14 @@ pub(super) fn ips_stats_in_range(
     let mut table_id_counts = BTreeMap::<u64, u64>::new();
 
     if let Some(series) = shard.ips.get(key) {
-        for (timestamp_ms, _) in series.range(start_ms..=end_ms) {
+        for (timestamp_ms, _) in series.range(crate::engine::timestamp_range_bounds(start_ms, end_ms)) {
             total += 1;
             first_timestamp_ms.get_or_insert(*timestamp_ms);
             last_timestamp_ms = Some(*timestamp_ms);
         }
     }
     if let Some(series) = shard.ips_meta.get(key) {
-        for (_, meta) in series.range(start_ms..=end_ms) {
+        for (_, meta) in series.range(crate::engine::timestamp_range_bounds(start_ms, end_ms)) {
             if let Some(action_type) = meta.action_type {
                 *action_type_counts.entry(action_type).or_default() += 1;
             }

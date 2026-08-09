@@ -1036,6 +1036,26 @@ impl TemporalEngine {
 
 }
 
+/// Inclusive `[start, end]` timestamp bounds for `BTreeMap::range` that yield an EMPTY range
+/// (never panic) when `start > end`. `BTreeMap::range` panics on reversed bounds, and every
+/// range query runs under the shard write lock, so a client sending `start_ms > end_ms` would
+/// poison the lock and take the whole shard down (every later `.lock().expect()` panics). C++
+/// `RangeGet` simply iterates and returns an empty result with Status::OK when `min > max`
+/// (model/ips/ips_operator.cc), so match that: reversed bounds → empty range, not a crash. For
+/// `start <= end` this is byte-for-byte the same set as `start..=end`.
+pub(crate) fn timestamp_range_bounds(
+    start: u64,
+    end: u64,
+) -> (std::ops::Bound<u64>, std::ops::Bound<u64>) {
+    use std::ops::Bound;
+    if start <= end {
+        (Bound::Included(start), Bound::Included(end))
+    } else {
+        // Empty, non-panicking: `[1, 1)` contains nothing and is a valid (not both-excluded) range.
+        (Bound::Included(1), Bound::Excluded(1))
+    }
+}
+
 fn bulk_ingest_mode() -> bool {
     matches!(
         std::env::var("MATRIXARK_BULK_INGEST")

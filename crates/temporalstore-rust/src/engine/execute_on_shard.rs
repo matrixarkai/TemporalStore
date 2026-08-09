@@ -585,7 +585,7 @@ pub(crate) fn execute_on_shard(
                         // page reader, so a large single timestamped value remains
                         // readable when it occupies its own page.
                         series
-                            .range(start_ms..=end_ms)
+                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                             .take(count.unwrap_or(5000))
                             .filter_map(|(timestamp_ms, address)| {
                                 read_feature_point_cached(
@@ -617,7 +617,7 @@ pub(crate) fn execute_on_shard(
                 .map(|series| {
                     let mut page_cache = HashMap::new();
                     series
-                        .range(start_ms..=end_ms)
+                        .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                         .take(limit)
                         .filter_map(|(timestamp_ms, address)| {
                             read_feature_point_cached(
@@ -654,7 +654,7 @@ pub(crate) fn execute_on_shard(
             let series = shard.features.entry(key.clone()).or_default();
             let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             let replaced = series
-                .range(start_ms..=end_ms)
+                .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                 .map(|(timestamp_ms, _)| *timestamp_ms)
                 .collect::<Vec<_>>();
             for timestamp_ms in replaced {
@@ -716,7 +716,7 @@ pub(crate) fn execute_on_shard(
                 .get(&key)
                 .map(|series| {
                     series
-                        .range(start_ms..=end_ms)
+                        .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                         .take(count.unwrap_or(5000))
                         .filter_map(|(timestamp_ms, address)| {
                             read_feature_point(cache, page_store, shard_id, *timestamp_ms, address)
@@ -795,7 +795,7 @@ pub(crate) fn execute_on_shard(
                 .get(&key)
                 .map(|series| {
                     series
-                        .range(start_ms..=end_ms)
+                        .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                         .take(count)
                         .filter_map(|(timestamp_ms, address)| {
                             read_sequence_row(cache, page_store, shard_id, *timestamp_ms, address)
@@ -1144,7 +1144,7 @@ pub(crate) fn execute_on_shard(
             let value = shard
                 .ips
                 .get(&key)
-                .map(|series| series.range(start_ms..=end_ms).count() as i64)
+                .map(|series| series.range(crate::engine::timestamp_range_bounds(start_ms, end_ms)).count() as i64)
                 .unwrap_or_default();
             CommandResponse::Integer { value }
         }
@@ -1377,7 +1377,7 @@ pub(crate) fn execute_on_shard(
                 .get(&key)
                 .map(|series| {
                     series
-                        .range(start_ms..=end_ms)
+                        .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                         .map(|(_, value)| *value)
                         .sum()
                 })
@@ -1407,7 +1407,7 @@ pub(crate) fn execute_on_shard(
                     .get(&key)
                     .map(|series| {
                         series
-                            .range(start_ms..=end_ms)
+                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                             .map(|(_, value)| *value)
                             .collect::<Vec<_>>()
                     })
@@ -1435,7 +1435,7 @@ pub(crate) fn execute_on_shard(
                 .get(&key)
                 .map(|series| {
                     series
-                        .range(start_ms..=end_ms)
+                        .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                         .take(count.unwrap_or(usize::MAX))
                         .map(|(timestamp_ms, amount)| FeaturePoint {
                             timestamp_ms: *timestamp_ms,
@@ -1487,7 +1487,7 @@ pub(crate) fn execute_on_shard(
             let series = shard.control_state.entry(key.clone()).or_default();
             *series.entry(timestamp_ms).or_default() += amount;
             let values = series
-                .range(start_ms..=end_ms)
+                .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                 .map(|(_, value)| *value)
                 .collect::<Vec<_>>();
             persist_control_state_page(
@@ -1553,7 +1553,7 @@ pub(crate) fn execute_on_shard(
                     .get(&key)
                     .map(|series| {
                         series
-                            .range(start_ms..=end_ms)
+                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                             .map(|(_, value)| *value)
                             .collect::<Vec<_>>()
                     })
@@ -1603,7 +1603,7 @@ pub(crate) fn execute_on_shard(
                     .get(&key)
                     .map(|series| {
                         series
-                            .range(start_ms..=end_ms)
+                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                             .map(|(_, value)| *value)
                             .collect::<Vec<_>>()
                     })
@@ -1725,7 +1725,7 @@ pub(crate) fn execute_on_shard(
                 let window = series
                     .map(|series| {
                         series
-                            .range(start_ms..=end_ms)
+                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                             .map(|(timestamp_ms, value)| (*timestamp_ms, *value))
                             .collect::<Vec<_>>()
                     })

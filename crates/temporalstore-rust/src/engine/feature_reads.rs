@@ -24,7 +24,7 @@ fn timestamp_page_refs_in_range(
     let mut refs = Vec::with_capacity(limit.min(series.len()));
     refs.extend(
         series
-            .range(start_ms..=end_ms)
+            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
             .take(limit)
             .map(|(timestamp_ms, address)| (*timestamp_ms, address.clone())),
     );
@@ -153,7 +153,7 @@ pub(super) fn read_ips_count_in_range(
     shard
         .ips
         .get(key)
-        .map(|series| series.range(start_ms..=end_ms).count() as i64)
+        .map(|series| series.range(crate::engine::timestamp_range_bounds(start_ms, end_ms)).count() as i64)
         .unwrap_or_else(|| {
             let addresses = bucket_index_object_page_addresses(shard, "ips", key);
             read_feature_points_from_pages_in_range(
