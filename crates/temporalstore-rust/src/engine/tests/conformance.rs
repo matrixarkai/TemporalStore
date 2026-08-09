@@ -423,6 +423,45 @@ impl RefModel {
                     series.insert(point.timestamp_ms, point.value.clone());
                 }
             }
+            Command::FeatureReplace {
+                key,
+                start_ms,
+                end_ms,
+                points,
+            } => {
+                let series = self.features.entry(key.clone()).or_default();
+                // Remove existing points in [start, end] (empty if start > end, matching the engine's
+                // reversed-bounds guard), then upsert the new points (which may fall outside the
+                // range). feature_max_size trim not modeled -- the generator stays far under 5000.
+                if start_ms <= end_ms {
+                    series.retain(|timestamp, _| !(*timestamp >= *start_ms && *timestamp <= *end_ms));
+                }
+                for point in points {
+                    series.insert(point.timestamp_ms, point.value.clone());
+                }
+            }
+            Command::FeatureDelete { key } => {
+                self.features.remove(key);
+            }
+            Command::ControlStateIncrementWithOptions {
+                key,
+                timestamp_ms,
+                amount,
+                precision_ms,
+                ..
+            } => {
+                let bucket = precision_ms
+                    .filter(|precision| *precision > 0)
+                    .map(|precision| timestamp_ms - timestamp_ms % precision)
+                    .unwrap_or(*timestamp_ms);
+                let slot = self
+                    .control_state
+                    .entry(key.clone())
+                    .or_default()
+                    .entry(bucket)
+                    .or_default();
+                *slot = slot.wrapping_add(*amount);
+            }
             Command::IpsAdd {
                 key,
                 timestamp_ms,
@@ -489,7 +528,7 @@ impl RefModel {
 }
 
 fn gen_oracle_command(rng: &mut Rng) -> Command {
-    match rng.below(16) {
+    match rng.below(19) {
         0 => Command::StringSet {
             key: rng.model_key('s'),
             value: rng.small_bytes(),
@@ -558,6 +597,35 @@ fn gen_oracle_command(rng: &mut Rng) -> Command {
             precision_ms: None,
             ttl_ms: None,
         },
+        15 => {
+            let (start_ms, end_ms) = adversarial_bounds(rng);
+            Command::FeatureReplace {
+                key: rng.model_key('f'),
+                start_ms,
+                end_ms,
+                points: (0..1 + rng.below(3))
+                    .map(|_| FeaturePoint {
+                        timestamp_ms: rng.ts(),
+                        value: rng.small_bytes(),
+                    })
+                    .collect(),
+            }
+        }
+        16 => Command::FeatureDelete {
+            key: rng.model_key('f'),
+        },
+        17 => Command::ControlStateIncrementWithOptions {
+            key: rng.model_key('c'),
+            timestamp_ms: rng.ts(),
+            amount: (rng.below(2001) as i64) - 1000,
+            // Sometimes bucket by precision (collapses timestamps), sometimes raw.
+            precision_ms: if rng.below(2) == 0 {
+                None
+            } else {
+                Some([2, 5, 10, 16][rng.below(4) as usize])
+            },
+            ttl_ms: None,
+        },
         _ => Command::CommonExpire {
             key: rng.any_key(),
             ttl_ms: 1 << 40,
@@ -581,6 +649,20 @@ fn points_to_pairs(response: CommandResponse) -> Result<Vec<(u64, Vec<u8>)>, Str
             .map(|point| (point.timestamp_ms, point.value))
             .collect()),
         other => Err(format!("expected FeaturePoints, got {other:?}")),
+    }
+}
+
+// Mirror aggregate_control_state_values (product_model.rs) exactly, including 0-on-empty for
+// min/max/first/last and wrapping sum. `values` are the bucket values in timestamp-ascending order.
+fn model_cs_aggregate(values: &[i64], aggregator: &str) -> i64 {
+    match aggregator {
+        "sum" | "count" | "" => values.iter().fold(0i64, |acc, v| acc.wrapping_add(*v)),
+        "events" | "len" => values.len() as i64,
+        "min" => values.iter().copied().min().unwrap_or(0),
+        "max" => values.iter().copied().max().unwrap_or(0),
+        "first" => values.first().copied().unwrap_or(0),
+        "last" => values.last().copied().unwrap_or(0),
+        _ => values.iter().fold(0i64, |acc, v| acc.wrapping_add(*v)),
     }
 }
 
@@ -707,29 +789,37 @@ fn oracle_mismatch(engine: &TemporalEngine, model: &RefModel) -> Option<String> 
             other => return Some(format!("sequence {key}: unexpected {other:?}")),
         }
 
-        // Control-state increment: SUM aggregate over the full range (the sum is the correct
-        // expected value whether the engine takes the raw or the rollup path).
+        // Control-state increment: every aggregator over the full range. (sum is correct whether
+        // the engine takes the raw or the rollup path; min/max/first/last go through
+        // aggregate_control_state_values, so the model mirrors it exactly, incl. 0-on-empty.)
         let key = format!("c{n}");
-        match engine_read(
-            engine,
-            Command::ControlStateQuery {
-                key: key.clone(),
-                start_ms: 0,
-                end_ms: u64::MAX,
-                aggregator: "sum".to_string(),
-            },
-        ) {
-            CommandResponse::Integer { value } => {
-                let expected = model
-                    .control_state
-                    .get(&key)
-                    .map(|series| series.values().fold(0i64, |acc, v| acc.wrapping_add(*v)))
-                    .unwrap_or(0);
-                if value != expected {
-                    return Some(format!("control_state sum {key}: engine={value} model={expected}"));
+        let cs_values: Vec<i64> = model
+            .control_state
+            .get(&key)
+            .map(|series| series.values().copied().collect())
+            .unwrap_or_default();
+        for aggregator in ["sum", "min", "max", "first", "last"] {
+            match engine_read(
+                engine,
+                Command::ControlStateQuery {
+                    key: key.clone(),
+                    start_ms: 0,
+                    end_ms: u64::MAX,
+                    aggregator: aggregator.to_string(),
+                },
+            ) {
+                CommandResponse::Integer { value } => {
+                    let expected = model_cs_aggregate(&cs_values, aggregator);
+                    if value != expected {
+                        return Some(format!(
+                            "control_state {aggregator} {key}: engine={value} model={expected}"
+                        ));
+                    }
+                }
+                other => {
+                    return Some(format!("control_state {key} ({aggregator}): unexpected {other:?}"))
                 }
             }
-            other => return Some(format!("control_state {key}: unexpected {other:?}")),
         }
 
         // Control-state change: distinct-value count over the full range.
