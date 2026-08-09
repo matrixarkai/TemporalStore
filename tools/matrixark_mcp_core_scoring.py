@@ -88,6 +88,21 @@ except ImportError:  # top-level path (matrixark_mcp_core)
         sparse_lexical_score,
     )
 
+# Mode-dependent quota knobs come from the leaf runtime_config (no import cycle) rather than
+# mcp_core, which re-declares constants by hand and would not have these.
+try:
+    from tools.matrixark_mcp_runtime_config import (
+        DEFAULT_AUGMENT_CROSS_SESSION_BUDGET_RATIO,
+        DEFAULT_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO,
+        MODE_DEPENDENT_QUOTA_ENABLED,
+    )
+except ImportError:
+    from matrixark_mcp_runtime_config import (
+        DEFAULT_AUGMENT_CROSS_SESSION_BUDGET_RATIO,
+        DEFAULT_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO,
+        MODE_DEPENDENT_QUOTA_ENABLED,
+    )
+
 __all__ = ['passes_secondary_index_filters', 'passes_applicable_secondary_index_filters', 'hybrid_origin_score', 'time_decay_score', 'business_instance_weight', 'business_type_score', 'business_score_for_candidate', 'final_recall_score', 'integer_arg', 'float_arg', 'build_cross_session_policy', 'build_shared_context_policy']
 
 
@@ -225,7 +240,7 @@ def float_arg(data: Json, field: str, default: float, *, minimum: float = 0.0, m
     return result
 
 
-def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str, session_scope: str, remote_budget_tokens: int) -> Json:
+def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str, session_scope: str, remote_budget_tokens: int, context_source_mode: str = "") -> Json:
     raw = args.get("cross_session", ranking.get("cross_session", {}))
     if isinstance(raw, bool):
         config: Json = {"enabled": raw}
@@ -291,7 +306,20 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
     else:
         default_ratio = DEFAULT_CROSS_SESSION_BUDGET_RATIO
         question_budget_reason = "normal_queries_keep_cross_session_small so current session/resources/skills dominate"
+    # Mode-dependent quota (opt-in). Augment: local carries the current session, so route the
+    # memory budget to cross-session + long-term profile. Remote-only: remote reconstructs the
+    # working context too, so cross-session takes the minority. OFF by default (legacy ratios).
+    _mode = str(context_source_mode or "").strip().lower()
+    if MODE_DEPENDENT_QUOTA_ENABLED and _mode == "local_and_remote":
+        default_ratio = max(default_ratio, DEFAULT_AUGMENT_CROSS_SESSION_BUDGET_RATIO)
+        question_budget_reason = "augment_mode_routes_memory_budget_to_cross_session_and_profile_local_carries_current_session"
+    elif MODE_DEPENDENT_QUOTA_ENABLED and _mode == "remote_only":
+        default_ratio = DEFAULT_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO
+        question_budget_reason = "remote_only_reserves_majority_of_budget_for_current_session_reconstruction"
     default_max_budget_ratio = DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO if profile_budget_query else DEFAULT_CROSS_SESSION_MAX_BUDGET_RATIO
+    if MODE_DEPENDENT_QUOTA_ENABLED and _mode in {"local_and_remote", "remote_only"}:
+        # do not let the profile/default max-ratio cap the mode-dependent cross-session allocation
+        default_max_budget_ratio = max(default_max_budget_ratio, default_ratio)
     max_budget_ratio = max(0.0, min(1.0, float(config.get("max_budget_ratio", default_max_budget_ratio))))
     budget_ratio = float_arg(config, "budget_ratio", min(default_ratio, max_budget_ratio), minimum=0.0, maximum=max_budget_ratio)
     max_budget_default = (

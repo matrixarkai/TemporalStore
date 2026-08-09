@@ -75,6 +75,14 @@ def _http_has_auth(headers: Any, args: Json) -> bool:
 
 
 HTTP_TOOL_ROUTES: dict[str, str] = {
+    # Enterprise real-time ingestion + retrieval. Verticals that own their API loop (no CLI hooks)
+    # POST turns here as they happen and pull managed context to build their prompt. matrixark_ingest
+    # already carries the async / session-buffer / idle-commit / provisional-vs-final machinery and
+    # accepts a `messages` array (single or batched). /api/ingest defaults to async_processing for a
+    # fast, non-blocking ack under scaled load (see do_POST). Multi-tenant via the header API key.
+    "/api/ingest": "matrixark_ingest",
+    "/api/retrieve": "matrixark_retrieve",
+    "/api/session_commit": "matrixark_session_commit",
     "/api/management_portal": "matrixark_management_portal",
     "/api/ingestion_dashboard": "matrixark_ingestion_dashboard",
     "/api/backend_metrics": "matrixark_backend_metrics",
@@ -692,6 +700,38 @@ def query_codex_hook_messages(args: Json) -> Json:
     }
 
 
+def mcp_http_dispatch(server: Any, body: Json, *, api_key: Optional[str] = None) -> Json:
+    """Stateless MCP-over-HTTP dispatch (Streamable HTTP transport).
+
+    Pipes a JSON-RPC MCP message through the same server.handle() used by stdio, so MCP runs
+    distributed/load-balanced for enterprise reads. Injects the header API key into tools/call
+    arguments (multi-tenant), and applies the ingest fast-ack default. Stateless: any replica can
+    serve any request. Returns the JSON-RPC response ({"jsonrpc":"2.0"} for notifications).
+    """
+    if isinstance(body, dict) and body.get("method") == "tools/call" and isinstance(body.get("params"), dict):
+        name = body["params"].get("name")
+        margs = body["params"].get("arguments")
+        if isinstance(margs, dict):
+            if api_key:
+                margs.setdefault("api_key", api_key)
+            if name == "matrixark_ingest":
+                margs.setdefault("async_processing", True)
+    response = server.handle(body)
+    return response if response is not None else {"jsonrpc": "2.0"}
+
+
+def apply_ingest_route_defaults(path: str, args: Json) -> Json:
+    """Enterprise ingest defaults: fast, non-blocking ack for scaled real-time ingestion.
+
+    /api/ingest defaults to async_processing=True (write the ContextEvent / session buffer and
+    return; extraction/summaries/embeddings run async). Callers keep control by sending an explicit
+    async_processing value. Pure + side-effect-free apart from mutating the passed args dict.
+    """
+    if path == "/api/ingest" and isinstance(args, dict):
+        args.setdefault("async_processing", True)
+    return args
+
+
 def make_matrixark_http_handler(server: "MatrixArkMcpServer", static_root: Path) -> type[SimpleHTTPRequestHandler]:
     static_root = static_root.resolve()
 
@@ -760,7 +800,13 @@ def make_matrixark_http_handler(server: "MatrixArkMcpServer", static_root: Path)
                 result = server.call_tool(tool_name, args)
                 self._write_json(200, {"status": "ok", "tool": tool_name, "result": result})
             except Exception as exc:
-                self._write_json(500, {"status": "error", "tool": tool_name, "error": str(exc)})
+                # Shed load at the edge under overload -> 429 so the client SDK backs off + retries,
+                # rather than a 500. Matched by class name to avoid a hard import dependency.
+                if exc.__class__.__name__ == "MatrixArkBackpressureError":
+                    self._write_json(429, {"status": "overloaded", "tool": tool_name,
+                                           "error": str(exc), "retry_after_ms": 100})
+                else:
+                    self._write_json(500, {"status": "error", "tool": tool_name, "error": str(exc)})
 
         def do_GET(self) -> None:  # noqa: N802 - http.server API
             parsed = urlparse(self.path)
@@ -814,6 +860,24 @@ def make_matrixark_http_handler(server: "MatrixArkMcpServer", static_root: Path)
                     return
                 self._call_tool_route(tool_name, args)
                 return
+            if parsed.path == "/mcp":
+                # MCP Streamable HTTP transport (stateless). Pipe a JSON-RPC MCP message
+                # (initialize / tools/list / tools/call) through the SAME dispatch as stdio, so MCP
+                # runs distributed + load-balanced for enterprise reads instead of per-process stdio.
+                # Stateless => any replica can serve any request. Multi-tenant: the header API key is
+                # injected into tools/call arguments so the access model applies unchanged.
+                if self.cloud_mode and not _http_has_auth(self.headers, body):
+                    self._write_auth_required("mcp")
+                    return
+                _akd: Json = {}
+                _http_api_key(self.headers, _akd)
+                try:
+                    response = mcp_http_dispatch(server, body, api_key=_akd.get("api_key"))
+                    self._write_json(200, response)
+                except Exception as exc:  # keep MCP errors JSON-RPC shaped
+                    self._write_json(200, {"jsonrpc": "2.0", "id": body.get("id") if isinstance(body, dict) else None,
+                                           "error": {"code": -32603, "message": str(exc)}})
+                return
             if parsed.path == "/api/agent/hook":
                 if self.cloud_mode and not _http_has_auth(self.headers, body):
                     self._write_auth_required("agent_hook")
@@ -827,6 +891,7 @@ def make_matrixark_http_handler(server: "MatrixArkMcpServer", static_root: Path)
                 return
             if parsed.path in HTTP_TOOL_ROUTES:
                 args = body.get("arguments") if isinstance(body.get("arguments"), dict) else body
+                apply_ingest_route_defaults(parsed.path, args)
                 self._call_tool_route(HTTP_TOOL_ROUTES[parsed.path], args)
                 return
             if parsed.path == "/api/codex_hook_messages":

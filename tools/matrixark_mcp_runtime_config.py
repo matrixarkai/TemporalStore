@@ -67,6 +67,18 @@ DEFAULT_MAX_CONTEXT_TOKENS = int(os.environ.get("MATRIXARK_DEFAULT_MAX_CONTEXT_T
 # Per-request override: pass "context_source_mode" in the retrieve args.
 DEFAULT_CONTEXT_SOURCE_MODE = os.environ.get("MATRIXARK_CONTEXT_SOURCE_MODE", "auto").strip().lower()
 
+# Mode-dependent quota (opt-in; default OFF preserves legacy per-question-type ratios + tests).
+# When enabled, the cross-session budget ratio depends on context_source_mode:
+#   local_and_remote (augment): the agent's local context already carries the current session,
+#       so route the memory budget to cross-session + long-term profile (current-session quota
+#       -> ~0; same-session refs are deduped against the local context in the packer).
+#   remote_only: remote must also reconstruct the working context, so cross-session takes the
+#       minority (current-session reconstruction fills the majority of the remote budget).
+# Flip on with MATRIXARK_MODE_DEPENDENT_QUOTA=1 once the three-arm study validates it.
+MODE_DEPENDENT_QUOTA_ENABLED = os.environ.get("MATRIXARK_MODE_DEPENDENT_QUOTA", "0").strip().lower() in {"1", "true", "yes"}
+DEFAULT_AUGMENT_CROSS_SESSION_BUDGET_RATIO = float(os.environ.get("MATRIXARK_AUGMENT_CROSS_SESSION_BUDGET_RATIO", "0.60"))
+DEFAULT_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO = float(os.environ.get("MATRIXARK_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO", "0.30"))
+
 
 def resolve_context_source_mode(args: dict | None, *, default_mode: str | None = None) -> str:
     """Resolve a retrieve request to 'remote_only' or 'local_and_remote'.
