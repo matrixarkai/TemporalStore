@@ -44,6 +44,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 try:
     from tools.matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from tools.matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
+    from tools.matrixark_mcp_local_adapter import materialize_serving_record_batch
     from tools.matrixark_mcp_local_adapter import (
         auto_extraction_phase_budget_tokens,
         auto_memory_layer_budget_tokens,
@@ -58,6 +59,7 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
+    from matrixark_mcp_local_adapter import materialize_serving_record_batch
     from matrixark_mcp_local_adapter import (
         auto_extraction_phase_budget_tokens,
         auto_memory_layer_budget_tokens,
@@ -347,6 +349,45 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
     embedded/local path; MATRIXARK_TEMPORALSTORE_CPP_PROXY_ENDPOINT selects the
     proxy boundary.
     """
+
+    def append(self, record: Json) -> None:
+        self.append_many([record])
+
+    def append_many(self, records: list[Json]) -> None:
+        # Persist serving records to the durable TemporalStore backend.
+        #
+        # MatrixArkLocalAdapter.append/append_many only mirror records into a
+        # local JSONL event log, which backend adapters disable (their event_log
+        # is the "-unused-" sentinel, so _local_jsonl_enabled is False). Because
+        # MatrixArkLocalAdapter is FIRST in this class's MRO, those no-op writers
+        # otherwise win and every serving record produced by the MCP ingest /
+        # session-commit path is silently dropped (backend records_written == 0),
+        # leaving retrieval permanently empty. Route through the canonical
+        # _append_many_materialized backend writer instead so records actually
+        # land in the store and become retrievable on later turns. The pure-local
+        # JSONL adapter is unaffected (it keeps _local_jsonl_enabled and is not
+        # this class); the fast direct-ingest path calls _append_many_materialized
+        # itself (never append), so there is no double write. Disable with
+        # MATRIXARK_DIRECT_SERVING_APPEND_TO_BACKEND=0 as an escape hatch.
+        materialized = materialize_serving_record_batch(records)
+        if not materialized:
+            return
+        if self._queue_batched_records(materialized):
+            return
+        append_backend = getattr(self, "_append_many_materialized", None)
+        route_to_backend = (
+            callable(append_backend)
+            and not getattr(self, "_local_jsonl_enabled", False)
+            and os.environ.get(
+                "MATRIXARK_DIRECT_SERVING_APPEND_TO_BACKEND", "1"
+            ).strip().lower()
+            not in {"0", "false", "no"}
+        )
+        if route_to_backend:
+            append_backend(materialized, allow_queue=False)
+            self._update_latest_entity_cache(materialized)
+            return
+        super().append_many(records)
 
     def __init__(
         self,

@@ -140,6 +140,14 @@ if [[ "$BACKEND" == "python" ]]; then
   export MATRIXARK_TEMPORALSTORE_RUST_ROOT="${MATRIXARK_TEMPORALSTORE_RUST_ROOT:-$CLAUDE_STORE_BASE/store}"
   export MATRIXARK_RUST_PROXY_ASYNC_STORAGE="${MATRIXARK_RUST_PROXY_ASYNC_STORAGE:-true}"
   export MATRIXARK_HOOK_STORAGE_ROUTE="${MATRIXARK_HOOK_STORAGE_ROUTE:-shared_store_async}"
+  # Durability contract for this single-node, no-metaserver deployment: serving
+  # records extracted on ingest/session-commit must be written through the durable
+  # TemporalStore backend writer (_append_many_materialized) instead of the
+  # backend adapter's disabled local-JSONL mirror, which would silently drop every
+  # record (records_written == 0) and leave retrieval permanently empty. This is
+  # orthogonal to MATRIXARK_HOOK_STORAGE_ROUTE above (the route does not control
+  # durability here); both stay overridable via env. Set to 0 to opt out.
+  export MATRIXARK_DIRECT_SERVING_APPEND_TO_BACKEND="${MATRIXARK_DIRECT_SERVING_APPEND_TO_BACKEND:-1}"
   PY_REPORT="$("$PYTHON" tools/matrixark_agent_hook.py \
     --agent claude \
     --event "$EVENT" \
