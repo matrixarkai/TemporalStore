@@ -39,7 +39,8 @@ class PackRawPrecisionTest(unittest.TestCase):
 
     def test_flag_and_types_exposed(self):
         self.assertIn("fact", P.PRECISION_QUESTION_TYPES)
-        self.assertIn("current_state", P.PRECISION_QUESTION_TYPES)
+        self.assertIn("evidence", P.PRECISION_QUESTION_TYPES)
+        self.assertNotIn("current_state", P.PRECISION_QUESTION_TYPES)  # keeps distilled
         self.assertNotIn("profile_memory", P.PRECISION_QUESTION_TYPES)
 
 
