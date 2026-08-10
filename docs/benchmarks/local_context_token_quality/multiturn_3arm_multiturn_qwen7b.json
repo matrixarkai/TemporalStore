@@ -1,0 +1,335 @@
+{
+  "reader": "qwen2.5:7b",
+  "remote_budget": 3000,
+  "current_session_ratio": 0.5,
+  "aggregate": {
+    "total_turns": 10,
+    "cumulative_tokens": {
+      "local": 1665,
+      "remote": 29996,
+      "augment": 16341
+    },
+    "avg_quality": {
+      "local": 4.117,
+      "remote": 4.879,
+      "augment": 6.466
+    },
+    "quality_turns_measured": 4,
+    "token_saving_pct": {
+      "remote_vs_local": -1701.56,
+      "augment_vs_local": -881.44
+    }
+  },
+  "conversations": [
+    {
+      "topic": "hooks_ingestion",
+      "turns": [
+        {
+          "turn": 1,
+          "query": "What did we decide about real-time Codex/Claude prompt ingestion via hooks?",
+          "tokens": {
+            "local": 12,
+            "remote": 3000,
+            "augment": 1500
+          },
+          "cumulative": {
+            "local": 12,
+            "remote": 3000,
+            "augment": 1500
+          },
+          "quality": {
+            "local": 7.716,
+            "remote": 8.516,
+            "augment": 7.716
+          },
+          "remote_pack_breakdown": {
+            "by_layer": {
+              "event": 589,
+              "segment": 2411
+            },
+            "current_session": 1500,
+            "cross_session": 1500
+          },
+          "augment_pack_kept_refs": 11
+        },
+        {
+          "turn": 2,
+          "query": "How are tool events handled during ingestion?",
+          "tokens": {
+            "local": 53,
+            "remote": 2999,
+            "augment": 1545
+          },
+          "cumulative": {
+            "local": 65,
+            "remote": 5999,
+            "augment": 3045
+          },
+          "quality": {
+            "local": 0.8,
+            "remote": 0.4,
+            "augment": 1.5
+          },
+          "remote_pack_breakdown": {
+            "by_layer": {
+              "event": 99,
+              "segment": 2900
+            },
+            "current_session": 1500,
+            "cross_session": 1499
+          },
+          "augment_pack_kept_refs": 10
+        },
+        {
+          "turn": 3,
+          "query": "What was the fix for tool messages being skipped?",
+          "tokens": {
+            "local": 89,
+            "remote": 3000,
+            "augment": 1579
+          },
+          "cumulative": {
+            "local": 154,
+            "remote": 8999,
+            "augment": 4624
+          },
+          "quality": {
+            "local": null,
+            "remote": null,
+            "augment": null
+          },
+          "remote_pack_breakdown": {
+            "by_layer": {
+              "event": 291,
+              "segment": 2709
+            },
+            "current_session": 1500,
+            "cross_session": 1500
+          },
+          "augment_pack_kept_refs": 16
+        },
+        {
+          "turn": 4,
+          "query": "How do the session buffer and idle commit work?",
+          "tokens": {
+            "local": 267,
+            "remote": 3000,
+            "augment": 1710
+          },
+          "cumulative": {
+            "local": 421,
+            "remote": 11999,
+            "augment": 6334
+          },
+          "quality": {
+            "local": null,
+            "remote": null,
+            "augment": null
+          },
+          "remote_pack_breakdown": {
+            "by_layer": {
+              "event": 884,
+              "segment": 2116
+            },
+            "current_session": 1502,
+            "cross_session": 1498
+          },
+          "augment_pack_kept_refs": 15
+        },
+        {
+          "turn": 5,
+          "query": "What is the difference between provisional and final extraction?",
+          "tokens": {
+            "local": 445,
+            "remote": 3000,
+            "augment": 1855
+          },
+          "cumulative": {
+            "local": 866,
+            "remote": 14999,
+            "augment": 8189
+          },
+          "quality": {
+            "local": null,
+            "remote": null,
+            "augment": null
+          },
+          "remote_pack_breakdown": {
+            "by_layer": {
+              "event": 1610,
+              "segment": 1390
+            },
+            "current_session": 1504,
+            "cross_session": 1496
+          },
+          "augment_pack_kept_refs": 11
+        }
+      ],
+      "final_cumulative": {
+        "local": 866,
+        "remote": 14999,
+        "augment": 8189
+      },
+      "avg_quality": {
+        "local": 4.258,
+        "remote": 4.458,
+        "augment": 4.608
+      }
+    },
+    {
+      "topic": "benchmark_budget",
+      "turns": [
+        {
+          "turn": 1,
+          "query": "What did the 3-arm token and quality benchmark show?",
+          "tokens": {
+            "local": 10,
+            "remote": 3000,
+            "augment": 1500
+          },
+          "cumulative": {
+            "local": 10,
+            "remote": 3000,
+            "augment": 1500
+          },
+          "quality": {
+            "local": 4.9,
+            "remote": 6.85,
+            "augment": 7.65
+          },
+          "remote_pack_breakdown": {
+            "by_layer": {
+              "event": 669,
+              "segment": 2331
+            },
+            "current_session": 1500,
+            "cross_session": 1500
+          },
+          "augment_pack_kept_refs": 14
+        },
+        {
+          "turn": 2,
+          "query": "Which model was used as reader and judge?",
+          "tokens": {
+            "local": 45,
+            "remote": 2999,
+            "augment": 1535
+          },
+          "cumulative": {
+            "local": 55,
+            "remote": 5999,
+            "augment": 3035
+          },
+          "quality": {
+            "local": 3.05,
+            "remote": 3.75,
+            "augment": 9.0
+          },
+          "remote_pack_breakdown": {
+            "by_layer": {
+              "event": 445,
+              "segment": 2554
+            },
+            "current_session": 1498,
+            "cross_session": 1501
+          },
+          "augment_pack_kept_refs": 10
+        },
+        {
+          "turn": 3,
+          "query": "Why did the recency-truncated baseline fail on some queries?",
+          "tokens": {
+            "local": 71,
+            "remote": 2999,
+            "augment": 1561
+          },
+          "cumulative": {
+            "local": 126,
+            "remote": 8998,
+            "augment": 4596
+          },
+          "quality": {
+            "local": null,
+            "remote": null,
+            "augment": null
+          },
+          "remote_pack_breakdown": {
+            "by_layer": {
+              "event": 526,
+              "segment": 2473
+            },
+            "current_session": 1498,
+            "cross_session": 1501
+          },
+          "augment_pack_kept_refs": 9
+        },
+        {
+          "turn": 4,
+          "query": "How much token saving at equal-or-better quality?",
+          "tokens": {
+            "local": 247,
+            "remote": 2999,
+            "augment": 1703
+          },
+          "cumulative": {
+            "local": 373,
+            "remote": 11997,
+            "augment": 6299
+          },
+          "quality": {
+            "local": null,
+            "remote": null,
+            "augment": null
+          },
+          "remote_pack_breakdown": {
+            "by_layer": {
+              "event": 1333,
+              "segment": 1666
+            },
+            "current_session": 1500,
+            "cross_session": 1499
+          },
+          "augment_pack_kept_refs": 14
+        },
+        {
+          "turn": 5,
+          "query": "What is the budget split for cross-session vs current session?",
+          "tokens": {
+            "local": 426,
+            "remote": 3000,
+            "augment": 1853
+          },
+          "cumulative": {
+            "local": 799,
+            "remote": 14997,
+            "augment": 8152
+          },
+          "quality": {
+            "local": null,
+            "remote": null,
+            "augment": null
+          },
+          "remote_pack_breakdown": {
+            "by_layer": {
+              "event": 557,
+              "segment": 2443
+            },
+            "current_session": 1500,
+            "cross_session": 1500
+          },
+          "augment_pack_kept_refs": 10
+        }
+      ],
+      "final_cumulative": {
+        "local": 799,
+        "remote": 14997,
+        "augment": 8152
+      },
+      "avg_quality": {
+        "local": 3.975,
+        "remote": 5.3,
+        "augment": 8.325
+      }
+    }
+  ]
+}
