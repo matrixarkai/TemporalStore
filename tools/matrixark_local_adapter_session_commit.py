@@ -19,8 +19,57 @@ except ImportError:
     source_event_lineage_summary,
 )
 
+try:  # gate flags only (runtime_config is a leaf; symbols do not star-propagate).
+    from tools.matrixark_mcp_runtime_config import (
+        SKILL_DISCOVERY_ENABLED,
+        SKILL_DISCOVERY_MIN_SUPPORT,
+        SKILL_DISCOVERY_MAX_SKILLS,
+    )
+except ImportError:
+    from matrixark_mcp_runtime_config import (
+        SKILL_DISCOVERY_ENABLED,
+        SKILL_DISCOVERY_MIN_SUPPORT,
+        SKILL_DISCOVERY_MAX_SKILLS,
+    )
+
+
+def _load_skill_discovery():
+    """Lazy import: skill_discovery pulls matrixark_mcp_core, which would create an import
+    cycle at adapter load time. Imported here only when discovery actually runs (gated)."""
+    try:
+        from tools import matrixark_skill_discovery as mod
+    except ImportError:
+        import matrixark_skill_discovery as mod
+    return mod
+
 
 class _LocalAdapterSessionCommitMixin:
+    def _maybe_discover_skills(self, scope: Json, messages: list, *, final_session_boundary: bool) -> Json | None:
+        """Mine reusable skills from the committed session and persist them (gated, safe).
+
+        Runs only on the final session boundary and only when SKILL_DISCOVERY_ENABLED.
+        Discovered skills are user-scoped and cross-session durable; deduped against
+        already-defined local skills. Never raises through to the commit path.
+        """
+        if not SKILL_DISCOVERY_ENABLED or not final_session_boundary or not messages:
+            return None
+        try:
+            _skill_discovery = _load_skill_discovery()
+            session_id = ":".join(str(part) for part in session_buffer_key_from_scope(scope))
+            events = _skill_discovery.events_from_leaned_messages(messages, session_id)
+            local_records = [
+                record for record in self.read_all()
+                if record.get("record_type") in {"skill_manifest", "skill_registry"}
+            ]
+            return _skill_discovery.discover_capture_for_session(
+                events, scope=scope, ingest_records=self.append_many,
+                local_records=local_records, updated_at_ms=now_ms(),
+                min_support=SKILL_DISCOVERY_MIN_SUPPORT, max_skills=SKILL_DISCOVERY_MAX_SKILLS,
+                deployment_scope="user", sharing_scope="user",
+            )
+        except Exception as exc:  # discovery must never break a commit
+            return {"discovered": 0, "captured": 0, "error": f"{type(exc).__name__}: {exc}"}
+
     def session_commit(self, args: Json, *, hook: Json | None = None) -> Json:
         scope = optional_object(args, "scope")
         threshold = args.get("threshold_messages", 20)
@@ -616,10 +665,14 @@ class _LocalAdapterSessionCommitMixin:
                 }
             )
         self.append_many(progress_records)
+        skill_discovery_result = self._maybe_discover_skills(
+            scope, messages, final_session_boundary=final_session_boundary
+        )
         return {
             **batch_result,
             "status": "committed",
             "commit_id_hash": commit_id_hash,
+            **({"skill_discovery": skill_discovery_result} if skill_discovery_result else {}),
             "storage_options": storage_options,
             "storage_route": canonical_storage_route(storage_options),
             "pending_event_count": pending_event_count,
