@@ -43,7 +43,10 @@ impl Default for Config {
             tenant_read_qps: None,
             tenant_write_qps: None,
             extend_config: BTreeMap::new(),
-            feature_max_size: 5000,
+            // Default retained points (and default read bound) per feature/sequence timeline.
+            // Doubled from the historical 5000 to better serve long-sequence feature use cases
+            // out of the box; still overridable per shard via set_config.
+            feature_max_size: 10000,
             async_storage: false,
         }
     }
