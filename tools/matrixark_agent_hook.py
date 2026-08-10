@@ -982,6 +982,140 @@ def run_idle_commit_worker_only(args: argparse.Namespace, session_id_source: str
     return 0
 
 
+def _text_from_transcript_content(content: Any) -> str:
+    """Flatten a transcript message's `content` (string or block list) to text."""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                if block.get("type") in (None, "text") and isinstance(block.get("text"), str):
+                    parts.append(block["text"])
+        return "\n".join(part for part in parts if part).strip()
+    if isinstance(content, dict) and isinstance(content.get("text"), str):
+        return content["text"].strip()
+    return ""
+
+
+def _last_assistant_text_from_transcript(path: str, *, max_chars: int = 8000) -> str:
+    """Return the last assistant message text from a Claude Code transcript JSONL."""
+    try:
+        transcript = Path(path)
+        if not transcript.is_file():
+            return ""
+        last = ""
+        with transcript.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line or not line.startswith("{"):
+                    continue
+                try:
+                    obj = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                message = obj.get("message") if isinstance(obj.get("message"), dict) else None
+                if message is not None:
+                    role = str(message.get("role") or obj.get("role") or obj.get("type") or "")
+                    content = message.get("content")
+                else:
+                    role = str(obj.get("role") or obj.get("type") or "")
+                    content = obj.get("content") if obj.get("content") is not None else obj.get("text")
+                if role != "assistant":
+                    continue
+                text = _text_from_transcript_content(content)
+                if text:
+                    last = text
+        return last[:max_chars]
+    except OSError:
+        return ""
+
+
+def augment_payload_with_transcript(payload: Json, *, event: str) -> None:
+    """Surface the model's reply from `transcript_path` for after-LLM/commit events.
+
+    Claude Code's Stop / SubagentStop / PostCompact payloads carry only a
+    ``transcript_path`` (the JSONL conversation log) and no inline assistant text,
+    so the hook previously ingested only the payload envelope (or nothing) and the
+    model's actual answer was never captured -- transcript_path was used solely to
+    hash a session id. Read the transcript and expose the last assistant turn under
+    ``last_assistant_message`` (an assistant_paths key that payload_text/ingest
+    already understand). Only fires for after-LLM/commit events and never clobbers
+    assistant text the payload already supplies. Best effort: any failure leaves
+    the payload unchanged so the hook stays fail-open.
+    """
+    if not isinstance(payload, dict):
+        return
+    normalized = norm(event)
+    is_after_llm = (
+        should_commit(event)
+        or normalized in AFTER_LLM_EVENTS
+        or "stop" in normalized
+        or "compact" in normalized
+    )
+    if not is_after_llm:
+        return
+    if first_string_at(
+        payload,
+        [["last_assistant_message"], ["last_agent_message"], ["assistant_message"], ["response"], ["output"]],
+    ):
+        return
+    path = first_string_at(
+        payload,
+        [["transcript_path"], ["transcriptPath"], ["conversation_path"], ["conversationPath"], ["log_path"], ["logPath"]],
+    )
+    if not path:
+        return
+    text = _last_assistant_text_from_transcript(path)
+    if text:
+        payload["last_assistant_message"] = text
+
+
+def additional_context_from_retrieve(retrieve: Json | None, *, max_chars: int = 8000) -> str:
+    """Flatten a retrieve context pack into the Claude Code additionalContext string.
+
+    The native context pack returns retrieved memory as ``groups[].items[].text``.
+    agent_hook previously never surfaced this as ``hookSpecificOutput`` /
+    ``additionalContext``, so the Claude wrapper's pass-through always emitted
+    ``{}`` and no retrieved context ever reached the model even when refs were
+    selected. Join the unique item texts (bounded) into a compact block the hook
+    can inject. Returns "" when nothing was retrieved so the fail-open ``{}``
+    contract is preserved.
+    """
+    if not isinstance(retrieve, dict):
+        return ""
+    lines: list[str] = []
+    seen: set[str] = set()
+    groups = retrieve.get("groups")
+    if isinstance(groups, list):
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            items = group.get("items")
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if isinstance(item, dict):
+                    text = str(item.get("text") or item.get("entity") or "").strip()
+                elif isinstance(item, str):
+                    text = item.strip()
+                else:
+                    text = ""
+                if not text or text in seen:
+                    continue
+                seen.add(text)
+                lines.append(text)
+    if not lines:
+        return ""
+    header = "Relevant context from earlier turns (MatrixArk memory):"
+    body = "\n".join(f"- {line}" for line in lines)
+    return (header + "\n" + body)[:max_chars]
+
+
 def main() -> int:
     args = parse_args()
     validate_hook_backend_policy(args.backend)
@@ -989,6 +1123,7 @@ def main() -> int:
     args.session_id, session_id_source = resolve_session_id(payload, args)
     if args.idle_commit_worker_only:
         return run_idle_commit_worker_only(args, session_id_source)
+    augment_payload_with_transcript(payload, event=args.event)
     text = payload_text(payload, event=args.event) or args.query
     raw_uri = payload_resource_uri(payload)
     resource_type = payload_resource_type(payload, raw_uri) if raw_uri else ""
@@ -1190,6 +1325,17 @@ def main() -> int:
         "retrieved": retrieved_summary,
         "committed": session_commit_summary(commit),
     }
+    # Emit the Claude Code hook contract so retrieved memory actually reaches the
+    # model. The wrapper (matrixark_claude_hook.sh) passes through
+    # hookSpecificOutput.additionalContext on before-LLM events; without this the
+    # pack is retrieved but never injected.
+    if should_retrieve(args.event) or args.query:
+        additional_context = additional_context_from_retrieve(retrieve)
+        if additional_context.strip():
+            output["hookSpecificOutput"] = {
+                "hookEventName": args.event,
+                "additionalContext": additional_context,
+            }
     require_retrieval_coverage = args.require_retrieval_memory_coverage or require_retrieval_memory_coverage(
         os.environ.get("MATRIXARK_REQUIRE_RETRIEVAL_MEMORY_COVERAGE")
     )
