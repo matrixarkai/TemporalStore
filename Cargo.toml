@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/matrixobject",
     "crates/temporalstore-snapshot",
     "crates/temporalstore-rust",
 ]
