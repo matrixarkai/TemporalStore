@@ -173,8 +173,7 @@ The proxy SDKs use the same logical data model as the direct SDKs:
 - HASH: hset/hget/hdel.
 - SET: sadd/smembers.
 - FEATURE: raw timestamped feature points with filters.
-- SEQUENCE FEATURE: typed long-sequence rows with filters.
-- IPS: add/query recent instances.
+- SEQUENCE FEATURE: typed long-sequence rows with filters (a typed view over Feature storage).
 - CONTROL STATE: increment and count over a time window.
 
 Current proxy SDK entry points:

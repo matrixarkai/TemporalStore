@@ -16,13 +16,12 @@ The executable sweep case is `all_data_model_cpp_rust_parity_sweep` in `compat/u
 | Set | `set_add`, `set_members` | set membership |
 | Feature | append, aggregate query | timestamp/value Feature pages |
 | Sequence | C++ feature-row encoding, filtered query | sequence rows over Feature-style values |
-| IPS | add with metadata, filter, stats | IPS instance metadata and range queries |
-| Risk | H/CPC/FOL set/query | risk counter/list/FOL families |
+| Risk | Counter/Distinct/Selection set/query (families formerly H/CPC/FOL) | risk counter/list/FOL families |
 | Context | node, extracted event, secondary indexes, entity, child ref, embedding, summary, compression | current C++ context sidecar model set |
 
 ## Remaining Deeper Parity Work
 
-- C++ IPS has richer table-schema operators and ranking modes than the Rust-native executable sweep proves.
+- C++ retains the IPS model (richer table-schema operators and ranking modes); the Rust reimplementation no longer implements IPS, so it is outside this parity sweep.
 - C++ Risk still has broader thrift manager/window semantics; Rust covers the production Rust-native command contract and shared family behavior.
 - Context parity is strongest for the current lean hot models and sidecars; live extraction/model-provider benchmark parity remains a separate context pipeline gate.
 - Storage/Raft parity remains governed by the storage and Raft shared cases rather than this product-model sweep.

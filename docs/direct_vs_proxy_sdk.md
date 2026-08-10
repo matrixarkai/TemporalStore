@@ -97,8 +97,6 @@ Endpoints:
 | `POST /v1/feature/query` | query raw feature points |
 | `POST /v1/sequence/add` | add typed sequence rows |
 | `POST /v1/sequence/query` | query typed sequence rows |
-| `POST /v1/ips/add` | add IPS instance |
-| `POST /v1/ips/query_last` | query IPS last instances |
 | `POST /v1/risk/increment` | increment risk counter |
 | `POST /v1/risk/count` | query risk window counter |
 
