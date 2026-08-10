@@ -357,7 +357,13 @@ class TemporalFeatureStore:
     def cs_family_agg(
         self, cs_key: str, start_ms: int, end_ms: int, aggregator: str, family: str = "h"
     ) -> int:
-        """Rollup aggregate (sum/min/max/change) via the generic table command."""
+        """Rollup aggregate (sum/min/max/change) via the generic table command.
+
+        ``family`` is the on-the-wire family tag and stays ``"h"`` / ``"cpc"`` /
+        ``"fol"`` (the Counter / Distinct / Selection families, respectively);
+        these serde-pinned tags are the correct wire values and are unchanged by
+        the family rename.
+        """
         body = self._base(cs_key)
         body["command"] = {
             "kind": "control_state_family_query",
@@ -370,17 +376,27 @@ class TemporalFeatureStore:
         return int(self._post("/ProxyService/ExecuteTableCmd", body).get("value", 0))
 
     def fol_set(self, cs_key: str, value: Any, occur_time_ms: int, ttl_ms: int, fol_type: str = "last") -> None:
+        """Set the first/last value for a key (the **Selection** family).
+
+        Maps to the ``ControlStateSelectionSet`` route (formerly ``...FolSet``);
+        the ``selection_type`` field (formerly ``fol_type``) selects first vs.
+        last. The method name is kept for API stability.
+        """
         body = self._base(cs_key)
         body.update({
             "value": _metric_bytes(value),
             "occur_time_ms": int(occur_time_ms),
             "ttl_ms": int(ttl_ms),
-            "fol_type": fol_type,
+            "selection_type": fol_type,
         })
-        self._post("/ProxyService/ControlStateFolSet", body)
+        self._post("/ProxyService/ControlStateSelectionSet", body)
 
     def fol_get(self, cs_key: str) -> Optional[str]:
-        v = self._post("/ProxyService/ControlStateFolQuery", self._base(cs_key)).get("value")
+        """Read the stored first/last value (the **Selection** family).
+
+        Maps to the ``ControlStateSelectionQuery`` route (formerly ``...FolQuery``).
+        """
+        v = self._post("/ProxyService/ControlStateSelectionQuery", self._base(cs_key)).get("value")
         return None if v in (None, "") else _bytes_to_str(v)
 
     # ==================================================== dual-write + hybrid read

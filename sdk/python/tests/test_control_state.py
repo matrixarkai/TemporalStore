@@ -21,7 +21,10 @@ from temporalstore.control_state import ControlState, ControlStateConfig  # noqa
 
 
 # --------------------------------------------------------------------------- #
-# Mock RESP server: one counter per key + a distinct-set per key + a fol store.
+# Mock RESP server: one counter (Counter family) per key + a distinct-set
+# (Distinct family) per key + a first/last store (Selection family, the FOL/
+# SELECTION verbs). The client still sends the legacy HSETANDGET/FOLSET/... verbs,
+# which remain valid aliases of the new COUNTER*/SELECTION*/DISTINCT* spellings.
 # Windows/precision are ignored (the client always sends windows that cover the
 # test writes), which is sufficient to validate client-side use-case logic.
 # --------------------------------------------------------------------------- #

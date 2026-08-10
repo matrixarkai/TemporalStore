@@ -313,19 +313,24 @@ control:t1:device:d7:login:failed:rolling_1h               <span class="cmt"># r
     <div class="wrap">
       <p class="kicker">How to use it</p>
       <h2>The command surface</h2>
-      <p>Control State is a small, generic API. The <b>H</b> family holds counters and aggregates,
-        <b>FOL</b> holds first/last values, and <b>MANAGER</b> handles admin. Everything is reachable
-        over the Redis-compatible protocol and the typed Rust client.</p>
+      <p>Control State is a small, generic API. The <b>Counter</b> family holds counters and aggregates,
+        <b>Selection</b> holds first/last values, <b>Distinct</b> holds distinct-value sets, and
+        <b>MANAGER</b> handles admin. Everything is reachable over the Redis-compatible protocol and
+        the typed Rust client.</p>
+      <div class="note"><b>Family naming.</b> The families are <b>Counter</b> / <b>Distinct</b> /
+        <b>Selection</b> (formerly <b>H</b> / <b>Cpc</b> / <b>Fol</b>). The RESP verbs carry both
+        spellings — <code>HSET*</code>/<code>COUNTER*</code>, <code>CPC*</code>/<code>DISTINCT*</code>,
+        <code>FOL*</code>/<code>SELECTION*</code> — and either works.</div>
       <div class="twrap">
         <table>
           <thead><tr><th>Operation</th><th>RESP verb</th><th>Does</th></tr></thead>
           <tbody>
-            <tr><td>Increment (windowed)</td><td><code>HSET</code></td><td>Add to the counter for a precision bucket at an occur-time.</td></tr>
-            <tr><td>Query window</td><td><code>HQUERY</code></td><td>Aggregate the counter over one or more windows.</td></tr>
-            <tr><td><b>Atomic incr-then-read</b></td><td><code>HSETANDGET</code></td><td>The accept-decision primitive: bump the counter and return the window total in one command.</td></tr>
-            <tr><td>Atomic + options</td><td><code>HSETANDGETOPT</code></td><td>Same, plus precision, TTL, and <code>uuid</code> idempotency for replay-safe ingest.</td></tr>
-            <tr><td>Distinct set</td><td><code>CPCSET</code> / <code>CPCQUERY</code></td><td>Track distinct values (e.g. unique devices) with the <code>change</code> aggregator.</td></tr>
-            <tr><td>First / last</td><td><code>FOLSET</code> / <code>FOLQUERY</code></td><td>Keep the earliest or latest value by occur-time.</td></tr>
+            <tr><td>Increment (windowed)</td><td><code>HSET</code> / <code>COUNTERSET</code></td><td>Add to the counter for a precision bucket at an occur-time.</td></tr>
+            <tr><td>Query window</td><td><code>HQUERY</code> / <code>COUNTERQUERY</code></td><td>Aggregate the counter over one or more windows.</td></tr>
+            <tr><td><b>Atomic incr-then-read</b></td><td><code>HSETANDGET</code> / <code>COUNTERSETANDGET</code></td><td>The accept-decision primitive: bump the counter and return the window total in one command.</td></tr>
+            <tr><td>Atomic + options</td><td><code>HSETANDGETOPT</code> / <code>COUNTERSETANDGETOPT</code></td><td>Same, plus precision, TTL, and <code>uuid</code> idempotency for replay-safe ingest.</td></tr>
+            <tr><td>Distinct set</td><td><code>CPCSET</code> / <code>DISTINCTSET</code> · <code>CPCQUERY</code> / <code>DISTINCTQUERY</code></td><td>Track distinct values (e.g. unique devices) with the <code>change</code> aggregator.</td></tr>
+            <tr><td>First / last</td><td><code>FOLSET</code> / <code>SELECTIONSET</code> · <code>FOLQUERY</code> / <code>SELECTIONQUERY</code></td><td>Keep the earliest or latest value by occur-time.</td></tr>
             <tr><td>Admin</td><td><code>CONTROLSTATEMANAGER</code></td><td>Query, list fields, counts, and GC of control state.</td></tr>
           </tbody>
         </table>

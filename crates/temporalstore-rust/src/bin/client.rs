@@ -219,26 +219,26 @@ fn main() {
             end_ms: args[4].parse().expect("end must be u64"),
             count: args.get(5).map(|v| v.parse().expect("count must be usize")),
         },
-        "control_statehset" if args.len() == 5 => Command::ControlStateSet {
+        "control_statehset" | "counterset" if args.len() == 5 => Command::ControlStateSet {
             family: ControlStateFamily::Counter,
             key: args[2].clone(),
             timestamp_ms: args[3].parse().expect("timestamp must be u64"),
             amount: args[4].parse().expect("amount must be i64"),
         },
-        "cpcset" if args.len() == 5 => Command::ControlStateSet {
+        "cpcset" | "distinctset" if args.len() == 5 => Command::ControlStateSet {
             family: ControlStateFamily::Distinct,
             key: args[2].clone(),
             timestamp_ms: args[3].parse().expect("timestamp must be u64"),
             amount: args[4].parse().expect("amount must be i64"),
         },
-        "folset" if args.len() == 7 => Command::ControlStateSelectionSet {
+        "folset" | "selectionset" if args.len() == 7 => Command::ControlStateSelectionSet {
             key: args[2].clone(),
             value: args[3].as_bytes().to_vec(),
             occur_time_ms: args[4].parse().expect("occur_time_ms must be u64"),
             ttl_ms: args[5].parse().expect("ttl_ms must be u64"),
             selection_type: parse_selection_type(&args[6]),
         },
-        "folquery" if args.len() == 3 => Command::ControlStateSelectionQuery {
+        "folquery" | "selectionquery" if args.len() == 3 => Command::ControlStateSelectionQuery {
             key: args[2].clone(),
         },
         "control_statemanager" if args.len() == 3 => Command::ControlStateManager {
