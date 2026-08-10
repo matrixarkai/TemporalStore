@@ -46,6 +46,8 @@ collapsed into the shared runner, or deleted from `tools/rust_product_test_basel
 | Context model and pipeline behavior | 7 | `context_workflow.rs`, Context model tests | Event/segment/entity/index/embedding/summary/compression, query debug flow, prompt-pack ordering. |
 | IPS model behavior | 4 | `engine.rs`, `unified_temporalstore_corpus.rs` | Snapshot/stat/filter metadata, batch-last grouping, action/table/request metadata. |
 
+Note: the IPS model has since been removed entirely from the Rust implementation (no IPS model, command, or RESP verb); the IPS row above reflects a pre-removal snapshot and is retained only for count continuity. IPS remains a C++-only model. The "Sequence model behavior" bucket is now backed by the shared Feature timestamped-KV storage rather than a separate sequence storage map.
+
 The next migration target is **Raft RustRaft-derived process/fault/readiness cases**, followed by
 storage/cache recovery cases and Context pipeline model cases.
 

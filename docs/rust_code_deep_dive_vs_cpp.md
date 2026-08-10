@@ -6,10 +6,10 @@ The Rust repo is a clean open-source TemporalStore-shaped implementation, but it
 
 What exists today:
 
-- a typed command API for common, string, hash, set, feature, sequence, and the implemented IPS/Risk subset
+- a typed command API for common, string, hash, set, feature, sequence, and the implemented Risk subset
 - a TemporalStore Rust engine with shard-local indexes, local append-only page segment files, and read-through memory/disk cache
 - HTTP binaries for metaserver, server, proxy, and client
-- a Redis RESP proxy covering common string/hash/set commands plus feature, IPS, and Risk extensions
+- a Redis RESP proxy covering common string/hash/set commands plus feature and Risk extensions
 - an in-process Raft behavior model for data replication, metaserver replication, promotion, scale up/down, and replica read policy tests
 - an S3-compatible snapshot crate with manifest-last visibility, checksum verification, retention, stale restore guard, and Prometheus metric names
 - local smoke scripts, AWS existing-EKS Terraform, and compatibility-style tests
@@ -78,9 +78,7 @@ key -> crc64 slot -> partition set -> primary/secondary server -> worker -> obje
 - `strings: key -> BlockAddress`
 - `hashes: key -> field -> BlockAddress`
 - `sets: key -> member -> BlockAddress`
-- `features: key -> timestamp -> BlockAddress`
-- `sequences: key -> timestamp -> BlockAddress`
-- `ips: key -> timestamp -> BlockAddress`
+- `features: key -> timestamp -> BlockAddress` (Sequence is a typed view over this same Feature storage; there is no separate `sequences` map)
 - `risk: key -> timestamp -> i64`
 - `expires_at_ms: key -> expire timestamp`
 
@@ -261,7 +259,7 @@ That is why "rewrite C++ TemporalStore in Rust" is not just translating syntax. 
 | Common/string/hash/set APIs | Mostly present, including Redis `SET NX/XX GET EX/PX` | Mature | Missing exact internal wire compatibility. |
 | Feature API | Append/query/replace/delete/agg plus write-policy append with typed client and RESP coverage | Rich feature point/range/write policy support | Need C++ proto-compatible nested feature shape and exact aggregate semantics. |
 | Sequence API | Typed rows, filters, and batch query | Part of richer feature/data modules | Need exact C++ sequence edge-case policy if required by callers. |
-| IPS | Add/query-last/range/batch/remove/delete/count plus idempotent/dimensional add, dimension-filtered range, local load, range snapshot, stats, and named filter with typed client and RESP coverage | Rich add/batch query/remove/load/delete/stat/filter/snap behavior | Missing production snap metadata and server aggregation. |
+| IPS | Removed from Rust (no IPS model, command, or RESP verb) | Rich add/batch query/remove/load/delete/stat/filter/snap behavior | IPS is now a C++-only model; not reimplemented in Rust. |
 | Risk | Increment/count plus precision/TTL increment, sum/min/max/first/last/events/detail with typed client and RESP coverage | Rich H/CPC/FOL/query/manager/window/precision semantics | Missing CPC/list-specific behavior and manager APIs. |
 | Local storage | Local page segments + JSON index, oplog/index-log, periodic dirty-shard dump scheduling, and local live-page rewrite compaction | Oplog + page/slot store + dump/recover | Need native ObjectManager runtime mechanics, SlotStore layout transitions, stream-backed zones, page compaction tied to model layout/tombstones, mature StorageManager loops, merged dump/load, and optional binary log/header parity if migration requires it. |
 | Cache | Rust-native memory + bounded SSD block cache with policy admission, hotness, pinning, write-through accounting, weighted hotness/LRU pressure eviction, warmup, and inspection metrics | mtcache/blockcache-like production cache | Rust-native multi-tier replacement policy, pinned-handle accounting/eviction guards, DRAM/PMEM/SSD placement semantics, async writeback/backpressure counters, and mature latency metrics are covered by weighted hotness/LRU memory plus SSD eviction, pin/unpin state, pinned-skip counters, `CacheTieringPolicy` placement decisions, write-through/backpressure counters, and get/put latency metrics. PMEM is treated as an SSD-class persistent tier in Rust. CacheLib/mtcache binary/API compatibility remains optional only if that compatibility is re-scoped. |
