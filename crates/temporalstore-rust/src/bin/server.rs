@@ -143,54 +143,71 @@ fn main() {
         .unwrap_or(3_000);
     let raft_state = start_server_raft_from_env(shard_id, node_id, &advertised_addr);
 
-    let server_registration = RegisterServerRequest {
-        server_addr: advertised_addr.clone(),
-        node_id,
-        location,
-        binary_version: binary_version.clone(),
-    };
-    match post_json::<_, AckResponse>(&meta_addr, "/servers/register", &server_registration) {
-        Ok(response) if response.status.ok => {
-            println!("registered server {advertised_addr} with metaserver {meta_addr}");
+    // Local/standalone mode: run the datanode with no metaserver. We skip server +
+    // shard registration and the heartbeat loop, and serve the locally-loaded shard
+    // directly. This is opt-in and gated so the default distributed path is unchanged:
+    // `standalone` is false unless TS_STANDALONE is truthy or TS_META_ADDR is set to a
+    // sentinel ("", "local", "none", "standalone", "off"). An unset TS_META_ADDR keeps
+    // the real default address and the full registration/heartbeat behavior.
+    let standalone = env_bool("TS_STANDALONE", false)
+        || matches!(
+            meta_addr.trim().to_ascii_lowercase().as_str(),
+            "" | "local" | "none" | "standalone" | "off"
+        );
+    if standalone {
+        println!(
+            "standalone datanode: no metaserver — serving shard {shard_id} locally at {advertised_addr}"
+        );
+    } else {
+        let server_registration = RegisterServerRequest {
+            server_addr: advertised_addr.clone(),
+            node_id,
+            location,
+            binary_version: binary_version.clone(),
+        };
+        match post_json::<_, AckResponse>(&meta_addr, "/servers/register", &server_registration) {
+            Ok(response) if response.status.ok => {
+                println!("registered server {advertised_addr} with metaserver {meta_addr}");
+            }
+            Ok(response) => {
+                eprintln!(
+                    "metaserver rejected server registration: {}",
+                    response.status.message
+                );
+            }
+            Err(err) => {
+                eprintln!("failed to register server {advertised_addr}: {err}");
+            }
         }
-        Ok(response) => {
-            eprintln!(
-                "metaserver rejected server registration: {}",
-                response.status.message
-            );
-        }
-        Err(err) => {
-            eprintln!("failed to register server {advertised_addr}: {err}");
-        }
-    }
 
-    let registration = RegisterShardRequest {
-        shard_id,
-        server_addr: advertised_addr.clone(),
-    };
-    match post_json::<_, RegisterShardResponse>(&meta_addr, "/register_shard", &registration) {
-        Ok(response) if response.status.ok => {
-            println!("registered shard {shard_id} with metaserver {meta_addr}");
+        let registration = RegisterShardRequest {
+            shard_id,
+            server_addr: advertised_addr.clone(),
+        };
+        match post_json::<_, RegisterShardResponse>(&meta_addr, "/register_shard", &registration) {
+            Ok(response) if response.status.ok => {
+                println!("registered shard {shard_id} with metaserver {meta_addr}");
+            }
+            Ok(response) => {
+                eprintln!(
+                    "metaserver rejected registration: {}",
+                    response.status.message
+                );
+            }
+            Err(err) => {
+                eprintln!("failed to register shard {shard_id}: {err}");
+            }
         }
-        Ok(response) => {
-            eprintln!(
-                "metaserver rejected registration: {}",
-                response.status.message
-            );
-        }
-        Err(err) => {
-            eprintln!("failed to register shard {shard_id}: {err}");
-        }
-    }
 
-    start_heartbeat_loop(
-        engine.clone(),
-        runtime.clone(),
-        meta_addr.clone(),
-        advertised_addr.clone(),
-        binary_version.clone(),
-        heartbeat_interval_ms,
-    );
+        start_heartbeat_loop(
+            engine.clone(),
+            runtime.clone(),
+            meta_addr.clone(),
+            advertised_addr.clone(),
+            binary_version.clone(),
+            heartbeat_interval_ms,
+        );
+    }
     let data_raft_appliers: Arc<Mutex<BTreeMap<u64, DataRaftCommittedLogApplier>>> = Arc::default();
     println!("temporalstore server listening on {addr}");
     serve(&addr, move |request| {
