@@ -594,8 +594,7 @@ pub(crate) fn execute_on_shard(
                         series
                             .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                             // Default read bound follows feature_max_size so raising the
-                            // retention cap (long-sequence use) also lifts the read limit;
-                            // identical to the historical 5000 at the default cap.
+                            // retention cap (long-sequence use) also lifts the read limit.
                             .take(count.unwrap_or(feature_max_size))
                             .filter_map(|(timestamp_ms, address)| {
                                 read_feature_point_cached(
