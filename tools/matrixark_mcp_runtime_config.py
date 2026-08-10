@@ -189,6 +189,12 @@ DEFAULT_SHARED_SKILL_MAX_BUDGET_RATIO = float(os.environ.get("MATRIXARK_SHARED_S
 DEFAULT_SHARED_SKILL_MAX_BUDGET_TOKENS = int(os.environ.get("MATRIXARK_SHARED_SKILL_MAX_BUDGET_TOKENS", "500000"))
 DEFAULT_SHARED_CONTEXT_MIN_SCORE = float(os.environ.get("MATRIXARK_SHARED_CONTEXT_MIN_SCORE", "0.20"))
 
+# Conditional follow-up query rewriting: rewrite the RETRIEVAL query (ranking only) from
+# recent session turns so anaphora ("that"/"the ones") carries its referent terms. It does
+# NOT change the pack fed to the model, so it adds ZERO model tokens. Ships OFF.
+QUERY_REWRITE_ENABLED = os.environ.get("MATRIXARK_QUERY_REWRITE", "0").strip().lower() in {"1", "true", "yes"}
+QUERY_REWRITE_WINDOW = int(os.environ.get("MATRIXARK_QUERY_REWRITE_WINDOW", "3"))
+
 # Auto skill discovery on session commit (mine reusable tool-procedures -> skill records).
 # Ships OFF; enable per-deployment. Runs only on final session boundaries.
 SKILL_DISCOVERY_ENABLED = os.environ.get("MATRIXARK_SKILL_DISCOVERY", "0").strip().lower() in {"1", "true", "yes"}

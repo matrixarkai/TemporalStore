@@ -12,12 +12,58 @@ try:  # package path
     from tools.matrixark_mcp_runtime_config import (
         apply_remote_only_local_fallback,
         resolve_context_source_mode,
+        QUERY_REWRITE_ENABLED,
+        QUERY_REWRITE_WINDOW,
     )  # noqa: F401
+    from tools import matrixark_query_rewrite as _query_rewrite
 except ImportError:
     from matrixark_mcp_runtime_config import (  # noqa: F401
         apply_remote_only_local_fallback,
         resolve_context_source_mode,
+        QUERY_REWRITE_ENABLED,
+        QUERY_REWRITE_WINDOW,
     )
+    import matrixark_query_rewrite as _query_rewrite
+
+
+def _recent_user_texts_for_rewrite(args, adapter, scope) -> list:
+    """Recent user-turn texts for follow-up rewriting: prefer explicit args, else session buffer.
+
+    Only called for follow-up queries (cheap early-out otherwise), so the buffer read is rare.
+    """
+    for key in ("prior_user_messages", "prior_messages", "recent_user_texts", "recent_turns"):
+        val = args.get(key)
+        if isinstance(val, list) and val:
+            out = []
+            for m in val:
+                if isinstance(m, str):
+                    out.append(m)
+                elif isinstance(m, dict) and str(m.get("role", "user")) in ("user", "human"):
+                    c = m.get("content") or m.get("text")
+                    if isinstance(c, str):
+                        out.append(c)
+            if out:
+                return out
+    try:  # best-effort: pull recent user turns from the session buffer
+        events = adapter.pending_session_events(scope) or []
+        texts = []
+        for rec in events[-16:]:
+            for msg in (messages_from_event_record(rec) or []):
+                if str(msg.get("role", "")) in ("user", "human") and isinstance(msg.get("content"), str):
+                    texts.append(msg["content"])
+        return texts
+    except Exception:
+        return []
+
+
+def _maybe_rewrite_retrieval_query(query, args, adapter, scope):
+    """Conditional follow-up rewrite of the RANKING query only (never the pack). Returns (rq, info)."""
+    if not QUERY_REWRITE_ENABLED or not _query_rewrite.is_followup_query(query):
+        return query, {"query_rewritten": False, "reason": "disabled_or_standalone"}
+    priors = _recent_user_texts_for_rewrite(args, adapter, scope)
+    rq, rewritten, reason = _query_rewrite.conditional_retrieval_query(
+        query, priors, enabled=True, window=QUERY_REWRITE_WINDOW)
+    return rq, {"query_rewritten": rewritten, "reason": reason}
 
 try:  # names owned by the parent module
     from tools.matrixark_mcp_local_adapter import (
@@ -82,6 +128,9 @@ class _LocalAdapterRetrieveMixin:
         started_perf = time.perf_counter()
         query = require_string(args, "query")
         scope = optional_object(args, "scope")
+        # Conditional follow-up rewrite for RANKING ONLY (does not change the pack -> zero added
+        # model tokens). `query` stays the user's prompt everywhere else; `retrieval_query` ranks.
+        retrieval_query, _rewrite_info = _maybe_rewrite_retrieval_query(query, args, self, scope)
         storage_options = normalize_storage_options(args)
         ranking = optional_object(args, "ranking")
         audit_mode = str(args.get("audit_mode") or os.environ.get("MATRIXARK_CONTEXT_AUDIT_MODE", "off")).strip().lower()
@@ -367,7 +416,7 @@ class _LocalAdapterRetrieveMixin:
                 remote_budget_tokens=remote_context_budget_tokens,
                 question_type=question_type,
             )
-        query_terms = {term for term in tokens(query) if len(term) > 2}
+        query_terms = {term for term in tokens(retrieval_query) if len(term) > 2}
         raw_reference_time_ms = args.get("reference_time_ms", now_ms())
         if not isinstance(raw_reference_time_ms, int):
             raise MatrixArkError("reference_time_ms must be an integer")
@@ -760,7 +809,7 @@ class _LocalAdapterRetrieveMixin:
                 "Python reference packing is disabled unless explicitly overridden for local debug."
             )
         embedding_started_perf = time.perf_counter()
-        query_embedding = embedding_for_text(query)
+        query_embedding = embedding_for_text(retrieval_query)
         self._observe_model_latency("query_embedding", (time.perf_counter() - embedding_started_perf) * 1000.0)
         stage_started_perf = time.perf_counter()
         retrieval_record_result = self.retrieval_records(
