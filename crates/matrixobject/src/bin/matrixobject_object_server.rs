@@ -21,6 +21,7 @@ struct ObjectService {
 struct AppendLog {
     state: Mutex<AppendState>,
     durable: Condvar,
+    sync_file: File,
 }
 
 struct AppendState {
@@ -128,6 +129,11 @@ fn main() {
         .read(true)
         .open(&data_path)
         .expect("object data log read handle should open");
+    let sync_file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&data_path)
+        .expect("object data log sync handle should open");
     let file_offset = data_file
         .metadata()
         .expect("object data log metadata should load")
@@ -144,6 +150,7 @@ fn main() {
                 syncing: false,
             }),
             durable: Condvar::new(),
+            sync_file,
         }),
         read_files: Arc::new(Mutex::new(vec![read_file])),
         tenant_id,
@@ -746,10 +753,9 @@ fn wait_until_durable<'a>(
 
     loop {
         let sync_target = append.next_offset;
-        let sync_file = append.file.try_clone()?;
         drop(append);
 
-        let sync_result = sync_file.sync_data();
+        let sync_result = log.sync_file.sync_data();
 
         append = log.state.lock().expect("append state poisoned");
         match sync_result {
