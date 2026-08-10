@@ -27,12 +27,15 @@ class PackRawPrecisionTest(unittest.TestCase):
 
     def test_on_prefers_raw_event_for_precision_types(self):
         P.PACK_RAW_PRECISION = True
-        for qt in ("fact", "current_state", "multi_hop", "evidence", "benchmark_quality"):
+        for qt in ("fact", "multi_hop", "evidence", "benchmark_quality", "date"):
             self.assertTrue(_prefers_event(qt), f"expected raw event to win for {qt}")
 
     def test_on_leaves_non_precision_types_unchanged(self):
         P.PACK_RAW_PRECISION = True
-        self.assertFalse(_prefers_event("profile_memory"))  # gist queries keep the density preference
+        # gist / current-value queries keep the distilled preference
+        self.assertFalse(_prefers_event("profile_memory"))
+        self.assertFalse(_prefers_event("current_state"))
+        self.assertFalse(_prefers_event("latest"))
 
     def test_flag_and_types_exposed(self):
         self.assertIn("fact", P.PRECISION_QUESTION_TYPES)

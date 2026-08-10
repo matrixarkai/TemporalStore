@@ -56,7 +56,9 @@ __all__ = ['packing_sort_key', 'context_text_hashes', 'local_context_budget', 'c
 # summaries drop (measured ~2/6 exact-fact loss). When enabled, dampen the compression boost
 # and lift raw events for precision question-types so exactness is preserved. Ships OFF.
 PACK_RAW_PRECISION = os.environ.get("MATRIXARK_PACK_RAW_PRECISION", "0").strip().lower() in {"1", "true", "yes"}
-PRECISION_QUESTION_TYPES = {"fact", "current_state", "multi_hop", "evidence", "benchmark_quality", "latest", "date"}
+# Exact-fact query types where raw events (hashes/numbers/lists) beat lossy summaries.
+# NOT current_state/latest — those legitimately want the distilled current-value entity.
+PRECISION_QUESTION_TYPES = {"fact", "multi_hop", "evidence", "benchmark_quality", "date"}
 
 
 def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float, float, float, float]:
