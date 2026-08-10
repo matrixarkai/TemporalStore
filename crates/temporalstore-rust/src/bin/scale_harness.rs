@@ -633,7 +633,7 @@ where
         .map(|result| result.oplog_index)
         .unwrap_or(0);
     let replay = replicator
-        .replay_oplog(shard_id, 0, &follower)
+        .replay_oplog_strict(shard_id, 0, &follower)
         .await
         .expect("concurrent follower replay should succeed");
     assert_eq!(

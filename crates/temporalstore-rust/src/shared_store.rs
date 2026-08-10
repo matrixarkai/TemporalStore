@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -36,6 +36,14 @@ pub enum SharedStoreReplicationError {
     ApplyFailed { oplog_index: u64, status: Status },
     #[error("oplog replay gap: expected index {expected}, got {actual}")]
     ReplayGap { expected: u64, actual: u64 },
+    #[error("oplog batch read mismatch: expected {expected}, got {actual}")]
+    OplogBatchReadMismatch { expected: String, actual: String },
+    #[error("oplog entry index mismatch for {path}: expected {expected}, got {actual}")]
+    OplogEntryIndexMismatch {
+        path: String,
+        expected: u64,
+        actual: u64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -651,10 +659,29 @@ where
         keys: &[(u64, String)],
     ) -> Result<Vec<SharedStoreOplogEntry>, SharedStoreReplicationError> {
         let object_keys = keys.iter().map(|(_, key)| key.clone()).collect::<Vec<_>>();
-        let objects = self.object_store.get_many(&object_keys).await?;
+        let objects = self
+            .object_store
+            .get_many(&object_keys)
+            .await?
+            .into_iter()
+            .collect::<HashMap<_, _>>();
         let mut entries = Vec::with_capacity(objects.len());
-        for (key, bytes) in objects {
-            entries.push(self.parse_oplog_entry_object(&key, &bytes)?);
+        for (oplog_index, key) in keys {
+            let bytes = objects.get(key).ok_or_else(|| {
+                SharedStoreReplicationError::OplogBatchReadMismatch {
+                    expected: key.clone(),
+                    actual: "<missing>".to_string(),
+                }
+            })?;
+            let entry = self.parse_oplog_entry_object(key, bytes)?;
+            if entry.oplog_index != *oplog_index {
+                return Err(SharedStoreReplicationError::OplogEntryIndexMismatch {
+                    path: key.clone(),
+                    expected: *oplog_index,
+                    actual: entry.oplog_index,
+                });
+            }
+            entries.push(entry);
         }
         Ok(entries)
     }
@@ -890,6 +917,42 @@ mod tests {
 
     use super::*;
     use crate::types::CommandResponse;
+
+    struct ReorderedGetManyStore {
+        inner: FileObjectStore,
+    }
+
+    #[async_trait]
+    impl ObjectStore for ReorderedGetManyStore {
+        async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
+            self.inner.put(key, bytes).await
+        }
+
+        async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
+            self.inner.get(key).await
+        }
+
+        async fn get_many(
+            &self,
+            keys: &[String],
+        ) -> Result<Vec<(String, Bytes)>, ObjectStoreError> {
+            let mut objects = self.inner.get_many(keys).await?;
+            objects.reverse();
+            Ok(objects)
+        }
+
+        async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
+            self.inner.list(prefix).await
+        }
+
+        async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
+            self.inner.delete(key).await
+        }
+
+        fn uri(&self, key: &str) -> String {
+            self.inner.uri(key)
+        }
+    }
 
     #[tokio::test]
     async fn shared_store_restores_index_pages_and_replays_later_oplog() {
@@ -1274,6 +1337,60 @@ mod tests {
                 .unwrap_err(),
             SharedStoreReplicationError::ChecksumMismatch { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn shared_store_replay_tolerates_reordered_batch_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(ReorderedGetManyStore {
+            inner: FileObjectStore::new(dir.path().join("objects")),
+        });
+        let replicator = SharedStoreReplicator::new("cluster-a", store);
+        for oplog_index in 1..=3 {
+            replicator
+                .publish_oplog_entry(SharedStoreOplogEntry {
+                    shard_id: 1,
+                    oplog_index,
+                    command: Command::StringSet {
+                        key: format!("k{oplog_index}"),
+                        value: vec![oplog_index as u8],
+                    },
+                })
+                .await
+                .unwrap();
+        }
+
+        let follower = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("follower-cache"),
+            dir.path().join("follower-pages"),
+            dir.path().join("follower-index"),
+        );
+        follower.load_shard(1);
+        let report = replicator
+            .replay_oplog_strict(1, 0, &follower)
+            .await
+            .unwrap();
+        assert_eq!(
+            report,
+            ReplayReport {
+                applied: 3,
+                last_oplog_index: 3,
+            }
+        );
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "k2".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(vec![2])
+            }
+        );
     }
 
     #[tokio::test]
