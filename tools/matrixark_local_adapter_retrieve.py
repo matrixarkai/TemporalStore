@@ -14,6 +14,9 @@ try:  # package path
         resolve_context_source_mode,
         QUERY_REWRITE_ENABLED,
         QUERY_REWRITE_WINDOW,
+        PACK_PRECISION_EXPAND_ENABLED,
+        PACK_PRECISION_EXPAND_MAX_EVENTS,
+        PACK_PRECISION_EXPAND_QUESTION_TYPES,
     )  # noqa: F401
     from tools import matrixark_query_rewrite as _query_rewrite
 except ImportError:
@@ -22,8 +25,65 @@ except ImportError:
         resolve_context_source_mode,
         QUERY_REWRITE_ENABLED,
         QUERY_REWRITE_WINDOW,
+        PACK_PRECISION_EXPAND_ENABLED,
+        PACK_PRECISION_EXPAND_MAX_EVENTS,
+        PACK_PRECISION_EXPAND_QUESTION_TYPES,
     )
     import matrixark_query_rewrite as _query_rewrite
+
+
+def precision_expand_pack(pack, records, question_type, *, max_events, budget_tokens) -> int:
+    """Expand matched segments/summaries in the pack to their source raw events.
+
+    For exact-fact queries a summary can drop the exact hash/number/command it summarized; the
+    raw events are the exact record. This looks up each packed segment/summary's source_event_ids
+    and appends those raw context_events (deduped, within budget) so precision is recovered. Adds
+    tokens (raw > summary), so it is gated + scoped to exact-fact question types. Mutates pack;
+    returns the number of raw events added. Never raises.
+    """
+    try:
+        refs = pack.get("selected_refs")
+        if not isinstance(refs, list) or not refs:
+            return 0
+        event_text = {}
+        seg_sources = {}
+        for r in records:
+            rt = r.get("record_type")
+            if rt == "context_event" and r.get("event_id_hash") is not None:
+                event_text[int(r["event_id_hash"])] = str(r.get("text", ""))
+            elif rt in {"context_segment", "context_summary"}:
+                h = r.get("segment_hash") or r.get("summary_hash")
+                if h is not None:
+                    seg_sources[int(h)] = [int(x) for x in (r.get("source_event_ids") or []) if str(x).lstrip("-").isdigit()]
+        already = set()
+        for r in refs:
+            rh = r.get("ref_hash")
+            if rh is not None:
+                already.add(int(rh))
+        added = 0
+        used = 0
+        additions = []
+        for r in refs:
+            if r.get("ref_type") not in {"segment", "summary", "compression"}:
+                continue
+            rh = r.get("ref_hash")
+            for eid in (seg_sources.get(int(rh), []) if rh is not None else [])[:max_events]:
+                if eid in already or eid not in event_text:
+                    continue
+                txt = event_text[eid]
+                t = max(1, len(txt) // 4)
+                if used + t > budget_tokens:
+                    break
+                additions.append({"ref_type": "event", "ref_hash": eid, "text": txt,
+                                  "tokens": t, "memory_layer": "session", "source": "precision_expand"})
+                already.add(eid); used += t; added += 1
+        if additions:
+            pack["selected_refs"] = refs + additions
+            pack["used_context_tokens"] = int(pack.get("used_context_tokens", 0) or 0) + used
+            pack["precision_expanded"] = {"raw_events_added": added, "tokens_added": used}
+        return added
+    except Exception:
+        return 0
 
 
 def _recent_user_texts_for_rewrite(args, adapter, scope) -> list:
@@ -3590,6 +3650,11 @@ class _LocalAdapterRetrieveMixin:
         if over_budget_stages and not any(str(warning).startswith("stage_budget_exceeded:") for warning in quality_warnings):
             quality_warnings.append("stage_budget_exceeded:" + ",".join(over_budget_stages))
             pack["quality_warnings"] = quality_warnings
+        # Precision-expand (gated): for exact-fact queries, add matched segments' source raw
+        # events so exact hashes/numbers/commands the summaries dropped are recovered.
+        if PACK_PRECISION_EXPAND_ENABLED and question_type in PACK_PRECISION_EXPAND_QUESTION_TYPES:
+            precision_expand_pack(pack, records, question_type,
+                                  max_events=PACK_PRECISION_EXPAND_MAX_EVENTS, budget_tokens=16000)
         if bool(args.get("debug_context_pack")) or bool(args.get("include_retrieval_debug")):
             return pack
         return compact_context_pack_for_serving(pack, include_debug=debug_refs)
