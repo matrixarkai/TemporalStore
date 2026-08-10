@@ -381,10 +381,16 @@ def score_text(q_terms: set[str], text: str, recency_rank: int) -> float:
 PER_REF_TEXT_CHARS = int(os.environ.get("SWEEP_PER_REF_TEXT_CHARS", "4000"))
 
 
-def _fill(cands, token_budget, used, selected, seen_text):
-    """Greedy best-score fill of a sub-budget, with dedup + per-ref truncation. Mutates in place."""
+def _fill(cands, token_budget, used, selected, seen_text, min_score=0.0):
+    """Greedy best-score fill of a sub-budget, with dedup + per-ref truncation. Mutates in place.
+
+    min_score is the relevance floor: candidates with score <= min_score are dropped.
+    Default 0.0 keeps the strict behavior (drop zero-overlap, low-recency candidates).
+    Pass a negative value (e.g. -1.0) to RELAX the floor and let recency/position fill the
+    remaining budget with recent context even when it has no query-term overlap.
+    """
     for score, rtype, rid, text, _is_cur in sorted(cands, key=lambda c: c[0], reverse=True):
-        if score <= 0 or used >= token_budget:
+        if score <= min_score or used >= token_budget:
             continue
         norm = text[:160]
         if norm in seen_text:
@@ -406,7 +412,7 @@ def _fill(cands, token_budget, used, selected, seen_text):
 
 
 def retrieve_pack(query: str, events, segments, entities, summaries, token_budget: int,
-                  current_session_ratio: float | None = None) -> dict[str, Any]:
+                  current_session_ratio: float | None = None, min_score: float = 0.0) -> dict[str, Any]:
     q_terms = set(keywords(query))
     newest_session = ""
     if events:
@@ -431,9 +437,9 @@ def retrieve_pack(query: str, events, segments, entities, summaries, token_budge
         # Phase 1: reserve a floor of the budget for current-session reconstruction.
         cur_cap = int(token_budget * current_session_ratio)
         cur = [c for c in candidates if c[4]]
-        used = _fill(cur, cur_cap, used, selected, seen_text)
+        used = _fill(cur, cur_cap, used, selected, seen_text, min_score)
     # Phase 2: fill the remaining budget from everything, best-score first (cross-session included).
-    used = _fill(candidates, token_budget, used, selected, seen_text)
+    used = _fill(candidates, token_budget, used, selected, seen_text, min_score)
     cur_tok = sum(r["tokens"] for r in selected if r.get("is_current"))
     return {"query": query, "token_budget": token_budget, "used_tokens": used,
             "current_session_tokens": cur_tok, "cross_session_tokens": used - cur_tok,
