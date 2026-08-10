@@ -110,7 +110,7 @@ impl ObjectStore for MatrixObjectHttpStore {
             return Ok(Vec::new());
         }
         match self.rpc_request(RPC_GET_MANY, "", keys.join("\n").as_bytes()) {
-            Ok(response) => parse_rpc_get_many_response(&response),
+            Ok(response) => parse_rpc_get_many_response(response),
             Err(_) => {
                 let mut objects = Vec::with_capacity(keys.len());
                 for key in keys {
@@ -274,7 +274,9 @@ fn parse_rpc_list_response(response: &[u8]) -> Vec<String> {
         .collect()
 }
 
-fn parse_rpc_get_many_response(response: &[u8]) -> Result<Vec<(String, Bytes)>, ObjectStoreError> {
+fn parse_rpc_get_many_response(
+    response: Vec<u8>,
+) -> Result<Vec<(String, Bytes)>, ObjectStoreError> {
     if response.len() < 4 {
         return Err(ObjectStoreError::Http(
             "truncated get_many response count".to_string(),
@@ -283,6 +285,7 @@ fn parse_rpc_get_many_response(response: &[u8]) -> Result<Vec<(String, Bytes)>, 
     let count = u32::from_le_bytes(response[..4].try_into().unwrap()) as usize;
     let mut offset = 4;
     let mut objects = Vec::with_capacity(count);
+    let response = Bytes::from(response);
     for _ in 0..count {
         if response.len().saturating_sub(offset) < 12 {
             return Err(ObjectStoreError::Http(
@@ -302,7 +305,7 @@ fn parse_rpc_get_many_response(response: &[u8]) -> Result<Vec<(String, Bytes)>, 
         let key = String::from_utf8(response[offset..offset + key_len].to_vec())
             .map_err(|err| ObjectStoreError::Http(err.to_string()))?;
         offset += key_len;
-        let value = Bytes::copy_from_slice(&response[offset..offset + value_len]);
+        let value = response.slice(offset..offset + value_len);
         offset += value_len;
         objects.push((key, value));
     }
