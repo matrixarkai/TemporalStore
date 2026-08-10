@@ -1,10 +1,65 @@
 """_LocalAdapterRetrieveMixin methods split from matrixark_mcp_local_adapter.MatrixArkLocalAdapter (mixin)."""
 from __future__ import annotations
 
+import os as _os
+import re as _re
+
 try:  # package path
     from tools.matrixark_mcp_core import *  # noqa: F401,F403
 except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
+
+
+# --- Lexical exact-recall lane (gated by MATRIXARK_LEXICAL_EXACT_RECALL, default ON) -----------
+# Dense (MiniLM) similarity under-weights rare/exact tokens -- numbers, units, counts, version
+# strings, hex hashes, and capitalized proper names / acronyms. When a query names such a token,
+# the record carrying it can be pruned by tree/node placement before it is ever scored, so the
+# fact is never a candidate (funnel-loss class "never a candidate"). This lane admits a record as
+# a candidate when it shares a rare/exact token with the query, complementing dense recall. It is
+# purely additive to candidate GATHERING -- scoring, packing, and budget semantics are unchanged,
+# and the admitted record still has to earn its place on score/budget like any other candidate.
+_LEXICAL_EXACT_STOPWORDS = frozenset({
+    "the", "and", "for", "with", "that", "this", "from", "have", "has", "had", "what", "when",
+    "where", "which", "who", "whom", "whose", "how", "why", "are", "was", "were", "you", "your",
+    "yours", "its", "their", "there", "then", "than", "into", "onto", "over", "under", "about",
+    "does", "did", "done", "not", "but", "our", "his", "her", "him", "she", "they", "them",
+})
+
+
+def lexical_exact_recall_enabled() -> bool:
+    """Feature gate. Default ON; set MATRIXARK_LEXICAL_EXACT_RECALL=0 to restore exact prior behavior."""
+    return str(_os.environ.get("MATRIXARK_LEXICAL_EXACT_RECALL", "1")).strip().lower() not in {
+        "0", "false", "no", "off", "",
+    }
+
+
+def lexical_exact_recall_query_tokens(query: object) -> set:
+    """Rare/exact query tokens worth a lexical recall lane: numeric/version/hash tokens always, and
+    capitalized proper-name/acronym tokens when not the leading word. Common words are excluded so
+    ordinary phrasings ("how many shards") yield an empty set and behavior is unchanged."""
+    out: set = set()
+    for index, raw_token in enumerate(_re.findall(r"[A-Za-z0-9_]+", str(query or ""))):
+        low = raw_token.lower()
+        if len(low) < 3 or low in _LEXICAL_EXACT_STOPWORDS:
+            continue
+        if any(ch.isdigit() for ch in raw_token):
+            out.add(low)  # numbers, counts, versions, hex hashes (e.g. 226, 3924, 512, 9a803784)
+        elif index > 0 and any(ch.isupper() for ch in raw_token):
+            out.add(low)  # proper names / acronyms mid-query (e.g. Priya, Raman, LRU, MatrixCache)
+    return out
+
+
+def record_lexical_exact_match(record: Any, exact_tokens: set) -> bool:
+    """True when the record's text carries any of the query's rare/exact tokens."""
+    if not exact_tokens:
+        return False
+    blob = " ".join(
+        str(record.get(field, "") or "")
+        for field in ("text", "summary_text", "state", "entity_name", "topic")
+    )
+    if not blob:
+        return False
+    return not exact_tokens.isdisjoint(tokens(blob))
 
 # Context-source policy resolver + remote-only local fallback floor
 # (runtime_config is a leaf module -> no import cycle).
@@ -477,6 +532,13 @@ class _LocalAdapterRetrieveMixin:
                 question_type=question_type,
             )
         query_terms = {term for term in tokens(retrieval_query) if len(term) > 2}
+        # Lexical exact-recall lane: rare/exact tokens the dense encoder under-weights. Empty for
+        # ordinary phrasings, so this is a no-op unless the query actually names an exact token.
+        lexical_exact_tokens = (
+            lexical_exact_recall_query_tokens(retrieval_query)
+            if lexical_exact_recall_enabled()
+            else set()
+        )
         raw_reference_time_ms = args.get("reference_time_ms", now_ms())
         if not isinstance(raw_reference_time_ms, int):
             raise MatrixArkError("reference_time_ms must be an integer")
@@ -1363,9 +1425,16 @@ class _LocalAdapterRetrieveMixin:
             ):
                 return True
             try:
-                return int(record.get("node_hash")) in selected_node_hashes
+                if int(record.get("node_hash")) in selected_node_hashes:
+                    return True
             except (TypeError, ValueError):
-                return False
+                pass
+            # Lexical exact-recall lane: admit a record whose node was pruned (or that carries no
+            # scored node placement, e.g. a scope-less segment) when it shares a rare/exact token
+            # with the query. Gated + additive; when lexical_exact_tokens is empty this is a no-op.
+            if lexical_exact_tokens and record_lexical_exact_match(record, lexical_exact_tokens):
+                return True
+            return False
 
         if placement_candidate_records and not traversal.get("fallback_to_flat"):
             tree_candidate_records = [record for record in placement_candidate_records if selected_by_tree(record)]
@@ -1479,11 +1548,20 @@ class _LocalAdapterRetrieveMixin:
         )
         primary_matches = []
         auxiliary_matches = []
-        if question_type in {"broad_exploration", "profile_memory", "current_state", "latest"}:
+        summary_scan_question_types = {"broad_exploration", "profile_memory", "current_state", "latest"}
+        # Lexical exact-recall lane: fact/evidence/etc. normally skip summaries (they prefer dense
+        # raw refs), but when the exact fact lives ONLY in a properly-scoped L0/L1 summary, skipping
+        # summaries loses it. Enter the summary scan for those types too when the query names a
+        # rare/exact token, admitting ONLY lexically-matching summaries so normal fact packs are
+        # unchanged. The original four question types keep their exact prior behavior.
+        summary_lexical_lane = bool(lexical_exact_tokens) and question_type not in summary_scan_question_types
+        if question_type in summary_scan_question_types or summary_lexical_lane:
             for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
                 if scan_index % 64 == 0 and deadline_exceeded():
                     return deadline_fallback("deadline_during_summary_scan", records)
                 if record.get("record_type") != "context_summary":
+                    continue
+                if summary_lexical_lane and not record_lexical_exact_match(record, lexical_exact_tokens):
                     continue
                 if not recovered_scope_matches(record, retrieval_scope) and not profile_summary_scope_matches(record, retrieval_scope):
                     continue
