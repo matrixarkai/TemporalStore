@@ -33,9 +33,9 @@ THREAD = [
 ]
 
 CONFIGS = [
-    ("baseline",   3000,  0.0),
-    ("big_budget", 16000, 0.0),
-    ("relaxed",    16000, -1.0),
+    ("baseline",   3000, 0.0),
+    ("big_budget", 6000, 0.0),
+    ("relaxed",    6000, -1.0),
 ]
 
 
@@ -47,6 +47,11 @@ def main() -> int:
     ap.add_argument("--reader-max-tokens", type=int, default=220)
     ap.add_argument("--current-session-ratio", type=float, default=0.5)
     ap.add_argument("--out", default="docs/benchmarks/local_context_token_quality/floor_followup_qwen7b.json")
+    ap.add_argument("--no-judge", action="store_true", help="capture answers only (skip qwen judge); an external judge scores them")
+    ap.add_argument("--query-rewrite", action="store_true",
+                    help="resolve follow-up anaphora: build the RETRIEVAL query from the running thread "
+                         "(prior turns + current), so 'that'/'the ones' carry their referent terms")
+    ap.add_argument("--rewrite-window", type=int, default=3, help="how many prior turns to fold into the retrieval query")
     args = ap.parse_args()
 
     roles = {"user", "assistant"}
@@ -62,20 +67,24 @@ def main() -> int:
     print(json.dumps({"reader": args.reader_model}), flush=True)
 
     rows = []
+    prior_queries: list[str] = []
     for ti, (query, terms) in enumerate(THREAD, 1):
+        # Resolve anaphora: retrieve with the running thread, but the reader still answers the raw follow-up.
+        rq = (" ".join(prior_queries[-args.rewrite_window:]) + " " + query).strip() if args.query_rewrite else query
         print(f"[turn {ti}] {query[:44]}", flush=True)
-        ref = S.build_judge_reference(query, events)
-        turn = {"turn": ti, "query": query, "configs": {}}
+        ref = S.build_judge_reference(rq, events)
+        turn = {"turn": ti, "query": query, "retrieval_query": rq, "reference": ref[:3000], "configs": {}}
         for name, budget, minscore in CONFIGS:
-            pack = S.retrieve_pack(query, events, segments, entities, summaries, budget,
+            pack = S.retrieve_pack(rq, events, segments, entities, summaries, budget,
                                    current_session_ratio=(args.current_session_ratio or None), min_score=minscore)
             ans = reader.answer(query, S.pack_to_context_str(pack)).get("text", "")
-            score = S._combined(reader.judge(query, ans, ref), S.term_coverage(ans, terms))
+            score = None if args.no_judge else S._combined(reader.judge(query, ans, ref), S.term_coverage(ans, terms))
             turn["configs"][name] = {"budget": budget, "min_score": minscore,
                                      "used_tokens": pack["used_tokens"], "refs": len(pack["selected_refs"]),
-                                     "quality": score}
+                                     "answer": ans, "quality": score}
             print(f"    {name:11s} refs={len(pack['selected_refs']):3d} tok={pack['used_tokens']:6d} q={score}", flush=True)
         rows.append(turn)
+        prior_queries.append(query)
 
     def avg(name):
         v = [t["configs"][name]["quality"] for t in rows if t["configs"][name]["quality"] is not None]
