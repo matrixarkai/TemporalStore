@@ -46,6 +46,11 @@ struct PutObjectRequest {
     bytes: Vec<u8>,
 }
 
+struct BorrowedPutObjectRequest<'a> {
+    key: &'a str,
+    bytes: &'a [u8],
+}
+
 #[derive(Deserialize)]
 struct KeyRequest {
     key: String,
@@ -226,7 +231,7 @@ fn handle_rpc_stream(stream: &mut TcpStream, service: ObjectService) -> std::io:
                 let mut bytes = vec![0; value_len as usize];
                 stream.read_exact(&mut bytes)?;
                 match decode_rpc_put_many_request(&bytes)
-                    .and_then(|requests| service.put_many(requests))
+                    .and_then(|requests| service.put_many_borrowed(&requests))
                 {
                     Ok(()) => write_rpc_response(stream, RPC_STATUS_OK, &[])?,
                     Err(err) => write_rpc_error(stream, err)?,
@@ -348,19 +353,22 @@ impl ObjectService {
         Ok(())
     }
 
-    fn put_many(&self, requests: Vec<PutObjectRequest>) -> matrixobject::Result<()> {
+    fn put_many_borrowed(
+        &self,
+        requests: &[BorrowedPutObjectRequest<'_>],
+    ) -> matrixobject::Result<()> {
         if requests.is_empty() {
             return Ok(());
         }
         let segment_id = self.append_segment_id;
-        for req in &requests {
+        for req in requests {
             validate_key(&req.key)?;
         }
-        let appended = append_put_records_durable(&self.append, &requests)?;
+        let appended = append_put_records_durable(&self.append, requests)?;
         let mut index = self.index.write().expect("object index poisoned");
-        for (req, offset) in requests.into_iter().zip(appended) {
+        for (req, offset) in requests.iter().zip(appended) {
             index.insert(
-                req.key,
+                req.key.to_string(),
                 ObjectMeta {
                     segment_id,
                     offset,
@@ -537,7 +545,9 @@ fn parse_raw_key(body: &[u8]) -> matrixobject::Result<String> {
         .map_err(|err| MatrixObjectError::SharedStore(err.to_string()))
 }
 
-fn decode_rpc_put_many_request(body: &[u8]) -> matrixobject::Result<Vec<PutObjectRequest>> {
+fn decode_rpc_put_many_request(
+    body: &[u8],
+) -> matrixobject::Result<Vec<BorrowedPutObjectRequest<'_>>> {
     if body.len() < 4 {
         return Err(MatrixObjectError::SharedStore(
             "put_many body missing count".to_string(),
@@ -567,12 +577,12 @@ fn decode_rpc_put_many_request(body: &[u8]) -> matrixobject::Result<Vec<PutObjec
                 "put_many body truncated payload".to_string(),
             ));
         }
-        let key = String::from_utf8(body[offset..offset + key_len].to_vec())
+        let key = std::str::from_utf8(&body[offset..offset + key_len])
             .map_err(|err| MatrixObjectError::SharedStore(err.to_string()))?;
         offset += key_len;
-        let bytes = body[offset..offset + value_len].to_vec();
+        let bytes = &body[offset..offset + value_len];
         offset += value_len;
-        requests.push(PutObjectRequest { key, bytes });
+        requests.push(BorrowedPutObjectRequest { key, bytes });
     }
     if offset != body.len() {
         return Err(MatrixObjectError::SharedStore(
@@ -731,7 +741,7 @@ fn append_put_record_durable(log: &AppendLog, key: &str, bytes: &[u8]) -> std::i
 
 fn append_put_records_durable(
     log: &AppendLog,
-    requests: &[PutObjectRequest],
+    requests: &[BorrowedPutObjectRequest<'_>],
 ) -> std::io::Result<Vec<u64>> {
     let mut append = log.state.lock().expect("append state poisoned");
     let mut offset = append.next_offset;
