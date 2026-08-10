@@ -74,7 +74,10 @@ def main() -> int:
     prior_queries: list[str] = []
     for ti, (query, terms) in enumerate(THREAD, 1):
         # Resolve anaphora: retrieve with the running thread, but the reader still answers the raw follow-up.
-        rq = (" ".join(prior_queries[-args.rewrite_window:]) + " " + query).strip() if args.query_rewrite else query
+        # Conditional — only genuine follow-ups are rewritten (standalone queries are left alone).
+        import matrixark_query_rewrite as QR
+        rq, _rw, _reason = QR.conditional_retrieval_query(
+            query, prior_queries, enabled=args.query_rewrite, window=args.rewrite_window)
         print(f"[turn {ti}] {query[:44]}", flush=True)
         ref = S.build_judge_reference(rq, events)
         turn = {"turn": ti, "query": query, "retrieval_query": rq, "reference": ref[:3000],
