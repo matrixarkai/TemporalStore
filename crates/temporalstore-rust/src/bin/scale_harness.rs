@@ -2,6 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use async_trait::async_trait;
+use bytes::Bytes;
 use serde::Serialize;
 use temporalstore_rust::control::{Config, SetConfigRequest};
 use temporalstore_rust::engine::TemporalEngine;
@@ -10,7 +12,9 @@ use temporalstore_rust::shared_store::{SharedStoreReplicator, SharedStoreStorage
 use temporalstore_rust::types::{
     Command, CommandResponse, ExecuteRequest, FeatureFilter, FeatureFilterOp, SequenceFeatureRow,
 };
-use temporalstore_snapshot::object_store::FileObjectStore;
+use temporalstore_snapshot::object_store::{
+    FileObjectStore, MatrixObjectHttpStore, ObjectStore, ObjectStoreError,
+};
 
 #[derive(Debug, Clone)]
 struct HarnessOptions {
@@ -27,7 +31,9 @@ struct HarnessOptions {
     compare_shared_store: bool,
     shared_store_ops: usize,
     shared_store_flush_every: usize,
+    shared_store_concurrency: usize,
     shared_store_root: Option<PathBuf>,
+    shared_store_uri: Option<String>,
 }
 
 impl Default for HarnessOptions {
@@ -46,7 +52,9 @@ impl Default for HarnessOptions {
             compare_shared_store: false,
             shared_store_ops: 1_000,
             shared_store_flush_every: 25,
+            shared_store_concurrency: 1,
             shared_store_root: None,
+            shared_store_uri: None,
         }
     }
 }
@@ -113,6 +121,19 @@ struct SharedStoreComparisonSummary {
     async_max_lag: u64,
     async_flush_every: usize,
     shared_store_root: String,
+    concurrent_sync: Option<SharedStoreConcurrentSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct SharedStoreConcurrentSummary {
+    ops: usize,
+    concurrency: usize,
+    write_latency: LatencySummary,
+    read_latency: LatencySummary,
+    write_qps: ThroughputSummary,
+    read_qps: ThroughputSummary,
+    max_lag_before_replay: u64,
+    max_lag_after_replay: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -381,7 +402,9 @@ fn parse_options() -> HarnessOptions {
             }
             "--shared-store-ops" => options.shared_store_ops = parse(value, key),
             "--shared-store-flush-every" => options.shared_store_flush_every = parse(value, key),
+            "--shared-store-concurrency" => options.shared_store_concurrency = parse(value, key),
             "--shared-store-root" => options.shared_store_root = Some(PathBuf::from(value)),
+            "--shared-store-uri" => options.shared_store_uri = Some(value.clone()),
             "--help" | "-h" => usage_and_exit(),
             other => {
                 eprintln!("unknown option: {other}");
@@ -418,7 +441,9 @@ fn usage_and_exit() -> ! {
     eprintln!("  --compare-shared-store <bool> default false");
     eprintln!("  --shared-store-ops <n> default 1000");
     eprintln!("  --shared-store-flush-every <n> default 25");
+    eprintln!("  --shared-store-concurrency <n> default 1");
     eprintln!("  --shared-store-root <path> default temp dir");
+    eprintln!("  --shared-store-uri <matrixobject://host:port> remote object store");
     std::process::exit(2);
 }
 
@@ -448,8 +473,19 @@ fn run_shared_store_comparison(options: &HarnessOptions) -> SharedStoreCompariso
         let root = options.shared_store_root.clone().unwrap_or_else(|| {
             std::env::temp_dir().join(format!("temporalstore-shared-store-scale-{}", now_ms()))
         });
-        let store = Arc::new(FileObjectStore::new(root.join("objects")));
-        let replicator = SharedStoreReplicator::new("scale-harness", store);
+        let store = if let Some(uri) = &options.shared_store_uri {
+            ScaleObjectStore::MatrixObject(
+                MatrixObjectHttpStore::new(uri)
+                    .unwrap_or_else(|err| panic!("invalid --shared-store-uri {uri:?}: {err}")),
+            )
+        } else {
+            ScaleObjectStore::File(FileObjectStore::new(root.join("objects")))
+        };
+        let shared_store_name = options
+            .shared_store_uri
+            .clone()
+            .unwrap_or_else(|| root.display().to_string());
+        let replicator = SharedStoreReplicator::new("scale-harness", Arc::new(store));
 
         let sync = run_shared_store_mode(
             &replicator,
@@ -467,6 +503,19 @@ fn run_shared_store_comparison(options: &HarnessOptions) -> SharedStoreCompariso
             options.shared_store_flush_every,
         )
         .await;
+        let concurrent_sync = if options.shared_store_concurrency > 1 {
+            Some(
+                run_shared_store_concurrent_sync(
+                    &replicator,
+                    options.shard_id + 2,
+                    options.shared_store_ops,
+                    options.shared_store_concurrency,
+                )
+                .await,
+            )
+        } else {
+            None
+        };
 
         SharedStoreComparisonSummary {
             sync_ops: options.shared_store_ops,
@@ -486,9 +535,75 @@ fn run_shared_store_comparison(options: &HarnessOptions) -> SharedStoreCompariso
             sync_max_lag: sync.max_lag,
             async_max_lag: async_report.max_lag,
             async_flush_every: options.shared_store_flush_every.max(1),
-            shared_store_root: root.display().to_string(),
+            shared_store_root: shared_store_name,
+            concurrent_sync,
         }
     })
+}
+
+#[derive(Debug, Clone)]
+enum ScaleObjectStore {
+    File(FileObjectStore),
+    MatrixObject(MatrixObjectHttpStore),
+}
+
+#[async_trait]
+impl ObjectStore for ScaleObjectStore {
+    async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
+        match self {
+            Self::File(store) => store.put(key, bytes).await,
+            Self::MatrixObject(store) => store.put(key, bytes).await,
+        }
+    }
+
+    async fn put_many(&self, objects: &[(String, Bytes)]) -> Result<(), ObjectStoreError> {
+        match self {
+            Self::File(store) => store.put_many(objects).await,
+            Self::MatrixObject(store) => store.put_many(objects).await,
+        }
+    }
+
+    async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
+        match self {
+            Self::File(store) => store.get(key).await,
+            Self::MatrixObject(store) => store.get(key).await,
+        }
+    }
+
+    async fn get_many(&self, keys: &[String]) -> Result<Vec<(String, Bytes)>, ObjectStoreError> {
+        match self {
+            Self::File(store) => store.get_many(keys).await,
+            Self::MatrixObject(store) => store.get_many(keys).await,
+        }
+    }
+
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
+        match self {
+            Self::File(store) => store.list(prefix).await,
+            Self::MatrixObject(store) => store.list(prefix).await,
+        }
+    }
+
+    async fn list_after(&self, prefix: &str, after: &str) -> Result<Vec<String>, ObjectStoreError> {
+        match self {
+            Self::File(store) => store.list_after(prefix, after).await,
+            Self::MatrixObject(store) => store.list_after(prefix, after).await,
+        }
+    }
+
+    async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
+        match self {
+            Self::File(store) => store.delete(key).await,
+            Self::MatrixObject(store) => store.delete(key).await,
+        }
+    }
+
+    fn uri(&self, key: &str) -> String {
+        match self {
+            Self::File(store) => store.uri(key),
+            Self::MatrixObject(store) => store.uri(key),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -501,6 +616,125 @@ struct SharedStoreModeReport {
     primary_write_qps: ThroughputSummary,
     replica_read_qps: ThroughputSummary,
     max_lag: u64,
+}
+
+#[derive(Debug)]
+struct ConcurrentWriteResult {
+    oplog_index: u64,
+    key: String,
+    value: Vec<u8>,
+    write_latency: Duration,
+}
+
+async fn run_shared_store_concurrent_sync<O>(
+    replicator: &SharedStoreReplicator<O>,
+    shard_id: u64,
+    ops: usize,
+    concurrency: usize,
+) -> SharedStoreConcurrentSummary
+where
+    O: temporalstore_snapshot::object_store::ObjectStore + 'static,
+{
+    let primary = TemporalEngine::default();
+    let follower = TemporalEngine::default();
+    primary.load_shard(shard_id);
+    follower.load_shard(shard_id);
+    let writer = Arc::new(replicator.storage_writer(SharedStoreStorageMode::Sync, 1));
+    let concurrency = concurrency.max(1);
+    let mut write_results = Vec::with_capacity(ops);
+    let write_started = Instant::now();
+
+    for batch_start in (0..ops).step_by(concurrency) {
+        let batch_end = (batch_start + concurrency).min(ops);
+        let mut tasks = Vec::with_capacity(batch_end - batch_start);
+        for i in batch_start..batch_end {
+            let primary = primary.clone();
+            let writer = Arc::clone(&writer);
+            tasks.push(tokio::spawn(async move {
+                let key = format!("shared:concurrent:{shard_id}:{i}");
+                let value = format!("value-{i}").into_bytes();
+                let command = Command::StringSet {
+                    key: key.clone(),
+                    value: value.clone(),
+                };
+                let started = Instant::now();
+                let response = primary.execute(ExecuteRequest {
+                    shard_id,
+                    command: command.clone(),
+                });
+                assert!(response.status.ok, "concurrent primary write failed");
+                let report = writer
+                    .write(shard_id, command)
+                    .await
+                    .expect("concurrent shared-store sync write should publish");
+                ConcurrentWriteResult {
+                    oplog_index: report.oplog_index,
+                    key,
+                    value,
+                    write_latency: started.elapsed(),
+                }
+            }));
+        }
+        for task in tasks {
+            write_results.push(task.await.expect("concurrent write task should join"));
+        }
+    }
+
+    let write_elapsed_ms = write_started.elapsed().as_millis();
+    write_results.sort_by_key(|result| result.oplog_index);
+    let last_written = write_results
+        .last()
+        .map(|result| result.oplog_index)
+        .unwrap_or(0);
+    let replay = replicator
+        .replay_oplog_strict(shard_id, 0, &follower)
+        .await
+        .expect("concurrent follower replay should succeed");
+    assert_eq!(
+        replay.applied, ops,
+        "concurrent replay should apply every write"
+    );
+    let max_lag_before_replay = last_written;
+    let max_lag_after_replay = last_written.saturating_sub(replay.last_oplog_index);
+
+    let mut read_latencies = Vec::with_capacity(write_results.len());
+    let read_started = Instant::now();
+    for batch in write_results.chunks(concurrency) {
+        let mut tasks = Vec::with_capacity(batch.len());
+        for result in batch {
+            let follower = follower.clone();
+            let key = result.key.clone();
+            let value = result.value.clone();
+            tasks.push(tokio::spawn(async move {
+                let started = Instant::now();
+                let read = follower.execute(ExecuteRequest {
+                    shard_id,
+                    command: Command::StringGet { key },
+                });
+                assert_eq!(read.response, CommandResponse::Bytes { value: Some(value) });
+                started.elapsed()
+            }));
+        }
+        for task in tasks {
+            read_latencies.push(task.await.expect("concurrent read task should join"));
+        }
+    }
+    let read_elapsed_ms = read_started.elapsed().as_millis();
+    let write_latencies = write_results
+        .iter()
+        .map(|result| result.write_latency)
+        .collect::<Vec<_>>();
+
+    SharedStoreConcurrentSummary {
+        ops,
+        concurrency,
+        write_latency: summarize_latencies(&write_latencies),
+        read_latency: summarize_latencies(&read_latencies),
+        write_qps: summarize_throughput(ops, write_elapsed_ms),
+        read_qps: summarize_throughput(read_latencies.len(), read_elapsed_ms),
+        max_lag_before_replay,
+        max_lag_after_replay,
+    }
 }
 
 async fn run_shared_store_mode<O>(
