@@ -113,5 +113,105 @@ class CaptureTest(unittest.TestCase):
         self.assertIn("triggers", env["metadata"])
 
 
+class LlmNamingTest(unittest.TestCase):
+    def _spec(self):
+        return sd.discover_skills([e for i in range(3) for e in _proc_session(f"s{i}", 1000 * (i + 1))], min_support=3)[0]
+
+    def test_llm_name_applied(self):
+        spec = self._spec()
+        def fake(_prompt):
+            return 'sure: {"name": "Fix auth via grep-edit", "description": "Locate and patch the auth bug."}'
+        sd.name_skills_with_llm([spec], fake)
+        self.assertEqual("Fix auth via grep-edit", spec.name)
+        self.assertEqual("fix-auth-via-grep-edit", spec.slug)
+        self.assertTrue(spec.description.startswith("Locate and patch"))
+
+    def test_bad_llm_output_keeps_deterministic_name(self):
+        spec = self._spec()
+        before = spec.name
+        sd.name_skills_with_llm([spec], lambda _p: "no json here")
+        self.assertEqual(before, spec.name)
+
+    def test_llm_exception_is_swallowed(self):
+        spec = self._spec()
+        before = spec.name
+        def boom(_p):
+            raise RuntimeError("model down")
+        sd.name_skills_with_llm([spec], boom)
+        self.assertEqual(before, spec.name)
+
+
+class IdentityDedupTest(unittest.TestCase):
+    def _specs(self):
+        evs = [e for i in range(4) for e in _proc_session(f"s{i}", 1000 * (i + 1))]  # Grep,Read,Edit
+        for i in range(3):
+            evs += _proc_session(f"t{i}", 90000 * (i + 1), pattern=("Bash", "Write"), trigger="deploy the service")
+        return sd.discover_skills(evs, min_support=3)
+
+    def test_slug_match_drops_local_skill(self):
+        specs = self._specs()
+        target = specs[0]
+        kept = sd.dedup_discovered_vs_local(specs, local_names=[target.name])
+        self.assertNotIn(target.slug, [s.slug for s in kept])
+
+    def test_tool_set_match_drops(self):
+        specs = self._specs()
+        kept = sd.dedup_discovered_vs_local(specs, local_tool_sets=[["Grep", "Read", "Edit"]])
+        self.assertFalse(any(s.signature == ("Grep", "Read", "Edit") for s in kept))
+
+    def test_net_new_skill_survives(self):
+        specs = self._specs()
+        kept = sd.dedup_discovered_vs_local(specs, local_tool_sets=[["SomeOther", "Tool"]])
+        self.assertEqual(len(specs), len(kept))  # nothing matched local
+
+
+class LeanedMessageParsingTest(unittest.TestCase):
+    def test_parses_tool_markers_into_ordered_actions(self):
+        msgs = [
+            {"role": "user", "content": "fix the auth bug"},
+            {"role": "assistant", "content": "[tool:Grep] login\n[tool:Read] auth.py\n[tool:Edit] auth.py"},
+        ]
+        evs = sd.events_from_leaned_messages(msgs, "sess")
+        self.assertEqual("user", evs[0].role)
+        self.assertEqual(["Grep", "Read", "Edit"], [e.tool_name for e in evs if e.tool_name])
+        eps = sd.mine_episodes(evs)
+        self.assertEqual([("Grep", "login"), ("Read", "auth.py"), ("Edit", "auth.py")], eps[0].actions)
+
+    def test_list_content_and_no_tool_markers(self):
+        msgs = [{"role": "user", "content": [{"type": "text", "text": "just asking"}]},
+                {"role": "assistant", "content": "no tools here"}]
+        evs = sd.events_from_leaned_messages(msgs, "s")
+        self.assertEqual(1, len(evs))
+        self.assertEqual("user", evs[0].role)
+
+
+class OrchestratorTest(unittest.TestCase):
+    def test_discover_capture_pipeline(self):
+        evs = [e for i in range(3) for e in _proc_session(f"s{i}", 1000 * (i + 1))]
+        sink = []
+        out = sd.discover_capture_for_session(
+            evs, scope={"user": "u", "project": "p"},
+            ingest_records=lambda recs: sink.append(recs),
+            complete=lambda _p: '{"name": "Fix auth bug", "description": "Grep, read, edit auth."}',
+        )
+        self.assertEqual(1, out["captured"])
+        self.assertEqual("Fix auth bug", out["skills"][0]["name"])
+        self.assertTrue(any(r["record_type"] == "skill_section" for r in sink[0]))
+
+    def test_all_dup_of_local_is_noop(self):
+        evs = [e for i in range(3) for e in _proc_session(f"s{i}", 1000 * (i + 1))]
+        local = [{"record_type": "skill_manifest", "name": "x", "allowed_tools": ["Grep", "Read", "Edit"]}]
+        out = sd.discover_capture_for_session(evs, scope={"user": "u"}, ingest_records=lambda r: None, local_records=local)
+        self.assertEqual(0, out["captured"])
+        self.assertEqual("all_dup_of_local_skills", out["reason"])
+
+    def test_ingest_failure_never_raises(self):
+        evs = [e for i in range(3) for e in _proc_session(f"s{i}", 1000 * (i + 1))]
+        def boom(_recs):
+            raise IOError("store down")
+        out = sd.discover_capture_for_session(evs, scope={"user": "u"}, ingest_records=boom)
+        self.assertIn("error", out)  # swallowed, reported, not raised
+
+
 if __name__ == "__main__":
     unittest.main()

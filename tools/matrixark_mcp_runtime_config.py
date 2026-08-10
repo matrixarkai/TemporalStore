@@ -189,6 +189,12 @@ DEFAULT_SHARED_SKILL_MAX_BUDGET_RATIO = float(os.environ.get("MATRIXARK_SHARED_S
 DEFAULT_SHARED_SKILL_MAX_BUDGET_TOKENS = int(os.environ.get("MATRIXARK_SHARED_SKILL_MAX_BUDGET_TOKENS", "500000"))
 DEFAULT_SHARED_CONTEXT_MIN_SCORE = float(os.environ.get("MATRIXARK_SHARED_CONTEXT_MIN_SCORE", "0.20"))
 
+# Auto skill discovery on session commit (mine reusable tool-procedures -> skill records).
+# Ships OFF; enable per-deployment. Runs only on final session boundaries.
+SKILL_DISCOVERY_ENABLED = os.environ.get("MATRIXARK_SKILL_DISCOVERY", "0").strip().lower() in {"1", "true", "yes"}
+SKILL_DISCOVERY_MIN_SUPPORT = int(os.environ.get("MATRIXARK_SKILL_DISCOVERY_MIN_SUPPORT", "2"))
+SKILL_DISCOVERY_MAX_SKILLS = int(os.environ.get("MATRIXARK_SKILL_DISCOVERY_MAX_SKILLS", "8"))
+
 TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE", "1024"))
 TIME_COMPRESSION_WINDOW_EVENTS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_WINDOW_EVENTS", "64"))
 TIME_COMPRESSION_MIN_EVENTS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MIN_EVENTS", "8"))

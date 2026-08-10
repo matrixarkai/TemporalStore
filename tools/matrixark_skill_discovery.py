@@ -408,8 +408,186 @@ def skill_ingest_envelope(spec: SkillSpec, *, scope: Json, ingestion_time_ms: in
 
 
 # --------------------------------------------------------------------------------------
+# Optional LLM naming pass — readable names/descriptions on top of the deterministic ones.
+# --------------------------------------------------------------------------------------
+def _naming_prompt(spec: "SkillSpec") -> str:
+    return (
+        "Name a reusable agent skill from its observed tool procedure. "
+        "Reply ONLY compact JSON: {\"name\": <=6 words, \"description\": one sentence}.\n"
+        f"Tool sequence: {' -> '.join(spec.signature)}\n"
+        f"Common request keywords: {', '.join(spec.triggers[:6])}\n"
+        f"Example requests: {' | '.join(spec.examples[:3])}\n"
+    )
+
+
+def _parse_naming(raw: str) -> Json:
+    m = re.search(r"\{.*\}", raw or "", re.DOTALL)
+    if not m:
+        return {}
+    try:
+        data = json.loads(m.group(0))
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, ValueError):
+        return {}
+
+
+def name_skills_with_llm(specs: list["SkillSpec"], complete: Callable[[str], str], *, max_skills: Optional[int] = None) -> list["SkillSpec"]:
+    """Give skills readable names/descriptions via an injected `complete(prompt)->text` fn.
+
+    Model-agnostic: `complete` can wrap Ollama, Anthropic, or any endpoint; it should
+    return raw text expected to contain a JSON object {name, description}. Any failure or
+    unparseable reply leaves the deterministic name in place. Mutates specs in place.
+    """
+    for spec in specs[: max_skills if max_skills is not None else len(specs)]:
+        try:
+            data = _parse_naming(complete(_naming_prompt(spec)) or "")
+        except Exception:  # a naming failure must never break discovery
+            continue
+        name = str(data.get("name") or "").strip()
+        desc = str(data.get("description") or "").strip()
+        if name:
+            spec.name = name[:60]
+            spec.slug = _slug(name)
+            spec.content_hash = f"{stable_hash('|'.join(list(spec.signature) + spec.triggers + spec.allowed_tools)):x}"
+        if desc:
+            spec.description = desc[:240]
+    return specs
+
+
+# --------------------------------------------------------------------------------------
+# Identity dedup — never re-capture a skill the agent already has locally.
+# --------------------------------------------------------------------------------------
+def _skill_tool_set(tools: Iterable[str]) -> frozenset:
+    return frozenset(normalize_tool(t) for t in tools)
+
+
+def _jaccard(a: frozenset, b: frozenset) -> float:
+    if not a and not b:
+        return 1.0
+    union = a | b
+    return len(a & b) / len(union) if union else 0.0
+
+
+def local_skill_identities_from_records(records: Iterable[Json]) -> tuple[list[str], list[list[str]]]:
+    """Pull (names, tool-sets) of already-defined skills from ingested skill records."""
+    names: list[str] = []
+    tool_sets: list[list[str]] = []
+    for r in records:
+        if r.get("record_type") in {"skill_manifest", "skill_registry"}:
+            names.append(str(r.get("name") or ""))
+            tool_sets.append(list(r.get("allowed_tools") or []))
+    return names, tool_sets
+
+
+def dedup_discovered_vs_local(
+    specs: list["SkillSpec"],
+    *,
+    local_names: Iterable[str] = (),
+    local_tool_sets: Iterable[Iterable[str]] = (),
+    tool_jaccard: float = 0.8,
+) -> list["SkillSpec"]:
+    """Drop discovered skills the agent already has locally (identity, not text, match).
+
+    A discovered skill is dropped if its slug matches a local skill's slug, or its tool
+    set is >= `tool_jaccard` similar to a local skill's tool set. This is the identity
+    dedup that keeps augment-mode retrieval from re-returning locally-defined skills while
+    still surfacing genuinely net-new discovered procedures.
+    """
+    local_slugs = {_slug(n) for n in local_names if n}
+    local_sets = [_skill_tool_set(ts) for ts in local_tool_sets if ts]
+    kept: list[SkillSpec] = []
+    for spec in specs:
+        if spec.slug in local_slugs:
+            continue
+        ts = _skill_tool_set(spec.allowed_tools)
+        if any(_jaccard(ts, ls) >= tool_jaccard for ls in local_sets):
+            continue
+        kept.append(spec)
+    return kept
+
+
+def discover_capture_for_session(
+    events: Iterable[InteractionEvent],
+    *,
+    scope: Json,
+    ingest_records: Callable[[list[Json]], Any],
+    local_records: Iterable[Json] = (),
+    complete: Optional[Callable[[str], str]] = None,
+    updated_at_ms: int = 0,
+    min_support: int = MIN_SUPPORT,
+    min_steps: int = MIN_STEPS,
+    max_skills: int = MAX_SKILLS,
+    deployment_scope: str = "user",
+    sharing_scope: str = "user",
+) -> Json:
+    """End-to-end for the commit path: discover -> dedup-vs-local -> (LLM name) -> capture.
+
+    `ingest_records(records)` persists the built skill records (manifest/registry/section)
+    into the store. `complete` (optional) enables the LLM naming pass. Returns a summary.
+    Designed to be safe to call fire-and-forget from idle/session commit: bounded work,
+    never raises through to the caller.
+    """
+    try:
+        specs = discover_skills(events, min_support=min_support, min_steps=min_steps, max_skills=max_skills)
+        if not specs:
+            return {"discovered": 0, "captured": 0, "reason": "no_recurring_procedures"}
+        names, tool_sets = local_skill_identities_from_records(local_records)
+        specs = dedup_discovered_vs_local(specs, local_names=names, local_tool_sets=tool_sets)
+        if not specs:
+            return {"discovered": 0, "captured": 0, "reason": "all_dup_of_local_skills"}
+        if complete is not None:
+            name_skills_with_llm(specs, complete)
+        captured = 0
+        for spec in specs:
+            records = skill_records_for_spec(
+                spec, scope=scope, deployment_scope=deployment_scope,
+                sharing_scope=sharing_scope, updated_at_ms=updated_at_ms,
+            )
+            ingest_records(records)
+            captured += 1
+        return {"discovered": len(specs), "captured": captured,
+                "skills": [{"name": s.name, "slug": s.slug, "support": s.support} for s in specs]}
+    except Exception as exc:  # never break the commit path
+        return {"discovered": 0, "captured": 0, "error": f"{type(exc).__name__}: {exc}"}
+
+
+# --------------------------------------------------------------------------------------
 # Local-history loader + CLI (reuses the backfill transcript parsing when available).
 # --------------------------------------------------------------------------------------
+_TOOL_MARKER = re.compile(r"\[tool:([^\]]+)\]\s*([^\[\n]*)")
+
+
+def events_from_leaned_messages(messages: Iterable[Json], session_id: str) -> list[InteractionEvent]:
+    """Build InteractionEvents from committed messages whose tool calls are leaned to
+    `[tool:NAME] arg` text (the live ingestion format used by the hooks/backfill).
+
+    User messages become episode triggers; each `[tool:...]` marker in an assistant
+    message becomes an ordered tool action. This lets the session-commit path run skill
+    discovery over exactly what was ingested, without needing the raw structured blocks.
+    """
+    out: list[InteractionEvent] = []
+    ts = 0
+    for m in messages:
+        role = str(m.get("role") or "")
+        content = m.get("content")
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = " ".join(b.get("text", "") for b in content if isinstance(b, dict) and isinstance(b.get("text"), str))
+        else:
+            text = ""
+        ts += 1
+        if role in ("user", "human") and text.strip():
+            out.append(InteractionEvent(session_id=session_id, ts_ms=ts, role="user", text=text))
+        for name, arg in _TOOL_MARKER.findall(text or ""):
+            ts += 1
+            out.append(InteractionEvent(
+                session_id=session_id, ts_ms=ts, role="assistant", tool_name=name.strip(),
+                tool_input={"command": arg.strip()} if arg.strip() else {},
+            ))
+    return out
+
+
 def events_from_backfill_records(records: Iterable[Json]) -> list[InteractionEvent]:
     """Adapt normalized backfill records (dicts) into InteractionEvents."""
     out: list[InteractionEvent] = []
