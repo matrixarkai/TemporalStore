@@ -746,12 +746,24 @@ fn append_put_records_durable(
     let mut append = log.state.lock().expect("append state poisoned");
     let mut offset = append.next_offset;
     let mut value_offsets = Vec::with_capacity(requests.len());
+    let batch_capacity = requests
+        .iter()
+        .map(|req| LOG_HEADER_LEN + req.key.len() + req.bytes.len())
+        .sum();
+    let mut batch = Vec::with_capacity(batch_capacity);
     for req in requests {
-        let (value_offset, next_offset) =
-            append_put_record(&mut append.file, offset, &req.key, &req.bytes)?;
+        let header = log_header(LOG_PUT, req.key.len() as u32, req.bytes.len() as u64);
+        batch.extend_from_slice(&header);
+        batch.extend_from_slice(req.key.as_bytes());
+        batch.extend_from_slice(req.bytes);
+        let value_offset = offset + LOG_HEADER_LEN as u64 + req.key.len() as u64;
+        let next_offset = value_offset + req.bytes.len() as u64;
         value_offsets.push(value_offset);
         offset = next_offset;
     }
+    let append_start = append.next_offset;
+    append.file.seek(SeekFrom::Start(append_start))?;
+    append.file.write_all(&batch)?;
     append.next_offset = offset;
     wait_until_durable(log, append.next_offset, append)?;
     Ok(value_offsets)
