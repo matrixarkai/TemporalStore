@@ -195,6 +195,13 @@ DEFAULT_SHARED_CONTEXT_MIN_SCORE = float(os.environ.get("MATRIXARK_SHARED_CONTEX
 QUERY_REWRITE_ENABLED = os.environ.get("MATRIXARK_QUERY_REWRITE", "0").strip().lower() in {"1", "true", "yes"}
 QUERY_REWRITE_WINDOW = int(os.environ.get("MATRIXARK_QUERY_REWRITE_WINDOW", "3"))
 
+# Precision-expand: for exact-fact queries, expand matched segments/summaries to their source
+# raw events (recovers exact hashes/numbers/commands that summaries drop). Ships OFF. Adds tokens
+# (raw > summary), so intended for remote-only exact-fact queries where accuracy is the priority.
+PACK_PRECISION_EXPAND_ENABLED = os.environ.get("MATRIXARK_PACK_PRECISION_EXPAND", "0").strip().lower() in {"1", "true", "yes"}
+PACK_PRECISION_EXPAND_MAX_EVENTS = int(os.environ.get("MATRIXARK_PACK_PRECISION_EXPAND_MAX_EVENTS", "12"))
+PACK_PRECISION_EXPAND_QUESTION_TYPES = {"fact", "multi_hop", "evidence", "benchmark_quality", "date"}
+
 # Auto skill discovery on session commit (mine reusable tool-procedures -> skill records).
 # Ships OFF; enable per-deployment. Runs only on final session boundaries.
 SKILL_DISCOVERY_ENABLED = os.environ.get("MATRIXARK_SKILL_DISCOVERY", "0").strip().lower() in {"1", "true", "yes"}
