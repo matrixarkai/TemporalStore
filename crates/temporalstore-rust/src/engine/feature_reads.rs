@@ -1,3 +1,10 @@
+//! Feature timestamped-KV read paths.
+//!
+//! Range and last-N reads over the feature model's per-key timestamped series,
+//! served from the in-memory index when resident and rehydrated from packed pages
+//! (via the bucket index) otherwise. The sequence model shares this storage, so
+//! its reads route here too (model id `"feature"`).
+
 use std::collections::BTreeMap;
 
 use matrixcache::MultiLayerCache;

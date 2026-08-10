@@ -1,7 +1,6 @@
 //! Slab id / address helpers + delayed-destroy slab scanning, extracted from block_store.rs.
 
 use super::*;
-use std::ffi::OsStr;
 use std::path::Path;
 
 pub(crate) fn page_slab_utility_score(below_retention_floor: bool, is_current: bool, is_live: bool) -> u64 {

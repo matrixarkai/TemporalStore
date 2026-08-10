@@ -52,48 +52,6 @@ pub(crate) fn hash_entries_response(result: Result<CommandResponse, String>) -> 
     }
 }
 
-pub(crate) fn optional_u64_value(value: Option<u64>) -> RespValue {
-    match value {
-        Some(value) => RespValue::Integer(value as i64),
-        None => RespValue::Bulk(None),
-    }
-}
-
-pub(crate) fn optional_usize_value(value: Option<usize>) -> RespValue {
-    match value {
-        Some(value) => RespValue::Integer(value as i64),
-        None => RespValue::Bulk(None),
-    }
-}
-
-pub(crate) fn count_pairs_u32_value(counts: Vec<(u32, u64)>) -> RespValue {
-    RespValue::Array(
-        counts
-            .into_iter()
-            .map(|(key, count)| {
-                RespValue::Array(vec![
-                    RespValue::Integer(key as i64),
-                    RespValue::Integer(count as i64),
-                ])
-            })
-            .collect(),
-    )
-}
-
-pub(crate) fn count_pairs_u64_value(counts: Vec<(u64, u64)>) -> RespValue {
-    RespValue::Array(
-        counts
-            .into_iter()
-            .map(|(key, count)| {
-                RespValue::Array(vec![
-                    RespValue::Integer(key as i64),
-                    RespValue::Integer(count as i64),
-                ])
-            })
-            .collect(),
-    )
-}
-
 pub(crate) fn feature_points_value(points: Vec<FeaturePoint>) -> RespValue {
     RespValue::Array(
         points
@@ -116,13 +74,6 @@ pub(crate) fn parse_u64(value: &[u8], name: &str) -> Result<u64, String> {
 }
 
 pub(crate) fn parse_usize(value: &[u8], name: &str) -> Result<usize, String> {
-    std::str::from_utf8(value)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .ok_or_else(|| format!("ERR {name} must be an unsigned integer"))
-}
-
-pub(crate) fn parse_u32(value: &[u8], name: &str) -> Result<u32, String> {
     std::str::from_utf8(value)
         .ok()
         .and_then(|value| value.parse().ok())

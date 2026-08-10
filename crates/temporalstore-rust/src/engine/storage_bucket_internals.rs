@@ -723,26 +723,6 @@ pub(super) fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry
     collect_model_live_page_entries(shard)
 }
 
-pub(super) fn model_id_for_kind(kind: &str) -> u16 {
-    match kind {
-        "string" => 1,
-        "hash" => 2,
-        "set" => 3,
-        "feature" => 4,
-        "sequence" => 5,
-        "context_node" => 20,
-        "context_event" => 21,
-        "context_index" => 22,
-        "context_audit" => 23,
-        "context_entity" => 25,
-        "context_child" => 26,
-        "context_embedding" => 27,
-        "context_summary" => 28,
-        "context_compression" => 29,
-        _ => u16::MAX,
-    }
-}
-
 pub(super) fn mark_async_dirty_object(
     shard: &mut ShardState,
     object_key: &str,
