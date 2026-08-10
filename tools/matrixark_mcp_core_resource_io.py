@@ -212,6 +212,53 @@ def resolve_raw_resource_for_ingest(args: Json, envelope: Json, raw_uri: str, re
             result["parse_text"] = None
         return result
 
+    # Prefer MatrixObject over S3 for cloud raw storage when an object backend is configured
+    # (MATRIXARK_OBJECT_RPC_URL for the Rust proxy object RPC, or MATRIXARK_OBJECT_STORE_DIR).
+    # Uses its own object bucket and does NOT require an S3 bucket. Falls through to S3 below
+    # when no object backend is set (backward compatible).
+    if not is_s3_uri(raw_uri):
+        try:
+            from matrixark_object_store import (
+                resolve_object_backend as _obj_backend,
+                MatrixObjectClient as _ObjClient,
+                resource_blob_storage_resolution as _obj_resolution,
+                DEFAULT_BUCKET as _OBJ_DEFAULT_BUCKET,
+            )
+        except ImportError:
+            _obj_backend = None
+        if _obj_backend is not None and _obj_backend() != "inline":
+            obj_bucket = str(
+                args.get("object_bucket")
+                or envelope.get("metadata", {}).get("object_bucket")
+                or _OBJ_DEFAULT_BUCKET
+            )
+            result["cloud_bucket"] = obj_bucket
+            if local_path is not None and local_path.exists():
+                if local_path.is_dir():
+                    upload_path = _archive_directory_for_upload(local_path)
+                    result["temp_paths"].append(str(upload_path.parent))
+                    content_type = "application/gzip"
+                else:
+                    upload_path = local_path
+                    content_type = "application/octet-stream"
+                blob = Path(upload_path).read_bytes()
+                result["parse_uri"] = str(local_path)   # parse locally; the file is still present
+                result["parse_text"] = None
+            else:
+                blob = (resource_text or "").encode("utf-8")
+                content_type = "text/markdown"
+            obj_res = _obj_resolution(
+                _ObjClient(bucket=obj_bucket), blob, source_uri=raw_uri, content_type=content_type,
+                scope=envelope.get("scope"), kind=str(envelope.get("kind") or resource_type or "resource"),
+                name=str(envelope.get("metadata", {}).get("name") or ""), bucket=obj_bucket,
+            )
+            for _k in ("storage_mode", "stored_raw_uri", "raw_storage_policy", "raw_bytes_stored",
+                       "upload_status", "cloud_bucket", "cloud_key"):
+                result[_k] = obj_res[_k]
+            if result.get("parse_text") is None and result.get("parse_uri") in (raw_uri, obj_res["stored_raw_uri"]):
+                result["parse_text"] = resource_text  # inline path -> parse from the in-hand text
+            return result
+
     bucket = _cloud_resource_bucket(args, envelope)
     prefix = _cloud_resource_prefix(args, envelope)
     result["cloud_bucket"] = bucket
