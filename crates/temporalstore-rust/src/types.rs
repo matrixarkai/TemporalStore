@@ -202,14 +202,19 @@ pub struct SequenceQuerySpec {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlStateFamily {
-    H,
-    Cpc,
-    Fol,
+    // Wire/disk form is pinned to the historical C++-derived tags (h/cpc/fol) so this
+    // rename to descriptive Rust names carries zero on-disk/wire migration.
+    #[serde(rename = "h")]
+    Counter,
+    #[serde(rename = "cpc")]
+    Distinct,
+    #[serde(rename = "fol")]
+    Selection,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum ControlStateFolType {
+pub enum ControlStateSelectionType {
     First,
     Last,
 }
@@ -1321,14 +1326,17 @@ pub enum Command {
         end_ms: u64,
         aggregator: String,
     },
-    ControlStateFolSet {
+    #[serde(alias = "ControlStateFolSet")]
+    ControlStateSelectionSet {
         key: String,
         value: Vec<u8>,
         occur_time_ms: u64,
         ttl_ms: u64,
-        fol_type: ControlStateFolType,
+        #[serde(alias = "fol_type")]
+        selection_type: ControlStateSelectionType,
     },
-    ControlStateFolQuery {
+    #[serde(alias = "ControlStateFolQuery")]
+    ControlStateSelectionQuery {
         key: String,
     },
     ControlStateManager {
@@ -1347,9 +1355,9 @@ pub enum Command {
         /// Inclusive range end for FIELD_LIST (timestamp_ms as string).
         #[serde(default)]
         end_offset: String,
-        /// Select the Cpc family series instead of the default H family.
-        #[serde(default)]
-        is_cpc: bool,
+        /// Select the Distinct (Cpc) family series instead of the default Counter (H) family.
+        #[serde(default, alias = "is_cpc")]
+        is_distinct: bool,
     },
     ControlStateDebug {
         key: String,

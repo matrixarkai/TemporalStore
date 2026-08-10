@@ -2820,9 +2820,9 @@ fn common_delete_removes_cpp_control_state_family_records_for_logical_key() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     for (family, amount) in [
-        (ControlStateFamily::H, 5),
-        (ControlStateFamily::Cpc, 7),
-        (ControlStateFamily::Fol, 11),
+        (ControlStateFamily::Counter, 5),
+        (ControlStateFamily::Distinct, 7),
+        (ControlStateFamily::Selection, 11),
     ] {
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
@@ -2858,7 +2858,7 @@ fn common_delete_removes_cpp_control_state_family_records_for_logical_key() {
             .response,
         CommandResponse::Empty
     );
-    for family in [ControlStateFamily::H, ControlStateFamily::Cpc, ControlStateFamily::Fol] {
+    for family in [ControlStateFamily::Counter, ControlStateFamily::Distinct, ControlStateFamily::Selection] {
         assert_eq!(
             engine
                 .execute(ExecuteRequest {
@@ -2929,7 +2929,7 @@ fn common_expire_and_ttl_cover_cpp_control_state_family_records_for_logical_key(
     let response = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::ControlStateSet {
-            family: ControlStateFamily::Cpc,
+            family: ControlStateFamily::Distinct,
             key: "control_state-expire".to_string(),
             timestamp_ms: 10,
             amount: 3,
@@ -2976,7 +2976,7 @@ fn common_expire_and_ttl_cover_cpp_control_state_family_records_for_logical_key(
             .execute(ExecuteRequest {
                 shard_id: 1,
                 command: Command::ControlStateFamilyQuery {
-                    family: ControlStateFamily::Cpc,
+                    family: ControlStateFamily::Distinct,
                     key: "control_state-expire".to_string(),
                     start_ms: 0,
                     end_ms: 20,
@@ -3408,7 +3408,7 @@ fn control_state_manager_op_codes_match_cpp_hash_manager() {
         engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::ControlStateSet {
-                family: ControlStateFamily::H,
+                family: ControlStateFamily::Counter,
                 key: "cs".to_string(),
                 timestamp_ms,
                 amount,
@@ -3428,7 +3428,7 @@ fn control_state_manager_op_codes_match_cpp_hash_manager() {
                     field_list,
                     start_offset: start_offset.to_string(),
                     end_offset: end_offset.to_string(),
-                    is_cpc: false,
+                    is_distinct: false,
                 },
             })
             .response

@@ -1405,7 +1405,7 @@ mod tests {
         // only on the leader and dropped it from the raft log, so followers diverged and the
         // write was lost on failover. It must fall through to `propose`.
         let mutating = Command::ControlStateSetAndGet {
-            family: temporalstore_rust::types::ControlStateFamily::Cpc,
+            family: temporalstore_rust::types::ControlStateFamily::Distinct,
             key: "k".to_string(),
             timestamp_ms: 10,
             amount: 4,
@@ -1420,7 +1420,7 @@ mod tests {
 
         // Same for the options variant (it also mutates + persists).
         let mutating_with_options = Command::ControlStateSetAndGetWithOptions {
-            family: temporalstore_rust::types::ControlStateFamily::Cpc,
+            family: temporalstore_rust::types::ControlStateFamily::Distinct,
             key: "k".to_string(),
             timestamp_ms: 10,
             amount: 4,

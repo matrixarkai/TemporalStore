@@ -1467,7 +1467,7 @@ pub fn execute_redis_command_with_state(
                 (None, None)
             };
             let key = if command == "HCHANGE" {
-                control_state_family_key_for_resp(ControlStateFamily::H, &string_arg(&args[1]))
+                control_state_family_key_for_resp(ControlStateFamily::Counter, &string_arg(&args[1]))
             } else {
                 string_arg(&args[1])
             };
@@ -1558,20 +1558,20 @@ pub fn execute_redis_command_with_state(
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
             };
-            let fol_type = match upper(&args[5]).as_str() {
-                "FIRST" => ControlStateFolType::First,
-                "LAST" => ControlStateFolType::Last,
-                value => return RespValue::Error(format!("ERR unsupported fol_type: {value}")),
+            let selection_type = match upper(&args[5]).as_str() {
+                "FIRST" => ControlStateSelectionType::First,
+                "LAST" => ControlStateSelectionType::Last,
+                value => return RespValue::Error(format!("ERR unsupported selection_type: {value}")),
             };
-            status_ok(execute(Command::ControlStateFolSet {
+            status_ok(execute(Command::ControlStateSelectionSet {
                 key: string_arg(&args[1]),
                 value: args[2].clone(),
                 occur_time_ms,
                 ttl_ms,
-                fol_type,
+                selection_type,
             }))
         }
-        "FOLQUERY" if args.len() == 2 => bytes_response(execute(Command::ControlStateFolQuery {
+        "FOLQUERY" if args.len() == 2 => bytes_response(execute(Command::ControlStateSelectionQuery {
             key: string_arg(&args[1]),
         })),
         "HQUERY" | "CPCQUERY" | "FOLQUERY" if args.len() == 5 => {
@@ -1672,13 +1672,13 @@ pub fn execute_redis_command_with_state(
             field_list: Vec::new(),
             start_offset: String::new(),
             end_offset: String::new(),
-            is_cpc: false,
+            is_distinct: false,
         })),
-        // C++ MANAGER op parity: CONTROLSTATEMANAGER key op_type is_cpc [start_offset end_offset | field...]
-        // op_type: QUERY(2)|FIELD_LIST(5)|FIELD_COUNT(6)|ALL_DATA_VALUE(7). is_cpc: 0/1.
+        // C++ MANAGER op parity: CONTROLSTATEMANAGER key op_type is_distinct [start_offset end_offset | field...]
+        // op_type: QUERY(2)|FIELD_LIST(5)|FIELD_COUNT(6)|ALL_DATA_VALUE(7). is_distinct: 0/1.
         "CONTROLSTATEMANAGER" if args.len() >= 4 => {
             let op_type = string_arg(&args[2]);
-            let is_cpc = matches!(string_arg(&args[3]).as_str(), "1" | "cpc" | "true");
+            let is_distinct = matches!(string_arg(&args[3]).as_str(), "1" | "cpc" | "true");
             let op = op_type.trim().to_ascii_uppercase();
             let is_field_list = op == "5" || op == "FIELD_LIST";
             let is_query = op == "2" || op == "QUERY";
@@ -1702,7 +1702,7 @@ pub fn execute_redis_command_with_state(
                 field_list,
                 start_offset,
                 end_offset,
-                is_cpc,
+                is_distinct,
             }))
         }
         "CONTROLSTATEDEBUG" if args.len() == 4 => {

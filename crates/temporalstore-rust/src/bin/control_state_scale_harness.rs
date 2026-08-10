@@ -174,7 +174,7 @@ fn scenario_frequency_cap(engine: &TemporalEngine, shard: u64, opt: &Options) ->
                     .execute(ExecuteRequest {
                         shard_id: shard,
                         command: Command::ControlStateSetAndGet {
-                            family: ControlStateFamily::H,
+                            family: ControlStateFamily::Counter,
                             key: key.clone(),
                             timestamp_ms: ts,
                             amount: 1,
@@ -264,7 +264,7 @@ fn scenario_tenant_quota(engine: &TemporalEngine, shard: u64, opt: &Options) -> 
             .execute(ExecuteRequest {
                 shard_id: shard,
                 command: Command::ControlStateSetAndGet {
-                    family: ControlStateFamily::H,
+                    family: ControlStateFamily::Counter,
                     key,
                     timestamp_ms: ts,
                     amount: weight,
@@ -342,7 +342,7 @@ fn scenario_pacing(engine: &TemporalEngine, shard: u64, opt: &Options) -> Scenar
                 .execute(ExecuteRequest {
                     shard_id: shard,
                     command: Command::ControlStateFamilyQuery {
-                        family: ControlStateFamily::H,
+                        family: ControlStateFamily::Counter,
                         key,
                         start_ms: day_start,
                         end_ms: day_end,
@@ -355,7 +355,7 @@ fn scenario_pacing(engine: &TemporalEngine, shard: u64, opt: &Options) -> Scenar
                 .execute(ExecuteRequest {
                     shard_id: shard,
                     command: Command::ControlStateSetAndGet {
-                        family: ControlStateFamily::H,
+                        family: ControlStateFamily::Counter,
                         key,
                         timestamp_ms: ts,
                         amount: rng.in_range(1, 20) as i64,
@@ -542,7 +542,7 @@ fn scenario_idempotent_replay(
                         .execute(ExecuteRequest {
                             shard_id: shard,
                             command: Command::ControlStateSetAndGetWithOptions {
-                                family: ControlStateFamily::H,
+                                family: ControlStateFamily::Counter,
                                 key: key.clone(),
                                 timestamp_ms: day_start + e * 1000,
                                 amount: 1,

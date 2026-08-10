@@ -1248,12 +1248,12 @@ pub(crate) fn execute_on_shard(
                 }
             }
         }
-        Command::ControlStateFolSet {
+        Command::ControlStateSelectionSet {
             key,
             value,
             occur_time_ms,
             ttl_ms,
-            fol_type,
+            selection_type,
         } => {
             remove_if_expired(shard, &key);
             // C++ FirstOrLastSet substitutes occur_time==0 with the current time BEFORE the
@@ -1267,20 +1267,20 @@ pub(crate) fn execute_on_shard(
                 occur_time_ms
             };
             let should_store = shard
-                .control_state_fol
+                .control_state_selection
                 .get(&key)
-                .map(|existing| match fol_type {
-                    ControlStateFolType::First => occur_time_ms < existing.occur_time_ms,
-                    ControlStateFolType::Last => occur_time_ms > existing.occur_time_ms,
+                .map(|existing| match selection_type {
+                    ControlStateSelectionType::First => occur_time_ms < existing.occur_time_ms,
+                    ControlStateSelectionType::Last => occur_time_ms > existing.occur_time_ms,
                 })
                 .unwrap_or(true);
             if should_store {
-                shard.control_state_fol.insert(
+                shard.control_state_selection.insert(
                     key.clone(),
-                    ControlStateFolValue {
+                    ControlStateSelectionValue {
                         occur_time_ms,
                         value,
-                        fol_type,
+                        selection_type,
                     },
                 );
             }
@@ -1292,7 +1292,7 @@ pub(crate) fn execute_on_shard(
             mutated = true;
             CommandResponse::Empty
         }
-        Command::ControlStateFolQuery { key } => {
+        Command::ControlStateSelectionQuery { key } => {
             if remove_if_expired(shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
@@ -1301,7 +1301,7 @@ pub(crate) fn execute_on_shard(
                 };
             }
             CommandResponse::Bytes {
-                value: shard.control_state_fol.get(&key).map(|stored| stored.value.clone()),
+                value: shard.control_state_selection.get(&key).map(|stored| stored.value.clone()),
             }
         }
         Command::ControlStateManager {
@@ -1310,7 +1310,7 @@ pub(crate) fn execute_on_shard(
             field_list,
             start_offset,
             end_offset,
-            is_cpc,
+            is_distinct,
         } => {
             if remove_if_expired(shard, &key) {
                 mutated = true;
@@ -1328,7 +1328,7 @@ pub(crate) fn execute_on_shard(
                 &field_list,
                 &start_offset,
                 &end_offset,
-                is_cpc,
+                is_distinct,
             );
             CommandResponse::HashEntries { entries }
         }
@@ -1350,7 +1350,7 @@ pub(crate) fn execute_on_shard(
             entries.push(("key".to_string(), key.as_bytes().to_vec()));
             entries.push(("start_ms".to_string(), start_ms.to_string().into_bytes()));
             entries.push(("end_ms".to_string(), end_ms.to_string().into_bytes()));
-            for family in [ControlStateFamily::H, ControlStateFamily::Cpc, ControlStateFamily::Fol] {
+            for family in [ControlStateFamily::Counter, ControlStateFamily::Distinct, ControlStateFamily::Selection] {
                 let family_key = control_state_family_key(family, &key);
                 let name = control_state_family_name(family);
                 let series = shard.control_state.get(&family_key);
@@ -1403,7 +1403,7 @@ pub(crate) fn execute_on_shard(
                         .into_bytes(),
                 ));
             }
-            if let Some(fol) = shard.control_state_fol.get(&key) {
+            if let Some(fol) = shard.control_state_selection.get(&key) {
                 entries.push(("fol_value".to_string(), fol.value.clone()));
                 entries.push((
                     "fol_occur_time_ms".to_string(),
@@ -1411,9 +1411,9 @@ pub(crate) fn execute_on_shard(
                 ));
                 entries.push((
                     "fol_type".to_string(),
-                    match fol.fol_type {
-                        ControlStateFolType::First => b"first".to_vec(),
-                        ControlStateFolType::Last => b"last".to_vec(),
+                    match fol.selection_type {
+                        ControlStateSelectionType::First => b"first".to_vec(),
+                        ControlStateSelectionType::Last => b"last".to_vec(),
                     },
                 ));
             }

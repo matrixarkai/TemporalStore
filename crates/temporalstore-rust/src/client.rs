@@ -39,7 +39,7 @@ use crate::types::{
     parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
     ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit, ContextSummaryDirtyMarker,
     ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy,
-    ControlStateFamily, ControlStateFolType, SequenceFeatureRow, SequenceQuerySpec,
+    ControlStateFamily, ControlStateSelectionType, SequenceFeatureRow, SequenceQuerySpec,
     ShardId, Status,
 };
 

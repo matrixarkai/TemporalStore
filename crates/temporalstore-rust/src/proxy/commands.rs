@@ -26,7 +26,7 @@ pub(super) fn proxy_command_is_write(command: &Command) -> bool {
             | Command::ControlStateSet { .. }
             | Command::ControlStateSetAndGet { .. }
             | Command::ControlStateSetAndGetWithOptions { .. }
-            | Command::ControlStateFolSet { .. }
+            | Command::ControlStateSelectionSet { .. }
             | Command::ContextUpsertNode { .. }
             | Command::ContextWriteEvent { .. }
             | Command::ContextWriteExtractedEvent { .. }
@@ -83,8 +83,8 @@ fn proxy_command_key(command: &Command) -> Option<&str> {
         | Command::ControlStateSetAndGet { key, .. }
         | Command::ControlStateSetAndGetWithOptions { key, .. }
         | Command::ControlStateFamilyQuery { key, .. }
-        | Command::ControlStateFolSet { key, .. }
-        | Command::ControlStateFolQuery { key }
+        | Command::ControlStateSelectionSet { key, .. }
+        | Command::ControlStateSelectionQuery { key }
         | Command::ControlStateManager { key, .. }
         | Command::ControlStateDebug { key, .. } => Some(key),
         Command::SequenceBatchQuery { .. }

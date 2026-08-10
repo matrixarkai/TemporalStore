@@ -1,5 +1,5 @@
 use temporalstore_rust::types::{
-    Command, ExecuteRequest, FeatureFilter, FeatureFilterOp, FeaturePoint, ControlStateFamily, ControlStateFolType,
+    Command, ExecuteRequest, FeatureFilter, FeatureFilterOp, FeaturePoint, ControlStateFamily, ControlStateSelectionType,
     SequenceFeatureRow, StringSetCondition,
 };
 use temporalstore_rust::TemporalStoreClient;
@@ -220,25 +220,25 @@ fn main() {
             count: args.get(5).map(|v| v.parse().expect("count must be usize")),
         },
         "control_statehset" if args.len() == 5 => Command::ControlStateSet {
-            family: ControlStateFamily::H,
+            family: ControlStateFamily::Counter,
             key: args[2].clone(),
             timestamp_ms: args[3].parse().expect("timestamp must be u64"),
             amount: args[4].parse().expect("amount must be i64"),
         },
         "cpcset" if args.len() == 5 => Command::ControlStateSet {
-            family: ControlStateFamily::Cpc,
+            family: ControlStateFamily::Distinct,
             key: args[2].clone(),
             timestamp_ms: args[3].parse().expect("timestamp must be u64"),
             amount: args[4].parse().expect("amount must be i64"),
         },
-        "folset" if args.len() == 7 => Command::ControlStateFolSet {
+        "folset" if args.len() == 7 => Command::ControlStateSelectionSet {
             key: args[2].clone(),
             value: args[3].as_bytes().to_vec(),
             occur_time_ms: args[4].parse().expect("occur_time_ms must be u64"),
             ttl_ms: args[5].parse().expect("ttl_ms must be u64"),
-            fol_type: parse_fol_type(&args[6]),
+            selection_type: parse_selection_type(&args[6]),
         },
-        "folquery" if args.len() == 3 => Command::ControlStateFolQuery {
+        "folquery" if args.len() == 3 => Command::ControlStateSelectionQuery {
             key: args[2].clone(),
         },
         "control_statemanager" if args.len() == 3 => Command::ControlStateManager {
@@ -247,7 +247,7 @@ fn main() {
             field_list: Vec::new(),
             start_offset: String::new(),
             end_offset: String::new(),
-            is_cpc: false,
+            is_distinct: false,
         },
         _ => {
             usage();
@@ -320,10 +320,10 @@ fn parse_filter_op(op: &str) -> FeatureFilterOp {
     }
 }
 
-fn parse_fol_type(value: &str) -> ControlStateFolType {
+fn parse_selection_type(value: &str) -> ControlStateSelectionType {
     match value.to_ascii_lowercase().as_str() {
-        "first" => ControlStateFolType::First,
-        "last" => ControlStateFolType::Last,
+        "first" => ControlStateSelectionType::First,
+        "last" => ControlStateSelectionType::Last,
         other => panic!("unsupported fol type: {other}"),
     }
 }

@@ -442,7 +442,7 @@ impl ProxyService {
                 match parse_json::<ProxyControlStateHsetCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = Command::ControlStateSet {
-                            family: crate::types::ControlStateFamily::H,
+                            family: crate::types::ControlStateFamily::Counter,
                             key: req.key,
                             timestamp_ms: req.timestamp_ms,
                             amount: req.amount,
@@ -459,15 +459,15 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/ControlStateFolSet") => {
-                match parse_json::<ProxyControlStateFolSetCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/ControlStateSelectionSet") => {
+                match parse_json::<ProxyControlStateSelectionSetCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::ControlStateFolSet {
+                        let command = Command::ControlStateSelectionSet {
                             key: req.key,
                             value: req.value,
                             occur_time_ms: req.occur_time_ms,
                             ttl_ms: req.ttl_ms,
-                            fol_type: req.fol_type,
+                            selection_type: req.selection_type,
                         };
                         json_response(
                             200,
@@ -481,11 +481,11 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/ControlStateFolQuery") => {
+            ("POST", "/ProxyService/ControlStateSelectionQuery") => {
                 match parse_json::<ProxyKeyCommandRequest>(&request.body) {
                     Ok(req) => json_response(
                         200,
-                        &self.table_command(req, |key| Command::ControlStateFolQuery { key }),
+                        &self.table_command(req, |key| Command::ControlStateSelectionQuery { key }),
                     ),
                     Err(err) => self.bad_execute_request(err),
                 }
@@ -500,7 +500,7 @@ impl ProxyService {
                             field_list: Vec::new(),
                             start_offset: String::new(),
                             end_offset: String::new(),
-                            is_cpc: false,
+                            is_distinct: false,
                         }),
                     ),
                     Err(err) => self.bad_execute_request(err),

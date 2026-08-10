@@ -624,7 +624,7 @@ fn control_state_change_matches_cpp_distinct_field_semantics() {
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::ControlStateChangeAdd {
-                key: control_state_family_key(ControlStateFamily::H, "control_state-change"),
+                key: control_state_family_key(ControlStateFamily::Counter, "control_state-change"),
                 timestamp_ms,
                 value: value.as_bytes().to_vec(),
                 precision_ms: None,
@@ -638,7 +638,7 @@ fn control_state_change_matches_cpp_distinct_field_semantics() {
             .execute(ExecuteRequest {
                 shard_id: 1,
                 command: Command::ControlStateFamilyQuery {
-                    family: ControlStateFamily::H,
+                    family: ControlStateFamily::Counter,
                     key: "control_state-change".to_string(),
                     start_ms: 0,
                     end_ms: 40,
@@ -708,7 +708,7 @@ fn control_state_query_supports_first_last_and_detail_list() {
 }
 
 #[test]
-fn control_state_fol_matches_cpp_first_last_string_semantics() {
+fn control_state_selection_matches_cpp_first_last_string_semantics() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
 
@@ -717,12 +717,12 @@ fn control_state_fol_matches_cpp_first_last_string_semantics() {
             engine
                 .execute(ExecuteRequest {
                     shard_id: 1,
-                    command: Command::ControlStateFolSet {
+                    command: Command::ControlStateSelectionSet {
                         key: "control_state-fol-first".to_string(),
                         value: value.as_bytes().to_vec(),
                         occur_time_ms,
                         ttl_ms: 60_000,
-                        fol_type: ControlStateFolType::First,
+                        selection_type: ControlStateSelectionType::First,
                     },
                 })
                 .status
@@ -732,12 +732,12 @@ fn control_state_fol_matches_cpp_first_last_string_semantics() {
             engine
                 .execute(ExecuteRequest {
                     shard_id: 1,
-                    command: Command::ControlStateFolSet {
+                    command: Command::ControlStateSelectionSet {
                         key: "control_state-fol-last".to_string(),
                         value: value.as_bytes().to_vec(),
                         occur_time_ms,
                         ttl_ms: 60_000,
-                        fol_type: ControlStateFolType::Last,
+                        selection_type: ControlStateSelectionType::Last,
                     },
                 })
                 .status
@@ -749,7 +749,7 @@ fn control_state_fol_matches_cpp_first_last_string_semantics() {
         engine
             .execute(ExecuteRequest {
                 shard_id: 1,
-                command: Command::ControlStateFolQuery {
+                command: Command::ControlStateSelectionQuery {
                     key: "control_state-fol-first".to_string(),
                 },
             })
@@ -762,7 +762,7 @@ fn control_state_fol_matches_cpp_first_last_string_semantics() {
         engine
             .execute(ExecuteRequest {
                 shard_id: 1,
-                command: Command::ControlStateFolQuery {
+                command: Command::ControlStateSelectionQuery {
                     key: "control_state-fol-last".to_string(),
                 },
             })
@@ -774,7 +774,7 @@ fn control_state_fol_matches_cpp_first_last_string_semantics() {
 }
 
 #[test]
-fn control_state_fol_omitted_occur_time_resolves_to_now_like_cpp() {
+fn control_state_selection_omitted_occur_time_resolves_to_now_like_cpp() {
     // C++ FirstOrLastSet substitutes occur_time==0 with the current time before the FIRST/LAST
     // comparison; an omitted-occur-time FIRST set must NOT beat an earlier explicit record.
     let engine = TemporalEngine::default();
@@ -782,12 +782,12 @@ fn control_state_fol_omitted_occur_time_resolves_to_now_like_cpp() {
     assert!(engine
         .execute(ExecuteRequest {
             shard_id: 1,
-            command: Command::ControlStateFolSet {
+            command: Command::ControlStateSelectionSet {
                 key: "k".to_string(),
                 value: b"early".to_vec(),
                 occur_time_ms: 5000,
                 ttl_ms: 0,
-                fol_type: ControlStateFolType::First,
+                selection_type: ControlStateSelectionType::First,
             },
         })
         .status
@@ -796,12 +796,12 @@ fn control_state_fol_omitted_occur_time_resolves_to_now_like_cpp() {
     assert!(engine
         .execute(ExecuteRequest {
             shard_id: 1,
-            command: Command::ControlStateFolSet {
+            command: Command::ControlStateSelectionSet {
                 key: "k".to_string(),
                 value: b"late".to_vec(),
                 occur_time_ms: 0,
                 ttl_ms: 0,
-                fol_type: ControlStateFolType::First,
+                selection_type: ControlStateSelectionType::First,
             },
         })
         .status
@@ -810,7 +810,7 @@ fn control_state_fol_omitted_occur_time_resolves_to_now_like_cpp() {
         engine
             .execute(ExecuteRequest {
                 shard_id: 1,
-                command: Command::ControlStateFolQuery {
+                command: Command::ControlStateSelectionQuery {
                     key: "k".to_string(),
                 },
             })
@@ -831,7 +831,7 @@ fn live_page_slab_ids_includes_control_state_pages() {
     let resp = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::ControlStateSet {
-            family: ControlStateFamily::H,
+            family: ControlStateFamily::Counter,
             key: "cs".to_string(),
             timestamp_ms: 1000,
             amount: 1,
@@ -1577,7 +1577,7 @@ fn stats_include_cpp_style_partition_and_object_manager_accounting() {
             ],
         },
         Command::ControlStateSet {
-            family: ControlStateFamily::Cpc,
+            family: ControlStateFamily::Distinct,
             key: "control_state-key".to_string(),
             timestamp_ms: 40,
             amount: 5,
@@ -2409,7 +2409,7 @@ fn control_state_set_and_get_with_options_buckets_by_precision() {
             .execute(ExecuteRequest {
                 shard_id: 1,
                 command: Command::ControlStateSetAndGetWithOptions {
-                    family: ControlStateFamily::H,
+                    family: ControlStateFamily::Counter,
                     key: "cap:u1:c1".to_string(),
                     timestamp_ms: ts,
                     amount: 1,
@@ -2458,7 +2458,7 @@ fn control_state_set_and_get_with_options_is_idempotent_on_uuid_replay() {
             .execute(ExecuteRequest {
                 shard_id: 1,
                 command: Command::ControlStateSetAndGetWithOptions {
-                    family: ControlStateFamily::H,
+                    family: ControlStateFamily::Counter,
                     key: "quota:t1".to_string(),
                     timestamp_ms: day + 1,
                     amount: 1,

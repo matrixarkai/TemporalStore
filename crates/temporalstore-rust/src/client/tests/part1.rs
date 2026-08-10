@@ -554,92 +554,92 @@ fn table_typed_methods_and_pipeline_match_cpp_client_shape() {
         ]
     );
     table
-        .control_state_family_set(ControlStateFamily::H, "control_state-cpp", 10, 5)
+        .control_state_family_set(ControlStateFamily::Counter, "control_state-cpp", 10, 5)
         .unwrap();
     assert_eq!(
         table
-            .control_state_family_set_and_get(ControlStateFamily::H, "control_state-cpp", 20, 7, 0, 30, "sum")
+            .control_state_family_set_and_get(ControlStateFamily::Counter, "control_state-cpp", 20, 7, 0, 30, "sum")
             .unwrap(),
         12
     );
     table
-        .control_state_family_set(ControlStateFamily::Cpc, "control_state-cpp", 10, 3)
+        .control_state_family_set(ControlStateFamily::Distinct, "control_state-cpp", 10, 3)
         .unwrap();
     assert_eq!(
         table
-            .control_state_family_set_and_get(ControlStateFamily::Cpc, "control_state-cpp", 20, 4, 0, 30, "sum")
+            .control_state_family_set_and_get(ControlStateFamily::Distinct, "control_state-cpp", 20, 4, 0, 30, "sum")
             .unwrap(),
         7
     );
     table
-        .control_state_family_set(ControlStateFamily::Fol, "control_state-cpp", 10, 11)
+        .control_state_family_set(ControlStateFamily::Selection, "control_state-cpp", 10, 11)
         .unwrap();
     assert_eq!(
         table
-            .control_state_family_query(ControlStateFamily::Fol, "control_state-cpp", 0, 30, "sum")
+            .control_state_family_query(ControlStateFamily::Selection, "control_state-cpp", 0, 30, "sum")
             .unwrap(),
         11
     );
     table
-        .control_state_fol_set(
+        .control_state_selection_set(
             "control_state-fol-first",
             b"middle".to_vec(),
             20,
             60_000,
-            ControlStateFolType::First,
+            ControlStateSelectionType::First,
         )
         .unwrap();
     table
-        .control_state_fol_set(
+        .control_state_selection_set(
             "control_state-fol-first",
             b"first".to_vec(),
             10,
             60_000,
-            ControlStateFolType::First,
+            ControlStateSelectionType::First,
         )
         .unwrap();
     table
-        .control_state_fol_set(
+        .control_state_selection_set(
             "control_state-fol-first",
             b"last".to_vec(),
             30,
             60_000,
-            ControlStateFolType::First,
+            ControlStateSelectionType::First,
         )
         .unwrap();
     assert_eq!(
-        table.control_state_fol_query("control_state-fol-first").unwrap(),
+        table.control_state_selection_query("control_state-fol-first").unwrap(),
         Some(b"first".to_vec())
     );
     table
-        .control_state_fol_set(
+        .control_state_selection_set(
             "control_state-fol-last",
             b"middle".to_vec(),
             20,
             60_000,
-            ControlStateFolType::Last,
+            ControlStateSelectionType::Last,
         )
         .unwrap();
     table
-        .control_state_fol_set(
+        .control_state_selection_set(
             "control_state-fol-last",
             b"first".to_vec(),
             10,
             60_000,
-            ControlStateFolType::Last,
+            ControlStateSelectionType::Last,
         )
         .unwrap();
     table
-        .control_state_fol_set(
+        .control_state_selection_set(
             "control_state-fol-last",
             b"last".to_vec(),
             30,
             60_000,
-            ControlStateFolType::Last,
+            ControlStateSelectionType::Last,
         )
         .unwrap();
     assert_eq!(
-        table.control_state_fol_query("control_state-fol-last").unwrap(),
+        table.control_state_selection_query("control_state-fol-last").unwrap(),
         Some(b"last".to_vec())
     );
     assert_eq!(
