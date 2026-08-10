@@ -1,4 +1,13 @@
-use std::collections::{HashMap, HashSet};
+//! Redis/RESP-compatible command surface.
+//!
+//! Parses RESP command frames and dispatches them to the engine's data models:
+//! strings, hashes, sets, features (and the sequence view), and the control-state
+//! families (Counter/Distinct/Selection). Redis-native verbs (`SET`, `HSET`,
+//! `SADD`, ...) and the TemporalStore extension verbs share one dispatch path;
+//! see [`dispatch`] for the command table and [`command_table`] for the advertised
+//! `COMMAND` descriptors.
+
+use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod encoding;
@@ -21,8 +30,8 @@ pub use dispatch::execute_redis_command_with_state;
 
 use crate::client::{bucket_id_for_key, stable_key_hash};
 use crate::types::{
-    parse_cpp_feature_filters, Command, CommandResponse, FeatureFilter, FeatureFilterOp,
-    FeaturePoint, FeatureWritePolicy, ControlStateFamily, ControlStateSelectionType, ShardId, StringSetCondition,
+    parse_cpp_feature_filters, Command, CommandResponse, FeatureFilter,
+    FeaturePoint, ControlStateFamily, ControlStateSelectionType, ShardId, StringSetCondition,
 };
 
 use encoding::{REDIS_LIST_ENCODING_PREFIX, REDIS_ZSET_ENCODING_PREFIX};
@@ -30,7 +39,6 @@ use keyspace_commands::*;
 pub(crate) use list_set_commands::*;
 pub(crate) use response_helpers::*;
 pub(crate) use command_table::*;
-pub(crate) use dispatch::*;
 pub(crate) use string_commands::*;
 pub(crate) use zset_storage::*;
 use zset_commands::*;
@@ -291,7 +299,7 @@ fn redis_command_response(args: &[Vec<u8>]) -> RespValue {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct RedisCommandDescriptor {
+pub(crate) struct RedisCommandDescriptor {
     name: &'static str,
     arity: i64,
     flags: &'static [&'static str],
@@ -362,6 +370,7 @@ fn redis_info(section: &str, shard_id: ShardId, state: &RedisCommandState) -> St
 }
 
 
+#[cfg(test)]
 mod tests {
     use std::io::BufReader;
 

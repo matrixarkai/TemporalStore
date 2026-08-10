@@ -1,13 +1,21 @@
-﻿use std::collections::{BTreeMap, BTreeSet, HashSet};
+//! Product data-model read + aggregation helpers.
+//!
+//! Backs the engine's higher-level model queries: decoding sequence rows from the
+//! shared feature timestamped-KV storage and applying `FeatureFilter` predicates,
+//! and computing control-state family aggregates (Counter sum/count/min/max/
+//! first/last, Distinct cardinality, Selection first/last). Write paths live in
+//! the engine's execute path; this module is the read/aggregation side.
+
+use std::collections::BTreeMap;
 
 use crate::block_store::{BlockAddress, LocalBlockStore};
 use crate::types::{
-    FeatureFilter, FeatureFilterOp, FeaturePoint, ControlStateFamily,
+    FeatureFilter, FeatureFilterOp, ControlStateFamily,
     ControlStateSelectionType, SequenceFeatureRow, ShardId,
 };
 use matrixcache::MultiLayerCache;
 
-use super::packed_pages::{decode_feature_page_strict, read_feature_point};
+use super::packed_pages::decode_feature_page_strict;
 use super::state::PackedFeaturePageDecode;
 use super::{parse_i64, read_page_bytes, ShardState};
 pub(super) fn read_sequence_row(

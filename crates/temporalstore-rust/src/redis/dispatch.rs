@@ -1,7 +1,7 @@
 //! Redis command dispatcher (execute_redis_command_with_state), extracted from redis.rs.
 
 use super::*;
-use crate::types::{Command, CommandResponse, FeatureFilterOp, FeatureWritePolicy, ControlStateFamily, StringSetCondition};
+use crate::types::{Command, CommandResponse, ControlStateFamily, StringSetCondition};
 
 pub fn execute_redis_command_with_state(
     args: Vec<Vec<u8>>,

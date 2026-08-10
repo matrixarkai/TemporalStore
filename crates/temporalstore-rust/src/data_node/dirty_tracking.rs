@@ -2,7 +2,6 @@
 
 use super::*;
 use std::collections::BTreeSet;
-use std::collections::HashSet;
 use std::sync::Mutex;
 use crate::types::{Command, ExecuteResponse, ShardId};
 
