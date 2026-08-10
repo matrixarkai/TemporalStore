@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
+use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 
@@ -440,19 +441,22 @@ impl ObjectService {
     fn list(&self, prefix: &str) -> Vec<String> {
         let index = self.index.read().expect("object index poisoned");
         index
-            .range(prefix.to_string()..)
+            .range::<str, _>((Included(prefix), Unbounded))
             .take_while(|(key, _)| key.starts_with(prefix))
             .map(|(key, _)| key.clone())
             .collect()
     }
 
     fn list_after(&self, prefix: &str, after: &str) -> Vec<String> {
-        let start = if after > prefix { after } else { prefix };
+        let start = if after > prefix {
+            Excluded(after)
+        } else {
+            Included(prefix)
+        };
         let index = self.index.read().expect("object index poisoned");
         index
-            .range(start.to_string()..)
+            .range::<str, _>((start, Unbounded))
             .take_while(|(key, _)| key.starts_with(prefix))
-            .filter(|(key, _)| key.as_str() > after)
             .map(|(key, _)| key.clone())
             .collect()
     }
