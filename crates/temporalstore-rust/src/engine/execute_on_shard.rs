@@ -783,7 +783,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::SequenceAdd { key, rows } => {
             remove_if_expired(shard, &key);
-            let series = shard.sequences.entry(key.clone()).or_default();
+            let series = shard.features.entry(key.clone()).or_default();
             let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             let points = rows
                 .into_iter()
@@ -799,7 +799,7 @@ pub(crate) fn execute_on_shard(
                 cache,
                 page_store,
                 shard_id,
-                "sequence",
+                "feature",
                 &key,
                 points,
                 routing_bucket,
@@ -821,7 +821,7 @@ pub(crate) fn execute_on_shard(
             sync_bucket_index_object_pages(
                 shard,
                 shard_id,
-                "sequence",
+                "feature",
                 &key,
                 live_addresses,
                 mutated,
@@ -843,7 +843,7 @@ pub(crate) fn execute_on_shard(
                 };
             }
             let rows = shard
-                .sequences
+                .features
                 .get(&key)
                 .map(|series| {
                     series

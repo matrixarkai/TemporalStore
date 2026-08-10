@@ -1355,7 +1355,6 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
         removed = true;
         control_rollup::feature_forget(shard, key);
     }
-    removed |= shard.sequences.remove(key).is_some();
     if shard.control_state.remove(key).is_some() {
         removed = true;
         control_rollup::forget(shard, key);
@@ -1517,9 +1516,6 @@ fn collect_live_page_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
         ids.extend(members.values().map(|address| address.page_slab_id));
     }
     for series in shard.features.values() {
-        ids.extend(series.values().map(|address| address.page_slab_id));
-    }
-    for series in shard.sequences.values() {
         ids.extend(series.values().map(|address| address.page_slab_id));
     }
     ids.extend(
@@ -1700,7 +1696,6 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.hashes.contains_key(key)
         || shard.sets.contains_key(key)
         || shard.features.contains_key(key)
-        || shard.sequences.contains_key(key)
         || shard.control_state.contains_key(key)
         || shard.control_state_pages.contains_key(key)
         || shard.control_state_changes.contains_key(key)
@@ -1858,7 +1853,6 @@ fn object_manager_stats(
             + shard.hashes.len()
             + shard.sets.len()
             + shard.features.len()
-            + shard.sequences.len()
             + shard.control_state.len()
             + shard.control_state_changes.len()
             + shard.context_nodes.len()
@@ -1876,7 +1870,6 @@ fn object_manager_stats(
             + shard.hashes.values().map(HashMap::len).sum::<usize>()
             + shard.sets.values().map(BTreeMap::len).sum::<usize>()
             + shard.features.values().map(BTreeMap::len).sum::<usize>()
-            + shard.sequences.values().map(BTreeMap::len).sum::<usize>()
             + shard.context_nodes.len()
             + shard
                 .context_events
@@ -1947,7 +1940,6 @@ fn object_manager_stats(
         + shard.hashes.len()
         + shard.sets.len()
         + shard.features.len()
-        + shard.sequences.len()
         + shard.control_state.len()
         + shard.context_nodes.len()
         + shard.context_events.len()
@@ -1962,7 +1954,6 @@ fn object_manager_stats(
         + shard.hashes.values().map(HashMap::len).sum::<usize>()
         + shard.sets.values().map(BTreeMap::len).sum::<usize>()
         + shard.features.values().map(BTreeMap::len).sum::<usize>()
-        + shard.sequences.values().map(BTreeMap::len).sum::<usize>()
         + shard.context_nodes.len()
         + shard
             .context_events

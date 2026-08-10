@@ -34,6 +34,12 @@ pub(super) struct ShardState {
     #[serde(default, with = "super::set_index_serde")]
     pub(super) sets: HashMap<String, BTreeMap<Vec<u8>, BlockAddress>>,
     pub(super) features: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    // Sequence data is now stored in `features` (thin-layer fold: Sequence is Feature
+    // with a typed row codec over identical timestamped-KV storage). This field is
+    // retained only to fold a pre-fold on-disk index that still carries a `sequences`
+    // map into `features` at load time (see load_index); new code never writes it, so
+    // it serializes away once empty.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub(super) sequences: HashMap<String, BTreeMap<u64, BlockAddress>>,
     pub(super) control_state: HashMap<String, BTreeMap<u64, i64>>,
     #[serde(default)]

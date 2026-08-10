@@ -35,9 +35,6 @@ pub(super) fn timestamped_kv_series<'a>(
     for (key, timeline) in &shard.features {
         series.push(("feature", key.as_str(), timeline));
     }
-    for (key, timeline) in &shard.sequences {
-        series.push(("sequence", key.as_str(), timeline));
-    }
     }
     for (key, timeline) in &shard.context_events {
         series.push(("context_event", key.as_str(), timeline));

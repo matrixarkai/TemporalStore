@@ -928,13 +928,6 @@ pub(super) fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePag
                 .map(|address| live_page_entry(key.clone(), "feature", None, address)),
         );
     }
-    for (key, series) in &shard.sequences {
-        entries.extend(
-            unique_timestamped_kv_page_addresses(series)
-                .into_iter()
-                .map(|address| live_page_entry(key.clone(), "sequence", None, address)),
-        );
-    }
     entries.extend(
         shard
             .control_state_pages
@@ -1502,7 +1495,6 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut saw_hashes = false;
     let mut saw_sets = false;
     let mut saw_features = false;
-    let mut saw_sequences = false;
     let mut saw_control_state = false;
     let mut saw_context_events = false;
     let mut saw_context_indexes = false;
@@ -1517,7 +1509,6 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut hashes = HashMap::<String, HashMap<String, BlockAddress>>::new();
     let mut sets = HashMap::<String, BTreeMap<Vec<u8>, BlockAddress>>::new();
     let mut features = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
-    let mut sequences = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut control_state = HashMap::<String, BTreeMap<u64, i64>>::new();
     let mut control_state_pages = HashMap::new();
     let mut context_events = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
@@ -1565,12 +1556,12 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                 );
             }
             "sequence" => {
-                saw_sequences = true;
+                saw_features = true;
                 insert_timestamped_secondary_view(
                     page_store,
                     warm_shard,
                     &mut warm_batch,
-                    &mut sequences,
+                    &mut features,
                     entry.object_key,
                     entry.address,
                 );
@@ -1687,10 +1678,6 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         // The feature numeric view + rollup are derived from the feature series; drop them so
         // they rebuild lazily from the series reconcile just materialized.
         super::control_rollup::feature_clear_all(shard);
-    }
-    if saw_sequences {
-        let persisted = std::mem::take(&mut shard.sequences);
-        shard.sequences = reconcile_timestamped_series_membership(&persisted, sequences);
     }
     if saw_control_state {
         // The serialized i64 series is authoritative (the page is a copy of it): keep the

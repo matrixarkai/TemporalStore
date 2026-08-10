@@ -400,16 +400,6 @@ impl TemporalEngine {
                 &mut rewrite_stats,
             )?;
         }
-        for series in shard.sequences.values_mut() {
-            compact_feature_page_addresses(
-                &self.page_store,
-                &self.cache,
-                shard_id,
-                "sequence",
-                series,
-                &mut rewrite_stats,
-            )?;
-        }
         compact_page_addresses(
             &self.page_store,
             &self.cache,

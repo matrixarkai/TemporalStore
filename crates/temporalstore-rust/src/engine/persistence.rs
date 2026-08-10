@@ -103,6 +103,15 @@ impl TemporalEngine {
     pub(super) fn load_index(&self, shard_id: ShardId, warm_cache: bool) -> Option<ShardState> {
         let bytes = fs::read(self.index_path(shard_id)).ok()?;
         let mut shard = serde_json::from_slice::<ShardState>(&bytes).ok()?;
+        // Thin-layer Sequence fold: a pre-fold on-disk index stored Sequence rows in a
+        // separate `sequences` map. Sequence now lives in `features` (same timestamped-KV
+        // storage, typed row codec at the API layer), so fold any legacy series forward
+        // before reconcile rebuilds membership. New indexes never carry `sequences`.
+        if !shard.sequences.is_empty() {
+            for (key, series) in std::mem::take(&mut shard.sequences) {
+                shard.features.entry(key).or_default().extend(series);
+            }
+        }
         // Fold disk->memory cache promotion into reconcile's page reads on a warming
         // load (normal restart): the pages reconcile reads to rebuild the secondary
         // views are promoted into the cache tier in the same pass, so no second warm
