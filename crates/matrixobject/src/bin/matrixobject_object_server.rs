@@ -418,7 +418,11 @@ impl ObjectService {
         self.return_read_file(file);
 
         metas.sort_by_key(|(position, _, _)| *position);
-        let mut records = Vec::new();
+        let response_capacity = 4 + metas
+            .iter()
+            .map(|(_, key, meta)| 12 + key.len() + meta.len as usize)
+            .sum::<usize>();
+        let mut records = Vec::with_capacity(response_capacity);
         let mut count = 0u32;
         records.extend_from_slice(&0u32.to_le_bytes());
         for (position, key, _) in metas {

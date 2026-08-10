@@ -313,7 +313,11 @@ fn parse_rpc_get_many_response(
 }
 
 fn encode_rpc_put_many_request(objects: &[(String, Bytes)]) -> Vec<u8> {
-    let mut body = Vec::new();
+    let capacity = 4 + objects
+        .iter()
+        .map(|(key, bytes)| 12 + key.len() + bytes.len())
+        .sum::<usize>();
+    let mut body = Vec::with_capacity(capacity);
     body.extend_from_slice(&(objects.len() as u32).to_le_bytes());
     for (key, bytes) in objects {
         body.extend_from_slice(&(key.len() as u32).to_le_bytes());
