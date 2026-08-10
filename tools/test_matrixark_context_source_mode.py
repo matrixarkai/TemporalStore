@@ -110,7 +110,7 @@ class RemoteOnlyLocalFallbackFloorTest(unittest.TestCase):
         self.assertFalse(apply_remote_only_local_fallback(lb, used_remote_tokens=0, floor_tokens=256))
 
     def test_default_floor_constant(self):
-        self.assertEqual(256, cfg.DEFAULT_REMOTE_ONLY_LOCAL_FALLBACK_FLOOR_TOKENS)
+        self.assertEqual(2048, cfg.DEFAULT_REMOTE_ONLY_LOCAL_FALLBACK_FLOOR_TOKENS)
 
 
 import matrixark_mcp_budget_policies as bpol
