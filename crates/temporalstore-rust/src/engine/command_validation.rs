@@ -52,7 +52,7 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::ControlStateIncrement { key, .. }
         | Command::ControlStateIncrementWithOptions { key, .. }
         | Command::ControlStateChangeAdd { key, .. }
-        | Command::ControlStateFolSet { key, .. } => vec![key.clone()],
+        | Command::ControlStateSelectionSet { key, .. } => vec![key.clone()],
         Command::ControlStateSet { family, key, .. }
         | Command::ControlStateSetAndGet { family, key, .. }
         | Command::ControlStateSetAndGetWithOptions { family, key, .. } => {
@@ -199,7 +199,7 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::ControlStateQuery { .. }
         | Command::ControlStateDetail { .. }
         | Command::ControlStateFamilyQuery { .. }
-        | Command::ControlStateFolQuery { .. }
+        | Command::ControlStateSelectionQuery { .. }
         | Command::ControlStateManager { .. }
         | Command::ControlStateDebug { .. }
         | Command::ContextGetNode { .. }
@@ -268,7 +268,7 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::ControlStateSet { .. }
             | Command::ControlStateSetAndGet { .. }
             | Command::ControlStateSetAndGetWithOptions { .. }
-            | Command::ControlStateFolSet { .. }
+            | Command::ControlStateSelectionSet { .. }
             | Command::ContextUpsertNode { .. }
             | Command::ContextWriteEvent { .. }
             | Command::ContextWriteExtractedEvent { .. }

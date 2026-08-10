@@ -2,7 +2,7 @@ use super::reports::{CppGoldenCaseReport, CppGoldenCorpusReport};
 use crate::engine::TemporalEngine;
 use crate::types::{
     parse_cpp_feature_filters, Command, CommandResponse, ExecuteRequest, FeatureFilterOp,
-    FeaturePoint, ControlStateFamily, ControlStateFolType, SequenceFeatureRow,
+    FeaturePoint, ControlStateFamily, ControlStateSelectionType, SequenceFeatureRow,
 };
 
 pub fn cpp_feature_sequence_golden_corpus_report() -> CppGoldenCorpusReport {
@@ -275,9 +275,9 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
     );
 
     for (family, timestamp_ms, amount) in [
-        (ControlStateFamily::H, 10, 5),
-        (ControlStateFamily::H, 20, 7),
-        (ControlStateFamily::Cpc, 10, 3),
+        (ControlStateFamily::Counter, 10, 5),
+        (ControlStateFamily::Counter, 20, 7),
+        (ControlStateFamily::Distinct, 10, 3),
     ] {
         let _ = engine.execute(ExecuteRequest {
             shard_id: 1,
@@ -292,7 +292,7 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
     let control_state_sum = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::ControlStateFamilyQuery {
-            family: ControlStateFamily::H,
+            family: ControlStateFamily::Counter,
             key: "control_state-golden".to_string(),
             start_ms: 0,
             end_ms: 100,
@@ -302,7 +302,7 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
     let control_state_cpc = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::ControlStateSetAndGet {
-            family: ControlStateFamily::Cpc,
+            family: ControlStateFamily::Distinct,
             key: "control_state-golden".to_string(),
             timestamp_ms: 20,
             amount: 4,
@@ -321,49 +321,49 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
 
     let _ = engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::ControlStateFolSet {
+        command: Command::ControlStateSelectionSet {
             key: "control_state-golden".to_string(),
             value: b"late-first".to_vec(),
             occur_time_ms: 200,
             ttl_ms: 0,
-            fol_type: ControlStateFolType::First,
+            selection_type: ControlStateSelectionType::First,
         },
     });
     let _ = engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::ControlStateFolSet {
+        command: Command::ControlStateSelectionSet {
             key: "control_state-golden".to_string(),
             value: b"early-first".to_vec(),
             occur_time_ms: 100,
             ttl_ms: 0,
-            fol_type: ControlStateFolType::First,
+            selection_type: ControlStateSelectionType::First,
         },
     });
     let first = engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::ControlStateFolQuery {
+        command: Command::ControlStateSelectionQuery {
             key: "control_state-golden".to_string(),
         },
     });
     let _ = engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::ControlStateFolSet {
+        command: Command::ControlStateSelectionSet {
             key: "control_state-golden".to_string(),
             value: b"latest".to_vec(),
             occur_time_ms: 300,
             ttl_ms: 0,
-            fol_type: ControlStateFolType::Last,
+            selection_type: ControlStateSelectionType::Last,
         },
     });
     let last = engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::ControlStateFolQuery {
+        command: Command::ControlStateSelectionQuery {
             key: "control_state-golden".to_string(),
         },
     });
     record_golden_case(
         &mut cases,
-        "cpp_control_state_fol_first_last",
+        "cpp_control_state_selection_first_last",
         first.response
             == CommandResponse::Bytes {
                 value: Some(b"early-first".to_vec()),
@@ -383,7 +383,7 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
             field_list: Vec::new(),
             start_offset: String::new(),
             end_offset: String::new(),
-            is_cpc: false,
+            is_distinct: false,
         },
     });
     record_golden_case(

@@ -62,8 +62,8 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::ControlStateSetAndGet { key, .. }
         | Command::ControlStateSetAndGetWithOptions { key, .. }
         | Command::ControlStateFamilyQuery { key, .. }
-        | Command::ControlStateFolSet { key, .. }
-        | Command::ControlStateFolQuery { key }
+        | Command::ControlStateSelectionSet { key, .. }
+        | Command::ControlStateSelectionQuery { key }
         | Command::ControlStateManager { key, .. }
         | Command::ControlStateDebug { key, .. } => Some(key),
         Command::SequenceBatchQuery { .. }

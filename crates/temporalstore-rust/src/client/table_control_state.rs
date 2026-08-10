@@ -232,31 +232,31 @@ impl TemporalStoreTable {
         }
     }
 
-    pub fn control_state_fol_set(
+    pub fn control_state_selection_set(
         &self,
         key: impl Into<String>,
         value: impl Into<Vec<u8>>,
         occur_time_ms: u64,
         ttl_ms: u64,
-        fol_type: ControlStateFolType,
+        selection_type: ControlStateSelectionType,
     ) -> Result<(), ClientError> {
-        self.expect_empty(Command::ControlStateFolSet {
+        self.expect_empty(Command::ControlStateSelectionSet {
             key: key.into(),
             value: value.into(),
             occur_time_ms,
             ttl_ms,
-            fol_type,
+            selection_type,
         })
     }
 
-    pub fn control_state_fol_query(&self, key: impl Into<String>) -> Result<Option<Vec<u8>>, ClientError> {
+    pub fn control_state_selection_query(&self, key: impl Into<String>) -> Result<Option<Vec<u8>>, ClientError> {
         match self
-            .execute(Command::ControlStateFolQuery { key: key.into() })?
+            .execute(Command::ControlStateSelectionQuery { key: key.into() })?
             .response
         {
             CommandResponse::Bytes { value } => Ok(value),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "control_state_fol_query",
+                operation: "control_state_selection_query",
                 response,
             }),
         }
@@ -273,7 +273,7 @@ impl TemporalStoreTable {
                 field_list: Vec::new(),
                 start_offset: String::new(),
                 end_offset: String::new(),
-                is_cpc: false,
+                is_distinct: false,
             })?
             .response
         {

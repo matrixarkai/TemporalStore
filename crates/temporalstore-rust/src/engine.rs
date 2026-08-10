@@ -80,7 +80,7 @@ use crate::types::{
     ContextSummaryDirtyMarker, EventReplicationMode, EventReplicationSelectionReport,
     ExecuteRequest, ExecuteResponse, FeaturePoint, FeatureWritePolicy, InternalContextIndex,
     ReplicatedBatchExecuteRequest, ReplicatedBatchExecuteResponse,
-    ReplicatedExecuteRequest, ControlStateFamily, ControlStateFolType, SequenceFeatureRow, SequenceQuerySpec,
+    ReplicatedExecuteRequest, ControlStateFamily, ControlStateSelectionType, SequenceFeatureRow, SequenceQuerySpec,
     ShardId, Status, StringSetCondition,
 };
 use crate::wal::{LocalWriteAheadLogStore, WriteAheadLogRecord};
@@ -1362,7 +1362,7 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.control_state_pages.remove(key).is_some();
     removed |= shard.control_state_changes.remove(key).is_some();
     removed |= shard.control_state_change_sketch.remove(key).is_some();
-    removed |= shard.control_state_fol.remove(key).is_some();
+    removed |= shard.control_state_selection.remove(key).is_some();
     removed |= shard.context_nodes.remove(key).is_some();
     removed |= shard.context_events.remove(key).is_some();
     removed |= shard.context_indexes.remove(key).is_some();
@@ -1495,7 +1495,7 @@ fn associated_record_keys(key: &str) -> Vec<String> {
     }
     let mut keys = Vec::with_capacity(4);
     keys.push(key.to_string());
-    for family in [ControlStateFamily::H, ControlStateFamily::Cpc, ControlStateFamily::Fol] {
+    for family in [ControlStateFamily::Counter, ControlStateFamily::Distinct, ControlStateFamily::Selection] {
         keys.push(control_state_family_key(family, key));
     }
     keys
@@ -1699,7 +1699,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.control_state.contains_key(key)
         || shard.control_state_pages.contains_key(key)
         || shard.control_state_changes.contains_key(key)
-        || shard.control_state_fol.contains_key(key)
+        || shard.control_state_selection.contains_key(key)
         || shard.context_nodes.contains_key(key)
         || shard.context_events.contains_key(key)
         || shard.context_indexes.contains_key(key)

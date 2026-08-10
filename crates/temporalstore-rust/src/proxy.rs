@@ -34,7 +34,7 @@ use crate::meta::{
 };
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, ExecuteRequest, ExecuteResponse,
-    FeatureFilter, FeatureWritePolicy, ControlStateFolType, ShardId, Status,
+    FeatureFilter, FeatureWritePolicy, ControlStateSelectionType, ShardId, Status,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -617,14 +617,15 @@ pub struct ProxyControlStateHsetCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyControlStateFolSetCommandRequest {
+pub struct ProxyControlStateSelectionSetCommandRequest {
     pub namespace: String,
     pub table_name: String,
     pub key: String,
     pub value: Vec<u8>,
     pub occur_time_ms: u64,
     pub ttl_ms: u64,
-    pub fol_type: ControlStateFolType,
+    #[serde(alias = "fol_type")]
+    pub selection_type: ControlStateSelectionType,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -2979,7 +2980,7 @@ mod tests {
     fn proxy_control_state_and_feature_endpoints_round_trip_like_sdk() {
         // Locks the HTTP/JSON wire contract the Python/Rust SDKs depend on:
         // /ProxyService/{FeatureAdd, FeatureAggQuery, ControlStateIncrement,
-        // ControlStateCount, ControlStateFolSet, ControlStateFolQuery}.
+        // ControlStateCount, ControlStateSelectionSet, ControlStateSelectionQuery}.
         let dir = tempfile::tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
             1024,
@@ -3106,21 +3107,21 @@ mod tests {
 
         // Control State: last-value (FOL) round-trip.
         let fol_set = post(
-            "/ProxyService/ControlStateFolSet",
-            serde_json::to_vec(&ProxyControlStateFolSetCommandRequest {
+            "/ProxyService/ControlStateSelectionSet",
+            serde_json::to_vec(&ProxyControlStateSelectionSetCommandRequest {
                 namespace: "ns".to_string(),
                 table_name: "tbl".to_string(),
                 key: "itest:fol".to_string(),
                 value: b"alice".to_vec(),
                 occur_time_ms: 20,
                 ttl_ms: 60_000,
-                fol_type: crate::types::ControlStateFolType::Last,
+                selection_type: crate::types::ControlStateSelectionType::Last,
             })
             .unwrap(),
         );
         assert!(fol_set.status.ok, "{fol_set:?}");
         let fol_get = post(
-            "/ProxyService/ControlStateFolQuery",
+            "/ProxyService/ControlStateSelectionQuery",
             serde_json::to_vec(&ProxyKeyCommandRequest {
                 namespace: "ns".to_string(),
                 table_name: "tbl".to_string(),

@@ -22,7 +22,7 @@ pub use dispatch::execute_redis_command_with_state;
 use crate::client::{bucket_id_for_key, stable_key_hash};
 use crate::types::{
     parse_cpp_feature_filters, Command, CommandResponse, FeatureFilter, FeatureFilterOp,
-    FeaturePoint, FeatureWritePolicy, ControlStateFamily, ControlStateFolType, ShardId, StringSetCondition,
+    FeaturePoint, FeatureWritePolicy, ControlStateFamily, ControlStateSelectionType, ShardId, StringSetCondition,
 };
 
 use encoding::{REDIS_LIST_ENCODING_PREFIX, REDIS_ZSET_ENCODING_PREFIX};
@@ -47,19 +47,19 @@ pub fn execute_redis_command(
 
 fn control_state_family_for_command(command: &str) -> ControlStateFamily {
     if command.starts_with("CPC") {
-        ControlStateFamily::Cpc
+        ControlStateFamily::Distinct
     } else if command.starts_with("FOL") {
-        ControlStateFamily::Fol
+        ControlStateFamily::Selection
     } else {
-        ControlStateFamily::H
+        ControlStateFamily::Counter
     }
 }
 
 fn control_state_family_key_for_resp(family: ControlStateFamily, key: &str) -> String {
     let family_name = match family {
-        ControlStateFamily::H => "h",
-        ControlStateFamily::Cpc => "cpc",
-        ControlStateFamily::Fol => "fol",
+        ControlStateFamily::Counter => "h",
+        ControlStateFamily::Distinct => "cpc",
+        ControlStateFamily::Selection => "fol",
     };
     format!("control_state:{family_name}:{key}")
 }

@@ -3,7 +3,7 @@
 use crate::block_store::{BlockAddress, LocalBlockStore};
 use crate::types::{
     FeatureFilter, FeatureFilterOp, FeaturePoint, ControlStateFamily,
-    ControlStateFolType, SequenceFeatureRow, ShardId,
+    ControlStateSelectionType, SequenceFeatureRow, ShardId,
 };
 use matrixcache::MultiLayerCache;
 
@@ -152,9 +152,9 @@ pub(super) fn control_state_family_key(family: ControlStateFamily, key: &str) ->
 
 pub(super) fn control_state_family_name(family: ControlStateFamily) -> &'static str {
     match family {
-        ControlStateFamily::H => "h",
-        ControlStateFamily::Cpc => "cpc",
-        ControlStateFamily::Fol => "fol",
+        ControlStateFamily::Counter => "h",
+        ControlStateFamily::Distinct => "cpc",
+        ControlStateFamily::Selection => "fol",
     }
 }
 
@@ -174,12 +174,12 @@ pub(super) fn control_state_manager_op_code(op_type: Option<&str>) -> Option<i64
 fn control_state_manager_series<'a>(
     shard: &'a ShardState,
     key: &str,
-    is_cpc: bool,
+    is_distinct: bool,
 ) -> Option<&'a BTreeMap<u64, i64>> {
-    let family = if is_cpc {
-        ControlStateFamily::Cpc
+    let family = if is_distinct {
+        ControlStateFamily::Distinct
     } else {
-        ControlStateFamily::H
+        ControlStateFamily::Counter
     };
     shard.control_state.get(&control_state_family_key(family, key))
 }
@@ -194,11 +194,11 @@ pub(super) fn control_state_manager_entries(
     field_list: &[(String, String)],
     start_offset: &str,
     end_offset: &str,
-    is_cpc: bool,
+    is_distinct: bool,
 ) -> Vec<(String, Vec<u8>)> {
     match control_state_manager_op_code(op_type) {
         Some(2) => {
-            let Some(series) = control_state_manager_series(shard, key, is_cpc) else {
+            let Some(series) = control_state_manager_series(shard, key, is_distinct) else {
                 return Vec::new();
             };
             field_list
@@ -213,7 +213,7 @@ pub(super) fn control_state_manager_entries(
                 .collect()
         }
         Some(5) => {
-            let Some(series) = control_state_manager_series(shard, key, is_cpc) else {
+            let Some(series) = control_state_manager_series(shard, key, is_distinct) else {
                 return vec![("key_list".to_string(), Vec::new())];
             };
             let start = start_offset.parse::<u64>().unwrap_or(0);
@@ -226,12 +226,12 @@ pub(super) fn control_state_manager_entries(
             vec![("key_list".to_string(), value.into_bytes())]
         }
         Some(6) => {
-            let size = control_state_manager_series(shard, key, is_cpc)
+            let size = control_state_manager_series(shard, key, is_distinct)
                 .map(BTreeMap::len)
                 .unwrap_or_default();
             vec![("size".to_string(), size.to_string().into_bytes())]
         }
-        Some(7) => control_state_manager_series(shard, key, is_cpc)
+        Some(7) => control_state_manager_series(shard, key, is_distinct)
             .map(|series| {
                 series
                     .iter()
@@ -248,9 +248,9 @@ pub(super) fn control_state_manager_entries(
 fn control_state_manager_summary_entries(shard: &ShardState, key: &str) -> Vec<(String, Vec<u8>)> {
     let mut entries = Vec::new();
     for family in [
-        ControlStateFamily::H,
-        ControlStateFamily::Cpc,
-        ControlStateFamily::Fol,
+        ControlStateFamily::Counter,
+        ControlStateFamily::Distinct,
+        ControlStateFamily::Selection,
     ] {
         let family_key = control_state_family_key(family, key);
         let values = shard
@@ -267,7 +267,7 @@ fn control_state_manager_summary_entries(shard: &ShardState, key: &str) -> Vec<(
             values.iter().sum::<i64>().to_string().into_bytes(),
         ));
     }
-    if let Some(fol) = shard.control_state_fol.get(key) {
+    if let Some(fol) = shard.control_state_selection.get(key) {
         entries.push(("fol_value".to_string(), fol.value.clone()));
         entries.push((
             "fol_occur_time_ms".to_string(),
@@ -275,9 +275,9 @@ fn control_state_manager_summary_entries(shard: &ShardState, key: &str) -> Vec<(
         ));
         entries.push((
             "fol_type".to_string(),
-            match fol.fol_type {
-                ControlStateFolType::First => b"first".to_vec(),
-                ControlStateFolType::Last => b"last".to_vec(),
+            match fol.selection_type {
+                ControlStateSelectionType::First => b"first".to_vec(),
+                ControlStateSelectionType::Last => b"last".to_vec(),
             },
         ));
     }

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use serde::{Deserialize, Serialize};
 
 use crate::block_store::BlockAddress;
-use crate::types::{CommandResponse, FeaturePoint, ControlStateFolType, ShardId};
+use crate::types::{CommandResponse, FeaturePoint, ControlStateSelectionType, ShardId};
 
 use super::control_rollup::RollupEntry;
 use super::hll::Hll;
@@ -52,8 +52,8 @@ pub(super) struct ShardState {
     // Serde-default + durable (rides the index snapshot + WAL, like control_state_changes).
     #[serde(default)]
     pub(super) control_state_change_sketch: HashMap<String, BTreeMap<u64, Hll>>,
-    #[serde(default)]
-    pub(super) control_state_fol: HashMap<String, ControlStateFolValue>,
+    #[serde(default, alias = "control_state_fol")]
+    pub(super) control_state_selection: HashMap<String, ControlStateSelectionValue>,
     // UUID idempotency ledger for control-state writes: uuid -> expiry_ms. Mirrors
     // the C++ control_state 300s dedup window so at-least-once queue replays do not
     // double-count. Lazily garbage-collected on write; in-memory + serde-default so
@@ -372,10 +372,11 @@ fn same_page_address(left: &BlockAddress, right: &BlockAddress) -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct ControlStateFolValue {
+pub(super) struct ControlStateSelectionValue {
     pub(super) occur_time_ms: u64,
     pub(super) value: Vec<u8>,
-    pub(super) fol_type: ControlStateFolType,
+    #[serde(alias = "fol_type")]
+    pub(super) selection_type: ControlStateSelectionType,
 }
 
 #[derive(Debug, Default, Clone)]

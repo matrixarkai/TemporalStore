@@ -1294,7 +1294,7 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
             ],
         },
         Command::ControlStateSet {
-            family: ControlStateFamily::Cpc,
+            family: ControlStateFamily::Distinct,
             key: "compact-control_state".to_string(),
             timestamp_ms: 45,
             amount: 3,

@@ -595,7 +595,7 @@ fn previously_misclassified_writes_mark_shard_dirty() {
     // The data_node write classifier delegates to the engine's authoritative one, so writes it
     // used to omit (context / control-state change+fol / conditional
     // string) now correctly mark the shard dirty (and hit the lifecycle write gate). Regression:
-    // a ControlStateFolSet -- previously classified READ here -- must mark the shard dirty.
+    // a ControlStateSelectionSet -- previously classified READ here -- must mark the shard dirty.
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     let runtime = DataNodeRuntime::new(
@@ -609,12 +609,12 @@ fn previously_misclassified_writes_mark_shard_dirty() {
     let job = runtime.submit_execute(
         ExecuteRequest {
             shard_id: 1,
-            command: Command::ControlStateFolSet {
+            command: Command::ControlStateSelectionSet {
                 key: "k".to_string(),
                 value: b"v".to_vec(),
                 occur_time_ms: 1,
                 ttl_ms: 0,
-                fol_type: crate::types::ControlStateFolType::First,
+                selection_type: crate::types::ControlStateSelectionType::First,
             },
         },
         RequestController { timeout_ms: 1000 },
