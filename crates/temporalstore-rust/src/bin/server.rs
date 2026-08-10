@@ -66,7 +66,11 @@ fn main() {
         .unwrap_or_else(|_| "127.0.0.1:17002".to_string());
     let advertised_addr = std::env::var("TS_SERVER_ADVERTISE_ADDR")
         .unwrap_or_else(|_| std::env::var("TS_SERVER_ADDR").unwrap_or_else(|_| addr.clone()));
-    let meta_addr = std::env::var("TS_META_ADDR").unwrap_or_else(|_| "127.0.0.1:17001".to_string());
+    let meta_addr_raw = std::env::var("TS_META_ADDR").ok();
+    let meta_addr = meta_addr_raw
+        .clone()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "127.0.0.1:17001".to_string());
     let shard_id = std::env::var("TS_SHARD_ID")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -143,17 +147,35 @@ fn main() {
         .unwrap_or(3_000);
     let raft_state = start_server_raft_from_env(shard_id, node_id, &advertised_addr);
 
-    // Local/standalone mode: run the datanode with no metaserver. We skip server +
-    // shard registration and the heartbeat loop, and serve the locally-loaded shard
-    // directly. This is opt-in and gated so the default distributed path is unchanged:
-    // `standalone` is false unless TS_STANDALONE is truthy or TS_META_ADDR is set to a
-    // sentinel ("", "local", "none", "standalone", "off"). An unset TS_META_ADDR keeps
-    // the real default address and the full registration/heartbeat behavior.
-    let standalone = env_bool("TS_STANDALONE", false)
-        || matches!(
-            meta_addr.trim().to_ascii_lowercase().as_str(),
-            "" | "local" | "none" | "standalone" | "off"
-        );
+    // Standalone (no-metaserver) mode is the DEFAULT: run the datanode with no
+    // metaserver, skipping server + shard registration and the heartbeat loop and
+    // serving the locally-loaded shard directly. This is the right default for
+    // single-node / open-source local use — a fresh `matrixark_rust_datanode` with no
+    // config just works instead of hanging on metaserver registration.
+    //
+    // Opt INTO the distributed topology by giving a real TS_META_ADDR (a non-empty,
+    // non-sentinel address) or setting TS_DISTRIBUTED=1. TS_STANDALONE forces the mode
+    // explicitly and wins over both: TS_STANDALONE=1 → standalone, =0 → distributed
+    // (using TS_META_ADDR, defaulting to 127.0.0.1:17001). Sentinels for TS_META_ADDR
+    // ("local", "none", "standalone", "off", or empty) always mean standalone.
+    let meta_addr_is_real = meta_addr_raw
+        .as_deref()
+        .map(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "" | "local" | "none" | "standalone" | "off"
+            )
+        })
+        .unwrap_or(false);
+    let standalone = match std::env::var("TS_STANDALONE")
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("1") | Some("true") | Some("yes") | Some("on") => true,
+        Some("0") | Some("false") | Some("no") | Some("off") => false,
+        _ => !(meta_addr_is_real || env_bool("TS_DISTRIBUTED", false)),
+    };
     if standalone {
         println!(
             "standalone datanode: no metaserver — serving shard {shard_id} locally at {advertised_addr}"
