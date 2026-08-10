@@ -6,6 +6,35 @@ try:  # package path
 except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
 
+import warnings as _warnings
+
+_PROFILE_SCOPE_WARNED: set = set()
+
+
+def warn_if_profile_scope_missing(scope) -> str:
+    """Warn (once per identity) when a message-ingest scope lacks tenant_id/user_id.
+
+    Profile promotion writes to `tenant:<id>/user:<id>/profile:long_term_memory`, so without
+    both, extraction silently no-ops with blocker `profile_scope_missing` and long-term profile
+    memory never populates. The Codex/Claude hooks always pass these; this guards direct
+    HTTP/MCP/custom callers. Returns the warning string (also surfaced in the ingest result).
+    """
+    if not isinstance(scope, dict):
+        return ""
+    tid = str(scope.get("tenant_id") or "").strip()
+    uid = str(scope.get("user_id") or "").strip()
+    if tid and uid:
+        return ""
+    missing = " + ".join(k for k, v in (("tenant_id", tid), ("user_id", uid)) if not v)
+    msg = (f"profile_scope_missing: ingest scope lacks {missing}; profile long-term memory will "
+           "NOT be populated (entities will not promote to durable profile). Provide tenant_id + "
+           "user_id in scope (the Codex/Claude hooks set these automatically).")
+    dedup_key = (tid, uid)
+    if dedup_key not in _PROFILE_SCOPE_WARNED:
+        _PROFILE_SCOPE_WARNED.add(dedup_key)
+        _warnings.warn(msg, stacklevel=2)
+    return msg
+
 try:  # names owned by the parent module
     from tools.matrixark_mcp_local_adapter import (
     assistant_profile_fact_lineage_text,
@@ -57,6 +86,11 @@ except ImportError:
 class _LocalAdapterIngestMixin:
     def ingest(self, args: Json, *, hook: Json | None = None) -> Json:
         envelope = normalize_envelope(args, default_kind="message")
+        # Guard: a message-ingest scope without tenant_id/user_id silently disables profile
+        # long-term memory. Warn (once per identity) so profile_scope_missing is never silent.
+        self._profile_scope_warning = (
+            warn_if_profile_scope_missing(envelope["scope"]) if envelope["kind"] == "message" else ""
+        )
         hook = validate_hook(hook)
         source_lineage = context_source_lineage(envelope, hook)
         backend_readiness: Json | None = None
@@ -1544,6 +1578,7 @@ class _LocalAdapterIngestMixin:
             "storage_options": envelope.get("storage_options", {}),
             "storage_route": envelope.get("storage_route", {}),
             "hook_captured": hook is not None,
+            **({"profile_scope_warning": self._profile_scope_warning} if getattr(self, "_profile_scope_warning", "") else {}),
             "embedding_model": embedding_model_name(),
             "embedding_execution_mode": embedding_execution_mode_name(),
             "embedding_fallback_used": embedding_fallback_used(),
