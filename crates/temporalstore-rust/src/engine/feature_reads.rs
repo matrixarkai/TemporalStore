@@ -66,7 +66,7 @@ pub(super) fn read_feature_points_in_range(
 ) -> Vec<FeaturePoint> {
     let series = match model_id {
         "feature" => shard.features.get(key),
-        "sequence" => shard.sequences.get(key),
+        "sequence" => shard.features.get(key),
         _ => None,
     };
     series

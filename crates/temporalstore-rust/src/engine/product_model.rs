@@ -58,7 +58,7 @@ pub(super) fn sequence_rows_in_range(
     filters: &[FeatureFilter],
 ) -> Vec<SequenceFeatureRow> {
     shard
-        .sequences
+        .features
         .get(key)
         .map(|series| {
             series

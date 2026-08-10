@@ -497,8 +497,8 @@ fn recovery_validates_all_timestamped_kv_page_families() {
     let report = engine.storage_recovery_report(1);
     // context_dirty tracking was intentionally moved to an ephemeral in-memory
     // coalesced index (commit 9390d110), so it no longer contributes a persisted
-    // timestamped page: feature 8 + sequence 8 + context_event/index/audit
-    // 1 each = 19.
+    // timestamped page: feature 16 (8 feature + 8 sequence, now folded into the
+    // feature family) + context_event/index/audit 1 each = 19.
     assert_eq!(report.feature_page_layout.indexed_timestamped_points, 19);
     assert!(report.feature_page_layout.packed_timestamped_pages >= 10);
     assert!(
@@ -531,9 +531,10 @@ fn recovery_validates_all_timestamped_kv_page_families() {
         .iter()
         .map(|family| (family.kind.as_str(), family))
         .collect::<BTreeMap<_, _>>();
+    // Sequence folds into the feature family (same timestamped-KV storage, typed row
+    // codec at the API layer), so there is no distinct "sequence" recovery family.
     for kind in [
         "feature",
-        "sequence",
         "context_event",
         "context_index",
         "context_audit",
@@ -897,6 +898,104 @@ fn control_state_values_survive_unload_reload() {
     assert_eq!(
         after, before,
         "control-state aggregates must survive reload unchanged"
+    );
+}
+
+#[test]
+fn sequence_rows_fold_into_shared_feature_storage_and_survive_reload() {
+    // Thin-layer Sequence fold: Sequence is backed by the Feature timestamped-KV storage
+    // (a single `features` map, no separate `sequences` map). Rows written via SequenceAdd
+    // must be (a) readable through the typed SequenceQuery API, (b) physically present in
+    // the shared feature storage (a Feature read over the same key sees the same
+    // timestamps), and (c) preserved across an unload/reload cycle.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let rows = vec![
+        SequenceFeatureRow {
+            timestamp_ms: 100,
+            gid: 7,
+            action_type: 1,
+            duration: 10,
+            author_id: 900,
+        },
+        SequenceFeatureRow {
+            timestamp_ms: 200,
+            gid: 8,
+            action_type: 2,
+            duration: 20,
+            author_id: 901,
+        },
+    ];
+    assert!(engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::SequenceAdd {
+                key: "seq-fold".to_string(),
+                rows: rows.clone(),
+            },
+        })
+        .status
+        .ok);
+
+    let query_rows = |engine: &TemporalEngine| -> Vec<SequenceFeatureRow> {
+        match engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::SequenceQuery {
+                    key: "seq-fold".to_string(),
+                    start_ms: 0,
+                    end_ms: 1_000,
+                    count: 10,
+                    filters: Vec::new(),
+                },
+            })
+            .response
+        {
+            CommandResponse::SequenceRows { rows } => rows,
+            other => panic!("expected SequenceRows, got {other:?}"),
+        }
+    };
+    assert_eq!(query_rows(&engine), rows, "SequenceQuery returns the rows");
+
+    // Shared storage: the same key is visible through the Feature read path at the same
+    // timestamps, proving the rows live in the `features` map rather than a separate
+    // sequences map.
+    let feature_ts: Vec<u64> = match engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureQuery {
+                key: "seq-fold".to_string(),
+                start_ms: 0,
+                end_ms: 1_000,
+                count: None,
+            },
+        })
+        .response
+    {
+        CommandResponse::FeaturePoints { points } => {
+            points.iter().map(|point| point.timestamp_ms).collect()
+        }
+        other => panic!("expected FeaturePoints, got {other:?}"),
+    };
+    assert_eq!(
+        feature_ts,
+        vec![100, 200],
+        "sequence rows are stored in the shared feature storage"
+    );
+
+    // Reload fidelity through the merged storage.
+    engine.unload_shard(1);
+    engine.load_shard(1);
+    assert_eq!(
+        query_rows(&engine),
+        rows,
+        "sequence rows survive an unload/reload cycle via feature storage"
     );
 }
 

@@ -1073,7 +1073,7 @@ fn live_page_slab_ids_scan_all_index_backed_data_models() {
             },
         );
     shard
-        .sequences
+        .features
         .entry("sequence".to_string())
         .or_default()
         .insert(
@@ -1384,7 +1384,7 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
         report.reclaimable_stale_page_slab_count,
         report.stale_page_slab_ids.len()
     );
-    assert!(report.model_policy_family_count >= 8);
+    assert!(report.model_policy_family_count >= 7);
     assert!(report.tombstone_policy_model_count >= 1);
     assert!(report.stale_density_policy_model_count >= 1);
     assert!(report.layout_aware_policy_model_count >= 6);
@@ -1408,12 +1408,12 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
     };
     assert_eq!(layout("string").unique_page_refs, 2);
     assert_eq!(layout("hash").unique_page_refs, 1);
-    assert_eq!(layout("feature").index_refs, 2);
-    assert_eq!(layout("feature").unique_page_refs, 1);
-    assert_eq!(layout("feature").packed_timestamped_pages, 1);
-    assert_eq!(layout("sequence").index_refs, 2);
-    assert_eq!(layout("sequence").unique_page_refs, 1);
-    assert_eq!(layout("sequence").packed_timestamped_pages, 1);
+    // Sequence folds into the feature family (shared timestamped-KV storage), so the
+    // feature layout now aggregates both the feature series and the formerly separate
+    // sequence series; there is no distinct "sequence" layout.
+    assert_eq!(layout("feature").index_refs, 4);
+    assert_eq!(layout("feature").unique_page_refs, 2);
+    assert_eq!(layout("feature").packed_timestamped_pages, 2);
     assert_eq!(layout("context_event").index_refs, 1);
     assert_eq!(layout("context_embedding").unique_page_refs, 1);
     assert_eq!(layout("context_summary").index_refs, 1);
@@ -1434,7 +1434,6 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
     assert!(policy("string").stale_density_triggered);
     assert!(policy("hash").layout_aware_rewrite_required);
     assert!(policy("feature").layout_aware_rewrite_required);
-    assert!(policy("sequence").layout_aware_rewrite_required);
     assert!(policy("control_state").layout_aware_rewrite_required);
     assert!(policy("context_event").layout_aware_rewrite_required);
     assert!(policy("context_embedding").layout_aware_rewrite_required);

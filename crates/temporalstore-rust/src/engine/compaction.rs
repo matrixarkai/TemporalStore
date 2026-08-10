@@ -80,8 +80,6 @@ pub(super) fn model_compaction_policy_reports(
             "set"
         } else if shard.features.contains_key(key) {
             "feature"
-        } else if shard.sequences.contains_key(key) {
-            "sequence"
         } else if shard.control_state_pages.contains_key(key) {
             "control_state"
         } else if shard.context_nodes.contains_key(key) {
@@ -305,11 +303,6 @@ pub(super) fn compaction_model_layout_reports(
     reports.push(compaction_timestamped_layout(
         "feature",
         &shard.features,
-        &slab_page_counts,
-    ));
-    reports.push(compaction_timestamped_layout(
-        "sequence",
-        &shard.sequences,
         &slab_page_counts,
     ));
     reports.push(compaction_layout_from_addresses(
