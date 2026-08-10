@@ -5,12 +5,12 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 
 #[derive(Clone)]
 struct ObjectService {
     data_path: PathBuf,
-    index: Arc<Mutex<BTreeMap<String, ObjectMeta>>>,
+    index: Arc<RwLock<BTreeMap<String, ObjectMeta>>>,
     append: Arc<AppendLog>,
     read_files: Arc<Mutex<Vec<File>>>,
     tenant_id: String,
@@ -141,7 +141,7 @@ fn main() {
     let append_offset = file_offset;
     let service = ObjectService {
         data_path,
-        index: Arc::new(Mutex::new(index)),
+        index: Arc::new(RwLock::new(index)),
         append: Arc::new(AppendLog {
             state: Mutex::new(AppendState {
                 file: data_file,
@@ -293,7 +293,7 @@ fn route(
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/health") => json(&HealthResponse {
             ok: true,
-            keys: service.index.lock().expect("object index poisoned").len(),
+            keys: service.index.read().expect("object index poisoned").len(),
             addr,
         }),
         ("POST", "/v1/object/put_raw") => {
@@ -335,7 +335,7 @@ impl ObjectService {
         let segment_id = self.append_segment_id;
         let offset = append_put_record_durable(&self.append, &req.key, &req.bytes)?;
         {
-            let mut index = self.index.lock().expect("object index poisoned");
+            let mut index = self.index.write().expect("object index poisoned");
             let key = req.key;
             let meta = ObjectMeta {
                 segment_id,
@@ -356,7 +356,7 @@ impl ObjectService {
             validate_key(&req.key)?;
         }
         let appended = append_put_records_durable(&self.append, &requests)?;
-        let mut index = self.index.lock().expect("object index poisoned");
+        let mut index = self.index.write().expect("object index poisoned");
         for (req, offset) in requests.into_iter().zip(appended) {
             index.insert(
                 req.key,
@@ -374,7 +374,7 @@ impl ObjectService {
         validate_key(&key)?;
         let meta = self
             .index
-            .lock()
+            .read()
             .expect("object index poisoned")
             .get(&key)
             .cloned()
@@ -392,7 +392,7 @@ impl ObjectService {
 
     fn get_many<'a>(&self, keys: impl Iterator<Item = &'a str>) -> matrixobject::Result<Vec<u8>> {
         let mut metas = {
-            let index = self.index.lock().expect("object index poisoned");
+            let index = self.index.read().expect("object index poisoned");
             keys.enumerate()
                 .map(|(position, key)| {
                     validate_key(key)?;
@@ -438,7 +438,7 @@ impl ObjectService {
     }
 
     fn list(&self, prefix: &str) -> Vec<String> {
-        let index = self.index.lock().expect("object index poisoned");
+        let index = self.index.read().expect("object index poisoned");
         index
             .range(prefix.to_string()..)
             .take_while(|(key, _)| key.starts_with(prefix))
@@ -448,7 +448,7 @@ impl ObjectService {
 
     fn list_after(&self, prefix: &str, after: &str) -> Vec<String> {
         let start = if after > prefix { after } else { prefix };
-        let index = self.index.lock().expect("object index poisoned");
+        let index = self.index.read().expect("object index poisoned");
         index
             .range(start.to_string()..)
             .take_while(|(key, _)| key.starts_with(prefix))
@@ -461,7 +461,7 @@ impl ObjectService {
         validate_key(&key)?;
         let meta = self
             .index
-            .lock()
+            .write()
             .expect("object index poisoned")
             .remove(&key);
         if meta.is_some() {
