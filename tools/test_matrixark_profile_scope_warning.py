@@ -52,5 +52,35 @@ class ProfileScopeWarningTest(unittest.TestCase):
         self.assertEqual(1, len(w))  # warned once, not per-call
 
 
+class BatchedIngestWarningTest(unittest.TestCase):
+    def _adapter(self):
+        return mcp.MatrixArkLocalAdapter(Path(tempfile.mkdtemp()) / "events.jsonl")
+
+    def test_helper_flags_large_batch_only(self):
+        ing._BATCH_MESSAGES_WARNED.clear()
+        self.assertEqual("", ing.warn_if_batched_messages([{"role": "user", "content": "x"}] * 2))
+        self.assertTrue(ing.warn_if_batched_messages([{"role": "user", "content": "x"}] * 12))
+
+    def test_ingest_large_batch_warns_and_surfaces(self):
+        ing._BATCH_MESSAGES_WARNED.clear()
+        a = self._adapter()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            r = a.ingest({"kind": "message", "scope": {"tenant_id": "t", "user_id": "u", "session_id": "s"},
+                          "messages": [{"role": "user", "content": f"m{i}"} for i in range(12)]})
+        self.assertTrue(any("batched_ingest" in str(x.message) for x in w))
+        self.assertIn("batched_ingest_warning", r)
+
+    def test_per_turn_ingest_is_silent(self):
+        ing._BATCH_MESSAGES_WARNED.clear()
+        a = self._adapter()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            r = a.ingest({"kind": "message", "scope": {"tenant_id": "t", "user_id": "u", "session_id": "s"},
+                          "messages": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "ok"}]})
+        self.assertFalse(any("batched_ingest" in str(x.message) for x in w))
+        self.assertNotIn("batched_ingest_warning", r)
+
+
 if __name__ == "__main__":
     unittest.main()
