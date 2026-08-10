@@ -391,16 +391,27 @@ impl ObjectService {
     }
 
     fn get_many<'a>(&self, keys: impl Iterator<Item = &'a str>) -> matrixobject::Result<Vec<u8>> {
+        let metas = {
+            let index = self.index.lock().expect("object index poisoned");
+            keys.map(|key| {
+                validate_key(key)?;
+                let meta = index.get(key).cloned().ok_or_else(|| {
+                    MatrixObjectError::SegmentNotFound(self.segment_id_for_key(key))
+                })?;
+                Ok((key.to_string(), meta))
+            })
+            .collect::<matrixobject::Result<Vec<_>>>()?
+        };
         let mut file = self.take_read_file()?;
         let mut records = Vec::new();
         let mut count = 0u32;
         records.extend_from_slice(&0u32.to_le_bytes());
-        for key in keys {
-            let bytes = match self.get_with_file(key, &mut file) {
+        for (key, meta) in metas {
+            let bytes = match read_object_bytes(&mut file, &meta) {
                 Ok(bytes) => bytes,
                 Err(err) => {
                     self.return_read_file(file);
-                    return Err(err);
+                    return Err(err.into());
                 }
             };
             records.extend_from_slice(&(key.len() as u32).to_le_bytes());
@@ -412,21 +423,6 @@ impl ObjectService {
         self.return_read_file(file);
         records[..4].copy_from_slice(&count.to_le_bytes());
         Ok(records)
-    }
-
-    fn get_with_file(&self, key: &str, file: &mut File) -> matrixobject::Result<Vec<u8>> {
-        validate_key(key)?;
-        let meta = self
-            .index
-            .lock()
-            .expect("object index poisoned")
-            .get(key)
-            .cloned()
-            .ok_or_else(|| MatrixObjectError::SegmentNotFound(self.segment_id_for_key(key)))?;
-        file.seek(SeekFrom::Start(meta.offset))?;
-        let mut bytes = vec![0; meta.len as usize];
-        file.read_exact(&mut bytes)?;
-        Ok(bytes)
     }
 
     fn list(&self, prefix: &str) -> Vec<String> {
@@ -568,6 +564,13 @@ fn decode_rpc_put_many_request(body: &[u8]) -> matrixobject::Result<Vec<PutObjec
         ));
     }
     Ok(requests)
+}
+
+fn read_object_bytes(file: &mut File, meta: &ObjectMeta) -> std::io::Result<Vec<u8>> {
+    file.seek(SeekFrom::Start(meta.offset))?;
+    let mut bytes = vec![0; meta.len as usize];
+    file.read_exact(&mut bytes)?;
+    Ok(bytes)
 }
 
 fn read_rpc_request_header(stream: &mut TcpStream) -> std::io::Result<Option<(u8, u32, u64)>> {
