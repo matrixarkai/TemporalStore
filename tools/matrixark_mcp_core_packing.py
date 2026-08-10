@@ -51,8 +51,17 @@ except ImportError:  # top-level path (matrixark_mcp_core)
 __all__ = ['packing_sort_key', 'context_text_hashes', 'local_context_budget', 'compact_local_context_refs', 'local_context_refs_for_pack', 'memory_layer_for_serving_ref', 'memory_layer_counts', 'default_memory_layer_for_pack', 'serving_ref_for_pack', 'session_continuity_counts', 'default_session_continuity_for_pack', 'serving_refs_for_pack', 'serving_ref_groups_for_pack', 'selected_ref_count_from_pack', 'is_resource_or_skill_candidate', 'candidate_memory_layer_name']
 
 
+# Precision-aware raw preference (A/B-validated): the compression/summary token-efficiency
+# boost can crowd out raw events, and raw events retain exact hashes/numbers/lists that
+# summaries drop (measured ~2/6 exact-fact loss). When enabled, dampen the compression boost
+# and lift raw events for precision question-types so exactness is preserved. Ships OFF.
+PACK_RAW_PRECISION = os.environ.get("MATRIXARK_PACK_RAW_PRECISION", "0").strip().lower() in {"1", "true", "yes"}
+PRECISION_QUESTION_TYPES = {"fact", "current_state", "multi_hop", "evidence", "benchmark_quality", "latest", "date"}
+
+
 def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float, float, float, float]:
     score = float(candidate.get("score", 0.0))
+    prefer_raw = PACK_RAW_PRECISION and question_type in PRECISION_QUESTION_TYPES
     profile_memory_kind = str(candidate.get("profile_memory_kind") or "").strip().lower()
     is_feature_profile_memory = candidate_is_feature_profile_memory(candidate)
     ref_type = str(candidate.get("ref_type") or "")
@@ -78,12 +87,19 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
         + profile_current_boost
         - pending_async_penalty
     )
+    if prefer_raw:
+        # Precision queries: shift the PRIMARY sort key toward raw events so exact
+        # hashes/numbers/lists (which summaries drop) survive into the pack.
+        if ref_type == "event":
+            boosted = clamp01(boosted + 0.20)
+        elif ref_type in {"compression", "summary"}:
+            boosted = clamp01(boosted - 0.20)
     token_efficiency = boosted / max(1, token_count(str(candidate.get("text", ""))))
-    if ref_type == "compression" and question_type in {"fact", "current_state", "multi_hop"}:
+    if not prefer_raw and ref_type == "compression" and question_type in {"fact", "current_state", "multi_hop"}:
         source_count = len(candidate.get("source_event_ids", []) or [])
         if source_count >= 2:
             token_efficiency *= 1.5
-    if ref_type == "compression" and profile_memory_kind == "codex_outcome":
+    if not prefer_raw and ref_type == "compression" and profile_memory_kind == "codex_outcome":
         source_count = len(candidate.get("source_event_ids", []) or [])
         if question_type in {"current_state", "latest", "evidence", "benchmark_quality"}:
             token_efficiency *= 1.35 if source_count >= 2 else 1.15
