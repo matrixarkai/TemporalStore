@@ -6,10 +6,10 @@ The Rust repo is a clean open-source TemporalStore-shaped implementation, but it
 
 What exists today:
 
-- a typed command API for common, string, hash, set, feature, sequence, and the implemented Risk subset
+- a typed command API for common, string, hash, set, feature, sequence, and the implemented Control State subset (formerly Risk)
 - a TemporalStore Rust engine with shard-local indexes, local append-only page segment files, and read-through memory/disk cache
 - HTTP binaries for metaserver, server, proxy, and client
-- a Redis RESP proxy covering common string/hash/set commands plus feature and Risk extensions
+- a Redis RESP proxy covering common string/hash/set commands plus feature and Control State extensions
 - an in-process Raft behavior model for data replication, metaserver replication, promotion, scale up/down, and replica read policy tests
 - an S3-compatible snapshot crate with manifest-last visibility, checksum verification, retention, stale restore guard, and Prometheus metric names
 - local smoke scripts, AWS existing-EKS Terraform, and compatibility-style tests
@@ -37,7 +37,7 @@ So the right framing is: the Rust code is a good open-source v1 skeleton and loc
 
 | Area | Main files | What it does |
 | --- | --- | --- |
-| Public API model | `crates/temporalstore-rust/src/types.rs` | Defines `Command`, `CommandResponse`, request/response structs, shard id, feature/risk/sequence shapes. |
+| Public API model | `crates/temporalstore-rust/src/types.rs` | Defines `Command`, `CommandResponse`, request/response structs, shard id, feature/control-state/sequence shapes. |
 | Engine | `crates/temporalstore-rust/src/engine.rs` | Owns loaded shard state, executes commands, appends values to page files, updates indexes, persists index JSON, reads through cache/block store. |
 | Page storage | `crates/temporalstore-rust/src/block_store.rs` | Appends raw bytes to local `page_segment_*.seg` files and returns `BlockAddress { page_segment_id, offset, length }`. |
 | Multi-layer cache | `crates/temporalstore-rust/src/cache.rs` | L1 in-memory cache plus L2 local disk block cache. Disk blocks use a versioned envelope with optional zstd compression. Disk hits are decoded and promoted back to memory. Writes invalidate affected keys. |
@@ -79,7 +79,7 @@ key -> crc64 slot -> partition set -> primary/secondary server -> worker -> obje
 - `hashes: key -> field -> BlockAddress`
 - `sets: key -> member -> BlockAddress`
 - `features: key -> timestamp -> BlockAddress` (Sequence is a typed view over this same Feature storage; there is no separate `sequences` map)
-- `risk: key -> timestamp -> i64`
+- `control_state: key -> timestamp -> i64`
 - `expires_at_ms: key -> expire timestamp`
 
 For most data types, Rust stores bytes in the local block store and keeps only the page address in the index. On mutation, the engine appends a new value, updates the per-shard index, invalidates related cache entries, and persists the full shard index as JSON. On read miss, it follows the stored `BlockAddress` into the page segment file, reads the bytes, caches the page bytes under a page-address block key, builds the response, and caches the serialized response.
@@ -260,7 +260,7 @@ That is why "rewrite C++ TemporalStore in Rust" is not just translating syntax. 
 | Feature API | Append/query/replace/delete/agg plus write-policy append with typed client and RESP coverage | Rich feature point/range/write policy support | Need C++ proto-compatible nested feature shape and exact aggregate semantics. |
 | Sequence API | Typed rows, filters, and batch query | Part of richer feature/data modules | Need exact C++ sequence edge-case policy if required by callers. |
 | IPS | Removed from Rust (no IPS model, command, or RESP verb) | Rich add/batch query/remove/load/delete/stat/filter/snap behavior | IPS is now a C++-only model; not reimplemented in Rust. |
-| Risk | Increment/count plus precision/TTL increment, sum/min/max/first/last/events/detail with typed client and RESP coverage | Rich H/CPC/FOL/query/manager/window/precision semantics | Missing CPC/list-specific behavior and manager APIs. |
+| Control State (formerly Risk) | Increment/count plus precision/TTL increment, sum/min/max/first/last/events/detail with typed client and RESP coverage | Rich H/CPC/FOL/query/manager/window/precision semantics (C++ `risk`) | Missing CPC/list-specific behavior and manager APIs. |
 | Local storage | Local page segments + JSON index, oplog/index-log, periodic dirty-shard dump scheduling, and local live-page rewrite compaction | Oplog + page/slot store + dump/recover | Need native ObjectManager runtime mechanics, SlotStore layout transitions, stream-backed zones, page compaction tied to model layout/tombstones, mature StorageManager loops, merged dump/load, and optional binary log/header parity if migration requires it. |
 | Cache | Rust-native memory + bounded SSD block cache with policy admission, hotness, pinning, write-through accounting, weighted hotness/LRU pressure eviction, warmup, and inspection metrics | mtcache/blockcache-like production cache | Rust-native multi-tier replacement policy, pinned-handle accounting/eviction guards, DRAM/PMEM/SSD placement semantics, async writeback/backpressure counters, and mature latency metrics are covered by weighted hotness/LRU memory plus SSD eviction, pin/unpin state, pinned-skip counters, `CacheTieringPolicy` placement decisions, write-through/backpressure counters, and get/put latency metrics. PMEM is treated as an SSD-class persistent tier in Rust. CacheLib/mtcache binary/API compatibility remains optional only if that compatibility is re-scoped. |
 | Replication | In-process behavior model | RustRaft-backed production replication | Need real Raft library and networked nodes. |

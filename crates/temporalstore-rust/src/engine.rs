@@ -31,7 +31,7 @@ mod persistence;
 mod bucket_dump_io;
 mod command_validation;
 // Single source of truth for write-command classification (shared with the data_node layer,
-// which previously kept a drifted subset that mis-classified context/control-state/ips writes
+// which previously kept a drifted subset that mis-classified context/control-state writes
 // as reads -> lifecycle-write-barrier bypass + missing dump scheduling).
 pub(crate) use command_validation::{command_object_keys, is_write_command};
 mod storage_bucket_internals;
@@ -1046,7 +1046,7 @@ impl TemporalEngine {
 /// range query runs under the shard write lock, so a client sending `start_ms > end_ms` would
 /// poison the lock and take the whole shard down (every later `.lock().expect()` panics). C++
 /// `RangeGet` simply iterates and returns an empty result with Status::OK when `min > max`
-/// (model/ips/ips_operator.cc), so match that: reversed bounds → empty range, not a crash. For
+/// so match that: reversed bounds → empty range, not a crash. For
 /// `start <= end` this is byte-for-byte the same set as `start..=end`.
 pub(crate) fn timestamp_range_bounds(
     start: u64,
@@ -1554,7 +1554,7 @@ fn collect_live_page_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
     for series in shard.context_compressions.values() {
         ids.extend(series.values().map(|address| address.page_slab_id));
     }
-    // control_state_pages is the page-backed control-state (Risk) model and MUST be in the
+    // control_state_pages is the page-backed control-state model and MUST be in the
     // GC live set: it feeds both the reclaim live-slab set and the page-gc dependency plan.
     // Omitting it let a slab holding only a control-state page be reclaimed while the index
     // still referenced it -> DataLoss on the next read. C++ keeps any model's live pages

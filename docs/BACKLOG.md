@@ -883,8 +883,9 @@ Completed since the last backlog update:
   - Filter query: dimension predicates over bucketed state.
   - Clear semantics for raw events vs bucket increments.
 
-- Clarify IPS vs TemporalAggregate.
-  - IPS: profile/event history with richer per-event state.
+- Clarify IPS vs TemporalAggregate. (IPS is a C++-only model and is not reimplemented in Rust; this
+  is retained only as a C++-reference design comparison.)
+  - IPS (C++-only): profile/event history with richer per-event state.
   - TemporalAggregate: compact bucketed aggregate state for risk/fraud/frequency cap.
   - Document when to use each.
 
@@ -918,7 +919,7 @@ Completed since the last backlog update:
   - STRING.
   - HASH.
   - Feature/sequence.
-  - IPS.
+  - Control State.
   - TemporalAggregate.
 
 - Add GC/storage panel.

@@ -310,7 +310,7 @@ fn run_one_sequence(seed: u64, maintenance: bool) -> Result<(), String> {
 // Reference-model oracle: a naive, obviously-correct in-Rust model of the engine's INTENDED
 // semantics. Diffing the engine against it after a random sequence catches WRONG-RESULT bugs
 // (a query returning the wrong value), which the reload/no-panic invariants cannot see. Scoped to
-// the commands with unambiguous semantics (string/hash/set/feature/ips point storage +
+// the commands with unambiguous semantics (string/hash/set/feature point storage +
 // cross-model CommonDelete); the model mirrors the engine's CURRENT documented behavior (e.g.
 // HINCRBY parses stored ints strtoll-style skipping leading whitespace, and errors -> no change).
 #[derive(Default)]

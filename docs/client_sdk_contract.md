@@ -87,13 +87,13 @@ tests or validators:
 - HTTP/JSON replacement is covered by proxy/server execute, batch, table-open, topology refresh,
   preflight, and C++ service-name JSON alias tests.
 - RESP replacement is covered by the Redis command corpus and RESP adapter tests for string, hash,
-  set, Feature, Sequence, IPS, Risk, admin, and Context-facing migration paths.
+  set, Feature, Sequence, Control State (formerly Risk), admin, and Context-facing migration paths.
 - tonic replacement is covered by generated `temporalstore.v1` bindings plus adapter tests for
   `Execute`, `BatchExecute`, `OpenTable`, `SyncTopology`, `GetClientPreflight`, proxy streaming,
   route callbacks, preflight watch surfaces, long-running request, cancellation, backpressure, and
   reconnect evidence.
 - typed client migration is covered by `TemporalStoreClient`, `TemporalStoreTable`, and pipeline
-  tests that route common, Feature, Sequence, IPS, Risk, and Context commands through the same
+  tests that route common, Feature, Sequence, Control State, and Context commands through the same
   logical contract.
 - topology sync and route invalidation are covered by MetaSyncer, topology-version refresh,
   stale-route invalidation, C++ partition-set/member/version route-cache tests, proxy route
@@ -121,8 +121,7 @@ readiness work:
 - set add/member commands
 - packed timestamp/value Feature pages
 - Sequence rows in the C++ feature-row shape
-- IPS timeline add/query
-- Risk counter/window query
+- Control State counter/window query
 - Context node upsert/get
 - Redis-compatible aliases and admin-facing migration commands
 

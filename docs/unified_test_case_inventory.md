@@ -146,6 +146,11 @@ These cases are executable command/response tests. Rust runs them through both t
 path and the local HTTP client path. The C++ hook validates the same corpus shape today, and native
 C++ execution should progressively cover every executable case.
 
+> Naming note: IPS is a C++-only model; the Rust engine does not implement an IPS data model. The
+> Rust `Risk*` engine model was renamed to `ControlState*` (families formerly H/CPC/Fol are now
+> Counter/Distinct/Selection). The `ips_`/`risk_` case identifiers below are retained as frozen in
+> the shared corpus (`compat/unified_temporalstore_cases.json`).
+
 | Case | Coverage |
 | --- | --- |
 | `common_string_hash_core` | String set/get plus hash multi-set/multi-get. |
@@ -459,7 +464,7 @@ split into:
 | Storage/cache/local durability | Recovery, dump/load, cache refill, corruption outcomes, shared-store replay. | Page-store helper units, cache data-structure mechanics, serializer internals. |
 | Control plane/service behavior | Client/proxy/meta/data-node topology, lifecycle, admission, retry, convergence workflows. | Runtime worker handle units, local mock plumbing, adapter-only details. |
 | Raft/local consensus model | Log codec, snapshot, membership, failover, read-index, catch-up semantics. | Temporary Rust-local consensus scaffolding until production Raft lands. |
-| API/model/ingestion/context/SDK | Redis/API behavior, Feature/Sequence/IPS/Risk/Context, ingestion offsets/checkpoints/dead letters. | Rust SDK conversion helpers and provider mocks without cross-language behavior. |
+| API/model/ingestion/context/SDK | Redis/API behavior, Feature/Sequence/Control State/Context, ingestion offsets/checkpoints/dead letters. | Rust SDK conversion helpers and provider mocks without cross-language behavior. |
 | Storage crash harness | Crash/restart/corrupt artifact outcomes. | Harness plumbing needed only to drive Rust-local faults. |
 | Other local tests | Readiness output, external chaos, replica replay, scale/fault logs. | CLI parsing and local fixture setup. |
 
@@ -470,7 +475,7 @@ Those should follow the same rule:
 
 | C++-local bucket | Move into shared corpus | Keep C++-specific |
 | --- | --- | --- |
-| Product/API smoke tests | Redis/API command behavior, Feature/Sequence/IPS/Risk/Context behavior, lifecycle workflows. | legacy C++ wire service glue and C++ fixture setup. |
+| Product/API smoke tests | Redis/API command behavior, Feature/Sequence/Control State/Context behavior, lifecycle workflows. | legacy C++ wire service glue and C++ fixture setup. |
 | Storage tests | Logical recovery, dump/load, compaction, GC, corruption, shared-store replay. | C++ object lifetime, allocator, and storage class ownership units. |
 | Raft tests | Log/snapshot/membership/failover behavior and durability outcomes. | rustraft integration wiring and C++ transport internals. |
 | Scale/performance gates | Shared workload traces and SLO result formats. | Platform-specific packaging or benchmark harness mechanics. |

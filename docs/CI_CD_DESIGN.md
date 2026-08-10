@@ -172,7 +172,7 @@ Run on every PR:
 - page-store tests
 - oplog tests
 - command executor tests
-- data model tests: STRING, HASH, SET, FEATURE, IPS, RISK,
+- data model tests: STRING, HASH, SET, FEATURE, CONTROL STATE,
   TemporalAggregate
 - client router tests
 - metaserver metadata tests
@@ -227,8 +227,7 @@ Required workloads:
 - plain STRING set/get baseline
 - HASH read/write baseline
 - FEATURE sequence query
-- IPS query
-- RISK window count
+- CONTROL STATE window count
 - TemporalAggregate single-key smoke
 - TemporalAggregate high-cardinality workload
 - concurrent write/read workload

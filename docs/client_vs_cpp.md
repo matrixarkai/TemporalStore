@@ -35,7 +35,7 @@ Rust now has:
   retry, writes default to zero retries
 - `TemporalStoreTable`
 - `TemporalStorePipeline`
-- typed table methods for common string/hash/set/feature/sequence/IPS/risk flows:
+- typed table methods for common string/hash/set/feature/sequence/control-state flows:
   - `exists`
   - `set`
   - `setex`
@@ -63,20 +63,11 @@ Rust now has:
   - `sequence_add`
   - `sequence_query`
   - `sequence_batch_query`
-  - `ips_add`
-  - `ips_add_with_options`
-  - `ips_query_last`
-  - `ips_query_range`
-  - `ips_query_range_with_options`
-  - `ips_batch_query_last`
-  - `ips_remove`
-  - `ips_delete`
-  - `ips_count`
-  - `risk_increment`
-  - `risk_increment_with_options`
-  - `risk_count`
-  - `risk_query`
-  - `risk_detail`
+  - `control_state_increment`
+  - `control_state_increment_with_options`
+  - `control_state_count`
+  - `control_state_query`
+  - `control_state_detail`
 - key-to-shard routing using `TableOptions { first_shard_id, shard_count }`
 - pipeline `sync` backed by `BatchExecuteRequest`
 - pipeline grouping by routed shard, with responses reassembled in original command order

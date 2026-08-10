@@ -76,7 +76,7 @@ pub(super) fn mark_dirty_for_successful_commands(
 
 // Delegate to the engine's canonical object-key extractor (same one used for validation), so
 // the dirty tracker records a key for EVERY write command -- including the ones this used to
-// omit (context, control-state change/fol, ips load/remove/delete, conditional string). Those
+// omit (context, control-state change/selection, conditional string). Those
 // omissions left such writes untracked, so their shard was never scheduled for a dirty-driven
 // dump and its WAL grew unbounded. Returns the first (primary) object key.
 pub(super) fn command_key(command: &Command) -> Option<String> {
@@ -86,7 +86,7 @@ pub(super) fn command_key(command: &Command) -> Option<String> {
 // Delegate to the engine's authoritative write-command classifier (the same one that gates WAL
 // persistence). The data_node lifecycle write-barrier, dirty tracking and dump scheduling MUST
 // use it so they can never drift: a stale subset here mis-classified context / control-state
-// (change/fol) / ips (load/remove/delete) / conditional-string writes as READS, letting them
+// (change/selection) / conditional-string writes as READS, letting them
 // bypass the lifecycle write gate (execute against a shard being torn down) and never mark the
 // shard dirty (so it was never scheduled for a dump and its WAL grew unbounded).
 pub(super) fn is_write_command(command: &Command) -> bool {

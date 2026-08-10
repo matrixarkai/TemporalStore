@@ -147,55 +147,34 @@ Context:
   `mean_reciprocal_rank = 1.0`; query-term, synonym, phrase, and topic ranking keep QA-style hit
   ranking from silently regressing.
 
-IPS:
+IPS: not implemented in Rust.
 
-- `ADD` -> `IpsAdd`
-- dimension/idempotent add -> `IpsAddWithOptions`
-- query last -> `IpsQueryLast`
-- range query -> `IpsQueryRange`
-- dimension-filtered range query -> `IpsQueryRangeWithOptions`
-- batch query last -> `IpsBatchQueryLast`
-- remove timestamp -> `IpsRemove`
-- delete key -> `IpsDelete`
-- count range -> `IpsCount`
-- load point snapshot -> `IpsLoad`
-- snapshot range -> `IpsSnapshot`
-- range stats -> `IpsStat`
-- named dimension filter -> `IpsFilter`
-- Typed client coverage: `ips_add`, `ips_add_with_options`, `ips_query_last`,
-  `ips_query_range`, `ips_query_range_with_options`, `ips_batch_query_last`,
-  `ips_remove`, `ips_delete`, `ips_count`, `ips_load`, `ips_snapshot`, `ips_stat`,
-  `ips_filter`
-- RESP coverage: `IPSADD`, `IPSADDOPT`, `IPSQUERYLAST`, `IPSQUERYRANGE`,
-  `IPSQUERYRANGEOPT`, `IPSBATCHQUERYLAST`, `IPSREMOVE`, `IPSDEL`, `IPSCOUNT`,
-  `IPSLOAD`, `IPSSNAPSHOT`, `IPSSNAPSHOTREPORT`, `IPSSTAT`, `IPSFILTER`
-- Production snapshot metadata -> `IpsSnapshotReport`, including range metadata, returned versus
-  total counts, action/table aggregations, and packed page evidence for the timestamped page blocks
-  backing the snapshot.
+- IPS is a C++-only model (`src/extension/ips`). The Rust reimplementation has no IPS model,
+  command, or RESP verb; it is out of scope for the open-source Rust surface.
 
-Risk:
+Control State (formerly Risk; families formerly H/CPC/Fol are now Counter/Distinct/Selection):
 
-- increment -> `RiskIncrement`
-- precision/TTL increment -> `RiskIncrementWithOptions`
-- count/sum window -> `RiskCount`
-- aggregate query -> `RiskQuery` with `sum`, `min`, `max`, `first`, `last`, and `events`
-- detail list -> `RiskDetail`
-- C++-named family commands -> `RiskSet`, `RiskFamilyQuery`, `RiskSetAndGet`,
-  `RiskManager`, and `RiskDebug` for the `h`, `cpc`, and `fol` risk families
-- C++ FOL first/last string semantics -> `RiskFolSet` and `RiskFolQuery`, preserving the selected
-  value by event timestamp rather than treating FOL as a numeric sum-only family
-- Typed client coverage: `risk_increment`, `risk_increment_with_options`, `risk_count`,
-  `risk_query`, `risk_detail`, `risk_family_set`, `risk_family_query`,
-  `risk_family_set_and_get`, `risk_fol_set`, `risk_fol_query`, `risk_manager`, and
-  `risk_debug`
-- RESP coverage: `RISKINCR`, `RISKINCROPT`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`
-  plus C++-style `RISKHSET`, `HQUERY`, `HSETANDGET`, `CPCSET`, `CPCQUERY`,
-  `CPCSETANDGET`, `FOLSET`, `FOLQUERY`, `FOLSETANDGET`, `RISKMANAGER`, and
-  `RISKDEBUG`.
+- increment -> `ControlStateIncrement`
+- precision/TTL increment -> `ControlStateIncrementWithOptions`
+- count/sum window -> `ControlStateCount`
+- aggregate query -> `ControlStateQuery` with `sum`, `min`, `max`, `first`, `last`, and `events`
+- detail list -> `ControlStateDetail`
+- C++-named family commands -> `ControlStateSet`, `ControlStateFamilyQuery`, `ControlStateSetAndGet`,
+  `ControlStateManager`, and `ControlStateDebug` for the `h`, `cpc`, and `fol` families
+- C++ FOL first/last string semantics -> `ControlStateSelectionSet` and `ControlStateSelectionQuery`, preserving the selected
+  value by event timestamp rather than treating the selection family as a numeric sum-only family
+- Typed client coverage: `control_state_increment`, `control_state_increment_with_options`, `control_state_count`,
+  `control_state_query`, `control_state_detail`, `control_state_family_set`, `control_state_family_query`,
+  `control_state_family_set_and_get`, `control_state_fol_set`, `control_state_fol_query`, `control_state_manager`, and
+  `control_state_debug`
+- RESP coverage: `CONTROLSTATEINCR`, `CONTROLSTATEINCROPT`, `CONTROLSTATECOUNT`, `CONTROLSTATEQUERY`, `CONTROLSTATEDETAIL`
+  plus C++-style `CONTROLSTATEHSET`, `HQUERY`, `HSETANDGET`, `CPCSET`, `CPCQUERY`,
+  `CPCSETANDGET`, `FOLSET`, `FOLQUERY`, `FOLSETANDGET`, `CONTROLSTATEMANAGER`, and
+  `CONTROLSTATEDEBUG`.
   `FOLSET key value occur_time_ms ttl_ms FIRST|LAST` and `FOLQUERY key` now model the C++ string
-  first/last behavior; the older numeric FOL test shape remains for compatibility with the local
-  simplified family shim.
-  `RISKHSET` is used for H-family set-only writes in RESP so normal Redis `HSET`
+  first/last behavior; the older numeric selection test shape remains for compatibility with the local
+  simplified family shim. The lowercase family wire tags `h`/`cpc`/`fol` are retained on disk and wire.
+  `CONTROLSTATEHSET` is used for H-family (Counter) set-only writes in RESP so normal Redis `HSET`
   remains hash-compatible.
 
 Runtime/control surface:
@@ -225,22 +204,19 @@ Redis operational/admin compatibility:
 
 ## Partially Implemented
 
-IPS:
+IPS: C++-only, not reimplemented in Rust.
 
-- Rust covers add, dimension/idempotent add, query-last, range query, dimension-filtered range
-  query, batch query-last, remove timestamp, delete key, count range, local load, range snapshot,
-  snapshot metadata reports, stats, and named filter, with typed client and RESP coverage.
-- C++ IPS still has deployment-specific snap internals, but the Rust surface now covers production
-  snapshot metadata and server-side action/table aggregation for the local open-source model.
+- IPS remains a C++ model (`src/extension/ips`) with deployment-specific snap internals. The Rust
+  reimplementation has no IPS model, command, or RESP verb.
 
-Risk:
+Control State (formerly Risk):
 
 - Rust covers increment, precision/TTL increment, count, sum/min/max/first/last/event aggregation,
   and detail lists, with typed client and RESP coverage.
-- C++ risk has `HSET`, `HQUERY`, `CPCSET`, `CPCQUERY`, `FOLSET`, `FOLQUERY`,
+- C++ `risk` has `HSET`, `HQUERY`, `CPCSET`, `CPCQUERY`, `FOLSET`, `FOLQUERY`,
   `HSETANDGET`, `FOLSETANDGET`, `CPCSETANDGET`, and `MANAGER`. Rust now covers
-  those command shapes for local integer-window behavior, C++-style FOL first/last string selection,
-  a manager summary, and a debug report for full/window family counters and FOL metadata.
+  those command shapes for local integer-window behavior, C++-style selection (fol) first/last string selection,
+  a manager summary, and a debug report for full/window family counters and selection metadata.
 - Missing C++ semantics include deeper CPC/list-specific internals and production
   manager/debug operations beyond the local report.
 
@@ -254,7 +230,7 @@ Feature:
   sequence filtering, and packed timestamped KV page layout.
 - Rust also exposes `cpp_api_golden_corpus_v1` through `cpp_api_golden_corpus_report()`.
   This broader Rust-local corpus combines the feature/sequence golden cases with Redis-compatible
-  string/hash/set core commands, IPS filter/stat/snapshot behavior, Risk family/FOL/manager
+  string/hash/set core commands, Control State family/selection/manager
   behavior, and admin storage-readiness checks after mixed API writes.
 - C++ feature API includes richer `FeaturePoint` structure with nested point arrays and additional
   deployment-specific time-range behaviors. Rust currently stores one value per timestamp.
@@ -325,7 +301,7 @@ Still intentionally missing from the open-source Rust target:
 ## Current Conclusion
 
 The Rust repo now covers the main simple module APIs: common, string, hash, set, feature,
-sequence, and the implemented IPS/Risk subset with typed client and RESP coverage. It is not yet
+sequence, and the implemented Control State subset (formerly Risk) with typed client and RESP coverage. It is not yet
 feature-complete versus the full C++ TemporalStore product, mainly because exact C++ proto
 semantics, routing/topology, C++ slot-owned dump/load recovery, OpenRaft/raft-rs integration,
 mTLS/tonic production surfaces, external chaos validation, and production replication are still

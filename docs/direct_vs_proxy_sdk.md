@@ -97,8 +97,8 @@ Endpoints:
 | `POST /v1/feature/query` | query raw feature points |
 | `POST /v1/sequence/add` | add typed sequence rows |
 | `POST /v1/sequence/query` | query typed sequence rows |
-| `POST /v1/risk/increment` | increment risk counter |
-| `POST /v1/risk/count` | query risk window counter |
+| `POST /v1/control_state/increment` | increment control-state counter |
+| `POST /v1/control_state/count` | query control-state window counter |
 
 ## Direct vs Proxy Tradeoff
 

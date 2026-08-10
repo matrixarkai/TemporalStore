@@ -8,7 +8,14 @@ metaserver, ingestion, Context benchmarks, and ops/scale readiness, see
 
 The Rust code now covers the local correctness skeleton for TemporalStore-style serving:
 
-- command API for common, string, hash, set, feature, sequence, and the implemented IPS/Risk subset
+> **Naming note.** The Rust `Risk*` command family was later renamed to `ControlState*`
+> (families formerly H/CPC/Fol are now Counter/Distinct/Selection), and the Rust `Ips*`
+> commands and IPS model were removed entirely — IPS is now a C++-only model. Historical
+> pass entries below still reference the pre-rename `Risk*`/`Ips*` command names as captured
+> at the time; the current-state summary, parity table, and recommendations reflect the
+> post-rename, IPS-removed Rust surface.
+
+- command API for common, string, hash, set, feature, sequence, and the implemented Control State subset (formerly Risk)
 - local shard engine with page-address indexes
 - local page segment files
 - memory plus disk read-through cache
@@ -1157,7 +1164,7 @@ Repeated feature-parity storage pass focused on object identity:
 2. C++ object identity is stable across process restarts. Rust derives object
    ids from stable shard/type/key/component identities before writing pages.
 3. C++ hash fields and time-series points are distinct logical objects. Rust now
-   includes hash fields and feature/sequence/IPS timestamps in the object-id
+   includes hash fields and feature/sequence timestamps in the object-id
    source string.
 4. C++ page reads reject mismatched header metadata. Rust now rejects an address
    whose `object_id` disagrees with the envelope `object_id`.
@@ -2191,7 +2198,7 @@ it reports readiness, per-model layouts, packed timestamped page preservation,
 rewritten object/page counts, stale-page density, slot layout transitions, and
 tombstone object preservation. Per-model policy rows identify stale-density
 triggers, tombstone-compaction triggers, and layout-aware rewrite requirements
-for string/hash/set/timestamped/Risk/Context sidecar pages. The report includes
+for string/hash/set/timestamped/Control State/Context sidecar pages. The report includes
 aggregate policy-family counts and reclaimable stale-segment counts, and the
 shared test verifies index summaries move to the compacted segment while old
 segments become reclaimable. Rust now also has a StorageManager-style loop
@@ -2264,8 +2271,8 @@ reports as complete byte-for-byte runtime parity.
 | Cache | mtcache/blockcache production cache | Rust-native memory plus bounded SSD block cache with page-address keys, versioned block envelope, zstd compression, atomic synced disk-block writes, policy-driven memory/SSD admission, write-through accounting, per-entry hotness/routing-slot metadata, weighted hotness/LRU victim selection, pin-aware memory/SSD eviction skips, cold/low-hit/stale eviction reason counters, warmup, invalidation, metrics, and shard/slot inspection. The Rust-native multi-tier replacement policy, pinned-handle accounting/eviction guards, DRAM/PMEM/SSD placement semantics, async writeback/backpressure counters, and mature latency metrics are evidence-backed by weighted hotness/LRU memory plus SSD eviction, pin/unpin state, pinned-skip counters, `CacheTieringPolicy` placement decisions, write-through/backpressure counters, and get/put latency metrics. PMEM is treated as an SSD-class persistent tier in the Rust-native deployment contract. | CacheLib/mtcache binary/API compatibility remains out of scope unless re-scoped. |
 | Feature | richer feature proto semantics | append/query/replace/delete/agg, write-policy append, 5k long-sequence coverage, shared nested/proto-shaped payload roundtrip, C++ row filtering, and sum/avg/min/max/count aggregate semantics | deeper production proto edge cases beyond the shared executable corpus |
 | Sequence | C++ feature/data-module behavior | typed rows, timestamp ordering, inclusive/equality/inequality filters, count, batch query | exact C++ options and remaining edge-case policy |
-| IPS | rich IPS add/query/remove/load/delete/stat/filter/snap | add, idempotent/dimensional add, query-last, query range, dimension-filtered range, batch query-last, remove timestamp, delete key, count range, load, range snapshot, stats, and named filter; typed client and RESP coverage | production snap metadata and server aggregation |
-| Risk | H/CPC/FOL query/update/manager semantics | increment/count plus precision/TTL increment, sum/min/max/first/last/event aggregation, C++-style `CHANGE` distinct-field counting, detail list, H/CPC family set/query/set-and-get command shape, logical-key lifecycle handling for H/CPC/FOL records, explicit C++-style FOL first/last string selection, and local manager summary; typed client and RESP coverage | production CPC/list internals and full manager/debug APIs |
+| IPS (C++-only) | rich IPS add/query/remove/load/delete/stat/filter/snap | Removed from Rust (no IPS model, command, or RESP verb) | IPS is now a C++-only model; not reimplemented in Rust |
+| Control State (formerly Risk) | C++ `risk` H/CPC/FOL query/update/manager semantics | increment/count plus precision/TTL increment, sum/min/max/first/last/event aggregation, C++-style `CHANGE` distinct-field counting, detail list, Counter/Distinct family set/query/set-and-get command shape, logical-key lifecycle handling for Counter/Distinct/Selection records, explicit C++-style Selection first/last string selection, and local manager summary; typed client and RESP coverage | production CPC/list internals and full manager/debug APIs |
 | Redis | not the main C++ wire API; C++ server also exposes admin commands such as `INFO`, `CONFIG`, `SLAVEOF`, and `PARTITION` | useful RESP compatibility, including `SET NX/XX GET EX/PX`, hash/set commands, feature commands, C++-style `INFO`/`CONFIG`/`SLAVEOF`/`AUTH`/`BGSAVE`/`PARTITION` smoke commands, and CRC64 slot/hash helpers | sorted sets/lists if needed; real partition-manager backing for admin commands |
 | Metrics | production metrics/logging | Prometheus `/metrics` for shard/cache/page/oplog/runtime/object-manager/partition plus page-store zone lifecycle count/byte gauges, per-slot page-ref/byte/dirty gauges, and snapshot metric names; local raft metrics renderer | dashboards and alerts |
 | Deployment | internal production environment | Docker and existing-EKS Terraform skeleton | service discovery, autoscale controller, rolling upgrade, runbooks, auth/TLS |
@@ -2286,8 +2293,8 @@ These cannot be honestly marked done yet:
 ## P1 Still Missing Before C++ Feature Parity
 
 - deeper C++ Feature proto edge cases beyond the shared nested/proto aggregate corpus
-- remaining IPS module details: production snap metadata and server aggregation
-- remaining Risk module details: production CPC/list internals and full manager/debug APIs
+- remaining C++ IPS module details (C++-only model, not reimplemented in Rust): production snap metadata and server aggregation
+- remaining Control State (C++ `risk`) module details: production CPC/list internals and full manager/debug APIs
 - binary/protobuf-compatible oplog and index-log semantics where needed by the Rust migration API
 - deeper object/page/slot layout and C++-style page rewrite garbage collection
 - production cache backend
@@ -2304,4 +2311,4 @@ The next best implementation chunks are:
 2. Broaden durable WAL/recovery tests around oplog + index-log + page stream + zone manifest into disk-fault and multi-process cluster crash cases.
 3. Replace the local Raft model with OpenRaft or raft-rs.
 4. Connect metaserver table topology and data-node heartbeat reports to real placement/rebalance workflows.
-5. Port IPS and Risk semantics from the C++ protos as separate modules.
+5. Port remaining Control State (C++ `risk`) manager/debug semantics from the C++ protos; IPS remains a C++-only model and is not reimplemented in Rust unless a caller requires it.

@@ -13,7 +13,7 @@ Current case inventory: `docs/unified_test_case_inventory.md`.
 
 Both implementations should execute that same ordered corpus. The file stores
 literal `Command` and `CommandResponse` JSON payloads so it can cover common
-KV, hash, packed timestamped feature pages, sequence rows, IPS, risk, context,
+KV, hash, packed timestamped feature pages, sequence rows, control-state, context,
 advanced Feature policy/filter/aggregate flows, Sequence batch/filter groups,
 and restart reads without duplicating expected behavior in separate test code.
 The same corpus also carries static `existing_test` parity gates for C++
@@ -27,7 +27,7 @@ evidence.
 client, proxy, metaserver, and data-node lifecycle/control-plane parity
 surfaces.
 `tools/validate_api_model_parity_evidence.py` keeps executable API/model corpus
-coverage tied to Rust Redis, Feature, Sequence, IPS, Risk, Context, and SDK
+coverage tied to Rust Redis, Feature, Sequence, Control State, Context, and SDK
 evidence.
 `tools/validate_ingestion_ops_parity_evidence.py` keeps ingestion durability,
 production-readiness, Prometheus, and scale/fault validation evidence tied to
