@@ -13,14 +13,14 @@ bytes = "1"
 hex = "0.4"
 prost = "0.13"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 sha2 = "0.10"
 matrixraft = { package = "matrixraft", git = "https://github.com/bjmeetsfo/MatrixRaft.git", rev = "b535783614e742560063a2dc136abb2e6315d899" }
 matrixcache = { git = "https://github.com/bjmeetsfo/MatrixCache.git", rev = "b351b7365b15ea840415cfceb448b7b063a5c13d", features = ["rocksdb-ssd"] }
 matrixobjectstore-rs = { git = "https://github.com/bjmeetsfo/MatrixObjectStore.git", rev = "8f03227fab58406fe254662acb730d1c9ed81825", optional = true, default-features = false }
 temporalstore-snapshot = { path = "../temporalstore-snapshot" }
 thiserror = "1"
-tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "sync"] }
 tonic = { version = "0.12", default-features = false, features = ["codegen", "prost", "transport"] }
 uuid = { version = "=1.8.0", features = ["v4", "serde"] }
 zstd = "0.13"
