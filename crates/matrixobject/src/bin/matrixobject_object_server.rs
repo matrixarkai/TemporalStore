@@ -391,36 +391,44 @@ impl ObjectService {
     }
 
     fn get_many<'a>(&self, keys: impl Iterator<Item = &'a str>) -> matrixobject::Result<Vec<u8>> {
-        let metas = {
+        let mut metas = {
             let index = self.index.lock().expect("object index poisoned");
-            keys.map(|key| {
-                validate_key(key)?;
-                let meta = index.get(key).cloned().ok_or_else(|| {
-                    MatrixObjectError::SegmentNotFound(self.segment_id_for_key(key))
-                })?;
-                Ok((key.to_string(), meta))
-            })
-            .collect::<matrixobject::Result<Vec<_>>>()?
+            keys.enumerate()
+                .map(|(position, key)| {
+                    validate_key(key)?;
+                    let meta = index.get(key).cloned().ok_or_else(|| {
+                        MatrixObjectError::SegmentNotFound(self.segment_id_for_key(key))
+                    })?;
+                    Ok((position, key.to_string(), meta))
+                })
+                .collect::<matrixobject::Result<Vec<_>>>()?
         };
+        let mut values = vec![Vec::new(); metas.len()];
+        metas.sort_by_key(|(_, _, meta)| meta.offset);
         let mut file = self.take_read_file()?;
-        let mut records = Vec::new();
-        let mut count = 0u32;
-        records.extend_from_slice(&0u32.to_le_bytes());
-        for (key, meta) in metas {
-            let bytes = match read_object_bytes(&mut file, &meta) {
+        for (position, _, meta) in &metas {
+            values[*position] = match read_object_bytes(&mut file, meta) {
                 Ok(bytes) => bytes,
                 Err(err) => {
                     self.return_read_file(file);
                     return Err(err.into());
                 }
             };
+        }
+        self.return_read_file(file);
+
+        metas.sort_by_key(|(position, _, _)| *position);
+        let mut records = Vec::new();
+        let mut count = 0u32;
+        records.extend_from_slice(&0u32.to_le_bytes());
+        for (position, key, _) in metas {
+            let bytes = &values[position];
             records.extend_from_slice(&(key.len() as u32).to_le_bytes());
             records.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
             records.extend_from_slice(key.as_bytes());
-            records.extend_from_slice(&bytes);
+            records.extend_from_slice(bytes);
             count += 1;
         }
-        self.return_read_file(file);
         records[..4].copy_from_slice(&count.to_le_bytes());
         Ok(records)
     }
