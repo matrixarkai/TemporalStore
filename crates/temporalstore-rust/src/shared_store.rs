@@ -5,6 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use sha2::{Digest, Sha256};
 use temporalstore_snapshot::object_store::{ObjectStore, ObjectStoreError};
 use thiserror::Error;
@@ -49,6 +50,14 @@ pub struct SharedStoreOplogObject {
     pub entry: SharedStoreOplogEntry,
     pub entry_byte_size: u64,
     pub entry_sha256: String,
+}
+
+#[derive(Deserialize)]
+struct BorrowedSharedStoreOplogObject<'a> {
+    #[serde(borrow)]
+    entry: &'a RawValue,
+    entry_byte_size: u64,
+    entry_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -655,15 +664,15 @@ where
         key: &str,
         bytes: &[u8],
     ) -> Result<SharedStoreOplogEntry, SharedStoreReplicationError> {
-        if let Ok(object) = serde_json::from_slice::<SharedStoreOplogObject>(&bytes) {
-            let entry_bytes = serde_json::to_vec(&object.entry)?;
+        if let Ok(object) = serde_json::from_slice::<BorrowedSharedStoreOplogObject<'_>>(bytes) {
+            let entry_bytes = object.entry.get().as_bytes();
             verify_checksum(
                 key,
-                &entry_bytes,
+                entry_bytes,
                 object.entry_byte_size,
                 &object.entry_sha256,
             )?;
-            return Ok(object.entry);
+            return Ok(serde_json::from_str(object.entry.get())?);
         }
         Ok(serde_json::from_slice(&bytes)?)
     }
