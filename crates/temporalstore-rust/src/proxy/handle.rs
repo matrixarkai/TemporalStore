@@ -459,7 +459,8 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/ControlStateSelectionSet") => {
+            ("POST", "/ProxyService/ControlStateSelectionSet")
+            | ("POST", "/ProxyService/ControlStateFolSet") => {
                 match parse_json::<ProxyControlStateSelectionSetCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = Command::ControlStateSelectionSet {
@@ -481,7 +482,8 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/ControlStateSelectionQuery") => {
+            ("POST", "/ProxyService/ControlStateSelectionQuery")
+            | ("POST", "/ProxyService/ControlStateFolQuery") => {
                 match parse_json::<ProxyKeyCommandRequest>(&request.body) {
                     Ok(req) => json_response(
                         200,

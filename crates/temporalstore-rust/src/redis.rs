@@ -46,11 +46,14 @@ pub fn execute_redis_command(
 
 
 fn control_state_family_for_command(command: &str) -> ControlStateFamily {
-    if command.starts_with("CPC") {
+    // Accept both the historical family verbs (CPC*/FOL*/H*) and the descriptive
+    // spellings (DISTINCT*/SELECTION*/COUNTER*) that match the renamed families.
+    if command.starts_with("CPC") || command.starts_with("DISTINCT") {
         ControlStateFamily::Distinct
-    } else if command.starts_with("FOL") {
+    } else if command.starts_with("FOL") || command.starts_with("SELECTION") {
         ControlStateFamily::Selection
     } else {
+        // H*, COUNTER*, CONTROLSTATEH*
         ControlStateFamily::Counter
     }
 }
@@ -1170,6 +1173,79 @@ mod tests {
             "ZUNION" => vec!["ZUNION", "1", "advertised:zset"],
             other => panic!("missing sample command for {other}"),
         }
+    }
+
+    #[test]
+    fn control_state_family_verbs_new_spellings_match_legacy_aliases() {
+        // The families were renamed H/Cpc/Fol -> Counter/Distinct/Selection. The new,
+        // descriptive RESP verbs (COUNTER*/DISTINCT*/SELECTION*) must route to the same
+        // handler + family as the legacy verbs (CONTROLSTATEH*/CPC*/FOL*), which stay as
+        // compatibility aliases. Same op via new vs old spelling => identical response.
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let run = |args: Vec<&str>| {
+            execute_redis_command(
+                args.into_iter()
+                    .map(|arg| arg.as_bytes().to_vec())
+                    .collect(),
+                1,
+                |command| {
+                    let response = engine.execute(ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    });
+                    if response.status.ok {
+                        Ok(response.response)
+                    } else {
+                        Err(response.status.message)
+                    }
+                },
+            )
+        };
+        let not_error = |value: &RespValue| !matches!(value, RespValue::Error(_));
+
+        // Counter family (was H): SET + range aggregate query.
+        run(vec!["COUNTERSET", "cs-new", "10", "5"]);
+        run(vec!["CONTROLSTATEHSET", "cs-old", "10", "5"]);
+        let counter_new = run(vec!["COUNTERQUERY", "cs-new", "0", "20", "sum"]);
+        assert!(not_error(&counter_new), "COUNTERQUERY errored: {counter_new:?}");
+        assert_eq!(
+            counter_new,
+            run(vec!["HQUERY", "cs-old", "0", "20", "sum"]),
+            "COUNTER* verbs must match the legacy H* verbs"
+        );
+
+        // Distinct family (was Cpc).
+        run(vec!["DISTINCTSET", "ds-new", "10", "3"]);
+        run(vec!["CPCSET", "ds-old", "10", "3"]);
+        let distinct_new = run(vec!["DISTINCTQUERY", "ds-new", "0", "20", "sum"]);
+        assert!(not_error(&distinct_new), "DISTINCTQUERY errored: {distinct_new:?}");
+        assert_eq!(
+            distinct_new,
+            run(vec!["CPCQUERY", "ds-old", "0", "20", "sum"]),
+            "DISTINCT* verbs must match the legacy CPC* verbs"
+        );
+
+        // Selection family (was Fol): first/last value selection.
+        run(vec!["SELECTIONSET", "sel-new", "v1", "10", "0", "LAST"]);
+        run(vec!["FOLSET", "sel-old", "v1", "10", "0", "LAST"]);
+        let selection_new = run(vec!["SELECTIONQUERY", "sel-new"]);
+        assert!(not_error(&selection_new), "SELECTIONQUERY errored: {selection_new:?}");
+        assert_eq!(
+            selection_new,
+            run(vec!["FOLQUERY", "sel-old"]),
+            "SELECTION* verbs must match the legacy FOL* verbs"
+        );
+
+        // SETANDGET equivalence across the rename.
+        assert_eq!(
+            run(vec!["COUNTERSETANDGET", "cg-new", "10", "5", "0", "20", "sum"]),
+            run(vec!["HSETANDGET", "cg-old", "10", "5", "0", "20", "sum"]),
+        );
+        assert_eq!(
+            run(vec!["DISTINCTSETANDGET", "dg-new", "10", "3", "0", "20", "sum"]),
+            run(vec!["CPCSETANDGET", "dg-old", "10", "3", "0", "20", "sum"]),
+        );
     }
 
     #[test]

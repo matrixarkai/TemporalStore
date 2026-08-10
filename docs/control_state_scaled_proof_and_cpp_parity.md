@@ -122,6 +122,17 @@ Reference: `bjmeetsfo/TemporalStore-cpp` `src/extension/control_state/*` +
 multi-precision counting system with H (COUNT/MIN/MAX/CHANGE), CPC (distinct
 count), and FOL (first/last) families plus a MANAGER admin op.
 
+> **Family naming.** The Rust family enum was renamed to describe intent:
+> `H` → **`Counter`** (numeric accumulator: increment + sum/count/min/max/first/last),
+> `Cpc` → **`Distinct`** (distinct-value cardinality / COUNT DISTINCT, HLL sketch),
+> `Fol` → **`Selection`** (first-or-last value selection). The RESP verbs gained
+> matching aliases and **both spellings work**: `HSET*`↔`COUNTER*`,
+> `CPCSET`/`CPCQUERY`/`CPCSETANDGET`/`CPCSETANDGETOPT`↔`DISTINCT*`, and
+> `FOLSET`/`FOLQUERY`/`FOLSETANDGET`/`FOLSETANDGETOPT`↔`SELECTION*`. On the wire
+> the family still serializes as the old tags `"h"`/`"cpc"`/`"fol"` (pinned via
+> serde) and the storage key prefix stays `control_state:{h|cpc|fol}:{key}`, so
+> existing payloads remain correct.
+
 | Capability | C++ `control_state` | Rust `ControlState*` | Status |
 | --- | --- | --- | --- |
 | Atomic increment-then-read (freq cap) | `HSETANDGET` | `ControlStateSetAndGet` + **new** `ControlStateSetAndGetWithOptions` | ✅ parity + options |
@@ -130,7 +141,7 @@ count), and FOL (first/last) families plus a MANAGER admin op.
 | CHANGE (distinct) | reserved-key transition count | `change` aggregator → distinct `BTreeSet` union | ✅ functional (exact) |
 | Windowed query | `HQUERY` single-precision; `CPCQUERY` multi-precision split | `BTreeMap` range `O(log n + k)` | ✅ functional; ⚠️ hierarchical rollup not implemented |
 | **UUID idempotency (300s dedup)** | `InsertUUID` ledger | **new** `control_state_uuid` ledger (WithOptions) | ✅ **gap fixed** |
-| First / Last (FOL) | `StringModel` by occur-time | `ControlStateFolSet` / `ControlStateFolQuery` | ✅ |
+| First / Last (Selection, family tag `fol`) | `StringModel` by occur-time | `ControlStateSelectionSet` / `ControlStateSelectionQuery` | ✅ |
 | Distinct-count sketch (CPC LDC) | DataSketches `cpc_sketch` lgK=12, upgrade @4096 | exact `BTreeSet` only | ⚠️ exact-only (documented memory tradeoff) |
 | Per-key TTL | monotonic raise | `expires_at` / WithOptions `ttl_ms` | ✅ functional |
 | Bounded GC | field GC (2M cap, min-GC 1000) | lazy key-expiry + uuid-ledger soft-cap sweep | ✅ functional |
@@ -150,7 +161,7 @@ bucket count.
 End-to-end rename across the crate + proto (`scripts/rename_risk_to_control_state.pl`):
 
 - **Commands:** `RiskIncrement`→`ControlStateIncrement`, … `RiskSetAndGet`→`ControlStateSetAndGet`, `RiskManager`→`ControlStateManager`, etc.
-- **Types:** `RiskFamily`→`ControlStateFamily`, `RiskFolType`→`ControlStateFolType`, `RiskFolValue`→`ControlStateFolValue`.
+- **Types:** `RiskFamily`→`ControlStateFamily`, `RiskFolType`→`ControlStateSelectionType`, `RiskFolValue`→`ControlStateSelectionValue` (the family-enum variants and their `Selection*` types are the current spelling of the former `Fol` naming — see the Family naming note in §4).
 - **Storage fields:** `risk`→`control_state`, `risk_changes`, `risk_fol`, `risk_pages`, `risk_uuid` (all `control_state_*`).
 - **WAL model:** `WriteAheadLogModel::Risk`→`ControlState`.
 - **Key prefix:** `risk:{family}:{key}` → `control_state:{family}:{key}`.
@@ -176,7 +187,9 @@ start_ms, end_ms, aggregator, precision_ms?, ttl_ms?, uuid?`. Behavior:
 
 Wired through: engine (`execute_on_shard.rs`), command classification /
 validation / dirty-tracking / proxy / raft routing, RESP verb
-`HSETANDGETOPT`/`CPCSETANDGETOPT`/`FOLSETANDGETOPT` (arity 10), and the typed
+`HSETANDGETOPT` (a.k.a. `COUNTERSETANDGETOPT`) / `CPCSETANDGETOPT` (a.k.a.
+`DISTINCTSETANDGETOPT`) / `FOLSETANDGETOPT` (a.k.a. `SELECTIONSETANDGETOPT`)
+(arity 10), and the typed
 client method `control_state_family_set_and_get_with_options`.
 
 Tests (both passing):
@@ -199,7 +212,7 @@ before send), UTC-correct windows, typed results, and a metrics hook. It exposes
 | 3 | `record_spend` + `pacing` | campaign pacing | `CONTROLSTATEINCROPT` + `HQUERY` |
 | 4 | `rolling_suppression` | risk / spike suppression | `CONTROLSTATEINCROPT` + `HQUERY` |
 | 5 | `ingest_impression` | replay-safe queue ingest | `HSETANDGETOPT` (uuid dedup) |
-| 6 | `mark_seen` / `seen_value` | eligibility first/last | `FOLSET` / `FOLQUERY` |
+| 6 | `mark_seen` / `seen_value` | eligibility first/last | `FOLSET` / `SELECTIONSET` · `FOLQUERY` / `SELECTIONQUERY` |
 | 7 | `rate_limit` | sliding-window throttle | `HSETANDGETOPT` (rolling window) |
 | 8 | `debounce` | collapse bursts (quiet window) | `HSETANDGETOPT` (limit 1) |
 | 9 | `concurrency_acquire` / `_release` / `concurrency_slot` | in-flight semaphore | `HSETANDGET` +1 / `CONTROLSTATEINCR` −1 |

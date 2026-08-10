@@ -11,8 +11,12 @@ The serving shape for every use case is the same:
     read current state -> apply rule -> atomically update state -> return decision
 
 The accept-decision primitive is the atomic increment-then-read operator
-``HSETANDGET`` (and its idempotent variant ``HSETANDGETOPT``), issued in a single
-round trip so concurrent requests cannot race past a cap.
+``HSETANDGET`` (a.k.a. ``COUNTERSETANDGET``) and its idempotent variant
+``HSETANDGETOPT`` (a.k.a. ``COUNTERSETANDGETOPT``), issued in a single round trip
+so concurrent requests cannot race past a cap. The Control State families are
+**Counter** / **Distinct** / **Selection** (formerly H / Cpc / Fol); the legacy
+``H*`` / ``CPC*`` / ``FOL*`` verbs and the new ``COUNTER*`` / ``DISTINCT*`` /
+``SELECTION*`` verbs are aliases, so either spelling works on the wire.
 
 Design notes for production
 ---------------------------
@@ -398,7 +402,10 @@ class ControlState:
     # -- low-level primitives (rarely called directly) --------------------- #
     def _incr_and_read(self, key: str, amount: int, start_ms: int, end_ms: int,
                        occur_ms: int, aggregator: str = "sum") -> int:
-        """Atomic increment-then-read (``HSETANDGET``). At-most-once on retry."""
+        """Atomic increment-then-read (``HSETANDGET``, a.k.a. ``COUNTERSETANDGET``).
+
+        At-most-once on retry.
+        """
         reply = self._call(
             ["HSETANDGET", key, occur_ms, amount, start_ms, end_ms, aggregator],
             idempotent=False,
@@ -408,7 +415,7 @@ class ControlState:
     def _incr_and_read_idempotent(self, key: str, amount: int, start_ms: int, end_ms: int,
                                   occur_ms: int, precision_ms: int, ttl_ms: int,
                                   event_id: str, aggregator: str = "sum") -> int:
-        """Atomic, idempotent increment-then-read (``HSETANDGETOPT``).
+        """Atomic, idempotent increment-then-read (``HSETANDGETOPT``, a.k.a. ``COUNTERSETANDGETOPT``).
 
         A repeated ``event_id`` inside the dedup window is a no-op write that
         still returns the current total, so at-least-once queue replays and
@@ -423,7 +430,7 @@ class ControlState:
 
     def window_count(self, key: str, start_ms: int, end_ms: int,
                      aggregator: str = "sum") -> int:
-        """Read-only aggregate over a window (``HQUERY``)."""
+        """Read-only aggregate over a window (``HQUERY``, a.k.a. ``COUNTERQUERY``)."""
         return int(self._call(["HQUERY", key, start_ms, end_ms, aggregator], idempotent=True))
 
     # -- use case 1: frequency cap ----------------------------------------- #
@@ -550,13 +557,13 @@ class ControlState:
     def mark_seen(self, *, subject: str, value: str, ttl_ms: int = 30 * _DAY_MS,
                   keep: str = "first", tenant: Optional[str] = None,
                   now_ms: Optional[int] = None) -> None:
-        """Record a first/last value for eligibility policies (``FOLSET``)."""
+        """Record a first/last value for eligibility policies (``FOLSET``, a.k.a. ``SELECTIONSET``)."""
         now_ms = now_ms if now_ms is not None else _now_ms()
         key = self.key("eligibility", subject, tenant=tenant)
         self._call(["FOLSET", key, value, now_ms, ttl_ms, keep.upper()], idempotent=True)
 
     def seen_value(self, *, subject: str, tenant: Optional[str] = None) -> Optional[str]:
-        """Read the stored first/last value (``FOLQUERY``)."""
+        """Read the stored first/last value (``FOLQUERY``, a.k.a. ``SELECTIONQUERY``)."""
         key = self.key("eligibility", subject, tenant=tenant)
         reply = self._call(["FOLQUERY", key], idempotent=True)
         return reply.decode("utf-8") if isinstance(reply, (bytes, bytearray)) else reply

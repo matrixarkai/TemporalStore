@@ -1326,7 +1326,7 @@ pub enum Command {
         end_ms: u64,
         aggregator: String,
     },
-    #[serde(alias = "ControlStateFolSet")]
+    #[serde(alias = "control_state_fol_set")]
     ControlStateSelectionSet {
         key: String,
         value: Vec<u8>,
@@ -1335,7 +1335,7 @@ pub enum Command {
         #[serde(alias = "fol_type")]
         selection_type: ControlStateSelectionType,
     },
-    #[serde(alias = "ControlStateFolQuery")]
+    #[serde(alias = "control_state_fol_query")]
     ControlStateSelectionQuery {
         key: String,
     },
@@ -1901,6 +1901,45 @@ pub struct BatchExecuteResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_state_family_serde_is_pinned_to_legacy_tags() {
+        // The families were renamed H/Cpc/Fol -> Counter/Distinct/Selection, but the
+        // serialized (wire/disk) form is pinned to the historical tags so existing
+        // indexes/WAL/RESP payloads round-trip with zero migration.
+        for (tag, family) in [
+            ("h", ControlStateFamily::Counter),
+            ("cpc", ControlStateFamily::Distinct),
+            ("fol", ControlStateFamily::Selection),
+        ] {
+            let quoted = format!("\"{tag}\"");
+            assert_eq!(
+                serde_json::from_str::<ControlStateFamily>(&quoted).unwrap(),
+                family,
+                "legacy tag {tag} must deserialize to the renamed family"
+            );
+            assert_eq!(
+                serde_json::to_string(&family).unwrap(),
+                quoted,
+                "renamed family must serialize back to the legacy tag {tag}"
+            );
+        }
+    }
+
+    #[test]
+    fn control_state_selection_command_deserializes_legacy_fol_alias() {
+        // The Fol* command variant + its fol_type field were renamed; #[serde(alias)]
+        // keeps a pre-rename serialized command deserializable.
+        let legacy = r#"{"kind":"control_state_fol_set","key":"k","value":[1,2],"occur_time_ms":10,"ttl_ms":0,"fol_type":"last"}"#;
+        let command: Command = serde_json::from_str(legacy).unwrap();
+        assert!(matches!(
+            command,
+            Command::ControlStateSelectionSet {
+                selection_type: ControlStateSelectionType::Last,
+                ..
+            }
+        ));
+    }
 
     // shared-corpus: dynamic_event_replication_mode_selection
     #[test]

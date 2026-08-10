@@ -1533,7 +1533,7 @@ pub fn execute_redis_command_with_state(
                 count,
             }))
         }
-        "CONTROLSTATEHSET" | "CPCSET" | "FOLSET" if args.len() == 4 => {
+        "CONTROLSTATEHSET" | "COUNTERSET" | "CPCSET" | "DISTINCTSET" | "FOLSET" | "SELECTIONSET" if args.len() == 4 => {
             let timestamp_ms = match parse_u64(&args[2], "timestamp_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1549,7 +1549,7 @@ pub fn execute_redis_command_with_state(
                 amount,
             }))
         }
-        "FOLSET" if args.len() == 6 => {
+        "FOLSET" | "SELECTIONSET" if args.len() == 6 => {
             let occur_time_ms = match parse_u64(&args[3], "occur_time_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1571,10 +1571,10 @@ pub fn execute_redis_command_with_state(
                 selection_type,
             }))
         }
-        "FOLQUERY" if args.len() == 2 => bytes_response(execute(Command::ControlStateSelectionQuery {
+        "FOLQUERY" | "SELECTIONQUERY" if args.len() == 2 => bytes_response(execute(Command::ControlStateSelectionQuery {
             key: string_arg(&args[1]),
         })),
-        "HQUERY" | "CPCQUERY" | "FOLQUERY" if args.len() == 5 => {
+        "HQUERY" | "COUNTERQUERY" | "CPCQUERY" | "DISTINCTQUERY" | "FOLQUERY" | "SELECTIONQUERY" if args.len() == 5 => {
             let start_ms = match parse_u64(&args[2], "start_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1591,7 +1591,7 @@ pub fn execute_redis_command_with_state(
                 aggregator: string_arg(&args[4]),
             }))
         }
-        "HSETANDGET" | "CPCSETANDGET" | "FOLSETANDGET" if args.len() == 7 => {
+        "HSETANDGET" | "COUNTERSETANDGET" | "CPCSETANDGET" | "DISTINCTSETANDGET" | "FOLSETANDGET" | "SELECTIONSETANDGET" if args.len() == 7 => {
             let timestamp_ms = match parse_u64(&args[2], "timestamp_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1618,7 +1618,7 @@ pub fn execute_redis_command_with_state(
                 aggregator: string_arg(&args[6]),
             }))
         }
-        "HSETANDGETOPT" | "CPCSETANDGETOPT" | "FOLSETANDGETOPT" if args.len() == 10 => {
+        "HSETANDGETOPT" | "COUNTERSETANDGETOPT" | "CPCSETANDGETOPT" | "DISTINCTSETANDGETOPT" | "FOLSETANDGETOPT" | "SELECTIONSETANDGETOPT" if args.len() == 10 => {
             let timestamp_ms = match parse_u64(&args[2], "timestamp_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
