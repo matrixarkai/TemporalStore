@@ -174,7 +174,7 @@ TemporalStore should be benchmarked where Redis is not a direct engine match:
 ## Next Benchmark Work
 
 1. Fix Release/O3 build blockers in bundled dependencies or add a benchmark build profile that suppresses third-party `unused-result` warnings.
-2. Add TemporalStore feature/risk/sequence concurrent benchmarks, not only string KV.
+2. Add TemporalStore feature/control-state/sequence concurrent benchmarks, not only string KV.
 3. Add cold-read test: write data, restart data nodes, measure first-read latency from file storage.
 4. Add primary failure test: write load, stop primary, observe metaserver behavior and replica freshness.
 5. Add disk/device metrics: iostat, process CPU, RSS, and storage bytes per op.

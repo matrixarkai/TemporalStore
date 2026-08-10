@@ -93,7 +93,7 @@ The current local gap-fill loops cover:
 - 3 metaserver processes with Raft metadata replication.
 - 3 data-node processes using shared-file storage and 3 replicas.
 - 1 `bcache2-proxy` process in front of the cluster.
-- Module ingest/query coverage for string, common TTL, hash, set, feature, IPS, risk, and temporal aggregate.
+- Module ingest/query coverage for string, common TTL, hash, set, feature, control-state, and temporal aggregate.
 - Proxy thrift smoke coverage for string, hash, and feature APIs.
 - Proxy ingestion pressure coverage for concurrent thrift `Set` writes and optional read verification.
 - Primary and replica-eligible string and sequence benchmarks.

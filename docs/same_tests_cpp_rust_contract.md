@@ -38,6 +38,11 @@ required response kinds: 19
 C++ existing-test parity surfaces: 170 unique required paths
 ```
 
+> Naming note: IPS is a C++-only model; the Rust engine does not implement an IPS data model. The
+> Rust `Risk*` engine model was renamed to `ControlState*` (families formerly H/CPC/Fol are now
+> Counter/Distinct/Selection). The `ips_`/`risk_` case identifiers below are retained as frozen in
+> the shared corpus (`compat/unified_temporalstore_cases.json`).
+
 The shared cases are:
 
 - `common_string_hash_core`: string set/get plus hash multi-set/multi-get.
@@ -621,8 +626,8 @@ storage_shared_store_async_replay
 
 These cases cover advanced Feature append policy, aggregate query, replace/delete lifecycle,
 filtered C++ feature-row payloads, Sequence filtered queries, scan-bound count semantics, batch
-query groups, missing sequence groups, IPS snapshot/filter/stat/batch metadata behavior, and Risk
-manager/debug/FOL behavior. The storage cases cover slot dump/load restart recovery, manifest
+query groups, missing sequence groups, C++-only IPS snapshot/filter/stat/batch metadata behavior, and Control State (formerly Risk)
+manager/debug/selection behavior. The storage cases cover slot dump/load restart recovery, manifest
 fault rejection, follower-cursor lifecycle protection, cache refill from page-store refs, and sync
 plus async local shared-store replay.
 

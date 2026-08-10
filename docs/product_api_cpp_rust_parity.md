@@ -9,8 +9,9 @@ Unified cases should validate:
 - string, hash, set, and common key lifecycle behavior
 - Feature nested point/proto semantics, replacement, filters, and aggregation
 - Sequence ordering, batch query, and missing-series behavior
-- IPS snapshot, stat, filter, and metadata behavior
-- Risk CPC, FOL/list, manager, and debug APIs
+- Control State (formerly Risk) Counter/Distinct/Selection families, manager, and debug APIs (families formerly H/CPC/FOL)
+
+IPS is a C++-only model and is not reimplemented in Rust, so it is not a shared unified case.
 
 When a behavior is product-visible, prefer a shared command/response case. Local C++ or Rust tests
 should remain only for implementation internals, parser helpers, mocks, and build-specific surfaces.

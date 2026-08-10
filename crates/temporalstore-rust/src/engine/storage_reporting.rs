@@ -594,7 +594,7 @@ pub(super) fn object_manager_runtime_report(
             .blockers
             .push("page refs disagree with expected object owners".to_string());
     }
-    // Count live timestamped-kv pages (feature/sequence/ips and the context
+    // Count live timestamped-kv pages (feature/sequence and the context
     // timeline families). collect_live_page_entries already dedupes packed series
     // pages via unique_timestamped_kv_page_addresses, so this is the packed page
     // count. Previously this field was left at its default (0).

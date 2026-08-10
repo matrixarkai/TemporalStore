@@ -145,8 +145,8 @@ rust_evidence_snippets: 35
 ```
 
 The four checked areas are common/Redis string-hash-set behavior, Feature/Sequence timestamped
-pages including policy/filter/aggregate/batch behavior, IPS/Risk models, and Context/SDK
-wire-model behavior.
+pages including policy/filter/aggregate/batch behavior, the Control State model (formerly Risk; IPS
+is now a C++-only model), and Context/SDK wire-model behavior.
 
 Ingestion/ops parity evidence status:
 
@@ -185,8 +185,8 @@ Detailed inventory: `docs/unified_test_case_inventory.md`.
 | C++ migration corpus test | 1 | `crates/temporalstore-rust/tests/storage_migration_corpus.rs` | Rust consumes converted C++ storage artifacts and validates storage lifecycle paths. |
 
 The shared corpus currently covers common/string/hash/set, Redis-compatible set, Feature,
-Sequence, advanced Feature policy/filter/aggregate flows, Sequence batch/filter groups, IPS
-snapshot/filter/stat/batch metadata flows, Risk manager/debug/FOL flows,
+Sequence, advanced Feature policy/filter/aggregate flows, Sequence batch/filter groups, C++-only IPS
+snapshot/filter/stat/batch metadata flows, Control State (formerly Risk) manager/debug/selection flows,
 storage dump/load, fault matrix, follower-safe GC, cache refill, sync shared-store replay, async
 shared-store replay,
 explicit data-node Raft leader/failover, snapshot/restart/follower-lag, membership/secondary-read
@@ -222,11 +222,13 @@ remain local.
 | Ops/scale/fault behavior | 22 | `readiness.rs`, `bin/readiness_gate.rs`, `bin/external_chaos_gate.rs`, `replica_replay.rs` |
 | Feature model behavior | 13 | `engine.rs`, `temporalstore_compat.rs` |
 | Ingestion behavior | 10 | `ingestion.rs`, server ingestion routes |
-| Risk model behavior | 9 | `engine.rs`, `temporalstore_compat.rs` |
+| Control State model behavior (formerly Risk) | 9 | `engine.rs`, `temporalstore_compat.rs` |
 | Context model and pipeline behavior | 7 | `context_workflow.rs`, Context model tests |
 | Sequence model behavior | 5 | `engine.rs`, `temporalstore_compat.rs` |
 | IPS model behavior | 5 | `engine.rs`, `temporalstore_compat.rs` |
 | Rust-only internals that can remain local | 7 | `tests/unified_temporalstore_corpus.rs`, `partition_id.rs`, `http.rs`, `types.rs` |
+
+Note: the IPS model has since been removed entirely from the Rust implementation (no IPS model, command, or RESP verb); the IPS row above reflects a pre-removal snapshot retained for count continuity. IPS remains a C++-only model.
 
 The duplicate-test validator currently reports `rust_attributed_tests=585`,
 `rust_test_guard_shared_corpus_marked_tests=89`, `shared_corpus_cases=179`,
@@ -241,7 +243,7 @@ Target disposition:
 | Storage/cache/local durability | Recovery behavior, dump/load manifests, cache refill, shared-store replay, corruption outcomes | Rust page-store helpers, serializer unit checks, local cache data-structure mechanics |
 | Control plane/service behavior | Client/proxy/meta/data-node topology, lifecycle, admission, retry, convergence workflows | Rust runtime worker handles, local mock plumbing, HTTP adapter unit details |
 | Raft/local consensus model | Log codec, snapshot install, membership, failover, read-index, catch-up semantics | Temporary local consensus scaffolding until replaced by production Raft implementation |
-| API/model/ingestion/context/SDK | Redis/API commands, Feature/Sequence/IPS/Risk/Context, ingestion offsets/checkpoints/dead letters | Rust SDK conversion helpers and provider mocks without cross-language behavior |
+| API/model/ingestion/context/SDK | Redis/API commands, Feature/Sequence/Control State/Context, ingestion offsets/checkpoints/dead letters | Rust SDK conversion helpers and provider mocks without cross-language behavior |
 | Rust storage crash harness | Crash/restart/corrupt artifact outcomes | Process harness wiring that is only needed to drive Rust-local faults |
 | Other local tests | Readiness output, external chaos scenarios, replica replay, scale/fault logs | Thin binary/CLI argument parsing and local fixture setup |
 
