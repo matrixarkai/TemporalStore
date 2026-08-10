@@ -47,7 +47,10 @@ def main() -> int:
     ap.add_argument("--reader-max-tokens", type=int, default=220)
     ap.add_argument("--current-session-ratio", type=float, default=0.5)
     ap.add_argument("--out", default="docs/benchmarks/local_context_token_quality/floor_followup_qwen7b.json")
-    ap.add_argument("--no-judge", action="store_true", help="capture answers only (skip qwen judge); an external judge scores them")
+    ap.add_argument("--judge", default="claude", choices=["claude", "qwen", "anthropic"],
+                    help="default 'claude': emit gradeable cases for in-loop Claude scoring (qwen over-scores). "
+                         "'qwen' uses the fast noisy OSS judge; 'anthropic' uses the API if a key is set.")
+    ap.add_argument("--no-judge", action="store_true", help="deprecated alias for --judge claude")
     ap.add_argument("--query-rewrite", action="store_true",
                     help="resolve follow-up anaphora: build the RETRIEVAL query from the running thread "
                          "(prior turns + current), so 'that'/'the ones' carry their referent terms")
@@ -64,7 +67,8 @@ def main() -> int:
     print(json.dumps({"ingest": {"events": len(events), "segments": len(segments)}}), flush=True)
 
     reader = S.OpenAICompatReader(args.reader_base_url, args.reader_model, args.reader_timeout, args.reader_max_tokens)
-    print(json.dumps({"reader": args.reader_model}), flush=True)
+    judge_kind = "claude" if args.no_judge else args.judge   # default: Claude judges in-loop
+    print(json.dumps({"reader": args.reader_model, "judge": judge_kind}), flush=True)
 
     rows = []
     prior_queries: list[str] = []
@@ -73,12 +77,13 @@ def main() -> int:
         rq = (" ".join(prior_queries[-args.rewrite_window:]) + " " + query).strip() if args.query_rewrite else query
         print(f"[turn {ti}] {query[:44]}", flush=True)
         ref = S.build_judge_reference(rq, events)
-        turn = {"turn": ti, "query": query, "retrieval_query": rq, "reference": ref[:3000], "configs": {}}
+        turn = {"turn": ti, "query": query, "retrieval_query": rq, "reference": ref[:3000],
+                "expected_terms": list(terms), "configs": {}}
         for name, budget, minscore in CONFIGS:
             pack = S.retrieve_pack(rq, events, segments, entities, summaries, budget,
                                    current_session_ratio=(args.current_session_ratio or None), min_score=minscore)
             ans = reader.answer(query, S.pack_to_context_str(pack)).get("text", "")
-            score = None if args.no_judge else S._combined(reader.judge(query, ans, ref), S.term_coverage(ans, terms))
+            score = S._combined(reader.judge(query, ans, ref), S.term_coverage(ans, terms)) if judge_kind == "qwen" else None
             turn["configs"][name] = {"budget": budget, "min_score": minscore,
                                      "used_tokens": pack["used_tokens"], "refs": len(pack["selected_refs"]),
                                      "answer": ans, "quality": score}
@@ -93,11 +98,18 @@ def main() -> int:
                   "avg_refs": round(sum(t["configs"][name]["refs"] for t in rows) / len(rows), 1),
                   "avg_tokens": round(sum(t["configs"][name]["used_tokens"] for t in rows) / len(rows))}
            for name, _, _ in CONFIGS}
-    report = {"reader": args.reader_model, "aggregate": agg, "turns": rows}
+    report = {"reader": args.reader_model, "judge": judge_kind, "aggregate": agg, "turns": rows}
     out = Path(args.out); out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     print(json.dumps({"aggregate": agg}, indent=2), flush=True)
     print("[out]", out, flush=True)
+    if judge_kind == "claude":
+        import matrixark_bench_judge as J
+        cases = J.cases_from_arm_turns(rows, [n for n, _, _ in CONFIGS])
+        cases_path = str(out) + ".cases.json"
+        J.write_cases(cases_path, cases)
+        print("[claude-judge] %d gradeable cases -> %s" % (len(cases), cases_path), flush=True)
+        print("[claude-judge] agent scores 0-10 -> scores.json, then:  python3 -m matrixark_bench_judge apply %s scores.json" % out, flush=True)
     print("DONE", flush=True)
     return 0
 
