@@ -1155,9 +1155,19 @@ pub struct RaftWalSegmentReport {
     pub slow_fsync_backpressure_observed: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+struct NodeWalCursor {
+    next_sequence: u64,
+    segments: Vec<RaftWalSegmentInfo>,
+    released_segment_count: u64,
+    last_fsync_elapsed_ms: u64,
+    slow_fsync_backpressure_observed: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct LocalRaftWal {
     root: PathBuf,
+    cursors: Arc<Mutex<BTreeMap<(ShardId, RaftNodeId), NodeWalCursor>>>,
 }
 
 
