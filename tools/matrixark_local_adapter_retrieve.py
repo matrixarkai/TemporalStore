@@ -1448,6 +1448,40 @@ class _LocalAdapterRetrieveMixin:
         else:
             tree_candidate_records = records if traversal.get("fallback_to_flat") else [record for record in records if selected_by_tree(record)]
             tree_prefilter_dropped_count = 0 if traversal.get("fallback_to_flat") else max(0, len(records) - len(tree_candidate_records))
+        # --- Exact-value fact admission (general, gated) --------------------------------
+        # Candidate FETCH is scoped to selected node placements, so a fact whose node was not
+        # query-selected (a cross-session entity, or a current-session turn on an unselected
+        # batch node) never becomes a candidate even when captured, scored, and scope-eligible.
+        # Admit scope-matching exact_value_fact entities that are embedding- or lexically
+        # relevant to the query (capped), so the value token can be packed. Additive + gated
+        # (MATRIXARK_VALUE_FACT_ADMISSION, default on); reversible to prior fetch behavior.
+        if (
+            str(_os.environ.get("MATRIXARK_VALUE_FACT_ADMISSION", "1")).strip().lower()
+            not in {"0", "false", "no", "off"}
+            and not traversal.get("fallback_to_flat")
+        ):
+            _admitted_value_hashes = {
+                record.get("entity_hash")
+                for record in tree_candidate_records
+                if record.get("record_type") == "context_entity"
+            }
+            _value_fact_scored: list = []
+            for _vrecord in records:
+                if _vrecord.get("record_type") != "context_entity":
+                    continue
+                if _vrecord.get("entity_type") != "exact_value_fact":
+                    continue
+                if _vrecord.get("entity_hash") in _admitted_value_hashes:
+                    continue
+                if not recovered_scope_matches(_vrecord, retrieval_scope):
+                    continue
+                _vsim = cosine(query_embedding, entity_embedding_vectors.get(_vrecord.get("entity_hash"), []))
+                _vlex = bool(lexical_exact_tokens) and record_lexical_exact_match(_vrecord, lexical_exact_tokens)
+                if _vsim >= 0.40 or _vlex:
+                    _value_fact_scored.append((1.0 if _vlex else float(_vsim), _vrecord))
+            _value_fact_scored.sort(key=lambda item: item[0], reverse=True)
+            for _score, _vrecord in _value_fact_scored[:8]:
+                tree_candidate_records.append(_vrecord)
         seen_profile_summary_hashes = {
             record.get("summary_hash")
             for record in tree_candidate_records
