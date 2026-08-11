@@ -2721,6 +2721,23 @@ def clip_context_text(text: str, *, max_chars: int = MAX_CONTEXT_REF_CHARS) -> s
     return text[:max_chars].rstrip() + " ...[truncated]"
 
 
+# API embedding providers (OpenAI / Voyage / any OpenAI-compatible endpoint) are defined in the
+# embeddings module; import them so this canonical core embedding path also honors API keys in
+# production. Acyclic: matrixark_mcp_embeddings imports only leaf helpers (errors, scoring), never core.
+try:  # package path
+    from tools.matrixark_mcp_embeddings import (
+        _API_EMBEDDING_PROVIDERS,
+        api_embedding_for_text,
+        api_embedding_for_texts,
+    )
+except ImportError:  # top-level path (direct tools/ execution)
+    from matrixark_mcp_embeddings import (
+        _API_EMBEDDING_PROVIDERS,
+        api_embedding_for_text,
+        api_embedding_for_texts,
+    )
+
+
 def embedding_for_text(text: str) -> list[float]:
     model = embedding_model_name()
     cache_key = (model, text)
@@ -2731,6 +2748,13 @@ def embedding_for_text(text: str) -> list[float]:
     provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip().lower()
     if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
         vector = oss_embedding_for_text(text)
+        with _EMBEDDING_VECTOR_CACHE_LOCK:
+            if len(_EMBEDDING_VECTOR_CACHE) >= 8192:
+                _EMBEDDING_VECTOR_CACHE.clear()
+            _EMBEDDING_VECTOR_CACHE[cache_key] = list(vector)
+        return vector
+    if provider in _API_EMBEDDING_PROVIDERS:
+        vector = api_embedding_for_text(text, provider)
         with _EMBEDDING_VECTOR_CACHE_LOCK:
             if len(_EMBEDDING_VECTOR_CACHE) >= 8192:
                 _EMBEDDING_VECTOR_CACHE.clear()
@@ -2770,7 +2794,16 @@ def embeddings_for_texts(texts: list[str]) -> list[list[float]]:
             else:
                 results.append(list(cached))
     provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip().lower()
-    if missing and provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
+    if missing and provider in _API_EMBEDDING_PROVIDERS:
+        vectors = api_embedding_for_texts([text for _index, text in missing], provider)
+        with _EMBEDDING_VECTOR_CACHE_LOCK:
+            if len(_EMBEDDING_VECTOR_CACHE) + len(missing) >= 8192:
+                _EMBEDDING_VECTOR_CACHE.clear()
+            for (index, text), vector in zip(missing, vectors):
+                materialized = [round(float(value), 6) for value in vector]
+                _EMBEDDING_VECTOR_CACHE[(model, text)] = list(materialized)
+                results[index] = materialized
+    elif missing and provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
         model_ref = os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
             "MATRIXARK_EMBEDDING_MODEL",
             "sentence-transformers/all-MiniLM-L6-v2",
@@ -2806,6 +2839,9 @@ def embedding_model_name() -> str:
             "MATRIXARK_EMBEDDING_MODEL",
             "sentence-transformers/all-MiniLM-L6-v2",
         )
+    if provider in _API_EMBEDDING_PROVIDERS:
+        default_model = "voyage-3" if provider == "voyage" else "text-embedding-3-large"
+        return os.environ.get("MATRIXARK_EMBEDDING_MODEL", default_model)
     return "matrixark-local-token-hash-v1"
 
 
@@ -2815,6 +2851,8 @@ def embedding_execution_mode_name() -> str:
         return "local_hash_embedding_fallback"
     if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
         return "oss_embedding_model"
+    if provider in _API_EMBEDDING_PROVIDERS:
+        return "voyage_embedding_api" if provider == "voyage" else "openai_embedding_api"
     if provider == "hash":
         return "hashing-local"
     return "deterministic-token-hash"
