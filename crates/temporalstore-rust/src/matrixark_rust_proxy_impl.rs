@@ -942,6 +942,58 @@ fn invalidate_record_count_cache(key: &str) {
     }
 }
 
+fn monotonic_record_count_enabled() -> bool {
+    env::var("MATRIXARK_MONOTONIC_RECORD_COUNT")
+        .map(|value| !matches!(value.trim(), "0" | "false" | "no" | "off"))
+        .unwrap_or(true)
+}
+
+// C++ TemporalStore parity (bjmeetsfo/TemporalStore-cpp): the storage engine's
+// record/serving SEQUENCE is an engine-owned MONOTONIC log id -- src/partition/index/
+// index.cc:845 `log_id_ = iter_->Id();` with `GetLogId() { return log_id_; }` (index.h
+// :236). It is advanced only by the append log / commit and is never a client
+// read-modify-write of a stored count, so a stale read can never make it regress.
+//
+// The MatrixArk serving record-log counter (`{prefix}:record_count`) is instead computed
+// client-side (Python `_get_count()` + `_record_location(sequence)`), a read-modify-write.
+// Under SYNCHRONOUS commit a stale/low counter read makes a subsequent write REGRESS the
+// stored counter; that cascades (later turns read low, replay low sequences and OVERWRITE
+// earlier serving records -> fact records clobbered -> sync retrieval collapses to 0/14,
+// while async stays 14/14). Mirror the C++ contract at the engine boundary: a record_count
+// write can only ADVANCE the stored counter, never lower it -> the client always reads a
+// correct high sequence -> placement never regresses. Gated (default on;
+// MATRIXARK_MONOTONIC_RECORD_COUNT=0 restores prior behavior). Inert for async, whose
+// counter already advances monotonically (the clamp only ever raises a low write).
+fn clamp_record_count_value(engine: &TemporalEngine, key: &str, value: Vec<u8>) -> Vec<u8> {
+    if !monotonic_record_count_enabled() || !is_record_count_key(key) {
+        return value;
+    }
+    let Some(new_count) = std::str::from_utf8(&value)
+        .ok()
+        .and_then(|text| text.trim().parse::<u64>().ok())
+    else {
+        return value;
+    };
+    let existing = read_record_count(engine, key)
+        .ok()
+        .and_then(|text| text.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    if existing > new_count {
+        return existing.to_string().into_bytes();
+    }
+    value
+}
+
+fn clamp_record_count_command(engine: &TemporalEngine, command: Command) -> Command {
+    match command {
+        Command::StringSet { key, value } if is_record_count_key(&key) => {
+            let value = clamp_record_count_value(engine, &key, value);
+            Command::StringSet { key, value }
+        }
+        other => other,
+    }
+}
+
 fn retrieve_candidate_cache_key(
     storage_prefix: &str,
     count: usize,
@@ -2215,6 +2267,8 @@ fn env_i32_any(names: &[&str], default: i32) -> i32 {
 }
 
 fn execute_empty(engine: &TemporalEngine, command: Command) -> Result<(), String> {
+    // C++-parity monotonic serving sequence: never let a record_count write regress.
+    let command = clamp_record_count_command(engine, command);
     let retrieve_cache_keys = match &command {
         Command::HashSet { key, .. }
         | Command::HashMultiSet { key, .. }
@@ -2284,6 +2338,13 @@ fn execute_empty_batch_runtime(
     if commands.is_empty() {
         return Ok(());
     }
+    // C++-parity monotonic serving sequence: never let a record_count write regress
+    // (mirrors the append-log's advance-only log id). Applies to the serving append
+    // batch that carries the {prefix}:record_count StringSet.
+    let commands: Vec<Command> = commands
+        .into_iter()
+        .map(|command| clamp_record_count_command(engine, command))
+        .collect();
     let mut retrieve_cache_prefixes = HashSet::<String>::new();
     for command in &commands {
         match command {
