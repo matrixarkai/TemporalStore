@@ -1146,12 +1146,31 @@ where
         let mut entries = BTreeMap::new();
         let mut keys = self.object_store.list(&self.oplog_prefix(shard_id)).await?;
         keys.sort();
-        for key in keys {
-            let Some(oplog_index) = parse_oplog_index(&key) else {
-                continue;
-            };
-            let entry = self.read_oplog_entry(&key).await?;
-            entries.insert(oplog_index, entry);
+        let indexed_keys = keys
+            .into_iter()
+            .filter_map(|key| parse_oplog_index(&key).map(|oplog_index| (oplog_index, key)))
+            .collect::<Vec<_>>();
+        if !indexed_keys.is_empty() {
+            let object_keys = indexed_keys
+                .iter()
+                .map(|(_, key)| key.clone())
+                .collect::<Vec<_>>();
+            let objects = self.object_store.get_many(&object_keys).await?;
+            if objects.len() == indexed_keys.len()
+                && objects
+                    .iter()
+                    .zip(&indexed_keys)
+                    .all(|((actual, _), (_, expected))| actual == expected)
+            {
+                for ((_, bytes), (oplog_index, key)) in objects.iter().zip(&indexed_keys) {
+                    entries.insert(*oplog_index, self.parse_wal_entry_object(key, bytes)?);
+                }
+            } else {
+                for (oplog_index, key) in &indexed_keys {
+                    let entry = self.read_oplog_entry(key).await?;
+                    entries.insert(*oplog_index, entry);
+                }
+            }
         }
 
         match self.object_store.get(&self.oplog_blob_key(shard_id)).await {
