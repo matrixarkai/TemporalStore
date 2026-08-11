@@ -6,7 +6,10 @@ use super::*;
 
 impl LocalRaftWal {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            cursors: Arc::new(Mutex::new(BTreeMap::new())),
+        }
     }
 
     pub fn persist_node(
@@ -83,8 +86,23 @@ impl LocalRaftWal {
         let min_keep_segments = min_keep_segments.max(1);
         let segment_dir = self.node_segment_dir(shard_id, node_id);
         fs::create_dir_all(&segment_dir)?;
-        let recovery = self.recover_node_segmented(shard_id, node_id)?;
-        let sequence = recovery.valid_records as u64 + 1;
+
+        // O(1) append: use an in-memory cursor for the next sequence number and
+        // active-segment offset instead of re-parsing the whole node log on every
+        // append. The cursor is seeded ONCE from a disk scan (which also truncates a
+        // corrupt tail exactly like the legacy first-append path) and then updated
+        // incrementally. On-disk format, filenames, and the sequence values written
+        // are byte-for-byte identical to the previous full-scan implementation.
+        let mut cursors = self.cursors.lock().expect("raft wal cursor lock poisoned");
+        if !cursors.contains_key(&(shard_id, node_id)) {
+            let seeded = self.seed_node_cursor(shard_id, node_id)?;
+            cursors.insert((shard_id, node_id), seeded);
+        }
+        let cursor = cursors
+            .get_mut(&(shard_id, node_id))
+            .expect("cursor seeded above");
+
+        let sequence = cursor.next_sequence;
         let envelope = RaftWalEnvelope {
             sequence,
             checksum: raft_wal_checksum(record)?,
@@ -94,19 +112,21 @@ impl LocalRaftWal {
         serde_json::to_writer(&mut encoded, &envelope).map_err(io::Error::other)?;
         encoded.push(b'\n');
 
-        let mut active_segment_id = self
-            .node_segments(shard_id, node_id)?
+        let mut active_segment_id = cursor
+            .segments
             .last()
             .map(|segment| segment.segment_id)
             .unwrap_or(1);
-        let mut active_path = self.node_segment_path(shard_id, node_id, active_segment_id);
-        let active_len = fs::metadata(&active_path)
-            .map(|metadata| metadata.len())
+        let active_len = cursor
+            .segments
+            .last()
+            .map(|segment| segment.bytes)
             .unwrap_or_default();
-        if active_len > 0 && active_len + encoded.len() as u64 > max_segment_bytes {
+        let rotate = active_len > 0 && active_len + encoded.len() as u64 > max_segment_bytes;
+        if rotate {
             active_segment_id += 1;
-            active_path = self.node_segment_path(shard_id, node_id, active_segment_id);
         }
+        let active_path = self.node_segment_path(shard_id, node_id, active_segment_id);
 
         let mut file = OpenOptions::new()
             .create(true)
@@ -116,19 +136,147 @@ impl LocalRaftWal {
         let fsync_started = Instant::now();
         file.sync_data()?;
         let last_fsync_elapsed_ms = fsync_started.elapsed().as_millis() as u64;
-        let before_prune_segments = self.node_segments(shard_id, node_id)?.len();
-        self.prune_node_segments(shard_id, node_id, min_keep_segments)?;
-        let after_prune_segments = self.node_segments(shard_id, node_id)?.len();
-        let mut report = self.segment_report(shard_id, node_id)?;
-        report.released_segment_count =
-            before_prune_segments.saturating_sub(after_prune_segments) as u64;
+
+        // Update the in-memory segment metadata to mirror what a fresh on-disk scan
+        // (`node_segments` -> `inspect_segment_sequences`) would report.
+        if rotate || cursor.segments.is_empty() {
+            cursor.segments.push(RaftWalSegmentInfo {
+                segment_id: active_segment_id,
+                path: active_path.to_string_lossy().into_owned(),
+                bytes: 0,
+                record_count: 0,
+                first_sequence: 0,
+                last_sequence: 0,
+                first_log_index: 0,
+                last_log_index: 0,
+            });
+        }
+        let (record_first_log_index, record_last_log_index) =
+            Self::record_log_index_bounds(record);
+        {
+            let active = cursor
+                .segments
+                .last_mut()
+                .expect("active segment present after push");
+            active.bytes += encoded.len() as u64;
+            active.record_count = active.record_count.saturating_add(1);
+            if active.first_sequence == 0 {
+                active.first_sequence = sequence;
+            }
+            active.last_sequence = sequence;
+            if active.first_log_index == 0
+                || (record_first_log_index > 0 && record_first_log_index < active.first_log_index)
+            {
+                active.first_log_index = record_first_log_index;
+            }
+            active.last_log_index = active.last_log_index.max(record_last_log_index);
+        }
+        // One more record is now durable on disk.
+        cursor.next_sequence = cursor.next_sequence.saturating_add(1);
+
+        // Prune the oldest segments, keeping at least `min_keep_segments`. Removing a
+        // segment drops its records from the retained window, so the next sequence
+        // number decreases by exactly those records -- matching the legacy behavior
+        // where the sequence was `recover().valid_records + 1` over the surviving
+        // segments only.
+        let mut released_segment_count = 0u64;
+        if cursor.segments.len() > min_keep_segments {
+            let remove = cursor.segments.len() - min_keep_segments;
+            let pruned: Vec<RaftWalSegmentInfo> = cursor.segments.drain(0..remove).collect();
+            for segment in &pruned {
+                fs::remove_file(&segment.path)?;
+                cursor.next_sequence = cursor
+                    .next_sequence
+                    .saturating_sub(segment.record_count);
+            }
+            released_segment_count = pruned.len() as u64;
+        }
+
+        let slow_fsync_backpressure_observed = last_fsync_elapsed_ms >= slow_fsync_threshold_ms;
+        cursor.released_segment_count = released_segment_count;
+        cursor.last_fsync_elapsed_ms = last_fsync_elapsed_ms;
+        cursor.slow_fsync_backpressure_observed = slow_fsync_backpressure_observed;
+
+        let mut report = Self::segment_report_from_segments(&cursor.segments);
+        report.released_segment_count = released_segment_count;
         report.last_fsync_elapsed_ms = last_fsync_elapsed_ms;
-        report.slow_fsync_backpressure_observed = last_fsync_elapsed_ms >= slow_fsync_threshold_ms;
+        report.slow_fsync_backpressure_observed = slow_fsync_backpressure_observed;
         self.persist_segment_runtime_state(shard_id, node_id, &report)?;
         Ok(report)
     }
 
+    /// Seed a fresh in-memory cursor from disk. Runs the full recovery scan exactly
+    /// once (truncating a corrupt tail like the legacy path did on the first append),
+    /// then snapshots the segment metadata and persisted runtime state.
+    fn seed_node_cursor(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+    ) -> io::Result<NodeWalCursor> {
+        let recovery = self.recover_node_segmented_scan(shard_id, node_id)?;
+        let segments = self.node_segments(shard_id, node_id)?;
+        let runtime_state = self.read_segment_runtime_state(shard_id, node_id);
+        Ok(NodeWalCursor {
+            next_sequence: recovery.valid_records as u64 + 1,
+            segments,
+            released_segment_count: runtime_state.released_segment_count,
+            last_fsync_elapsed_ms: runtime_state.last_fsync_elapsed_ms,
+            slow_fsync_backpressure_observed: runtime_state.slow_fsync_backpressure_observed,
+        })
+    }
+
+    fn record_log_index_bounds(record: &RaftWalRecord) -> (u64, u64) {
+        let first = record
+            .entries
+            .first()
+            .map(|entry| entry.index)
+            .unwrap_or(record.hard_state.commit_index);
+        let last = record
+            .entries
+            .last()
+            .map(|entry| entry.index)
+            .unwrap_or(record.hard_state.commit_index);
+        (first, last)
+    }
+
+    fn segment_report_from_segments(segments: &[RaftWalSegmentInfo]) -> RaftWalSegmentReport {
+        let first_retained_log_index = segments
+            .iter()
+            .find_map(|segment| (segment.first_log_index > 0).then_some(segment.first_log_index))
+            .unwrap_or_default();
+        let last_retained_log_index = segments
+            .iter()
+            .rev()
+            .find_map(|segment| (segment.last_log_index > 0).then_some(segment.last_log_index))
+            .unwrap_or_default();
+        RaftWalSegmentReport {
+            active_segment_id: segments
+                .last()
+                .map(|segment| segment.segment_id)
+                .unwrap_or(0),
+            segments: segments.to_vec(),
+            released_segment_count: 0,
+            first_retained_log_index,
+            last_retained_log_index,
+            last_fsync_elapsed_ms: 0,
+            slow_fsync_backpressure_observed: false,
+        }
+    }
+
     pub fn recover_node_segmented(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+    ) -> io::Result<RaftWalRecovery> {
+        // Recovery may truncate a corrupt tail on disk, so any cached cursor must be
+        // rebuilt from disk on the next append.
+        if let Ok(mut cursors) = self.cursors.lock() {
+            cursors.remove(&(shard_id, node_id));
+        }
+        self.recover_node_segmented_scan(shard_id, node_id)
+    }
+
+    fn recover_node_segmented_scan(
         &self,
         shard_id: ShardId,
         node_id: RaftNodeId,
@@ -481,6 +629,9 @@ impl LocalRaftWal {
         ))
     }
 
+    // Retained for the legacy on-disk prune path; the segmented append hot path now
+    // prunes in-memory via the cursor to stay O(1).
+    #[allow(dead_code)]
     pub(super) fn prune_node_segments(
         &self,
         shard_id: ShardId,
