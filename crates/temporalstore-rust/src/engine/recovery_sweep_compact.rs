@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Index install/recovery + expiry sweep + page compaction methods for TemporalEngine, split from engine.rs.
 use super::*;
 

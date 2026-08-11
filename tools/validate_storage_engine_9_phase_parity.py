@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Run the C++/Rust storage-engine parity gates phase by phase.
 
 This is the umbrella gate for the nine storage parity phases:

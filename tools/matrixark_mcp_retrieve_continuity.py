@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Session-continuity helpers for MatrixArk retrieval."""
 
 from __future__ import annotations

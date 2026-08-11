@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use std::io::{self, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;

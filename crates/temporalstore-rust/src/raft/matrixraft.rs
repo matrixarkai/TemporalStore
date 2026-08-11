@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use matrixraft::{
     rustraft_parity_contract as library_matrixraft_parity_contract,
     rustraft_parity_report as library_matrixraft_parity_report,

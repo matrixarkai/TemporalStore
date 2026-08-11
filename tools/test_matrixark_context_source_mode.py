@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Context-source policy: synthetic/debug -> remote-only, real sessions -> local+remote.
 
 Covers resolve_context_source_mode (the routing + the future global flip) and the

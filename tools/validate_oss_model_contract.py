@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Validate apples-to-apples OSS model contracts across benchmark reports.
 
 MatrixArk, OpenViking, VikingMem, and similar baselines may have different

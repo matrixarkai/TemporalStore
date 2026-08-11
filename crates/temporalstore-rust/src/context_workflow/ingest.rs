@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Context ingest + resource/skill secondary-index verification, split from context_workflow.rs.
 use super::*;
 

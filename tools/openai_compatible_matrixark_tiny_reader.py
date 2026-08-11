@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Dependency-free OpenAI-compatible reader for local benchmark unblocking.
 
 This endpoint is intentionally small: it exposes the same `/v1/models` and

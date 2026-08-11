@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Multi-resolution rollup ladder for Control State counters.
 //!
 //! Long-window Control State aggregates (frequency caps / counts over hours→weeks)

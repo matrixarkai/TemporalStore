@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Storage physical-index / object-manager / feature-page layout report helpers, split from engine.rs.
 use super::*;
 

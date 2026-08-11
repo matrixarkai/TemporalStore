@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Small MatrixArk admin CLI over the same MCP server implementation."""
 
 from __future__ import annotations

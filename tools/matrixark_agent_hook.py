@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Universal MatrixArk hook adapter for popular AI agents.
 
 The adapter accepts JSON hook payloads on stdin and normalizes them into

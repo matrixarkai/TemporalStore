@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Summarize OSS memory benchmark artifacts across MatrixArk/OpenViking-style runs.
 
 The goal is not to bless a run as paper-comparable. It produces a compact,

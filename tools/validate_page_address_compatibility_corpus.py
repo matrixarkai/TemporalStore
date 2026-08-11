@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Validate the shared PageAddress compatibility corpus.
 
 This is intentionally lightweight so C++ and Rust CI can both run it before

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Verify MatrixArk context backfill CI evidence manifests."""
 
 from __future__ import annotations

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use std::collections::BTreeMap;
 
 use super::cache::{page_physical_identity_key, PagePhysicalIdentityKey};

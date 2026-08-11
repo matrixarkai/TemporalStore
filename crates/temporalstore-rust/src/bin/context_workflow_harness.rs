@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

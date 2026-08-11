@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! ProxyService::prometheus_metrics, split from proxy.rs.
 use super::*;
 

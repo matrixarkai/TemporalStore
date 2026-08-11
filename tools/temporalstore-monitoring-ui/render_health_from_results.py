@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Render monitoring-ui health.json from TemporalStore test artifacts."""
 
 from __future__ import annotations

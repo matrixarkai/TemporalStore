@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use crate::types::*;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

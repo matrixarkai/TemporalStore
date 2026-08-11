@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Per-prompt token report: local Claude memory (full replay) vs TemporalStore managed pack.
 
 For several REAL prompts taken from local Claude threads, report:

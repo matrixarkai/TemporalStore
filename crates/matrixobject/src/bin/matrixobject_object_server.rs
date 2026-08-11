@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use matrixobject::{MatrixObjectError, SegmentId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

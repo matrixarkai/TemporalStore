@@ -1,4 +1,7 @@
-﻿use std::collections::BTreeSet;
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
+use std::collections::BTreeSet;
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

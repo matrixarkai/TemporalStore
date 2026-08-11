@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Compare live C++ and Rust TemporalStore storage lifecycle reports.
 
 This is the operator-facing wrapper around validate_storage_lifecycle_parity.py.

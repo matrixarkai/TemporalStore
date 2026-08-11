@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};

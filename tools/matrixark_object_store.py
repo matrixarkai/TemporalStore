@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """MatrixObject storage for resource/skill raw content (distributed mode).
 
 Split of concerns for a resource or skill in distributed/cloud mode:

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! feature_aggregate_scale_harness
 //!
 //! Demonstrates that TemporalStore serves **aggregated features** well over a

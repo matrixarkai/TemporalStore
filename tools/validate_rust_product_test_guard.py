@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Guard new Rust product-behavior tests.
 
 Existing Rust attributed tests are a migration backlog captured in

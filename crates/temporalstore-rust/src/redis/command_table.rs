@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Redis supported-command descriptor table, extracted from redis.rs.
 
 use super::*;

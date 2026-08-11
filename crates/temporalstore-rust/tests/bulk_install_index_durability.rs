@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Regression: manifest install-on-load must durably materialize the restored index even
 //! under bulk-ingest mode.
 //!

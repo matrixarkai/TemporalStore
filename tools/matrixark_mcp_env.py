@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Small environment parsing helpers for MatrixArk MCP modules."""
 
 from __future__ import annotations

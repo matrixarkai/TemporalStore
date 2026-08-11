@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Skill discovery / extraction — mine reusable procedures from agent interactions.
 
 The skill *storage + retrieval + budget* lane already exists in TemporalStore:

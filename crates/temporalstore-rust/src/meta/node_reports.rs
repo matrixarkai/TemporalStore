@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! SingleNodeMeta reporting methods (parity/info/stats/preflight/topology_version), extracted from meta.rs.
 
 use super::*;

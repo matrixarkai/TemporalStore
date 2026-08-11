@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Probe whether an OSS reader is strong enough for memory benchmarks.
 
 The benchmark harness can run with tiny local readers, but final MatrixArk vs

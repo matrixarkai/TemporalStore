@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """ASGI front: routing, api-key injection, ingest async-default, MCP dispatch, 429, healthz."""
 import asyncio
 import json

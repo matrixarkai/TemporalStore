@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Worker loop + task dispatch execution, extracted from data_node.rs.
 
 use super::*;

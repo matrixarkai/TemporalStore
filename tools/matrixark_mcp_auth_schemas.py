@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Shared auth and admin schema fragments for MatrixArk MCP tools."""
 
 from __future__ import annotations

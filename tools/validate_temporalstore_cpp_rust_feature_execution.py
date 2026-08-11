@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Validate C++/Rust shared-corpus feature execution parity status.
 
 The shared corpus can temporarily prove some C++ families through static source

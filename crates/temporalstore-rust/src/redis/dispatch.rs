@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Redis command dispatcher (execute_redis_command_with_state), extracted from redis.rs.
 
 use super::*;

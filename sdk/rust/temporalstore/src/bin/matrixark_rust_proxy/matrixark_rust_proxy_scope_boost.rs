@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use serde_json::Value;
 
 pub(crate) fn continuity_boost(record: &Value, context_class: &str, status: &str) -> f64 {

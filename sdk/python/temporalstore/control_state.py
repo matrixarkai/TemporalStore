@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Production Control State client for TemporalStore.
 
 Control State is TemporalStore's capability for fast-changing serving signals —

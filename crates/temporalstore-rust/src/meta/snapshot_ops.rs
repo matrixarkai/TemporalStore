@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! SingleNodeMeta snapshot export/install/save/load, extracted from meta.rs.
 
 use super::*;

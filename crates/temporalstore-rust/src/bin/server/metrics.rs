@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 // Prometheus metrics appenders (runtime/storage-manager/ingestion), split from
 // server.rs (textual include!, shared flat scope + use-imports; no mod wrapper).
 

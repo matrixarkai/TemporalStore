@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Standalone per-shard command execution extracted from engine.rs.
 use super::*;
 

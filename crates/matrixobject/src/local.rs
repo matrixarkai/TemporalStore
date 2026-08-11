@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use crate::pipeline::{
     decode_compressed, encode_compressed, MatrixObjectPipeline, PipelineRead, PipelineWrite,
 };

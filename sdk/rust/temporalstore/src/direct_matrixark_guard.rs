@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use crate::{Error, Result};
 
 pub(crate) fn cpp_matrixark_c_api_bridge_allowed(op: &str) -> Result<()> {

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Split out of run_matrixark_cpp_rust_scale_report.py; re-exported at that module's end via the dual
 relative/absolute import pattern so the same module object is reused under both
 the package path (tools.<mod>) and the top-level path. No import-time cycle.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Storage lifecycle / WAL-reclaim / eviction methods for TemporalEngine, split from engine.rs.
 use super::*;
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! RaftClusterInner::matrixraft_runtime_admin_report, split from raft.rs.
 use super::*;
 

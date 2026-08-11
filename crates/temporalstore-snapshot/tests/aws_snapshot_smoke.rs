@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use std::path::{Path, PathBuf};

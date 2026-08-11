@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use serde::{Deserialize, Serialize};
 
 pub const TS_CONTEXT_PAGE_TARGET_BYTES: &str = "TS_CONTEXT_PAGE_TARGET_BYTES";

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 // Server Raft route handler + raft execute/read/membership helpers, split from
 // server.rs (textual include!, shared flat scope + use-imports; no mod wrapper).
 

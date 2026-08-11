@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Run a LoCoMo direct-source OpenViking/VikingMem diagnostic baseline.
 
 This baseline uses the same LoCoMo source records as the MatrixArk runner, ranks

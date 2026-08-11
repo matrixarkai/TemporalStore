@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Context model-provider calls (summaries/embeddings, OpenAI-compatible), split from context_workflow.rs.
 use super::*;
 

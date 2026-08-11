@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Guard: a message-ingest scope without tenant_id/user_id must not silently disable profile."""
 import tempfile
 import unittest

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 // retrieve_context_pack_native, split from matrixark_rust_proxy_impl.rs (textually include!d;
 // shares parent use-imports + flat scope; no use-statements or mod wrapper).
 

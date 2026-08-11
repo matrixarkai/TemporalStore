@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """_LocalAdapterSummariesMixin methods split from matrixark_mcp_local_adapter.MatrixArkLocalAdapter (mixin)."""
 from __future__ import annotations
 

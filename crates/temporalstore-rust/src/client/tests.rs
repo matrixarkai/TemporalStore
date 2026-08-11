@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use super::*;
 use crate::engine::TemporalEngine;
 use crate::http::{json_response, parse_json, serve};

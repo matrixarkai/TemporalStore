@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Self-test the shared C++/Rust context benchmark report comparator."""
 
 from __future__ import annotations

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Distributed-mode storage-backend selection.
 //!
 //! A distributed TemporalStore node persists shard data either through **shared

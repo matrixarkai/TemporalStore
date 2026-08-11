@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Validate RustRaft-derived production-readiness evidence in Rust Raft.
 
 TemporalStore C++ relies on RustRaft behavior beyond basic log replication:

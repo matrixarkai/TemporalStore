@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Convert OpenViking/VikingMem CSV results into MatrixArk benchmark artifacts.
 
 The OpenViking benchmark scripts write CSV files, while MatrixArk summaries use

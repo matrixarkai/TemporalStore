@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Resource and skill candidate scan for MatrixArk local retrieval."""
 
 from __future__ import annotations

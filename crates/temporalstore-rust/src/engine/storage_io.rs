@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Run shared ingestion parity cases from the unified corpus.
 
 The ingestion cases are service/runtime workflows, so they are represented as

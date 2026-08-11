@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Validate the consolidated Rust-vs-C++ TemporalStore parity report."""
 
 from __future__ import annotations

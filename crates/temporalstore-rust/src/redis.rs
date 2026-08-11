@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Redis/RESP-compatible command surface.
 //!
 //! Parses RESP command frames and dispatches them to the engine's data models:

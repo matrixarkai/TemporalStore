@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Tests for MatrixObject resource/skill blob storage (local-fs backend)."""
 import os
 import tempfile

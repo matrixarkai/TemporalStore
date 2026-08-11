@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 // impl MetaBackend, split from metaserver.rs (textual include!, shared flat scope).
 
 impl MetaBackend {

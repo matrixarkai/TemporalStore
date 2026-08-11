@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Summarize OSS memory benchmark misses into actionable gap buckets."""
 
 from __future__ import annotations

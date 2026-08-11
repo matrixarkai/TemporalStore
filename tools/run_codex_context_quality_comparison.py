@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Offline Codex + MatrixArk context A/B quality and token comparison.
 
 This builds a small historical-session style corpus, simulates MatrixArk

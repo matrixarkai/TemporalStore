@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Download OSS models for the MatrixArk context pipeline.
 
 The default route uses ModelScope because direct Hugging Face access can be

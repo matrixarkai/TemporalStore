@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! production_readiness_report aggregator + service readiness helpers, split from readiness.rs.
 use super::*;
 

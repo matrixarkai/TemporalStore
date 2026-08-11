@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Validate same-config C++/Rust TemporalStore performance parity evidence.
 
 This validator is deliberately fail-closed. A missing live benchmark row is

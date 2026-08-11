@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """MatrixArk access-management and metadata-store support for the MCP server."""
 
 from __future__ import annotations

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Raw ingestion helper functions for MatrixArk TemporalStore adapters."""
 
 from __future__ import annotations

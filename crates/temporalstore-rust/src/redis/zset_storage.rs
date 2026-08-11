@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Redis sorted-set (ZSET) storage encoding + index/range/numeric helpers, extracted from redis.rs.
 
 use super::*;

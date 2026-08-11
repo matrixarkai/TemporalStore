@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Product data-model read + aggregation helpers.
 //!
 //! Backs the engine's higher-level model queries: decoding sequence rows from the

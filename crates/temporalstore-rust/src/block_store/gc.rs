@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! LocalBlockStore garbage-collection methods, extracted from block_store.rs.
 
 use super::*;

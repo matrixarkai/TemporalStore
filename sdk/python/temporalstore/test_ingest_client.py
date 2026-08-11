@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Enterprise ingest client: buffering, finality, idempotency, retry — no network."""
 import io
 import os

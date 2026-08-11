@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use super::resource::{
     default_resource_max_chunk_chars, default_resource_overlap_chars, default_resource_parser_name,
     extract_markdown_link_refs, parse_context_resource, slugify_context_resource, split_paragraphs,

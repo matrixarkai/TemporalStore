@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Validate the generated next C++/Rust performance workflow plan.
 
 This gate checks the plan before anybody runs it. It keeps the long-running

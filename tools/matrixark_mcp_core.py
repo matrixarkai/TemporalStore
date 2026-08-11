@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """MatrixArk MCP server for LLM context ingestion and retrieval.
 
 This is intentionally dependency-free. It implements the small JSON-RPC subset

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Run shared Context pipeline parity cases from the unified corpus.
 
 Context pipeline cases are service/workflow oriented, so they use

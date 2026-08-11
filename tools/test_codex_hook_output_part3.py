@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """_CodexHookOutputPart3 methods split from test_matrixark_codex_hook_output.MatrixArkCodexHookOutputTest (mixin)."""
 from __future__ import annotations
 

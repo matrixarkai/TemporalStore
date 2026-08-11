@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 pub(crate) fn default_cross_session_budget_ratio(question_type: &str) -> f64 {
     if matches!(
         question_type,

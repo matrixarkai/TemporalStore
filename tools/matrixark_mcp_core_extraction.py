@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Split out of matrixark_mcp_core.py; re-exported at core end via the dual
 relative/absolute import pattern so the same core module object is reused under
 both the package path (tools.matrixark_mcp_core) and the top-level path. No

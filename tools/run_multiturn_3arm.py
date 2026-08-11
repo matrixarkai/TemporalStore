@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Multi-turn 3-arm token/quality experiment.
 
 Deep back-and-forth conversations, turn by turn. Each turn appends to the local

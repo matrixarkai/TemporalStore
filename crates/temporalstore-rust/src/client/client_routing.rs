@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! TemporalStoreClient execute + route-resolution + backend-failure methods, split from client.rs.
 use super::*;
 

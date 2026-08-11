@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Thin enterprise HTTP client for TemporalStore real-time ingestion + retrieval.
 
 For verticals that own their LLM loop (no CLI hooks). Call the HTTP API — NOT MCP-stdio,

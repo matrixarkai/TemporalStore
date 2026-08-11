@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use matrixcache::MultiLayerCache;
 
 use crate::block_store::LocalBlockStore;

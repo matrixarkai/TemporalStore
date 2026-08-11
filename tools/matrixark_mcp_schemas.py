@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """MCP tool schemas for MatrixArk.
 
 Keeping schemas out of the runtime server makes the server entrypoint small and

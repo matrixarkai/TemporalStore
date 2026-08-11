@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 // Control State scaled-workload harness.
 //
 // Proves the public Control State use cases (frequency cap, tenant quota, campaign

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Property/invariant conformance harness.
 //!
 //! Instead of sampling behavior with hand-written cases, this drives seeded random command

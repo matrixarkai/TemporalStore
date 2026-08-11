@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Production retrieve-path wiring for conditional query rewriting.
 
 Verifies the ranking query is rewritten only for follow-ups when the gate is on, that the

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Redis list commands + set-algebra (SINTER/SUNION/SDIFF) + list storage, extracted from redis.rs.
 
 use super::*;

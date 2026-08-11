@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 // budget-token / source-role / layer-count parsing helpers, split from matrixark_rust_proxy_impl.rs (textually include!d;
 // shares parent use-imports + flat scope; no use-statements or mod wrapper).
 

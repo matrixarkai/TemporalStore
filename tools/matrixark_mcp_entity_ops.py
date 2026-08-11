@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Entity patch and merge helpers for MatrixArk MCP extraction."""
 
 from __future__ import annotations

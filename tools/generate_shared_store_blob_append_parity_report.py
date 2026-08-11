@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Generate Rust/C++ shared-store append-blob parity evidence.
 
 The Rust side is live runtime evidence from the MatrixObject-backed protobuf

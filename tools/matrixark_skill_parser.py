@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """MatrixArk skill parsing helpers.
 
 Skills are structured prompt/tool resources: a manifest plus bounded sections

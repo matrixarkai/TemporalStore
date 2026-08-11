@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Validate Rust Raft with the unified C++ Raft case definitions.
 
 The shared corpus is the contract: every C++ Raft case names the C++ runner

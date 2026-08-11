@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Storage-manager runtime scheduling/reporting helpers, extracted from data_node.rs.
 
 use super::*;

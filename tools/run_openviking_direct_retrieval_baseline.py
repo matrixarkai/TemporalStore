@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Run an OpenViking direct-retrieval LoCoMo diagnostic baseline.
 
 This intentionally bypasses the VikingBot tool loop and memory-extraction

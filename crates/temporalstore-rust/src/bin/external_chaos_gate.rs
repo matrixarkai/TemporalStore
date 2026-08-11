@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};

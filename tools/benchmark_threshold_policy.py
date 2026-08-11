@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Shared benchmark threshold profiles for context-memory gates."""
 
 from __future__ import annotations

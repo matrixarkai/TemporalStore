@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Run a MatrixArk message + resource debug trace and render docs.
 
 The goal of this runner is observability, not load testing. It creates a small

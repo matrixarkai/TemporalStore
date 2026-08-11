@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use temporalstore_rust::http::serve;
 use temporalstore_rust::{ProxyOptions, ProxyService, ProxyServingMode};
 

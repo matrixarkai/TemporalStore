@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Conditional query rewriting for follow-up prompts.
 
 A follow-up like "how are tool events handled during *that*?" carries no query terms

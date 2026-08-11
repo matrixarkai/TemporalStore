@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Run shared control-plane parity cases from the unified corpus.
 
 The control-plane cases currently use ``existing_test`` corpus commands because

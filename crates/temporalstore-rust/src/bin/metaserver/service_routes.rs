@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 // Master/manage/heartbeat/query service-route handlers, split from metaserver.rs
 // (textual include!, shared flat scope + use-imports; no mod wrapper).
 

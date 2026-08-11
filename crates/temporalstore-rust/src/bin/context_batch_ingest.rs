@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Load-once batch ingester for local-context backfill (Claude + Codex).
 //!
 //! The per-event hook binary (`codex_context_hook`) loads the engine and reloads

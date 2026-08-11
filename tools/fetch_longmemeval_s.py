@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Fetch the real LongMemEval_s artifact used by the benchmark runner.
 
 The dataset is intentionally not committed to this repository. This helper

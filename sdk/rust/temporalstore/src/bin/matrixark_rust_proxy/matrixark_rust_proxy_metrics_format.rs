@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 pub(crate) fn metric_header(out: &mut String, name: &str, metric_type: &str, help: &str) {
     out.push_str("# HELP ");
     out.push_str(name);

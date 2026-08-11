@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Bucket-dump manifest/install-marker file I/O helpers, split from engine.rs.
 use super::*;
 

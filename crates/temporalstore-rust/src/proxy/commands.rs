@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use crate::types::Command;
 
 pub(super) fn proxy_command_is_write(command: &Command) -> bool {

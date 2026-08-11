@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use temporalstore_rust::{production_readiness_report, ProductionReadinessReport};
 
 fn main() {

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! RaftCluster read/read-index/status/report methods, split from raft.rs.
 use super::*;
 

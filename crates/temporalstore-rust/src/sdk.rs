@@ -1,4 +1,7 @@
-﻿pub mod v1 {
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
+pub mod v1 {
     tonic::include_proto!("temporalstore.v1");
 }
 

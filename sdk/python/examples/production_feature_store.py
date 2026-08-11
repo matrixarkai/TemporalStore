@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Production-ready TemporalStore usage patterns.
 
 A batteries-included facade over the TemporalStore Python SDK (native ``Client``
