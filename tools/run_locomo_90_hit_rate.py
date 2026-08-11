@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Run the LOCOMO retrieval/context hit-rate gate used for VikingMem parity.
 
 This intentionally gates the metric comparable to the MatrixArk/C++ path's

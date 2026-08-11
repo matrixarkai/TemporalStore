@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Redis RESP response encoders and argument parsers, extracted from redis.rs.
 
 use super::*;

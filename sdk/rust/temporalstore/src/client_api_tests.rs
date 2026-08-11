@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 #[cfg(feature = "direct")]
 use crate::Client;
 #[cfg(feature = "proxy")]

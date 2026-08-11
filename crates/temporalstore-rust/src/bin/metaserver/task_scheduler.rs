@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 // impl MetaTaskScheduler, split from metaserver.rs. Textually include!d, so it
 // shares the parent bin body flat scope + use-imports; no mod wrapper.
 

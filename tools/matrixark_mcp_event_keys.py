@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Context event key and placement helpers for MatrixArk MCP records."""
 
 from __future__ import annotations

@@ -1,4 +1,7 @@
-﻿use std::collections::BTreeMap;
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 

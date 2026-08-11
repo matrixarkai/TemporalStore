@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Validate the Context benchmark truth contract wiring.
 
 This is deliberately static and fast. It ensures the benchmark path says what it

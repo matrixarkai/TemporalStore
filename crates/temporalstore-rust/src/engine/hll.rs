@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Bounded approximate distinct count via a dense HyperLogLog sketch.
 //!
 //! Control State distinct/CHANGE counts are otherwise exact `BTreeSet` unions, whose memory

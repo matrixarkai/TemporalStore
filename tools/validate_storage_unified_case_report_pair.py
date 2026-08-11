@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Validate the C++/Rust storage unified case-report fixture pair.
 
 This gate is intentionally small but important: it proves the storage/cache

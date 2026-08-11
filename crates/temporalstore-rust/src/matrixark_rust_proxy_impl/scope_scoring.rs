@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 // Scope / session-continuity / cross-session scoring helpers, split from
 // matrixark_rust_proxy_impl.rs. Textually include!d, so it shares the parent
 // file's use-imports and flat scope; do not add use-statements or mod wrappers.

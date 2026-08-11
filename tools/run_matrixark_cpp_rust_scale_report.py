@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Run a live MatrixArk C++ vs Rust TemporalStore scale comparison.
 
 The runner intentionally exercises the same in-process MCP tool boundary used by

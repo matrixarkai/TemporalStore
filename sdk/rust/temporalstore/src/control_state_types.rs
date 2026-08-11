@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 #[derive(Clone, Copy, Debug)]
 #[repr(i32)]
 pub enum ControlStatePrecision {

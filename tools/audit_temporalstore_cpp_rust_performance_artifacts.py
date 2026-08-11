@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Audit C++/Rust performance artifacts against the fail-closed matrix policy."""
 
 from __future__ import annotations

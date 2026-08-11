@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Resolve the external TemporalStore unified test corpus path."""
 
 from __future__ import annotations

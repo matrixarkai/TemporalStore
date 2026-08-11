@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 #[derive(Clone, Debug)]
 pub struct Options {
     pub metaserver_addr: String,

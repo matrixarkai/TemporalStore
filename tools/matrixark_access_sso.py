@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """_AccessSsoMixin methods split from matrixark_access.MatrixArkAccessManager (mixin)."""
 from __future__ import annotations
 

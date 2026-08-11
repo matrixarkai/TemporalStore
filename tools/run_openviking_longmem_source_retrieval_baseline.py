@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Run a LongMemEval direct-source retrieval diagnostic baseline.
 
 This is a fallback baseline for OpenViking/VikingMem comparisons when local

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """_ModuleBoundaryPart2 methods split from test_matrixark_python_module_boundaries.MatrixArkPythonModuleBoundaryTest (mixin)."""
 from __future__ import annotations
 

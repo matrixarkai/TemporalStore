@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Runtime proof for the in-memory, coalesced summary-dirty tracking.
 //!
 //! Run with: cargo run -q -p temporalstore-rust --example inmemory_dirty_check

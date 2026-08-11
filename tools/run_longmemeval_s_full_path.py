@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Run LongMemEval_s as ingest-once/query-many full-path scoring.
 
 This is the LongMemEval_s sibling of the LOCOMO 90% gate. It accepts the real

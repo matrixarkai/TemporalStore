@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Offline unit tests for temporalstore.features (mock transport, no server)."""
 import json
 import sys

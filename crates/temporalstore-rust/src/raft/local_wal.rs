@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! LocalRaftWal WAL persistence/recovery methods, split from raft.rs.
 use super::*;
 

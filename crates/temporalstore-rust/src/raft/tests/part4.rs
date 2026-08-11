@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Test part 4, split from tests.rs.
 #![allow(clippy::all)]
 use super::*;

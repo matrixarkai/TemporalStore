@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Production Raft/Meta-Raft runtime + timer-handle types and impls, split from raft.rs.
 use super::*;
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use crate::client::key_is_dropped_by_percent;
 use crate::types::{Command, Status};
 

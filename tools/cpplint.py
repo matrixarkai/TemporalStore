@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 #
 # Copyright (c) 2009 Google Inc. All rights reserved.
 #

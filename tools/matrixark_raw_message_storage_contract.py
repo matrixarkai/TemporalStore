@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Shared raw-message storage target contract for TemporalStore and MatrixKV.
 
 This module is intentionally small and dependency-free so C++ tooling, Rust

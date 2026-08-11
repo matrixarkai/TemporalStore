@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Validate and report MatrixArk layer traversal + cross-session rerank parity.
 
 This is a lightweight source/corpus gate for the native C++ and Rust context

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! RaftClusterInner core helpers (timeouts, candidates, election, membership, WAL, status), split from raft.rs.
 use super::*;
 

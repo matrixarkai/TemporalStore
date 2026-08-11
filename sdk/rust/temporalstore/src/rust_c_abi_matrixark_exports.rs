@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use std::os::raw::{c_char, c_int};
 
 use crate::rust_c_abi_helpers::{client_from_handle, cstr_arg, run_c_abi, run_c_abi_string};

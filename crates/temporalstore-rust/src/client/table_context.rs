@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! TemporalStoreTable context methods, split from client.rs.
 use super::*;
 

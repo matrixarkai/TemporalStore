@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! TemporalStoreClient meta topology sync + route refresh/invalidation + reports, split from client.rs.
 use super::*;
 

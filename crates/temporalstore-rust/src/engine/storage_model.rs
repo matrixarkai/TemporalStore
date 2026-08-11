@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 pub(super) fn storage_model_code(kind: &str) -> u8 {
     match kind {
         "string" => 1,

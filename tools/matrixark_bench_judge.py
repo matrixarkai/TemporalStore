@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Claude-as-judge for the context benchmarks — the DEFAULT judge.
 
 Why this is the default: the OSS qwen judge over-scores and self-contradicts. On an

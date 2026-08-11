@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Does relaxing the relevance floor + using the large budget help follow-up prompts?
 
 A deep thread of follow-up-style queries (low term-overlap on purpose), answered

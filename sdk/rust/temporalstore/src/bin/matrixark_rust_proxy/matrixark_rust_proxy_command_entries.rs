@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use crate::matrixark_rust_proxy_protocol::{Command, HashEntryRef};
 use std::borrow::Cow;
 

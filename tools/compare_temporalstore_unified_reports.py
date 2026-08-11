@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Compare Rust/C++ TemporalStore unified report JSON files.
 
 The comparator is intentionally schema-light: shared runners can evolve their

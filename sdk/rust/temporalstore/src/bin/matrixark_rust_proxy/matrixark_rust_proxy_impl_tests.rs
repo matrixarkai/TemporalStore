@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use serde_json::{json, Value};
 
 use crate::matrixark_rust_proxy_command_stats::command_stats;

@@ -1,4 +1,7 @@
-﻿use super::*;
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
+use super::*;
 use crate::block_store::BlockStoreBandState;
 use crate::engine::golden::{
     cpp_api_golden_corpus_report, cpp_feature_sequence_golden_corpus_report,

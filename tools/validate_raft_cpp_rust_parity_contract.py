@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Validate the shared C++/Rust Raft Phase 0 public contract."""
 
 from __future__ import annotations

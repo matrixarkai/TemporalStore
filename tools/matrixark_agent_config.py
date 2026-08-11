@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Generate MatrixArk agent integration snippets.
 
 The MatrixArk MCP server is the common boundary for Codex today.

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Run the canonical MatrixArk C++/Rust scale matrix after each fix.
 
 The matrix intentionally reuses ``run_matrixark_cpp_rust_scale_report.py`` so

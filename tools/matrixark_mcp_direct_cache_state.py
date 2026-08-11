@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Shared direct TemporalStore cache state for MatrixArk adapters."""
 
 from __future__ import annotations

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 // Shared implementation body for the thin proxy entrypoints
 // (matrixark_rust_proxy, matrixark_rust_direct_sdk), which `include!` this file.
 // It deliberately lives under src/ (not src/bin/) so it is NOT compiled as a

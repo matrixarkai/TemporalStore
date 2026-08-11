@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! RaftCluster append-entries / vote / WAL replication methods, split from raft.rs.
 use super::*;
 

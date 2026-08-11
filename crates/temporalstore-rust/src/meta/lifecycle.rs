@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! SingleNodeMeta topology/listing/freeze/finish-load lifecycle methods, extracted from meta.rs.
 
 use super::*;

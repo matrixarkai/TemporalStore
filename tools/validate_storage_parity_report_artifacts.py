@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Validate committed C++/Rust parity report storage shape.
 
 The shared storage lifecycle validators protect the canonical contract and

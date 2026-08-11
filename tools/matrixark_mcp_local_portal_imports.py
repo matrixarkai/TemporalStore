@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Portal, registry, and resource-import facade methods for MatrixArk local adapter."""
 
 from __future__ import annotations

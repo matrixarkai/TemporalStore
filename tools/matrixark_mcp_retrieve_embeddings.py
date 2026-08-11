@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Embedding-vector collection helpers for MatrixArk retrieval."""
 
 from __future__ import annotations

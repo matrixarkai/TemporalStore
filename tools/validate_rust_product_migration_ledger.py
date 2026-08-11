@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Validate the Rust product-test migration ledger.
 
 The ledger is intentionally separate from the guard baseline: the baseline keeps

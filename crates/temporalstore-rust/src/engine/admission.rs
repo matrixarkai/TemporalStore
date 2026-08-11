@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::control::{Config, ShardInfo};

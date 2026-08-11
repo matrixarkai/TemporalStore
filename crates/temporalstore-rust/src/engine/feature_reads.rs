@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Feature timestamped-KV read paths.
 //!
 //! Range and last-N reads over the feature model's per-key timestamped series,

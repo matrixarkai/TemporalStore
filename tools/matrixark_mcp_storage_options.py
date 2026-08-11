@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """MatrixArk MCP storage route and per-record durability policy helpers."""
 
 from __future__ import annotations

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Local MatrixArk backend readiness and service metrics helpers."""
 
 from __future__ import annotations

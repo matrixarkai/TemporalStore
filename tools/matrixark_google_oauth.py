@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Real Google ID-token (OIDC) verification for MatrixArk, using only the stdlib.
 
 MatrixArk normally trusts a product gateway to verify OAuth and pass down claims.

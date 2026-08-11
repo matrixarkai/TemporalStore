@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Self-contained tests for the Control State client.
 
 These do not require a running TemporalStore: a small in-process mock RESP server

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Rust-TemporalStore source packing/splitting helpers, extracted from run_locomo_ingest_once.py."""
 from __future__ import annotations
 

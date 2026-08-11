@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Run or validate per-family Rust/C++ shared-test migration checks."""
 
 from __future__ import annotations

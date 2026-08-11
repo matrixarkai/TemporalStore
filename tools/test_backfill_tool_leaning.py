@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Backfill ingests tool events, but leaned (small text / pre-analyzed)."""
 import unittest
 

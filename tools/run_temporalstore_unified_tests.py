@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Run the shared TemporalStore C++/Rust behavioral corpus.
 
 The JSON corpus is the test contract. Rust executes it through an integration

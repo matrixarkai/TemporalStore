@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use temporalstore::{Client, FeatureFilter, FeatureFilterOp, Options, SequenceFeatureRow};
 
 fn main() -> temporalstore::Result<()> {

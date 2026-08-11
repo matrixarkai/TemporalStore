@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Import one C++/Rust scale report into the performance parity matrix.
 
 The importer is conservative: it updates only the workload rows proven by the

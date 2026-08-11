@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! RaftCluster snapshot build/install/transfer methods, split from raft.rs.
 use super::*;
 

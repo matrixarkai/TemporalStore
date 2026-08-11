@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Request-boundary policy helpers for MatrixArk MCP/HTTP tools."""
 
 from __future__ import annotations

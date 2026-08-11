@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Backfill MatrixArk context records from a MatrixKV raw ingestion log.
 
 The source log is the sharded record format used by the MatrixArk direct

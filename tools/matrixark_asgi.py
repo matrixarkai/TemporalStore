@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Production ASGI front for MatrixArk: scaled HTTP ingestion + MCP-over-HTTP, in pure Python.
 
 Replaces the stdlib ThreadingHTTPServer for enterprise scale. Run under any ASGI server:

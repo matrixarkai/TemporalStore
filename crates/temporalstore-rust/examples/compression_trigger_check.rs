@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Runtime proof for the configurable auto temporal-compression trigger.
 //!
 //! Run with: cargo run -q -p temporalstore-rust --example compression_trigger_check

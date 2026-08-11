@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Backfill TemporalStore from *local agent context* on disk (Claude + Codex).
 
 Unlike ``matrixark_context_backfill.py`` (which replays a MatrixKV raw record log

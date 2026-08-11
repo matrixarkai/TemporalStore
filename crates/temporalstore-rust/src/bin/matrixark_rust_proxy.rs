@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 // Production-named MatrixArk Rust proxy entrypoint.
 //
 // Benchmarks and production wiring must invoke this binary name so retired

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Validate Rust/C++ Codex MCP integration parity wiring.
 
 This is intentionally a contract validator, not a replacement for the shared

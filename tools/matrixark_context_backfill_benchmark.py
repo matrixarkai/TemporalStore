@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Benchmark MatrixArk context backfill batch and incremental repair paths."""
 
 from __future__ import annotations

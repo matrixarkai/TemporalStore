@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Context workflow provider/state/manage report + policy-validation fns, split from context_workflow.rs.
 use super::*;
 

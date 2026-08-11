@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Deadline and stage-latency tracking for MatrixArk retrieval."""
 
 from __future__ import annotations

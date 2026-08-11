@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """precision_expand_pack: expand matched segments to their source raw events for exact-fact recall."""
 import unittest
 

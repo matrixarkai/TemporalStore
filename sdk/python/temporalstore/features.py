@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """
 temporalstore_features — production client for TemporalStore aggregated features.
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 import unittest
 
 from tools.matrixark_mcp_rust_proxy_cache import mark_context_pack_response_cache_hit

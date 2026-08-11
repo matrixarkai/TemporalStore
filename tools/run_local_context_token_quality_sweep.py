@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Local Codex+Claude context vs TemporalStore-managed context: token & quality sweep.
 
 Goal (from the request):

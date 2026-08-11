@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Storage readiness/posture/cache report generators, split from readiness.rs.
 use super::*;
 

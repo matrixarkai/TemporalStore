@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Regression tests for supported Codex hook plus planned-agent TODOs."""
 
 from __future__ import annotations

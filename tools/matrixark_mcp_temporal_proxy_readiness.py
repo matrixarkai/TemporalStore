@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """C++ proxy/direct backend readiness helpers for MatrixArk TemporalStore."""
 
 from __future__ import annotations

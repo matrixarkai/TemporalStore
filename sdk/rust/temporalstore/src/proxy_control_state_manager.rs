@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use crate::proxy_client::ProxyClient;
 use crate::proxy_helpers::response_hash_entries_to_strings;
 use crate::Result;

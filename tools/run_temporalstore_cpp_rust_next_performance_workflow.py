@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Run or print the next C++/Rust performance parity evidence workflow.
 
 The workflow is derived from audit_temporalstore_cpp_rust_performance_artifacts.py.

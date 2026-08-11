@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Fail if retired legacy object-store naming leaks into first-party files."""
 
 from __future__ import annotations

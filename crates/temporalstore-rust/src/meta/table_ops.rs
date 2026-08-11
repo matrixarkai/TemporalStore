@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! SingleNodeMeta table CRUD operations (add/delete/freeze/update_table), extracted from meta.rs.
 
 use super::*;

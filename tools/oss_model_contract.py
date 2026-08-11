@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Shared OSS model contract for MatrixArk/OpenViking benchmark comparisons."""
 
 from __future__ import annotations

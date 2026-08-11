@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Ingest setup helpers for MatrixArk local orchestration."""
 
 from __future__ import annotations

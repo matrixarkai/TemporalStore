@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Storage-manager cycle + merged-dump policy report for TemporalEngine, split from engine.rs.
 use super::*;
 

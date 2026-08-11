@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Run LOCOMO/LongMemEval_s as conversation-load-once/query-many benchmark.
 
 The generic context harness accepts JSONL cases and is useful for CI smoke tests,

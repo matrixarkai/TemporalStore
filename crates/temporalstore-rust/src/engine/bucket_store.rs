@@ -1,4 +1,7 @@
-﻿use serde::{Deserialize, Serialize};
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
+use serde::{Deserialize, Serialize};
 
 use crate::block_store::{LocalBlockStore, BlockAddress};
 use crate::types::ShardId;

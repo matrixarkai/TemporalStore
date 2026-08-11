@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use std::sync::atomic::AtomicU64;
 
 pub(super) const FEATURE_ADD_HARD_MAX_SIZE: usize = 100_000;

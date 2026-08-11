@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Rust TemporalStore MatrixArk adapter implementations."""
 
 from __future__ import annotations

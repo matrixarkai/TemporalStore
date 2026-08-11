@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Reject duplicate TemporalStore test surfaces.
 
 The shared Rust/C++ corpus already rejects duplicate case names, step names, and

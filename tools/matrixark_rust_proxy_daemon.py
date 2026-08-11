@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Long-lived MatrixArk Rust proxy daemon.
 
 The Rust proxy binary speaks newline-delimited JSON on stdio in ``--serve``

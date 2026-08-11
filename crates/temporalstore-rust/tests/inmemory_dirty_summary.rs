@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Integration coverage for the in-memory, coalesced summary-dirty tracking.
 //!
 //! Summary-dirty markers are no longer persisted as one `ctx:dirty` page per event.

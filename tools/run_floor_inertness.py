@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Is the relevance-score floor actually filtering usable context, or is it inert?
 
 Hypothesis: at realistic budgets the floor is INERT — the budget fills with score>0

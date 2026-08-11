@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::thread;

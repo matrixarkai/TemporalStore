@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Access scope and session-continuity helpers for MatrixArk recall."""
 
 from __future__ import annotations

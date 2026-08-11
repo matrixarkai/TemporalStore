@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Deep-thread validation: does quality hold as a thread accumulates context?
 
 Models a real, deep back-and-forth: each turn's Q+A is appended to a growing "current

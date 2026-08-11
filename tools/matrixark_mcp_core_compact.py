@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Compact / context-record materialization helpers.
 
 Split out of matrixark_mcp_core.py, re-exported via `from ...core_compact import *`

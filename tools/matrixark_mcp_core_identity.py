@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Identity / role-scope / scope-key / request-validation helpers.
 
 Split out of matrixark_mcp_core.py for readability. Re-exported via

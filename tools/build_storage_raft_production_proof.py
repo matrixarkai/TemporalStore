@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Build one combined storage plus Raft production proof report.
 
 The individual harnesses are still the source of truth. This script joins their

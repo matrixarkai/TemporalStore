@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Compatibility wrapper for the shared MatrixArk context scale E2E runner."""
 
 from __future__ import annotations

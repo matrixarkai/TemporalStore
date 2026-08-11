@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 use crate::local::LocalMatrixObjectStore;
 use crate::meta::{MatrixObjectMetaService, PlacementPolicy};
 use crate::replication::SegmentReplicationReport;

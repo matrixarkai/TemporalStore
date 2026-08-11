@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! LocalBlockStore band descriptor/summary + stream-backed band runtime report, extracted from block_store.rs.
 
 use super::*;

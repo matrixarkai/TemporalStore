@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Precision-aware raw preference: raw events win over summaries for precision queries when on."""
 import sys
 import unittest

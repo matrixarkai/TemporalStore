@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Run fair OSS MatrixArk vs OpenViking/VikingMem-style benchmark pairs.
 
 This wrapper exists to prevent accidental apples-to-oranges comparisons. It

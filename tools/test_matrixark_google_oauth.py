@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Offline tests for in-process Google ID-token verification.
 
 A throwaway 2048-bit RSA key (generated once, safe to publish) is used to sign

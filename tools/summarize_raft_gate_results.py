@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Summarize local raft gate results as JSON and Prometheus text."""
 
 from __future__ import annotations

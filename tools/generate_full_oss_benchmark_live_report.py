@@ -1,4 +1,6 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Generate a live HTML checkpoint for OSS LoCoMo/LongMemEval benchmark runs."""
 from __future__ import annotations
 import argparse, collections, html, json, pathlib, statistics, subprocess, time

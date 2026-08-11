@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Validate and optionally run shared Raft parity evidence cases.
 
 The Raft corpus cases are harness-oriented ``existing_test`` entries. This

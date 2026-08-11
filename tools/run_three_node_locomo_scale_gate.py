@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Run the Rust LOCOMO plus three-data-node scale gate.
 
 This gate intentionally composes the current Rust evidence paths:

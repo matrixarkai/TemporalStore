@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """MatrixArk resource parsing helpers.
 
 The parser keeps raw bytes outside TemporalStore and converts resources into

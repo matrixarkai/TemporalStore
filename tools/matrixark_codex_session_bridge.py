@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Bridge Codex desktop session user messages into the MatrixArk dual hook.
 
 Codex CLI hooks fire for CLI turns, but some desktop/app-server turns are only

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Validate MatrixArk tests/runners stay in the shared TemporalStoreTestCorpus.
 
 MatrixArk C++/Rust parity runners are shared product-behavior tests. The root

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Validate the goal-level Rust-vs-C++ TemporalStore parity status.
 
 This gate is intentionally stricter than a prose report and intentionally more

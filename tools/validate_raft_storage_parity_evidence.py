@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Validate Rust evidence for the shared C++ storage/Raft parity gates.
 
 The unified corpus proves that current C++ storage and Raft surfaces still

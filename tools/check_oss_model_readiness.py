@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Record local OSS reader/model readiness for benchmark runs.
 
 This intentionally does not run LoCoMo or LongMemEval. It captures the local

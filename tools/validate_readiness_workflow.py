@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Validate production-readiness workflow coverage.
 
 The readiness gate reports a fixed public service list. CI must keep a
