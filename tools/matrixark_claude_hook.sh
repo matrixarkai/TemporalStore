@@ -148,6 +148,47 @@ if [[ "$BACKEND" == "python" ]]; then
   # orthogonal to MATRIXARK_HOOK_STORAGE_ROUTE above (the route does not control
   # durability here); both stay overridable via env. Set to 0 to opt out.
   export MATRIXARK_DIRECT_SERVING_APPEND_TO_BACKEND="${MATRIXARK_DIRECT_SERVING_APPEND_TO_BACKEND:-1}"
+  # Warm resident proxy daemon (kills the cold-start re-scan). Each hook invocation
+  # is a fresh short-lived process; spawning a brand-new matrixark_rust_proxy every
+  # call forces it to reload the shard and re-scan the full serving-record set
+  # (~thousands of records) before every retrieve -- slow and nondeterministic
+  # (coverage swung run-to-run, and worse under synchronous storage). Instead route
+  # the shared pipeline through a long-lived proxy kept warm behind a Unix socket,
+  # exactly like the Codex hook (tools/matrixark_codex_rust_hook.sh). The daemon
+  # inherits MATRIXARK_TEMPORALSTORE_RUST_ROOT so its resident proxy is pinned to
+  # THIS claude store (one daemon per store root); the adapter's _call_socket_json
+  # dispatches to it when MATRIXARK_RUST_PROXY_SOCKET is set. Gated by
+  # MATRIXARK_CLAUDE_HOOK_PROXY_DAEMON (default on). Fail-safe: if the daemon cannot
+  # be made reachable we UNSET the socket so the adapter falls back to the prior
+  # ephemeral-spawn path (default behavior fully preserved).
+  if [[ "${MATRIXARK_CLAUDE_HOOK_PROXY_DAEMON:-1}" == "1" && -x "$RUST_PROXY" ]]; then
+    # Default socket is derived from the store root so each distinct
+    # MATRIXARK_TEMPORALSTORE_RUST_ROOT gets its OWN resident daemon. The daemon's
+    # proxy is env-pinned to whatever root it was started with, so a single fixed
+    # socket shared across roots would let a stale daemon serve the wrong store
+    # (e.g. a test/alternate store base). The production claude store root is stable,
+    # so this still yields a stable per-store socket. Override with an explicit
+    # MATRIXARK_RUST_PROXY_SOCKET to pin one socket by hand.
+    _MATRIXARK_CLAUDE_ROOT_HASH="$(printf '%s' "$MATRIXARK_TEMPORALSTORE_RUST_ROOT" | cksum 2>/dev/null | cut -d' ' -f1)"
+    _MATRIXARK_CLAUDE_ROOT_HASH="${_MATRIXARK_CLAUDE_ROOT_HASH:-live}"
+    export MATRIXARK_RUST_PROXY_SOCKET="${MATRIXARK_RUST_PROXY_SOCKET:-/tmp/matrixark-rust-proxy-claude-${_MATRIXARK_CLAUDE_ROOT_HASH}.sock}"
+    _MATRIXARK_CLAUDE_DAEMON_LOG="${MATRIXARK_RUST_PROXY_DAEMON_LOG:-/dev/null}"
+    _matrixark_claude_daemon_ping() {
+      "$PYTHON" "$REPO_ROOT/tools/matrixark_rust_proxy_daemon.py" \
+        --proxy "$RUST_PROXY" --socket "$MATRIXARK_RUST_PROXY_SOCKET" \
+        --log "$_MATRIXARK_CLAUDE_DAEMON_LOG" --ping >/dev/null 2>&1
+    }
+    if ! _matrixark_claude_daemon_ping; then
+      if [[ "${MATRIXARK_CLAUDE_HOOK_PROXY_DAEMON_AUTOSTART:-1}" == "1" ]]; then
+        setsid "$PYTHON" "$REPO_ROOT/tools/matrixark_rust_proxy_daemon.py" \
+          --proxy "$RUST_PROXY" --socket "$MATRIXARK_RUST_PROXY_SOCKET" \
+          --log "$_MATRIXARK_CLAUDE_DAEMON_LOG" >/dev/null 2>&1 </dev/null &
+        disown 2>/dev/null || true
+        for _ in $(seq 1 40); do _matrixark_claude_daemon_ping && break; sleep 0.05; done
+      fi
+    fi
+    if ! _matrixark_claude_daemon_ping; then unset MATRIXARK_RUST_PROXY_SOCKET; fi
+  fi
   PY_REPORT="$("$PYTHON" tools/matrixark_agent_hook.py \
     --agent claude \
     --event "$EVENT" \
