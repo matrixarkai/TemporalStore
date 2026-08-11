@@ -39,6 +39,13 @@ def embedding_for_text(text: str) -> list[float]:
                 _EMBEDDING_VECTOR_CACHE.clear()
             _EMBEDDING_VECTOR_CACHE[cache_key] = list(vector)
         return vector
+    if provider in _API_EMBEDDING_PROVIDERS:
+        vector = api_embedding_for_text(text, provider)
+        with _EMBEDDING_VECTOR_CACHE_LOCK:
+            if len(_EMBEDDING_VECTOR_CACHE) >= 8192:
+                _EMBEDDING_VECTOR_CACHE.clear()
+            _EMBEDDING_VECTOR_CACHE[cache_key] = list(vector)
+        return vector
     vector = [0.0] * EMBEDDING_DIM
     for token in tokens(text):
         digest = hashlib.sha256(token.encode("utf-8")).digest()
@@ -73,7 +80,16 @@ def embeddings_for_texts(texts: list[str]) -> list[list[float]]:
             else:
                 results.append(list(cached))
     provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip().lower()
-    if missing and provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
+    if missing and provider in _API_EMBEDDING_PROVIDERS:
+        vectors = api_embedding_for_texts([text for _index, text in missing], provider)
+        with _EMBEDDING_VECTOR_CACHE_LOCK:
+            if len(_EMBEDDING_VECTOR_CACHE) + len(missing) >= 8192:
+                _EMBEDDING_VECTOR_CACHE.clear()
+            for (index, text), vector in zip(missing, vectors):
+                materialized = [round(float(value), 6) for value in vector]
+                _EMBEDDING_VECTOR_CACHE[(model, text)] = list(materialized)
+                results[index] = materialized
+    elif missing and provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
         model_ref = os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
             "MATRIXARK_EMBEDDING_MODEL",
             "sentence-transformers/all-MiniLM-L6-v2",
@@ -109,6 +125,9 @@ def embedding_model_name() -> str:
             "MATRIXARK_EMBEDDING_MODEL",
             "sentence-transformers/all-MiniLM-L6-v2",
         )
+    if provider in _API_EMBEDDING_PROVIDERS:
+        _endpoint, _api_key, model, _key_env = _api_embedding_config(provider)
+        return model
     return "matrixark-local-token-hash-v1"
 
 
@@ -118,6 +137,8 @@ def embedding_execution_mode_name() -> str:
         return "local_hash_embedding_fallback"
     if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
         return "oss_embedding_model"
+    if provider in _API_EMBEDDING_PROVIDERS:
+        return "voyage_embedding_api" if provider == "voyage" else "openai_embedding_api"
     if provider == "hash":
         return "hashing-local"
     return "deterministic-token-hash"
@@ -125,6 +146,87 @@ def embedding_execution_mode_name() -> str:
 
 def embedding_fallback_used() -> bool:
     return _EMBEDDING_FALLBACK_USED
+
+
+# --- API embedding providers (production: OpenAI / Voyage / any OpenAI-compatible endpoint) -------
+# OSS models stay the zero-config default (provider "deterministic"/"oss"); these activate ONLY when
+# MATRIXARK_EMBEDDING_PROVIDER is set to an API provider AND the API key env is present. Anthropic has
+# no embeddings API, so API embeddings are OpenAI/Voyage (or any OpenAI-compatible server, incl. a
+# local vLLM/Ollama endpoint via MATRIXARK_EMBEDDING_API_BASE). No new dependency: stdlib urllib only.
+_API_EMBEDDING_PROVIDERS = {"openai", "openai_compatible", "openai-compatible", "azure_openai", "voyage", "api"}
+
+
+def _deterministic_embedding_for_text(text: str) -> list[float]:
+    """The zero-config token-hash embedding, also used as the graceful fallback for oss/api providers."""
+    vector = [0.0] * EMBEDDING_DIM
+    for token in tokens(text):
+        digest = hashlib.sha256(token.encode("utf-8")).digest()
+        index = digest[0] % EMBEDDING_DIM
+        sign = 1.0 if digest[1] % 2 == 0 else -1.0
+        vector[index] += sign
+    norm = math.sqrt(sum(value * value for value in vector))
+    if norm == 0:
+        return vector
+    return [round(value / norm, 6) for value in vector]
+
+
+def _api_embedding_config(provider: str) -> tuple[str, str, str, str]:
+    """(endpoint, api_key, model, key_env) for the selected API provider. Base URL + key env are
+    overridable so the same path serves OpenAI, Azure, Voyage, and self-hosted OpenAI-compatible servers."""
+    if provider == "voyage":
+        base = os.environ.get("MATRIXARK_EMBEDDING_API_BASE", "https://api.voyageai.com/v1")
+        key_env = os.environ.get("MATRIXARK_EMBEDDING_API_KEY_ENV", "VOYAGE_API_KEY")
+        default_model = "voyage-3"
+    else:  # openai / openai_compatible / azure_openai / api
+        base = os.environ.get("MATRIXARK_EMBEDDING_API_BASE", "https://api.openai.com/v1")
+        key_env = os.environ.get("MATRIXARK_EMBEDDING_API_KEY_ENV", "OPENAI_API_KEY")
+        default_model = "text-embedding-3-large"
+    model = os.environ.get("MATRIXARK_EMBEDDING_MODEL", default_model)
+    endpoint = base.rstrip("/") + "/embeddings"
+    return endpoint, os.environ.get(key_env, "").strip(), model, key_env
+
+
+def api_embedding_for_texts(texts: list[str], provider: str) -> list[list[float]]:
+    """Embed via an OpenAI-compatible or Voyage embeddings API. Falls back to the deterministic
+    encoder on missing key / network error unless MATRIXARK_REQUIRE_API_EMBEDDINGS is set (then it
+    raises, so production fails fast instead of silently poisoning the store with mismatched-dim vectors)."""
+    global _EMBEDDING_FALLBACK_USED
+    endpoint, api_key, model, key_env = _api_embedding_config(provider)
+    require = os.environ.get("MATRIXARK_REQUIRE_API_EMBEDDINGS", "").strip().lower() in {"1", "true", "yes"}
+    if not api_key:
+        if require:
+            raise MatrixArkError(f"API embeddings require {key_env} for provider '{provider}'")
+        _EMBEDDING_FALLBACK_USED = True
+        return [_deterministic_embedding_for_text(text) for text in texts]
+    try:
+        import json as _json
+        import urllib.request as _urlreq
+
+        body = _json.dumps({"model": model, "input": list(texts)}).encode("utf-8")
+        request = _urlreq.Request(
+            endpoint,
+            data=body,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+        )
+        timeout = float(os.environ.get("MATRIXARK_EMBEDDING_API_TIMEOUT_S", "30"))
+        with _urlreq.urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed provider endpoint
+            payload = _json.loads(response.read().decode("utf-8"))
+        rows = sorted(payload.get("data", []), key=lambda row: row.get("index", 0))
+        if not rows:
+            raise MatrixArkError("API embedding response had no data")
+        return [[round(float(value), 6) for value in row.get("embedding", [])] for row in rows]
+    except MatrixArkError:
+        raise
+    except Exception as exc:  # network / auth / shape errors
+        if require:
+            raise MatrixArkError(f"API embedding call failed for provider '{provider}' ({model}): {exc}") from exc
+        _EMBEDDING_FALLBACK_USED = True
+        return [_deterministic_embedding_for_text(text) for text in texts]
+
+
+def api_embedding_for_text(text: str, provider: str) -> list[float]:
+    result = api_embedding_for_texts([text], provider)
+    return result[0] if result else _deterministic_embedding_for_text(text)
 
 
 def oss_embedding_for_text(text: str) -> list[float]:
