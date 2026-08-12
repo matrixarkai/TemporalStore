@@ -103,6 +103,9 @@ RETRIEVAL_HOT_RECORD_TYPES = {
 
 RESOURCE_IMPORT_IGNORE_DIRS = {".git", "node_modules", "target", "build", "dist", ".venv", "__pycache__"}
 LOCAL_READ_CACHE_COPY = os.environ.get("MATRIXARK_LOCAL_READ_CACHE_COPY", "1").strip().lower() not in {"0", "false", "no"}
+LOCAL_DURABLE_READ_CACHE_ENABLED = os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
+LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS = max(0.0, float(os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS", "0")))
+LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION = 1
 PRE_RETRIEVAL_SUMMARY_REFRESH = os.environ.get("MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH", "0").strip().lower() in {"1", "true", "yes"}
 
 QUALITY_FIRST_UNDERFILL_DROP_KEYS = {
@@ -2707,6 +2710,8 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         self._read_cache_records: list[Json] | None = None
         self._read_cache_size = -1
         self._read_cache_mtime_ns = -1
+        self._read_cache_source = "empty"
+        self._durable_read_cache_last_write_ms = 0.0
         self._retrieval_records_cache_lock = threading.RLock()
         self._retrieval_records_cache_generation = 0
         self._retrieval_records_cache: dict[tuple[Any, ...], Json] = {}
@@ -2744,6 +2749,13 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             "retention_count": LOCAL_JSONL_RETENTION_COUNT,
             "retention_age_ms": LOCAL_JSONL_RETENTION_AGE_MS,
             "include_bulky_fields": LOCAL_JSONL_INCLUDE_BULKY_FIELDS,
+            "durable_read_cache": {
+                "enabled": LOCAL_DURABLE_READ_CACHE_ENABLED,
+                "path": str(self._durable_read_cache_path()),
+                "schema_version": LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION,
+                "last_load_source": self._read_cache_source,
+                "min_write_ms": LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS,
+            },
             "usage": "testing_debug_only",
         }
 
@@ -2771,19 +2783,82 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         paths.append(self.event_log)
         return [path for path in paths if path.exists()]
 
-    def _jsonl_cache_signature(self) -> tuple[int, int]:
+    def _durable_read_cache_path(self) -> Path:
+        return self.event_log.with_name(f"{self.event_log.name}.read-cache.json")
+
+    def _jsonl_cache_signature_detail(self, paths: list[Path] | None = None) -> Json:
         total_size = 0
         max_mtime_ns = -1
-        for path in self._retained_jsonl_paths():
+        entries: list[Json] = []
+        for path in paths if paths is not None else self._retained_jsonl_paths():
             try:
                 stat = path.stat()
             except FileNotFoundError:
                 continue
-            total_size += int(stat.st_size)
-            max_mtime_ns = max(max_mtime_ns, int(stat.st_mtime_ns))
+            size = int(stat.st_size)
+            mtime_ns = int(stat.st_mtime_ns)
+            total_size += size
+            max_mtime_ns = max(max_mtime_ns, mtime_ns)
+            entries.append({"path": str(path.resolve()), "size": size, "mtime_ns": mtime_ns})
         if total_size <= 0 and max_mtime_ns < 0:
-            return -1, -1
-        return total_size, max_mtime_ns
+            return {"total_size": -1, "max_mtime_ns": -1, "paths": []}
+        return {"total_size": total_size, "max_mtime_ns": max_mtime_ns, "paths": entries}
+
+    def _jsonl_cache_signature(self) -> tuple[int, int]:
+        signature = self._jsonl_cache_signature_detail()
+        return int(signature.get("total_size", -1)), int(signature.get("max_mtime_ns", -1))
+
+    def _load_durable_read_cache(self, signature: Json) -> list[Json] | None:
+        if not self._local_jsonl_enabled or not LOCAL_DURABLE_READ_CACHE_ENABLED:
+            return None
+        try:
+            with self._durable_read_cache_path().open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("schema_version") != LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION:
+            return None
+        if payload.get("cache_key") != str(self.event_log.resolve()):
+            return None
+        if payload.get("signature") != signature:
+            return None
+        records = payload.get("records")
+        if not isinstance(records, list):
+            return None
+        return [record for record in records if isinstance(record, dict)]
+
+    def _write_durable_read_cache(self, records: list[Json], signature: Json, *, force: bool = False) -> None:
+        if not self._local_jsonl_enabled or not LOCAL_DURABLE_READ_CACHE_ENABLED:
+            return
+        if int(signature.get("total_size", -1)) < 0:
+            return
+        now = now_ms()
+        if not force and LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS > 0:
+            if now - self._durable_read_cache_last_write_ms < LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS:
+                return
+        path = self._durable_read_cache_path()
+        tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        payload = {
+            "schema_version": LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION,
+            "cache_key": str(self.event_log.resolve()),
+            "signature": signature,
+            "record_count": len(records),
+            "records": records,
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with tmp_path.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle, separators=(",", ":"))
+                handle.write("\n")
+            tmp_path.replace(path)
+            self._durable_read_cache_last_write_ms = now
+        except OSError:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
 
     def _clear_jsonl_read_caches(self) -> None:
         cache_key = str(self.event_log.resolve())
@@ -2791,8 +2866,13 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             self._read_cache_records = None
             self._read_cache_size = -1
             self._read_cache_mtime_ns = -1
+            self._read_cache_source = "empty"
         with _LOCAL_READ_CACHE_LOCK:
             _LOCAL_READ_CACHE.pop(cache_key, None)
+        try:
+            self._durable_read_cache_path().unlink()
+        except FileNotFoundError:
+            pass
 
     def _prune_jsonl_retention_locked(self) -> None:
         max_rotated = max(0, LOCAL_JSONL_RETENTION_COUNT - 1)
@@ -2902,20 +2982,26 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         if not records:
             return
         cache_key = str(self.event_log.resolve())
+        signature = self._jsonl_cache_signature_detail()
+        size = int(signature.get("total_size", -1))
+        mtime_ns = int(signature.get("max_mtime_ns", -1))
+        durable_records: list[Json] | None = None
         with self._read_cache_lock:
             if self._read_cache_records is not None:
                 self._read_cache_records.extend(records)
                 self._read_cache_records = compact_latest_context_state_records(
                     compact_latest_value_records(self._read_cache_records)
                 )
-            size, mtime_ns = self._jsonl_cache_signature()
             if size >= 0:
                 self._read_cache_size = size
                 self._read_cache_mtime_ns = mtime_ns
+                if self._read_cache_records is not None:
+                    durable_records = list(self._read_cache_records)
             else:
                 self._read_cache_records = None
                 self._read_cache_size = -1
                 self._read_cache_mtime_ns = -1
+                self._read_cache_source = "empty"
         with _LOCAL_READ_CACHE_LOCK:
             cached = _LOCAL_READ_CACHE.get(cache_key)
             if cached is not None:
@@ -2924,12 +3010,16 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                     compact_latest_value_records(list(cached_records) + list(records))
                 )
                 _LOCAL_READ_CACHE[cache_key] = (self._read_cache_size, self._read_cache_mtime_ns, cached_records)
+                if durable_records is None:
+                    durable_records = list(cached_records)
             elif self._read_cache_records is not None:
                 _LOCAL_READ_CACHE[cache_key] = (
                     self._read_cache_size,
                     self._read_cache_mtime_ns,
                     compact_latest_context_state_records(compact_latest_value_records(list(self._read_cache_records))),
                 )
+        if durable_records is not None:
+            self._write_durable_read_cache(durable_records, signature)
         if any(str(record.get("record_type") or "") in RETRIEVAL_HOT_RECORD_TYPES for record in records):
             with self._retrieval_records_cache_lock:
                 self._retrieval_records_cache_generation += 1
@@ -3332,16 +3422,24 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 self._read_cache_records = []
                 self._read_cache_size = -1
                 self._read_cache_mtime_ns = -1
+                self._read_cache_source = "empty"
             with _LOCAL_READ_CACHE_LOCK:
                 _LOCAL_READ_CACHE.pop(cache_key, None)
+            try:
+                self._durable_read_cache_path().unlink()
+            except FileNotFoundError:
+                pass
             return []
-        size, mtime_ns = self._jsonl_cache_signature()
+        signature = self._jsonl_cache_signature_detail(paths)
+        size = int(signature.get("total_size", -1))
+        mtime_ns = int(signature.get("max_mtime_ns", -1))
         with self._read_cache_lock:
             if (
                 self._read_cache_records is not None
                 and self._read_cache_size == size
                 and self._read_cache_mtime_ns == mtime_ns
             ):
+                self._read_cache_source = "instance"
                 return list(self._read_cache_records)
         with _LOCAL_READ_CACHE_LOCK:
             cached = _LOCAL_READ_CACHE.get(cache_key)
@@ -3353,11 +3451,28 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                         self._read_cache_records = records
                         self._read_cache_size = size
                         self._read_cache_mtime_ns = mtime_ns
+                        self._read_cache_source = "process"
                     return list(records)
                 _LOCAL_READ_CACHE.pop(cache_key, None)
+        durable_records = self._load_durable_read_cache(signature)
+        if durable_records is not None:
+            records = list(durable_records)
+            with self._read_cache_lock:
+                self._read_cache_records = list(records)
+                self._read_cache_size = size
+                self._read_cache_mtime_ns = mtime_ns
+                self._read_cache_source = "durable"
+            with _LOCAL_READ_CACHE_LOCK:
+                _LOCAL_READ_CACHE[cache_key] = (size, mtime_ns, list(records))
+            with self._retrieval_records_cache_lock:
+                self._retrieval_records_cache_generation += 1
+                self._retrieval_records_cache.clear()
+            with self._context_pack_cache_lock:
+                self._context_pack_cache.clear()
+            return list(records)
         records = []
         with self._event_log_lock:
-            for path in self._retained_jsonl_paths():
+            for path in paths:
                 with path.open("r", encoding="utf-8") as handle:
                     for line in handle:
                         line = line.strip()
@@ -3373,8 +3488,10 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             self._read_cache_records = list(records)
             self._read_cache_size = size
             self._read_cache_mtime_ns = mtime_ns
+            self._read_cache_source = "jsonl"
         with _LOCAL_READ_CACHE_LOCK:
             _LOCAL_READ_CACHE[cache_key] = (size, mtime_ns, list(records))
+        self._write_durable_read_cache(list(records), signature, force=True)
         if cache_changed:
             with self._retrieval_records_cache_lock:
                 self._retrieval_records_cache_generation += 1
@@ -3382,11 +3499,6 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             with self._context_pack_cache_lock:
                 self._context_pack_cache.clear()
         return list(records)
-
-
-
-
-
 
 
 
