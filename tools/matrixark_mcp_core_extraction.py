@@ -12,6 +12,12 @@ from typing import Any
 
 try:  # package path (tools.matrixark_mcp_core)
     from .matrixark_mcp_core import (
+        ANTHROPIC_API_BASE,
+        ANTHROPIC_API_VERSION,
+        ANTHROPIC_LLM_API_KEY_ENV,
+        ANTHROPIC_LLM_MAX_TOKENS,
+        ANTHROPIC_LLM_MODEL,
+        ANTHROPIC_LLM_TIMEOUT_SEC,
         DEFAULT_ENTITY_MERGE_OPERATOR,
         ENABLE_LLM_MERGE_OPERATOR,
         EXTRACTION_LLM_API_KEY_ENV,
@@ -41,6 +47,12 @@ try:  # package path (tools.matrixark_mcp_core)
     )
 except ImportError:  # top-level path (matrixark_mcp_core)
     from matrixark_mcp_core import (
+        ANTHROPIC_API_BASE,
+        ANTHROPIC_API_VERSION,
+        ANTHROPIC_LLM_API_KEY_ENV,
+        ANTHROPIC_LLM_MAX_TOKENS,
+        ANTHROPIC_LLM_MODEL,
+        ANTHROPIC_LLM_TIMEOUT_SEC,
         DEFAULT_ENTITY_MERGE_OPERATOR,
         ENABLE_LLM_MERGE_OPERATOR,
         EXTRACTION_LLM_API_KEY_ENV,
@@ -69,7 +81,7 @@ except ImportError:  # top-level path (matrixark_mcp_core)
         understanding_provider,
     )
 
-__all__ = ['openai_compatible_json_call', 'normalize_entity_operator', 'normalize_extracted_entities', 'normalize_extracted_segments', 'normalize_extracted_facts', 'openai_compatible_one_pass_memory_extraction', 'openai_compatible_resource_facts', 'compact_internal_extraction', 'ONE_PASS_MEMORY_SCHEMA']
+__all__ = ['openai_compatible_json_call', 'anthropic_json_call', 'normalize_entity_operator', 'normalize_extracted_entities', 'normalize_extracted_segments', 'normalize_extracted_facts', 'openai_compatible_one_pass_memory_extraction', 'anthropic_one_pass_memory_extraction', 'openai_compatible_resource_facts', 'compact_internal_extraction', 'ONE_PASS_MEMORY_SCHEMA']
 
 
 def openai_compatible_json_call(*, system: str, user: str, model: str | None = None, max_tokens: int | None = None) -> Json:
@@ -102,6 +114,52 @@ def openai_compatible_json_call(*, system: str, user: str, model: str | None = N
         return parse_first_json_object(content)
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, MatrixArkError) as exc:
         raise MatrixArkError(f"OpenAI-compatible extraction provider failed: {exc}") from exc
+
+
+def anthropic_json_call(*, system: str, user: str, model: str | None = None, max_tokens: int | None = None) -> Json:
+    """Anthropic Messages API counterpart of openai_compatible_json_call.
+
+    Same raw-stdlib-urllib transport as the OpenAI-compatible path (no new dep). The
+    Messages API has no OpenAI-style response_format=json_object, so the JSON-only
+    instruction rides in the system + user prompt (identical to the OpenAI provider),
+    and parse_first_json_object extracts the object from .content[0].text.
+    """
+    api_key = os.environ.get(ANTHROPIC_LLM_API_KEY_ENV, "")
+    if not api_key:
+        raise MatrixArkError(f"{ANTHROPIC_LLM_API_KEY_ENV} is required for the Anthropic extraction provider")
+    payload = {
+        "model": model or ANTHROPIC_LLM_MODEL,
+        "max_tokens": max_tokens or ANTHROPIC_LLM_MAX_TOKENS,
+        "system": system,
+        "messages": [
+            {"role": "user", "content": user},
+        ],
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": api_key,
+        "anthropic-version": ANTHROPIC_API_VERSION,
+    }
+    request = urllib.request.Request(
+        f"{ANTHROPIC_API_BASE}/v1/messages",
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=ANTHROPIC_LLM_TIMEOUT_SEC) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        blocks = data.get("content", [])
+        content = "".join(
+            str(block.get("text", ""))
+            for block in blocks
+            if isinstance(block, dict) and block.get("type", "text") == "text"
+        ).strip() if isinstance(blocks, list) else ""
+        if not content:
+            raise MatrixArkError("Anthropic extraction provider returned empty content")
+        return parse_first_json_object(content)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, MatrixArkError) as exc:
+        raise MatrixArkError(f"Anthropic extraction provider failed: {exc}") from exc
 
 
 def normalize_entity_operator(raw_operator: Any, entity_type: str) -> str:
@@ -252,6 +310,69 @@ def openai_compatible_one_pass_memory_extraction(envelope: Json, *, prior_contex
         "entities": entities,
         "segments": segments,
         "segment_provider": {"provider": "openai_compatible", "execution_mode": "llm_json", "model": EXTRACTION_LLM_MODEL, "fallback_used": False, "segment_count": len(segments)},
+        "indexes": normalized_indexes[:8],
+        "batch_summary": summarize_text(str(raw.get("batch_summary") or raw.get("summary") or batch_text), limit=700),
+        "message_count": len(messages),
+        "token_count_estimate": len(tokens(batch_text)),
+        "prior_context": prior_context.get("level", ""),
+        "prior_refs": prior_context.get("refs", []),
+        "prior_message_count": len(prior_context.get("messages", [])),
+        "prior_summary_count": len(prior_context.get("summaries", [])),
+    }
+
+
+def anthropic_one_pass_memory_extraction(envelope: Json, *, prior_context: Json) -> Json:
+    """Anthropic Messages counterpart of openai_compatible_one_pass_memory_extraction.
+
+    Byte-compatible output dict shape: same keys, same normalization helpers, same
+    deterministic fallback + require_oss gate behavior. Only the transport
+    (anthropic_json_call), the extracted_by tag, and the provider-identifying
+    mode / understanding_provider / segment_provider values differ, so everything
+    downstream (storage, indexes, replay) stays identical to the OpenAI path.
+    """
+    messages = envelope["messages"]
+    indexed = "\n".join(f"{index}. {message.get('role', 'user')}: {message.get('content', '')}" for index, message in enumerate(messages))
+    source_event_ids = envelope.get("source_event_ids", [])
+    source_refs = [str(ref) for ref in source_event_ids] if isinstance(source_event_ids, list) and source_event_ids else [str(index) for index, _ in enumerate(messages)]
+    system = "Return only JSON. You are a one-pass memory extractor for MatrixArk."
+    user = (
+        "Extract memory from this logical conversation batch in one pass. "
+        "Return JSON with keys classification, event_type, batch_summary, entities, segments, indexes. "
+        "Entities must use a stable concise entity_name and a separate state sentence; do not copy the same phrase into both. "
+        "Each entity shape: {entity_type, entity_name, state, confidence, field_patches}; operator is optional and MatrixArk will coerce it to the actual runtime operator. "
+        "Segments shape: {topic, coordinate_tuples, message_indexes, saliency_score, summary_text}. "
+        "Use event_type values like approval_state, budget_update, deadline, procedure, correction, status_update.\n\n"
+        f"Conversation:\n{indexed}\n\nJSON:"
+    )
+    raw = anthropic_json_call(system=system, user=user)
+    batch_text = text_from_messages(messages)
+    entities = normalize_extracted_entities(raw.get("entities"), fallback_text=batch_text, source_refs=source_refs, extracted_by="anthropic")
+    if not entities:
+        if require_oss_understanding():
+            raise MatrixArkError("Anthropic extraction returned no entities")
+        entities = extract_batch_entities(messages, envelope)
+        for entity in entities:
+            entity["extracted_by"] = "deterministic_fallback"
+    segments = normalize_extracted_segments(raw.get("segments"), messages)
+    if not segments:
+        if require_oss_understanding():
+            raise MatrixArkError("Anthropic extraction returned no segments")
+        segments, _segment_meta = detect_memory_segments(messages, {**envelope, "segment_provider": "deterministic"})
+    event_type = re.sub(r"[^a-z0-9_]+", "_", str(raw.get("event_type") or infer_event_type(batch_text)).lower()).strip("_") or "session"
+    classification = re.sub(r"[^A-Z0-9_]+", "_", str(raw.get("classification") or "BATCH_MEMORY").upper()).strip("_") or "BATCH_MEMORY"
+    indexes = raw.get("indexes") if isinstance(raw.get("indexes"), list) else []
+    normalized_indexes = [str(item) for item in indexes if isinstance(item, str)]
+    normalized_indexes = ordered_unique(normalized_indexes + [context_index_name("event_type", event_type), context_index_name("classification", classification)])
+    return {
+        "mode": "matrixark_one_pass_schema_anthropic",
+        "understanding_provider": "anthropic",
+        "schema": ONE_PASS_MEMORY_SCHEMA,
+        "classification": classification,
+        "status": str(raw.get("status") or "observed"),
+        "event_type": event_type,
+        "entities": entities,
+        "segments": segments,
+        "segment_provider": {"provider": "anthropic", "execution_mode": "llm_json", "model": ANTHROPIC_LLM_MODEL, "fallback_used": False, "segment_count": len(segments)},
         "indexes": normalized_indexes[:8],
         "batch_summary": summarize_text(str(raw.get("batch_summary") or raw.get("summary") or batch_text), limit=700),
         "message_count": len(messages),

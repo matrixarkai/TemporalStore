@@ -195,6 +195,17 @@ EXTRACTION_LLM_BASE_URL = os.environ.get("MATRIXARK_EXTRACTION_BASE_URL", os.env
 EXTRACTION_LLM_API_KEY_ENV = os.environ.get("MATRIXARK_EXTRACTION_API_KEY_ENV", "OPENAI_API_KEY")
 EXTRACTION_LLM_TIMEOUT_SEC = float(os.environ.get("MATRIXARK_EXTRACTION_TIMEOUT_SEC", "30"))
 EXTRACTION_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_EXTRACTION_MAX_TOKENS", "1200"))
+# Anthropic / Claude GENERATION provider (extraction + summary; Anthropic has no embeddings
+# API, so this is the generation side only). Mirrors the OpenAI-compatible extraction config
+# above but targets the Anthropic Messages API (POST /v1/messages; x-api-key + anthropic-version
+# headers; response text in .content[0].text). Default-off: only selected when the request's
+# understanding_provider resolves to anthropic/claude/anthropic_messages.
+ANTHROPIC_LLM_MODEL = os.environ.get("MATRIXARK_ANTHROPIC_MODEL", "claude-sonnet-5")
+ANTHROPIC_API_BASE = os.environ.get("MATRIXARK_ANTHROPIC_API_BASE", "https://api.anthropic.com").rstrip("/")
+ANTHROPIC_LLM_API_KEY_ENV = os.environ.get("MATRIXARK_EXTRACTION_API_KEY_ENV", "ANTHROPIC_API_KEY")
+ANTHROPIC_API_VERSION = os.environ.get("MATRIXARK_ANTHROPIC_VERSION", "2023-06-01")
+ANTHROPIC_LLM_TIMEOUT_SEC = float(os.environ.get("MATRIXARK_ANTHROPIC_TIMEOUT_SEC", os.environ.get("MATRIXARK_EXTRACTION_TIMEOUT_SEC", "30")))
+ANTHROPIC_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_ANTHROPIC_MAX_TOKENS", os.environ.get("MATRIXARK_EXTRACTION_MAX_TOKENS", "1200")))
 SUMMARY_LLM_PROVIDER = os.environ.get(
     "MATRIXARK_SUMMARY_PROVIDER",
     os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", "deterministic")),
@@ -537,6 +548,12 @@ def one_pass_memory_extraction(envelope: Json, *, prior_context: Json) -> Json:
     if provider in {"openai", "openai_compatible", "openai_compatible_llm"}:
         try:
             return openai_compatible_one_pass_memory_extraction(envelope, prior_context=prior_context)
+        except MatrixArkError:
+            if require_oss_understanding():
+                raise
+    if provider in {"anthropic", "claude", "anthropic_messages"}:
+        try:
+            return anthropic_one_pass_memory_extraction(envelope, prior_context=prior_context)
         except MatrixArkError:
             if require_oss_understanding():
                 raise
@@ -3839,7 +3856,8 @@ def generate_time_compression_summary(
             "model": "",
             "fallback_used": False,
         }
-    if provider not in {"openai", "openai_compatible", "openai_compatible_llm"}:
+    anthropic_summary = provider in {"anthropic", "claude", "anthropic_messages"}
+    if provider not in {"openai", "openai_compatible", "openai_compatible_llm", "anthropic", "claude", "anthropic_messages"}:
         if TIME_COMPRESSION_REQUIRE_LLM_SUMMARY:
             raise MatrixArkError(f"unsupported TIME_COMPRESS summary provider: {provider}")
         return {
@@ -3870,25 +3888,49 @@ def generate_time_compression_summary(
         "Source events:\n"
         + "\n".join(f"- {summarize_text(text, limit=400)}" for text in event_texts[:32])
     )
-    payload = {
-        "model": TIME_COMPRESSION_SUMMARY_MODEL,
-        "messages": [
-            {"role": "system", "content": "You write concise, factual memory compression summaries for an LLM context system."},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0,
-        "max_tokens": 512,
-    }
-    request = urllib.request.Request(
-        f"{TIME_COMPRESSION_SUMMARY_BASE_URL}/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        method="POST",
-    )
+    if anthropic_summary:
+        payload = {
+            "model": TIME_COMPRESSION_SUMMARY_MODEL,
+            "max_tokens": 512,
+            "system": "You write concise, factual memory compression summaries for an LLM context system.",
+            "messages": [
+                {"role": "user", "content": prompt},
+            ],
+        }
+        request = urllib.request.Request(
+            f"{ANTHROPIC_API_BASE}/v1/messages",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"x-api-key": api_key, "anthropic-version": ANTHROPIC_API_VERSION, "Content-Type": "application/json"},
+            method="POST",
+        )
+    else:
+        payload = {
+            "model": TIME_COMPRESSION_SUMMARY_MODEL,
+            "messages": [
+                {"role": "system", "content": "You write concise, factual memory compression summaries for an LLM context system."},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0,
+            "max_tokens": 512,
+        }
+        request = urllib.request.Request(
+            f"{TIME_COMPRESSION_SUMMARY_BASE_URL}/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
     try:
         with urllib.request.urlopen(request, timeout=TIME_COMPRESSION_SUMMARY_TIMEOUT_SEC) as response:
             data = json.loads(response.read().decode("utf-8"))
-        summary = str(data.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
+        if anthropic_summary:
+            blocks = data.get("content", [])
+            summary = "".join(
+                str(block.get("text", ""))
+                for block in blocks
+                if isinstance(block, dict) and block.get("type", "text") == "text"
+            ).strip() if isinstance(blocks, list) else ""
+        else:
+            summary = str(data.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
         if not summary:
             raise MatrixArkError("TIME_COMPRESS summary provider returned empty content")
         return {
