@@ -3,6 +3,8 @@
 **The open-source, Rust-native temporal store for AI-agent memory, features, and control.**
 Apache-2.0 · self-hostable · one durable engine, no vector DB.
 
+📊 **Benchmarks & docs — [temporalstore.ai/benchmarks.html](https://temporalstore.ai/benchmarks.html)**
+
 TemporalStore gives coding and product agents **durable, time-aware memory**: it ingests
 each turn in real time, extracts entities and summaries, and serves a ranked, token-budgeted
 **ContextPack** — plus exact serving-time **feature aggregates** and O(1) **control state**
@@ -33,7 +35,8 @@ cost; a bounded managed pack cuts it dramatically.
 ## Proof it works
 
 Measured with open-source reader models (Ollama + Qwen) and independent ground truth — full
-methodology and per-dataset numbers in [docs/benchmarks](docs/benchmarks/README.md):
+methodology and per-dataset numbers in [docs/benchmarks](docs/benchmarks/README.md), with the
+live report at **[temporalstore.ai/benchmarks.html](https://temporalstore.ai/benchmarks.html)**:
 
 - **~89–99% fewer prompt tokens** at equal-or-better answer quality on deep sessions —
   a real-transcript **median of 484k tokens/turn** of replayed context collapses to a
@@ -50,7 +53,7 @@ You need only [Docker](docs/INSTALL.md#step-0-install-docker-if-you-dont-have-it
 — no Rust toolchain on your host (it lives inside the build stage).
 
 ```bash
-git clone https://github.com/bjmeetsfo/TemporalStore.git
+git clone https://github.com/matrixarkai/TemporalStore.git
 cd TemporalStore
 docker compose -f docker-compose.single-node.yml up --build
 ```
@@ -170,9 +173,9 @@ Foundation (OSS) ─ MatrixCache (multi-layer cache) · MatrixRaft (Rust Raft co
 Storage backend (auto) ─ MatrixObject → shared filesystem → local + Raft
 ```
 
-Three Apache-2.0 repositories: [TemporalStore](https://github.com/bjmeetsfo/TemporalStore) ·
-[MatrixCache](https://github.com/bjmeetsfo/MatrixCache) ·
-[MatrixRaft](https://github.com/bjmeetsfo/MatrixRaft).
+Three Apache-2.0 repositories: [TemporalStore](https://github.com/matrixarkai/TemporalStore) ·
+[MatrixCache](https://github.com/matrixarkai/MatrixCache) ·
+[MatrixRaft](https://github.com/matrixarkai/MatrixRaft).
 
 ---
 
