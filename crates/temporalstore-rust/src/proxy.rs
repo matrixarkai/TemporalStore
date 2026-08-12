@@ -1130,40 +1130,6 @@ mod tests {
     use std::time::Instant;
 
     #[test]
-    fn proxy_exposes_cpp_parity_readiness_report() {
-        let proxy = ProxyService::new(ProxyOptions {
-            meta_addr: "127.0.0.1:1".to_string(),
-            ..ProxyOptions::default()
-        });
-
-        for path in ["/readiness", "/cpp_parity"] {
-            let (code, body) = proxy.handle(HttpRequest {
-                method: "GET".to_string(),
-                path: path.to_string(),
-                body: Vec::new(),
-            });
-            assert_eq!(code, 200);
-            let report = parse_json::<ProductionReadinessReport>(&body).unwrap();
-            assert!(!report.production_ready);
-            assert!(!report.cpp_parity_ready);
-            assert!(report.missing_count() > 0);
-            assert!(report
-                .missing_by_area("storage_cache")
-                .expect("storage cache area must exist")
-                .is_empty());
-            assert!(report
-                .missing_by_area("raft_replication")
-                .expect("raft replication area must exist")
-                .iter()
-                .any(|item| item.contains("multi-process rollout evidence")));
-            assert!(report
-                .missing_by_area("scale_testing")
-                .expect("scale testing area must exist")
-                .is_empty());
-        }
-    }
-
-    #[test]
     fn proxy_exposes_tonic_streaming_callback_contract() {
         // shared-corpus: control_proxy_tonic_streaming_maturity
         let proxy = ProxyService::new(ProxyOptions {
@@ -1251,7 +1217,7 @@ mod tests {
 
     #[test]
     fn proxy_metrics_expose_request_policy_and_backend_counters() {
-        // shared-corpus: ops_grafana_metrics_cpp_parity
+        // shared-corpus: ops_grafana_metrics_parity
         let proxy = ProxyService::new(ProxyOptions {
             meta_addr: "127.0.0.1:1".to_string(),
             serving_mode: ProxyServingMode::NotServing,
@@ -1975,7 +1941,6 @@ mod tests {
                 first_shard_id: 1,
                 shard_count: 1,
                 replica_count: 1,
-                use_cpp_partition_ids: false,
                 partition_version: 0,
                 serving_options: crate::meta::TableServingOptions::default(),
             })
@@ -2506,7 +2471,6 @@ mod tests {
                 first_shard_id: 1,
                 shard_count: 2,
                 replica_count: 1,
-                use_cpp_partition_ids: false,
                 partition_version: 0,
                 serving_options: crate::meta::TableServingOptions::default(),
             })
@@ -2605,7 +2569,6 @@ mod tests {
                 first_shard_id: 1,
                 shard_count: 1,
                 replica_count: 1,
-                use_cpp_partition_ids: false,
                 partition_version: 0,
                 serving_options: crate::meta::TableServingOptions::default(),
             })
@@ -2645,7 +2608,6 @@ mod tests {
                 shard_count: Some(1),
                 replica_count: Some(1),
                 first_shard_id: None,
-                use_cpp_partition_ids: None,
                 partition_version: None,
                 serving_options: Some(crate::meta::TableServingOptionsPatch {
                     drop_percent: Some(1),
@@ -3001,7 +2963,6 @@ mod tests {
                 first_shard_id: 1,
                 shard_count: 1,
                 replica_count: 1,
-                use_cpp_partition_ids: false,
                 partition_version: 0,
                 serving_options: crate::meta::TableServingOptions::default(),
             })

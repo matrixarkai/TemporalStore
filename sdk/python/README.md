@@ -6,7 +6,6 @@ proxy over HTTP/JSON; no build step required.
 - **`TemporalFeatureStore`** — high-level, production-hardened client for
   **aggregated features** (this is what most serving code should use).
 - **`ProxyClient`** — thin wrapper over the raw `/ProxyService/*` endpoints.
-- **`Client`** — direct in-process client over the native library (ctypes FFI).
 
 Requires Python 3.7+. Uses only the standard library; if [`requests`] is
 installed it is used automatically for connection pooling.

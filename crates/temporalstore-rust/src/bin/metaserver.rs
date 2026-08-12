@@ -680,7 +680,7 @@ fn handle(
             200,
             metaserver_prometheus_metrics(meta, scheduler).into_bytes(),
         ),
-        ("GET", "/readiness") | ("GET", "/cpp_parity") => {
+        ("GET", "/readiness") => {
             json_response(200, &production_readiness_report())
         }
         ("GET", "/meta/info") => json_response(200, &backend_call!(meta, info)),
@@ -1113,8 +1113,6 @@ struct MasterCreateTableRequest {
     #[serde(default)]
     table_options: Option<MasterTableOptionsRequest>,
     #[serde(default)]
-    use_cpp_partition_ids: bool,
-    #[serde(default)]
     partition_version: u32,
 }
 
@@ -1132,8 +1130,6 @@ struct MasterUpdateTableRequest {
     first_shard_id: Option<u64>,
     #[serde(default)]
     table_options: Option<MasterTableOptionsRequest>,
-    #[serde(default)]
-    use_cpp_partition_ids: Option<bool>,
     #[serde(default)]
     partition_version: Option<u32>,
 }
@@ -1343,29 +1339,6 @@ mod tests {
     use temporalstore_rust::ProductionReadinessReport;
 
     #[test]
-    fn metaserver_exposes_cpp_parity_readiness_report() {
-        let backend = MetaBackend::Single(SingleNodeMeta::default());
-        let scheduler = MetaTaskScheduler::default();
-
-        for path in ["/readiness", "/cpp_parity"] {
-            let (code, body) = handle(
-                &backend,
-                &scheduler,
-                HttpRequest {
-                    method: "GET".to_string(),
-                    path: path.to_string(),
-                    body: Vec::new(),
-                },
-            );
-            assert_eq!(code, 200);
-            let report: ProductionReadinessReport = serde_json::from_slice(&body).unwrap();
-            assert!(report.production_ready);
-            assert!(report.cpp_parity_ready);
-            assert_eq!(report.missing_count(), 0);
-        }
-    }
-
-    #[test]
     fn metaserver_metrics_expose_inventory_state_and_scheduler() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
@@ -1394,7 +1367,6 @@ mod tests {
             first_shard_id: 1,
             shard_count: 1,
             replica_count: 1,
-            use_cpp_partition_ids: false,
             partition_version: 0,
             serving_options: temporalstore_rust::meta::TableServingOptions::default(),
         });
@@ -1475,7 +1447,6 @@ mod tests {
             first_shard_id: 91,
             shard_count: 1,
             replica_count: 1,
-            use_cpp_partition_ids: false,
             partition_version: 0,
             serving_options: temporalstore_rust::meta::TableServingOptions::default(),
         });
@@ -1623,319 +1594,6 @@ mod tests {
         assert!(safe_mode.status.ok, "{safe_mode:?}");
         assert_eq!(safe_mode.blocked_servers, vec!["safe-server".to_string()]);
         assert_eq!(safe_mode.blocked_proxies, vec!["safe-proxy".to_string()]);
-    }
-
-    #[test]
-    fn master_service_aliases_cover_cpp_master_surface() {
-        let meta = SingleNodeMeta::default();
-        let backend = MetaBackend::Single(meta.clone());
-        let scheduler = MetaTaskScheduler::default();
-
-        let (code, body) = handle(
-            &backend,
-            &scheduler,
-            HttpRequest {
-                method: "POST".to_string(),
-                path: "/namespaces".to_string(),
-                body: serde_json::to_vec(&AddNamespaceRequest {
-                    namespace: "ns".to_string(),
-                })
-                .unwrap(),
-            },
-        );
-        assert_eq!(code, 200);
-        let ack: AckResponse = serde_json::from_slice(&body).unwrap();
-        assert!(ack.status.ok, "{ack:?}");
-
-        let (code, body) = handle(
-            &backend,
-            &scheduler,
-            HttpRequest {
-                method: "POST".to_string(),
-                path: "/MasterService/RegisterServer".to_string(),
-                body: serde_json::to_vec(&serde_json::json!({
-                    "host": "127.0.0.1",
-                    "port": 19090,
-                    "node_id": 99,
-                    "location": "zone-a",
-                    "binary_version": "v-master"
-                }))
-                .unwrap(),
-            },
-        );
-        assert_eq!(code, 200);
-        let ack: AckResponse = serde_json::from_slice(&body).unwrap();
-        assert!(ack.status.ok, "{ack:?}");
-        assert_eq!(
-            meta.list_servers().servers[0].server_addr,
-            "127.0.0.1:19090"
-        );
-
-        for path in ["/meta/preflight", "/MasterService/Preflight"] {
-            let (code, body) = handle(
-                &backend,
-                &scheduler,
-                HttpRequest {
-                    method: "GET".to_string(),
-                    path: path.to_string(),
-                    body: Vec::new(),
-                },
-            );
-            assert_eq!(code, 200, "{path}");
-            let preflight: temporalstore_rust::meta::MetaPreflightReport =
-                serde_json::from_slice(&body).unwrap();
-            assert!(preflight.status.ok, "{path}: {preflight:?}");
-            assert_eq!(preflight.normal_servers, 1);
-        }
-
-        let (code, body) = handle(
-            &backend,
-            &scheduler,
-            HttpRequest {
-                method: "GET".to_string(),
-                path: "/MasterService/GetInfo".to_string(),
-                body: Vec::new(),
-            },
-        );
-        assert_eq!(code, 200);
-        let info: temporalstore_rust::meta::MetaInfo = serde_json::from_slice(&body).unwrap();
-        assert!(info.status.ok, "{info:?}");
-        assert_eq!(info.stats.server_count, 1);
-
-        let (code, body) = handle(
-            &backend,
-            &scheduler,
-            HttpRequest {
-                method: "POST".to_string(),
-                path: "/MasterService/CreateTable".to_string(),
-                body: serde_json::to_vec(&serde_json::json!({
-                    "namespace": "ns",
-                    "table_name": "tbl",
-                    "first_shard_id": 700,
-                    "replica_count": 1,
-                    "table_options": {
-                        "partition_num": 2,
-                        "pin_primary": false,
-                        "replica_read_policy": "first_replica",
-                        "preferred_location": "zone-a",
-                        "drop_percent": 13,
-                        "max_read_retries": 3,
-                        "max_write_retries": 2,
-                        "retry_backoff_ms": 9,
-                        "continuous_failed_time_ms": 1234,
-                        "io_timeout_ms": 345,
-                        "connect_timeout_ms": 456
-                    }
-                }))
-                .unwrap(),
-            },
-        );
-        assert_eq!(code, 200);
-        let ack: AckResponse = serde_json::from_slice(&body).unwrap();
-        assert!(ack.status.ok, "{ack:?}");
-
-        let (code, body) = handle(
-            &backend,
-            &scheduler,
-            HttpRequest {
-                method: "POST".to_string(),
-                path: "/MasterService/OpenTable".to_string(),
-                body: serde_json::to_vec(&serde_json::json!({
-                    "namespace": "ns",
-                    "table_name": "tbl"
-                }))
-                .unwrap(),
-            },
-        );
-        assert_eq!(code, 200);
-        let open: MasterOpenTableResponse = serde_json::from_slice(&body).unwrap();
-        assert!(open.status.ok, "{open:?}");
-        assert!(open.open_version > 0);
-
-        let (code, body) = handle(
-            &backend,
-            &scheduler,
-            HttpRequest {
-                method: "POST".to_string(),
-                path: "/MasterService/GetTableTopo".to_string(),
-                body: serde_json::to_vec(&serde_json::json!({
-                    "namespace": "ns",
-                    "table_name": "tbl",
-                    "old_topo_version": 0
-                }))
-                .unwrap(),
-            },
-        );
-        assert_eq!(code, 200);
-        let topo: TableTopologyResponse = serde_json::from_slice(&body).unwrap();
-        assert!(topo.status.ok, "{topo:?}");
-        assert_eq!(topo.shards.len(), 2);
-        let serving_options = &topo.table.as_ref().unwrap().serving_options;
-        assert!(!serving_options.pin_primary);
-        assert_eq!(serving_options.replica_read_policy, "first_replica");
-        assert_eq!(serving_options.preferred_location, "zone-a");
-        assert_eq!(serving_options.drop_percent, 13);
-        assert_eq!(serving_options.max_read_retries, 3);
-        assert_eq!(serving_options.max_write_retries, 2);
-        assert_eq!(serving_options.retry_backoff_ms, 9);
-        assert_eq!(serving_options.continuous_failed_time_ms, 1234);
-        assert_eq!(serving_options.io_timeout_ms, 345);
-        assert_eq!(serving_options.connect_timeout_ms, 456);
-
-        let (code, body) = handle(
-            &backend,
-            &scheduler,
-            HttpRequest {
-                method: "POST".to_string(),
-                path: "/MasterService/GetTableTopo".to_string(),
-                body: serde_json::to_vec(&serde_json::json!({
-                    "namespace": "ns",
-                    "table_name": "tbl",
-                    "old_topo_version": open.open_version
-                }))
-                .unwrap(),
-            },
-        );
-        assert_eq!(code, 200);
-        let unchanged: TableTopologyResponse = serde_json::from_slice(&body).unwrap();
-        assert!(unchanged.status.ok, "{unchanged:?}");
-        assert!(unchanged.unchanged);
-
-        let (code, body) = handle(
-            &backend,
-            &scheduler,
-            HttpRequest {
-                method: "POST".to_string(),
-                path: "/MasterService/UpdateTable".to_string(),
-                body: serde_json::to_vec(&serde_json::json!({
-                    "namespace": "ns",
-                    "table_name": "tbl",
-                    "replica_count": 2,
-                    "table_options": {
-                        "partition_num": 3,
-                        "drop_percent": 21,
-                        "replica_read_policy": "round_robin_replica"
-                    }
-                }))
-                .unwrap(),
-            },
-        );
-        assert_eq!(code, 200);
-        let update: AckResponse = serde_json::from_slice(&body).unwrap();
-        assert!(update.status.ok, "{update:?}");
-
-        let (code, body) = handle(
-            &backend,
-            &scheduler,
-            HttpRequest {
-                method: "POST".to_string(),
-                path: "/MasterService/GetTableTopo".to_string(),
-                body: serde_json::to_vec(&serde_json::json!({
-                    "namespace": "ns",
-                    "table_name": "tbl",
-                    "old_topo_version": open.open_version
-                }))
-                .unwrap(),
-            },
-        );
-        assert_eq!(code, 200);
-        let changed_topo: TableTopologyResponse = serde_json::from_slice(&body).unwrap();
-        assert!(changed_topo.status.ok, "{changed_topo:?}");
-        assert!(!changed_topo.unchanged);
-        assert_eq!(changed_topo.table.as_ref().unwrap().replica_count, 2);
-        assert_eq!(
-            changed_topo
-                .table
-                .as_ref()
-                .unwrap()
-                .serving_options
-                .replica_read_policy,
-            "round_robin_replica"
-        );
-        assert_eq!(
-            changed_topo
-                .table
-                .as_ref()
-                .unwrap()
-                .serving_options
-                .drop_percent,
-            21
-        );
-        assert_eq!(changed_topo.shards.len(), 3);
-
-        let (code, body) = handle(
-            &backend,
-            &scheduler,
-            HttpRequest {
-                method: "POST".to_string(),
-                path: "/MasterService/CloseTable".to_string(),
-                body: serde_json::to_vec(&serde_json::json!({
-                    "namespace": "ns",
-                    "table_name": "tbl",
-                    "open_version": open.open_version
-                }))
-                .unwrap(),
-            },
-        );
-        assert_eq!(code, 200);
-        let close: AckResponse = serde_json::from_slice(&body).unwrap();
-        assert!(close.status.ok, "{close:?}");
-
-        let (code, body) = handle(
-            &backend,
-            &scheduler,
-            HttpRequest {
-                method: "POST".to_string(),
-                path: "/MasterService/UnRegisterServer".to_string(),
-                body: serde_json::to_vec(&serde_json::json!({
-                    "host": "127.0.0.1",
-                    "port": 19090
-                }))
-                .unwrap(),
-            },
-        );
-        assert_eq!(code, 200);
-        let unregister: AckResponse = serde_json::from_slice(&body).unwrap();
-        assert!(unregister.status.ok, "{unregister:?}");
-        assert_eq!(
-            meta.list_servers().servers[0].state,
-            MetaEntityState::Dropped
-        );
-
-        let (code, body) = handle(
-            &backend,
-            &scheduler,
-            HttpRequest {
-                method: "POST".to_string(),
-                path: "/MasterService/DeleteTable".to_string(),
-                body: serde_json::to_vec(&serde_json::json!({
-                    "namespace": "ns",
-                    "table_name": "tbl"
-                }))
-                .unwrap(),
-            },
-        );
-        assert_eq!(code, 200);
-        let delete: AckResponse = serde_json::from_slice(&body).unwrap();
-        assert!(delete.status.ok, "{delete:?}");
-        assert_eq!(meta.list_tables().tables[0].state, MetaEntityState::Dropped);
-
-        let (code, body) = handle(
-            &backend,
-            &scheduler,
-            HttpRequest {
-                method: "POST".to_string(),
-                path: "/MasterService/OpenTable".to_string(),
-                body: serde_json::to_vec(&serde_json::json!({
-                    "namespace": "ns",
-                    "table_name": "tbl"
-                }))
-                .unwrap(),
-            },
-        );
-        assert_eq!(code, 200);
-        let open_after_delete: MasterOpenTableResponse = serde_json::from_slice(&body).unwrap();
-        assert_eq!(open_after_delete.status.code, "table_not_found");
     }
 
     #[test]

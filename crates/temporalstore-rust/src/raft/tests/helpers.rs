@@ -289,7 +289,6 @@ pub(super) fn topology_for_shard(
             first_shard_id: shard_id,
             shard_count: 1,
             replica_count: 3,
-            use_cpp_partition_ids: false,
             partition_version: 0,
             serving_options: crate::meta::TableServingOptions::default(),
         }),

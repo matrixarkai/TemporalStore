@@ -2143,7 +2143,6 @@ fn verify_client_cpp_partition_set_route_cache() {
                             first_shard_id: PartitionId::new(42, 0, 0, 17).unwrap().id(),
                             shard_count: 2,
                             replica_count: 2,
-                            use_cpp_partition_ids: true,
                             partition_version: 17,
                             serving_options: Default::default(),
                         }),
@@ -2219,7 +2218,6 @@ fn verify_client_cpp_partition_set_route_cache() {
     });
     let options = client.sync_table_topology("ns", "cpp_parts").unwrap();
     assert_eq!(options.table_id, 42);
-    assert!(options.use_cpp_partition_ids);
     assert_eq!(options.partition_version, 17);
 
     let report = client.preflight_report();
@@ -2227,7 +2225,6 @@ fn verify_client_cpp_partition_set_route_cache() {
     let partition_set = &report.cpp_partition_sets[0];
     assert_eq!(partition_set.table_id, 42);
     assert_eq!(partition_set.combine_name, "ns/cpp_parts");
-    assert!(partition_set.use_cpp_partition_ids);
     assert_eq!(partition_set.partition_version, 17);
     assert_eq!(partition_set.topology_version, 12);
     assert_eq!(partition_set.partition_count, 2);
@@ -2251,7 +2248,6 @@ fn verify_client_cpp_partition_set_route_cache() {
         .routes
         .iter()
         .all(|route| route.table == "ns/cpp_parts"
-            && route.use_cpp_partition_ids
             && route.partition_version == 17));
     assert_eq!(
         topology_report.routes[0].partition_id,
@@ -2408,7 +2404,6 @@ fn verify_client_metasync_outage_churn() {
                                 first_shard_id: 40,
                                 shard_count: 1,
                                 replica_count: 1,
-                                use_cpp_partition_ids: false,
                                 partition_version: 0,
                                 serving_options: Default::default(),
                             }),
@@ -2625,7 +2620,6 @@ fn verify_client_deployment_placement_routing() {
                             first_shard_id: 81,
                             shard_count: 1,
                             replica_count: 2,
-                            use_cpp_partition_ids: false,
                             partition_version: 3,
                             serving_options: temporalstore_rust::meta::TableServingOptions {
                                 pin_primary: false,
@@ -2735,14 +2729,14 @@ fn verify_metaserver_scheduler_control_plane() {
         first_shard_id: 0,
         shard_count: 2,
         replica_count: 2,
-        use_cpp_partition_ids: true,
         partition_version: 23,
         serving_options: Default::default(),
     });
     assert!(added.status.ok, "{added:?}");
 
-    let first = PartitionId::new(1, 0, 0, 23).unwrap().id();
-    let second = PartitionId::new(1, 1, 0, 23).unwrap().id();
+    // Native partition ids: shard_id = first_shard_id + offset.
+    let first = 0;
+    let second = 1;
     assert!(
         meta.register(RegisterShardRequest {
             shard_id: first,
@@ -2760,7 +2754,6 @@ fn verify_metaserver_scheduler_control_plane() {
     assert!(topology.status.ok, "{topology:?}");
     let table = topology.table.as_ref().unwrap();
     assert_eq!(table.table_id, 1);
-    assert!(table.use_cpp_partition_ids);
     assert_eq!(table.partition_version, 23);
     assert_eq!(table.shard_count, 2);
     assert_eq!(topology.shards.len(), 2);

@@ -2,12 +2,12 @@
 # Copyright 2026 MatrixArkAI
 """Production-ready TemporalStore usage patterns.
 
-A batteries-included facade over the TemporalStore Python SDK (native ``Client``
-*or* HTTP ``ProxyClient``) that demonstrates how to run long-sequence features and
+A batteries-included facade over the TemporalStore Python SDK (HTTP
+``ProxyClient``) that demonstrates how to run long-sequence features and
 the common companion use cases in a real service, with the operational concerns a
 production deployment needs:
 
-* configuration from environment / dataclass, native-or-proxy backend selection;
+* configuration from environment / dataclass;
 * connection lifecycle (context manager) and safe reuse across a request handler;
 * bounded retries with exponential backoff + jitter, applied only to operations
   that are safe to retry (reads, and appends that are idempotent by timestamp);
@@ -51,11 +51,9 @@ from typing import Callable, Iterable, Iterator, List, Optional, Protocol, Seque
 # The SDK ships two interchangeable clients; import the concrete types from the
 # submodules so this works regardless of what the package __init__ re-exports.
 from temporalstore.client import (
-    Client,
     FeatureFilter,
     FeatureFilterOp,
     FeaturePoint,
-    Options,
     RiskPrecision as ControlPrecision,
     SequenceFeatureRow,
     TemporalStoreError,
@@ -96,17 +94,13 @@ class StoreConfig:
     the code.
     """
 
-    backend: str = "proxy"  # "proxy" (HTTP) or "native" (ctypes .so)
+    backend: str = "proxy"  # "proxy" (HTTP)
     namespace: str = "default"
     table: str = "features"
 
     # proxy backend
     endpoint: str = "http://127.0.0.1:8080"
     api_key: str = ""
-
-    # native backend
-    metaserver_addr: str = "127.0.0.1:17101"
-    library_path: Optional[str] = None
 
     # limits / timeouts (shared)
     request_timeout_ms: int = 5000
@@ -128,8 +122,6 @@ class StoreConfig:
             table=env("TABLE", "features"),
             endpoint=env("ENDPOINT", "http://127.0.0.1:8080"),
             api_key=env("API_KEY", ""),
-            metaserver_addr=env("METASERVER", "127.0.0.1:17101"),
-            library_path=os.environ.get(prefix + "LIBRARY_PATH") or None,
             request_timeout_ms=int(env("TIMEOUT_MS", "5000")),
             max_points_per_request=int(env("MAX_POINTS", "1000")),
             max_query_count=int(env("MAX_QUERY_COUNT", "5000")),
@@ -189,22 +181,8 @@ def build_client(config: StoreConfig) -> StoreClient:
     """Construct the concrete client for ``config.backend``.
 
     The proxy client is pure-Python (stdlib HTTP) and needs no shared library —
-    the right default for portable services. The native client is faster but
-    requires ``libtemporalstore.so`` (set ``library_path`` / ``TEMPORALSTORE_LIB``).
+    the right default for portable services.
     """
-
-    if config.backend == "native":
-        options = Options(
-            metaserver_addr=config.metaserver_addr,
-            namespace_name=config.namespace,
-            table_name=config.table,
-            request_timeout_ms=config.request_timeout_ms,
-            max_feature_points_per_request=config.max_points_per_request,
-            max_feature_query_count=config.max_query_count,
-            max_key_bytes=config.max_key_bytes,
-            max_value_bytes=config.max_value_bytes,
-        )
-        return Client(options, library_path=config.library_path)
 
     if config.backend == "proxy":
         return ProxyClient(
@@ -217,7 +195,7 @@ def build_client(config: StoreConfig) -> StoreClient:
             )
         )
 
-    raise ValueError(f"unknown backend {config.backend!r}; expected 'proxy' or 'native'")
+    raise ValueError(f"unknown backend {config.backend!r}; expected 'proxy'")
 
 
 # ---------------------------------------------------------------------------

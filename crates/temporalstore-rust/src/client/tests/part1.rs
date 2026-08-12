@@ -226,181 +226,6 @@ fn cpp_partition_set_report_marks_missing_routes() {
     );
 }
 
-// shared-corpus: control_client_cpp_partition_set_route_cache
-#[test]
-fn client_route_cache_preserves_cpp_partition_set_member_version_hierarchy() {
-    let meta_addr = free_local_addr();
-    let primary_addr = "127.0.0.1:27101".to_string();
-    let replica_addr = "127.0.0.1:27102".to_string();
-    let meta_addr_for_listener = meta_addr.clone();
-    let primary_for_meta = primary_addr.clone();
-    let replica_for_meta = replica_addr.clone();
-    std::thread::spawn(move || {
-        serve(&meta_addr_for_listener, move |request| {
-            match (request.method.as_str(), request.path.as_str()) {
-                ("POST", "/tables/topology") => json_response(
-                    200,
-                    &TableTopologyResponse {
-                        status: Status::ok(),
-                        table: Some(TableMetaInfo {
-                            table_id: 42,
-                            namespace: "ns".to_string(),
-                            table_name: "cpp_parts".to_string(),
-                            state: crate::meta::MetaEntityState::Normal,
-                            topology_version: 12,
-                            first_shard_id: crate::partition_id::PartitionId::new(42, 0, 0, 17)
-                                .unwrap()
-                                .id(),
-                            shard_count: 2,
-                            replica_count: 2,
-                            use_cpp_partition_ids: true,
-                            partition_version: 17,
-                            serving_options: crate::meta::TableServingOptions::default(),
-                        }),
-                        shards: vec![
-                            TableShard {
-                                shard_id: crate::partition_id::PartitionId::new(42, 0, 0, 17)
-                                    .unwrap()
-                                    .id(),
-                                start_bucket: 0,
-                                end_bucket: 536_870_911,
-                                primary: Some(primary_for_meta.clone()),
-                                replicas: vec![primary_for_meta.clone(), replica_for_meta.clone()],
-                                primary_endpoint: Some(crate::meta::ServerEndpoint {
-                                    server_addr: primary_for_meta.clone(),
-                                    location: "zone-a".to_string(),
-                                }),
-                                replica_endpoints: vec![crate::meta::ServerEndpoint {
-                                    server_addr: replica_for_meta.clone(),
-                                    location: "zone-b".to_string(),
-                                }],
-                            },
-                            TableShard {
-                                shard_id: crate::partition_id::PartitionId::new(42, 1, 0, 17)
-                                    .unwrap()
-                                    .id(),
-                                start_bucket: 536_870_912,
-                                end_bucket: 1_073_741_823,
-                                primary: Some(replica_for_meta.clone()),
-                                replicas: vec![replica_for_meta.clone()],
-                                primary_endpoint: Some(crate::meta::ServerEndpoint {
-                                    server_addr: replica_for_meta.clone(),
-                                    location: "zone-b".to_string(),
-                                }),
-                                replica_endpoints: Vec::new(),
-                            },
-                        ],
-                        unchanged: false,
-                    },
-                ),
-                ("POST", "/meta/topology_version") => json_response(
-                    200,
-                    &crate::meta::TopologyVersionReport {
-                        status: Status::ok(),
-                        current_topology_version: 12,
-                        old_topology_version: 0,
-                        unchanged: false,
-                        server_count: 0,
-                        proxy_count: 0,
-                        table_count: 1,
-                        shard_route_count: 2,
-                        normal_servers: 0,
-                        frozen_servers: 0,
-                        dropped_servers: 0,
-                        normal_proxies: 0,
-                        frozen_proxies: 0,
-                        dropped_proxies: 0,
-                        normal_tables: 1,
-                        frozen_tables: 0,
-                        dropped_tables: 0,
-                        changed_tables: Vec::new(),
-                        events: Vec::new(),
-                        event_history_truncated: false,
-                    },
-                ),
-                _ => json_response(404, &Status::error("not_found", "not found")),
-            }
-        })
-        .unwrap();
-    });
-    wait_for_http(&meta_addr);
-
-    let client = TemporalStoreClient::with_options(ClientOptions {
-        proxy_addr: "127.0.0.1:1".to_string(),
-        meta_addr: Some(meta_addr),
-        route_cache_ttl_ms: 60_000,
-        ..ClientOptions::default()
-    });
-    let options = client.sync_table_topology("ns", "cpp_parts").unwrap();
-    assert_eq!(options.table_id, 42);
-    assert!(options.use_cpp_partition_ids);
-    assert_eq!(options.partition_version, 17);
-
-    let report = client.preflight_report();
-    assert_eq!(report.cpp_partition_sets.len(), 1);
-    let partition_set = &report.cpp_partition_sets[0];
-    assert_eq!(partition_set.table_id, 42);
-    assert_eq!(partition_set.combine_name, "ns/cpp_parts");
-    assert!(partition_set.use_cpp_partition_ids);
-    assert_eq!(partition_set.partition_version, 17);
-    assert_eq!(partition_set.topology_version, 12);
-    assert_eq!(partition_set.partition_count, 2);
-    assert_eq!(partition_set.missing_route_count, 0);
-    assert_eq!(partition_set.members[0].start_bucket, 0);
-    assert_eq!(partition_set.members[0].end_bucket, 536_870_911);
-    assert_eq!(partition_set.members[1].start_bucket, 536_870_912);
-    assert_eq!(partition_set.members[1].end_bucket, 1_073_741_823);
-    assert_eq!(
-        partition_set.members[0].primary_addr.as_deref(),
-        Some(primary_addr.as_str())
-    );
-    assert_eq!(
-        partition_set.members[0].replica_addrs,
-        vec![replica_addr.clone()]
-    );
-
-    let topology_report = client.topology_cache_report();
-    assert_eq!(topology_report.route_count, 2);
-    assert!(topology_report
-        .routes
-        .iter()
-        .all(|route| route.table == "ns/cpp_parts"
-            && route.use_cpp_partition_ids
-            && route.partition_version == 17));
-    assert_eq!(
-        topology_report.routes[0].partition_id,
-        partition_set.members[0].partition_id
-    );
-
-    let parity = client.direct_sdk_parity_report();
-    assert!(
-        parity.ready,
-        "direct SDK parity blockers: {:?}",
-        parity.blockers
-    );
-    assert!(parity.rust_native_migration_contract_ready);
-    assert!(parity.typed_table_client_ready);
-    assert!(parity.cpp_partition_set_route_cache_ready);
-    assert!(parity.partition_member_version_ready);
-    assert!(parity.topology_sync_ready);
-    assert!(parity.meta_syncer_ready);
-    assert!(parity.retry_budget_ready);
-    assert!(parity.route_invalidation_ready);
-    assert!(parity.placement_hooks_ready);
-    assert!(parity.location_affine_secondary_reads_ready);
-    assert!(parity.primary_only_writes_ready);
-    assert_eq!(parity.cpp_partition_set_count, 1);
-    assert_eq!(parity.cpp_partition_member_count, 2);
-    assert_eq!(parity.missing_route_count, 0);
-    assert_eq!(parity.max_topology_version, 12);
-    assert!(parity.meta_sync_generation > 0);
-    for family in ["string", "hash", "feature", "redis", "admin", "context"] {
-        assert!(parity
-            .direct_sdk_command_families
-            .contains(&family.to_string()));
-    }
-}
-
 #[test]
 fn table_typed_methods_and_pipeline_match_cpp_client_shape() {
     let dir = tempfile::tempdir().unwrap();
@@ -816,7 +641,6 @@ fn table_write_refreshes_topology_after_meta_changed_without_write_retry_budget(
                             first_shard_id: 1,
                             shard_count: 1,
                             replica_count: 1,
-                            use_cpp_partition_ids: false,
                             partition_version: 0,
                             serving_options: crate::meta::TableServingOptions::default(),
                         }),
@@ -980,7 +804,6 @@ fn client_opens_table_from_metaserver_topology() {
                             first_shard_id: 10,
                             shard_count: 4,
                             replica_count: 1,
-                            use_cpp_partition_ids: false,
                             partition_version: 0,
                             serving_options: crate::meta::TableServingOptions::default(),
                         }),

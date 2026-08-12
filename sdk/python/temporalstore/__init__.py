@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
 from .client import (
-    Client,
     FeatureFilter,
     FeatureFilterOp,
     FeaturePoint,
@@ -21,7 +20,6 @@ from .features import (
 )
 
 __all__ = [
-    "Client",
     "FeatureFilter",
     "FeatureFilterOp",
     "FeaturePoint",

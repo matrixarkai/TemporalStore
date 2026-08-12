@@ -26,7 +26,6 @@ fn master_add_table_request(req: MasterCreateTableRequest) -> AddTableRequest {
         first_shard_id: req.first_shard_id,
         shard_count,
         replica_count: req.replica_count.max(1),
-        use_cpp_partition_ids: req.use_cpp_partition_ids,
         partition_version: req.partition_version,
         serving_options: req
             .table_options
@@ -48,7 +47,6 @@ fn master_update_table_request(req: MasterUpdateTableRequest) -> UpdateTableRequ
         shard_count,
         replica_count: req.replica_count,
         first_shard_id: req.first_shard_id,
-        use_cpp_partition_ids: req.use_cpp_partition_ids,
         partition_version: req.partition_version,
         serving_options: req
             .table_options
@@ -355,7 +353,6 @@ fn handle_master_service_route(
                         first_shard_id: req.first_shard_id,
                         shard_count,
                         replica_count: req.replica_count.max(1),
-                        use_cpp_partition_ids: req.use_cpp_partition_ids,
                         partition_version: req.partition_version,
                         serving_options: req
                             .table_options
@@ -394,7 +391,6 @@ fn handle_master_service_route(
                         shard_count,
                         replica_count: req.replica_count,
                         first_shard_id: req.first_shard_id,
-                        use_cpp_partition_ids: req.use_cpp_partition_ids,
                         partition_version: req.partition_version,
                         serving_options: req
                             .table_options

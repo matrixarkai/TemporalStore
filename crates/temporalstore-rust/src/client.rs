@@ -19,7 +19,6 @@ use crate::meta::{
     GetTableTopologyRequest, ServerEndpoint, TableTopologyResponse, TopologyVersionReport,
     TopologyVersionRequest,
 };
-use crate::partition_id::PartitionId;
 mod client_routing;
 mod client_meta_sync;
 mod commands;
@@ -149,7 +148,6 @@ pub struct TableOptions {
     pub continuous_failed_time_ms: u64,
     pub first_shard_id: ShardId,
     pub shard_count: u64,
-    pub use_cpp_partition_ids: bool,
     pub partition_version: u32,
     pub pin_primary: bool,
     pub replica_read_policy: ReplicaReadPolicy,
@@ -169,7 +167,6 @@ impl Default for TableOptions {
             continuous_failed_time_ms: 10_000,
             first_shard_id: 1,
             shard_count: 1,
-            use_cpp_partition_ids: false,
             partition_version: 0,
             pin_primary: true,
             replica_read_policy: ReplicaReadPolicy::PinPrimary,
@@ -418,7 +415,6 @@ pub struct ClientCppPartitionSetReport {
     pub combine_name: String,
     pub first_shard_id: ShardId,
     pub shard_count: u64,
-    pub use_cpp_partition_ids: bool,
     pub partition_version: u32,
     pub topology_version: u64,
     pub partition_count: usize,
@@ -531,7 +527,6 @@ pub struct ClientRouteCacheEntryReport {
     pub start_bucket: u64,
     #[serde(rename = "end_slot")]
     pub end_bucket: u64,
-    pub use_cpp_partition_ids: bool,
     pub partition_version: u32,
     pub primary_addr: String,
     pub replica_count: usize,
@@ -627,7 +622,6 @@ struct CachedRoute {
     partition_id: ShardId,
     start_bucket: u64,
     end_bucket: u64,
-    use_cpp_partition_ids: bool,
     partition_version: u32,
     primary_addr: String,
     replica_addrs: Vec<String>,
@@ -645,7 +639,6 @@ impl CachedRoute {
             partition_id: shard_id,
             start_bucket: 0,
             end_bucket: 0,
-            use_cpp_partition_ids: false,
             partition_version: 0,
             primary_addr: primary_addr.into(),
             replica_addrs: Vec::new(),
@@ -1542,16 +1535,6 @@ fn table_combine_name(namespace: &str, table_name: &str) -> String {
 }
 
 fn client_partition_id_for_offset(options: &TableOptions, offset: u64) -> ShardId {
-    if options.use_cpp_partition_ids {
-        if let Ok(partition) = PartitionId::new(
-            options.table_id,
-            offset,
-            0,
-            options.partition_version as u64,
-        ) {
-            return partition.id();
-        }
-    }
     options.first_shard_id.saturating_add(offset)
 }
 

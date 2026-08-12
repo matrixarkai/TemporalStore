@@ -12,7 +12,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::control::{ShardStatInfo, ShardCanonicalStorageStats};
-use crate::partition_id::{validate_partition_set_count, PartitionId, MAX_TABLE_ID};
 use crate::types::{ShardId, Status};
 mod partitioning;
 mod lifecycle;
@@ -336,8 +335,6 @@ pub struct AddTableRequest {
     #[serde(default = "default_replica_count")]
     pub replica_count: u64,
     #[serde(default)]
-    pub use_cpp_partition_ids: bool,
-    #[serde(default)]
     pub partition_version: u32,
     #[serde(default)]
     pub serving_options: TableServingOptions,
@@ -359,8 +356,6 @@ pub struct UpdateTableRequest {
     pub replica_count: Option<u64>,
     #[serde(default)]
     pub first_shard_id: Option<ShardId>,
-    #[serde(default)]
-    pub use_cpp_partition_ids: Option<bool>,
     #[serde(default)]
     pub partition_version: Option<u32>,
     #[serde(default)]
@@ -450,8 +445,6 @@ pub struct TableMetaInfo {
     pub first_shard_id: ShardId,
     pub shard_count: u64,
     pub replica_count: u64,
-    #[serde(default)]
-    pub use_cpp_partition_ids: bool,
     #[serde(default)]
     pub partition_version: u32,
     #[serde(default)]
@@ -1409,7 +1402,6 @@ mod tests {
                 first_shard_id: 10,
                 shard_count: 2,
                 replica_count: 2,
-                use_cpp_partition_ids: false,
                 partition_version: 0,
                 serving_options: crate::meta::TableServingOptions::default(),
             })
@@ -1483,7 +1475,6 @@ mod tests {
                 first_shard_id: 10,
                 shard_count: 2,
                 replica_count: 1,
-                use_cpp_partition_ids: false,
                 partition_version: 0,
                 serving_options: crate::meta::TableServingOptions::default(),
             })
@@ -1534,7 +1525,6 @@ mod tests {
                 first_shard_id: 42,
                 shard_count: 1,
                 replica_count: 1,
-                use_cpp_partition_ids: false,
                 partition_version: 0,
                 serving_options: crate::meta::TableServingOptions::default(),
             })
@@ -1563,7 +1553,6 @@ mod tests {
             shard_count: Some(2),
             replica_count: None,
             first_shard_id: None,
-            use_cpp_partition_ids: None,
             partition_version: None,
             serving_options: None,
         });
@@ -1613,7 +1602,6 @@ mod tests {
             first_shard_id: 100,
             shard_count: 2,
             replica_count: 1,
-            use_cpp_partition_ids: false,
             partition_version: 0,
             serving_options: crate::meta::TableServingOptions::default(),
         });
@@ -1625,7 +1613,6 @@ mod tests {
             shard_count: Some(4),
             replica_count: Some(2),
             first_shard_id: None,
-            use_cpp_partition_ids: None,
             partition_version: None,
             serving_options: None,
         });
@@ -1650,7 +1637,6 @@ mod tests {
             shard_count: Some(4),
             replica_count: Some(2),
             first_shard_id: None,
-            use_cpp_partition_ids: None,
             partition_version: None,
             serving_options: None,
         });
@@ -1662,7 +1648,6 @@ mod tests {
             shard_count: Some(1),
             replica_count: None,
             first_shard_id: None,
-            use_cpp_partition_ids: None,
             partition_version: None,
             serving_options: None,
         });
@@ -1674,7 +1659,6 @@ mod tests {
             shard_count: None,
             replica_count: None,
             first_shard_id: Some(200),
-            use_cpp_partition_ids: None,
             partition_version: None,
             serving_options: None,
         });
@@ -1694,7 +1678,6 @@ mod tests {
             shard_count: Some(5),
             replica_count: None,
             first_shard_id: None,
-            use_cpp_partition_ids: None,
             partition_version: None,
             serving_options: None,
         });
@@ -1711,7 +1694,6 @@ mod tests {
                 first_shard_id: 10,
                 shard_count: 1,
                 replica_count: 1,
-                use_cpp_partition_ids: false,
                 partition_version: 0,
                 serving_options: TableServingOptions {
                     pin_primary: false,
@@ -1748,7 +1730,6 @@ mod tests {
             shard_count: None,
             replica_count: None,
             first_shard_id: None,
-            use_cpp_partition_ids: None,
             partition_version: None,
             serving_options: Some(TableServingOptionsPatch {
                 replica_read_policy: Some("round_robin_replica".to_string()),
@@ -1773,7 +1754,6 @@ mod tests {
             shard_count: None,
             replica_count: None,
             first_shard_id: None,
-            use_cpp_partition_ids: None,
             partition_version: None,
             serving_options: Some(TableServingOptionsPatch {
                 replica_read_policy: Some("unknown_policy".to_string()),
@@ -1790,57 +1770,6 @@ mod tests {
                 .drop_percent,
             19
         );
-    }
-
-    #[test]
-    fn metaserver_can_generate_cpp_compatible_partition_ids_for_table_topology() {
-        let meta = SingleNodeMeta::default();
-        meta.add_table(AddTableRequest {
-            namespace: "ns".to_string(),
-            table_name: "cpp_ids".to_string(),
-            first_shard_id: 999,
-            shard_count: 3,
-            replica_count: 1,
-            use_cpp_partition_ids: true,
-            partition_version: 17,
-            serving_options: crate::meta::TableServingOptions::default(),
-        });
-
-        let topo = meta.get_table_topology(GetTableTopologyRequest {
-            namespace: "ns".to_string(),
-            table_name: "cpp_ids".to_string(),
-            old_topology_version: 0,
-        });
-
-        assert!(topo.status.ok);
-        let table = topo.table.unwrap();
-        assert_eq!(table.table_id, 1);
-        assert!(table.use_cpp_partition_ids);
-        assert_eq!(table.partition_version, 17);
-        assert_eq!(
-            table.first_shard_id,
-            PartitionId::new(1, 0, 0, 17).unwrap().id()
-        );
-        let shard_ids = topo
-            .shards
-            .iter()
-            .map(|partition| partition.shard_id)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            shard_ids,
-            vec![
-                PartitionId::new(1, 0, 0, 17).unwrap().id(),
-                PartitionId::new(1, 1, 0, 17).unwrap().id(),
-                PartitionId::new(1, 2, 0, 17).unwrap().id(),
-            ]
-        );
-        for (offset, shard_id) in shard_ids.into_iter().enumerate() {
-            let decoded = PartitionId::from_raw(shard_id);
-            assert_eq!(decoded.table_id(), 1);
-            assert_eq!(decoded.partition_set_index(), offset as u32);
-            assert_eq!(decoded.partition_index(), 0);
-            assert_eq!(decoded.partition_version(), 17);
-        }
     }
 
     #[test]
@@ -1877,7 +1806,6 @@ mod tests {
             first_shard_id: 100,
             shard_count: 1,
             replica_count: 2,
-            use_cpp_partition_ids: false,
             partition_version: 0,
             serving_options: crate::meta::TableServingOptions::default(),
         });
@@ -1935,7 +1863,6 @@ mod tests {
             first_shard_id: 400,
             shard_count: 1,
             replica_count: 2,
-            use_cpp_partition_ids: false,
             partition_version: 0,
             serving_options: crate::meta::TableServingOptions::default(),
         });
@@ -1990,7 +1917,6 @@ mod tests {
             first_shard_id: 500,
             shard_count: 1,
             replica_count: 2,
-            use_cpp_partition_ids: false,
             partition_version: 0,
             serving_options: crate::meta::TableServingOptions::default(),
         });
@@ -2040,7 +1966,6 @@ mod tests {
             first_shard_id: 200,
             shard_count: 1,
             replica_count: 2,
-            use_cpp_partition_ids: false,
             partition_version: 0,
             serving_options: crate::meta::TableServingOptions::default(),
         });
@@ -2091,7 +2016,6 @@ mod tests {
             first_shard_id: 300,
             shard_count: 1,
             replica_count: 2,
-            use_cpp_partition_ids: false,
             partition_version: 0,
             serving_options: crate::meta::TableServingOptions::default(),
         });
@@ -2140,7 +2064,6 @@ mod tests {
             first_shard_id: 301,
             shard_count: 1,
             replica_count: 2,
-            use_cpp_partition_ids: false,
             partition_version: 0,
             serving_options: crate::meta::TableServingOptions::default(),
         });
@@ -2268,7 +2191,6 @@ mod tests {
             first_shard_id: 42,
             shard_count: 1,
             replica_count: 1,
-            use_cpp_partition_ids: false,
             partition_version: 0,
             serving_options: crate::meta::TableServingOptions::default(),
         });
@@ -2408,7 +2330,6 @@ mod tests {
             first_shard_id: 77,
             shard_count: 1,
             replica_count: 1,
-            use_cpp_partition_ids: false,
             partition_version: 0,
             serving_options: crate::meta::TableServingOptions::default(),
         });
@@ -2535,7 +2456,6 @@ mod tests {
                 first_shard_id: 10,
                 shard_count: 1,
                 replica_count: 1,
-                use_cpp_partition_ids: false,
                 partition_version: 0,
                 serving_options: crate::meta::TableServingOptions::default(),
             })
@@ -2549,7 +2469,6 @@ mod tests {
                 shard_count: Some(2),
                 replica_count: Some(2),
                 first_shard_id: None,
-                use_cpp_partition_ids: None,
                 partition_version: None,
                 serving_options: None,
             })
@@ -2563,7 +2482,6 @@ mod tests {
                 first_shard_id: 11,
                 shard_count: 1,
                 replica_count: 1,
-                use_cpp_partition_ids: false,
                 partition_version: 0,
                 serving_options: crate::meta::TableServingOptions::default(),
             })
@@ -2731,7 +2649,6 @@ mod tests {
                 first_shard_id: 77,
                 shard_count: 2,
                 replica_count: 2,
-                use_cpp_partition_ids: false,
                 partition_version: 0,
                 serving_options: crate::meta::TableServingOptions::default(),
             })

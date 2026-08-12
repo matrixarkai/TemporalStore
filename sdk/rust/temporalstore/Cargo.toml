@@ -18,16 +18,6 @@ name = "matrixark_rust_proxy"
 path = "src/bin/matrixark_rust_proxy.rs"
 required-features = ["direct"]
 
-[[bin]]
-name = "matrixark_rust_direct_sdk"
-path = "src/bin/matrixark_rust_direct_sdk.rs"
-required-features = ["direct"]
-
-[[example]]
-name = "sequence_features"
-path = "examples/sequence_features.rs"
-required-features = ["direct"]
-
 [[example]]
 name = "proxy_sequence_features"
 path = "examples/proxy_sequence_features.rs"

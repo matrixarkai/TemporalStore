@@ -6,16 +6,12 @@
 use super::*;
 use std::collections::BTreeSet;
 use crate::types::{ShardId, Status};
-use crate::partition_id::PartitionId;
 
 pub(super) fn table_shard_id(
     table: &TableMetaInfo,
     offset: u64,
 ) -> Result<ShardId, crate::partition_id::PartitionIdError> {
-    if !table.use_cpp_partition_ids {
-        return Ok(table.first_shard_id + offset);
-    }
-    PartitionId::new(table.table_id, offset, 0, table.partition_version as u64).map(PartitionId::id)
+    Ok(table.first_shard_id + offset)
 }
 
 pub(super) fn table_for_shard<'a>(state: &'a MetaState, shard_id: ShardId) -> Option<&'a TableRecord> {

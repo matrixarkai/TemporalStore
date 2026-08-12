@@ -869,7 +869,6 @@ fn runtime_builds_cpp_style_server_load_report() {
             first_shard_id: 7,
             shard_count: 1,
             replica_count: 1,
-            use_cpp_partition_ids: false,
             partition_version: 0,
             serving_options: crate::meta::TableServingOptions::default(),
         }),

@@ -131,7 +131,7 @@ fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {
 
 // shared-corpus: cpp_storage_object_page_bucket_parity_surfaces;
 #[test]
-fn object_manager_runtime_report_tracks_residency_layout_and_tombstones_cpp_parity() {
+fn object_manager_runtime_report_tracks_residency_layout_and_tombstones_parity() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,

@@ -552,7 +552,7 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
     assert!(!inject.audit.selected_refs.is_empty());
 }
 
-// shared-corpus: context_query_debug_filter_group_cpp_parity
+// shared-corpus: context_query_debug_filter_group_parity
 #[test]
 fn context_query_debug_reports_filter_groups_drops_and_injection_order() {
     let engine = test_engine();

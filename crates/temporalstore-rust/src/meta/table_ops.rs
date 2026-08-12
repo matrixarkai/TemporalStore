@@ -22,21 +22,6 @@ impl SingleNodeMeta {
                 status: Status::error("bad_request", "shard_count must be > 0"),
             };
         }
-        if request.use_cpp_partition_ids {
-            if request.shard_count > u32::MAX as u64 {
-                return AckResponse {
-                    status: Status::error(
-                        "bad_request",
-                        "shard_count exceeds C++ partition-set range",
-                    ),
-                };
-            }
-            if let Err(err) = validate_partition_set_count(request.shard_count as u32) {
-                return AckResponse {
-                    status: Status::error("bad_request", err.to_string()),
-                };
-            }
-        }
         if let Err(err) = validate_serving_options(&request.serving_options) {
             return AckResponse {
                 status: Status::error("bad_request", err),
@@ -55,14 +40,6 @@ impl SingleNodeMeta {
             };
         }
         let table_id = state.next_table_id;
-        if request.use_cpp_partition_ids && table_id > MAX_TABLE_ID as u64 {
-            return AckResponse {
-                status: Status::error(
-                    "bad_request",
-                    "table_id exceeds C++ partition id table range",
-                ),
-            };
-        }
         state.next_table_id += 1;
         let namespace = request.namespace.clone();
         let table_name = request.table_name.clone();
@@ -76,18 +53,7 @@ impl SingleNodeMeta {
                 request.replica_count.max(1)
             ),
         );
-        let first_shard_id = if request.use_cpp_partition_ids {
-            match PartitionId::new(table_id, 0, 0, request.partition_version as u64) {
-                Ok(partition_id) => partition_id.id(),
-                Err(err) => {
-                    return AckResponse {
-                        status: Status::error("bad_request", err.to_string()),
-                    };
-                }
-            }
-        } else {
-            request.first_shard_id
-        };
+        let first_shard_id = request.first_shard_id;
         let info = TableMetaInfo {
             table_id,
             namespace: request.namespace,
@@ -97,7 +63,6 @@ impl SingleNodeMeta {
             first_shard_id,
             shard_count: request.shard_count,
             replica_count: request.replica_count.max(1),
-            use_cpp_partition_ids: request.use_cpp_partition_ids,
             partition_version: request.partition_version,
             serving_options: request.serving_options,
         };
@@ -171,7 +136,6 @@ impl SingleNodeMeta {
         if request.shard_count.is_none()
             && request.replica_count.is_none()
             && request.first_shard_id.is_none()
-            && request.use_cpp_partition_ids.is_none()
             && request.partition_version.is_none()
             && request.serving_options.is_none()
         {
@@ -208,31 +172,6 @@ impl SingleNodeMeta {
                     status: Status::error("bad_request", "shard_count cannot shrink"),
                 };
             }
-            if existing.use_cpp_partition_ids {
-                if shard_count > u32::MAX as u64 {
-                    return AckResponse {
-                        status: Status::error(
-                            "bad_request",
-                            "shard_count exceeds C++ partition-set range",
-                        ),
-                    };
-                }
-                if let Err(err) = validate_partition_set_count(shard_count as u32) {
-                    return AckResponse {
-                        status: Status::error("bad_request", err.to_string()),
-                    };
-                }
-            }
-        }
-        if let Some(use_cpp_partition_ids) = request.use_cpp_partition_ids {
-            if use_cpp_partition_ids != existing.use_cpp_partition_ids {
-                return AckResponse {
-                    status: Status::error(
-                        "bad_request",
-                        "use_cpp_partition_ids cannot change after table creation",
-                    ),
-                };
-            }
         }
         if let Some(partition_version) = request.partition_version {
             if partition_version != existing.partition_version {
@@ -245,14 +184,6 @@ impl SingleNodeMeta {
             }
         }
         if let Some(first_shard_id) = request.first_shard_id {
-            if existing.use_cpp_partition_ids {
-                return AckResponse {
-                    status: Status::error(
-                        "bad_request",
-                        "first_shard_id is derived for C++ partition-id tables",
-                    ),
-                };
-            }
             if first_shard_id != existing.first_shard_id {
                 return AckResponse {
                     status: Status::error(

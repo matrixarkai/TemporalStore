@@ -1,13 +1,9 @@
 # TemporalStore SDKs
 
 TemporalStore is a Rust engine. Its open-source SDK surface is **Rust and
-Python**, in two families:
-
-- **Proxy SDKs** — pure-language HTTP/JSON clients that call a TemporalStore
-  proxy. No native library to load; the proxy owns routing, topology refresh,
-  retries, auth, quotas, and observability. This is the recommended path.
-- **Direct SDKs** — load the engine's C-ABI native library and route straight to
-  data nodes. Lowest latency, at the cost of loading a native library.
+Python**, both **Proxy SDKs** — pure-language HTTP/JSON clients that call a
+TemporalStore proxy. No native library to load; the proxy owns routing, topology
+refresh, retries, auth, quotas, and observability.
 
 ## Layout
 
@@ -15,9 +11,7 @@ Python**, in two families:
 |---|---|---|
 | Python proxy | `sdk/python/temporalstore/proxy_client.py` | pure HTTP client |
 | Python features | `sdk/python/temporalstore/features.py` | high-level aggregated-feature client |
-| Python direct | `sdk/python/temporalstore/client.py` | `ctypes` over the C ABI |
 | Rust proxy | `sdk/rust/temporalstore` (`--features proxy`) | pure HTTP client |
-| Rust direct | `sdk/rust/temporalstore` | FFI over the C ABI |
 
 The HTTP/JSON contract the proxy SDKs speak is in `sdk/proxy/openapi.yaml`.
 
@@ -46,10 +40,6 @@ export PYTHONPATH=/path/to/repo/sdk/python
 # proxy SDK (no native library)
 python3 sdk/python/examples/aggregated_features.py
 python3 sdk/python/examples/proxy_sequence_features.py
-
-# direct SDK (loads the engine's C-ABI library)
-export TEMPORALSTORE_LIB=/path/to/native/library
-python3 sdk/python/examples/sequence_features.py
 ```
 
 Offline unit tests (mock transport, no server):
@@ -64,16 +54,11 @@ python3 tools/test_temporalstore_features.py
 # proxy SDK, no native linking
 cd sdk/rust/temporalstore
 cargo run --no-default-features --features proxy --example proxy_sequence_features
-
-# direct SDK over the C ABI
-export TEMPORALSTORE_LIB_DIR=/path/to/native/libdir
-cargo run --example sequence_features
 ```
 
 ## Proxy API
 
-The proxy API contract is `sdk/proxy/openapi.yaml`; design detail is in
-`docs/direct_vs_proxy_sdk.md`.
+The proxy API contract is `sdk/proxy/openapi.yaml`.
 
 ## Smoke test
 

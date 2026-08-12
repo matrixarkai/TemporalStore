@@ -506,7 +506,6 @@ fn metaserver_raft_replicates_full_metadata_mutation_api() {
             first_shard_id: 100,
             shard_count: 2,
             replica_count: 1,
-            use_cpp_partition_ids: false,
             partition_version: 0,
             serving_options: crate::meta::TableServingOptions::default(),
         })
@@ -542,7 +541,6 @@ fn metaserver_raft_replicates_full_metadata_mutation_api() {
         shard_count: Some(3),
         replica_count: Some(2),
         first_shard_id: None,
-        use_cpp_partition_ids: None,
         partition_version: None,
         serving_options: None,
     });
@@ -567,7 +565,6 @@ fn metaserver_raft_replicates_full_metadata_mutation_api() {
         first_shard_id: 100,
         shard_count: 2,
         replica_count: 1,
-        use_cpp_partition_ids: false,
         partition_version: 0,
         serving_options: crate::meta::TableServingOptions::default(),
     });

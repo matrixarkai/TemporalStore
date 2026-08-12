@@ -88,7 +88,6 @@ impl TemporalStoreClient {
             },
             first_shard_id: table.first_shard_id,
             shard_count: table.shard_count,
-            use_cpp_partition_ids: table.use_cpp_partition_ids,
             partition_version: table.partition_version,
             pin_primary: serving_options.pin_primary,
             replica_read_policy: replica_read_policy_from_meta(
@@ -140,7 +139,6 @@ impl TemporalStoreClient {
                             partition_id: partition.shard_id,
                             start_bucket: partition.start_bucket,
                             end_bucket: partition.end_bucket,
-                            use_cpp_partition_ids: table.use_cpp_partition_ids,
                             partition_version: table.partition_version,
                             primary_addr: primary.clone(),
                             replica_addrs: partition
@@ -631,7 +629,6 @@ impl TemporalStoreClient {
                     combine_name,
                     first_shard_id: options.first_shard_id,
                     shard_count: options.shard_count,
-                    use_cpp_partition_ids: options.use_cpp_partition_ids,
                     partition_version: options.partition_version,
                     topology_version,
                     partition_count: members.len(),
@@ -667,7 +664,6 @@ impl TemporalStoreClient {
                     partition_id: route.partition_id,
                     start_bucket: route.start_bucket,
                     end_bucket: route.end_bucket,
-                    use_cpp_partition_ids: route.use_cpp_partition_ids,
                     partition_version: route.partition_version,
                     primary_addr: route.primary_addr.clone(),
                     replica_count: route.replica_addrs.len().max(route.replica_endpoints.len()),

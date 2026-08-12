@@ -460,7 +460,6 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
     let service_summaries = service_readiness_summaries(&areas);
     ProductionReadinessReport {
         production_ready,
-        cpp_parity_ready: production_ready,
         blocker_count,
         failed_areas,
         failed_capabilities,
@@ -679,7 +678,7 @@ pub(crate) fn service_blocker_class(area: &str) -> &'static str {
         "data_node_distributed_raft" => "data_node_distributed_raft",
         "metaserver" => "metaserver_control_plane",
         "storage_cache" => "storage_cache_durability",
-        "feature_modules" => "feature_module_cpp_parity",
+        "feature_modules" => "feature_module_parity",
         "context_workflow" => "context_model_provider_parity",
         "fault_tolerance" => "fault_tolerance_validation",
         "deployment_ops" => "deployment_ops_runtime",
@@ -715,7 +714,7 @@ pub(crate) fn service_next_action(service: &str, blocker_classes: &[String]) -> 
         ("storage_cache", "storage_cache_durability") => {
             "finish matrixcache-class async writeback/backpressure and mature latency metrics"
         }
-        ("feature_modules", "feature_module_cpp_parity") => {
+        ("feature_modules", "feature_module_parity") => {
             "finish exact C++ feature/control_state corpus coverage and deployment-specific module edge cases"
         }
         ("context_workflow", "context_model_provider_parity") => {

@@ -24,7 +24,6 @@ pub struct ReadinessArea {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProductionReadinessReport {
     pub production_ready: bool,
-    pub cpp_parity_ready: bool,
     #[serde(default)]
     pub blocker_count: usize,
     #[serde(default)]
@@ -756,7 +755,6 @@ mod tests {
     fn production_readiness_report_lists_blockers_for_all_major_services() {
         let report = production_readiness_report();
         assert!(!report.production_ready);
-        assert!(!report.cpp_parity_ready);
         assert_eq!(report.blocker_count, report.failed_capabilities.len());
         assert!(report.blocker_count > 0);
         assert!(report.missing_count() >= report.blocker_count);
