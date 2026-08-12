@@ -150,14 +150,7 @@ pub(super) fn redis_type_response(
     let key = string_arg(key);
     match execute(Command::StringGet { key: key.clone() }) {
         Ok(CommandResponse::Bytes { value: Some(value) }) => {
-            let redis_type = if value.starts_with(REDIS_LIST_ENCODING_PREFIX) {
-                "list"
-            } else if value.starts_with(REDIS_ZSET_ENCODING_PREFIX) {
-                "zset"
-            } else {
-                "string"
-            };
-            return RespValue::SimpleString(redis_type.to_string());
+            return RespValue::SimpleString("string".to_string());
         }
         Ok(CommandResponse::Bytes { value: None }) => {}
         Ok(_) => return RespValue::Error("ERR invalid type string response".to_string()),

@@ -196,61 +196,6 @@ pub(crate) fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: WRITE,
         },
         RedisCommandDescriptor {
-            name: "LINDEX",
-            arity: 3,
-            flags: READ,
-        },
-        RedisCommandDescriptor {
-            name: "LLEN",
-            arity: 2,
-            flags: READ,
-        },
-        RedisCommandDescriptor {
-            name: "LPOP",
-            arity: -2,
-            flags: WRITE,
-        },
-        RedisCommandDescriptor {
-            name: "LINSERT",
-            arity: 5,
-            flags: WRITE,
-        },
-        RedisCommandDescriptor {
-            name: "LMOVE",
-            arity: 5,
-            flags: WRITE,
-        },
-        RedisCommandDescriptor {
-            name: "LREM",
-            arity: 4,
-            flags: WRITE,
-        },
-        RedisCommandDescriptor {
-            name: "LPUSH",
-            arity: -3,
-            flags: WRITE,
-        },
-        RedisCommandDescriptor {
-            name: "LPOS",
-            arity: 3,
-            flags: READ,
-        },
-        RedisCommandDescriptor {
-            name: "LRANGE",
-            arity: 4,
-            flags: READ,
-        },
-        RedisCommandDescriptor {
-            name: "LSET",
-            arity: 4,
-            flags: WRITE,
-        },
-        RedisCommandDescriptor {
-            name: "LTRIM",
-            arity: 4,
-            flags: WRITE,
-        },
-        RedisCommandDescriptor {
             name: "MGET",
             arity: -2,
             flags: READ,
@@ -318,21 +263,6 @@ pub(crate) fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
         RedisCommandDescriptor {
             name: "RENAMENX",
             arity: 3,
-            flags: WRITE,
-        },
-        RedisCommandDescriptor {
-            name: "RPOP",
-            arity: -2,
-            flags: WRITE,
-        },
-        RedisCommandDescriptor {
-            name: "RPOPLPUSH",
-            arity: 3,
-            flags: WRITE,
-        },
-        RedisCommandDescriptor {
-            name: "RPUSH",
-            arity: -3,
             flags: WRITE,
         },
         RedisCommandDescriptor {
@@ -459,111 +389,6 @@ pub(crate) fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             name: "UNLINK",
             arity: -2,
             flags: WRITE,
-        },
-        RedisCommandDescriptor {
-            name: "ZADD",
-            arity: -4,
-            flags: WRITE,
-        },
-        RedisCommandDescriptor {
-            name: "ZCARD",
-            arity: 2,
-            flags: READ,
-        },
-        RedisCommandDescriptor {
-            name: "ZCOUNT",
-            arity: 4,
-            flags: READ,
-        },
-        RedisCommandDescriptor {
-            name: "ZDIFF",
-            arity: -3,
-            flags: READ,
-        },
-        RedisCommandDescriptor {
-            name: "ZINCRBY",
-            arity: 4,
-            flags: WRITE,
-        },
-        RedisCommandDescriptor {
-            name: "ZINTER",
-            arity: -3,
-            flags: READ,
-        },
-        RedisCommandDescriptor {
-            name: "ZMSCORE",
-            arity: -3,
-            flags: READ,
-        },
-        RedisCommandDescriptor {
-            name: "ZPOPMAX",
-            arity: -2,
-            flags: WRITE,
-        },
-        RedisCommandDescriptor {
-            name: "ZPOPMIN",
-            arity: -2,
-            flags: WRITE,
-        },
-        RedisCommandDescriptor {
-            name: "ZRANGE",
-            arity: -4,
-            flags: READ,
-        },
-        RedisCommandDescriptor {
-            name: "ZRANGEBYSCORE",
-            arity: -4,
-            flags: READ,
-        },
-        RedisCommandDescriptor {
-            name: "ZREM",
-            arity: -3,
-            flags: WRITE,
-        },
-        RedisCommandDescriptor {
-            name: "ZREMRANGEBYRANK",
-            arity: 4,
-            flags: WRITE,
-        },
-        RedisCommandDescriptor {
-            name: "ZREMRANGEBYSCORE",
-            arity: 4,
-            flags: WRITE,
-        },
-        RedisCommandDescriptor {
-            name: "ZRANK",
-            arity: 3,
-            flags: READ,
-        },
-        RedisCommandDescriptor {
-            name: "ZRANDMEMBER",
-            arity: -2,
-            flags: READ,
-        },
-        RedisCommandDescriptor {
-            name: "ZREVRANGE",
-            arity: -4,
-            flags: READ,
-        },
-        RedisCommandDescriptor {
-            name: "ZREVRANK",
-            arity: 3,
-            flags: READ,
-        },
-        RedisCommandDescriptor {
-            name: "ZSCAN",
-            arity: -3,
-            flags: READ,
-        },
-        RedisCommandDescriptor {
-            name: "ZSCORE",
-            arity: 3,
-            flags: READ,
-        },
-        RedisCommandDescriptor {
-            name: "ZUNION",
-            arity: -3,
-            flags: READ,
         },
     ]
 }

@@ -120,3 +120,46 @@ pub(crate) fn upper(value: &[u8]) -> String {
     String::from_utf8_lossy(value).to_ascii_uppercase()
 }
 
+
+pub(crate) fn normalize_range(start: i64, stop: i64, len: usize) -> (usize, usize) {
+    if len == 0 {
+        return (0, 0);
+    }
+    let len_i64 = len as i64;
+    let mut start = if start < 0 { len_i64 + start } else { start };
+    let mut stop = if stop < 0 { len_i64 + stop } else { stop };
+    if start < 0 {
+        start = 0;
+    }
+    if stop < 0 || start >= len_i64 {
+        return (0, 0);
+    }
+    if stop >= len_i64 {
+        stop = len_i64 - 1;
+    }
+    if start > stop {
+        (0, 0)
+    } else {
+        (start as usize, stop as usize + 1)
+    }
+}
+
+pub(crate) fn format_redis_score(score: f64) -> String {
+    if score.fract() == 0.0 {
+        format!("{score:.0}")
+    } else {
+        score.to_string()
+    }
+}
+
+pub(crate) fn parse_f64_arg(value: &[u8], name: &str) -> Result<f64, String> {
+    let value = std::str::from_utf8(value)
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .ok_or_else(|| format!("ERR {name} must be a float"))?;
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(format!("ERR {name} must be finite"))
+    }
+}

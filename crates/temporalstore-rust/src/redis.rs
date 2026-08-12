@@ -13,18 +13,15 @@
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-mod encoding;
 mod protocol;
 mod server;
 mod state;
 mod keyspace_commands;
 mod string_commands;
-mod list_set_commands;
+mod set_commands;
 mod response_helpers;
 mod command_table;
 mod dispatch;
-mod zset_commands;
-mod zset_storage;
 
 pub use protocol::{read_command, RespValue};
 pub use server::serve_redis_proxy;
@@ -37,14 +34,11 @@ use crate::types::{
     FeaturePoint, ControlStateFamily, ControlStateSelectionType, ShardId, StringSetCondition,
 };
 
-use encoding::{REDIS_LIST_ENCODING_PREFIX, REDIS_ZSET_ENCODING_PREFIX};
 use keyspace_commands::*;
-pub(crate) use list_set_commands::*;
+pub(crate) use set_commands::*;
 pub(crate) use response_helpers::*;
 pub(crate) use command_table::*;
 pub(crate) use string_commands::*;
-pub(crate) use zset_storage::*;
-use zset_commands::*;
 
 pub fn execute_redis_command(
     args: Vec<Vec<u8>>,
@@ -431,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn ttl_expire_and_zset_score_bounds_match_cpp() {
+    fn ttl_expire_match_cpp() {
         let engine = TemporalEngine::default();
         engine.load_shard(1);
         let mut state = RedisCommandState::default();
@@ -472,37 +466,10 @@ mod tests {
             "EXPIRE on a missing key must return 0"
         );
         assert_eq!(run(&mut state, vec!["EXPIRE", "k", "100"]), RespValue::Integer(1));
-
-        // ZSet score ranges accept the -inf/+inf idiom.
-        run(
-            &mut state,
-            vec!["ZADD", "z", "1", "a", "2", "b", "3", "c"],
-        );
-        assert!(
-            matches!(run(&mut state, vec!["ZRANGEBYSCORE", "z", "-inf", "+inf"]),
-                RespValue::Array(ref m) if m.len() == 3),
-            "ZRANGEBYSCORE -inf +inf must return all members"
-        );
-        assert_eq!(
-            run(&mut state, vec!["ZCOUNT", "z", "-inf", "+inf"]),
-            RespValue::Integer(3)
-        );
-
-        // ZINCRBY overflow to infinity errors and leaves the score unchanged.
-        run(&mut state, vec!["ZADD", "z2", "1e308", "m"]);
-        assert!(matches!(
-            run(&mut state, vec!["ZINCRBY", "z2", "1e308", "m"]),
-            RespValue::Error(_)
-        ));
-        assert!(
-            matches!(run(&mut state, vec!["ZSCORE", "z2", "m"]),
-                RespValue::Bulk(Some(ref b)) if b != b"inf"),
-            "ZINCRBY overflow must not corrupt the stored score to inf"
-        );
     }
 
     #[test]
-    fn set_zero_expiry_and_zrandmember_min_match_cpp() {
+    fn set_zero_expiry_match_cpp() {
         let engine = TemporalEngine::default();
         engine.load_shard(1);
         let mut state = RedisCommandState::default();
@@ -545,21 +512,6 @@ mod tests {
             run(&mut state, vec!["SETEX", "d", "100", "v"]),
             RespValue::SimpleString("OK".to_string())
         );
-
-        // ZRANDMEMBER with the i64::MIN negative count must be BOUNDED (not a 2^63 alloc).
-        run(&mut state, vec!["ZADD", "z", "1", "a", "2", "b"]);
-        assert!(
-            matches!(
-                run(&mut state, vec!["ZRANDMEMBER", "z", "-9223372036854775808"]),
-                RespValue::Array(ref members) if members.len() <= 2
-            ),
-            "ZRANDMEMBER i64::MIN count must be bounded, not an unbounded allocation"
-        );
-        // A huge POSITIVE count returns at most the set size (distinct), no busy loop.
-        assert!(matches!(
-            run(&mut state, vec!["ZRANDMEMBER", "z", "9223372036854775807"]),
-            RespValue::Array(ref members) if members.len() == 2
-        ));
     }
 
     #[test]
@@ -749,197 +701,6 @@ mod tests {
         assert_eq!(
             run(
                 &mut state,
-                vec!["RPUSH", "redis:core:list", "a", "b", "a", "c", "a"]
-            ),
-            RespValue::Integer(5)
-        );
-        assert_eq!(
-            run(&mut state, vec!["LREM", "redis:core:list", "2", "a"]),
-            RespValue::Integer(2)
-        );
-        assert_eq!(
-            run(&mut state, vec!["LRANGE", "redis:core:list", "0", "-1"]),
-            RespValue::Array(vec![
-                RespValue::Bulk(Some(b"b".to_vec())),
-                RespValue::Bulk(Some(b"c".to_vec())),
-                RespValue::Bulk(Some(b"a".to_vec())),
-            ])
-        );
-        assert_eq!(
-            run(
-                &mut state,
-                vec!["LINSERT", "redis:core:list", "BEFORE", "c", "x"]
-            ),
-            RespValue::Integer(4)
-        );
-        assert_eq!(
-            run(&mut state, vec!["LPOS", "redis:core:list", "a"]),
-            RespValue::Integer(3)
-        );
-        assert_eq!(
-            run(
-                &mut state,
-                vec![
-                    "LMOVE",
-                    "redis:core:list",
-                    "redis:core:list2",
-                    "RIGHT",
-                    "LEFT"
-                ]
-            ),
-            RespValue::Bulk(Some(b"a".to_vec()))
-        );
-        assert_eq!(
-            run(
-                &mut state,
-                vec!["RPOPLPUSH", "redis:core:list2", "redis:core:list"]
-            ),
-            RespValue::Bulk(Some(b"a".to_vec()))
-        );
-        assert_eq!(
-            run(&mut state, vec!["TYPE", "redis:core:list"]),
-            RespValue::SimpleString("list".to_string())
-        );
-        assert_eq!(
-            run(
-                &mut state,
-                vec!["ZADD", "redis:core:zset", "1", "a", "2", "b", "3", "c"]
-            ),
-            RespValue::Integer(3)
-        );
-        assert_eq!(
-            run(
-                &mut state,
-                vec!["ZRANGEBYSCORE", "redis:core:zset", "1.5", "3", "WITHSCORES"]
-            ),
-            RespValue::Array(vec![
-                RespValue::Bulk(Some(b"b".to_vec())),
-                RespValue::Bulk(Some(b"2".to_vec())),
-                RespValue::Bulk(Some(b"c".to_vec())),
-                RespValue::Bulk(Some(b"3".to_vec())),
-            ])
-        );
-        assert_eq!(
-            run(&mut state, vec!["ZINCRBY", "redis:core:zset", "2", "b"]),
-            RespValue::Bulk(Some(b"4".to_vec()))
-        );
-        assert_eq!(
-            run(&mut state, vec!["ZRANK", "redis:core:zset", "c"]),
-            RespValue::Integer(1)
-        );
-        assert_eq!(
-            run(&mut state, vec!["ZREVRANK", "redis:core:zset", "b"]),
-            RespValue::Integer(0)
-        );
-        assert_eq!(
-            run(
-                &mut state,
-                vec!["ZMSCORE", "redis:core:zset", "a", "missing"]
-            ),
-            RespValue::Array(vec![
-                RespValue::Bulk(Some(b"1".to_vec())),
-                RespValue::Bulk(None),
-            ])
-        );
-        assert_eq!(
-            run(&mut state, vec!["ZRANDMEMBER", "redis:core:zset"]),
-            RespValue::Bulk(Some(b"a".to_vec()))
-        );
-        assert_eq!(
-            run(
-                &mut state,
-                vec!["ZADD", "redis:core:zset2", "2", "a", "5", "d"]
-            ),
-            RespValue::Integer(2)
-        );
-        assert_eq!(
-            run(
-                &mut state,
-                vec!["ZDIFF", "2", "redis:core:zset", "redis:core:zset2"]
-            ),
-            RespValue::Array(vec![
-                RespValue::Bulk(Some(b"c".to_vec())),
-                RespValue::Bulk(Some(b"b".to_vec())),
-            ])
-        );
-        assert_eq!(
-            run(
-                &mut state,
-                vec![
-                    "ZINTER",
-                    "2",
-                    "redis:core:zset",
-                    "redis:core:zset2",
-                    "WITHSCORES"
-                ]
-            ),
-            RespValue::Array(vec![
-                RespValue::Bulk(Some(b"a".to_vec())),
-                RespValue::Bulk(Some(b"3".to_vec())),
-            ])
-        );
-        assert_eq!(
-            run(
-                &mut state,
-                vec!["ZUNION", "2", "redis:core:zset", "redis:core:zset2"]
-            ),
-            RespValue::Array(vec![
-                RespValue::Bulk(Some(b"a".to_vec())),
-                RespValue::Bulk(Some(b"c".to_vec())),
-                RespValue::Bulk(Some(b"b".to_vec())),
-                RespValue::Bulk(Some(b"d".to_vec())),
-            ])
-        );
-        assert_eq!(
-            run(
-                &mut state,
-                vec!["ZSCAN", "redis:core:zset", "0", "COUNT", "4"]
-            ),
-            RespValue::Array(vec![
-                RespValue::Bulk(Some(b"4".to_vec())),
-                RespValue::Array(vec![
-                    RespValue::Bulk(Some(b"a".to_vec())),
-                    RespValue::Bulk(Some(b"1".to_vec())),
-                    RespValue::Bulk(Some(b"c".to_vec())),
-                    RespValue::Bulk(Some(b"3".to_vec())),
-                ]),
-            ])
-        );
-        assert_eq!(
-            run(&mut state, vec!["ZPOPMIN", "redis:core:zset"]),
-            RespValue::Array(vec![
-                RespValue::Bulk(Some(b"a".to_vec())),
-                RespValue::Bulk(Some(b"1".to_vec())),
-            ])
-        );
-        assert_eq!(
-            run(&mut state, vec!["ZPOPMAX", "redis:core:zset"]),
-            RespValue::Array(vec![
-                RespValue::Bulk(Some(b"b".to_vec())),
-                RespValue::Bulk(Some(b"4".to_vec())),
-            ])
-        );
-        assert_eq!(
-            run(
-                &mut state,
-                vec!["ZREMRANGEBYSCORE", "redis:core:zset", "3", "3"]
-            ),
-            RespValue::Integer(1)
-        );
-        assert_eq!(
-            run(
-                &mut state,
-                vec!["ZREMRANGEBYRANK", "redis:core:zset", "0", "0"]
-            ),
-            RespValue::Integer(0)
-        );
-        assert_eq!(
-            run(&mut state, vec!["TYPE", "redis:core:zset"]),
-            RespValue::SimpleString("zset".to_string())
-        );
-        assert_eq!(
-            run(
-                &mut state,
                 vec!["COPY", "redis:core:string", "redis:core:string-copy"]
             ),
             RespValue::Integer(1)
@@ -986,15 +747,11 @@ mod tests {
             RespValue::Array(vec![
                 RespValue::Bulk(Some(b"redis:core:float".to_vec())),
                 RespValue::Bulk(Some(b"redis:core:hash".to_vec())),
-                RespValue::Bulk(Some(b"redis:core:list".to_vec())),
-                RespValue::Bulk(Some(b"redis:core:list2".to_vec())),
                 RespValue::Bulk(Some(b"redis:core:other-set".to_vec())),
                 RespValue::Bulk(Some(b"redis:core:set".to_vec())),
                 RespValue::Bulk(Some(b"redis:core:set-dest".to_vec())),
                 RespValue::Bulk(Some(b"redis:core:string".to_vec())),
                 RespValue::Bulk(Some(b"redis:core:string-copy".to_vec())),
-                RespValue::Bulk(Some(b"redis:core:zset".to_vec())),
-                RespValue::Bulk(Some(b"redis:core:zset2".to_vec())),
             ])
         );
         assert_eq!(
@@ -1014,7 +771,7 @@ mod tests {
             run(&mut state, vec!["TYPE", "redis:core:missing"]),
             RespValue::SimpleString("none".to_string())
         );
-        assert_eq!(run(&mut state, vec!["DBSIZE"]), RespValue::Integer(11));
+        assert_eq!(run(&mut state, vec!["DBSIZE"]), RespValue::Integer(7));
         assert_eq!(
             run(&mut state, vec!["DEL", "redis:core:string"]),
             RespValue::Integer(1)
@@ -1023,7 +780,7 @@ mod tests {
             run(&mut state, vec!["UNLINK", "redis:core:other-set"]),
             RespValue::Integer(1)
         );
-        assert_eq!(run(&mut state, vec!["DBSIZE"]), RespValue::Integer(9));
+        assert_eq!(run(&mut state, vec!["DBSIZE"]), RespValue::Integer(5));
         assert_eq!(
             run(&mut state, vec!["FLUSHDB"]),
             RespValue::SimpleString("OK".to_string())
@@ -1104,23 +861,6 @@ mod tests {
             "INFO" => vec!["INFO"],
             "INCRBYFLOAT" => vec!["INCRBYFLOAT", "advertised:float", "1.5"],
             "KEYS" => vec!["KEYS", "*"],
-            "LINSERT" => vec!["LINSERT", "advertised:list", "BEFORE", "a", "b"],
-            "LINDEX" => vec!["LINDEX", "advertised:list", "0"],
-            "LLEN" => vec!["LLEN", "advertised:list"],
-            "LMOVE" => vec![
-                "LMOVE",
-                "advertised:list",
-                "advertised:list2",
-                "RIGHT",
-                "LEFT",
-            ],
-            "LPOP" => vec!["LPOP", "advertised:list"],
-            "LPUSH" => vec!["LPUSH", "advertised:list", "a"],
-            "LPOS" => vec!["LPOS", "advertised:list", "a"],
-            "LREM" => vec!["LREM", "advertised:list", "0", "a"],
-            "LRANGE" => vec!["LRANGE", "advertised:list", "0", "-1"],
-            "LSET" => vec!["LSET", "advertised:list", "0", "b"],
-            "LTRIM" => vec!["LTRIM", "advertised:list", "0", "-1"],
             "MGET" => vec!["MGET", "advertised:missing"],
             "MSET" => vec!["MSET", "advertised:mset", "v"],
             "MSETNX" => vec!["MSETNX", "advertised:msetnx", "v"],
@@ -1134,9 +874,6 @@ mod tests {
             "RANDOMKEY" => vec!["RANDOMKEY"],
             "RENAME" => vec!["RENAME", "advertised:missing", "advertised:renamed"],
             "RENAMENX" => vec!["RENAMENX", "advertised:missing", "advertised:renamed"],
-            "RPOP" => vec!["RPOP", "advertised:list"],
-            "RPOPLPUSH" => vec!["RPOPLPUSH", "advertised:list", "advertised:list2"],
-            "RPUSH" => vec!["RPUSH", "advertised:list", "z"],
             "SADD" => vec!["SADD", "advertised:set", "a"],
             "SCARD" => vec!["SCARD", "advertised:set"],
             "SDIFF" => vec!["SDIFF", "advertised:set", "advertised:other"],
@@ -1162,27 +899,6 @@ mod tests {
             "TOUCH" => vec!["TOUCH", "advertised:missing"],
             "TYPE" => vec!["TYPE", "advertised:missing"],
             "UNLINK" => vec!["UNLINK", "advertised:missing"],
-            "ZADD" => vec!["ZADD", "advertised:zset", "1", "a"],
-            "ZCARD" => vec!["ZCARD", "advertised:zset"],
-            "ZCOUNT" => vec!["ZCOUNT", "advertised:zset", "0", "10"],
-            "ZDIFF" => vec!["ZDIFF", "1", "advertised:zset"],
-            "ZINCRBY" => vec!["ZINCRBY", "advertised:zset", "1", "a"],
-            "ZINTER" => vec!["ZINTER", "1", "advertised:zset"],
-            "ZMSCORE" => vec!["ZMSCORE", "advertised:zset", "a"],
-            "ZPOPMAX" => vec!["ZPOPMAX", "advertised:zset"],
-            "ZPOPMIN" => vec!["ZPOPMIN", "advertised:zset"],
-            "ZRANGE" => vec!["ZRANGE", "advertised:zset", "0", "-1"],
-            "ZRANGEBYSCORE" => vec!["ZRANGEBYSCORE", "advertised:zset", "0", "10"],
-            "ZRANK" => vec!["ZRANK", "advertised:zset", "a"],
-            "ZRANDMEMBER" => vec!["ZRANDMEMBER", "advertised:zset"],
-            "ZREM" => vec!["ZREM", "advertised:zset", "a"],
-            "ZREMRANGEBYRANK" => vec!["ZREMRANGEBYRANK", "advertised:zset", "0", "1"],
-            "ZREMRANGEBYSCORE" => vec!["ZREMRANGEBYSCORE", "advertised:zset", "0", "10"],
-            "ZREVRANGE" => vec!["ZREVRANGE", "advertised:zset", "0", "-1"],
-            "ZREVRANK" => vec!["ZREVRANK", "advertised:zset", "a"],
-            "ZSCAN" => vec!["ZSCAN", "advertised:zset", "0"],
-            "ZSCORE" => vec!["ZSCORE", "advertised:zset", "a"],
-            "ZUNION" => vec!["ZUNION", "1", "advertised:zset"],
             other => panic!("missing sample command for {other}"),
         }
     }
@@ -1416,71 +1132,6 @@ mod tests {
                 RespValue::Bulk(Some(b"m3".to_vec())),
             ])
         );
-        assert_eq!(run(vec!["RPUSH", "list", "a", "b"]), RespValue::Integer(2));
-        assert_eq!(run(vec!["LPUSH", "list", "left"]), RespValue::Integer(3));
-        assert_eq!(
-            run(vec!["LRANGE", "list", "0", "-1"]),
-            RespValue::Array(vec![
-                RespValue::Bulk(Some(b"left".to_vec())),
-                RespValue::Bulk(Some(b"a".to_vec())),
-                RespValue::Bulk(Some(b"b".to_vec())),
-            ])
-        );
-        assert_eq!(
-            run(vec!["LINDEX", "list", "-1"]),
-            RespValue::Bulk(Some(b"b".to_vec()))
-        );
-        assert_eq!(
-            run(vec!["LSET", "list", "1", "middle"]),
-            RespValue::SimpleString("OK".to_string())
-        );
-        assert_eq!(
-            run(vec!["LPOP", "list"]),
-            RespValue::Bulk(Some(b"left".to_vec()))
-        );
-        assert_eq!(
-            run(vec!["RPOP", "list", "2"]),
-            RespValue::Array(vec![
-                RespValue::Bulk(Some(b"middle".to_vec())),
-                RespValue::Bulk(Some(b"b".to_vec())),
-            ])
-        );
-        assert_eq!(run(vec!["LLEN", "list"]), RespValue::Integer(0));
-        assert_eq!(
-            run(vec!["ZADD", "z", "2", "b", "1", "a", "3.5", "c"]),
-            RespValue::Integer(3)
-        );
-        assert_eq!(
-            run(vec!["ZRANGE", "z", "0", "-1", "WITHSCORES"]),
-            RespValue::Array(vec![
-                RespValue::Bulk(Some(b"a".to_vec())),
-                RespValue::Bulk(Some(b"1".to_vec())),
-                RespValue::Bulk(Some(b"b".to_vec())),
-                RespValue::Bulk(Some(b"2".to_vec())),
-                RespValue::Bulk(Some(b"c".to_vec())),
-                RespValue::Bulk(Some(b"3.5".to_vec())),
-            ])
-        );
-        assert_eq!(
-            run(vec!["ZREVRANGE", "z", "0", "1"]),
-            RespValue::Array(vec![
-                RespValue::Bulk(Some(b"c".to_vec())),
-                RespValue::Bulk(Some(b"b".to_vec())),
-            ])
-        );
-        assert_eq!(
-            run(vec!["ZSCORE", "z", "b"]),
-            RespValue::Bulk(Some(b"2".to_vec()))
-        );
-        assert_eq!(
-            run(vec!["ZCOUNT", "z", "1.5", "3.5"]),
-            RespValue::Integer(2)
-        );
-        assert_eq!(
-            run(vec!["ZREM", "z", "b", "missing"]),
-            RespValue::Integer(1)
-        );
-        assert_eq!(run(vec!["ZCARD", "z"]), RespValue::Integer(2));
         assert_eq!(
             run(vec!["FAPPEND", "feature", "10", "2"]),
             RespValue::SimpleString("OK".to_string())
