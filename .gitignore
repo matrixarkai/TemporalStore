@@ -60,3 +60,14 @@ Thumbs.db
 .codex/
 .local/
 *.png
+
+# Benchmark/result/trace dumps (regenerable; keep .md summaries only)
+docs/debug/
+docs/benchmark_archives/*.json
+docs/benchmark_archives/*.jsonl
+docs/benchmark_archives/**/*.json
+docs/benchmark_archives/**/*.jsonl
+*.trace.json
+*_trace.json
+*_trace.jsonl
+benchmarks/data-type-trace-*/
