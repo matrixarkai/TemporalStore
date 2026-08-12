@@ -1,0 +1,36 @@
+# cargo-deny configuration: https://embarkstudios.github.io/cargo-deny/
+# Run locally with: cargo deny check
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Unlicense",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# First-party MatrixArkAI crates consumed as git dependencies.
+allow-git = [
+    "https://github.com/bjmeetsfo/MatrixRaft.git",
+    "https://github.com/bjmeetsfo/MatrixCache.git",
+    "https://github.com/bjmeetsfo/MatrixObjectStore.git",
+]

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 //! Distributed multi-user scale harness with forced memory eviction + cold-read promotion.
 //!
 //! Simulates a distributed TemporalStore in a local setup: several users, each with a large

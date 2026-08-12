@@ -218,3 +218,10 @@ C++ page/log layout; live ByteStore/S3 integration.
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). New product-behavior tests
 should reference a shared corpus case with `shared-corpus: <case_id>`; Rust-only implementation
 tests should be marked `rust-internal: <reason>`.
+
+## License
+
+Licensed under the Apache License, Version 2.0 ([`LICENSE`](LICENSE), [`NOTICE`](NOTICE)).
+Third-party dependency licenses and attributions are listed in
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md). Product and crate names are trademarks
+of MatrixArkAI; see [`TRADEMARKS.md`](TRADEMARKS.md).
