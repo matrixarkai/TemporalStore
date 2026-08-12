@@ -1,16 +1,18 @@
 # TemporalStore
 
-**The open-source, Rust-native temporal store for AI-agent memory, features, and control.**
-Apache-2.0 · self-hostable · one durable engine, no vector DB.
+**Open-source temporal infrastructure for LLM memory.**
+The universal, Rust-native store that context-management platforms build their agent memory on —
+ingest, retrieval, features, and control in one durable, time-aware engine.
+Apache-2.0 · self-hostable · no vector DB · [temporalstore.ai](https://temporalstore.ai)
 
 📊 **Benchmarks & docs — [temporalstore.ai/benchmarks.html](https://temporalstore.ai/benchmarks.html)**
 
-TemporalStore gives coding and product agents **durable, time-aware memory**: it ingests
-each turn in real time, extracts entities and summaries, and serves a ranked, token-budgeted
-**ContextPack** — plus exact serving-time **feature aggregates** and O(1) **control state**
-(caps, quotas, pacing) — all from one temporal index. It powers Codex and Claude Code
-agent memory today, runs locally with one Docker command, and scales out to a replicated,
-shared-storage cluster.
+TemporalStore is the durable, time-aware foundation for **LLM memory at any scale** — the
+universal infrastructure context-management platforms build on. Bring your own data models
+and business logic; let one engine handle real-time ingest, entity/summary extraction, ranked
+token-budgeted **ContextPack** retrieval, exact serving-time **feature aggregates**, and O(1)
+**control state** (caps, quotas, pacing) — all from one temporal index. It runs locally with
+one Docker command and scales out to a replicated, shared-storage cluster.
 
 ---
 
