@@ -1,6 +1,6 @@
 {
   "schema": "temporalstore_cpp_rust_goal_parity_status_v1",
-  "description": "Machine-readable Rust-vs-C++ TemporalStore parity status for feature, performance, storage lifecycle, manager, GC, eviction, zone, stream, segment, page, PageAddress, and index parity.",
+  "description": "Machine-readable Rust-vs-TemporalStore parity status for feature, performance, storage lifecycle, manager, GC, eviction, zone, stream, segment, page, PageAddress, and index parity.",
   "generated_from": [
     "tools/validate_storage_engine_9_phase_parity.py",
     "tools/validate_storage_lifecycle_parity.py",
@@ -30,7 +30,7 @@
   ],
   "status_labels": {
     "feature_correct": "Shared contract and deterministic evidence pass for this area.",
-    "performance_candidate": "Live C++ and Rust runs complete under the same config without silent fallback.",
+    "performance_candidate": "Live and Rust runs complete under the same config without silent fallback.",
     "production_performance_parity": "QPS, p50/p95/p99, timeout/error/fallback rates, and correctness metrics are within thresholds under the same dataset, topology, storage mode, token budget, batch size, and model config.",
     "active_gap": "The area has known missing live proof or implementation work and must not be marketed as complete."
   },
@@ -40,8 +40,8 @@
     "production_performance_parity": false,
     "goal_complete": false,
     "open_blockers": [
-      "Live C++ and Rust performance parity evidence is not yet complete for every storage mode and scale target.",
-      "Some C++ shared corpus paths are still static surface gates rather than native executable shared cases.",
+      "Live and Rust performance parity evidence is not yet complete for every storage mode and scale target.",
+      "Some shared corpus paths are still static surface gates rather than native executable shared cases.",
       "Production performance parity still needs same-config p50/p95/p99/QPS/error/timeout/fallback evidence across 1K, 10K, and 100K workloads."
     ]
   },
@@ -100,7 +100,7 @@
         "tools/test_temporalstore_feature_execution_validator.py"
       ],
       "open_blockers": [
-        "C++ native execution should replace remaining static surface gates where product behavior is shared."
+        "native execution should replace remaining static surface gates where product behavior is shared."
       ]
     },
     "performance_parity": {
@@ -116,7 +116,7 @@
         "tools/validate_temporalstore_next_performance_plan.py"
       ],
       "open_blockers": [
-        "Same-config live C++/Rust p50/p95/p99/QPS parity is not yet proven across the required scale matrix."
+        "Same-config live conformance p50/p95/p99/QPS parity is not yet proven across the required scale matrix."
       ]
     },
     "storage_lifecycle_parity": {

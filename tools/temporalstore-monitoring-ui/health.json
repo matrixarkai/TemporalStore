@@ -707,7 +707,7 @@
         "write_qps": "0 writes",
         "read_p50_ms": "24 tokens",
         "read_p99_ms": "48 tokens",
-        "secondary_lag_ms": "C++ + Rust",
+        "secondary_lag_ms": "+ Rust",
         "threads": "query 77027771",
         "result_dir": "context_pack_token_budget_parity"
       },
@@ -718,7 +718,7 @@
         "write_qps": "3 chunks",
         "read_p50_ms": "L0 abstract",
         "read_p99_ms": "60 tokens",
-        "secondary_lag_ms": "C++ + Rust",
+        "secondary_lag_ms": "+ Rust",
         "threads": "resource pdf",
         "result_dir": "context_layered_resource_parsing_pipeline"
       }
@@ -886,7 +886,7 @@
         "status": "passed"
       },
       {
-        "run": "C++ module parity",
+        "run": "module parity",
         "covers": "registered context models, child refs, embeddings, summaries",
         "evidence": "context_module_test --gtest_brief=1",
         "output": "7 context module tests passed",
@@ -1246,7 +1246,7 @@
       },
       {
         "label": "Parity gate",
-        "value": "C++ + Rust unified"
+        "value": "+ Rust unified"
       }
     ],
     "operators": [
@@ -1329,7 +1329,7 @@
         "value": "python3 tools/run_temporalstore_unified_tests.py --validate-only"
       },
       {
-        "label": "Run C++ contract",
+        "label": "Run contract",
         "value": "tools/run_cpp_unified_context_contract.sh third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json"
       },
       {
@@ -1563,7 +1563,7 @@
         "severity": "blocker",
         "owner": "runtime",
         "evidence": "context_nine_ingestion_compression_parity_gates",
-        "detail": "C++ and Rust unified corpus agree on API idempotency, stream replay, batch, resource, token, compression, and source-audit behavior"
+        "detail": "and Rust unified corpus agree on API idempotency, stream replay, batch, resource, token, compression, and source-audit behavior"
       },
       {
         "label": "Tenant isolation",
@@ -1684,7 +1684,7 @@
         "value": "pass",
         "severity": "medium",
         "owner": "ops",
-        "evidence": "Runbook panel links commands for corpus, C++ contract, Rust unified, and local serve",
+        "evidence": "Runbook panel links commands for corpus, contract, Rust unified, and local serve",
         "detail": "the UI exposes the exact commands operators need to reproduce readiness signals"
       },
       {
@@ -1693,7 +1693,7 @@
         "severity": "medium",
         "owner": "qa",
         "evidence": "context_ten_model_config_parity_gates",
-        "detail": "end-to-end parity table renders API, stream, batch, resource, feedback, compression, audit, model/config, and C++ lanes"
+        "detail": "end-to-end parity table renders API, stream, batch, resource, feedback, compression, audit, model/config, and lanes"
       }
     ],
     "resource_skill_ops": {

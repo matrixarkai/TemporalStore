@@ -63,7 +63,7 @@ pub(crate) fn build_filtered_cache_hit_response(
             "secondary_index_dropped_candidate_count": entry.secondary_dropped,
             "native_pack_assembly": false,
             "pack_assembly_location": "python_reference_packer",
-            "next_native_gap": "C++/Rust ContextPack scoring and budget assembly APIs"
+            "next_native_gap": "conformance ContextPack scoring and budget assembly APIs"
         }
     })
 }
@@ -105,7 +105,7 @@ pub(crate) fn build_scan_response(input: ScanResponseInput) -> Value {
             "secondary_index_dropped_candidate_count": input.secondary_dropped,
             "native_pack_assembly": false,
             "pack_assembly_location": "python_reference_packer",
-            "next_native_gap": "C++/Rust ContextPack scoring and budget assembly APIs"
+            "next_native_gap": "conformance ContextPack scoring and budget assembly APIs"
         }
     })
 }

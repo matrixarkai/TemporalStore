@@ -1,6 +1,6 @@
 {
   "schema": "temporalstore_storage_unified_case_report_pair_v1",
-  "description": "Fixture pair proving the C++ and Rust storage/cache native runners must emit comparable temporalstore_unified_case_report_v1 rows for every selected storage/cache shared case before the family can leave static surface gates.",
+  "description": "Fixture pair proving the and Rust storage/cache native runners must emit comparable temporalstore_unified_case_report_v1 rows for every selected storage/cache shared case before the family can leave static surface gates.",
   "rust_report": {
     "cases": [
       {

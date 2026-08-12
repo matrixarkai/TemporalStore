@@ -95,7 +95,7 @@
           "budget": 2000,
           "pack_tokens": 2000,
           "ref_count": 10,
-          "answer": "Based on the provided context, it appears that Deeproute (the user) is working on integrating Rust TemporalStore with Claude and Codex for managing local context and additional context from TemporalStore. The key points are: 1. **Context Management**: The user wants to manage both local agent context and additional context from TemporalStore using the Rust TemporalStore. 2. **Ingestion and Extraction**: The user is interested in scaling testing pipelines for Rust/C++ TemporalStore ingestion/extraction, specifically focusing on fallbacks to primary for secondary/replica random reads. 3. **Real-Time Querying**: There's a request for real-time querying capabilities, including batch ingestion, one-by-one ingestion, and comprehensive reports of all data (including latency, CPU, memory) in a detailed performance report. From the tool results, it seems that the user has requested to continue from where they left off, focusing on the Rust TemporalStore hooks and real-time Codex prompt ingestion. The managed pack now surfaces older benchmark prompts, which suggests that retrieval should beat full-context replay for certain scenarios like `q_bench`. To summarize: - **Rust TemporalStore**: The user wants to integrate it with both Claude and Codex to manage local context.",
+          "answer": "Based on the provided context, it appears that Deeproute (the user) is working on integrating Rust TemporalStore with Claude and Codex for managing local context and additional context from TemporalStore. The key points are: 1. **Context Management**: The user wants to manage both local agent context and additional context from TemporalStore using the Rust TemporalStore. 2. **Ingestion and Extraction**: The user is interested in scaling testing pipelines for cross-format TemporalStore ingestion/extraction, specifically focusing on fallbacks to primary for secondary/replica random reads. 3. **Real-Time Querying**: There's a request for real-time querying capabilities, including batch ingestion, one-by-one ingestion, and comprehensive reports of all data (including latency, CPU, memory) in a detailed performance report. From the tool results, it seems that the user has requested to continue from where they left off, focusing on the Rust TemporalStore hooks and real-time Codex prompt ingestion. The managed pack now surfaces older benchmark prompts, which suggests that retrieval should beat full-context replay for certain scenarios like `q_bench`. To summarize: - **Rust TemporalStore**: The user wants to integrate it with both Claude and Codex to manage local context.",
           "answer_error": null,
           "judge": {
             "ok": true,
@@ -146,7 +146,7 @@
     },
     {
       "query_id": "q_parity",
-      "question": "What did the user want regarding C++ vs Rust TemporalStore parity and fair performance comparison?",
+      "question": "What did the user want regarding vs Rust TemporalStore parity and fair performance comparison?",
       "expected_terms": [
         "c++",
         "rust",
@@ -164,7 +164,7 @@
           "ok": true,
           "correctness": 7,
           "completeness": 6,
-          "note": "Partial info on C++ vs Rust TemporalStore parity, lacks performance details.",
+          "note": "Partial info on vs Rust TemporalStore parity, lacks performance details.",
           "error": null
         },
         "term_coverage": 0.0,
@@ -175,13 +175,13 @@
           "budget": 4000,
           "pack_tokens": 4000,
           "ref_count": 11,
-          "answer": "It seems the user was asking about a comparison or parity between C++ and Rust implementations of TemporalStore, specifically regarding their performance in terms of Write-Ahead Logging (WAL) recovery and replay. The user might also be interested in fair performance comparisons between these two languages. Here's a summary based on the provided context: - **C++ vs Rust TemporalStore Parity**: The user is likely seeking to understand how the C++ and Rust implementations of TemporalStore compare, particularly focusing on their Write-Ahead Logging (WAL) recovery and replay mechanisms. - **Fair Performance Comparison**: There's an interest in a fair performance comparison between these two languages for the TemporalStore implementation. Given the code snippet provided, it appears that the user is working with Python scripts to analyze or compare different storage subsystems. The script seems to be setting up a task to audit WAL recovery-replay parity between C++ and Rust implementations of TemporalStore. The question \"openrust is not used by rust temporalstore?\" suggests there might be some confusion about whether `openrust` (a hypothetical tool) is being utilized in the Rust implementation. If this is indeed the case, it would be helpful to clarify if `openrust` refers to a specific component or",
+          "answer": "It seems the user was asking about a comparison or parity between and Rust implementations of TemporalStore, specifically regarding their performance in terms of Write-Ahead Logging (WAL) recovery and replay. The user might also be interested in fair performance comparisons between these two languages. Here's a summary based on the provided context: - **vs Rust TemporalStore Parity**: The user is likely seeking to understand how the and Rust implementations of TemporalStore compare, particularly focusing on their Write-Ahead Logging (WAL) recovery and replay mechanisms. - **Fair Performance Comparison**: There's an interest in a fair performance comparison between these two languages for the TemporalStore implementation. Given the code snippet provided, it appears that the user is working with Python scripts to analyze or compare different storage subsystems. The script seems to be setting up a task to audit WAL recovery-replay parity between and Rust implementations of TemporalStore. The question \"openrust is not used by rust temporalstore?\" suggests there might be some confusion about whether `openrust` (a hypothetical tool) is being utilized in the Rust implementation. If this is indeed the case, it would be helpful to clarify if `openrust` refers to a specific component or",
           "answer_error": null,
           "judge": {
             "ok": true,
             "correctness": 8,
             "completeness": 7,
-            "note": "Partial focus on C++ vs Rust TemporalStore parity and performance.",
+            "note": "Partial focus on vs Rust TemporalStore parity and performance.",
             "error": null
           },
           "term_coverage": 0.5,
@@ -192,7 +192,7 @@
           "budget": 2000,
           "pack_tokens": 2000,
           "ref_count": 9,
-          "answer": "The user wanted a fair performance comparison between C++ and Rust TemporalStore, specifically regarding parity. This involves ensuring both implementations have equivalent features and comparing their async capabilities, oplog/WAL mechanisms, SDK support, and latency.",
+          "answer": "The user wanted a fair performance comparison between and Rust TemporalStore, specifically regarding parity. This involves ensuring both implementations have equivalent features and comparing their async capabilities, oplog/WAL mechanisms, SDK support, and latency.",
           "answer_error": null,
           "judge": {
             "ok": true,
@@ -209,13 +209,13 @@
           "budget": 1000,
           "pack_tokens": 1000,
           "ref_count": 8,
-          "answer": "The user wanted a fair performance comparison between C++ and Rust TemporalStore, focusing on parity and async operations, including oplog, WAL, SDK, and latency aspects. However, the exact details or outcomes of this request were not provided in the context.",
+          "answer": "The user wanted a fair performance comparison between and Rust TemporalStore, focusing on parity and async operations, including oplog, WAL, SDK, and latency aspects. However, the exact details or outcomes of this request were not provided in the context.",
           "answer_error": null,
           "judge": {
             "ok": true,
             "correctness": 8,
             "completeness": 7,
-            "note": "Partial details on C++ vs Rust TemporalStore parity, missing exact focus.",
+            "note": "Partial details on vs Rust TemporalStore parity, missing exact focus.",
             "error": null
           },
           "term_coverage": 1.0,
@@ -227,13 +227,13 @@
         "budget": 1000,
         "pack_tokens": 1000,
         "ref_count": 8,
-        "answer": "The user wanted a fair performance comparison between C++ and Rust TemporalStore, focusing on parity and async operations, including oplog, WAL, SDK, and latency aspects. However, the exact details or outcomes of this request were not provided in the context.",
+        "answer": "The user wanted a fair performance comparison between and Rust TemporalStore, focusing on parity and async operations, including oplog, WAL, SDK, and latency aspects. However, the exact details or outcomes of this request were not provided in the context.",
         "answer_error": null,
         "judge": {
           "ok": true,
           "correctness": 8,
           "completeness": 7,
-          "note": "Partial details on C++ vs Rust TemporalStore parity, missing exact focus.",
+          "note": "Partial details on vs Rust TemporalStore parity, missing exact focus.",
           "error": null
         },
         "term_coverage": 1.0,
@@ -555,7 +555,7 @@
           "budget": 4000,
           "pack_tokens": 4000,
           "ref_count": 11,
-          "answer": "It seems like the conversation is about reviewing and understanding a document related to Rust and C++ capability parity in TemporalStore, as well as examining some code snippets. Here's a summary of what was shared: ### Document Summary (`rust_cpp_capability_parity_sweep.md`) 1. **Scope**: The focus is on behavioral parity between Rust and C++ implementations through the shared corpus, not on wire compatibility or storage layout. 2. **Covered Capabilities**: - Common: `exists`, TTL-backed string write - String: `string_set_ex`, `string_get` - Hash: `hash_multi_set`, `hash_get_all` - Set: `set_add`, `set_members` - Feature: append, aggregate query (timestamp/value) - Sequence: C++ feature-row encoding, filtered query - IPS: add with metadata, filter, stats - ControlState: H/CPC/FOL set/query - Context: node, extracted event, secondary indexes, entity, child ref, embedding, summary, compression 3. **Remaining Parity Work**: - C++ has richer table-schema operators and ranking modes. - C++ ControlState still covers broader thrift manager/window semantics.",
+          "answer": "It seems like the conversation is about reviewing and understanding a document related to Rust and capability parity in TemporalStore, as well as examining some code snippets. Here's a summary of what was shared: ### Document Summary (`rust_cpp_capability_parity_sweep.md`) 1. **Scope**: The focus is on behavioral parity between Rust and implementations through the shared corpus, not on wire compatibility or storage layout. 2. **Covered Capabilities**: - Common: `exists`, TTL-backed string write - String: `string_set_ex`, `string_get` - Hash: `hash_multi_set`, `hash_get_all` - Set: `set_add`, `set_members` - Feature: append, aggregate query (timestamp/value) - Sequence: feature-row encoding, filtered query - IPS: add with metadata, filter, stats - ControlState: H/CPC/FOL set/query - Context: node, extracted event, secondary indexes, entity, child ref, embedding, summary, compression 3. **Remaining Parity Work**: - has richer table-schema operators and ranking modes. - ControlState still covers broader thrift manager/window semantics.",
           "answer_error": null,
           "judge": {
             "ok": true,
@@ -589,7 +589,7 @@
           "budget": 1000,
           "pack_tokens": 1000,
           "ref_count": 9,
-          "answer": "The user asked about MatrixObject, shared storage, S3, and object storage, but these topics are not addressed in the provided context. The context focuses on Rust TemporalStore parity with C++, zset functions, and a Python script related to queries. Information regarding MatrixObject, shared storage, S3, or object storage is missing from the given segments.",
+          "answer": "The user asked about MatrixObject, shared storage, S3, and object storage, but these topics are not addressed in the provided context. The context focuses on Rust TemporalStore parity with, zset functions, and a Python script related to queries. Information regarding MatrixObject, shared storage, S3, or object storage is missing from the given segments.",
           "answer_error": null,
           "judge": {
             "ok": true,

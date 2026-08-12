@@ -3,7 +3,7 @@
   "name": "temporalstore-storage-migration-corpus",
   "source_format": "cpp_exported_logical_artifacts_v1",
   "format_compatibility": "migration_only_rust_native_pages",
-  "description": "Golden storage corpus for proving C++ logical object/page/slot/index/oplog exports can be converted into Rust-native storage pages, recovered, dumped, replayed through shared-store, and replicated through Raft.",
+  "description": "Golden storage corpus for proving logical object/page/slot/index/oplog exports can be converted into Rust-native storage pages, recovered, dumped, replayed through shared-store, and replicated through Raft.",
   "cases": [
     {
       "name": "cpp_logical_storage_models_packed_timestamped_pages",

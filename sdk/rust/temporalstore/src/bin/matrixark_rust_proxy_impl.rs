@@ -1932,7 +1932,7 @@ fn scan_matrixark_candidates(client: &Client, command: &Command) -> Result<Value
                 "secondary_index_dropped_candidate_count": entry.secondary_dropped,
                 "native_pack_assembly": false,
                 "pack_assembly_location": "python_reference_packer",
-                "next_native_gap": "C++/Rust ContextPack scoring and budget assembly APIs"
+                "next_native_gap": "conformance ContextPack scoring and budget assembly APIs"
             }
         }));
     }
@@ -2142,7 +2142,7 @@ fn scan_matrixark_candidates(client: &Client, command: &Command) -> Result<Value
             "secondary_index_dropped_candidate_count": secondary_dropped,
             "native_pack_assembly": false,
             "pack_assembly_location": "python_reference_packer",
-            "next_native_gap": "C++/Rust ContextPack scoring and budget assembly APIs"
+            "next_native_gap": "conformance ContextPack scoring and budget assembly APIs"
         }
     }))
 }

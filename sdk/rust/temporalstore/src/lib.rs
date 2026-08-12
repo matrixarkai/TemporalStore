@@ -46,7 +46,7 @@ fn cpp_matrixark_c_api_bridge_allowed(op: &str) -> Result<()> {
     Err(Error {
         code: 1,
         message: format!(
-            "Rust MatrixArk hot path {op} would call the shared C++ C API bridge. \
+            "Rust MatrixArk hot path {op} would call the shared C API bridge. \
              Use the Rust-native temporalstore-rust matrixark_rust_proxy/direct SDK path, \
              or set TEMPORALSTORE_RUST_ALLOW_CPP_MATRIXARK_C_API=1 only for compatibility diagnostics."
         ),

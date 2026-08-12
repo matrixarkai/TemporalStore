@@ -1,6 +1,6 @@
 {
   "schema": "temporalstore_cpp_rust_performance_parity_matrix_v1",
-  "description": "Fail-closed same-config C++/Rust TemporalStore performance parity matrix. This file is not a benchmark result; it is the required evidence shape and current blocker ledger.",
+  "description": "Fail-closed same-config conformance TemporalStore performance parity matrix. This file is not a benchmark result; it is the required evidence shape and current blocker ledger.",
   "status": {
     "performance_candidate": false,
     "production_performance_parity": false,
@@ -11,8 +11,8 @@
       "10K_event_ingestion:rust_backend_not_passed",
       "100K_event_ingestion:cpp_backend_not_passed",
       "100K_event_ingestion:rust_backend_not_passed",
-      "retrieve_workers_4:same-config live C++ and Rust 4-worker retrieval evidence missing",
-      "retrieve_workers_8:same-config live C++ and Rust 8-worker retrieval evidence missing",
+      "retrieve_workers_4:same-config live and Rust 4-worker retrieval evidence missing",
+      "retrieve_workers_8:same-config live and Rust 8-worker retrieval evidence missing",
       "retrieve_workers_16:cpp_backend_not_passed",
       "retrieve_workers_16:rust_backend_not_passed",
       "retrieve_workers_32:cpp_backend_not_passed",
@@ -147,7 +147,7 @@
           "storage_tuning"
         ],
         "required_result": [
-          "same-config C++ and Rust comparison.json with passed backends",
+          "same-config and Rust comparison.json with passed backends",
           "zero timeouts/errors/fallback flags",
           "selected_ref_parity=true",
           "ratios within configured thresholds"
@@ -472,7 +472,7 @@
           "storage_tuning"
         ],
         "required_result": [
-          "same-config C++ and Rust comparison.json with passed backends",
+          "same-config and Rust comparison.json with passed backends",
           "zero timeouts/errors/fallback flags",
           "selected_ref_parity=true",
           "ratios within configured thresholds"
@@ -797,7 +797,7 @@
           "storage_tuning"
         ],
         "required_result": [
-          "same-config C++ and Rust comparison.json with passed backends",
+          "same-config and Rust comparison.json with passed backends",
           "zero timeouts/errors/fallback flags",
           "selected_ref_parity=true",
           "ratios within configured thresholds"
@@ -1055,7 +1055,7 @@
       "rust": {},
       "ratios": {},
       "open_blockers": [
-        "same-config live C++ and Rust 4-worker retrieval evidence missing"
+        "same-config live and Rust 4-worker retrieval evidence missing"
       ],
       "next_run_hint": {
         "artifact_dir": "docs/benchmarks/parity_retrieve_workers_4",
@@ -1121,7 +1121,7 @@
           "storage_tuning"
         ],
         "required_result": [
-          "same-config C++ and Rust comparison.json with passed backends",
+          "same-config and Rust comparison.json with passed backends",
           "zero timeouts/errors/fallback flags",
           "selected_ref_parity=true",
           "ratios within configured thresholds"
@@ -1379,7 +1379,7 @@
       "rust": {},
       "ratios": {},
       "open_blockers": [
-        "same-config live C++ and Rust 8-worker retrieval evidence missing"
+        "same-config live and Rust 8-worker retrieval evidence missing"
       ],
       "next_run_hint": {
         "artifact_dir": "docs/benchmarks/parity_retrieve_workers_8",
@@ -1445,7 +1445,7 @@
           "storage_tuning"
         ],
         "required_result": [
-          "same-config C++ and Rust comparison.json with passed backends",
+          "same-config and Rust comparison.json with passed backends",
           "zero timeouts/errors/fallback flags",
           "selected_ref_parity=true",
           "ratios within configured thresholds"
@@ -1770,7 +1770,7 @@
           "storage_tuning"
         ],
         "required_result": [
-          "same-config C++ and Rust comparison.json with passed backends",
+          "same-config and Rust comparison.json with passed backends",
           "zero timeouts/errors/fallback flags",
           "selected_ref_parity=true",
           "ratios within configured thresholds"
@@ -2095,7 +2095,7 @@
           "storage_tuning"
         ],
         "required_result": [
-          "same-config C++ and Rust comparison.json with passed backends",
+          "same-config and Rust comparison.json with passed backends",
           "zero timeouts/errors/fallback flags",
           "selected_ref_parity=true",
           "ratios within configured thresholds"

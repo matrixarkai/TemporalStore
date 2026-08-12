@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "name": "temporalstore-storage-lifecycle-report-pair-corpus",
-  "description": "Synthetic C++/Rust report pair proving canonical public storage shape normalization and lifecycle metric parity.",
+  "description": "Synthetic conformance report pair proving canonical public storage shape normalization and lifecycle metric parity.",
   "cpp": {
     "effective_storage_tuning": {
       "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,

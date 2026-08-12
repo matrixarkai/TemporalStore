@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "name": "temporalstore-page-address-compatibility-corpus",
-  "description": "Shared C++/Rust corpus for canonical PageAddress compatibility, range lookup, split, compaction, tombstone, cold scan, and restart index rebuild behavior.",
+  "description": "Shared conformance corpus for canonical PageAddress compatibility, range lookup, split, compaction, tombstone, cold scan, and restart index rebuild behavior.",
   "address_fields": [
     "shard_id",
     "zone_id",

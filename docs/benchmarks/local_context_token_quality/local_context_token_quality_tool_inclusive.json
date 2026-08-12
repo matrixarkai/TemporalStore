@@ -98,7 +98,7 @@
           "budget": 16000,
           "pack_tokens": 16000,
           "ref_count": 13,
-          "answer": "The user decided to enable Rust TemporalStore hooks and real-time ingestion for both Codex and Claude. They also wanted the prompt \"QUERY LATEST REAL MESSAGES…\" stored in both Rust and C++ TemporalStore as a non-synthetic `UserPromptSubmit` event with synthetic set to false, ensuring identical records across both backends.",
+          "answer": "The user decided to enable Rust TemporalStore hooks and real-time ingestion for both Codex and Claude. They also wanted the prompt \"QUERY LATEST REAL MESSAGES…\" stored in both Rust and TemporalStore as a non-synthetic `UserPromptSubmit` event with synthetic set to false, ensuring identical records across both backends.",
           "answer_error": null,
           "judge": {
             "ok": true,
@@ -200,7 +200,7 @@
     },
     {
       "query_id": "q_parity",
-      "question": "What did the user want regarding C++ vs Rust TemporalStore parity and fair performance comparison?",
+      "question": "What did the user want regarding vs Rust TemporalStore parity and fair performance comparison?",
       "expected_terms": [
         "c++",
         "rust",
@@ -229,7 +229,7 @@
           "budget": 24000,
           "pack_tokens": 24000,
           "ref_count": 11,
-          "answer": "The user wanted a parity comparison and performance benchmark between C++ and Rust implementations of TemporalStore, focusing on the storage side. Specifically, they asked about: - The differences in long-window aggregate functionality. - The impact of control state capabilities on feature sequences. - Any specific changes or gaps that need to be addressed for parity with the C++ reference implementation.",
+          "answer": "The user wanted a parity comparison and performance benchmark between and Rust implementations of TemporalStore, focusing on the storage side. Specifically, they asked about: - The differences in long-window aggregate functionality. - The impact of control state capabilities on feature sequences. - Any specific changes or gaps that need to be addressed for parity with the reference implementation.",
           "answer_error": null,
           "judge": {
             "ok": true,
@@ -246,7 +246,7 @@
           "budget": 16000,
           "pack_tokens": 16000,
           "ref_count": 8,
-          "answer": "The user wanted to compare the parity and performance of C++ TemporalStore with Rust TemporalStore, focusing on storage-side crash-recovery semantics. Specifically, they requested an audit of WAL recovery-replay parity between the C++ reference implementation and the Rust reimplementation.",
+          "answer": "The user wanted to compare the parity and performance of TemporalStore with Rust TemporalStore, focusing on storage-side crash-recovery semantics. Specifically, they requested an audit of WAL recovery-replay parity between the reference implementation and the Rust reimplementation.",
           "answer_error": null,
           "judge": {
             "ok": true,
@@ -263,13 +263,13 @@
           "budget": 8000,
           "pack_tokens": 7999,
           "ref_count": 5,
-          "answer": "The user wanted a fair performance comparison and concrete gaps between C++ and Rust implementations of TemporalStore's TemporalStore.",
+          "answer": "The user wanted a fair performance comparison and concrete gaps between and Rust implementations of TemporalStore's TemporalStore.",
           "answer_error": null,
           "judge": {
             "ok": true,
             "correctness": 10,
             "completeness": 10,
-            "note": "The answer accurately reflects the user's request for a fair performance comparison and concrete gaps between C++ and Ru",
+            "note": "The answer accurately reflects the user's request for a fair performance comparison and concrete gaps between and Ru",
             "error": null
           },
           "term_coverage": 0.25,
@@ -280,13 +280,13 @@
           "budget": 4000,
           "pack_tokens": 4000,
           "ref_count": 4,
-          "answer": "The user wanted a fair performance comparison between C++ and Rust implementations of TemporalStore.",
+          "answer": "The user wanted a fair performance comparison between and Rust implementations of TemporalStore.",
           "answer_error": null,
           "judge": {
             "ok": true,
             "correctness": 10,
             "completeness": 10,
-            "note": "The answer accurately reflects the user's request for a fair performance comparison between C++ and Rust implementations",
+            "note": "The answer accurately reflects the user's request for a fair performance comparison between and Rust implementations",
             "error": null
           },
           "term_coverage": 0.25,
@@ -297,13 +297,13 @@
           "budget": 2000,
           "pack_tokens": 1999,
           "ref_count": 4,
-          "answer": "The user wanted a fair performance comparison between C++ and Rust TemporalStore implementations.",
+          "answer": "The user wanted a fair performance comparison between and Rust TemporalStore implementations.",
           "answer_error": null,
           "judge": {
             "ok": true,
             "correctness": 10,
             "completeness": 10,
-            "note": "The answer accurately reflects the user's request for a fair performance comparison between C++ and Rust TemporalStore i",
+            "note": "The answer accurately reflects the user's request for a fair performance comparison between and Rust TemporalStore i",
             "error": null
           },
           "term_coverage": 0.25,
@@ -314,13 +314,13 @@
           "budget": 1000,
           "pack_tokens": 999,
           "ref_count": 5,
-          "answer": "The user wanted a fair performance comparison between C++ and Rust TemporalStore implementations.",
+          "answer": "The user wanted a fair performance comparison between and Rust TemporalStore implementations.",
           "answer_error": null,
           "judge": {
             "ok": true,
             "correctness": 10,
             "completeness": 10,
-            "note": "The answer accurately reflects the user's request for a fair performance comparison between C++ and Rust TemporalStore i",
+            "note": "The answer accurately reflects the user's request for a fair performance comparison between and Rust TemporalStore i",
             "error": null
           },
           "term_coverage": 0.25,
@@ -332,13 +332,13 @@
         "budget": 1000,
         "pack_tokens": 999,
         "ref_count": 5,
-        "answer": "The user wanted a fair performance comparison between C++ and Rust TemporalStore implementations.",
+        "answer": "The user wanted a fair performance comparison between and Rust TemporalStore implementations.",
         "answer_error": null,
         "judge": {
           "ok": true,
           "correctness": 10,
           "completeness": 10,
-          "note": "The answer accurately reflects the user's request for a fair performance comparison between C++ and Rust TemporalStore i",
+          "note": "The answer accurately reflects the user's request for a fair performance comparison between and Rust TemporalStore i",
           "error": null
         },
         "term_coverage": 0.25,
@@ -392,7 +392,7 @@
           "budget": 16000,
           "pack_tokens": 16000,
           "ref_count": 23,
-          "answer": "The provided text appears to be a log entry from an automated system, likely related to the setup and maintenance of a TemporalStore service. The key points include: - A cleanup operation has been performed on Windows 10 Pro with WSL version 2. - The process involved freeing up disk space by removing unnecessary files and workspaces. - It also shut down the WSL environment cleanly, preserving certain directories and logs. The log entry mentions that some of the removed files are not recoverable except through rebuilding or cloning again. This suggests a need for caution when dealing with potentially deleted data in WSL environments. Additionally, it indicates that two WSL Vim windows were opened to work on TemporalStore-related codebases: - One was for C++ TemporalStore (`C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-07\\what-s-the-topology-for-all\\temporalstore-service-fix`) - The other was for Rust TemporalStore (`C:\\Users\\Deeproute\\Documents\\Codex\\2",
+          "answer": "The provided text appears to be a log entry from an automated system, likely related to the setup and maintenance of a TemporalStore service. The key points include: - A cleanup operation has been performed on Windows 10 Pro with WSL version 2. - The process involved freeing up disk space by removing unnecessary files and workspaces. - It also shut down the WSL environment cleanly, preserving certain directories and logs. The log entry mentions that some of the removed files are not recoverable except through rebuilding or cloning again. This suggests a need for caution when dealing with potentially deleted data in WSL environments. Additionally, it indicates that two WSL Vim windows were opened to work on TemporalStore-related codebases: - One was for TemporalStore (`C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-07\\what-s-the-topology-for-all\\temporalstore-service-fix`) - The other was for Rust TemporalStore (`C:\\Users\\Deeproute\\Documents\\Codex\\2",
           "answer_error": null,
           "judge": {
             "ok": true,
