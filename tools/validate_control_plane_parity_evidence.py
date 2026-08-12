@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Validate Rust evidence for shared C++ control-plane parity gates."""
+"""Validate Rust evidence for shared control-plane parity gates."""
 
 from __future__ import annotations
 
@@ -497,14 +497,14 @@ def validate_cpp_paths(area: ParityArea, paths: set[str], cpp_repo: Path) -> set
     checked: set[str] = set()
     for required_path in paths:
         if not (cpp_repo / required_path).exists():
-            raise SystemExit(f"{area.name}: C++ required path missing: {required_path}")
+            raise SystemExit(f"{area.name}: required path missing: {required_path}")
         checked.add(required_path)
     return checked
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cpp-repo", type=Path, help="optional C++ checkout for required path checks")
+    parser.add_argument("--cpp-repo", type=Path, help="optional checkout for required path checks")
     args = parser.parse_args()
 
     corpus = load_corpus()

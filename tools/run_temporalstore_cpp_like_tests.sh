@@ -86,4 +86,4 @@ python3 tools/validate_aws_validation_log.py \
   --job temporalstore-cpp-like-storage-validation \
   --log /tmp/temporalstore-cpp-like-storage.log
 
-echo "TemporalStore C++-like test suite passed."
+echo "TemporalStore-like test suite passed."

@@ -14,7 +14,7 @@ RUST_DIRECT_SDK="${MATRIXARK_TEMPORALSTORE_RUST_DIRECT_SDK:-$TARGET_DIR/debug/ma
 
 if [[ -z "$SERVER" || ! -f "$SERVER" ]]; then
   echo "MatrixArk MCP server not found: $SERVER" >&2
-  echo "Set MATRIXARK_MCP_SERVER or MATRIXARK_CPP_TEMPORALSTORE_REPO to the C++ TemporalStore checkout." >&2
+  echo "Set MATRIXARK_MCP_SERVER or MATRIXARK_CPP_TEMPORALSTORE_REPO to the TemporalStore checkout." >&2
   exit 2
 fi
 

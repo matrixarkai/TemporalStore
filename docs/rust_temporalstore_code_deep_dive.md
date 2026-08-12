@@ -6,12 +6,12 @@ This document is a code-oriented map of the Rust TemporalStore implementation in
 `crates/temporalstore-rust`. It focuses on how the Rust code is organized, where
 major product behavior lives, how data flows through storage, Raft, context
 management, client/proxy paths, and what the current test and parity posture
-looks like versus the shared C++/Rust test corpus.
+looks like versus the shared conformance test corpus.
 
 Rust TemporalStore is intentionally Rust-native. The production surfaces are
 HTTP/JSON, RESP, tonic-style service contracts, Rust SDK/client paths, shared
 store replay, and OpenRaft-backed readiness evidence. brpc/thrift wire
-compatibility and byte-for-byte C++ page/log layout are not part of the Rust
+compatibility and byte-for-byte page/log layout are not part of the Rust
 runtime contract unless separately re-scoped.
 
 ## Top-Level Crate Map
@@ -34,7 +34,7 @@ The main Rust crate exposes the following public modules from
 | `meta` | Metaserver topology, table/shard lifecycle, scheduler task reports, membership tokens. |
 | `rebalance` | Rebalance and placement planning. |
 | `client` | Typed Rust client, topology sync, retry budgets, route invalidation, product API wrappers. |
-| `proxy` | Proxy routing, admission, topology-version cache, backend quarantine, C++ alias replacement routes. |
+| `proxy` | Proxy routing, admission, topology-version cache, backend quarantine, alias replacement routes. |
 | `redis` | RESP command parsing and Redis-compatible command execution over the TemporalStore engine. |
 | `http` | HTTP request/response helpers shared by service binaries. |
 | `ingestion` | Kafka/Flink-style ingestion record mapping, offset/checkpoint/dead-letter reports. |
@@ -92,7 +92,7 @@ The common request path is:
   control-state metadata, context nodes/events/segments/entities, storage reports, cache
   reports, and Raft/readiness reports.
 
-This is the main place to inspect when comparing Rust behavior with C++ product
+This is the main place to inspect when comparing Rust behavior with product
 APIs, because most higher-level surfaces eventually map into these command and
 response types.
 
@@ -122,7 +122,7 @@ of maintaining parallel product implementations.
 
 ## Storage And Cache
 
-Rust storage keeps a Rust-native page envelope and log format. C++ parity is
+Rust storage keeps a Rust-native page envelope and log format. parity is
 tracked as behavior and migration/replay parity, not byte-for-byte internal
 layout parity.
 
@@ -247,7 +247,7 @@ data-node and metaserver paths, not on local in-process fixtures.
 - membership tokens and generation checks
 - topology history and operational reports
 
-The C++ parity target here is behavior: scheduler-owned topology and membership
+The parity target here is behavior: scheduler-owned topology and membership
 changes, durable replay, stale token rejection, and real data-node process
 coordination.
 
@@ -260,7 +260,7 @@ coordination.
 - backend health quarantine and probing
 - readonly/write-disabled/drop-percent admission
 - degraded and overload reports
-- Rust-native migration routes and C++ alias replacement paths
+- Rust-native migration routes and alias replacement paths
 
 ### Client
 
@@ -288,10 +288,10 @@ Important binaries include:
 - Raft/storage harness binaries for rollout, secondary replication, storage
   production, and fault validation.
 
-## Unified C++/Rust Test Corpus Posture
+## Unified conformance Test Corpus Posture
 
 The shared corpus is the product-behavior contract intended to be consumed by
-both Rust and C++.
+both Rust and.
 
 Current inventory snapshot from the repo tooling:
 
@@ -319,7 +319,7 @@ Shared families currently include:
 
 Adapter status is still mixed. Raft has native plus static gate coverage,
 benchmarks have a native adapter contract, and several families still depend on
-temporary static surface gates until the executable C++ adapter side is broader.
+temporary static surface gates until the executable adapter side is broader.
 
 ## LOC And File Hot Spots
 
@@ -386,7 +386,7 @@ should remain evidence based:
 - Context benchmark readiness requires Rust TemporalStore backend evidence;
   paper-comparable VikingMem claims additionally require real dataset, live
   reader, full replay, and archived report fields.
-- C++ parity should be measured by shared executable product behavior, not by
+- parity should be measured by shared executable product behavior, not by
   LOC matching or internal implementation shape.
 
 ## Recommended Next Deep-Dive Work
@@ -400,7 +400,7 @@ should remain evidence based:
    modules.
 4. Move more Rust-local product tests into shared corpus cases and keep only
    Rust internals in local tests.
-5. Expand executable C++ adapters so shared corpus comparison can replace static
+5. Expand executable adapters so shared corpus comparison can replace static
    surface gates family by family.
 6. Keep all benchmark docs strict about whether a result is deterministic
    engineering evidence, live-reader evidence, or paper-comparable evidence.

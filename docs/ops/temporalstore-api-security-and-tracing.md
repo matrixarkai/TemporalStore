@@ -31,7 +31,7 @@ tools/run_ops_scale_readiness.sh --run-distributed-raft
 
 The readiness harness validates that the non-Raft auth/TLS contract, tracing
 fields, dashboard, alerts, runbooks, Docker/local scale path, distributed Raft
-load path, and unified C++/Rust workload corpus are present.
+load path, and unified conformance workload corpus are present.
 
 ## Release Checklist
 

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Validate same-config C++/Rust TemporalStore performance parity evidence.
+"""Validate same-config conformance TemporalStore performance parity evidence.
 
 This validator is deliberately fail-closed. A missing live benchmark row is
 allowed only when it is explicitly marked as an active blocker. A row may claim
-`production_performance_parity` only when it carries same-config C++ and Rust
+`production_performance_parity` only when it carries same-config and Rust
 metrics, zero errors/timeouts, no fallback flags, selected-ref parity, and QPS /
 latency ratios within policy thresholds.
 """
@@ -240,7 +240,7 @@ def _validate_missing_evidence_hint(row: dict[str, Any], failures: list[str]) ->
             failures.append(f"{workload} next_run_hint.required_same_config_fields missing `{key}`")
     required_result = _as_list(hint.get("required_result"))
     for expected in [
-        "same-config C++ and Rust comparison.json with passed backends",
+        "same-config and Rust comparison.json with passed backends",
         "zero timeouts/errors/fallback flags",
         "selected_ref_parity=true",
         "ratios within configured thresholds",
@@ -582,9 +582,9 @@ def main() -> int:
 
     if failures:
         details = "\n".join(f"- {failure}" for failure in failures)
-        raise SystemExit(f"TemporalStore C++/Rust performance parity matrix failed:\n{details}")
+        raise SystemExit(f"TemporalStore conformance performance parity matrix failed:\n{details}")
 
-    print("TemporalStore C++/Rust performance parity matrix is explicit and fail-closed")
+    print("TemporalStore conformance performance parity matrix is explicit and fail-closed")
     print(f"- workloads={len(REQUIRED_WORKLOADS)}")
     print(f"- missing_live_evidence_rows={missing_rows}")
     print(f"- performance_candidate={global_candidate}")

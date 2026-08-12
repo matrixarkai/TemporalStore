@@ -725,13 +725,13 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase, _CodexHookOutputPart3, _Co
     def test_loose_stop_payload_preserves_single_prompt_with_commas(self) -> None:
         raw = (
             '-- {"type:agent-turn-complete,thread-id:019f8d12-86c6-7100-9a44-7537cdd30aec,'
-            'input-messages:[QUERY TOP 10 MESSAGES FROM C++ AND RUST TEMPORALSTORE WITH DETAILS TO COMPARE, '
+            'input-messages:[QUERY TOP 10 MESSAGES FROM AND RUST TEMPORALSTORE WITH DETAILS TO COMPARE, '
             'MAKE SURE CURRENT THREAD IS FETCHED]}"'
         )
         payload = decode_payload(raw.encode("utf-8"))
 
         self.assertIn(
-            "QUERY TOP 10 MESSAGES FROM C++ AND RUST TEMPORALSTORE",
+            "QUERY TOP 10 MESSAGES FROM AND RUST TEMPORALSTORE",
             extract_prompt(payload, event="Stop"),
         )
         identity = extract_identity(payload)
@@ -1119,7 +1119,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase, _CodexHookOutputPart3, _Co
                             "session_continuity": "same_session",
                             "text": (
                                 "user: Codex hook heartbeat 2026-07-15T13:32:00Z: "
-                                "C++ TemporalStore is live and accepting MatrixArk hook writes."
+                                "TemporalStore is live and accepting MatrixArk hook writes."
                             ),
                         },
                         {

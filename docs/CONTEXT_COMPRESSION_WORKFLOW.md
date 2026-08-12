@@ -104,7 +104,7 @@ incident compression:
   sources = stream incident events + resource-derived event + feedback event
 ```
 
-Both C++ and Rust unified tests assert:
+Both and Rust unified tests assert:
 
 ```text
 context_write_compression

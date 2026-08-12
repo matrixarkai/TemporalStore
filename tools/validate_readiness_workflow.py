@@ -33,7 +33,7 @@ REQUIRED_SERVICES = [
     "raft_replication",
 ]
 REQUIRED_SNIPPETS = [
-    "Validate unified C++/Rust corpus",
+    "Validate unified conformance corpus",
     "python3 tools/run_temporalstore_unified_tests.py --validate-only",
     "Run unified Rust corpus",
     "tools/run_temporalstore_unified_tests.sh",

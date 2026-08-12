@@ -5,7 +5,7 @@
 
 The generic context harness accepts JSONL cases and is useful for CI smoke tests,
 but LOCOMO and LongMemEval_s have many questions per conversation. This runner
-mirrors the benchmark shape used by the C++/MatrixArk path: build the source
+mirrors the benchmark shape used by the/MatrixArk path: build the source
 bundle once per conversation, then stream every question against that shared
 bundle.
 """

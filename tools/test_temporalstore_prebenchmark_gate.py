@@ -24,7 +24,7 @@ class TemporalStorePrebenchmarkGateTest(unittest.TestCase):
         positions = [text.index(name) for name in expected]
         self.assertEqual(positions, sorted(positions))
         self.assertIn("fix metaserver reachability, namespace/table creation, placement, slot coverage, primary assignment, or topology readiness retries", text)
-        self.assertIn("fix launcher, live proxy port, direct SDK oracle, request timeout, or C++ proxy status warnings", text)
+        self.assertIn("fix launcher, live proxy port, direct SDK oracle, request timeout, or proxy status warnings", text)
         self.assertIn("fix queue replay, append batching, async oplog, or backend write timeout before MatrixArk context parity", text)
         self.assertIn("fix cache admission, eviction counters, refill-from-persistence, page compaction, GC, and recovery invariants before scale claims", text)
         self.assertIn("stop_on_first_failure", text)

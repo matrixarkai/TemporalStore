@@ -196,4 +196,4 @@ groups:
           severity: warning
         annotations:
           summary: MatrixArk backend errors are increasing
-          description: "MatrixArk backend {{ $labels.backend }} has increasing command errors. Inspect C++/Rust gateway logs and backend parity reports."
+          description: "MatrixArk backend {{ $labels.backend }} has increasing command errors. Inspect conformance gateway logs and backend parity reports."

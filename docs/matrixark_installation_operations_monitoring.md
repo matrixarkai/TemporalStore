@@ -67,7 +67,7 @@ node_path  = tenant:<tenant_id> / user:<user_id> / session:<session_id>
 
 ## Quickstart
 
-Production C++/Rust MCP/server path:
+Production conformance MCP/server path:
 
 ```bash
 export MATRIXARK_ACCESS_MODE=dev
@@ -106,7 +106,7 @@ The local Docker distribution should expose the same pieces:
 
 ```text
 matrixark-server        MCP/API + context runtime
-temporalstore-data      local C++ TemporalStore backend
+temporalstore-data      local TemporalStore backend
 temporalstore-rust      optional Rust TemporalStore backend
 matrixark-models        optional OSS embedding/reader/VLM model cache
 matrixark-monitoring    static console + health.json
@@ -131,11 +131,11 @@ matrixark-server start --backend rust --local
 matrixark-server apply-key --agent codex
 ```
 
-## C++ And Rust Store Parity
+## And Rust Store Parity
 
 MatrixArk should operate against either TemporalStore implementation through the same product contract. The caller should not change API payloads, access scopes, ContextPack shape, monitoring views, or benchmark commands when switching backends.
 
-| Area | C++ TemporalStore | Rust TemporalStore | Required parity |
+| Area | TemporalStore | Rust TemporalStore | Required parity |
 | --- | --- | --- | --- |
 | Local developer mode | Native process, direct SDK, or proxy/gateway. | Long-lived Rust proxy or binding; CLI-per-operation is debug only. | Same `backend=cpp|rust` switch in config and Docker. |
 | Serving data | ContextNode, ContextSummary, ContextEmbedding, ContextEvent, ContextEntity, ContextIndex, ResourceChunk, SkillManifest, ContextPackAudit. | Same logical records and wire shape. | Same record keys, timestamps, ids, and replay output. |
@@ -154,7 +154,7 @@ export MATRIXARK_TEMPORALSTORE_BACKEND=rust
 python3 tools/matrixark_mcp_server.py --event-log "$MATRIXARK_MCP_EVENT_LOG"
 ```
 
-Production Rust must not spawn a Rust CLI once per storage operation. That path is useful for feature parity tests, but product runs need a long-lived process, gateway, or in-process binding so latency and concurrency are comparable with C++.
+Production Rust must not spawn a Rust CLI once per storage operation. That path is useful for feature parity tests, but product runs need a long-lived process, gateway, or in-process binding so latency and concurrency are comparable with.
 
 Parity gates:
 
@@ -282,8 +282,8 @@ Common fixes:
 - Skill miss: inspect skill triggers, owner scope, status, precedence, and selected-skill audit.
 - Backend mismatch: run the same parity fixture with `backend=cpp` and `backend=rust`; compare ContextPack JSONL, selected refs, dropped refs, and audit rows.
 - Rust slow path: verify the Rust backend is a Rust proxy/binding, not CLI-per-operation.
-- C++ slow path: verify async oplog, batch append, audit buffering, and data-node count before raising retrieval worker concurrency.
+- slow path: verify async oplog, batch append, audit buffering, and data-node count before raising retrieval worker concurrency.
 
 ## Product Parity Target
 
-OpenViking-style operation teaches the right expectation: context systems need an install path, a control surface, and diagnostics. MatrixArk should match that operator experience while keeping the serving architecture TemporalStore-native: local or distributed, C++ or Rust backend, one context store first, and optional MatrixDB/MatrixKV for offline analysis or transactional metadata.
+OpenViking-style operation teaches the right expectation: context systems need an install path, a control surface, and diagnostics. MatrixArk should match that operator experience while keeping the serving architecture TemporalStore-native: local or distributed, or Rust backend, one context store first, and optional MatrixDB/MatrixKV for offline analysis or transactional metadata.

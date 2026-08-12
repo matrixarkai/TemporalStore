@@ -51,9 +51,9 @@ That means hooks do not need a hard-coded `--session-id` for normal use. Add
 `--session-id` only when intentionally forcing multiple hook invocations into
 one named session.
 
-## C++ Always Mode
+## Always Mode
 
-For this repo, Codex hooks should use the C++ TemporalStore path by default:
+For this repo, Codex hooks should use the TemporalStore path by default:
 
 ```bash
 <repo>/tools/matrixark_codex_cpp_hook.sh \
@@ -80,7 +80,7 @@ MATRIXARK_REQUIRE_OSS_UNDERSTANDING=1
 
 That means Codex prompts, tool events, stop events, session commits, extraction,
 retrieval, summaries, entities, segments, indexes, embeddings, and ContextPack
-audits all go through the MatrixArk direct adapter backed by the live C++
+audits all go through the MatrixArk direct adapter backed by the live
 TemporalStore SDK.
 
 Validation report:
@@ -177,9 +177,9 @@ On Windows, use `commandWindows` if Codex runs hooks through PowerShell/CMD:
 After adding or changing hooks, open `/hooks` in Codex and trust the hook
 definition before expecting it to run.
 
-## C++ TemporalStore Mode
+## TemporalStore Mode
 
-The hook defaults to a local JSONL MatrixArk adapter. To use C++ TemporalStore
+The hook defaults to a local JSONL MatrixArk adapter. To use TemporalStore
 storage, set:
 
 ```bash

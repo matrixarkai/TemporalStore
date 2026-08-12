@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Audit C++/Rust performance artifacts against the fail-closed matrix policy."""
+"""Audit conformance performance artifacts against the fail-closed matrix policy."""
 
 from __future__ import annotations
 
@@ -99,7 +99,7 @@ def _default_next_run_hint(workload: str) -> dict[str, Any]:
         "phase_scale_coverage_required": PHASE_SCALE_COVERAGE,
         "required_same_config_fields": SAME_CONFIG_KEYS,
         "required_result": [
-            "same-config C++ and Rust comparison.json with passed backends",
+            "same-config and Rust comparison.json with passed backends",
             "zero timeouts/errors/fallback flags",
             "selected_ref_parity=true",
             "ratios within configured thresholds",
@@ -436,7 +436,7 @@ def main() -> int:
     else:
         print(text, end="")
     if args.require_importable and not audit["reports_with_importable_workloads"]:
-        raise SystemExit("no importable C++/Rust performance artifacts found")
+        raise SystemExit("no importable conformance performance artifacts found")
     return 0
 
 

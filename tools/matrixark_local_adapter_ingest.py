@@ -4072,7 +4072,7 @@ class _LocalAdapterIngestMixin:
         """Return a backend-assembled ContextPack when the native backend supports it.
 
         Python remains responsible for MCP/auth/model glue and request shaping.
-        C++/Rust backends should own scan, secondary-index filtering, scoring, and
+        conformance backends should own scan, secondary-index filtering, scoring, and
         budget-aware pack assembly through this boundary when available.
         """
         return None

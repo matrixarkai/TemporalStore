@@ -83,7 +83,7 @@ class _LocalAdapterRetrievalMixin:
     ) -> Json:
         """Return records eligible for retrieval hot-path scan/filter/pack.
 
-        C++/Rust backends override this seam with native prefix scans and
+        conformance backends override this seam with native prefix scans and
         secondary-index prefiltering. The local adapter keeps the reference
         behavior by filtering the JSONL record log before Python scoring.
         """

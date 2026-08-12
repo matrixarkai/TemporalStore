@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MatrixArk C++ TemporalStore Docker OSS Scale Testing</title>
+<title>MatrixArk TemporalStore Docker OSS Scale Testing</title>
 <style>
 body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#172033;background:#fff}
 main{max-width:1120px;margin:0 auto;padding:38px 28px 68px}
@@ -11,28 +11,28 @@ h1{font-size:42px;line-height:1.06;margin:0 0 16px}
 pre{white-space:pre-wrap;overflow-x:auto;background:#f6f8fb;border:1px solid #dbe3ef;border-radius:8px;padding:18px;font:14px/1.55 Consolas,"SFMono-Regular",monospace;color:#0f172a}
 </style>
 </head>
-<body><main><span class="badge">Accessible Copy</span><h1>MatrixArk C++ TemporalStore Docker OSS Scale Testing</h1><pre># MatrixArk C++ TemporalStore Docker OSS Scale Testing
+<body><main><span class="badge">Accessible Copy</span><h1>MatrixArk TemporalStore Docker OSS Scale Testing</h1><pre># MatrixArk TemporalStore Docker OSS Scale Testing
 
-This document describes the local scale test that runs MatrixArk context extraction, ingestion, retrieval, and context packing against a live C++ TemporalStore deployment while an OSS model container is running. It also records CPU, memory, latency, and pipeline metrics for debugging.
+This document describes the local scale test that runs MatrixArk context extraction, ingestion, retrieval, and context packing against a live TemporalStore deployment while an OSS model container is running. It also records CPU, memory, latency, and pipeline metrics for debugging.
 
 ## What This Test Proves
 
 - OSS model runtime is available in Docker using `sentence-transformers/all-MiniLM-L6-v2`.
 - MatrixArk can run a scaled context pipeline and generate model-backed embeddings in the container.
-- MatrixArk extraction, batch ingestion, restart/reload, retrieval, and hit-rate checks run through the C++ TemporalStore direct SDK.
-- C++ TemporalStore metaserver/server CPU and RSS are sampled while the benchmark runs.
+- MatrixArk extraction, batch ingestion, restart/reload, retrieval, and hit-rate checks run through the TemporalStore direct SDK.
+- TemporalStore metaserver/server CPU and RSS are sampled while the benchmark runs.
 - Docker container CPU and memory are sampled while OSS model and benchmark work is running.
 
-Current limitation: the OSS model probe and live C++ TemporalStore benchmark run in the same Docker setup, but the benchmark client still uses the current MatrixArk MCP extraction/retrieval path. The direct SDK storage path is real C++; model inference for the MCP benchmark should be wired deeper into MatrixArk as a future step.
+Current limitation: the OSS model probe and live TemporalStore benchmark run in the same Docker setup, but the benchmark client still uses the current MatrixArk MCP extraction/retrieval path. The direct SDK storage path is real; model inference for the MCP benchmark should be wired deeper into MatrixArk as a future step.
 
 ## Workflow
 
 ```mermaid
 flowchart LR
-  A[&quot;Local C++ TemporalStore deployment&quot;] --&gt; B[&quot;metaserver + server&quot;]
+  A[&quot;Local TemporalStore deployment&quot;] --&gt; B[&quot;metaserver + server&quot;]
   C[&quot;Docker OSS model container&quot;] --&gt; D[&quot;OSS embedding probe&quot;]
   C --&gt; E[&quot;MatrixArk MCP benchmark client&quot;]
-  E --&gt; F[&quot;C++ direct SDK adapter&quot;]
+  E --&gt; F[&quot;direct SDK adapter&quot;]
   F --&gt; B
   G[&quot;Metrics sampler&quot;] --&gt; C
   G --&gt; B
@@ -75,11 +75,11 @@ EVENTS=200 QUERIES=80 EVENTS_PER_LANE=50 BATCH_SIZE=20 \
   tools/run_matrixark_cpp_docker_oss_scale.sh
 ```
 
-The script starts a local C++ TemporalStore deployment unless `START_CPP=0` is set.
+The script starts a local TemporalStore deployment unless `START_CPP=0` is set.
 
 By default, the wrapper uses `python:3.12-slim` and installs CPU-only PyTorch plus `sentence-transformers` at container runtime. This avoids large Docker image layer export failures on local WSL Docker. If you want a reusable image, set `BUILD_IMAGE=1`.
 
-The C++ direct SDK is linked against host Ubuntu libraries. The wrapper mounts host library directories read-only and symlinks only the non-libc SDK dependencies into `/tmp/ts-libs` inside the container. This avoids accidentally loading the host `libc` into the Debian Python container.
+The direct SDK is linked against host Ubuntu libraries. The wrapper mounts host library directories read-only and symlinks only the non-libc SDK dependencies into `/tmp/ts-libs` inside the container. This avoids accidentally loading the host `libc` into the Debian Python container.
 
 ## Artifacts
 
@@ -92,7 +92,7 @@ All artifacts are written under:
 Important files:
 
 - `oss_model_pipeline_result.json`: OSS model probe and context contract result.
-- `cpp_temporalstore_benchmark.json`: MatrixArk extraction/ingestion/retrieval benchmark through C++ TemporalStore.
+- `cpp_temporalstore_benchmark.json`: MatrixArk extraction/ingestion/retrieval benchmark through TemporalStore.
 - `docker_stats.jsonl`: raw Docker CPU/memory samples.
 - `cpp_process_stats.jsonl`: metaserver/server CPU/RSS samples.
 - `summary.json`: merged summary of benchmark and resource metrics.
@@ -127,7 +127,7 @@ If the model is missing:
 python3 tools/download_context_oss_models.py --source modelscope --skip-vlm
 ```
 
-If the C++ deployment is stale:
+If the deployment is stale:
 
 ```bash
 BUILD_TYPE=Release OUT_DIR=output-ubuntu22/release DEPLOY_DIR=/tmp/matrixark-cpp-docker-oss-19300 \
@@ -192,8 +192,8 @@ What passed:
 
 - `oss_model_pipeline_result.json` exists and reports OSS embedding model usage.
 - `cpp_temporalstore_benchmark.json` exists and reports `backend=temporalstore-direct`.
-- `summary.json` contains Docker and C++ process metrics.
-- No C++ fatal assertion or SDK load error appears in `run.log`.
+- `summary.json` contains Docker and process metrics.
+- No fatal assertion or SDK load error appears in `run.log`.
 
 For larger runs, increase `EVENTS`, `QUERIES`, and `EVENTS_PER_LANE`. Keep `BATCH_SIZE &gt;= 20` to match the session-batch extraction pattern used in VikingMem-style benchmarking.
 

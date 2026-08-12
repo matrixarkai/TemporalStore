@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Run or print the next C++/Rust performance parity evidence workflow.
+"""Run or print the next conformance performance parity evidence workflow.
 
 The workflow is derived from audit_temporalstore_cpp_rust_performance_artifacts.py.
 By default this script is a dry run: it prints the exact run/import/validation
@@ -438,7 +438,7 @@ def main() -> int:
     parser.add_argument(
         "--skip-backend-artifact-preflight",
         action="store_true",
-        help="With --execute, skip the fail-closed C++ SDK/Rust CLI artifact preflight gate.",
+        help="With --execute, skip the fail-closed SDK/Rust CLI artifact preflight gate.",
     )
     parser.add_argument("--execution-output", type=Path, help="With --execute, write the execution summary JSON here.")
     parser.add_argument(

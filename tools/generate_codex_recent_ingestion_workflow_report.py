@@ -841,9 +841,9 @@ def render_markdown(report: dict[str, Any]) -> str:
         "## What This Report Proves",
         "",
         "- Rust TemporalStore currently captures real Codex `UserPromptSubmit` rows in raw ingestion and exposes matching serving `context_event` rows.",
-        "- C++ TemporalStore now keeps the live hot prefix compact; the full hook writes trace/debug output to a separate debug prefix by default.",
+        "- TemporalStore now keeps the live hot prefix compact; the full hook writes trace/debug output to a separate debug prefix by default.",
         "- Compact extraction/summary is visible through `context_segment`, `context_entity`, `context_index`, and `context_summary` rows in the recent raw window.",
-        "- Rust and C++ live hook prefixes use the same compact direct-publish shape for raw prompts, serving events, extracted entities, indexes, segments, and summaries.",
+        "- Rust and live hook prefixes use the same compact direct-publish shape for raw prompts, serving events, extracted entities, indexes, segments, and summaries.",
         "",
         "## Workflow",
         "",
@@ -852,7 +852,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         "  participant Codex",
         "  participant Hook as matrixark_codex_dual_hook.sh",
         "  participant Rust as Rust TemporalStore 17100/17101/17102",
-        "  participant Cpp as C++ TemporalStore 18000/18001",
+        "  participant Cpp as TemporalStore 18000/18001",
         "  participant Async as Async extraction/summary",
         "  Codex->>Hook: UserPromptSubmit JSON payload",
         "  Hook->>Rust: raw agent_message append",
@@ -940,7 +940,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         "2. Raw event ingestion is proven by the `raw_ingestion` append sequence and write path metadata.",
         "3. Serving context-event publication is proven when the same prompt appears as `context_event` in the serving prefix.",
         "4. Async extraction is proven only when entity/summary/index rows appear after the raw prompt or when dirty-summary markers are drained by a worker.",
-        "5. Compact hot counts are reported separately from physical historical counts, so old C++ debug/audit rows no longer inflate live traffic parity.",
+        "5. Compact hot counts are reported separately from physical historical counts, so old debug/audit rows no longer inflate live traffic parity.",
     ])
     return "\n".join(lines) + "\n"
 
@@ -998,7 +998,7 @@ def main(argv: list[str] | None = None) -> None:
         },
         "backends": [
             summarize_backend("Rust TemporalStore", RUST_PREFIX, rust_raw_count, rust_raw_hot_count, rust_raw, rust_serving_count, rust_serving_hot_count, rust_serving),
-            summarize_backend("C++ TemporalStore", CPP_PREFIX, cpp_raw_count, cpp_raw_hot_count, cpp_raw, cpp_serving_count, cpp_serving_hot_count, cpp_serving),
+            summarize_backend("TemporalStore", CPP_PREFIX, cpp_raw_count, cpp_raw_hot_count, cpp_raw, cpp_serving_count, cpp_serving_hot_count, cpp_serving),
         ],
     }
     report["serving_visibility"] = serving_visibility_summary(report)

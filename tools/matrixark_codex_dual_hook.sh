@@ -1405,7 +1405,7 @@ for record in cpp_live_extraction_records():
                 f"{destination_prefix}:hot_record_count",
             )
         except Exception as exc:
-            print(f"publish extracted C++ record to {destination_prefix} failed: {exc}", file=sys.stderr)
+            print(f"publish extracted record to {destination_prefix} failed: {exc}", file=sys.stderr)
 
 if event_name == "UserPromptSubmit" and published_raw:
     try:

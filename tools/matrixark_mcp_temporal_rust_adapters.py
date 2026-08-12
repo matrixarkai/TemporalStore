@@ -641,7 +641,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
 class MatrixArkTemporalStoreRustDirectAdapter(MatrixArkTemporalStoreRustAdapter):
     """MatrixArk adapter backed by a long-lived Rust process using the Rust SDK directly.
 
-    This is the Rust parity counterpart to the C++ direct SDK adapter. The Python
+    This is the Rust parity counterpart to the direct SDK adapter. The Python
     MCP process still owns protocol/model glue, while the Rust bridge owns the
     TemporalStore SDK client and native storage calls. It is intentionally
     explicit so benchmark reports can distinguish it from the production Rust

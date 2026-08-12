@@ -83,7 +83,7 @@ Syntax: cpplint.py [--verbose=#] [--output=emacs|eclipse|vs7|junit]
                    [--version]
         <file> [file] ...
 
-  Style checker for C/C++ source files.
+  Style checker for C/source files.
   This is a fork of the Google style checker with minor extensions.
 
   The style guidelines this tries to follow are those in
@@ -353,7 +353,7 @@ _LEGACY_ERROR_CATEGORIES = [
 # All entries here should start with a '-' or '+', as in the --filter= flag.
 _DEFAULT_FILTERS = ['-build/include_alpha']
 
-# The default list of categories suppressed for C (not C++) files.
+# The default list of categories suppressed for C (not) files.
 _DEFAULT_C_SUPPRESSED_CATEGORIES = [
     'readability/casting',
     ]
@@ -367,7 +367,7 @@ _DEFAULT_KERNEL_SUPPRESSED_CATEGORIES = [
 # decided those were OK, as long as they were in UTF-8 and didn't represent
 # hard-coded international strings, which belong in a separate i18n file.
 
-# C++ headers
+# headers
 _CPP_HEADERS = frozenset([
     # Legacy
     'algobase.h',
@@ -421,7 +421,7 @@ _CPP_HEADERS = frozenset([
     'tree.h',
     'type_traits.h',
     'vector.h',
-    # 17.6.1.2 C++ library headers
+    # 17.6.1.2 library headers
     'algorithm',
     'array',
     'atomic',
@@ -475,9 +475,9 @@ _CPP_HEADERS = frozenset([
     'utility',
     'valarray',
     'vector',
-    # 17.6.1.2 C++14 headers
+    # 17.6.1.214 headers
     'shared_mutex',
-    # 17.6.1.2 C++17 headers
+    # 17.6.1.217 headers
     'any',
     'charconv',
     'codecvt',
@@ -487,7 +487,7 @@ _CPP_HEADERS = frozenset([
     'optional',
     'string_view',
     'variant',
-    # 17.6.1.2 C++ headers for C library facilities
+    # 17.6.1.2 headers for C library facilities
     'cassert',
     'ccomplex',
     'cctype',
@@ -571,7 +571,7 @@ for op, inv_replacement in [('==', 'NE'), ('!=', 'EQ'),
   _CHECK_REPLACEMENT['ASSERT_FALSE'][op] = 'ASSERT_%s' % inv_replacement
 
 # Alternative tokens and their replacements.  For full list, see section 2.5
-# Alternative tokens [lex.digraph] in the C++ standard.
+# Alternative tokens [lex.digraph] in the standard.
 #
 # Digraphs (such as '%:') are not included here since it's a mess to
 # match those on a word boundary.
@@ -617,7 +617,7 @@ _MATCH_ASM = re.compile(r'^\s*(?:asm|_asm|__asm|__asm__)'
                         r'(?:\s+(volatile|__volatile__))?'
                         r'\s*[{(]')
 
-# Match strings that indicate we're working on a C (not C++) file.
+# Match strings that indicate we're working on a C (not) file.
 _SEARCH_C_FILE = re.compile(r'\b(?:LINT_C_FILE|'
                             r'vim?:\s*.*(\s*|:)filetype=c(\s*|:|$))')
 
@@ -849,7 +849,7 @@ class _IncludeState(object):
 
   _TYPE_NAMES = {
       _C_SYS_HEADER: 'C system header',
-      _CPP_SYS_HEADER: 'C++ system header',
+      _CPP_SYS_HEADER: 'system header',
       _LIKELY_MY_HEADER: 'header this file implements',
       _POSSIBLE_MY_HEADER: 'header this file may implement',
       _OTHER_HEADER: 'other header',
@@ -858,7 +858,7 @@ class _IncludeState(object):
       _INITIAL_SECTION: "... nothing. (This can't be an error.)",
       _MY_H_SECTION: 'a header this file implements',
       _C_SECTION: 'C system header',
-      _CPP_SECTION: 'C++ system header',
+      _CPP_SECTION: 'system header',
       _OTHER_H_SECTION: 'other header',
       }
 
@@ -1466,7 +1466,7 @@ def Error(filename, linenum, category, confidence, message):
           filename, linenum, message, category, confidence)
       sys.stderr.write(final_message)
 
-# Matches standard C++ escape sequences per 2.13.2.3 of the C++ standard.
+# Matches standard escape sequences per 2.13.2.3 of the standard.
 _RE_PATTERN_CLEANSE_LINE_ESCAPES = re.compile(
     r'\\([abfnrtv?"\\\']|\d+|x[0-9a-fA-F]+)')
 # Match a single C style comment on the same line.
@@ -1504,7 +1504,7 @@ def IsCppString(line):
 
 
 def CleanseRawStrings(raw_lines):
-  """Removes C++11 raw strings from lines.
+  """Removes11 raw strings from lines.
 
     Before:
       static const char kData[] = R"(
@@ -1520,7 +1520,7 @@ def CleanseRawStrings(raw_lines):
     raw_lines: list of raw lines.
 
   Returns:
-    list of lines with C++11 raw strings replaced by empty strings.
+    list of lines with11 raw strings replaced by empty strings.
   """
 
   delimiter = None
@@ -1627,7 +1627,7 @@ def CleanseComments(line):
   """Removes //-comments and single-line C-style /* */ comments.
 
   Args:
-    line: A line of C++ source.
+    line: A line of source.
 
   Returns:
     The line with single-line comments removed.
@@ -1645,7 +1645,7 @@ class CleansedLines(object):
   1) elided member contains lines without strings and comments.
   2) lines member contains lines without comments.
   3) raw_lines member contains all the lines without processing.
-  4) lines_without_raw_strings member is same as raw_lines, but with C++11 raw
+  4) lines_without_raw_strings member is same as raw_lines, but with11 raw
      strings removed.
   All these members are of <type 'list'>, and of the same length.
   """
@@ -2028,7 +2028,7 @@ def GetHeaderGuardCPPVariable(filename):
   """Returns the CPP variable that should be used as a header guard.
 
   Args:
-    filename: The name of a C++ header file.
+    filename: The name of a header file.
 
   Returns:
     The CPP variable that should be used as a header guard in the
@@ -2041,7 +2041,7 @@ def GetHeaderGuardCPPVariable(filename):
   filename = re.sub(r'_flymake\.h$', '.h', filename)
   filename = re.sub(r'/\.flymake/([^/]*)$', r'/\1', filename)
   # Replace 'c++' with 'cpp'.
-  filename = filename.replace('C++', 'cpp').replace('c++', 'cpp')
+  filename = filename.replace('', 'cpp').replace('c++', 'cpp')
 
   fileinfo = FileInfo(filename)
   file_path_from_root = fileinfo.RepositoryName()
@@ -2107,7 +2107,7 @@ def CheckForHeaderGuard(filename, clean_lines, error):
   headers, checks that the full pathname is used.
 
   Args:
-    filename: The name of the C++ header file.
+    filename: The name of the header file.
     clean_lines: A CleansedLines instance containing the file.
     error: The function to call with any errors found.
   """
@@ -2280,7 +2280,7 @@ def CheckForMultilineCommentsAndStrings(filename, clean_lines, linenum, error):
   Otherwise, we prefer // comments, so it's ok to warn about the
   other.  Likewise, it's ok for strings to extend across multiple
   lines, as long as a line continuation character (backslash)
-  terminates each line. Although not currently prohibited by the C++
+  terminates each line. Although not currently prohibited by the
   style guide, it's ugly and unnecessary. We don't do well with either
   in this lint program, so we warn about both.
 
@@ -2308,7 +2308,7 @@ def CheckForMultilineCommentsAndStrings(filename, clean_lines, linenum, error):
     error(filename, linenum, 'readability/multiline_string', 5,
           'Multi-line string ("...") found.  This lint script doesn\'t '
           'do well with such strings, and may give bogus warnings.  '
-          'Use C++11 raw strings or concatenation instead.')
+          'Use11 raw strings or concatenation instead.')
 
 
 # (non-threadsafe name, thread-safe alternative, validation pattern)
@@ -3007,7 +3007,7 @@ def CheckForNonStandardConstructs(filename, clean_lines, linenum,
   r"""Logs an error if we see certain non-ANSI constructs ignored by gcc-2.
 
   Complain about several constructs which gcc-2 accepts, but which are
-  not standard C++.  Warning about these in lint is one way to ease the
+  not standard.  Warning about these in lint is one way to ease the
   transition to new compilers.
   - put storage class first (e.g. "static const" instead of "const static").
   - "%lld" instead of %qd" in printf-type functions.
@@ -3416,7 +3416,7 @@ def CheckSpacing(filename, clean_lines, linenum, nesting_state, error):
   """
 
   # Don't use "elided" lines here, otherwise we can't check commented lines.
-  # Don't want to use "raw" either, because we don't want to check inside C++11
+  # Don't want to use "raw" either, because we don't want to check inside11
   # raw strings,
   raw = clean_lines.lines_without_raw_strings
   line = raw[linenum]
@@ -3556,7 +3556,7 @@ def CheckOperatorSpacing(filename, clean_lines, linenum, error):
   if ((Search(r'[\w.]=', line) or
        Search(r'=[\w.]', line))
       and not Search(r'\b(if|while|for) ', line)
-      # Operators taken from [lex.operators] in C++11 standard.
+      # Operators taken from [lex.operators] in11 standard.
       and not Search(r'(>=|<=|==|!=|&=|\^=|\|=|\+=|\*=|\/=|\%=)', line)
       and not Search(r'operator=', line)):
     error(filename, linenum, 'whitespace/operators', 4,
@@ -3617,7 +3617,7 @@ def CheckOperatorSpacing(filename, clean_lines, linenum, error):
           'Missing spaces around <<')
 
   # We allow no-spaces around >> for almost anything.  This is because
-  # C++11 allows ">>" to close nested templates, which accounts for
+  #11 allows ">>" to close nested templates, which accounts for
   # most cases when ">>" is not followed by a space.
   #
   # We still warn on ">>" followed by alpha character, because that is
@@ -4092,7 +4092,7 @@ def CheckTrailingSemicolon(filename, clean_lines, linenum, error):
 
   line = clean_lines.elided[linenum]
 
-  # Block bodies should not be followed by a semicolon.  Due to C++11
+  # Block bodies should not be followed by a semicolon.  Due to11
   # brace initialization, there are more places where semicolons are
   # required than not, so we use a whitelist approach to check these
   # rather than a blacklist.  These are the places where "};" should
@@ -4538,7 +4538,7 @@ def GetLineWidth(line):
 
 def CheckStyle(filename, clean_lines, linenum, file_extension, nesting_state,
                error):
-  """Checks rules from the 'C++ style rules' section of cppguide.html.
+  """Checks rules from the 'standard rules' section of cppguide.html.
 
   Most of these rules are hard to test (naming, comment style), but we
   do what we can.  In particular we check for 2-space indents, line lengths,
@@ -4555,7 +4555,7 @@ def CheckStyle(filename, clean_lines, linenum, file_extension, nesting_state,
   """
 
   # Don't use "elided" lines here, otherwise we can't check commented lines.
-  # Don't want to use "raw" either, because we don't want to check inside C++11
+  # Don't want to use "raw" either, because we don't want to check inside11
   # raw strings,
   raw_lines = clean_lines.lines_without_raw_strings
   line = raw_lines[linenum]
@@ -4729,7 +4729,7 @@ def _ClassifyInclude(fileinfo, include, is_system):
   # those already checked for above.
   is_cpp_h = include in _CPP_HEADERS
 
-  # Headers with C++ extensions shouldn't be considered C system headers
+  # Headers with extensions shouldn't be considered C system headers
   if is_system and os.path.splitext(include)[1] in ['.hpp', '.hxx', '.h++']:
     is_system = False
 
@@ -4933,7 +4933,7 @@ _RE_PATTERN_REF_STREAM_PARAM = (
 
 def CheckLanguage(filename, clean_lines, linenum, file_extension,
                   include_state, nesting_state, error):
-  """Checks rules from the 'C++ language rules' section of cppguide.html.
+  """Checks rules from the 'language rules' section of cppguide.html.
 
   Some of these rules are hard to test (function overloading, using
   uint32 inappropriately), but we do the best we can.
@@ -5108,7 +5108,7 @@ def CheckGlobalStatic(filename, clean_lines, linenum, error):
     line += clean_lines.elided[linenum + 1].strip()
 
   # Check for people declaring static/global STL strings at the top level.
-  # This is dangerous because the C++ language does not guarantee that
+  # This is dangerous because the language does not guarantee that
   # globals with constructors are initialized before the first access, and
   # also because globals can be destroyed when some threads are still running.
   # TODO(unknown): Generalize this to also find static unique_ptr instances.
@@ -5527,7 +5527,7 @@ def CheckCStyleCast(filename, clean_lines, linenum, cast_type, pattern, error):
     filename: The name of the current file.
     clean_lines: A CleansedLines instance containing the file.
     linenum: The number of the line to check.
-    cast_type: The string for the C++ cast to recommend.  This is either
+    cast_type: The string for the cast to recommend.  This is either
       reinterpret_cast, static_cast, or const_cast, depending.
     pattern: The regular expression used to find C-style casts.
     error: The function to call with any errors found.
@@ -5867,7 +5867,7 @@ _RE_PATTERN_EXPLICIT_MAKEPAIR = re.compile(r'\bmake_pair\s*<')
 def CheckMakePairUsesDeduction(filename, clean_lines, linenum, error):
   """Check that make_pair's template arguments are deduced.
 
-  G++ 4.6 in C++11 mode fails badly if make_pair's template arguments are
+  G++ 4.6 in11 mode fails badly if make_pair's template arguments are
   specified explicitly, and such use isn't intended in any case.
 
   Args:
@@ -5881,7 +5881,7 @@ def CheckMakePairUsesDeduction(filename, clean_lines, linenum, error):
   if match:
     error(filename, linenum, 'build/explicit_make_pair',
           4,  # 4 = high confidence
-          'For C++11-compatibility, omit template arguments from make_pair'
+          'For11-compatibility, omit template arguments from make_pair'
           ' OR use pair directly OR if appropriate, construct a pair directly')
 
 
@@ -6100,12 +6100,12 @@ def FlagCxx11Features(filename, clean_lines, linenum, error):
 
   include = Match(r'\s*#\s*include\s+[<"]([^<"]+)[">]', line)
 
-  # Flag unapproved C++ TR1 headers.
+  # Flag unapproved TR1 headers.
   if include and include.group(1).startswith('tr1/'):
     error(filename, linenum, 'build/c++tr1', 5,
-          ('C++ TR1 headers such as <%s> are unapproved.') % include.group(1))
+          ('TR1 headers such as <%s> are unapproved.') % include.group(1))
 
-  # Flag unapproved C++11 headers.
+  # Flag unapproved11 headers.
   if include and include.group(1) in ('cfenv',
                                       'condition_variable',
                                       'fenv.h',
@@ -6118,9 +6118,9 @@ def FlagCxx11Features(filename, clean_lines, linenum, error):
                                       'system_error',
                                      ):
     error(filename, linenum, 'build/c++11', 5,
-          ('<%s> is an unapproved C++11 header.') % include.group(1))
+          ('<%s> is an unapproved11 header.') % include.group(1))
 
-  # The only place where we need to worry about C++11 keywords and library
+  # The only place where we need to worry about11 keywords and library
   # features in preprocessor directives is in macro definitions.
   if Match(r'\s*#', line) and not Match(r'\s*#\s*define\b', line): return
 
@@ -6134,13 +6134,13 @@ def FlagCxx11Features(filename, clean_lines, linenum, error):
       ):
     if Search(r'\bstd::%s\b' % top_name, line):
       error(filename, linenum, 'build/c++11', 5,
-            ('std::%s is an unapproved C++11 class or function.  Send c-style '
+            ('std::%s is an unapproved11 class or function.  Send c-style '
              'an example of where it would make your code more readable, and '
              'they may let you use it.') % top_name)
 
 
 def FlagCxx14Features(filename, clean_lines, linenum, error):
-  """Flag those C++14 features that we restrict.
+  """Flag those14 features that we restrict.
 
   Args:
     filename: The name of the current file.
@@ -6152,10 +6152,10 @@ def FlagCxx14Features(filename, clean_lines, linenum, error):
 
   include = Match(r'\s*#\s*include\s+[<"]([^<"]+)[">]', line)
 
-  # Flag unapproved C++14 headers.
+  # Flag unapproved14 headers.
   if include and include.group(1) in ('scoped_allocator', 'shared_mutex'):
     error(filename, linenum, 'build/c++14', 5,
-          ('<%s> is an unapproved C++14 header.') % include.group(1))
+          ('<%s> is an unapproved14 header.') % include.group(1))
 
 
 def ProcessFileData(filename, file_extension, lines, error,

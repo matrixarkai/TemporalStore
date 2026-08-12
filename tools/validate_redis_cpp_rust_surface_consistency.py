@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Validate C++/Rust Redis and capability command surface consistency.
+"""Validate conformance Redis and capability command surface consistency.
 
 The first open-source release intentionally keeps one shared Redis-compatible
 base plus Rust-only explicit Feature/Control State commands. This gate catches
-C++/Rust/manifest drift by validating only the positive public allowlist.
+conformance/manifest drift by validating only the positive public allowlist.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ def extract_cxx_open_source_commands(source: str) -> list[str]:
         re.S,
     )
     if not match:
-        raise AssertionError("could not locate C++ OpenSourceRedisCommands descriptor table")
+        raise AssertionError("could not locate OpenSourceRedisCommands descriptor table")
     return re.findall(r'\{\s*RedisCommand::CmdType::k[A-Za-z0-9]+\s*,\s*"([A-Z0-9]+)"\s*,', match.group("body"))
 
 
@@ -80,7 +80,7 @@ def main() -> int:
     if manifest_cxx != shared:
         failures.append("manifest cxx_commands must exactly match shared minimal Redis commands")
     if cxx_commands != shared:
-        failures.append("C++ OpenSourceRedisCommands must exactly match shared minimal Redis commands")
+        failures.append("OpenSourceRedisCommands must exactly match shared minimal Redis commands")
     if manifest.get("cxx_command_count") != len(shared):
         failures.append("manifest cxx_command_count must match shared minimal Redis command count")
     if contract.get("cxx_public_command_count") != len(shared):
@@ -97,11 +97,11 @@ def main() -> int:
         failures.append("contract rust_trimmed_public_command_count must match shared plus capability commands")
 
     if failures:
-        print("redis C++/Rust surface consistency validation failed:")
+        print("redis conformance surface consistency validation failed:")
         for failure in failures:
             print(f" - {failure}")
         return 1
-    print("redis C++/Rust surface consistency validation passed")
+    print("redis conformance surface consistency validation passed")
     return 0
 
 

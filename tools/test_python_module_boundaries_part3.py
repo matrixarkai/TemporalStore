@@ -154,8 +154,8 @@ class _ModuleBoundaryPart3:
         defaults_doc = (REPO_ROOT / "docs" / "matrixark_mcp_production_defaults.md").read_text(encoding="utf-8")
         required_snippets = [
             "Python remains the MCP/HTTP/control-plane layer",
-            "Native C++ or Rust MCP servers are future optimizations, not a v1 requirement",
-            "C++ and Rust TemporalStore remain the serving engines",
+            "Native or Rust MCP servers are future optimizations, not a v1 requirement",
+            "and Rust TemporalStore remain the serving engines",
             "compact and audit-light",
             "Full replay/debug audit is opt-in",
             "Cloud mode requires an API key or trusted SSO gateway identity",
@@ -200,7 +200,7 @@ class _ModuleBoundaryPart3:
             "no local credentials or secrets",
             "no vendored build outputs",
             "reproducible local validation commands",
-            "C++/Rust scale matrix gate",
+            "conformance scale matrix gate",
         ]
         for snippet in required_snippets:
             self.assertIn(snippet, defaults_doc)

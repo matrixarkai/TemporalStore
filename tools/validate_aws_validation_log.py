@@ -357,7 +357,7 @@ def validate_context_workflow(job, summary):
     )
     require(
         any("model ids 9-13" in item for item in summary["parity_evidence"]),
-        f"{job}: context parity evidence missing C++ model id coverage",
+        f"{job}: context parity evidence missing model id coverage",
     )
 
 

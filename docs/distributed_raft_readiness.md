@@ -186,7 +186,7 @@ path and borrow RustRaft semantics, safety contracts, metrics, admin surfaces, a
 RustRaft-derived evidence is now paired with the Rust TemporalRaft process rollout evidence, and the
 process-path gate fails closed if that evidence is absent. This makes the runtime parity claim
 harder to fake, but it is still Rust-native TemporalRaft readiness evidence, not a claim that Rust is
-byte-for-byte or implementation-identical to C++ RustRaft. Direct C++ RustRaft FFI is not part of
+byte-for-byte or implementation-identical to RustRaft. Direct RustRaft FFI is not part of
 the readiness target.
 
 The local WAL now has the applied-index/storage/snapshot atomicity contract represented as durable
@@ -223,8 +223,8 @@ The production runtime surface is:
   rejection, and caught-up-candidate grant, rolling-restarts every voter from its WAL, verifies
   post-restart replication, kills the original leader, triggers surviving-node failover, and
   verifies post-failover reads
-- `run_raft_shared_cases.py` validates every shared C++/Rust Raft corpus case has Rust process or
-  harness evidence and C++ required paths. Its Rust combined mode runs the data-node plus metaserver
+- `run_raft_shared_cases.py` validates every shared conformance Raft corpus case has Rust process or
+  harness evidence and required paths. Its Rust combined mode runs the data-node plus metaserver
   parity gate once instead of treating individual corpus rows as production proof by name alone.
 - The combined Raft parity summary now promotes metaserver scheduler execution coverage,
   TemporalRaft metaserver process rollout, and metaserver-owned data-Raft membership into first-class
@@ -240,15 +240,15 @@ Production deployments should use `ProductionRaftSecurity::mtls`. Local chaos te
 
 - AWS or other external multi-node SLO runs with real metaserver, proxy, client, and data-node
   deployments remain part of the broader `scale_testing` gate.
-- legacy C++ wire compatibility remains out of scope for the Rust-native Raft process path.
+- legacy wire compatibility remains out of scope for the Rust-native Raft process path.
 - Non-Raft service API TLS/auth, dashboards, autoscale, and deployment automation remain tracked by
   the broader deployment-ops gate.
 
-## C++ Raft Test Case Cross-Reference
+## Raft Test Case Cross-Reference
 
-The current C++ unified corpus includes these Raft/replication cases:
+The current unified corpus includes these Raft/replication cases:
 
-| C++ corpus case | C++ runner | Rust validation path |
+| corpus case | runner | Rust validation path |
 | --- | --- | --- |
 | `storage_data_raft_replication_gtest` | `cmake --build build-ubuntu22/release --target data_raft_replication_test -j2` | `cargo run -p temporalstore-rust --bin distributed_raft_harness` plus `tools/validate_aws_validation_log.py --job temporalstore-raft-validation` |
 | `raft_data_node_scale_failover_snapshot` | `tools/run_data_raft_2node_scale_ubuntu22.sh`, `tools/run_data_raft_failover_ubuntu22.sh`, `tools/run_data_raft_snapshot_restore_ubuntu22.sh` | `distributed_raft_harness`, `raft_secondary_replication_harness`, and `external_chaos_gate --profile quick` cover scale down/up, leader transfer, snapshot bootstrap, secondary restart catch-up, and leader-crash failover |
@@ -262,7 +262,7 @@ The current C++ unified corpus includes these Raft/replication cases:
 | `raft_temporal_raft_process_rollout_evidence` | `tools/run_raft_production_gate_ubuntu22.sh`, `tools/run_raft_stress_suite_ubuntu22.sh` | Rust unit/readiness evidence verifies local mode is rejected for deployment and production readiness depends on TemporalRaft data-node and metaserver process rollout plus log-store validation fields; `distributed_raft_harness` now emits `membership_role_process_evidence` and requires `rustraft_runtime_semantics.membership_role_process_validated=true` for witness quorum/no-data behavior, learner auto-promote, and pending joint-consensus WAL restore before final commit; local-status Prometheus now exports RustRaft-style peer progress, snapshot state, transfer target, pre-vote/election counters, and WAL first/last log index; the membership matrix also requires metaserver generation/token replay evidence |
 | `raft_production_gate` | `tools/run_raft_production_gate_ubuntu22.sh` | `tools/run_storage_raft_production_readiness.sh` is the Rust storage/Raft local gate, and `tools/run_raft_distributed_parity.sh` is the Rust Raft-only parity gate for data-node plus metaserver multi-node behavior; strict production mode still fails until networked TemporalRaft rollout and real multi-process log-store validation are complete |
 
-Focused C++ Raft-case-driven Rust validation:
+Focused Raft-case-driven Rust validation:
 
 ```bash
 python3 tools/run_cpp_raft_cases_on_rust.py \
@@ -270,12 +270,12 @@ python3 tools/run_cpp_raft_cases_on_rust.py \
   --artifact-dir /tmp/temporalstore-cpp-raft-cases-on-rust
 ```
 
-This command uses the unified C++ Raft case names above to verify C++ required paths, write a
+This command uses the unified Raft case names above to verify required paths, write a
 case-to-Rust-runner mapping report, and execute the Rust data-node plus metaserver Raft parity gate.
 
 ## June 17, 2026 Local Multi-Node Validation
 
-The Rust multi-node Raft checks were rerun against the C++ coverage above:
+The Rust multi-node Raft checks were rerun against the coverage above:
 
 The RustRaft replication-backpressure shared case now includes explicit
 reordered append gap handling, stale-term rejection, packet-loss recovery, and
@@ -417,7 +417,7 @@ cargo build -p temporalstore-rust --bins
 cargo run -p temporalstore-rust --bin external_chaos_gate -- --profile quick
 ```
 
-The executable Raft-only C++ parity gate for both data-node and metaserver multi-node behavior is:
+The executable Raft-only parity gate for both data-node and metaserver multi-node behavior is:
 
 ```bash
 tools/run_raft_distributed_parity.sh

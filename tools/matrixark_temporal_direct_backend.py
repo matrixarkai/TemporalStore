@@ -918,7 +918,7 @@ class _TemporalDirectBackendMixin:
 
         ContextIndex remains compact and bucketed.  These sidecar hashes make the
         compact postings and ref-to-record locations directly addressable by the
-        native C++/Rust hash API.
+        native conformance hash API.
         """
         lookup_updates: dict[tuple[str, str], Json] = {}
         locator_updates: dict[int, list[Json]] = {}

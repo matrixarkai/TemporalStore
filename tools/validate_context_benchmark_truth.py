@@ -4,8 +4,8 @@
 """Validate the Context benchmark truth contract wiring.
 
 This is deliberately static and fast. It ensures the benchmark path says what it
-can honestly prove before deeper C++ parity execution is enabled: archive-level
-truth mode first, shared report contract second, native C++ execution third.
+can honestly prove before deeper parity execution is enabled: archive-level
+truth mode first, shared report contract second, native execution third.
 """
 
 from __future__ import annotations
@@ -96,7 +96,7 @@ def main() -> int:
             "truth_blockers",
             "benchmark truth first",
             "unified report contract next",
-            "deeper C++ parity execution",
+            "deeper parity execution",
         ),
     )
     require_snippets(

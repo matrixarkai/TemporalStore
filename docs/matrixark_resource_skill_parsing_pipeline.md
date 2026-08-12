@@ -349,7 +349,7 @@ cd <repo>
 python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_resource_skill_backend_parity.py --backends local
 ```
 
-Run C++ live parity after topology readiness:
+Run live parity after topology readiness:
 
 ```bash
 cd <repo>
@@ -387,4 +387,4 @@ For a resource or skill import, inspect these records in order:
 
 ## Current Design Takeaway
 
-MatrixArk uses Python for parser/model-worker responsibilities and C++/Rust TemporalStore backends for serving storage, indexes, embeddings, audits, and retrieval. This keeps the document ecosystem flexible while making the serving path TemporalStore-native, replayable, scoped, and ready for both local and distributed deployments.
+MatrixArk uses Python for parser/model-worker responsibilities and conformance TemporalStore backends for serving storage, indexes, embeddings, audits, and retrieval. This keeps the document ecosystem flexible while making the serving path TemporalStore-native, replayable, scoped, and ready for both local and distributed deployments.

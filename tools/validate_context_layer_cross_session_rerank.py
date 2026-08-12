@@ -3,7 +3,7 @@
 # Copyright 2026 MatrixArkAI
 """Validate and report MatrixArk layer traversal + cross-session rerank parity.
 
-This is a lightweight source/corpus gate for the native C++ and Rust context
+This is a lightweight source/corpus gate for the native and Rust context
 paths. The heavy live benchmark still belongs to the scale runners; this script
 keeps the product behavior contract visible and repeatable without relinking the
 full local TemporalStore tree.
@@ -166,7 +166,7 @@ def build_report() -> dict[str, Any]:
             "cargo test -p temporalstore-rust context_retrieval_reranks_cross_session_and_shared_resource_evidence --lib -- --test-threads=1",
         ],
         "notes": [
-            "C++ native surface already contains TRAVERSE_CONTEXT_TREE and decayed QUERY_EVENTS primitives.",
+            "native surface already contains TRAVERSE_CONTEXT_TREE and decayed QUERY_EVENTS primitives.",
             "Rust native retrieve path now applies weighted reranking before the existing relevance/tier/time tie-breakers.",
             "Live full-Cargo validation can be slow in this Windows/WSL workspace; the report records the command separately from the fast source/corpus gate.",
         ],
@@ -189,7 +189,7 @@ def markdown(report: dict[str, Any]) -> str:
     lines.extend(["", "## Budget Defaults"])
     for key, value in report["behavior"]["budget_defaults"].items():
         lines.append(f"- `{key}`: {value}")
-    lines.extend(["", "## C++ / Rust Checks"])
+    lines.extend(["", "## / Rust Checks"])
     for check in report["checks"]:
         lines.append(f"- `{check['name']}`: **{check['status']}**")
         if check.get("missing"):

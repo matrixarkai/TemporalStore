@@ -4,8 +4,8 @@ These assumptions define the v1 MatrixArk MCP and orchestrator boundary.
 
 ## Defaults
 
-- Python remains the MCP/HTTP/control-plane layer for now. Native C++ or Rust MCP servers are future optimizations, not a v1 requirement.
-- C++ and Rust TemporalStore remain the serving engines. They own hot-path
+- Python remains the MCP/HTTP/control-plane layer for now. Native or Rust MCP servers are future optimizations, not a v1 requirement.
+- and Rust TemporalStore remain the serving engines. They own hot-path
   append, scan, index prefilter, retrieve, pack, storage, and topology behavior.
 - Default production retrieval is compact and audit-light.
 - Full replay/debug audit is opt-in policy, not the default hot path.
@@ -113,8 +113,8 @@ PYTHONPATH=tools:. python3 -m unittest \
 
 Production gates include `validate_open_source_readiness.py`, module-boundary
 tests, access-governance tests, Codex hook tests plus TODO coverage for planned agents, backend-policy tests,
-and the C++/Rust scale matrix gate.
+and the conformance scale matrix gate.
 
 The production posture is intentionally conservative: Python is the protocol and
-orchestration control plane; C++/Rust own serving-critical work; debug/replay is
+orchestration control plane; conformance own serving-critical work; debug/replay is
 policy-enabled rather than automatically written on every hot retrieval.

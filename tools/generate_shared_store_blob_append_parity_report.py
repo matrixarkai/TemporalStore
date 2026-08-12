@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Generate Rust/C++ shared-store append-blob parity evidence.
+"""Generate cross-format shared-store append-blob parity evidence.
 
 The Rust side is live runtime evidence from the MatrixObject-backed protobuf
-append-blob WAL workflow. The C++ side includes live MatrixObjectStore append
+append-blob WAL workflow. The side includes live MatrixObjectStore append
 runtime evidence plus source contract checks for the AppendObject/RPC offset
 surface that TemporalStore shared-store replication relies on.
 """
@@ -332,7 +332,7 @@ def _rust_summary(rust_report: dict[str, Any]) -> dict[str, Any]:
         "matrixobject_mode": rust_report.get("matrixobject_mode"),
         "storage_semantics": "incremental_journal_reopen_matrixobject_binding",
         "durable_reopen_equivalent": snapshot_reopen_ok,
-        "durable_reopen_caveat": "Rust MatrixObjectStore now reloads from an incremental checksummed journal path; C++ uses incremental disk-root ObjectStore reopen.",
+        "durable_reopen_caveat": "Rust MatrixObjectStore now reloads from an incremental checksummed journal path; uses incremental disk-root ObjectStore reopen.",
         "snapshot_reopen_restores_offset_metadata": bool(summary.get("snapshot_reopen_restores_offset_metadata")),
         "snapshot_reopen_recovered_all_records": bool(summary.get("snapshot_reopen_recovered_all_records")),
         "snapshot_reopen_cache_metrics_available": cache_metrics_available,
@@ -580,8 +580,8 @@ def _parity_status(
         "rust_retrieval_avg_us_to_cpp_full_read_us": full_read_latency_ratio,
         "rust_direct_publish_ops_per_sec_to_cpp_indexed_append_ops_per_sec": append_throughput_ratio,
         "rust_retrieval_ops_per_sec_to_cpp_full_read_ops_per_sec": retrieval_throughput_ratio,
-        "threshold": "<=2.0x for Rust direct publish vs C++ indexed append when durable offset semantics are comparable",
-        "throughput_threshold": ">=0.5x for Rust direct publish vs C++ indexed append when durable offset semantics are comparable",
+        "threshold": "<=2.0x for Rust direct publish vs indexed append when durable offset semantics are comparable",
+        "throughput_threshold": ">=0.5x for Rust direct publish vs indexed append when durable offset semantics are comparable",
         "comparable": bool(rust_summary.get("durable_reopen_equivalent")),
         "gate_profile": rust_profile,
         "release_profile_required_for_latency_gate": release_latency_gate,
@@ -595,18 +595,18 @@ def _parity_status(
         "feature_mismatches": feature_mismatches,
         "root_cause": (
             "Rust originally appeared much faster because the MatrixObject binding benchmark used "
-            "an in-memory MatrixObjectStore, while the C++ benchmark used a disk-root ObjectStore, "
+            "an in-memory MatrixObjectStore, while the benchmark used a disk-root ObjectStore, "
             "FlushForShutdown, process-style reopen, extent metadata recovery, and range reads. "
             "Rust now persists protobuf oplog-offset metadata and validates MatrixObjectStore reload "
             "from an incremental checksummed journal path. The latency gate compares Rust direct publish "
-            "with C++ indexed append, because both include durable offset metadata; sync writer and "
+            "with indexed append, because both include durable offset metadata; sync writer and "
             "async flush are reported separately. Throughput is reported from the same average latency "
             "samples so release parity covers both latency and ops/sec views of the comparable paths."
         ),
         "note": (
             "Rust TemporalStore MatrixObject append-blob runtime evidence now validates WAL frame "
             "offsets, a protobuf oplog-index offset metadata sidecar, authoritative oplog-index "
-            "metadata lookup/range reads, and incremental journal reopen/readback. C++ MatrixObjectStore runtime evidence covers incremental disk-root "
+            "metadata lookup/range reads, and incremental journal reopen/readback. MatrixObjectStore runtime evidence covers incremental disk-root "
             "reopen/readback."
         ),
     }
@@ -655,39 +655,39 @@ def _render_html(report: dict[str, Any]) -> str:
         ("Rust total replay latency us", rust_summary.get("replay_latency_total_us")),
         ("Rust avg retrieval latency us", rust_summary.get("retrieval_latency_avg_us")),
         ("Rust retrieval throughput ops/sec", rust_summary.get("retrieval_throughput_ops_per_sec")),
-        ("C++ raw append avg latency us", cpp_runtime_summary.get("append_latency_avg_us")),
-        ("C++ indexed append avg latency us", cpp_runtime_summary.get("indexed_append_latency_avg_us")),
-        ("C++ raw append throughput ops/sec", cpp_runtime_summary.get("append_throughput_ops_per_sec")),
-        ("C++ indexed append throughput ops/sec", cpp_runtime_summary.get("indexed_append_throughput_ops_per_sec")),
-        ("C++ offset index matches", cpp_runtime_summary.get("offset_index_matches")),
-        ("C++ offset index object size", cpp_runtime_summary.get("offset_index_object_size")),
+        ("raw append avg latency us", cpp_runtime_summary.get("append_latency_avg_us")),
+        ("indexed append avg latency us", cpp_runtime_summary.get("indexed_append_latency_avg_us")),
+        ("raw append throughput ops/sec", cpp_runtime_summary.get("append_throughput_ops_per_sec")),
+        ("indexed append throughput ops/sec", cpp_runtime_summary.get("indexed_append_throughput_ops_per_sec")),
+        ("offset index matches", cpp_runtime_summary.get("offset_index_matches")),
+        ("offset index object size", cpp_runtime_summary.get("offset_index_object_size")),
         (
-            "Rust direct/C++ indexed append latency ratio",
+            "Rust direct/indexed append latency ratio",
             performance_ratios.get("rust_direct_publish_avg_us_to_cpp_indexed_append_avg_us"),
         ),
         (
-            "Rust retrieval/C++ full read latency ratio",
+            "Rust retrieval/full read latency ratio",
             performance_ratios.get("rust_retrieval_avg_us_to_cpp_full_read_us"),
         ),
         (
-            "Rust direct/C++ indexed append throughput ratio",
+            "Rust direct/indexed append throughput ratio",
             performance_ratios.get("rust_direct_publish_ops_per_sec_to_cpp_indexed_append_ops_per_sec"),
         ),
         (
-            "Rust retrieval/C++ full read throughput ratio",
+            "Rust retrieval/full read throughput ratio",
             performance_ratios.get("rust_retrieval_ops_per_sec_to_cpp_full_read_ops_per_sec"),
         ),
-        ("C++ reopen latency us", cpp_runtime_summary.get("reopen_latency_us")),
-        ("C++ full read latency us", cpp_runtime_summary.get("read_full_latency_us")),
-        ("C++ tail read latency us", cpp_runtime_summary.get("read_tail_latency_us")),
-        ("C++ full read throughput ops/sec", cpp_runtime_summary.get("read_full_throughput_ops_per_sec")),
-        ("C++ tail read throughput ops/sec", cpp_runtime_summary.get("read_tail_throughput_ops_per_sec")),
-        ("C++ reopened extent count", cpp_runtime_summary.get("reopened_extent_count")),
+        ("reopen latency us", cpp_runtime_summary.get("reopen_latency_us")),
+        ("full read latency us", cpp_runtime_summary.get("read_full_latency_us")),
+        ("tail read latency us", cpp_runtime_summary.get("read_tail_latency_us")),
+        ("full read throughput ops/sec", cpp_runtime_summary.get("read_full_throughput_ops_per_sec")),
+        ("tail read throughput ops/sec", cpp_runtime_summary.get("read_tail_throughput_ops_per_sec")),
+        ("reopened extent count", cpp_runtime_summary.get("reopened_extent_count")),
         ("Rust cache after retrieval", rust_summary.get("cache_after_retrieval")),
-        ("C++ read cache bytes", cpp_runtime_summary.get("read_cache_bytes")),
-        ("C++ read cache pages", cpp_runtime_summary.get("read_cache_pages")),
-        ("C++ read cache hits", cpp_runtime_summary.get("read_cache_hits")),
-        ("C++ read cache misses", cpp_runtime_summary.get("read_cache_misses")),
+        ("read cache bytes", cpp_runtime_summary.get("read_cache_bytes")),
+        ("read cache pages", cpp_runtime_summary.get("read_cache_pages")),
+        ("read cache hits", cpp_runtime_summary.get("read_cache_hits")),
+        ("read cache misses", cpp_runtime_summary.get("read_cache_misses")),
     ]
     check_rows = "\n".join(
         f"<tr><td>{html.escape(key)}</td><td>{'pass' if value else 'fail'}</td></tr>"

@@ -23,7 +23,7 @@ def _static_corpus() -> dict:
                     "family": "storage/cache",
                     "status": "temporary_static_surface_gate",
                     "suites": ["cpp_storage_parity"],
-                    "blocker": "native C++ runner missing",
+                    "blocker": "native runner missing",
                     "expected_runner_command": (
                         "TS_CPP_UNIFIED_NATIVE_CMD=cpp-storage-corpus-runner "
                         "python3 tools/run_temporalstore_unified_tests.py "
@@ -35,7 +35,7 @@ def _static_corpus() -> dict:
                         "--require-schema temporalstore_unified_case_report_v1"
                     ),
                     "exit_criteria": [
-                        "native C++ runner emits temporalstore_unified_case_report_v1",
+                        "native runner emits temporalstore_unified_case_report_v1",
                         "selected shared cases pass",
                         "no static surface gate remains",
                     ],
@@ -64,7 +64,7 @@ def _static_matrix(blockers: list[str]) -> dict:
                 "status": "temporary_static_surface_gate",
                 "native_cpp_executable": False,
                 "selected_case_count": 1,
-                "blocker": "native C++ runner missing",
+                "blocker": "native runner missing",
                 "expected_runner_command": (
                     "TS_CPP_UNIFIED_NATIVE_CMD=cpp-storage-corpus-runner "
                     "python3 tools/run_temporalstore_unified_tests.py "
@@ -77,7 +77,7 @@ def _static_matrix(blockers: list[str]) -> dict:
                     "--require-schema temporalstore_unified_case_report_v1"
                 ),
                 "exit_criteria": [
-                    "native C++ runner emits temporalstore_unified_case_report_v1",
+                    "native runner emits temporalstore_unified_case_report_v1",
                     "selected shared cases pass",
                     "no static surface gate remains",
                 ],
@@ -92,7 +92,7 @@ class FeatureExecutionValidatorTest(unittest.TestCase):
             root = Path(tmp)
             matrix = root / "matrix.json"
             corpus = root / "corpus.json"
-            _write_json(matrix, _static_matrix(["C++ shared-corpus execution still has temporary static surface gates."]))
+            _write_json(matrix, _static_matrix(["shared-corpus execution still has temporary static surface gates."]))
             _write_json(corpus, _static_corpus())
             old_matrix, old_corpus = validator.MATRIX, validator.CORPUS
             try:
@@ -109,7 +109,7 @@ class FeatureExecutionValidatorTest(unittest.TestCase):
             root = Path(tmp)
             matrix = root / "matrix.json"
             corpus = root / "corpus.json"
-            _write_json(matrix, _static_matrix(["storage/cache native C++ runner is still pending"]))
+            _write_json(matrix, _static_matrix(["storage/cache native runner is still pending"]))
             _write_json(corpus, _static_corpus())
             old_matrix, old_corpus = validator.MATRIX, validator.CORPUS
             try:
@@ -123,7 +123,7 @@ class FeatureExecutionValidatorTest(unittest.TestCase):
             root = Path(tmp)
             matrix = root / "matrix.json"
             corpus = root / "corpus.json"
-            payload = _static_matrix(["storage/cache native C++ runner is still pending"])
+            payload = _static_matrix(["storage/cache native runner is still pending"])
             payload["rows"][0]["blocker"] = "short blocker"
             payload["rows"][0]["expected_runner_command"] = "python3 tools/run_temporalstore_unified_tests.py --family storage/cache --cpp --corpus {corpus} --require-cpp-native"
             _write_json(matrix, payload)
@@ -145,7 +145,7 @@ class FeatureExecutionValidatorTest(unittest.TestCase):
             root = Path(tmp)
             matrix = root / "matrix.json"
             corpus = root / "corpus.json"
-            payload = _static_matrix(["storage/cache native C++ runner is still pending"])
+            payload = _static_matrix(["storage/cache native runner is still pending"])
             payload["allowed_statuses"] = ["temporary_static_surface_gate"]
             payload["completion_statuses"] = ["temporary_static_surface_gate"]
             _write_json(matrix, payload)

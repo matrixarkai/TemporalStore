@@ -123,8 +123,8 @@
 <body>
 <main>
   <span class="tag">MatrixArk Benchmark Doc</span>
-  <h1>LOCOMO Benchmark Workflow: C++ TemporalStore vs Python Memory</h1>
-  <p class="lede">This walkthrough shows how LOCOMO conversations become MatrixArk context records, how retrieval builds a ContextPack, and what differs when the same pipeline uses Python memory versus C++ TemporalStore as the storage boundary.</p>
+  <h1>LOCOMO Benchmark Workflow: TemporalStore vs Python Memory</h1>
+  <p class="lede">This walkthrough shows how LOCOMO conversations become MatrixArk context records, how retrieval builds a ContextPack, and what differs when the same pipeline uses Python memory versus TemporalStore as the storage boundary.</p>
 
   <h2>What LOCOMO Tests</h2>
   <div class="grid">
@@ -139,17 +139,17 @@
     <div class="step"><strong>1. Load</strong>LOCOMO JSON sessions and QA.</div>
     <div class="step"><strong>2. Batch</strong>Session turns become message batches.</div>
     <div class="step"><strong>3. Extract</strong>One pass emits events, entities, summaries, indexes, segments.</div>
-    <div class="step"><strong>4. Store</strong>Python memory or C++ TemporalStore record log.</div>
+    <div class="step"><strong>4. Store</strong>Python memory or TemporalStore record log.</div>
     <div class="step"><strong>5. Retrieve</strong>Dense, sparse, keyword, time-decay recall.</div>
     <div class="step"><strong>6. Pack</strong>Question-type token-budgeted ContextPack.</div>
     <div class="step"><strong>7. Judge</strong>Deterministic, OSS, or OpenAI-compatible reader/judge.</div>
   </div>
 
-  <h2>Python Memory vs C++ TemporalStore</h2>
+  <h2>Python Memory vs TemporalStore</h2>
   <table>
-    <tr><th>Area</th><th>Python Memory</th><th>C++ TemporalStore</th></tr>
+    <tr><th>Area</th><th>Python Memory</th><th>TemporalStore</th></tr>
     <tr><td>Purpose</td><td>Fast dev, CI, logical debugging.</td><td>Production storage validation and benchmark parity.</td></tr>
-    <tr><td>Storage</td><td>In-process / JSONL-style records.</td><td>Native C++ TemporalStore SDK/proxy-backed record log.</td></tr>
+    <tr><td>Storage</td><td>In-process / JSONL-style records.</td><td>Native TemporalStore SDK/proxy-backed record log.</td></tr>
     <tr><td>Data shape</td><td>MatrixArk logical records.</td><td>The same records serialized into TemporalStore hash fields.</td></tr>
     <tr><td>Expected score</td><td>Baseline for logical retrieval behavior.</td><td>Should be on par when read/write parity is clean.</td></tr>
   </table>
@@ -233,7 +233,7 @@ PYTHONPATH=. python3 tools/run_matrixark_dataset_benchmark.py \
   --output-dir artifacts/matrixark_benchmarks/locomo_cpp</code></pre>
 
   <div class="callout">
-    <strong>Takeaway:</strong> Python memory proves the MatrixArk logic quickly. C++ TemporalStore proves the same logical context records survive the production storage boundary. The target is identical benchmark behavior while TemporalStore remains the single serving store for events, entities, summaries, indexes, embeddings, compression, and context-pack audits.
+    <strong>Takeaway:</strong> Python memory proves the MatrixArk logic quickly. TemporalStore proves the same logical context records survive the production storage boundary. The target is identical benchmark behavior while TemporalStore remains the single serving store for events, entities, summaries, indexes, embeddings, compression, and context-pack audits.
   </div>
 </main>
 </body>

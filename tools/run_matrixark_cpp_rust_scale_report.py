@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Run a live MatrixArk C++ vs Rust TemporalStore scale comparison.
+"""Run a live MatrixArk vs Rust TemporalStore scale comparison.
 
 The runner intentionally exercises the same in-process MCP tool boundary used by
 agent integrations, while avoiding JSONL/local fallback paths. It writes
@@ -167,7 +167,7 @@ def selected_ref_signature(result: Json) -> list[str]:
             signatures.append(f"{ref_type}:stable:logical_event")
             continue
         if ref_type == "ref":
-            # C++ and Rust native ContextPack paths may return compact text-only
+            # and Rust native ContextPack paths may return compact text-only
             # refs whose text includes backend-local envelopes. Stable durable IDs
             # are checked above when present; compact refs fall back to ordinal
             # logical slots so the parity gate measures selection shape, not
@@ -660,7 +660,7 @@ def effective_storage_tuning_from_env() -> Json:
         except (TypeError, ValueError):
             values[name] = int(default)
 
-    # C++ deployment scripts still accept legacy TEMPORALSTORE_* overrides.
+    # deployment scripts still accept legacy TEMPORALSTORE_* overrides.
     try:
         if os.environ.get("TEMPORALSTORE_STORAGE_ZONE_SIZE"):
             values["TS_STORAGE_ZONE_SIZE"] = int(os.environ["TEMPORALSTORE_STORAGE_ZONE_SIZE"])
@@ -2794,7 +2794,7 @@ def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | N
         feature_parity_passed = phase0.get("status") == "passed"
         return {
             "status": "not_comparable",
-            "reason": "both C++ and Rust backends must pass",
+            "reason": "both and Rust backends must pass",
             "status_labels": {
                 "feature_correct": feature_parity_passed,
                 "performance_candidate": False,
@@ -2810,7 +2810,7 @@ def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | N
                 "performance_parity": {
                     "status": "not_comparable",
                     "passed": False,
-                    "reason": "both C++ and Rust backends must pass before performance parity is evaluated",
+                    "reason": "both and Rust backends must pass before performance parity is evaluated",
                 },
             },
             "phase0_correctness": phase0,
@@ -3093,7 +3093,7 @@ def production_policy_gate(report: Json) -> Json:
     add_check(
         "correctness_before_latency",
         feature_correct,
-        "Selected refs must be non-empty and logically equivalent across C++/Rust/Python before latency is considered.",
+        "Selected refs must be non-empty and logically equivalent across conformance/Python before latency is considered.",
     )
 
     for backend in ("cpp", "rust"):
@@ -3199,7 +3199,7 @@ def production_policy_gate(report: Json) -> Json:
         all(field in config for field in same_config_fields),
         (
             "Performance parity requires the same dataset, storage mode, topology, token budget, "
-            "batch size, embedding model, reader, judge, and effective storage tuning for C++ and Rust."
+            "batch size, embedding model, reader, judge, and effective storage tuning for and Rust."
         ),
     )
     tuning_failures = storage_tuning_failures(report)
@@ -3207,7 +3207,7 @@ def production_policy_gate(report: Json) -> Json:
         "same_effective_storage_tuning",
         not tuning_failures,
         (
-            "C++ and Rust passed backends must report the same effective TS_* storage tuning as the run config. "
+            "and Rust passed backends must report the same effective TS_* storage tuning as the run config. "
             + ("; ".join(tuning_failures) if tuning_failures else "all required knobs match")
         ),
     )
@@ -3218,11 +3218,11 @@ def production_policy_gate(report: Json) -> Json:
         "checks": checks,
         "blockers": blockers,
         "policy": [
-            "Correctness beats latency: do not tune C++ performance until selected refs are non-empty and logically equivalent to Rust/Python.",
-            "Python remains API/auth/model orchestration only; serving-critical scan/filter/pack/write work belongs in C++/Rust.",
+            "Correctness beats latency: do not tune performance until selected refs are non-empty and logically equivalent to Rust/Python.",
+            "Python remains API/auth/model orchestration only; serving-critical scan/filter/pack/write work belongs in conformance.",
             "Normal retrieval is placement-key and compact-index driven; broad scan is fallback/debug only.",
             "Audit/debug records do not block hot retrieval by default.",
-            "Performance parity uses the same dataset, storage mode, topology, token budget, batch size, embedding model, reader, judge, and effective storage tuning for C++ and Rust.",
+            "Performance parity uses the same dataset, storage mode, topology, token budget, batch size, embedding model, reader, judge, and effective storage tuning for and Rust.",
         ],
     }
 
@@ -3230,7 +3230,7 @@ def production_policy_gate(report: Json) -> Json:
 def write_report(path: Path, report: Json) -> None:
     backend_order = [backend for backend in ("cpp", "rust", "python_ref") if backend in report.get("backends", {})]
     lines = [
-        "# MatrixArk C++ vs Rust Scale Report",
+        "# MatrixArk vs Rust Scale Report",
         "",
         f"- run_id: `{report['run_id']}`",
         f"- generated_at_ms: `{report['generated_at_ms']}`",
@@ -3289,7 +3289,7 @@ def write_report(path: Path, report: Json) -> None:
             "",
             "## Required Page/Block Metrics",
             "",
-            "Both C++ and Rust backends must expose these metric names before storage performance parity claims are accepted:",
+            "Both and Rust backends must expose these metric names before storage performance parity claims are accepted:",
             "",
         ]
     )
@@ -3355,7 +3355,7 @@ def write_report(path: Path, report: Json) -> None:
             "",
             "## Required Storage Lifecycle Metrics",
             "",
-            "Both C++ and Rust backends must expose these lifecycle metric names before stream/zone/eviction/GC/reclaim parity claims are accepted:",
+            "Both and Rust backends must expose these lifecycle metric names before stream/zone/eviction/GC/reclaim parity claims are accepted:",
             "",
         ]
     )
@@ -3431,13 +3431,13 @@ def write_report(path: Path, report: Json) -> None:
         lines.extend(
             [
                 "",
-                "## Rust Vs C++ Parity",
+                "## Rust Vs Parity",
                 "",
                 f"- feature parity: `{feature.get('status', 'unknown')}`",
                 f"- performance parity: `{performance.get('status', 'unknown')}`",
                 f"- production performance parity: `{production.get('status', 'unknown')}`",
-                f"- min Rust/C++ QPS ratio: `{performance.get('min_qps_ratio', '')}`",
-                f"- max Rust/C++ latency ratio: `{performance.get('max_latency_ratio', '')}`",
+                f"- min cross-format QPS ratio: `{performance.get('min_qps_ratio', '')}`",
+                f"- max cross-format latency ratio: `{performance.get('max_latency_ratio', '')}`",
                 f"- performance blockers: `{len(performance.get('blockers', [])) if isinstance(performance.get('blockers'), list) else 0}`",
             ]
         )
@@ -3557,12 +3557,12 @@ def write_report(path: Path, report: Json) -> None:
             ]
         )
         if parity.get("blockers"):
-            lines.extend(["", "| metric | C++ | Rust | threshold | ratio |", "|---|---:|---:|---:|---:|"])
+            lines.extend(["", "| metric | | Rust | threshold | ratio |", "|---|---:|---:|---:|---:|"])
             for row in parity.get("blockers", []):
                 lines.append(
                     f"| {row['metric']} | {row['cpp']} | {row['rust']} | {row['parity_threshold']} | {row['rust_to_cpp_ratio']} |"
                 )
-        lines.extend(["", "## Rust Minus C++", "", "| metric | C++ | Rust | delta | percent delta |", "|---|---:|---:|---:|---:|"])
+        lines.extend(["", "## Rust Minus", "", "| metric | | Rust | delta | percent delta |", "|---|---:|---:|---:|---:|"])
         for row in comp.get("rows", []):
             lines.append(
                 f"| {row['metric']} | {row['cpp']} | {row['rust']} | {row['rust_minus_cpp']} | {row['percent_delta']}% |"
@@ -3646,7 +3646,7 @@ def main() -> int:
     parser.add_argument("--local-topology-start-timeout-sec", type=int, default=120)
     parser.add_argument("--allow-rust-record-log-compat", action="store_true")
     parser.add_argument("--allow-rust-debug-cli", action="store_true")
-    parser.add_argument("--allow-rust-cpp-c-api-bridge", action="store_true", help="diagnostic only: allow the legacy Rust cdylib MatrixArk hot path to call the shared C++ C API bridge")
+    parser.add_argument("--allow-rust-cpp-c-api-bridge", action="store_true", help="diagnostic only: allow the legacy Rust cdylib MatrixArk hot path to call the shared C API bridge")
     parser.add_argument("--request-timeout-ms", type=int, default=60000)
     parser.add_argument("--io-timeout-ms", type=int, default=60000)
     parser.add_argument("--readiness-timeout-ms", type=int, default=60000)

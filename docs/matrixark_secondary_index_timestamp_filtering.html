@@ -421,7 +421,7 @@ The serving ContextPack should not include these index implementation fields. Th
 4. Group debug rows by `(data_model, index_name, timestamp_key_ms, node_hash)` and show counts instead of every posting when possible.
 5. Cap secondary index terms per object with dynamic config.
 6. Remove low-signal index terms from default extraction/indexing.
-7. Push filtering into C++/Rust TemporalStore native APIs so Python does not materialize large posting lists.
+7. Push filtering into conformance TemporalStore native APIs so Python does not materialize large posting lists.
 
 ## Practical Rule
 

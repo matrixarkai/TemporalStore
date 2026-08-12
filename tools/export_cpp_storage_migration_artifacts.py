@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Export deterministic C++ storage migration artifacts for Rust replay.
+"""Export deterministic storage migration artifacts for Rust replay.
 
 The exporter is intentionally migration-only: it preserves the logical
-object/page/slot/index/oplog shape expected from the C++ side, while Rust keeps
+object/page/slot/index/oplog shape expected from the side, while Rust keeps
 its native page and log formats for live storage.
 """
 

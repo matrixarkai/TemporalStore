@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Run or validate per-family Rust/C++ shared-test migration checks."""
+"""Run or validate per-family cross-format shared-test migration checks."""
 
 from __future__ import annotations
 
@@ -299,7 +299,7 @@ def main() -> int:
     parser.add_argument(
         "--run-cpp-runner",
         action="store_true",
-        help="run the C++ unified runner instead of only checking static surfaces",
+        help="run the unified runner instead of only checking static surfaces",
     )
     parser.add_argument("--rust-report", type=Path)
     parser.add_argument("--cpp-report", type=Path)

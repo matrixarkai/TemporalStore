@@ -3,18 +3,18 @@
 ## Purpose
 
 This document defines the open-source Rust production SDK contract that must stay aligned with the
-existing HTTP/JSON client and proxy paths. It is not a claim of legacy C++ wire compatibility. The
+existing HTTP/JSON client and proxy paths. It is not a claim of legacy wire compatibility. The
 production target is a Rust-native API surface with a stable schema, generated SDK bindings, and
-the same logical behavior as the shared C++/Rust corpus.
+the same logical behavior as the shared conformance corpus.
 
-The client/proxy wire-compatibility decision is explicit: legacy C++ wire migration shims stay out of
-scope for this pass. Existing C++ callers migrate through the Rust-native HTTP/JSON, RESP, or tonic
+The client/proxy wire-compatibility decision is explicit: legacy wire migration shims stay out of
+scope for this pass. Existing legacy callers migrate through the Rust-native HTTP/JSON, RESP, or tonic
 contract while preserving typed table clients, topology sync, retry budgets, Neptune routing hooks,
 deployment placement hooks, proxy admission, route quarantine, topology-version invalidation, and
 heartbeat/config application behavior.
 
-The Rust client route cache models the C++ partition-set hierarchy as Rust-native data: table id,
-combine name, C++ partition-id mode, partition version, member partition ids, slot ranges,
+The Rust client route cache models the partition-set hierarchy as Rust-native data: table id,
+combine name, partition-id mode, partition version, member partition ids, slot ranges,
 primary/replica endpoints, topology version, refresh reason, and missing-route counts are exposed
 through client preflight and route-cache reports.
 
@@ -85,7 +85,7 @@ The replacement contract is readiness-eligible only when every Rust-native surfa
 tests or validators:
 
 - HTTP/JSON replacement is covered by proxy/server execute, batch, table-open, topology refresh,
-  preflight, and C++ service-name JSON alias tests.
+  preflight, and service-name JSON alias tests.
 - RESP replacement is covered by the Redis command corpus and RESP adapter tests for string, hash,
   set, Feature, Sequence, Control State (formerly Risk), admin, and Context-facing migration paths.
 - tonic replacement is covered by generated `temporalstore.v1` bindings plus adapter tests for
@@ -96,7 +96,7 @@ tests or validators:
   tests that route common, Feature, Sequence, Control State, and Context commands through the same
   logical contract.
 - topology sync and route invalidation are covered by MetaSyncer, topology-version refresh,
-  stale-route invalidation, C++ partition-set/member/version route-cache tests, proxy route
+  stale-route invalidation, partition-set/member/version route-cache tests, proxy route
   refresh, and route-quarantine tests.
 - deployment placement and routing hooks are covered by executable shared tests for deployment
   placement policy, location-affine secondary reads, and primary-only write routing.
@@ -120,21 +120,21 @@ readiness work:
 - hash multi-set/multi-get commands
 - set add/member commands
 - packed timestamp/value Feature pages
-- Sequence rows in the C++ feature-row shape
+- Sequence rows in the feature-row shape
 - Control State counter/window query
 - Context node upsert/get
 - Redis-compatible aliases and admin-facing migration commands
 
-For every supported command family above, the C++ caller migration contract is HTTP/JSON, RESP, or
+For every supported command family above, the caller migration contract is HTTP/JSON, RESP, or
 tonic replacement. The client compatibility report exposes the supported command families so
-readiness tests can reject accidental undocumented C++-only command paths.
+readiness tests can reject accidental undocumented-only command paths.
 
 New production command families must update all of these in the same change:
 
 - `proto/temporalstore/v1/temporalstore.proto`
 - `compat/unified_temporalstore_cases.json` when behavior is externally observable
 - Rust client/proxy/server command handling
-- C++ native corpus runner support, when the command is part of C++ parity
+- native corpus runner support, when the command is part of parity
 - `tools/validate_sdk_contract.py`
 
 ## Readiness Status
@@ -146,7 +146,7 @@ tonic adapter sub-gap for `Execute`, `BatchExecute`, `OpenTable`, `SyncTopology`
 as ready when the compatibility-result evidence is present. Broader global production readiness can
 still be blocked by deployment-scale or closed-scope gates outside the client/proxy slice.
 
-Legacy C++ wire-compatible migration for existing C++ client callers remains explicitly out of
-scope for the Rust-native schema. The C++ partition-set hierarchy is covered behaviorally by the
+Legacy wire-compatible migration for existing client callers remains explicitly out of
+scope for the Rust-native schema. The partition-set hierarchy is covered behaviorally by the
 Rust route-cache/preflight model; legacy wire protocols remain a separate compatibility target if a
 deployment later reopens them.

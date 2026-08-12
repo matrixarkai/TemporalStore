@@ -63,7 +63,7 @@ feature:<tenant>:<feature_name>:<entity_key>
 ```
 
 The timestamp is the primary order key. The value is a compact row payload. In
-the current C++ sequence feature path, the row is protobuf-compatible and query
+the current sequence feature path, the row is protobuf-compatible and query
 filters decode candidate rows.
 
 ## Window Query
@@ -263,7 +263,7 @@ duration > 120
 gid != 1002048
 ```
 
-Current implementation notes from the C++ sequence path:
+Current implementation notes from the sequence path:
 
 - filters are evaluated after decoding candidate rows;
 - supported operators include `=`, `!=`, `>`, `<`;
@@ -290,7 +290,7 @@ bucket compaction policy
 raw tail retention after bucket seal
 ```
 
-The existing C++ feature path has a `feature_max_size` style limit for one
+The existing feature path has a `feature_max_size` style limit for one
 sequence object. After an append, older rows can be truncated when the object
 exceeds the configured limit.
 

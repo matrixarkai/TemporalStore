@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Rust TemporalStore Deep Dive And C++ Comparison</title>
+  <title>Rust TemporalStore Deep Dive And Comparison</title>
   <style>
     :root {
       --bg: #f7f8fb;
@@ -153,7 +153,7 @@
 <body>
   <header>
     <h1>Rust TemporalStore Deep Dive</h1>
-    <p>Storage engine internals, MatrixArk context workflow, and a direct comparison with the C++ TemporalStore implementation.</p>
+    <p>Storage engine internals, MatrixArk context workflow, and a direct comparison with the TemporalStore implementation.</p>
   </header>
 
   <main>
@@ -165,7 +165,7 @@
       <a href="#cache">Cache</a>
       <a href="#lifecycle">Lifecycle</a>
       <a href="#context">Context</a>
-      <a href="#comparison">Rust vs C++</a>
+      <a href="#comparison">Rust vs</a>
       <a href="#gaps">Gaps</a>
     </nav>
 
@@ -190,10 +190,10 @@
         and <code>data_node.rs</code>.
       </div>
       <p>
-        The C++ engine remains the mature reference for tightly packed page indexes, coroutine-driven
+        The engine remains the mature reference for tightly packed page indexes, coroutine-driven
         <code>StorageManager</code>, page GC, page compaction, zones, stream/blob rollover, and production path behavior.
         Rust has caught up on public contract shape and much of the runtime machinery, but it still carries more report
-        scaffolding and compatibility aliases, and its page/block layer is less compact than the C++ packed structures.
+        scaffolding and compatibility aliases, and its page/block layer is less compact than the packed structures.
       </p>
     </section>
 
@@ -277,7 +277,7 @@
           <p>
             <code>CoreIndex</code> contains a <code>SlotMap</code>. Each <code>SlotNode</code> records object ids, deleted
             object ids, dirty generation, in-memory/loading flags, TTL, and a <code>PageIndexMap</code>. The shape mirrors
-            the C++ <code>Index -&gt; SlotMap -&gt; SlotNode -&gt; PageIndex/ObjectIndex</code> hierarchy, but uses Rust maps
+            the <code>Index -&gt; SlotMap -&gt; SlotNode -&gt; PageIndex/ObjectIndex</code> hierarchy, but uses Rust maps
             rather than packed structs.
           </p>
         </div>
@@ -332,7 +332,7 @@
             <td><code>StorageTuningConfig</code></td>
             <td><code>storage_config.rs</code></td>
             <td><code>context_page_target_bytes</code>, <code>block_segment_target_bytes</code>, <code>storage_zone_size</code>, <code>stream_max_blob_size</code>, <code>cold_scan_no_cache_fill</code></td>
-            <td>Rust public config surface aligned with C++ benchmark/report knobs.</td>
+            <td>Rust public config surface aligned with benchmark/report knobs.</td>
           </tr>
         </tbody>
       </table>
@@ -470,7 +470,7 @@
   -&gt; metrics reap
   -&gt; StorageManagerCycleReport</pre>
       <p>
-        The cycle intentionally keeps a C++ stage order in the report:
+        The cycle intentionally keeps a stage order in the report:
         <code>prepare</code>, <code>reclaim_oplog</code>, <code>expire</code>, <code>evict</code>,
         <code>reclaim_page</code>, <code>index_gc</code>, <code>compact</code>, <code>reap_metrics</code>.
         The canonical public contract maps these to the broader parity phase names:
@@ -487,7 +487,7 @@
         Raft install floors, or delayed-destroy grace periods still retain a segment.
       </p>
       <div class="warn">
-        This is the right semantic model, but C++ still has the more mature production background loop and compact packed
+        This is the right semantic model, but still has the more mature production background loop and compact packed
         metadata. Rust has strong reporting and explicit dependency checks; the remaining parity work is proving the same
         behavior under long-running live load, restart, follower cursor, and compaction scenarios.
       </div>
@@ -537,35 +537,35 @@ ContextInjectRequest
       <p>
         Rust has the key native behavior needed to keep Python thin: query understanding, summary embedding traversal,
         context-event filtering, ordering, injection, and audit assembly live in Rust workflow code. The main difference
-        from the C++ path is product shape: Rust exposes this through the Rust library/proxy workflow today, while C++ has
-        a native extension/API surface tied to the existing C++ server and SDK.
+        from the path is product shape: Rust exposes this through the Rust library/proxy workflow today, while has
+        a native extension/API surface tied to the existing server and SDK.
       </p>
     </section>
 
     <section id="comparison">
-      <h2>Rust vs C++ TemporalStore</h2>
+      <h2>Rust vs TemporalStore</h2>
       <table>
         <thead>
-          <tr><th>Subsystem</th><th>Rust TemporalStore</th><th>C++ TemporalStore</th><th>Assessment</th></tr>
+          <tr><th>Subsystem</th><th>Rust TemporalStore</th><th>TemporalStore</th><th>Assessment</th></tr>
         </thead>
         <tbody>
           <tr>
             <td>Core engine</td>
             <td><code>TemporalEngine</code> with RwLock shard map, command execution, page store, WAL, index log, admission.</td>
             <td>Partition, command executor, object manager, index, page store, op logger, storage manager.</td>
-            <td>Feature shape is close. C++ is more mature under production server lifecycle.</td>
+            <td>Feature shape is close. is more mature under production server lifecycle.</td>
           </tr>
           <tr>
             <td>Page address</td>
             <td><code>PageAddress</code> is reexported from <code>BlockAddress</code>; includes segment, offset, length, optional ownership and checksum.</td>
             <td><code>PageIndex</code> stores a compact address word plus page size and flags; page address is tightly packed.</td>
-            <td>Rust is more explicit/readable; C++ is more memory compact.</td>
+            <td>Rust is more explicit/readable; is more memory compact.</td>
           </tr>
           <tr>
             <td>Page index</td>
             <td>Rust <code>PageIndex</code> stores strings for model/object/component plus <code>PageAddress</code>.</td>
-            <td>C++ <code>PageIndex</code> is 17 bytes packed: object id, model id, page id, flags, size, address.</td>
-            <td>C++ wins compactness; Rust wins schema clarity and reportability.</td>
+            <td><code>PageIndex</code> is 17 bytes packed: object id, model id, page id, flags, size, address.</td>
+            <td>wins compactness; Rust wins schema clarity and reportability.</td>
           </tr>
           <tr>
             <td>Slot index</td>
@@ -577,43 +577,43 @@ ContextInjectRequest
             <td>Write-ahead log</td>
             <td><code>LocalWriteAheadLogStore</code> appends JSON-line records with rich metadata, replay idempotence, scan, flush, GC reports.</td>
             <td><code>OpLogger</code> writes KV/page/delete logs and participates deeply in slot dump and page reclaim.</td>
-            <td>Rust is clear and inspectable; C++ is more tightly optimized and lifecycle-integrated.</td>
+            <td>Rust is clear and inspectable; is more tightly optimized and lifecycle-integrated.</td>
           </tr>
           <tr>
             <td>Block/page store</td>
             <td><code>LocalBlockStore</code> stores encoded page records, compression, segments, extents, delayed destroy, utility GC reports.</td>
             <td><code>PageStore</code> handles zones, stream-backed page blobs, zone prepare/destroy, page GC, page compaction.</td>
-            <td>Rust has equivalent concepts; C++ is the production maturity baseline.</td>
+            <td>Rust has equivalent concepts; is the production maturity baseline.</td>
           </tr>
           <tr>
             <td>Cache</td>
             <td>Explicit <code>MultiLayerCache</code> with memory/pmem/SSD, disk index, pinning, writeback queue, refill/invalidation metrics.</td>
-            <td>C++ uses object/page/block cache mechanics integrated with allocator and storage manager pressure.</td>
-            <td>Rust reportability is strong; C++ integration is mature.</td>
+            <td>uses object/page/block cache mechanics integrated with allocator and storage manager pressure.</td>
+            <td>Rust reportability is strong; integration is mature.</td>
           </tr>
           <tr>
             <td>Storage manager</td>
             <td><code>run_storage_manager_cycle</code> and <code>DataNodeRuntime</code> schedulers produce detailed pressure and phase reports.</td>
             <td><code>StorageManager::LoopWorker</code> runs a production coroutine loop through prepare, reclaim, evict, page GC, index reclaim, compaction, metrics.</td>
-            <td>C++ is older and battle-tested; Rust has detailed parity scaffolding and runtime cycle support.</td>
+            <td>is older and battle-tested; Rust has detailed parity scaffolding and runtime cycle support.</td>
           </tr>
           <tr>
             <td>Compaction/reclaim</td>
             <td>Rust plans stale segments, delayed destroy, follower cursor/snapshot blockers, page GC dependency plans, page compaction reports.</td>
-            <td>C++ has page GC and page compactor wired directly to index, model manager and storage manager.</td>
-            <td>Rust has the right safety model; C++ has deeper production integration.</td>
+            <td>has page GC and page compactor wired directly to index, model manager and storage manager.</td>
+            <td>Rust has the right safety model; has deeper production integration.</td>
           </tr>
           <tr>
             <td>Context management</td>
             <td>Native Rust workflow has extraction, resource/skill parsing, secondary indexes, summary traversal, retrieve/inject reports.</td>
-            <td>C++ extension has proto/API and native context retrieval work, with server/SDK integration.</td>
-            <td>Both are converging; Rust is often faster to iterate, C++ needs correctness/perf parity on context retrieve.</td>
+            <td>extension has proto/API and native context retrieval work, with server/SDK integration.</td>
+            <td>Both are converging; Rust is often faster to iterate, needs correctness/perf parity on context retrieve.</td>
           </tr>
           <tr>
             <td>Public parity reports</td>
             <td>Strong: canonical storage contract, tuning, read/write/cold scan, cache and reclaim contracts in <code>engine/reports.rs</code>.</td>
             <td>Reports are being normalized from mature internal metrics/gflags.</td>
-            <td>Rust currently has clearer public parity output; C++ remains behavior reference.</td>
+            <td>Rust currently has clearer public parity output; remains behavior reference.</td>
           </tr>
         </tbody>
       </table>
@@ -621,7 +621,7 @@ ContextInjectRequest
 
     <section id="gaps">
       <h2>Practical Gaps And Next Fixes</h2>
-      <h3>Rust gaps to close against C++</h3>
+      <h3>Rust gaps to close against</h3>
       <ul>
         <li>Make public reports use canonical names only, with compatibility aliases kept out of parity gates.</li>
         <li>Keep reducing string-heavy Rust <code>PageIndex</code>/<code>SlotNode</code> reports for hot paths; compact structs should be used internally for native retrieval.</li>
@@ -630,17 +630,17 @@ ContextInjectRequest
         <li>Move more Raft and membership implementation into the standalone RustRaft library while TemporalStore consumes it as a dependency.</li>
       </ul>
 
-      <h3>C++ gaps to close against Rust</h3>
+      <h3>gaps to close against Rust</h3>
       <ul>
         <li>Normalize reports to the Rust-style canonical storage contract so comparison tools see identical shapes.</li>
-        <li>Make C++ context retrieval return non-empty, logically equivalent selected refs before treating latency as meaningful.</li>
+        <li>Make context retrieval return non-empty, logically equivalent selected refs before treating latency as meaningful.</li>
         <li>Use placement/index/cache driven fetch for context, avoiding broad scan/score paths.</li>
         <li>Add native candidate cache and compact ContextPack assembly parity with Rust workflow behavior.</li>
       </ul>
 
       <h3>Most important parity gate</h3>
       <pre>Same corpus + same storage mode + same topology + same config
-  -&gt; Rust and C++ expose the same public storage contract
+  -&gt; Rust and expose the same public storage contract
   -&gt; page/block indexes rebuild after restart
   -&gt; cache eviction != physical reclaim
   -&gt; cold scan does not warm hot cache

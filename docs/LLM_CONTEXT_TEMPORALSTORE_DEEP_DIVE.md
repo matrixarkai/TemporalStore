@@ -47,7 +47,7 @@ and computes bounded cosine scores during tree traversal.
 
 ## Context Record Schemas
 
-The C++ proto lives at `src/extension/context/interface.proto`.
+The wire proto lives at `src/extension/context/interface.proto`.
 
 ### ContextNode
 
@@ -546,7 +546,7 @@ resource parsing
 feedback memory
 temporal compression
 compression source audit
-C++ module parity
+module parity
 ```
 
 Every row must show the evidence command or corpus case, the expected output, and
@@ -586,7 +586,7 @@ python3 -m json.tool third_party/TemporalStoreTestCorpus/cases/unified_temporals
 python3 tools/run_temporalstore_unified_tests.py --validate-only
 ```
 
-C++ unified contract:
+unified contract:
 
 ```bash
 bash tools/run_cpp_unified_context_contract.sh third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json
@@ -600,7 +600,7 @@ node --check tools/temporalstore-monitoring-ui/app.js
 python3 -m unittest tools.test_monitoring_ui_context_ops tools.test_render_health_from_results
 ```
 
-C++ context module:
+context module:
 
 ```bash
 cmake --build build-ubuntu22/test-release --target context_module_test -j2
@@ -611,7 +611,7 @@ Expected current results:
 
 ```text
 unified corpus validation: passed
-C++ unified context contract: passed, 12 context cases / 96 context steps
+unified context contract: passed, 12 context cases / 96 context steps
 monitoring UI unit tests: 6 tests passed
 context_module_test: 7 tests passed
 ```

@@ -43,7 +43,7 @@ def _wsl_path(path: str) -> str:
 
 def _linux_so_on_windows_error(path: str) -> str:
     return (
-        "invalid_host_platform: C++ direct SDK parity requires loading libtemporalstore.so from "
+        "invalid_host_platform: direct SDK parity requires loading libtemporalstore.so from "
         "a Linux process. The current runner is Windows Python, which cannot load a Linux .so. "
         "Run this command from WSL/Linux or provide a Windows-compatible temporalstore.dll. "
         f"WSL path hint: {_wsl_path(path)}"
@@ -98,7 +98,7 @@ def ensure_local_topology(
     force_restart: bool = False,
     reason: str = "metaserver_unreachable",
 ) -> Json:
-    """Start local C++ topology for loopback scale runs when it is absent or unhealthy."""
+    """Start local topology for loopback scale runs when it is absent or unhealthy."""
 
     if getattr(args, "no_auto_start_local_topology", False):
         return {"status": "skipped", "reason": "disabled_by_flag", "metaserver": args.metaserver}

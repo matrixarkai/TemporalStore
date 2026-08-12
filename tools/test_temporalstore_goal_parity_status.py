@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Unit tests for goal-level C++/Rust TemporalStore parity status validation."""
+"""Unit tests for goal-level conformance TemporalStore parity status validation."""
 
 from __future__ import annotations
 

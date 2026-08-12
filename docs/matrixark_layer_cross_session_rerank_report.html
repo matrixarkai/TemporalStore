@@ -45,7 +45,7 @@ Status: **pass**
 - `cross_session`: bounded cap; normally summaries/entities/compressions first, raw events only for high-confidence evidence
 - `shared_resources_skills`: separate quota and eligibility before scoring; selected only when query intent matches
 
-## C++ / Rust Checks
+## / Rust Checks
 - `cpp_layer_traversal_native`: **pass**
 - `cpp_temporal_decay_event_query`: **pass**
 - `cpp_unit_coverage_for_layer_and_decay`: **pass**
@@ -66,7 +66,7 @@ cargo test -p temporalstore-rust context_retrieval_reranks_cross_session_and_sha
 ```
 
 ## Notes
-- C++ native surface already contains TRAVERSE_CONTEXT_TREE and decayed QUERY_EVENTS primitives.
+- native surface already contains TRAVERSE_CONTEXT_TREE and decayed QUERY_EVENTS primitives.
 - Rust native retrieve path now applies weighted reranking before the existing relevance/tier/time tie-breakers.
 - Live full-Cargo validation can be slow in this Windows/WSL workspace; the report records the command separately from the fast source/corpus gate.
 </pre>
@@ -171,7 +171,7 @@ cargo test -p temporalstore-rust context_retrieval_reranks_cross_session_and_sha
     }
   ],
   &quot;notes&quot;: [
-    &quot;C++ native surface already contains TRAVERSE_CONTEXT_TREE and decayed QUERY_EVENTS primitives.&quot;,
+    &quot;native surface already contains TRAVERSE_CONTEXT_TREE and decayed QUERY_EVENTS primitives.&quot;,
     &quot;Rust native retrieve path now applies weighted reranking before the existing relevance/tier/time tie-breakers.&quot;,
     &quot;Live full-Cargo validation can be slow in this Windows/WSL workspace; the report records the command separately from the fast source/corpus gate.&quot;
   ],

@@ -103,7 +103,7 @@ echo '{"prompt":"Alice approved the GPU request.","session_id":"demo-thread"}' |
     --backend local
 ```
 
-For C++ TemporalStore-backed operation:
+For TemporalStore-backed operation:
 
 ```bash
 python3 tools/matrixark_agent_hook.py \

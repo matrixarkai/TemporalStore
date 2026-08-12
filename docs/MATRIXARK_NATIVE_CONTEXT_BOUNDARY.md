@@ -1,10 +1,10 @@
-# MatrixArk Native C++/Rust Context Boundary
+# MatrixArk Native conformance Context Boundary
 
 MatrixArk keeps the Python layer for MCP, agent glue, model providers, resource parsing, PDF/VLM tooling, and benchmark scripts. The native TemporalStore implementations own the storage-facing context contract.
 
 ## Native Responsibilities
 
-Both C++ and Rust should implement the same behavior behind the shared test corpus:
+Both and Rust should implement the same behavior behind the shared test corpus:
 
 - Adapter contract and canonical record encoding.
 - Batch writes for high-throughput ingestion.
@@ -42,7 +42,7 @@ field = record_id | node_hash | event_id_hash | entity_hash | resource_hash |
 value = JSON record
 ```
 
-This lets the Python MCP server keep its model-facing code while Rust and C++ share the same persisted record identity.
+This lets the Python MCP server keep its model-facing code while Rust and share the same persisted record identity.
 
 ## MatrixArk Batch Append Contract
 
@@ -70,22 +70,22 @@ Backend status:
 
 - Rust proxy/direct SDK: implements `matrixark_append_records` and
   `matrixark_batch_append_records` as first-class ops.
-- C++ direct SDK: exposes `temporalstore_matrixark_batch_append_records` in the
+- direct SDK: exposes `temporalstore_matrixark_batch_append_records` in the
   C ABI, and the Python SDK prefers that symbol when the loaded library provides
-  it. The current C++ implementation batches at the MatrixArk API boundary and
+  it. The current implementation batches at the MatrixArk API boundary and
   lowers each record to TemporalStore hash writes; a deeper server-side
   multi-field append path remains the next storage-engine optimization.
 - Python adapter: materializes records, then calls the native
   `matrixark_batch_append_records` boundary when available. Older libraries still
   fall back to `batch_hset` / `hset` so deployment upgrades are rolling-safe.
 
-## Current C++ Shared Gate
+## Current Shared Gate
 
-`TemporalStoreTestCorpus/runners/cpp/cpp_unified_context_contract.cc` is the C++ contract runner. It now validates resource manifests, skill manifests, skill sections, token-budgeted skill retrieval, context summaries/embeddings, events, entities, indexes, compression, and ContextPack audit behavior against shared JSON cases.
+`TemporalStoreTestCorpus/runners/cpp/cpp_unified_context_contract.cc` is the contract runner. It now validates resource manifests, skill manifests, skill sections, token-budgeted skill retrieval, context summaries/embeddings, events, entities, indexes, compression, and ContextPack audit behavior against shared JSON cases.
 
-## C++ Native Retrieve-Pack Surface
+## Native Retrieve-Pack Surface
 
-The C++ context extension now exposes `RETRIEVE_CONTEXT_PACK` as the native
+The context extension now exposes `RETRIEVE_CONTEXT_PACK` as the native
 ContextPack boundary. The first implementation is correctness-first:
 
 - input: tenant, start node, scope hash, time window, optional L0/L1 query
@@ -103,17 +103,17 @@ ContextPack boundary. The first implementation is correctness-first:
   postings read, candidate fetch count, placement partitions touched,
   broad-scan status, drop counters, and per-stage latency fields.
 
-Broad prefix scan remains fallback/debug only. Normal C++ retrieval should move
+Broad prefix scan remains fallback/debug only. Normal retrieval should move
 through this native API before any latency claim is treated as meaningful.
 
 Correctness is the first performance gate. The native retrieve path now reports
 whether scope filtering, placement filtering, compact secondary-index prefilter,
 stale/superseded exclusion, shared resource/skill quota, and cross-session
-quota/rerank were applied before scoring. The C++/Rust scale comparison fails
-the performance gate when C++ selected refs are empty or when selected-ref
+quota/rerank were applied before scoring. The conformance scale comparison fails
+the performance gate when selected refs are empty or when selected-ref
 counts/signatures drift materially from Rust/Python reference output.
 
-The direct C++ SDK now also exports the path through
+The direct SDK now also exports the path through
 `TemporalStoreClient::MatrixArkRetrieveContextPack` and the C ABI symbol
 `temporalstore_matrixark_retrieve_context_pack`. The Python MatrixArk adapter
 can therefore dispatch one compact native request with scope, placement node,
@@ -123,7 +123,7 @@ plus telemetry instead of materializing broad candidate tables in Python.
 ## Validation
 
 ```bash
-# C++ shared contract
+# shared contract
 cd <TemporalStoreTestCorpus>
 bash runners/cpp/run_cpp_unified_context_contract.sh
 
@@ -139,13 +139,13 @@ The intended production split is now explicit in code:
 
 - Python MCP: API envelopes, auth/access checks, model/extraction glue, resource
   parsing, request shaping, and benchmark orchestration.
-- C++/Rust TemporalStore: append queue entry point, batch append boundary,
+- conformance TemporalStore: append queue entry point, batch append boundary,
   WAL/oplog persistence, shared-store or Raft routing, prefix reads/scans,
   secondary-index filtering targets, cache/persistence/eviction behavior, and
   backend metrics.
 
-C++ and Rust still differ in depth: Rust has a long-lived proxy/direct-SDK
-bridge with MatrixArk batch commands; C++ now has the C ABI batch boundary and
+and Rust still differ in depth: Rust has a long-lived proxy/direct-SDK
+bridge with MatrixArk batch commands; now has the C ABI batch boundary and
 should next push the loop below `HSet` into a native append queue/batch-write
 engine path. The `matrixark_record_log` name remains a compatibility/debug
 wrapper only, not a production MatrixArk concept.

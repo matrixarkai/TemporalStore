@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Validate C++/Rust shared-corpus feature execution parity status.
+"""Validate conformance shared-corpus feature execution parity status.
 
-The shared corpus can temporarily prove some C++ families through static source
+The shared corpus can temporarily prove some families through static source
 surface gates. This validator keeps that honest: every static or mixed gate must
 have an explicit blocker and expected runner, and full feature parity cannot be
-claimed until all product-behavior families have native C++ execution or an
+claimed until all product-behavior families have native execution or an
 approved native adapter contract.
 """
 
@@ -43,7 +43,7 @@ REQUIRED_STATIC_COMPARISON_TOKENS = (
     "temporalstore_unified_case_report_v1",
 )
 REQUIRED_STATIC_EXIT_CRITERIA_TOKENS = (
-    "native C++",
+    "native",
     "temporalstore_unified_case_report_v1",
     "selected shared cases",
     "no static surface gate",
@@ -401,10 +401,10 @@ def main() -> int:
 
     if failures:
         details = "\n".join(f"- {failure}" for failure in failures)
-        raise SystemExit(f"TemporalStore C++/Rust feature execution matrix failed:\n{details}")
+        raise SystemExit(f"TemporalStore conformance feature execution matrix failed:\n{details}")
 
     static_count = sum(1 for row in rows if isinstance(row, dict) and row.get("status") in STATIC_STATUSES)
-    print("TemporalStore C++/Rust feature execution matrix is explicit and fail-closed")
+    print("TemporalStore conformance feature execution matrix is explicit and fail-closed")
     print(f"- families={len(rows)}")
     print(f"- static_or_mixed_gates={static_count}")
     print(f"- selected_case_count={sum(case_counts.values())}")

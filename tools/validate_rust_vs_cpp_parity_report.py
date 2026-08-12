@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Validate the consolidated Rust-vs-C++ TemporalStore parity report."""
+"""Validate the consolidated Rust-vs-TemporalStore parity report."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ REPORT = ROOT / "docs" / "rust_vs_cpp_temporalstore_parity_report.md"
 
 REQUIRED_PHRASES = [
     "no brpc or Thrift in Rust",
-    "no byte-for-byte C++ page/log layout requirement",
+    "no byte-for-byte page/log layout requirement",
     "Rust-native HTTP/JSON, RESP, and tonic",
     "live ByteStore/S3 remains out of scope",
     "`raft_replication`",
@@ -28,7 +28,7 @@ REQUIRED_PHRASES = [
     "Slot dump/load",
     "full Rust TemporalStore replay",
     "VikingMem paper-comparable",
-    "C++ static surface gates",
+    "static surface gates",
     "ContextEntity",
     "ContextSegment",
     "context_benchmark_injection_entity_segment_index",

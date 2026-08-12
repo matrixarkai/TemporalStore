@@ -107,7 +107,7 @@ bash tools/run_sdk_smoke_ubuntu22.sh
 
 Latest local run passed both examples:
 
-- C++: `PASS customer production client example`
+-: `PASS customer production client example`
 - C: `PASS customer C client example`
 
 The shared library target also builds and exports the C ABI symbols:
@@ -129,13 +129,13 @@ RUN_PYTHON_SDK=1 RUN_RUST_SDK=1 \
 ```
 
 This validates the selected language SDKs against a real local metaserver/server
-cluster. The legacy C++ and C customer examples are opt-in with
+cluster. The legacy and C customer examples are opt-in with
 `RUN_CUSTOMER_EXAMPLES=1`; shared behavior should live in the unified corpus.
 
-Enable the shared C++/Rust unified corpus tests through the same runner. The
-default corpus lives at `third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json`; the C++
+Enable the shared conformance unified corpus tests through the same runner. The
+default corpus lives at `third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json`; the
 hook validates the corpus contract and the Rust proxy integration test executes
-the same SDK cases. The corpus also lists existing C++ multi-layer cache,
+the same SDK cases. The corpus also lists existing multi-layer cache,
 storage, and RAFT gates as `existing_test` steps so they share one test
 inventory.
 
@@ -151,11 +151,11 @@ RUN_RUST_SDK=1 RUN_UNIFIED_TESTS=1 tools/run_sdk_smoke_ubuntu22.sh
 
 Use `RUST_UNIFIED_VALIDATE_ONLY=1` for a fast schema/contract validation pass.
 Use `TS_CPP_UNIFIED_NATIVE_CMD='...'` when the unified run should also execute a
-full C++ corpus command; the command string can reference `{corpus}` and
+full corpus command; the command string can reference `{corpus}` and
 `{cpp_repo}`. Use `RUST_UNIFIED_CORPUS=/path/to/corpus.json` to test an
 alternate corpus.
 
-To execute the existing C++ cache/storage/RAFT runners listed in the corpus:
+To execute the existing cache/storage/RAFT runners listed in the corpus:
 
 ```bash
 TS_CPP_UNIFIED_RUN_EXISTING=1 tools/run_rust_unified_tests.sh

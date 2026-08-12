@@ -10,11 +10,11 @@ This mode is selected with:
 MATRIXARK_LOCAL_MODE=no-metaserver
 ```
 
-When enabled, the MatrixArk C++ and Rust MCP wrapper scripts skip metaserver probing and skip `deploy_local_ubuntu22.sh` autostart. They start `tools/matrixark_mcp_server.py` with the `temporalstore-local` backend instead.
+When enabled, the MatrixArk and Rust MCP wrapper scripts skip metaserver probing and skip `deploy_local_ubuntu22.sh` autostart. They start `tools/matrixark_mcp_server.py` with the `temporalstore-local` backend instead.
 
 ## Why This Exists
 
-For distributed TemporalStore, C++ direct SDK and Rust direct SDK still use metaserver-backed table discovery, placement, and partition ownership. That remains the right mode for multi-node, Raft, HA, and production throughput tests.
+For distributed TemporalStore, direct SDK and Rust direct SDK still use metaserver-backed table discovery, placement, and partition ownership. That remains the right mode for multi-node, Raft, HA, and production throughput tests.
 
 For local mode, a developer should not need a metaserver just to test MatrixArk context ingestion and retrieval. The no-metaserver path gives the same MatrixArk context pipeline semantics using a persistent local record log:
 
@@ -30,7 +30,7 @@ agent / Codex / MCP
 
 ## How To Run
 
-C++ wrapper in no-metaserver mode:
+wrapper in no-metaserver mode:
 
 ```bash
 cd <repo>
@@ -78,13 +78,13 @@ The same MatrixArk logic is used:
 | Mode | Needs metaserver | Needs data node | Storage path | Best for |
 | --- | ---: | ---: | --- | --- |
 | `temporalstore-local` | no | no | local JSONL record log | local dev, Codex hook debugging, demos |
-| `temporalstore-direct` | yes | yes | C++ TemporalStore SDK | production-like C++ pipeline tests |
-| `temporalstore-rust` | yes | yes | Rust SDK process over TemporalStore | Rust/C++ parity tests |
+| `temporalstore-direct` | yes | yes | TemporalStore SDK | production-like pipeline tests |
+| `temporalstore-rust` | yes | yes | Rust SDK process over TemporalStore | cross-format parity tests |
 
 
 ## Validation Result On 2026-06-23
 
-The local C++ deployment was stopped before validation, and `127.0.0.1:18000` refused connections. The no-metaserver backend still passed the MatrixArk parity flows:
+The local deployment was stopped before validation, and `127.0.0.1:18000` refused connections. The no-metaserver backend still passed the MatrixArk parity flows:
 
 | Test | Backend | Result | Elapsed |
 | --- | --- | ---: | ---: |
@@ -100,9 +100,9 @@ Artifacts:
 
 ## Current Boundary
 
-This change gives MatrixArk a no-metaserver local mode today. It does not yet turn the C++ storage server itself into a standalone single-process database. The C++ SDK currently validates that `metaserver_addr` or `metaserver_consul` is present before opening a table.
+This change gives MatrixArk a no-metaserver local mode today. It does not yet turn the storage server itself into a standalone single-process database. The SDK currently validates that `metaserver_addr` or `metaserver_consul` is present before opening a table.
 
-The next native-storage step is a true C++ embedded/single-node backend that bootstraps one local partition without metaserver table discovery. The public MatrixArk switch can stay the same: `MATRIXARK_LOCAL_MODE=no-metaserver`.
+The next native-storage step is a true embedded/single-node backend that bootstraps one local partition without metaserver table discovery. The public MatrixArk switch can stay the same: `MATRIXARK_LOCAL_MODE=no-metaserver`.
 
 ## Parity Test
 

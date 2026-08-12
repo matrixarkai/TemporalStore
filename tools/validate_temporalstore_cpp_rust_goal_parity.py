@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Validate the goal-level Rust-vs-C++ TemporalStore parity status.
+"""Validate the goal-level Rust-vs-TemporalStore parity status.
 
 This gate is intentionally stricter than a prose report and intentionally more
 honest than a green unit test. It verifies that all user-facing parity areas are
@@ -395,13 +395,13 @@ def main() -> int:
     failures = validate_status(data)
     if failures:
         details = "\n".join(f"- {failure}" for failure in failures)
-        raise SystemExit(f"TemporalStore C++/Rust goal parity status failed:\n{details}")
+        raise SystemExit(f"TemporalStore conformance goal parity status failed:\n{details}")
 
     global_status = data.get("global_status")
     if not isinstance(global_status, dict):
         global_status = {}
     global_blockers = _as_strings(global_status.get("open_blockers"))
-    print("TemporalStore C++/Rust goal parity status is explicit and fail-closed")
+    print("TemporalStore conformance goal parity status is explicit and fail-closed")
     print(f"- goal_complete={global_status.get('goal_complete')}")
     print(f"- production_performance_parity={global_status.get('production_performance_parity')}")
     print(f"- tracked_areas={len(REQUIRED_AREAS)}")

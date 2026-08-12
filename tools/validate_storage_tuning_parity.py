@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Validate C++ launcher and Rust storage tuning expose the same TS_* knobs."""
+"""Validate launcher and Rust storage tuning expose the same TS_* knobs."""
 
 from __future__ import annotations
 

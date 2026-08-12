@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Compare live C++ and Rust TemporalStore storage lifecycle reports.
+"""Compare live and Rust TemporalStore storage lifecycle reports.
 
 This is the operator-facing wrapper around validate_storage_lifecycle_parity.py.
 It fails closed unless both reports expose the canonical public storage contract,
@@ -31,7 +31,7 @@ def main() -> int:
             print(failure, file=sys.stderr)
         return 1
 
-    print("live C++/Rust storage lifecycle reports match the canonical public contract")
+    print("live conformance storage lifecycle reports match the canonical public contract")
     print(f"- cpp_report={args.cpp_report}")
     print(f"- rust_report={args.rust_report}")
     return 0

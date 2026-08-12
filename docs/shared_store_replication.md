@@ -33,15 +33,15 @@ The replicated index is the engine's persisted shard index JSON. Page segments a
 
 ## Write/Publish Path
 
-Rust follows the C++ operational default here: shared-store writes use async storage by default.
+Rust follows the operational default here: shared-store writes use async storage by default.
 `SharedStoreStorageMode::default()` is `Async`, and `SharedStoreReplicator::default_storage_writer`
 queues oplog entries for background flush. Callers that need request-path durability can explicitly
 select `SharedStoreStorageMode::Sync`, which publishes the oplog object before returning.
 
-Rust and C++ also expose a request/event-level replication selector so services do not need a
+Rust and also expose a request/event-level replication selector so services do not need a
 restart to switch a specific write between `async_storage`, `sync_storage`, and `raft`. In Rust,
 callers use `ReplicatedExecuteRequest` or `ReplicatedBatchExecuteRequest` with
-`EventReplicationMode`. In C++, callers use `client::RequestOptions::event_replication_mode`,
+`EventReplicationMode`. In, callers use `client::RequestOptions::event_replication_mode`,
 which is carried through `RequestOption.event_replication_mode`. `raft` requires an initialized
 data-Raft backend; otherwise the request fails closed with the existing failed-precondition status.
 
@@ -78,7 +78,7 @@ Rust HTTP usage:
 Send that body to `/execute_replicated`. For batches, send `ReplicatedBatchExecuteRequest` to
 `/batch_execute_replicated` and set each command's `replication_mode`.
 
-C++ client usage:
+client usage:
 
 ```cpp
 temporalstore::client::RequestOptions async_opts =
@@ -96,7 +96,7 @@ table->Set("sync-key", "value", sync_opts);
 table->Set("raft-key", "value", raft_opts);
 ```
 
-Callers can also mutate an existing C++ options object with `UseAsyncStorage()`,
+Callers can also mutate an existing options object with `UseAsyncStorage()`,
 `UseSyncStorage()`, or `UseRaft()`.
 
 The primary can publish:
@@ -143,7 +143,7 @@ shared store oplog -> command replay -> catch up after checkpoint
 - Follower can read restored data by following `BlockAddress` into local page files.
 - Follower can replay oplog entries after the restored checkpoint.
 - Unit tests validate checkpoint restore, later oplog replay, and corrupt page rejection.
-- A C++-style compatibility test validates shared-store bootstrap plus catch-up across string, hash,
+- A standard compatibility test validates shared-store bootstrap plus catch-up across string, hash,
   and feature data.
 - Shared-store storage supports sync publish, async queued publish, bounded flush, and persisted
   replay cursor resume.

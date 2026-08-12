@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Run the shared TemporalStore C++/Rust behavioral corpus.
+"""Run the shared TemporalStore conformance behavioral corpus.
 
 The JSON corpus is the test contract. Rust executes it through an integration
-test. C++ should expose a runner command that accepts the same corpus path via
+test. should expose a runner command that accepts the same corpus path via
 TS_CPP_UNIFIED_TEST_CMD, using "{corpus}" as an optional path placeholder.
 When TS_CPP_REPO or --cpp-repo is provided, the command also gets "{cpp_repo}"
 rendered and otherwise runs from that repository root.
@@ -253,7 +253,7 @@ if [[ -z "${TS_CPP_UNIFIED_NATIVE_CMD:-}" ]]; then
   cat >&2 <<'MSG'
 TS_CPP_UNIFIED_NATIVE_CMD is not set.
 
-Set it to the C++ TemporalStore corpus executor. The command may use a
+Set it to the TemporalStore corpus executor. The command may use a
 {corpus} placeholder. Example:
 
   TS_CPP_UNIFIED_NATIVE_CMD='bazel run //temporalstore:corpus_runner -- {corpus}' \
@@ -285,7 +285,7 @@ def validate_corpus(path: Path) -> dict:
         raise SystemExit(f"{path}: cases must be a non-empty list")
     coverage = corpus.get("coverage")
     if not isinstance(coverage, dict):
-        raise SystemExit(f"{path}: coverage must declare required shared C++/Rust test families")
+        raise SystemExit(f"{path}: coverage must declare required shared conformance test families")
     required_case_names = coverage.get("required_case_names")
     required_raft_case_names = coverage.get("required_raft_case_names", [])
     required_command_kinds = coverage.get("required_command_kinds")
@@ -378,13 +378,13 @@ def validate_corpus(path: Path) -> dict:
 def validate_storage_cpp_report_adapter(path: Path) -> None:
     if not STORAGE_CPP_REPORT_ADAPTER.exists():
         raise SystemExit(
-            f"{path}: missing C++ storage report adapter {STORAGE_CPP_REPORT_ADAPTER}"
+            f"{path}: missing storage report adapter {STORAGE_CPP_REPORT_ADAPTER}"
         )
     adapter = STORAGE_CPP_REPORT_ADAPTER.read_text(encoding="utf-8")
     missing = sorted(field for field in STORAGE_REPORT_FIELDS if field not in adapter)
     if missing:
         raise SystemExit(
-            f"{path}: C++ storage report adapter missing canonical storage fields: "
+            f"{path}: storage report adapter missing canonical storage fields: "
             + ", ".join(missing)
         )
 
@@ -472,7 +472,7 @@ def validate_cpp_adapter_coverage(
         if status in {"native_adapter_contract", "native_runner_mapped", "mixed_native_and_static_surface_gate"}:
             runner = entry.get("runner_command")
             if not isinstance(runner, str) or not runner:
-                raise SystemExit(f"{location}: native C++ adapter entries must declare runner_command")
+                raise SystemExit(f"{location}: native adapter entries must declare runner_command")
         comparison = entry.get("comparison_command")
         if comparison is not None and not isinstance(comparison, str):
             raise SystemExit(f"{location}: comparison_command must be a string when present")
@@ -481,13 +481,13 @@ def validate_cpp_adapter_coverage(
     unmapped = sorted(seen_cpp_suites - mapped_suites)
     if unmapped:
         raise SystemExit(
-            f"{path}: C++ suites missing coverage.cpp_adapter_coverage entries: "
+            f"{path}: suites missing coverage.cpp_adapter_coverage entries: "
             + ", ".join(unmapped)
         )
     missing_static_blockers = sorted(seen_static_cpp_suites - static_gate_suites)
     if missing_static_blockers:
         raise SystemExit(
-            f"{path}: static C++ suites must have temporary_static_surface_gate blockers: "
+            f"{path}: static suites must have temporary_static_surface_gate blockers: "
             + ", ".join(missing_static_blockers)
         )
 
@@ -724,7 +724,7 @@ def install_cpp_runner(cpp_repo: Path, overwrite: bool) -> Path:
     target = cpp_repo / DEFAULT_CPP_RUNNER_RELATIVE
     if target.exists() and not overwrite:
         raise SystemExit(
-            f"C++ unified runner already exists: {target}; pass --overwrite-cpp-runner to replace it"
+            f"unified runner already exists: {target}; pass --overwrite-cpp-runner to replace it"
         )
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(CPP_RUNNER_TEMPLATE, encoding="utf-8")
@@ -738,14 +738,14 @@ def run_cpp(corpus: Path, required: bool, native_required: bool, cpp_repo: Path 
     if native_required and not direct_command and not native_command:
         raise SystemExit(
             "--require-cpp-native needs TS_CPP_UNIFIED_TEST_CMD or "
-            "TS_CPP_UNIFIED_NATIVE_CMD so the C++ side executes the corpus, "
+            "TS_CPP_UNIFIED_NATIVE_CMD so the side executes the corpus, "
             "not only the discovery/surface hook"
         )
     command = discover_cpp_command(cpp_repo)
     if not command:
         message = (
-            "no C++ unified corpus runner configured; set TS_CPP_UNIFIED_TEST_CMD "
-            "to the C++ corpus runner command, optionally using {corpus} and "
+            "no unified corpus runner configured; set TS_CPP_UNIFIED_TEST_CMD "
+            "to the corpus runner command, optionally using {corpus} and "
             "{cpp_repo} placeholders, or set TS_CPP_REPO/--cpp-repo to a checkout "
             "containing tools/run_temporalstore_unified_tests.sh"
         )
@@ -764,17 +764,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", type=Path, default=DEFAULT_CORPUS)
     parser.add_argument("--rust", action="store_true", help="run the Rust corpus executor")
-    parser.add_argument("--cpp", action="store_true", help="run the C++ corpus executor")
+    parser.add_argument("--cpp", action="store_true", help="run the corpus executor")
     parser.add_argument(
         "--both",
         action="store_true",
-        help="run both Rust and C++ corpus executors",
+        help="run both Rust and corpus executors",
     )
     parser.add_argument(
         "--cpp-repo",
         type=Path,
         default=Path(os.environ["TS_CPP_REPO"]) if os.environ.get("TS_CPP_REPO") else None,
-        help="C++ TemporalStore checkout root; also used as cwd for the C++ runner",
+        help="TemporalStore checkout root; also used as cwd for the runner",
     )
     parser.add_argument(
         "--require-cpp",
@@ -784,7 +784,7 @@ def main() -> int:
     parser.add_argument(
         "--require-cpp-native",
         action="store_true",
-        help="fail unless a native C++ corpus executor is configured with TS_CPP_UNIFIED_TEST_CMD or TS_CPP_UNIFIED_NATIVE_CMD",
+        help="fail unless a native corpus executor is configured with TS_CPP_UNIFIED_TEST_CMD or TS_CPP_UNIFIED_NATIVE_CMD",
     )
     parser.add_argument(
         "--family",
@@ -799,12 +799,12 @@ def main() -> int:
     parser.add_argument(
         "--overwrite-cpp-runner",
         action="store_true",
-        help="allow --install-cpp-runner to replace an existing C++ wrapper",
+        help="allow --install-cpp-runner to replace an existing wrapper",
     )
     parser.add_argument(
         "--print-cpp-runner-template",
         action="store_true",
-        help="print the installable C++ wrapper template and exit",
+        help="print the installable wrapper template and exit",
     )
     args = parser.parse_args()
 
@@ -838,12 +838,12 @@ def main() -> int:
         args.rust = True
     cpp_repo = args.cpp_repo.resolve() if args.cpp_repo is not None else None
     if cpp_repo is not None and not cpp_repo.exists():
-        raise SystemExit(f"C++ repo does not exist: {cpp_repo}")
+        raise SystemExit(f"repo does not exist: {cpp_repo}")
     if args.install_cpp_runner:
         if cpp_repo is None:
             raise SystemExit("--install-cpp-runner requires --cpp-repo or TS_CPP_REPO")
         target = install_cpp_runner(cpp_repo, args.overwrite_cpp_runner)
-        print(f"installed C++ unified runner: {target}")
+        print(f"installed unified runner: {target}")
         if install_only:
             return 0
     if args.rust:

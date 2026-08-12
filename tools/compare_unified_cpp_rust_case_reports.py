@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Compare Rust and C++ shared TemporalStore case reports.
+"""Compare Rust and shared TemporalStore case reports.
 
 Expected input shape is intentionally small so both repos can emit it:
 
@@ -23,7 +23,7 @@ Expected input shape is intentionally small so both repos can emit it:
   ]
 }
 
-The output highlights Rust-only misses, C++-only misses, shared-hard failures,
+The output highlights Rust-only misses,-only misses, shared-hard failures,
 output diffs, and latency deltas so migrated shared cases can replace duplicated
 language-specific product tests without hiding parity gaps.
 """

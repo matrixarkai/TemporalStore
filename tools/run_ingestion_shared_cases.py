@@ -5,9 +5,9 @@
 
 The ingestion cases are service/runtime workflows, so they are represented as
 ``existing_test`` corpus commands. This runner makes their Rust side executable
-by running the ``rust_runner`` commands embedded in the shared corpus. C++
+by running the ``rust_runner`` commands embedded in the shared corpus.
 native execution remains optional through ``TS_CPP_INGESTION_NATIVE_CMD``;
-without it, C++ is still validated as source/harness surface evidence.
+without it, is still validated as source/harness surface evidence.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ def validate_case(case: dict, cpp_repo: Path | None) -> list[tuple[str, str]]:
         if command.get("mode") != RUST_EXECUTABLE_MODE:
             raise SystemExit(
                 f"{location}: mode must be {RUST_EXECUTABLE_MODE!r} so Rust execution "
-                "and C++ static status stay explicit"
+                "and static status stay explicit"
             )
         rust_runner = command.get("rust_runner")
         if not isinstance(rust_runner, str) or not rust_runner:
@@ -68,11 +68,11 @@ def validate_case(case: dict, cpp_repo: Path | None) -> list[tuple[str, str]]:
             raise SystemExit(f"{location}: missing ingestion rust_validator")
         required_paths = command.get("required_paths")
         if not isinstance(required_paths, list) or not required_paths:
-            raise SystemExit(f"{location}: missing C++ required_paths")
+            raise SystemExit(f"{location}: missing required_paths")
         if cpp_repo is not None:
             for required_path in required_paths:
                 if not (cpp_repo / required_path).exists():
-                    raise SystemExit(f"{location}: C++ required path missing: {required_path}")
+                    raise SystemExit(f"{location}: required path missing: {required_path}")
         commands.append((location, rust_runner))
     return commands
 
@@ -133,10 +133,10 @@ def main() -> int:
 
     native_template = os.environ.get("TS_CPP_INGESTION_NATIVE_CMD")
     if args.require_cpp_native and not native_template:
-        raise SystemExit("TS_CPP_INGESTION_NATIVE_CMD is required for native C++ ingestion execution")
+        raise SystemExit("TS_CPP_INGESTION_NATIVE_CMD is required for native ingestion execution")
     if args.cpp_native:
         if not native_template:
-            raise SystemExit("set TS_CPP_INGESTION_NATIVE_CMD to run C++ ingestion cases")
+            raise SystemExit("set TS_CPP_INGESTION_NATIVE_CMD to run ingestion cases")
         cwd = cpp_repo or ROOT
         for case, location, _ in case_commands:
             print(f"== c++ ingestion case: {location} ==")

@@ -80,7 +80,7 @@ def tree_first_traversal(
     """Traverse ContextNode summaries layer by layer and return selected subtrees.
 
     The current Python runtime infers ContextNode children from node_path prefixes.
-    C++ can later replace this with native ContextChildRef/list-children APIs while
+    can later replace this with native ContextChildRef/list-children APIs while
     preserving the retrieval contract.
     """
     node_by_path: dict[tuple[str, ...], Json] = {}

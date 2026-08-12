@@ -10,7 +10,7 @@ Existing Rust attributed tests are a migration backlog captured in
 * ``// rust-internal: short reason`` for Rust-only implementation mechanics.
 
 The shared-corpus marker is validated against the canonical Rust-owned
-C++/Rust corpus so product behavior does not drift into Rust-only tests.
+conformance corpus so product behavior does not drift into Rust-only tests.
 """
 
 from __future__ import annotations

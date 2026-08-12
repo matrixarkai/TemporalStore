@@ -118,7 +118,7 @@ class _TemporalDirectReadMixin:
     ) -> Json:
         """Return retrieval candidates with native scan/cache prefiltering.
 
-        C++ direct and Rust proxy/direct SDK expose native hash/prefix scan for
+        direct and Rust proxy/direct SDK expose native hash/prefix scan for
         debug candidate inspection. Normal TemporalStore retrieval should use
         matrixark_retrieve_context_pack so Python receives a finished ContextPack
         instead of materializing candidates or assembling the hot-path pack.
@@ -259,7 +259,7 @@ class _TemporalDirectReadMixin:
                 "secondary_index_matched_node_count": len(matched_node_hashes),
                 "selected_node_hashes_supplied": len(selected_node_hashes or set()),
                 "pack_assembly_location": "python_reference_packer",
-                "next_native_gap": "C++/Rust ContextPack assembly and scoring APIs",
+                "next_native_gap": "conformance ContextPack assembly and scoring APIs",
             },
         }
 

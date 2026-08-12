@@ -53,7 +53,7 @@ REQUIRED_READINESS_SNIPPETS = (
     "Raft metaserver membership readiness covers topology membership plans, data-Raft apply reports, learner catch-up/promotion, leader transfer, voter removal, networked scheduler /raft/membership/apply transport, persisted scheduler task state, and real data-node group execution under follower lag, failover, scale up/down, and secondary replication",
     "Raft transport security readiness covers auth-token validation, mTLS cert/key/CA config validation, service-process mTLS runtime selection, authenticated HTTP transport, and plaintext-only local chaos guardrails",
     "Raft external chaos readiness covers local OS-process restart/failover, stale-read partition heal, lagging follower catch-up, networked membership/snapshot, storage replay, external packet-loss, disk-pressure, and process-chaos gates",
-    "storage migration corpus readiness covers Rust-local converted corpus replay through engine restart, Redis/admin, shared-store sync/async replay, cache warmup, Raft read paths, external C++ binary-artifact export, CI-published golden artifacts, and the unified C++/Rust runner",
+    "storage migration corpus readiness covers Rust-local converted corpus replay through engine restart, Redis/admin, shared-store sync/async replay, cache warmup, Raft read paths, external binary-artifact export, CI-published golden artifacts, and the unified conformance runner",
     "local/shared-store object manifest dependency matrix covers local file objects, checkpoint manifests, oplog cursor retention, page segment manifests, follower-cursor retention, and Raft snapshot manifest retention",
     "storage cache dependency matrix keeps live external ByteStore/S3 object-store integration explicitly out of scope while local/shared-store is the production target",
     "storage cache readiness is strong for Rust-native local/shared-store paths; broad Docker/AWS deployment evidence and live external object-store evidence are scoped as separate readiness gates",
@@ -71,8 +71,8 @@ REQUIRED_DOC_SNIPPETS = (
     "Combined storage+Raft production harness",
     "storage-raft-production-proof.json",
     "cpp-raft-cases-on-rust.json",
-    "C++ Raft scenario comparison",
-    "Update unified C++/Rust corpus and readiness docs",
+    "Raft scenario comparison",
+    "Update unified conformance corpus and readiness docs",
     "scale_slo_report.storage_deployment_scale_slo_ready",
 )
 

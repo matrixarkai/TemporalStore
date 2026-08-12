@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Compare Rust and C++ Context benchmark reports against the shared contract."""
+"""Compare Rust and Context benchmark reports against the shared contract."""
 
 from __future__ import annotations
 

@@ -384,7 +384,7 @@ For VikingMem benchmark parity, use the GPT-4o-mini reader profile:
 }
 ```
 
-The legacy open-source text profile used by older MatrixArk/C++ LOCOMO runs remains available as
+The legacy open-source text profile used by older MatrixArk LOCOMO runs remains available as
 `matrixark-cpp-oss-context`:
 
 ```json

@@ -2,7 +2,7 @@
 
 Last validated: 2026-06-24
 
-This mirrors the C++ MatrixArk agent hook flow, but uses the Rust TemporalStore
+This mirrors the MatrixArk agent hook flow, but uses the Rust TemporalStore
 context pipeline directly. Codex, Claude, Cursor, and generic agent lifecycle
 events are converted into
 `ContextNode`, `ContextEvent`, `ContextIndexRef`, `ContextSummaryDirtyMarker`,
@@ -10,13 +10,13 @@ retrieval blocks, prompt injection, and `ContextPackAudit` records through
 `TemporalEngine`.
 
 For MCP-based Codex integration, use the shared MatrixArk MCP server with either
-the C++ `temporalstore-direct` backend or the Rust `temporalstore-rust` backend.
+the `temporalstore-direct` backend or the Rust `temporalstore-rust` backend.
 
 ## Hook Shape
 
 Codex sends JSON to stdin for hook events such as `UserPromptSubmit` and `Stop`.
 Claude/Cursor style integrations can send equivalent JSON payloads. The Rust
-hook accepts the same tolerant payload fields used by the C++ hook plus common
+hook accepts the same tolerant payload fields used by the hook plus common
 agent aliases:
 
 ```text
@@ -201,13 +201,13 @@ session node index is stored under `--root/<agent>-session-index.json` so
 separate hook processes can retrieve prior Rust TemporalStore nodes for the same
 agent session.
 
-## Difference From C++ Hook
+## Difference From Hook
 
-- C++ hook default: `matrixark_codex_cpp_hook.sh` plus MatrixArk direct adapter
-  backed by the C++ SDK.
+- hook default: `matrixark_codex_cpp_hook.sh` plus MatrixArk direct adapter
+  backed by the SDK.
 - Rust hook default: `codex_context_hook` plus Rust `TemporalEngine`.
 - Rust keeps the same high-level lifecycle contract but does not use brpc/thrift
-  or the C++ SDK.
-- Stop events are ingested as assistant/user-event context. Full C++-style
+  or the SDK.
+- Stop events are ingested as assistant/user-event context. Full standard
   session batch commit is still represented by the regular Rust context
   workflow and benchmark harnesses, not by this minimal hook binary.

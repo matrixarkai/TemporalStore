@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Unit tests for C++/Rust performance parity matrix validation helpers."""
+"""Unit tests for conformance performance parity matrix validation helpers."""
 
 from __future__ import annotations
 

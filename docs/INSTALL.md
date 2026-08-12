@@ -148,7 +148,7 @@ You need these basics:
 git
 python3
 Rust toolchain for native Linux/macOS builds
-C/C++ toolchain + clang/libclang + cmake   for native builds (RocksDB via MatrixCache)
+C/toolchain + clang/libclang + cmake   for native builds (RocksDB via MatrixCache)
 network access to github.com               to fetch the MatrixCache/MatrixRaft crates
 Docker Desktop for Windows Docker installs
 ```
@@ -187,15 +187,15 @@ matrixobjectstore-rs  https://github.com/bjmeetsfo/MatrixObjectStore.git  option
 
 Each is pinned to an exact revision, so builds are reproducible. Because
 `matrixcache` enables the `rocksdb-ssd` feature, the first build compiles RocksDB
-from source (`librocksdb-sys`), which needs a **C/C++ toolchain, `clang`/
+from source (`librocksdb-sys`), which needs a **C/toolchain, `clang`/
 `libclang`, and `cmake`** in addition to Rust and `git`:
 
 - Linux (Ubuntu): `sudo apt-get install -y build-essential pkg-config libssl-dev clang libclang-dev cmake`
 - macOS: `xcode-select --install` (clang/libclang) and `brew install cmake`
 
 The platform guides ([Linux](linux_deploy.md), [macOS](macos_deploy.md)) list the
-full package sets. The legacy C++ implementation now lives in a separate
-repository, so this repository is Rust + Python only and needs no C++ build. For
+full package sets. The legacy implementation now lives in a separate
+repository, so this repository is Rust + Python only and needs no build. For
 offline/air-gapped builds, run `cargo vendor` on a connected host, or add
 `[patch]` path overrides pointing at local MatrixCache/MatrixRaft clones.
 

@@ -53,7 +53,7 @@ The implemented order is:
 
 Today the secondary-index prefilter is applied inside the MatrixArk retrieval
 runtime and recorded in the query plan. The next native-backend optimization is
-to push the same scope + secondary-index filter into C++/Rust prefix/index scans
+to push the same scope + secondary-index filter into conformance prefix/index scans
 so fewer records are loaded before traversal.
 
 ## Primary Path
@@ -161,7 +161,7 @@ Current MVP rerank:
 5. Record selected/dropped refs and reasons in `ContextPackAudit`.
 
 This is enough for the first production path because it is deterministic,
-cheap, explainable, and easy to keep identical across Python, C++, and Rust
+cheap, explainable, and easy to keep identical across Python,, and Rust
 backends.
 
 Future heavier rerank:
@@ -271,7 +271,7 @@ python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_weighted_recall_
   --report-json /tmp/matrixark_weighted_recall_local.json
 ```
 
-C++ TemporalStore direct:
+TemporalStore direct:
 
 ```bash
 PYTHONPATH=$PWD/sdk/python \

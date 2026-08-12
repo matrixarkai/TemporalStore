@@ -3,7 +3,7 @@
 # Copyright 2026 MatrixArkAI
 """Validate MatrixArk tests/runners stay in the shared TemporalStoreTestCorpus.
 
-MatrixArk C++/Rust parity runners are shared product-behavior tests. The root
+MatrixArk conformance parity runners are shared product-behavior tests. The root
 TemporalStore repo should not grow duplicate local copies after migration; local
 Python tests are allowed only for implementation internals of this repo.
 """

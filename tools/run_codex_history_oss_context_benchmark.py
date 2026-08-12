@@ -20,7 +20,7 @@ from typing import Any
 
 DEFAULT_QUERIES = [
     "What did the user ask about Rust TemporalStore hooks and real-time ingestion?",
-    "What did the user ask about C++ and Rust TemporalStore parity?",
+    "What did the user ask about and Rust TemporalStore parity?",
     "What did the user ask about Windows Docker installation for TemporalStore?",
     "What did the user ask about context management data fields and compaction?",
     "What did the user ask about Qwen, Ollama, vLLM, LoCoMo, LongMemEval, and VikingMem benchmarking?",

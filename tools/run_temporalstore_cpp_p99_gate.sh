@@ -52,19 +52,19 @@ if start < 0 or end < start:
 summary = json.loads(text[start:end + 1])
 
 thresholds = {
-    # C++ doc: FEATURE query_window_one_point p99. Rust aggregate includes string
+    # doc: FEATURE query_window_one_point p99. Rust aggregate includes string
     # replica reads plus sequence filtered reads, so this is the fair read target.
     "raft_replica_read_latency.p99_us": int(
         __import__("os").environ.get("TS_CPP_P99_RAFT_READ_US", "1593")
     ),
-    # C++ doc: STRING ingest_set p99.
+    # doc: STRING ingest_set p99.
     "shared_store.sync_primary_write_latency.p99_us": int(
         __import__("os").environ.get("TS_CPP_P99_SYNC_WRITE_US", "15695")
     ),
     "shared_store.async_primary_write_latency.p99_us": int(
         __import__("os").environ.get("TS_CPP_P99_ASYNC_WRITE_US", "15695")
     ),
-    # C++ doc: STRING query_get p99.
+    # doc: STRING query_get p99.
     "shared_store.sync_replica_read_latency.p99_us": int(
         __import__("os").environ.get("TS_CPP_P99_SYNC_READ_US", "1353")
     ),
@@ -123,10 +123,10 @@ if async_durable:
         )
 
 if failures:
-    print("\nC++ p99 gate failed:")
+    print("\np99 gate failed:")
     for metric, actual, limit in failures:
         print(f"- {metric}: actual={actual}, target<={limit}")
     raise SystemExit(1)
 
-print("\nC++ p99 gate passed.")
+print("\np99 gate passed.")
 PY

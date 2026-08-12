@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Validate the shared C++/Rust Raft Phase 0 public contract."""
+"""Validate the shared conformance Raft Phase 0 public contract."""
 
 from __future__ import annotations
 
@@ -225,7 +225,7 @@ REQUIRED_RAFT_STATUS_LABELS = [
 
 REQUIRED_RAFT_STATUS_LABEL_DESCRIPTIONS = {
     "feature_correct": "shared Raft contract passes",
-    "performance_candidate": "live C++ and Rust runs complete under same config",
+    "performance_candidate": "live and Rust runs complete under same config",
     "production_performance_parity": "failover/recovery/QPS/latency within thresholds",
 }
 
@@ -404,7 +404,7 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
     failures: list[str] = []
     if set(cpp_report.keys()) != set(rust_report.keys()):
         failures.append(
-            "C++/Rust top-level report shape drift: "
+            "conformance top-level report shape drift: "
             f"cpp_only={sorted(set(cpp_report.keys()) - set(rust_report.keys()))} "
             f"rust_only={sorted(set(rust_report.keys()) - set(cpp_report.keys()))}"
         )
@@ -463,7 +463,7 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
     cpp_contract = cpp_report.get("raft_public_contract")
     rust_contract = rust_report.get("raft_public_contract")
     if isinstance(cpp_contract, dict) and isinstance(rust_contract, dict) and cpp_contract != rust_contract:
-        failures.append("C++/Rust raft_public_contract drift")
+        failures.append("conformance raft_public_contract drift")
     failures.extend(_validate_fail_closed_pair(cpp_report, rust_report))
 
     for section in ["metaserver_raft", "data_node_raft"]:
@@ -500,7 +500,7 @@ def main() -> int:
             print(failure, file=sys.stderr)
         return 1
 
-    print("raft C++/Rust Phase 0 shared contract passed:")
+    print("raft conformance Phase 0 shared contract passed:")
     print("- types=" + ", ".join(CANONICAL_RAFT_TYPES))
     print("- operational_top_level_shape=" + ", ".join(REQUIRED_RAFT_OPERATIONAL_TOP_LEVEL_KEYS))
     print("- metadata_top_level_shape=schema_version, raft_public_contract")

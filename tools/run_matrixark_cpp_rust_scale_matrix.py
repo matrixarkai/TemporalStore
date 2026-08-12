@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Run the canonical MatrixArk C++/Rust scale matrix after each fix.
+"""Run the canonical MatrixArk conformance scale matrix after each fix.
 
 The matrix intentionally reuses ``run_matrixark_cpp_rust_scale_report.py`` so
-every cell has the same C++/Rust corpus, readiness gate, latency/QPS fields,
+every cell has the same conformance corpus, readiness gate, latency/QPS fields,
 selected-ref parity, timeout counts, fallback flags, and stage metrics.
 """
 
@@ -169,7 +169,7 @@ def run_case(args: argparse.Namespace, *, events: int, retrieve_workers: int, ru
 
 def write_summary_md(path: Path, summary: Json) -> None:
     lines = [
-        "# MatrixArk C++/Rust Scale Matrix",
+        "# MatrixArk conformance Scale Matrix",
         "",
         f"- run_id: `{summary['run_id']}`",
         f"- generated_at_ms: `{summary['generated_at_ms']}`",
@@ -179,7 +179,7 @@ def write_summary_md(path: Path, summary: Json) -> None:
         "",
         "## Cases",
         "",
-        "| case | events | workers | status | comparison | selected ref parity | C++ status | Rust status | artifact |",
+        "| case | events | workers | status | comparison | selected ref parity | status | Rust status | artifact |",
         "|---|---:|---:|---|---|---|---|---|---|",
     ]
     for case in summary.get("cases", []):
@@ -198,7 +198,7 @@ def write_summary_md(path: Path, summary: Json) -> None:
             "",
             "- 1K / 10K / 100K ingest tiers, or the explicit tiers passed to this runner.",
             "- retrieve worker tiers 4 / 8 / 16 / 32, or the explicit tiers passed to this runner.",
-            "- same generated corpus for C++ and Rust within each case.",
+            "- same generated corpus for and Rust within each case.",
             "- Phase 0 correctness: selected refs, dropped refs, scanned records, index hits, candidates, token count, timeout/fallback flags.",
             "- selected-ref zero/drift failures are correctness failures, not latency datapoints.",
             "- p50/p95/p99, QPS, timeout counts, partial-pack counts, fallback flags.",

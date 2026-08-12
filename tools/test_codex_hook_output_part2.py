@@ -1003,7 +1003,7 @@ class _CodexHookOutputPart2:
 
     def test_codex_hook_heartbeat_is_filtered_from_additional_context(self) -> None:
         args = Namespace(session_id="codex-session-1")
-        heartbeat = "user: Codex hook heartbeat 2026-07-15T13:32:00Z: C++ TemporalStore is live and accepting MatrixArk hook writes."
+        heartbeat = "user: Codex hook heartbeat 2026-07-15T13:32:00Z: TemporalStore is live and accepting MatrixArk hook writes."
         self.assertTrue(hook.is_codex_hook_heartbeat_text(heartbeat))
         output = hook.codex_hook_output(
             args=args,
@@ -1028,7 +1028,7 @@ class _CodexHookOutputPart2:
 
     def test_codex_hook_heartbeat_line_is_filtered_from_rendered_context(self) -> None:
         args = Namespace(session_id="codex-session-1")
-        heartbeat = "user: Codex hook heartbeat 2026-07-15T13:32:00Z: C++ TemporalStore is live and accepting MatrixArk hook writes."
+        heartbeat = "user: Codex hook heartbeat 2026-07-15T13:32:00Z: TemporalStore is live and accepting MatrixArk hook writes."
         output = hook.codex_hook_output(
             args=args,
             status="ok",
@@ -1052,7 +1052,7 @@ class _CodexHookOutputPart2:
 
     def test_heartbeat_only_rendered_context_does_not_emit_additional_context(self) -> None:
         args = Namespace(session_id="codex-session-1")
-        heartbeat = "user: Codex hook heartbeat 2026-07-15T13:32:00Z: C++ TemporalStore is live and accepting MatrixArk hook writes."
+        heartbeat = "user: Codex hook heartbeat 2026-07-15T13:32:00Z: TemporalStore is live and accepting MatrixArk hook writes."
         output = hook.codex_hook_output(
             args=args,
             status="ok",

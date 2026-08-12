@@ -4,9 +4,9 @@
 """Validate and optionally run shared Raft parity evidence cases.
 
 The Raft corpus cases are harness-oriented ``existing_test`` entries. This
-runner verifies that each shared Raft case has C++ required paths plus Rust
+runner verifies that each shared Raft case has required paths plus Rust
 process/harness evidence, and it can run the combined Rust distributed Raft
-parity gate once. Native C++ execution remains optional through
+parity gate once. Native execution remains optional through
 ``TS_CPP_RAFT_NATIVE_CMD``.
 """
 
@@ -142,12 +142,12 @@ def validate_case(case: dict, cpp_repo: Path | None) -> tuple[int, int]:
                 raise SystemExit(f"{case.get('name')}: missing combined Rust parity validator")
         required_paths = command.get("required_paths")
         if not isinstance(required_paths, list) or not required_paths:
-            raise SystemExit(f"{location}: missing C++ required_paths")
+            raise SystemExit(f"{location}: missing required_paths")
         cpp_paths += len(required_paths)
         if cpp_repo is not None:
             for required_path in required_paths:
                 if not (cpp_repo / required_path).exists():
-                    raise SystemExit(f"{location}: C++ required path missing: {required_path}")
+                    raise SystemExit(f"{location}: required path missing: {required_path}")
         rust_runners += 1
     return rust_runners, cpp_paths
 
@@ -231,10 +231,10 @@ def main() -> int:
 
     native_template = os.environ.get("TS_CPP_RAFT_NATIVE_CMD")
     if args.require_cpp_native and not native_template:
-        raise SystemExit("TS_CPP_RAFT_NATIVE_CMD is required for native C++ Raft execution")
+        raise SystemExit("TS_CPP_RAFT_NATIVE_CMD is required for native Raft execution")
     if args.cpp_native:
         if not native_template:
-            raise SystemExit("set TS_CPP_RAFT_NATIVE_CMD to run C++ Raft cases")
+            raise SystemExit("set TS_CPP_RAFT_NATIVE_CMD to run Raft cases")
         cwd = cpp_repo or ROOT
         for case in cases:
             print(f"== c++ Raft case: {case['name']} ==")

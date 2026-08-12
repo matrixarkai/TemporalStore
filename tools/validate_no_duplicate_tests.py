@@ -3,14 +3,14 @@
 # Copyright 2026 MatrixArkAI
 """Reject duplicate TemporalStore test surfaces.
 
-The shared Rust/C++ corpus already rejects duplicate case names, step names, and
+The shared cross-format corpus already rejects duplicate case names, step names, and
 command payloads inside a case. This repo-level guard adds the broader checks
 that matter when pruning duplicate test cases:
 
 * Rust attributed test function names are unique across temporalstore-rust.
 * Shared corpus case names are unique.
 * Shared corpus step names and command payloads are unique within each case.
-* C++ existing-test surface references are not repeated across cases except for
+* existing-test surface references are not repeated across cases except for
   the Raft aliases listed by coverage.required_raft_case_names.
 """
 
@@ -140,7 +140,7 @@ def validate_corpus() -> tuple[int, int, int]:
         {name: locations for name, locations in case_locations.items() if len(locations) > 1},
     )
     fail_duplicates(
-        "duplicate C++ existing_test required_paths:",
+        "duplicate existing_test required_paths:",
         {path: locations for path, locations in existing_test_refs.items() if len(locations) > 1},
     )
     return len(cases), step_count, len(existing_test_refs)

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Validate that C++/Rust parity execution artifacts are publishable.
+"""Validate that conformance parity execution artifacts are publishable.
 
-The next-performance workflow may execute with local C++ SDK and Rust CLI
+The next-performance workflow may execute with local SDK and Rust CLI
 paths, but committed evidence must keep those paths redacted. This gate scans
 the parity execution JSON artifacts and fails if local Windows/WSL workspace or
 backend artifact paths leak into stored evidence.

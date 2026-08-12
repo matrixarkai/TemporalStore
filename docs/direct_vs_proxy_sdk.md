@@ -13,7 +13,7 @@ App -> direct SDK -> metaserver topology -> data servers
 Use direct SDKs when:
 
 - the application is latency sensitive;
-- the deployment can ship the native shared library or link the C++ client;
+- the deployment can ship the native shared library or link the client;
 - the service wants client-side routing, retries, and primary/read-replica policy;
 - the language/runtime can safely load the native library.
 

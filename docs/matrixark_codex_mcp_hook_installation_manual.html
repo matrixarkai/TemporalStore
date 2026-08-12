@@ -29,7 +29,7 @@ Important: MCP by itself does not automatically ingest every message. Codex must
 
 ## 2. Install MatrixArk MCP For Codex
 
-### Recommended local C++ TemporalStore MCP config
+### Recommended local TemporalStore MCP config
 
 Add this to `<workspace>\.codex\config.toml`:
 
@@ -40,7 +40,7 @@ args = [&quot;--cd&quot;, &quot;<repo>&quot;, &quot;-e&quot;, &quot;bash&quot;, 
 startup_timeout_sec = 180
 ```
 
-Why `startup_timeout_sec` matters: if the C++ TemporalStore topology or OSS models are warming up, Codex can otherwise report:
+Why `startup_timeout_sec` matters: if the TemporalStore topology or OSS models are warming up, Codex can otherwise report:
 
 ```text
 MCP client for `matrixark` timed out after 120 seconds.
@@ -70,7 +70,7 @@ startup_timeout_sec = 180
 
 ### Local debug MCP config
 
-Use this only for API debugging without C++/Rust storage:
+Use this only for API debugging without conformance storage:
 
 ```toml
 [mcp_servers.matrixark]
@@ -83,7 +83,7 @@ Restart Codex after editing `config.toml`.
 
 ## 3. Backend Environment Variables
 
-The C++ hook launcher `tools/matrixark_codex_cpp_hook.sh` defaults to:
+The hook launcher `tools/matrixark_codex_cpp_hook.sh` defaults to:
 
 ```bash
 MATRIXARK_MCP_BACKEND=temporalstore-direct
@@ -355,7 +355,7 @@ sequenceDiagram
   participant Codex
   participant Hook
   participant MCP as MatrixArk MCP
-  participant TS as C++/Rust TemporalStore
+  participant TS as conformance TemporalStore
 
   Codex-&gt;&gt;Hook: UserPromptSubmit JSON
   Hook-&gt;&gt;MCP: matrixark_ingest(message, scope, hook metadata)
@@ -455,7 +455,7 @@ Use this for VikingMem-style logical session extraction after enough messages ac
   &quot;messages&quot;: [
     {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;I prefer Qwen for local tests.&quot;},
     {&quot;role&quot;: &quot;assistant&quot;, &quot;content&quot;: &quot;Noted. We&#x27;ll use Qwen locally.&quot;},
-    {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Also keep C++ TemporalStore as the production baseline.&quot;}
+    {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Also keep TemporalStore as the production baseline.&quot;}
   ],
   &quot;scope&quot;: {
     &quot;account_id&quot;: &quot;acct_local&quot;,
@@ -669,7 +669,7 @@ Retrieval selects only relevant skill sections, never the full skill bundle by d
 
 ## 10. Manual Hook Smoke Tests
 
-### C++ TemporalStore hook smoke
+### TemporalStore hook smoke
 
 ```bash
 cd <repo>
@@ -693,7 +693,7 @@ Expected output includes:
 }
 ```
 
-### C++ TemporalStore hook smoke
+### TemporalStore hook smoke
 
 ```bash
 cd <repo>
@@ -717,7 +717,7 @@ printf &#39;%s\n&#39; &#39;{&quot;prompt&quot;:&quot;Alice approved the GPU requ
 
 ## 11. MCP Smoke Test
 
-List tools through the configured C++ MCP launcher:
+List tools through the configured MCP launcher:
 
 ```powershell
 $req = &#x27;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:1,&quot;method&quot;:&quot;tools/list&quot;,&quot;params&quot;:{}}&#x27; + &quot;`n&quot;
@@ -779,7 +779,7 @@ ContextIndex(source_type, resource_type, unit_kind, heading_slug, relative_path,
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| MCP startup timeout | C++/Rust backend or models are warming up. | Increase `startup_timeout_sec` to 180 or 240. |
+| MCP startup timeout | conformance backend or models are warming up. | Increase `startup_timeout_sec` to 180 or 240. |
 | `MATRIXARK_CPP_TEMPORALSTORE_ENDPOINT is not set` | HTTP gateway mode requested but endpoint is missing. | Use `tools/matrixark_mcp_cpp_server.sh` direct SDK mode or set the gateway endpoint. |
 | `Slot not found` / `Partition info not found` | TemporalStore topology is still installing slots. | Run backend readiness/warmup and retry after metaserver reports slot coverage. |
 | MCP tools work but messages are not automatic | MCP is callable, not a lifecycle hook by itself. | Install hook commands or ask Codex to call `matrixark_ingest` explicitly. |
@@ -792,7 +792,7 @@ ContextIndex(source_type, resource_type, unit_kind, heading_slug, relative_path,
 For production-like Codex integration:
 
 ```text
-C++ TemporalStore remains the production-performance baseline.
+TemporalStore remains the production-performance baseline.
 Rust TemporalStore should use the Rust proxy or Rust direct SDK path, not process-per-operation CLI mode.
 Hooks should fail open to avoid breaking the agent loop.
 MCP API keys should scope account/tenant/user/session access.

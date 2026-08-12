@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Run the C++/Rust storage-engine parity gates phase by phase.
+"""Run the conformance storage-engine parity gates phase by phase.
 
 This is the umbrella gate for the nine storage parity phases:
 
@@ -145,7 +145,7 @@ def run_validator(script_name: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run the nine C++/Rust storage-engine parity phases."
+        description="Run the nine conformance storage-engine parity phases."
     )
     parser.add_argument(
         "--loops",

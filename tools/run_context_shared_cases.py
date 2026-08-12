@@ -4,9 +4,9 @@
 """Run shared Context pipeline parity cases from the unified corpus.
 
 Context pipeline cases are service/workflow oriented, so they use
-``existing_test`` corpus commands with Rust runners. Native C++ execution can
+``existing_test`` corpus commands with Rust runners. Native execution can
 be supplied later through ``TS_CPP_CONTEXT_NATIVE_CMD`` while this runner keeps
-Rust evidence executable and C++ source surfaces explicit.
+Rust evidence executable and source surfaces explicit.
 """
 
 from __future__ import annotations
@@ -71,11 +71,11 @@ def validate_case(case: dict, cpp_repo: Path | None) -> list[tuple[str, str]]:
             )
         required_paths = command.get("required_paths")
         if not isinstance(required_paths, list) or not required_paths:
-            raise SystemExit(f"{location}: missing C++/doc required_paths")
+            raise SystemExit(f"{location}: missing/doc required_paths")
         if cpp_repo is not None:
             for required_path in required_paths:
                 if not (cpp_repo / required_path).exists():
-                    raise SystemExit(f"{location}: C++ required path missing: {required_path}")
+                    raise SystemExit(f"{location}: required path missing: {required_path}")
         commands.extend((location, command) for command in expand_rust_runner(rust_runner))
     return commands
 
@@ -158,10 +158,10 @@ def main() -> int:
 
     native_template = os.environ.get("TS_CPP_CONTEXT_NATIVE_CMD")
     if args.require_cpp_native and not native_template:
-        raise SystemExit("TS_CPP_CONTEXT_NATIVE_CMD is required for native C++ context execution")
+        raise SystemExit("TS_CPP_CONTEXT_NATIVE_CMD is required for native context execution")
     if args.cpp_native:
         if not native_template:
-            raise SystemExit("set TS_CPP_CONTEXT_NATIVE_CMD to run C++ context cases")
+            raise SystemExit("set TS_CPP_CONTEXT_NATIVE_CMD to run context cases")
         cwd = cpp_repo or ROOT
         for case, location, _ in case_commands:
             print(f"== c++ context case: {location} ==")

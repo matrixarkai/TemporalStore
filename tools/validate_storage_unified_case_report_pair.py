@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Validate the C++/Rust storage unified case-report fixture pair.
+"""Validate the conformance storage unified case-report fixture pair.
 
 This gate is intentionally small but important: it proves the storage/cache
 family has a committed Rust temporalstore_unified_case_report_v1 fixture and a
-compiled C++ adapter runner that emits comparable report rows for slot/object/
+compiled adapter runner that emits comparable report rows for slot/object/
 block indexes, GC/eviction/cold reads, stream/segment/zone evidence, and the
-same comparator path that real native C++ and Rust runners must use.
+same comparator path that real native and Rust runners must use.
 """
 
 from __future__ import annotations

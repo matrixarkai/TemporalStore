@@ -82,7 +82,7 @@ def add_backend_arguments(parser: argparse.ArgumentParser) -> None:
         "--backend",
         choices=["local", "temporalstore-local", "temporalstore-direct", "temporalstore-rust"],
         default=default_mcp_backend(),
-        help="Storage backend. local uses JSONL; temporalstore-local uses a no-metaserver local TemporalStore-shaped record log; temporalstore-direct uses the native C++ TemporalStore SDK.",
+        help="Storage backend. local uses JSONL; temporalstore-local uses a no-metaserver local TemporalStore-shaped record log; temporalstore-direct uses the native TemporalStore SDK.",
     )
     parser.add_argument(
         "--event-log",
@@ -99,7 +99,7 @@ def add_backend_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--metaserver",
         default=os.environ.get("MATRIXARK_TEMPORALSTORE_METASERVER", "127.0.0.1:18000"),
-        help="C++ TemporalStore metaserver address for --backend temporalstore-direct.",
+        help="TemporalStore metaserver address for --backend temporalstore-direct.",
     )
     parser.add_argument(
         "--namespace",
@@ -130,13 +130,13 @@ def add_backend_arguments(parser: argparse.ArgumentParser) -> None:
         "--request-timeout-ms",
         type=int,
         default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS", "20000")),
-        help="Per-request timeout for the native C++ TemporalStore SDK.",
+        help="Per-request timeout for the native TemporalStore SDK.",
     )
     parser.add_argument(
         "--io-timeout-ms",
         type=int,
         default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS", "20000")),
-        help="BRPC I/O timeout for the native C++ TemporalStore SDK.",
+        help="BRPC I/O timeout for the native TemporalStore SDK.",
     )
 
 

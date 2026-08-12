@@ -49,7 +49,7 @@ class EvalQuery:
 EVAL_QUERIES: tuple[EvalQuery, ...] = (
     EvalQuery("q_hooks", "What did the user decide about Rust TemporalStore hooks and real-time Codex prompt ingestion?",
               ("hook", "userpromptsubmit", "real", "ingest", "rust", "session")),
-    EvalQuery("q_parity", "What did the user want regarding C++ vs Rust TemporalStore parity and fair performance comparison?",
+    EvalQuery("q_parity", "What did the user want regarding vs Rust TemporalStore parity and fair performance comparison?",
               ("c++", "rust", "parity", "async", "oplog", "wal", "sdk", "latency")),
     EvalQuery("q_windows", "How should Windows users install TemporalStore, and what about WSL and Docker?",
               ("windows", "docker", "wsl", "installer", "image", "powershell")),

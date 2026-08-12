@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Validate Rust Raft with the unified C++ Raft case definitions.
+"""Validate Rust Raft with the unified Raft case definitions.
 
-The shared corpus is the contract: every C++ Raft case names the C++ runner
+The shared corpus is the contract: every Raft case names the runner
 surface and the Rust harness/validator that must prove the same behavior. This
-script reads those C++ Raft cases, optionally checks their C++ required paths,
+script reads those Raft cases, optionally checks their required paths,
 then runs the Rust combined data-node/metaserver Raft parity gate once.
 """
 
@@ -105,7 +105,7 @@ def main() -> int:
         "--cpp-repo",
         type=Path,
         default=Path(os.environ["TS_CPP_REPO"]) if os.environ.get("TS_CPP_REPO") else None,
-        help="C++ TemporalStore checkout used to verify required C++ Raft paths",
+        help="TemporalStore checkout used to verify required Raft paths",
     )
     parser.add_argument("--artifact-dir", type=Path, default=DEFAULT_ARTIFACT_DIR)
     parser.add_argument("--timeout", default="300s")
@@ -123,10 +123,10 @@ def main() -> int:
 
     if missing_paths:
         raise SystemExit(
-            "missing C++ Raft required paths:\n" + "\n".join(f"- {item}" for item in missing_paths)
+            "missing Raft required paths:\n" + "\n".join(f"- {item}" for item in missing_paths)
         )
     if report["case_count"] == 0:
-        raise SystemExit("no C++ Raft cases found in unified corpus")
+        raise SystemExit("no Raft cases found in unified corpus")
 
     run_command(["python3", "tools/run_temporalstore_unified_tests.py", "--validate-only"])
     if args.cpp_repo is not None:
@@ -148,7 +148,7 @@ def main() -> int:
         run_command(["bash", "tools/run_raft_distributed_parity.sh"], env=env)
 
     print(json.dumps(report, indent=2, sort_keys=True))
-    print(f"TemporalStore Rust Raft validated from C++ Raft cases. Report: {report_path}")
+    print(f"TemporalStore Rust Raft validated from Raft cases. Report: {report_path}")
     return 0
 
 

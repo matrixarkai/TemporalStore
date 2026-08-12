@@ -174,7 +174,7 @@ fi
 
 if [[ "${RUN_CPP_CLIENT_BUILD_GATE}" == "1" ]]; then
   if [[ "${BACKEND}" != "cpp" ]]; then
-    write_stage cpp_client_target_build skip "C++ client target build gate is C++-specific" 0 "${RESULT_DIR}/cpp_client_target_build"
+    write_stage cpp_client_target_build skip "client target build gate is-specific" 0 "${RESULT_DIR}/cpp_client_target_build"
   else
     run_stage cpp_client_target_build \
       "fix stale build tree, missing client target dependencies, long compile fan-in, or local client build timeout before proxy/client pressure" \
@@ -184,10 +184,10 @@ fi
 
 if [[ "${RUN_PROXY_CLIENT_GATE}" == "1" ]]; then
   if [[ "${BACKEND}" != "cpp" ]]; then
-    write_stage proxy_client skip "proxy/client gate is C++-specific; use Rust proxy/direct SDK parity for rust" 0 "${RESULT_DIR}/proxy_client"
+    write_stage proxy_client skip "proxy/client gate is-specific; use Rust proxy/direct SDK parity for rust" 0 "${RESULT_DIR}/proxy_client"
   else
     run_stage proxy_client \
-      "fix launcher, live proxy port, direct SDK oracle, request timeout, or C++ proxy status warnings" \
+      "fix launcher, live proxy port, direct SDK oracle, request timeout, or proxy status warnings" \
       env BUILD_TYPE="${BUILD_TYPE}" bash tools/run_cpp_benchmark_transport_parity_ubuntu22.sh
   fi
 fi

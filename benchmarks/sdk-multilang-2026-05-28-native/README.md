@@ -4,7 +4,7 @@ Run date: 2026-05-28
 
 ## Passed
 
-- Native C++ customer client example
+- Native customer client example
 - Native C ABI customer client example
 - Shared library rebuild with new exported C ABI helpers
 - Python wrapper syntax check with `python3 -m py_compile`

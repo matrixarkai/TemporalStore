@@ -48,10 +48,10 @@ TEMPORALSTORE_READER_MODEL=llama3.2:1b \
 bash tools/run_context_benchmarks_docker_open_model.sh
 ```
 
-## Exact C++/OpenViking OSS Reader Endpoint
+## Exact/OpenViking OSS Reader Endpoint
 
 The Docker/Ollama path above is useful when the chosen model is available in
-Ollama. The C++/MatrixArk/OpenViking benchmark path uses the
+Ollama. The/MatrixArk/OpenViking benchmark path uses the
 `matrixark-cpp-oss-context` profile with `google/flan-t5-small`. Run that exact
 reader/model through the packaged Hugging Face endpoint with:
 
@@ -141,7 +141,7 @@ input bytes, model/provider, reader mode, exact reader prompt templates, Rust
 TemporalStore backend evidence, thresholds, p50/p95 latencies, token reduction,
 quality-gate state, and category breakdown. They are diagnostic archives unless
 `quality_gate.paper_comparable_claim_ready=true`; only then should they be used as
-VikingMem/OpenViking paper-comparable evidence or compared as paper-comparable C++ benchmark
+VikingMem/OpenViking paper-comparable evidence or compared as paper-comparable benchmark
 outputs.
 
 The local endpoint runner always requires the Rust TemporalStore backend. The lower-level

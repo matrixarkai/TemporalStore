@@ -1,4 +1,4 @@
-<!doctype html><meta charset='utf-8'><title>MatrixArk C++ Scale Benchmark</title><style>body{font-family:Inter,Segoe UI,Arial,sans-serif;max-width:1120px;margin:32px auto;padding:0 24px;color:#172033;line-height:1.45}pre{background:#f6f8fb;border:1px solid #dde5f0;padding:14px;overflow:auto;border-radius:8px}code{background:#edf2f7;padding:2px 4px;border-radius:4px}</style><pre># MatrixArk C++ TemporalStore Concurrent Scale Benchmark
+<!doctype html><meta charset='utf-8'><title>MatrixArk Scale Benchmark</title><style>body{font-family:Inter,Segoe UI,Arial,sans-serif;max-width:1120px;margin:32px auto;padding:0 24px;color:#172033;line-height:1.45}pre{background:#f6f8fb;border:1px solid #dde5f0;padding:14px;overflow:auto;border-radius:8px}code{background:#edf2f7;padding:2px 4px;border-radius:4px}</style><pre># MatrixArk TemporalStore Concurrent Scale Benchmark
 
 ## Summary
 
@@ -38,11 +38,11 @@
 ## What Is Measured
 
 - Ingest operation = `matrixark_batch_extract` with 20-message logical batch, OSS encoder understanding, ContextEvent/Entity/Segment/Index/Summary/Embedding writes, then `matrixark_refresh_summaries`.
-- Retrieve operation = new process-local adapter reads the persisted C++ TemporalStore prefix and runs tree/summary/index/event retrieval into a ContextPack.
-- Each ingest worker uses its own storage prefix. This avoids the current Python append-log count key becoming a write serialization artifact and gives a cleaner C++ storage + MatrixArk pipeline cap.
-- This is not raw C++ engine QPS. It includes Python orchestration and OSS embedding/query-understanding work.
+- Retrieve operation = new process-local adapter reads the persisted TemporalStore prefix and runs tree/summary/index/event retrieval into a ContextPack.
+- Each ingest worker uses its own storage prefix. This avoids the current Python append-log count key becoming a write serialization artifact and gives a cleaner storage + MatrixArk pipeline cap.
+- This is not raw engine QPS. It includes Python orchestration and OSS embedding/query-understanding work.
 
-## C++ Service Snapshot
+## Service Snapshot
 
 ```json
 {

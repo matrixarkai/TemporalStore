@@ -36,7 +36,7 @@ TemporalStore matches that shape:
 - compact secondary-index postings for topic/entity/resource filtering;
 - native batching and async durability policies for high write throughput;
 - page/block storage and cold-scan paths for lifecycle management;
-- C++ and Rust engines that can share the same public contracts.
+- and Rust engines that can share the same public contracts.
 
 ## Serving Records
 

@@ -387,7 +387,7 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
         self.assertTrue(any(row["run"] == "Compression source audit" for row in context["e2e_parity_runs"]))
         self.assertTrue(any(row["run"] == "Model/config parity" for row in context["e2e_parity_runs"]))
         self.assertTrue(any(row["evidence"] == "context_ten_model_config_parity_gates" for row in context["e2e_parity_runs"]))
-        self.assertTrue(any(row["run"] == "C++ module parity" for row in context["e2e_parity_runs"]))
+        self.assertTrue(any(row["run"] == "module parity" for row in context["e2e_parity_runs"]))
         self.assertTrue(any(alert["label"] == "Token budget" for alert in context["alerts"]))
         self.assertTrue(any(row["label"] == "Feedback memory" for row in context["audit"]))
         resource_skill = context["resource_skill_ops"]
@@ -791,7 +791,7 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
                 required.e2eParity.includes("Compression source audit") && required.e2eParity.includes("context_nine_ingestion_compression_parity_gates"),
                 required.e2eParity.includes("Model/config parity") && required.e2eParity.includes("context_ten_model_config_parity_gates"),
                 required.e2eParity.includes("query embedding, reranker, provider, top-k, token budget"),
-                required.e2eParity.includes("C++ module parity") && required.e2eParity.includes("7 context module tests passed"),
+                required.e2eParity.includes("module parity") && required.e2eParity.includes("7 context module tests passed"),
                 required.requestBuilder.includes("/v1/context/retrieve_with_resources"),
                 required.requestBuilder.includes("/v1/context/batch_ingest"),
                 required.requestBuilder.includes("/v1/context/stream_ingest"),
@@ -922,7 +922,7 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
                 banner.className.includes("warn"),
                 elements["last-refresh"].textContent.includes("stale"),
                 elements["context-kpis"].innerHTML.includes("TemporalStore"),
-                elements["context-e2e-parity-body"].innerHTML.includes("C++ module parity"),
+                elements["context-e2e-parity-body"].innerHTML.includes("module parity"),
               ];
               if (checks.some((ok) => !ok)) {{
                 console.error(JSON.stringify({{
@@ -1003,7 +1003,7 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
                 banner.className.includes("warn"),
                 elements["last-refresh"].textContent.includes("stale"),
                 elements["context-kpis"].innerHTML.includes("TemporalStore"),
-                elements["context-e2e-parity-body"].innerHTML.includes("C++ module parity"),
+                elements["context-e2e-parity-body"].innerHTML.includes("module parity"),
               ];
               if (checks.some((ok) => !ok)) {{
                 console.error(JSON.stringify({{

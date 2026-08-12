@@ -91,10 +91,10 @@
     "context_pack_id": "123"
   }
 }</code></pre>
-  <p>The current replay implementation flushes pending audit buffers, returns the stored records for the current backend/prefix, and lets the consumer find the matching <code>context_pack_audit</code> by <code>context_pack_id</code>. This works across local JSONL, C++ direct, and Rust record-log backends.</p>
+  <p>The current replay implementation flushes pending audit buffers, returns the stored records for the current backend/prefix, and lets the consumer find the matching <code>context_pack_audit</code> by <code>context_pack_id</code>. This works across local JSONL, direct, and Rust record-log backends.</p>
 
   <h2>Audit Buffering</h2>
-  <p>Direct C++ and Rust-backed adapters support audit modes:</p>
+  <p>Direct and Rust-backed adapters support audit modes:</p>
   <ul>
     <li><code>sync</code>: write audit immediately.</li>
     <li><code>buffered</code>: buffer and flush in the background to reduce retrieval tail latency.</li>
@@ -119,8 +119,8 @@
   </div>
   <p>Resource replay uses <code>resource_chunk</code> refs. Skill replay uses <code>skill_section</code> refs. For skills, MatrixArk writes <code>skill_manifest</code>, <code>skill_registry</code>, <code>skill_section</code>, skill-as-resource <code>resource_chunk</code>, <code>skill_l0</code> summary, and embeddings for <code>skill_l0</code>, <code>skill_summary</code>, <code>skill_section</code>, and <code>resource_chunk</code>.</p>
 
-  <h2>C++ And Rust Status</h2>
-  <p>The resource/skill backend parity harness validates the same replay/audit contract for local JSONL, C++ TemporalStore, and Rust TemporalStore record-log backends. It checks <code>context_pack_audit</code>, replayable selected refs, resource chunk replay, skill section replay, and access audit for retrieve/replay/resource/skill actions.</p>
+  <h2>And Rust Status</h2>
+  <p>The resource/skill backend parity harness validates the same replay/audit contract for local JSONL, TemporalStore, and Rust TemporalStore record-log backends. It checks <code>context_pack_audit</code>, replayable selected refs, resource chunk replay, skill section replay, and access audit for retrieve/replay/resource/skill actions.</p>
 
   <h2>Debug Commands</h2>
 <pre><code>cd <workspace>/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStoreTestCorpus

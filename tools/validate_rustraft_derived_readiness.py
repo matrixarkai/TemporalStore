@@ -3,7 +3,7 @@
 # Copyright 2026 MatrixArkAI
 """Validate RustRaft-derived production-readiness evidence in Rust Raft.
 
-TemporalStore C++ relies on RustRaft behavior beyond basic log replication:
+TemporalStore relies on RustRaft behavior beyond basic log replication:
 durable hard state, joint membership, bounded reads, leader transfer, learner
 promotion, lag-aware catch-up, snapshot install, election guards, and operator
 control surfaces. This guard keeps those Rust readiness contracts explicit and

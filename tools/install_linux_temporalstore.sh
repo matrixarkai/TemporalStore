@@ -182,7 +182,7 @@ report_tool git     "sudo apt-get install -y git"                        || prer
 report_tool python3 "sudo apt-get install -y python3"                    || prereqs_missing=1
 if [[ "$need_build" -eq 1 ]]; then
   # The engine depends on the matrixcache crate (rocksdb-ssd), which compiles
-  # RocksDB from source (librocksdb-sys/bindgen) — hence clang + cmake + a C/C++
+  # RocksDB from source (librocksdb-sys/bindgen) — hence clang + cmake + a C/
   # toolchain, on top of Rust.
   report_tool cargo "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh" || prereqs_missing=1
   report_tool rustc "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh" || prereqs_missing=1

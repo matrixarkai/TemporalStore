@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>C++ TemporalStore Deep Dive: Storage Engine And Context</title>
+  <title>TemporalStore Deep Dive: Storage Engine And Context</title>
   <style>
     :root {
       color-scheme: light;
@@ -143,8 +143,8 @@
 </head>
 <body>
   <header>
-    <h1>C++ TemporalStore Deep Dive</h1>
-    <p class="muted">Storage engine internals and MatrixArk context internals, grounded in the current C++ source tree.</p>
+    <h1>TemporalStore Deep Dive</h1>
+    <p class="muted">Storage engine internals and MatrixArk context internals, grounded in the current source tree.</p>
     <p>
       <span class="pill">src/partition/storage</span>
       <span class="pill">src/partition/index</span>
@@ -220,7 +220,7 @@
       <section id="storage-structures">
         <h2>Core Storage Data Structures</h2>
         <h3><code>PageIndex</code></h3>
-        <p><code>PageIndex</code> is a packed 17-byte public-internal page reference. It is the C++ equivalent of the shared page address contract, but in current code it is compact and implementation-oriented.</p>
+        <p><code>PageIndex</code> is a packed 17-byte public-internal page reference. It is the equivalent of the shared page address contract, but in current code it is compact and implementation-oriented.</p>
         <table>
           <thead><tr><th>Field</th><th>Meaning</th></tr></thead>
           <tbody>
@@ -266,14 +266,14 @@
   -> decode PageHeader + page bytes
   -> model decodes records and applies filters</pre>
         <p><code>PageStore::ReadPage</code> and <code>OpLogger::ReadPage</code> have different physical sources but both return <code>PageInfo</code>. That gives upper layers one decoded page abstraction even when old data is still in the log.</p>
-        <p>For ContextEvent and ContextSummary, model-level filtering happens through feature/time-series style key ranges. The C++ context extension uses ingestion-time keys and timeline query ranges, then applies type/confidence/importance/ranking filters.</p>
+        <p>For ContextEvent and ContextSummary, model-level filtering happens through feature/time-series style key ranges. The context extension uses ingestion-time keys and timeline query ranges, then applies type/confidence/importance/ranking filters.</p>
       </section>
 
       <section id="lifecycle">
         <h2>StorageManager Lifecycle</h2>
         <p><code>StorageManager::LoopWorker</code> runs repeatedly and executes these phases:</p>
         <table>
-          <thead><tr><th>Phase</th><th>C++ Method</th><th>Purpose</th></tr></thead>
+          <thead><tr><th>Phase</th><th>Method</th><th>Purpose</th></tr></thead>
           <tbody>
             <tr><td>prepare</td><td><code>Prepare</code></td><td>Create/freeze PageStore zones and periodically update index meta.</td></tr>
             <tr><td>reclaim oplog</td><td><code>ReclaimOpLog</code>, <code>ReclaimOpLogWithLimit</code></td><td>Dump dirty slots after enough log has accumulated, then advance dumped log id.</td></tr>
@@ -298,9 +298,9 @@
   -> after delay and safety checks, DestroyZone deletes stream and index metadata</pre>
         <p>The stream layer is log/blob based. <code>StreamImpl</code> buffers records, writes record headers and block footers, supports aggregate flush profiles, rolls to a new blob when <code>stream_max_blob_size</code> would be exceeded, and uses tail scan on load for recovery.</p>
         <table>
-          <thead><tr><th>Config</th><th>Observed C++ location</th><th>Default/Behavior</th></tr></thead>
+          <thead><tr><th>Config</th><th>Observed location</th><th>Default/Behavior</th></tr></thead>
           <tbody>
-            <tr><td><code>storage_zone_size</code></td><td><code>src/partition/storage/flags.cc</code></td><td>1 GiB default in C++ flags.</td></tr>
+            <tr><td><code>storage_zone_size</code></td><td><code>src/partition/storage/flags.cc</code></td><td>1 GiB default in flags.</td></tr>
             <tr><td><code>stream_max_blob_size</code></td><td><code>src/stream/flags.cc</code></td><td>1 GiB default max blob size.</td></tr>
             <tr><td><code>stream_aggregate_flush_profile</code></td><td><code>src/stream/log_based_stream.cc</code></td><td>Profiles adjust loop interval and batch bytes for latency/throughput/batch ingest.</td></tr>
           </tbody>
@@ -318,7 +318,7 @@
       </section>
 
       <section id="context-models">
-        <h2>MatrixArk Context Data Models In C++</h2>
+        <h2>MatrixArk Context Data Models In</h2>
         <table>
           <thead><tr><th>Proto</th><th>Storage Shape</th><th>Purpose</th></tr></thead>
           <tbody>
@@ -332,12 +332,12 @@
             <tr><td><code>ContextCompressionEvent</code></td><td>Feature timeline by compressed time</td><td>Temporal compression summary over an older event window.</td></tr>
           </tbody>
         </table>
-        <p>The C++ proto intentionally removed/forbid several verbose fields with <code>reserved</code> declarations. For example, <code>ContextEvent</code> no longer stores actor hash or valid-until fields, <code>ContextEmbedding</code> does not store dim separately, and <code>ContextSummary</code> no longer stores a separate version hash.</p>
+        <p>The wire proto intentionally removed/forbid several verbose fields with <code>reserved</code> declarations. For example, <code>ContextEvent</code> no longer stores actor hash or valid-until fields, <code>ContextEmbedding</code> does not store dim separately, and <code>ContextSummary</code> no longer stores a separate version hash.</p>
       </section>
 
       <section id="context-retrieve">
         <h2>Native Context Retrieve Path</h2>
-        <p><code>RetrieveContextPack</code> in <code>src/extension/context/implement.cc</code> is the C++ native hot path. It validates request shape, traverses nodes, applies placement/index filters, fetches candidates, scores, ranks, packs under budget, and returns compact telemetry.</p>
+        <p><code>RetrieveContextPack</code> in <code>src/extension/context/implement.cc</code> is the native hot path. It validates request shape, traverses nodes, applies placement/index filters, fetches candidates, scores, ranks, packs under budget, and returns compact telemetry.</p>
         <pre>RetrieveContextPack(request)
   -> ValidateRetrieveContextPackRequest
   -> CollectCandidateNodes
@@ -354,20 +354,20 @@
   -> token-budget pack into ContextPackRef
   -> NativeRetrieveTelemetry</pre>
         <h3>Telemetry fields</h3>
-        <p>The C++ response includes selected/dropped counts, scanned records, index postings read, candidate fetch count, placement partitions touched, candidate cache hit, broad scan flags, per-stage latency, and filter/drop buckets.</p>
+        <p>The response includes selected/dropped counts, scanned records, index postings read, candidate fetch count, placement partitions touched, candidate cache hit, broad scan flags, per-stage latency, and filter/drop buckets.</p>
         <h3>Current serving posture</h3>
         <p>The intended production path is placement-key and index driven. Broad scan is treated as explicit fallback/debug. Python should consume the compact ContextPack and telemetry rather than materializing thousands of raw records.</p>
       </section>
 
       <section id="client-sdk">
         <h2>Client And C ABI Boundary</h2>
-        <p>The C++ client exposes MatrixArk-specific methods in <code>src/client/temporalstore_client.cc</code> and C ABI wrappers in <code>src/client/temporalstore_c_client.cc/.h</code>.</p>
+        <p>The client exposes MatrixArk-specific methods in <code>src/client/temporalstore_client.cc</code> and C ABI wrappers in <code>src/client/temporalstore_c_client.cc/.h</code>.</p>
         <table>
           <thead><tr><th>Function</th><th>Purpose</th></tr></thead>
           <tbody>
             <tr><td><code>temporalstore_matrixark_batch_append_records</code></td><td>Append a batch of MatrixArk records through the C client boundary.</td></tr>
             <tr><td><code>temporalstore_matrixark_batch_append_records_v2</code></td><td>Extended batch append with runtime/storage options.</td></tr>
-            <tr><td><code>temporalstore_matrixark_retrieve_context_pack</code></td><td>Invoke native C++ context retrieve and return JSON response.</td></tr>
+            <tr><td><code>temporalstore_matrixark_retrieve_context_pack</code></td><td>Invoke native context retrieve and return JSON response.</td></tr>
             <tr><td><code>TemporalStoreClient::MatrixArkRetrieveContextPack</code></td><td>Parses request JSON, sets placement route, calls context extension, renders JSON.</td></tr>
           </tbody>
         </table>
@@ -380,15 +380,15 @@
           <li>Mature storage lifecycle loop with prepare, dump/reclaim, evict, expire, page GC, index GC, compaction, and metrics.</li>
           <li>Compact page references and packed slot metadata.</li>
           <li>PageStore zone state machine and stream/blob rollover/recovery.</li>
-          <li>Native C++ MatrixArk retrieve path with candidate cache, compact index prefilter, placement filtering, scoring, budget pack, and telemetry.</li>
+          <li>Native MatrixArk retrieve path with candidate cache, compact index prefilter, placement filtering, scoring, budget pack, and telemetry.</li>
         </ul>
         <h3>Gaps to keep watching</h3>
         <ul>
-          <li><strong>Public contract naming:</strong> C++ uses implementation names such as <code>PageIndex</code>, zone addresses, and oplog/page-store distinctions. Public reports should normalize these to <code>PageAddress</code>, <code>BlockAddress</code>, <code>AppendWatermark</code>, and <code>CompactionWatermark</code>.</li>
+          <li><strong>Public contract naming:</strong> uses implementation names such as <code>PageIndex</code>, zone addresses, and oplog/page-store distinctions. Public reports should normalize these to <code>PageAddress</code>, <code>BlockAddress</code>, <code>AppendWatermark</code>, and <code>CompactionWatermark</code>.</li>
           <li><strong>Context performance:</strong> correctness must remain first. If selected refs are empty or drift from Rust/Python, latency/QPS numbers are not meaningful.</li>
           <li><strong>Physical reclaim:</strong> cache eviction is memory-only; durable reclaim depends on tombstones, index safety, follower cursor safety, page/block rewrite, and reclaimed-byte accounting.</li>
           <li><strong>Cold scan semantics:</strong> context temporal compression and storage GC should use no-cache/no-promote cold reads so serving cache is not polluted by old raw pages.</li>
-          <li><strong>C++/Rust parity:</strong> reports should use the same top-level storage lifecycle, cache, stream, zone, page/block, and Raft shapes even if implementation internals differ.</li>
+          <li><strong>conformance parity:</strong> reports should use the same top-level storage lifecycle, cache, stream, zone, page/block, and Raft shapes even if implementation internals differ.</li>
         </ul>
       </section>
     </div>

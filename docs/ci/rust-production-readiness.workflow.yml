@@ -28,7 +28,7 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
-      - name: Validate unified C++/Rust corpus
+      - name: Validate unified conformance corpus
         run: python3 tools/run_temporalstore_unified_tests.py --validate-only
 
       - name: Validate readiness workflow coverage
@@ -79,7 +79,7 @@ jobs:
       - name: Run storage modes harness
         run: cargo run -p temporalstore-rust --bin storage_modes_harness
 
-      - name: Export C++ storage migration artifacts
+      - name: Export storage migration artifacts
         run: >
           python3 tools/export_cpp_storage_migration_artifacts.py
           --output target/readiness/storage-migration-artifacts

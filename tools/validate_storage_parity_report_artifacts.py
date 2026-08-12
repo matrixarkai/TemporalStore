@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Validate committed C++/Rust parity report storage shape.
+"""Validate committed conformance parity report storage shape.
 
 The shared storage lifecycle validators protect the canonical contract and
 synthetic corpus. This gate protects the committed benchmark evidence under
 ``docs/benchmarks/parity_*`` so reports cannot drift back to backend-specific
-public names or omit the storage lifecycle sections used by C++/Rust parity
+public names or omit the storage lifecycle sections used by conformance parity
 comparisons.
 """
 

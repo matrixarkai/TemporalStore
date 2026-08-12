@@ -3,7 +3,7 @@
 <style>body{font-family:Inter,Arial,sans-serif;max-width:1100px;margin:32px auto;padding:0 24px;line-height:1.5}pre{background:#111827;color:#e5e7eb;padding:16px;border-radius:8px;overflow:auto}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}table{border-collapse:collapse;width:100%}td,th{border:1px solid #d1d5db;padding:8px;text-align:left}th{background:#f3f4f6}</style></head><body><pre># MatrixArk Operators And Time Compression Validation
 
 This doc records the local validation for MatrixArk context operators and time compression.
-The test uses the Python MatrixArk runtime with TemporalStore-shaped records. C++ TemporalStore already has native `COMPRESS_EVENTS`, `WRITE_COMPRESSION_EVENT`, `QUERY_COMPRESSION_EVENTS`, and `QUERY_NODE_CONTEXT` tests; this run proves the MatrixArk extraction/retrieval path can also use compressed windows in a ContextPack.
+The test uses the Python MatrixArk runtime with TemporalStore-shaped records. TemporalStore already has native `COMPRESS_EVENTS`, `WRITE_COMPRESSION_EVENT`, `QUERY_COMPRESSION_EVENTS`, and `QUERY_NODE_CONTEXT` tests; this run proves the MatrixArk extraction/retrieval path can also use compressed windows in a ContextPack.
 
 ## Command
 
@@ -48,7 +48,7 @@ PYTHONPATH=. python3 -m unittest tools.test_matrixark_mcp_server
 | `DECAY_SCORE` | Passed | Emits `origin_score`, `time_score`, `business_score`, `final_score`, and formula. |
 | `LLM_MERGE` | Covered | Entity update tests cover deterministic field patches and `ContextEntity` merge/update audit; production LLM merge remains provider-backed. |
 | `TIME_COMPRESS` | Passed | Writes a source-linked compressed window and retrieval selects it in a tight ContextPack. |
-| `VALID_AS_OF` | Covered in C++ | `QuerySummaries` / `QueryNodeContext` tests select summaries as of a timestamp. |
+| `VALID_AS_OF` | Covered in | `QuerySummaries` / `QueryNodeContext` tests select summaries as of a timestamp. |
 | `BLOCK_IF_STALE` | Policy covered | Stale-blocker packing policy is present; destructive pruning is not enabled in MVP. |
 
 ## TIME_COMPRESS Debug Data
@@ -217,9 +217,9 @@ Key checks:
 }
 ```
 
-## C++ TemporalStore Coverage
+## TemporalStore Coverage
 
-Native C++ coverage lives in `src/extension/context/test.cc`:
+Native coverage lives in `src/extension/context/test.cc`:
 
 - `TreeEmbeddingSummaryAndCompressionRoundTrip`
 - `TemporalCompressionBuildsReplayableSummaryWithoutDeletingSources`

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Import one C++/Rust scale report into the performance parity matrix.
+"""Import one conformance scale report into the performance parity matrix.
 
 The importer is conservative: it updates only the workload rows proven by the
 input report, and it never upgrades a row from `missing_live_evidence` unless
-the report contains same-config C++ and Rust backend metrics with zero
+the report contains same-config and Rust backend metrics with zero
 errors/timeouts, no fallback flags, selected-ref parity, and threshold-compliant
 QPS/latency ratios.
 """
@@ -420,7 +420,7 @@ def import_report(matrix: dict[str, Any], report: dict[str, Any]) -> dict[str, A
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Import a C++/Rust scale report into the performance parity matrix.")
+    parser = argparse.ArgumentParser(description="Import a conformance scale report into the performance parity matrix.")
     parser.add_argument("--report", required=True, type=Path, help="Path to comparison.json from run_matrixark_cpp_rust_scale_report.py")
     parser.add_argument("--matrix", type=Path, default=DEFAULT_MATRIX)
     parser.add_argument("--output", type=Path, default=None, help="Write updated matrix here. Defaults to --matrix.")

@@ -6,7 +6,7 @@
 Codex CLI hooks fire for CLI turns, but some desktop/app-server turns are only
 visible in the Codex session JSONL stream. This bridge treats that stream as the
 authoritative Codex transcript and submits new user messages to the same
-C++/Rust dual hook used by UserPromptSubmit.
+conformance dual hook used by UserPromptSubmit.
 """
 
 from __future__ import annotations

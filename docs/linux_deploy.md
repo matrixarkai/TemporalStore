@@ -49,7 +49,7 @@ bash
 python3
 git
 rustup/rustc/cargo
-C/C++ toolchain + clang/libclang + cmake   (to compile RocksDB via MatrixCache)
+C/toolchain + clang/libclang + cmake   (to compile RocksDB via MatrixCache)
 network access to github.com               (to fetch the MatrixCache/MatrixRaft crates)
 ```
 
@@ -101,8 +101,8 @@ matrixobjectstore-rs  https://github.com/bjmeetsfo/MatrixObjectStore.git  (optio
 
 Each dependency is pinned to an exact revision, so builds are reproducible. You
 do not clone these repos by hand — you only need `git` and network access to
-`github.com` on the build host. The legacy C++ implementation now lives in a
-separate repository; this repository is Rust + Python only and needs no C++
+`github.com` on the build host. The legacy implementation now lives in a
+separate repository; this repository is Rust + Python only and needs no
 build.
 
 Offline or air-gapped builds: run `cargo vendor` on a connected host and commit

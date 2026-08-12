@@ -9,7 +9,7 @@ TemporalStore keeps Context data in its existing `ContextNode`, `ContextEvent`, 
 
 The workflow is:
 
-1. `manage`: report supported routes, provider count, pipeline stages, and C++/OpenViking parity
+1. `manage`: report supported routes, provider count, pipeline stages, and/OpenViking parity
    evidence before admitting a deployment as context-ready. The management report now includes
    per-stage readiness, provider names, and policy controls so operators can see which part of the
    pipeline owns a failure.
@@ -36,7 +36,7 @@ TemporalStore context models as normal production traffic:
 1. Benchmark entity blocks are backed by the node-level record stored as `ContextNodeModel`. The
    node owns the stable node hash, canonical title, `L0` routing summary, `L1` key-fact summary,
    last event time, dirty-summary flag, and raw source metadata ref. Rust also has a first-class
-   C++ `ContextEntityModel` for extracted entity attributes keyed by tenant/node/entity hash.
+   `ContextEntityModel` for extracted entity attributes keyed by tenant/node/entity hash.
 2. `ContextSegment` is the public benchmark/pipeline name for the timestamped evidence segment
    stored as `ContextEventModel`. It owns the timestamp key, event id hash, source text, source
    ref, confidence/importance, and related entity node hashes. The page stores timestamp-keyed
@@ -49,7 +49,7 @@ TemporalStore context models as normal production traffic:
 5. Injection packs the selected L0/L1/L2 blocks into `<context>` and writes `ContextPackAudit`
    selected refs so benchmark reports can prove the injected evidence came from TemporalStore.
 
-The shared C++/Rust corpus case `context_benchmark_injection_entity_segment_index` exercises this
+The shared conformance corpus case `context_benchmark_injection_entity_segment_index` exercises this
 flow with a LOCOMO-style conversation turn: extract entity/segment records, query the `source`
 secondary index, retrieve L0/L1/L2 blocks, inject them under a token budget, and verify the audit
 refs point back to the same entity and segment.
@@ -105,7 +105,7 @@ profiles through `GET /context/workflow/state`:
   `https://api.openai.com/v1`
 - `matrixark-cpp-oss-context`: `google/flan-t5-small` extraction model and
   `sentence-transformers/all-MiniLM-L6-v2` embedding model, retained for legacy open-source
-  MatrixArk/C++ comparison runs
+  MatrixArk comparison runs
 - `openviking-minigpt4-gpt-style-vlm`: `Vision-CAIR/MiniGPT-4` as the open-source GPT-4-style VLM,
   `lmsys/vicuna-7b-v1.5` chat model, `BAAI/bge-m3` embedding model, OpenAI-compatible gateway at
   `127.0.0.1:8000/v1`
@@ -171,16 +171,16 @@ The harness verifies:
 - restart replay preserves the same `ContextNode` and `ContextEvent`
 - shared-store sync and async replay preserve the same Context pipeline writes
 - Raft replica reads can serve the same Context event after the write path is replicated
-- `context_pipeline_ready` is true only when the parity report covers C++ Context models,
+- `context_pipeline_ready` is true only when the parity report covers Context models,
   OpenViking L0/L1/L2 tiers, extraction, retrieval, injection, index refs, pack audit, dirty
   summary, restart replay, shared-store sync/async replay, Raft reads, and unified corpus evidence
 
-## C++ Context Model Parity
+## Context Model Parity
 
-The current C++ TemporalStore context module registers first-class LLM context model names on top of
+The current TemporalStore context module registers first-class LLM context model names on top of
 existing hash/feature page primitives:
 
-| C++ model | Model id | Rust model descriptor | Key family | Primitive |
+| model | Model id | Rust model descriptor | Key family | Primitive |
 | --- | ---: | --- | --- | --- |
 | `ContextNodeModel` | `9` | `ContextNodeModel` | `ctx:node` | hash/object metadata, L0/L1 summaries |
 | `ContextEventModel` / `ContextSegment` | `10` | `ContextEventModel` | `ctx:event` | timestamp-keyed segment page |
@@ -190,8 +190,8 @@ existing hash/feature page primitives:
 | `ContextEntityModel` | `18` | `ContextEntityModel` | `ctx:entity` | hash/object extracted entity attributes |
 
 Rust exposes the same model IDs through `context_model_descriptors()`, uses the same object-key
-families, and matches the C++ timeline fanout (`1024 * 1024`) so multiple records in the same
-millisecond are queryable through the same range semantics. Rust also enforces the C++ context
+families, and matches the timeline fanout (`1024 * 1024`) so multiple records in the same
+millisecond are queryable through the same range semantics. Rust also enforces the context
 limits for index names, query limits, filter counts, related-node fanout, audit refs, propagation
 depth, score ranges, timestamp overflow, and bounded payload sizes.
 
@@ -209,8 +209,8 @@ Covered:
 - Data-node HTTP routes expose management and batch ingest/extract pipeline handoff.
 - The local harness and Docker-packaged harness validate management, ingest/extract, retrieval,
   injection, and audit refs.
-- C++/OpenViking parity evidence covers engine-local restart, shared-store sync/async replay,
-  Raft reads, and the shared C++/Rust Context corpus.
+-/OpenViking parity evidence covers engine-local restart, shared-store sync/async replay,
+  Raft reads, and the shared conformance Context corpus.
 
 ## VikingMem-Style Benchmark
 
@@ -320,7 +320,7 @@ after the dinner update?" and "What risk score was recorded after the latest fra
 numeric memory updates. Alias cases such as "What is Emma's roommate's name after the move?" and
 "What is the dog's name in the latest pet update?" cover entity-disambiguation updates.
 
-The shared C++/Rust corpus also has a dedicated `context_openviking_reasoning_vlm_parity` case.
+The shared conformance corpus also has a dedicated `context_openviking_reasoning_vlm_parity` case.
 Rust executes `context_openviking_reasoning_vlm_cases_cover_required_gaps`, which requires explicit
 coverage for multi-hop reasoning, temporal reasoning, memory updates, stale-memory replacement,
 open-domain retrieval, and VLM image/content understanding. The VLM case is currently a

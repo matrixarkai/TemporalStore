@@ -169,7 +169,7 @@ UPSERT_EMBEDDING(ref_hash = node_hash, level, summary_vector, updated_at_ms)
 The local E2E verifies this after API ingest, batch ingest, stream ingest,
 resource extraction, and feedback ingestion. It queries `ContextSummary` records
 and summary embedding refs from TemporalStore, so the path is covered by both the
-C++ contract and Rust mock proxy. Retrieval also returns `summary_refs`, so
+contract and Rust mock proxy. Retrieval also returns `summary_refs`, so
 summaries are covered in the serving path rather than only in the background
 refresh path.
 

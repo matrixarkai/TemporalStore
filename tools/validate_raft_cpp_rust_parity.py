@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Validate shared C++/Rust Raft parity fixtures and live report pairs."""
+"""Validate shared conformance Raft parity fixtures and live report pairs."""
 
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ def main() -> int:
         return 1
 
     validated = [path.name for path in (args.fixture or DEFAULT_FIXTURES)]
-    print("raft C++/Rust shared parity passed:")
+    print("raft conformance shared parity passed:")
     print("- fixtures=" + ", ".join(validated))
     return 0
 

@@ -1,7 +1,7 @@
 # In-Memory Coalesced Summary-Dirty Tracking
 
-Status: implemented (Rust + C++). Landed on `main` in commit
-`9390d110` ("TemporalStore: in-memory coalesced summary-dirty tracking (Rust + C++)").
+Status: implemented (Rust +). Landed on `main` in commit
+`9390d110` ("TemporalStore: in-memory coalesced summary-dirty tracking (Rust +)").
 
 ## Problem
 
@@ -44,7 +44,7 @@ value = { node_hash,
 
 ## Why ephemeral loss is acceptable
 
-The in-memory index is deliberately not persisted (Rust: `#[serde(skip)]`; C++:
+The in-memory index is deliberately not persisted (Rust: `#[serde(skip)]`;:
 process-local static map). It may be lost on restart, and that is safe:
 
 1. The async summary-refresh worker re-marks a node dirty on its next event.
@@ -76,7 +76,7 @@ $ cargo run -p temporalstore-rust --example inmemory_dirty_check
 inmemory_dirty_check: OK (coalescing, latest-ts, max-depth, window-filter, bounded 500->1)
 ```
 
-### C++ (`src/extension/context/implement.cc`)
+### (`src/extension/context/implement.cc`)
 
 `MarkSummaryDirty` / `QuerySummaryDirty` use a process-local, mutex-guarded
 coalescing map (`InMemoryDirtyEntry`) instead of the `ContextDirtyModel` `OrSet`

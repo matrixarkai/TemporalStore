@@ -28,27 +28,27 @@
 <tr><td>Rust p95 append latency us</td><td>35209</td></tr>
 <tr><td>Rust MatrixObject mode</td><td>rust_matrixobject_incremental_journal_protobuf_append_blob</td></tr>
 <tr><td>Rust durable reopen equivalent</td><td>True</td></tr>
-<tr><td>Rust durable reopen caveat</td><td>Rust MatrixObjectStore now reloads from an incremental checksummed journal path; C++ uses incremental disk-root ObjectStore reopen.</td></tr>
+<tr><td>Rust durable reopen caveat</td><td>Rust MatrixObjectStore now reloads from an incremental checksummed journal path; uses incremental disk-root ObjectStore reopen.</td></tr>
 <tr><td>Rust snapshot bytes</td><td>16428</td></tr>
 <tr><td>Rust snapshot export latency us</td><td>0</td></tr>
 <tr><td>Rust snapshot import latency us</td><td>452899</td></tr>
 <tr><td>Rust total replay latency us</td><td>499930</td></tr>
 <tr><td>Rust avg retrieval latency us</td><td>221</td></tr>
-<tr><td>C++ raw append avg latency us</td><td>9109.237</td></tr>
-<tr><td>C++ indexed append avg latency us</td><td>18782.854</td></tr>
-<tr><td>C++ offset index matches</td><td>True</td></tr>
-<tr><td>C++ offset index object size</td><td>356</td></tr>
-<tr><td>Rust direct/C++ indexed append latency ratio</td><td>0.878</td></tr>
-<tr><td>Rust retrieval/C++ full read latency ratio</td><td>0.044</td></tr>
-<tr><td>C++ reopen latency us</td><td>2622.066</td></tr>
-<tr><td>C++ full read latency us</td><td>4983.839</td></tr>
-<tr><td>C++ tail read latency us</td><td>3285.056</td></tr>
-<tr><td>C++ reopened extent count</td><td>8</td></tr>
+<tr><td>raw append avg latency us</td><td>9109.237</td></tr>
+<tr><td>indexed append avg latency us</td><td>18782.854</td></tr>
+<tr><td>offset index matches</td><td>True</td></tr>
+<tr><td>offset index object size</td><td>356</td></tr>
+<tr><td>Rust direct/indexed append latency ratio</td><td>0.878</td></tr>
+<tr><td>Rust retrieval/full read latency ratio</td><td>0.044</td></tr>
+<tr><td>reopen latency us</td><td>2622.066</td></tr>
+<tr><td>full read latency us</td><td>4983.839</td></tr>
+<tr><td>tail read latency us</td><td>3285.056</td></tr>
+<tr><td>reopened extent count</td><td>8</td></tr>
 <tr><td>Rust cache after retrieval</td><td>{&#x27;entries&#x27;: 1874, &#x27;bytes&#x27;: 13906, &#x27;max_bytes&#x27;: 201326592, &#x27;hits&#x27;: 6228, &#x27;misses&#x27;: 1876, &#x27;evictions&#x27;: 0, &#x27;direct_fill_pages&#x27;: 1876, &#x27;direct_fill_bytes&#x27;: 13914, &#x27;compressed_fill_pages&#x27;: 0, &#x27;compressed_fill_bytes&#x27;: 0, &#x27;ec_fill_pages&#x27;: 0, &#x27;ec_fill_bytes&#x27;: 0, &#x27;pressure&#x27;: False}</td></tr>
-<tr><td>C++ read cache bytes</td><td>0</td></tr>
-<tr><td>C++ read cache pages</td><td>0</td></tr>
-<tr><td>C++ read cache hits</td><td>14</td></tr>
-<tr><td>C++ read cache misses</td><td>3</td></tr></tbody></table>
+<tr><td>read cache bytes</td><td>0</td></tr>
+<tr><td>read cache pages</td><td>0</td></tr>
+<tr><td>read cache hits</td><td>14</td></tr>
+<tr><td>read cache misses</td><td>3</td></tr></tbody></table>
   <h2>Parity Checks</h2>
   <table><thead><tr><th>Check</th><th>Result</th></tr></thead><tbody><tr><td>rust_runtime_valid</td><td>pass</td></tr>
 <tr><td>rust_offsets_monotonic</td><td>pass</td></tr>
@@ -311,10 +311,10 @@
       &quot;comparable&quot;: true,
       &quot;rust_direct_publish_avg_us_to_cpp_indexed_append_avg_us&quot;: 0.878,
       &quot;rust_retrieval_avg_us_to_cpp_full_read_us&quot;: 0.044,
-      &quot;threshold&quot;: &quot;&lt;=2.0x for Rust direct publish vs C++ indexed append when durable offset semantics are comparable&quot;
+      &quot;threshold&quot;: &quot;&lt;=2.0x for Rust direct publish vs indexed append when durable offset semantics are comparable&quot;
     },
-    &quot;note&quot;: &quot;Rust TemporalStore MatrixObject append-blob runtime evidence now validates WAL frame offsets, a protobuf oplog-index offset metadata sidecar, and incremental journal reopen/readback. C++ MatrixObjectStore runtime evidence covers incremental disk-root reopen/readback.&quot;,
-    &quot;root_cause&quot;: &quot;Rust originally appeared much faster because the MatrixObject binding benchmark used an in-memory MatrixObjectStore, while the C++ benchmark used a disk-root ObjectStore, FlushForShutdown, process-style reopen, extent metadata recovery, and range reads. Rust now persists protobuf oplog-offset metadata and validates MatrixObjectStore reload from an incremental checksummed journal path. The latency gate compares Rust direct publish with C++ indexed append, because both include durable offset metadata; sync writer and async flush are reported separately.&quot;,
+    &quot;note&quot;: &quot;Rust TemporalStore MatrixObject append-blob runtime evidence now validates WAL frame offsets, a protobuf oplog-index offset metadata sidecar, and incremental journal reopen/readback. MatrixObjectStore runtime evidence covers incremental disk-root reopen/readback.&quot;,
+    &quot;root_cause&quot;: &quot;Rust originally appeared much faster because the MatrixObject binding benchmark used an in-memory MatrixObjectStore, while the benchmark used a disk-root ObjectStore, FlushForShutdown, process-style reopen, extent metadata recovery, and range reads. Rust now persists protobuf oplog-offset metadata and validates MatrixObjectStore reload from an incremental checksummed journal path. The latency gate compares Rust direct publish with indexed append, because both include durable offset metadata; sync writer and async flush are reported separately.&quot;,
     &quot;status&quot;: &quot;passed&quot;
   },
   &quot;rust_command&quot;: {
@@ -820,7 +820,7 @@
     &quot;direct_offset_index_maps_oplog_to_blob_offsets&quot;: true,
     &quot;direct_offset_slices_decode_expected_frames&quot;: true,
     &quot;direct_publish_latency_avg_us&quot;: 16500.125,
-    &quot;durable_reopen_caveat&quot;: &quot;Rust MatrixObjectStore now reloads from an incremental checksummed journal path; C++ uses incremental disk-root ObjectStore reopen.&quot;,
+    &quot;durable_reopen_caveat&quot;: &quot;Rust MatrixObjectStore now reloads from an incremental checksummed journal path; uses incremental disk-root ObjectStore reopen.&quot;,
     &quot;durable_reopen_equivalent&quot;: true,
     &quot;matrixobject_mode&quot;: &quot;rust_matrixobject_incremental_journal_protobuf_append_blob&quot;,
     &quot;offsets_contiguous&quot;: true,

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Validate C++/Rust storage lifecycle parity contract and optional reports.
+"""Validate conformance storage lifecycle parity contract and optional reports.
 
 The lightweight default mode checks that the shared docs and scale runner agree
 on the canonical StorageManager lifecycle metrics. When --cpp-report and
@@ -1266,7 +1266,7 @@ def main() -> int:
     for metric in REQUIRED_STORAGE_LIFECYCLE_METRICS:
         print(f"- {metric}")
     if validated_pair:
-        print("- C++/Rust report pair exposes matching config, lifecycle metrics, and canonical public storage shape")
+        print("- conformance report pair exposes matching config, lifecycle metrics, and canonical public storage shape")
     return 0
 
 

@@ -135,7 +135,7 @@ tools/run_ops_scale_readiness.sh --run-distributed-raft
 The first command validates the production evidence contract: autoscale and
 metaserver-driven rebalance surfaces, dashboard and alert files, tracing and
 non-Raft auth/TLS runbook, Docker/local scale harness, distributed Raft load
-harness, and unified C++/Rust workload corpus. The optional flags execute the
+harness, and unified conformance workload corpus. The optional flags execute the
 local scale and real-process distributed Raft harnesses.
 
 Recovery checks:

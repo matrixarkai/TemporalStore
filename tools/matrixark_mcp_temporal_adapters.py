@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""TemporalStore-backed MatrixArk adapters for C++ and Rust backends."""
+"""TemporalStore-backed MatrixArk adapters for and Rust backends."""
 
 from __future__ import annotations
 
@@ -343,10 +343,10 @@ except ImportError:
     from matrixark_temporal_direct_retrieve import _TemporalDirectRetrieveMixin
 
 class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirectBackendMixin, _TemporalDirectWriteMixin, _TemporalDirectReadMixin, _TemporalDirectRetrieveMixin):
-    """MatrixArk adapter backed by C++ TemporalStore proxy or direct SDK.
+    """MatrixArk adapter backed by TemporalStore proxy or direct SDK.
 
     Python stays as API/auth/model orchestration. Production retrieval should
-    call native C++ proxy/direct APIs for append, prefix scan, secondary-index
+    call native proxy/direct APIs for append, prefix scan, secondary-index
     prefiltering, scoring, and ContextPack assembly. Direct SDK remains the
     embedded/local path; MATRIXARK_TEMPORALSTORE_CPP_PROXY_ENDPOINT selects the
     proxy boundary.
@@ -456,7 +456,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             and self._matrixark_append_write_path == "cpp_direct_existing_batch_execute_raw_batch_mset"
         )
         self._matrixark_proxy_mode = bool(proxy_endpoint)
-        # C++ has a native CONTEXT extension (WRITE_EVENT / WRITE_EXTRACTED_EVENT)
+        # has a native CONTEXT extension (WRITE_EVENT / WRITE_EXTRACTED_EVENT)
         # but the generic JSON record-log adapter still persists through the
         # MatrixArk batch hash API. Keep this explicit in metrics/reports so the
         # deeper append-queue optimization is not confused with the API boundary.
@@ -2614,7 +2614,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
 class MatrixArkTemporalStoreRustDirectAdapter(MatrixArkTemporalStoreRustAdapter):
     """MatrixArk adapter backed by a long-lived Rust process using the Rust SDK directly.
 
-    This is the Rust parity counterpart to the C++ direct SDK adapter. The Python
+    This is the Rust parity counterpart to the direct SDK adapter. The Python
     MCP process still owns protocol/model glue, while the Rust bridge owns the
     TemporalStore SDK client and native storage calls. It is intentionally
     explicit so benchmark reports can distinguish it from the production Rust

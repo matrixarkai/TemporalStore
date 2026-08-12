@@ -12,13 +12,13 @@ usage: run_temporalstore_unified_validation.sh [--with-cpp]
 
 Runs one local unified TemporalStore validation pass across:
   - unit/compat tests
-  - API and shared C++/Rust corpus tests
+  - API and shared conformance corpus tests
   - storage integration tests
   - data-node plus metaserver Raft distributed parity
   - local scale/shared-store validation
   - production-readiness reporting
 
-Set TS_UNIFIED_RUN_CPP=1 or pass --with-cpp to also run the configured C++
+Set TS_UNIFIED_RUN_CPP=1 or pass --with-cpp to also run the configured
 corpus hook through tools/run_temporalstore_unified_tests.py --both.
 USAGE
   exit 2

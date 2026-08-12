@@ -34,7 +34,7 @@ python3 tools/validate_aws_validation_log.py \
   --job temporalstore-storage-production-validation \
   --log "${ARTIFACT_DIR}/storage-production.json"
 
-echo "== 3/8 C++ storage migration artifact export =="
+echo "== 3/8 storage migration artifact export =="
 python3 tools/export_cpp_storage_migration_artifacts.py \
   --output "${ARTIFACT_DIR}/storage-migration-artifacts" \
   > "${ARTIFACT_DIR}/storage-migration-artifacts-manifest.json"

@@ -3,7 +3,7 @@
 # Copyright 2026 MatrixArkAI
 """Validate the shared PageAddress compatibility corpus.
 
-This is intentionally lightweight so C++ and Rust CI can both run it before
+This is intentionally lightweight so and Rust CI can both run it before
 their native engine-specific tests. Native tests should consume the same JSON
 corpus and prove the storage engine implements these semantics.
 """

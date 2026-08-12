@@ -35,7 +35,7 @@ and observable apply lag.
 | Transport abstraction | Production data-node and metaserver paths need a stable RPC contract independent of the app crate. | Add RustRaft transport traits for append, vote, install-snapshot, and read-index. | Shared Raft transport contract cases. |
 | Snapshot lifecycle | Snapshot floor, chunk retry, stale chunk rejection, and tail catch-up are still tested mostly through TemporalStore. | Add library-level snapshot state machine and fault tests. | `raft_rustraft_snapshot_lifecycle_depth`. |
 | Membership workflow | Learner catch-up, promote, remove, transfer leader, and joint membership need a reusable library state model. | Add membership planner/state transitions to the `RustRaft` repo; TemporalStore metaserver consumes it. | `raft_rustraft_leader_transfer_high_write_fault_harness` and membership cases. |
-| Metrics model | Runtime metrics are emitted in TemporalStore-specific structures. | Add RustRaft metric names and status snapshots so C++ and Rust deployments share dashboards. | Grafana/Prometheus parity checks. |
+| Metrics model | Runtime metrics are emitted in TemporalStore-specific structures. | Add RustRaft metric names and status snapshots so and Rust deployments share dashboards. | Grafana/Prometheus parity checks. |
 | Fault harness API | Fault cases are currently driven by TemporalStore harnesses. | Add a library-level deterministic harness for partitions, packet loss, slow WAL, restart, compaction, and snapshot install. | `raft_rustraft_*_fault_harness` cases. |
 | Storage adapter boundary | Durable storage remains TemporalStore-specific. | Define RustRaft storage traits for log append/read, hard state, snapshots, and tombstoned compacted entries. | Storage recovery and compaction gates. |
 
@@ -55,8 +55,8 @@ and observable apply lag.
 
 ## Non-Goals For This Step
 
-- This step does not replace the C++ dependency checkout or its upstream build
-  flags. Those remain compatibility plumbing until C++ is independently moved to
+- This step does not replace the dependency checkout or its upstream build
+  flags. Those remain compatibility plumbing until is independently moved to
   a RustRaft-named wrapper.
 - This step does not claim production consensus replacement by itself. It creates
   the reusable Rust library boundary and keeps the existing TemporalStore tests as

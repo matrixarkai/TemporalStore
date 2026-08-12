@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Tests for C++/Rust performance artifact audit reporting."""
+"""Tests for conformance performance artifact audit reporting."""
 
 from __future__ import annotations
 
@@ -88,7 +88,7 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
                                     ],
                                 },
                                 "required_same_config_fields": ["dataset", "storage_mode"],
-                                "required_result": ["same-config C++ and Rust comparison.json with passed backends"],
+                                "required_result": ["same-config and Rust comparison.json with passed backends"],
                                 "next_run_hint_source": "audit_default",
                             }
                         ],
@@ -138,7 +138,7 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
         self.assertEqual(failed_step["required_same_config_fields"], ["dataset", "storage_mode"])
         self.assertEqual(
             failed_step["required_result"],
-            ["same-config C++ and Rust comparison.json with passed backends"],
+            ["same-config and Rust comparison.json with passed backends"],
         )
         self.assertEqual(failed_step["next_run_hint_source"], "audit_default")
         self.assertEqual(statuses["10K_event_ingestion"]["status"], "missing_candidate")

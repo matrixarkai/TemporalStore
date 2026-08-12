@@ -34,7 +34,7 @@
 <p>The implementation is intentionally split:</p>
 <ul>
   <li><strong>Python MCP layer</strong>: API, auth/scope resolution, parser/model orchestration, request shaping, and debug/reporting.</li>
-  <li><strong>C++/Rust TemporalStore layer</strong>: durable hot serving records, timestamp-keyed event storage, batch writes, prefix scans, secondary-index postings, cache/persistence/eviction, and native retrieval/pack paths as they become available.</li>
+  <li><strong>conformance TemporalStore layer</strong>: durable hot serving records, timestamp-keyed event storage, batch writes, prefix scans, secondary-index postings, cache/persistence/eviction, and native retrieval/pack paths as they become available.</li>
   <li><strong>Optional model workers</strong>: OSS/OpenAI-compatible extraction, summaries, embeddings, rerankers, OCR/VLM parsing, and judge/reader benchmark paths.</li>
 </ul>
 
@@ -336,7 +336,7 @@ global/resources/public_docs</code></pre>
   }
 }</code></pre>
 
-<p>Current production gap: compression summaries and TTL markers exist, but physical raw-event GC is not fully automatic yet. A native C++/Rust <code>matrixark_gc_expired_context_events</code> worker should use timestamp indexes, no-cache cold scans, bounded batches, tombstones, and retention/audit safety gates.</p>
+<p>Current production gap: compression summaries and TTL markers exist, but physical raw-event GC is not fully automatic yet. A native conformance <code>matrixark_gc_expired_context_events</code> worker should use timestamp indexes, no-cache cold scans, bounded batches, tombstones, and retention/audit safety gates.</p>
 
 <h2>Durable Storage Growth</h2>
 <p>If no GC/compaction runs, local/shared durable storage grows forever. Cache eviction removes hot memory residency; temporal compression reduces retrieval cost; WAL/checkpoint GC reclaims replication artifacts; Rust block store has segment GC/delayed-destroy/purge paths; MatrixArk raw ContextEvent physical deletion is not fully automatic yet.</p>
@@ -357,7 +357,7 @@ global/resources/public_docs</code></pre>
 <h2>Backfill</h2>
 <p>Backfill should replay raw ingestion messages from MatrixKV/SQL into TemporalStore in batches: read raw messages, normalize envelopes, batch append timestamp-keyed ContextEvents, run extraction windows, refresh summaries, generate embeddings, rebuild compact secondary postings, validate retrieval, and mark a checkpoint.</p>
 
-<h2>C++ And Rust Parity Expectations</h2>
+<h2>And Rust Parity Expectations</h2>
 <p>Both backends should pass shared contracts for ingest, extraction, async summary refresh, L0/L1 traversal, secondary-index prefilter, resource/skill/event/entity retrieval, compact ContextPack packing, optional audit/replay, temporal compression, and storage-mode routing.</p>
 
 <h2>Production Direction</h2>

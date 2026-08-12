@@ -11,7 +11,7 @@ ctxidx:{tenant_hash}:{index_name}:{index_value_hash}:{scope_hash}
   timestamp_key -> {primary_node_hash, primary_event_time_ms, event_id_hash}
 ```
 
-New C++ default context-index writes use compact bucket postings:
+New default context-index writes use compact bucket postings:
 
 ```text
 ctxidx2:{tenant_hash}:{scope_hash}:{index_name}:{time_bucket_ms}
@@ -118,7 +118,7 @@ ctxidx:2466697514329931826:event_kind:3:7836037686236352053
 
 Retrieval can query several index timelines, intersect event ids, then fetch the exact event rows from `ctx:event:{tenant}:{node}`.
 
-For extracted context events, the C++ native path now writes the same refs into compact bucket posting objects by default:
+For extracted context events, the native path now writes the same refs into compact bucket posting objects by default:
 
 ```text
 ctxidx2:{tenant_hash}:{scope_hash}:status:{minute_bucket_ms}
@@ -138,7 +138,7 @@ query understanding
 
 Broad prefix scan is fallback/debug only and must be visible in telemetry as `broad_scan_used`.
 
-The C++ native retrieve path also keeps a small parsed-candidate cache for placement
+The native retrieve path also keeps a small parsed-candidate cache for placement
 fetches:
 
 ```text
@@ -281,7 +281,7 @@ ctx:event:{tenant}:{node}
 2. Keep `ContextIndexRef` as a native internal posting/ref mechanism, not a verbose serving data model.
 3. Stop exporting every index ref into ContextPack/debug pages by default.
 4. Cap index fanout per object and per resource import.
-5. Add a native C++/Rust candidate scan API that applies scope and filter predicates before returning rows.
+5. Add a native conformance candidate scan API that applies scope and filter predicates before returning rows.
 6. Move keyword indexing to dictionary ids.
 7. Keep detailed index decisions in sampled audit/debug records only when debugging is enabled.
 
@@ -293,7 +293,7 @@ Do not break existing context tests immediately. Migrate in phases:
    - keep writing existing `ContextIndexRef` families;
    - keep current query behavior working.
 2. Native serving path:
-   - add C++ and Rust `matrixark_scan_candidates`;
+   - add and Rust `matrixark_scan_candidates`;
    - map query-understanding filters to native field ids;
    - use native scan before Python fallback.
 3. Compact index representation:

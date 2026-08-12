@@ -20,7 +20,7 @@ Codex lifecycle event
 -&gt; ContextPackAudit / commit audit
 ```
 
-For this local integration, use the C++ launcher:
+For this local integration, use the launcher:
 
 ```bash
 <repo>/tools/matrixark_codex_cpp_hook.sh
@@ -28,7 +28,7 @@ For this local integration, use the C++ launcher:
 
 It forces `MATRIXARK_MCP_BACKEND=temporalstore-direct`, requires OSS
 embeddings and OSS encoder understanding, and writes all MatrixArk records
-through the live C++ TemporalStore SDK. The latest validation report is:
+through the live TemporalStore SDK. The latest validation report is:
 
 ```text
 docs/matrixark_codex_cpp_hook_e2e.html
@@ -396,9 +396,9 @@ Run the test:
 PYTHONPATH=. python3 tools/test_matrixark_codex_hook.py
 ```
 
-## 10. C++ TemporalStore Mode
+## 10. TemporalStore Mode
 
-For production-like storage, switch the hook to C++ TemporalStore direct mode:
+For production-like storage, switch the hook to TemporalStore direct mode:
 
 ```bash
 export MATRIXARK_MCP_BACKEND=temporalstore-direct
@@ -409,7 +409,7 @@ export MATRIXARK_TEMPORALSTORE_PREFIX=matrixark:codex-hook
 export TEMPORALSTORE_LIB=<repo>/output-ubuntu22/release/sdk/lib/libtemporalstore.so
 ```
 
-Then run the same hook command. The hook will persist MatrixArk records through the C++ TemporalStore direct adapter.
+Then run the same hook command. The hook will persist MatrixArk records through the TemporalStore direct adapter.
 
 ## 11. Backlog
 
@@ -421,7 +421,7 @@ ContextPack injection back into Codex prompt flow
 PostCompact summary ingestion as first-class session summary
 Hook idempotency and dedupe by turn_id/tool_call_id
 Access-managed API-key mode for team deployments
-C++ TemporalStore gateway/proxy mode for hosted MatrixArk
+TemporalStore gateway/proxy mode for hosted MatrixArk
 UI page showing Codex sessions, hook events, batches, ContextPacks, and replay
 ```
 

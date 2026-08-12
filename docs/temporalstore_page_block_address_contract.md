@@ -1,13 +1,13 @@
 # TemporalStore Page/Block Address Contract
 
-This is the shared storage-address contract for C++ and Rust TemporalStore. It defines
+This is the shared storage-address contract for and Rust TemporalStore. It defines
 the public report/API vocabulary for page addresses, block addresses, logical indexes,
-and GC metadata. C++ and Rust may keep different private implementation details, but
+and GC metadata. and Rust may keep different private implementation details, but
 public reports, parity tests, metrics, and compatibility docs should use these names.
 
 ## Goals
 
-- Give C++ and Rust one vocabulary for page/block storage.
+- Give and Rust one vocabulary for page/block storage.
 - Make page/block index reports comparable across both engines.
 - Prevent public naming drift such as `page_store` in one backend and `block_store`
   in another when the concept is the same serving/durable page layer.
@@ -165,7 +165,7 @@ Expected use:
 - The hot read path should use `ObjectIndexEntry -> PageIndexEntry -> PageAddress`.
 - Recovery should rebuild or validate `ObjectIndexEntry` from page/block manifests and
   append logs.
-- C++ and Rust should report the same object-index shape even if their internal
+- and Rust should report the same object-index shape even if their internal
   slot map or shard map implementation differs.
 
 ### Stream, Segment, Extent, And Slot
@@ -214,7 +214,7 @@ Required safety gates before physical reclaim:
 
 ## Read/Write Behavior Parity
 
-C++ and Rust must expose the same logical read/write behavior even if their
+and Rust must expose the same logical read/write behavior even if their
 private page-store or block-store internals differ.
 
 ### Write Path
@@ -326,10 +326,10 @@ Parity rules:
 - The write result must contain canonical `PageAddress`, `BlockAddress`, and
   `append_watermark` fields in public reports.
 - `placement_key` and `slot` must make the shard/slot route visible enough to
-  compare C++ and Rust write placement decisions.
-- `storage_family`, `write_mode`, and `durability` must match when C++ and Rust
+  compare and Rust write placement decisions.
+- `storage_family`, `write_mode`, and `durability` must match when and Rust
   are run under the same test config.
-- C++ and Rust may acknowledge at different internal points only when
+- and Rust may acknowledge at different internal points only when
   `storage_options.write_mode` differs; same write mode must have the same
   durability contract.
 - A write must not publish an append watermark before the corresponding
@@ -502,7 +502,7 @@ Required behavior:
 
 ## Public Config Parity
 
-C++ and Rust must expose the same public storage tuning knobs. The names below
+and Rust must expose the same public storage tuning knobs. The names below
 are the public contract; each backend may map them into private gflags, typed
 configs, or environment readers internally.
 
@@ -536,7 +536,7 @@ Required report shape:
 
 Parity rules:
 
-- C++ launchers must map `TS_STORAGE_ZONE_SIZE` to `--storage_zone_size` and
+- launchers must map `TS_STORAGE_ZONE_SIZE` to `--storage_zone_size` and
   `TS_STREAM_MAX_BLOB_SIZE` to `--stream_max_blob_size` until native gflags use
   the public names directly.
 - Rust must read all eight names through its typed storage tuning config.
@@ -549,7 +549,7 @@ Parity rules:
 
 Public APIs, reports, metrics, docs, parity tests, and externally visible JSON
 must use the canonical names below. Private implementation names may still exist
-inside C++ or Rust, but they must be translated before data leaves the backend.
+inside or Rust, but they must be translated before data leaves the backend.
 
 Canonical names:
 
@@ -613,7 +613,7 @@ Avoid drifting pairs in public output:
 | `zone` vs `extent` | `StorageZone` for placement, `Extent` for contiguous physical byte ranges | Do not use one backend's private name as the public contract. |
 | `stream blob` vs `page segment` | `Stream`, `Segment` | A segment may map to a local file, shared blob, or stream blob. |
 | `oplog` vs `wal` | `Stream`, `AppendWatermark` | Public reports should describe append-log order through shared stream/watermark terms. |
-| `ShardStats.page_store` vs `ShardStats.block_store` | `ShardStats.storage_zone`, `ShardStats.page_index`, `ShardStats.block_index` | Shard stats must be comparable between C++ and Rust. |
+| `ShardStats.page_store` vs `ShardStats.block_store` | `ShardStats.storage_zone`, `ShardStats.page_index`, `ShardStats.block_index` | Shard stats must be comparable between and Rust. |
 
 Compatibility aliases are allowed only when all three conditions are true:
 
@@ -624,7 +624,7 @@ Compatibility aliases are allowed only when all three conditions are true:
 
 New public report fields must not introduce backend-specific names such as:
 
-- `page_store` for C++ but `block_store` for Rust;
+- `page_store` for but `block_store` for Rust;
 - `page_segment_id` when the report means canonical `segment_id`;
 - `oplog`, `oplog_id`, or `oplog_sequence` when the report means canonical
   `AppendWatermark` or append-log lifecycle metrics;
@@ -635,7 +635,7 @@ New public report fields must not introduce backend-specific names such as:
 
 ### Phase 1: Shared Schema And Aliases
 
-Phase 1 is documentation and compatibility mapping. C++ and Rust must both
+Phase 1 is documentation and compatibility mapping. and Rust must both
 publish the shared schema in docs and tests before changing production report
 payloads.
 
@@ -669,20 +669,20 @@ breaking existing consumers.
 
 Required Phase 2 behavior:
 
-- C++ and Rust report parsers accept old and new field names.
+- and Rust report parsers accept old and new field names.
 - Existing old report fields remain readable through adapters or are emitted
   under `compatibility_aliases` for one compatibility window.
 - Report parsers normalize old and new field names into the same in-memory
   shape before comparison.
 - CI verifies that old reports still parse, new reports can include canonical
-  names, and mixed C++/Rust report pairs compare on canonical fields only.
+  names, and mixed conformance report pairs compare on canonical fields only.
 - Deprecation warnings identify alias usage, but do not fail old-report parsing
   until the compatibility window ends.
 
 ### Phase 3: Rust Public Struct Names
 
 Phase 3 updates Rust public structs, report DTOs, metrics payloads, and
-documentation to match the C++/shared public names.
+documentation to match the/shared public names.
 
 Required Phase 3 behavior:
 
@@ -694,17 +694,17 @@ Required Phase 3 behavior:
 - Rust compatibility deserializers continue reading old report fields through
   `compatibility_aliases`.
 
-### Phase 4: C++ Report Shape Parity
+### Phase 4: Report Shape Parity
 
-Phase 4 updates C++ public reports to emit the same canonical shape as Rust.
+Phase 4 updates public reports to emit the same canonical shape as Rust.
 
 Required Phase 4 behavior:
 
-- C++ reports include the same canonical fields, nesting, metric names, and
+- reports include the same canonical fields, nesting, metric names, and
   effective config fields as Rust.
-- C++ compatibility aliases remain available for old dashboards and benchmark
+- compatibility aliases remain available for old dashboards and benchmark
   artifacts during the compatibility window.
-- C++/Rust comparison reports normalize both sides and show alias usage as a
+- conformance comparison reports normalize both sides and show alias usage as a
   warning, not as a separate metric family.
 
 ### Phase 5: Shared Tests
@@ -716,9 +716,9 @@ Required Phase 5 coverage:
 - shared page-address compatibility corpus;
 - shared page/block metrics parity validator;
 - old-report compatibility fixtures;
-- C++ and Rust native tests for page split, compaction rewrite, tombstones,
+- and Rust native tests for page split, compaction rewrite, tombstones,
   no-promote cold scans, crash/restart index rebuild, and watermark behavior;
-- comparison tests that prove canonicalized C++ and Rust reports are equivalent.
+- comparison tests that prove canonicalized and Rust reports are equivalent.
 
 ### Phase 6: Drift Gates
 
@@ -726,7 +726,7 @@ Phase 6 turns compatibility into enforcement.
 
 Required Phase 6 gates:
 
-- fail if public fields drift between C++ and Rust;
+- fail if public fields drift between and Rust;
 - fail if effective storage config fields drift or are missing;
 - fail if page/block metric names drift or are missing;
 - fail if canonical fields are absent from new reports;
@@ -738,12 +738,12 @@ Required Phase 6 gates:
 Removal gate:
 
 - remove or hide alias output only after dashboards, benchmark reports, portal
-  pages, C++ tests, Rust tests, replay/audit tooling, and parity gates all read
+  pages, tests, Rust tests, replay/audit tooling, and parity gates all read
   the canonical schema directly.
 
-## C++/Rust Mapping
+## conformance Mapping
 
-| Canonical term | C++ current/private source | Rust current/private source | Public output |
+| Canonical term | current/private source | Rust current/private source | Public output |
 |---|---|---|---|
 | `PageAddress` | `partition::PageIndex.address` plus page metadata | page-envelope address metadata | `PageAddress` |
 | `BlockAddress` | page-store stream/blob location | `BlockAddress` in block/page segment layer | `BlockAddress` |
@@ -755,7 +755,7 @@ Removal gate:
 
 ## Required Parity Tests
 
-Shared C++/Rust parity cases must cover:
+Shared conformance parity cases must cover:
 
 - encode/decode `PageAddress`;
 - encode/decode `BlockAddress`;
@@ -773,7 +773,7 @@ Shared C++/Rust parity cases must cover:
 - cold scan using no-cache/no-promote reads.
 
 The shared `compat/page_address_compatibility_corpus.json` corpus covers the
-PageAddress and BlockAddress subset that both C++ and Rust must consume:
+PageAddress and BlockAddress subset that both and Rust must consume:
 
 - encode/decode `PageAddress`;
 - encode/decode `BlockAddress`;
@@ -827,12 +827,12 @@ Required `storage_index_contract.required_behaviors` values:
 - `restart_rebuilds_page_block_object_indexes`
 
 `tools/validate_page_address_compatibility_corpus.py` is the lightweight
-fail-closed validator for this shared corpus. Native C++ and Rust tests should
+fail-closed validator for this shared corpus. Native and Rust tests should
 use the same corpus for engine-specific storage/index assertions.
 
 ## Metrics
 
-Both C++ and Rust should expose the same metric names:
+Both and Rust should expose the same metric names:
 
 - `page_index_lookup_count`
 - `page_index_lookup_ms`
@@ -853,7 +853,7 @@ Both C++ and Rust should expose the same metric names:
 - `compaction_watermark`
 
 `tools/validate_page_block_metrics_parity.py` validates that this canonical
-metric set is present in the shared contract and in C++/Rust scale report
+metric set is present in the shared contract and in conformance scale report
 artifacts.
 
 ## Storage Lifecycle Metrics
@@ -863,7 +863,7 @@ also use one shared lifecycle metric vocabulary:
 
 ## Multi-Layer Cache Contract
 
-C++ and Rust may implement cache internals differently, but public reports must
+and Rust may implement cache internals differently, but public reports must
 use one layered cache vocabulary:
 
 - `memory_object_cache`
@@ -1047,7 +1047,7 @@ lifecycle metric set is present in the shared contract and scale report runner.
 When given `--cpp-report` and `--rust-report`, it also verifies that both reports
 carry the same public storage tuning fields and lifecycle metric names.
 
-Canonical lifecycle reports must expose the same top-level shape for C++ and
+Canonical lifecycle reports must expose the same top-level shape for and
 Rust before comparison tools accept them:
 
 - `effective_storage_tuning`
@@ -1098,13 +1098,13 @@ prove public `AppendWatermark` and `CompactionWatermark` shape without dumping
 every slot or follower cursor.
 `storage_topology_snapshot` likewise carries bounded `storage_zone_samples`,
 `stream_samples`, `segment_samples`, `extent_samples`, and `slot_samples` so
-C++ and Rust prove the same public `StorageZone`, `Stream`, `Segment`, `Extent`,
+and Rust prove the same public `StorageZone`, `Stream`, `Segment`, `Extent`,
 and `Slot` shape while keeping topology reports compact.
 
 `tools/compare_storage_lifecycle_reports.py` is the operator-facing wrapper for
-live C++/Rust report comparison and uses the same fail-closed contract.
+live conformance report comparison and uses the same fail-closed contract.
 By default, it also validates
-`compat/storage_lifecycle_report_pair_corpus.json`, a synthetic C++/Rust report
+`compat/storage_lifecycle_report_pair_corpus.json`, a synthetic conformance report
 pair that proves `page_store`, `block_store`, stream/blob, and page-segment
 aliases are accepted only under `compatibility_aliases` and compared through the
 canonical public shape.
@@ -1135,7 +1135,7 @@ Canonical reclaim semantics:
   `physical_reclaim_errors` is zero.
 
 Lifecycle reports must also expose the fail-closed `storage_reclaim_contract`
-block. C++ and Rust compare this block directly after normalizing any private
+block. and Rust compare this block directly after normalizing any private
 implementation names into the public storage contract:
 
 ```json
@@ -1201,7 +1201,7 @@ Shared proof requirements:
 
 `tools/validate_storage_engine_9_phase_parity.py` is the umbrella gate for the
 storage-engine parity loop. It runs the focused validators in the same phase
-order used by the C++/Rust parity plan:
+order used by the conformance parity plan:
 
 1. canonical public contract;
 2. read/write/cold-scan sequences;
@@ -1225,13 +1225,13 @@ To repeat the full phase sequence for soak-style proof:
 python tools/validate_storage_engine_9_phase_parity.py --loops 9
 ```
 
-The umbrella gate does not replace native C++ or Rust tests. It composes the
+The umbrella gate does not replace native or Rust tests. It composes the
 shared validators so CI and local development fail at a named phase boundary
 instead of relying on a manual checklist.
 
 ## Acceptance
 
-This contract is satisfied when C++ and Rust:
+This contract is satisfied when and Rust:
 
 - emit the same public address/index field names;
 - can convert private storage metadata into the canonical report shape;

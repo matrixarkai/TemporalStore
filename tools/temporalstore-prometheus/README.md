@@ -65,7 +65,7 @@ Verify:
 
 ## End-to-end local validation
 
-This starts a local C++ cluster, uses the successful smoke deployment as the
+This starts a local cluster, uses the successful smoke deployment as the
 client signal, writes client textfile metrics, starts Prometheus, and checks
 Prometheus queries twice. If the `temporalstore-proxy` release artifact is present, it
 also starts proxy and validates proxy `/vars` scraping.

@@ -18,7 +18,7 @@ Json = dict[str, Any]
 
 def parse_args() -> argparse.Namespace:
     root = Path(__file__).resolve().parents[1]
-    parser = argparse.ArgumentParser(description="Raw C++ TemporalStore direct SDK hset/hget microbenchmark.")
+    parser = argparse.ArgumentParser(description="Raw TemporalStore direct SDK hset/hget microbenchmark.")
     parser.add_argument("--ops", type=int, default=1000)
     parser.add_argument("--write-workers", type=int, default=4)
     parser.add_argument("--read-workers", type=int, default=8)
@@ -132,7 +132,7 @@ def write_report(report: Json, artifact_dir: Path) -> None:
         encoding="utf-8",
     )
     lines = [
-        "# TemporalStore Raw C++ Direct SDK Microbenchmark",
+        "# TemporalStore Raw Direct SDK Microbenchmark",
         "",
         "## Summary",
         "",
@@ -154,7 +154,7 @@ def write_report(report: Json, artifact_dir: Path) -> None:
         "",
         "## Scope",
         "",
-        "This microbenchmark intentionally bypasses MatrixArk extraction, OSS models, tree traversal, token packing, and JSON record replay. It measures direct SDK hash writes and reads against the live C++ service.",
+        "This microbenchmark intentionally bypasses MatrixArk extraction, OSS models, tree traversal, token packing, and JSON record replay. It measures direct SDK hash writes and reads against the live service.",
     ]
     md = "\n".join(lines) + "\n"
     (artifact_dir / "temporalstore_raw_sdk_microbench.md").write_text(md, encoding="utf-8")

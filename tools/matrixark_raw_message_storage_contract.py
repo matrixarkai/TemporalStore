@@ -3,7 +3,7 @@
 # Copyright 2026 MatrixArkAI
 """Shared raw-message storage target contract for TemporalStore and MatrixKV.
 
-This module is intentionally small and dependency-free so C++ tooling, Rust
+This module is intentionally small and dependency-free so tooling, Rust
 corpus validators, and benchmark adapters can assert the same API semantics:
 TemporalStore is the default target, MatrixKV is selectable through the same
 storage_target shape, and raw agent-message payloads use a timestamp key plus an event key with

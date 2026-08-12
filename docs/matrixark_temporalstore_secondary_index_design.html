@@ -126,14 +126,14 @@ visibility_scope</code></pre>
   <li>Keep <code>ContextIndexRef</code> as a native internal posting/ref mechanism, not a verbose serving data model.</li>
   <li>Stop exporting every index ref into ContextPack/debug pages by default.</li>
   <li>Cap index fanout per object and per resource import.</li>
-  <li>Add a native C++/Rust candidate scan API that applies scope and filter predicates before returning rows.</li>
+  <li>Add a native conformance candidate scan API that applies scope and filter predicates before returning rows.</li>
   <li>Move keyword indexing to dictionary ids.</li>
   <li>Keep detailed index decisions in sampled audit/debug records only when debugging is enabled.</li>
 </ol>
 <h2>Compatibility Plan</h2>
 <ol>
   <li>Keep writing existing <code>ContextIndexRef</code> families and current query behavior.</li>
-  <li>Add C++ and Rust <code>matrixark_scan_candidates</code> and map query-understanding filters to native field ids.</li>
+  <li>Add and Rust <code>matrixark_scan_candidates</code> and map query-understanding filters to native field ids.</li>
   <li>Store field/value ids rather than repeated strings and hide <code>ContextIndexRef</code> from serving ContextPacks.</li>
   <li>Keep verbose <code>context_index</code> export only under debug/audit sampling.</li>
 </ol>

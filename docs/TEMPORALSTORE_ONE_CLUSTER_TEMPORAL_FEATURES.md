@@ -320,7 +320,7 @@ The first open-source milestone should focus on the one-cluster online-serving s
 - latest KV/hash lookup
 - TemporalAggregate with count/sum/min/max
 - sequence feature model with bounded filters
-- direct C++ SDK and proxy SDK
+- direct SDK and proxy SDK
 - simple metaserver deployment
 - shared-file or object-store-compatible persistence path
 - metrics and monitoring UI

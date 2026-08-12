@@ -51,7 +51,7 @@ Previously the Python runtime mostly inferred tree structure from `node_path` pr
 Now the runtime keeps the same simple customer API while making the tree explicit enough for:
 
 - filesystem-like browsing in the UI;
-- native C++ `list children` APIs later;
+- native `list children` APIs later;
 - layer-by-layer traversal using L0/L1 summary embeddings;
 - node metadata and access-control inspection;
 - lower write amplification because nodes and edges are only created once.

@@ -27,7 +27,7 @@ Shared-store write latency, sync vs async commit (800 ops each):
 
 Sync commit costs **~6 % over async at p50** (1.96 vs 1.85 ms) and ~43 % at the p99 tail —
 i.e. sync durability is cheap on the steady-state path. This is the payoff of the
-C++-aligned model already on `main`: the WAL is fsync'd per write for durability, while the
+-aligned model already on `main`: the WAL is fsync'd per write for durability, while the
 O(store) served-index materialization is deferred to dump cadence instead of running on
 every write. Full primary path incl. replication: sync p50 15.0 ms / p99 29.1 ms vs async
 p50 13.5 ms / p99 20.1 ms.

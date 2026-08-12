@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Validate Rust evidence for the shared C++ storage/Raft parity gates.
+"""Validate Rust evidence for the shared storage/Raft parity gates.
 
-The unified corpus proves that current C++ storage and Raft surfaces still
+The unified corpus proves that current storage and Raft surfaces still
 exist. This guard makes the other side explicit: every storage/Raft parity
 surface must also have Rust implementation, test, or harness evidence checked
 into this repo. It is intentionally static and fast so it can run in the local
@@ -512,14 +512,14 @@ def validate_cpp_paths(area: ParityArea, cases: dict[str, dict], cpp_repo: Path)
                 continue
             for required_path in step["command"].get("required_paths") or []:
                 if not (cpp_repo / required_path).exists():
-                    raise SystemExit(f"{area.name}: C++ required path missing: {required_path}")
+                    raise SystemExit(f"{area.name}: required path missing: {required_path}")
                 checked.add(required_path)
     return checked
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cpp-repo", type=Path, help="optional C++ checkout for required path checks")
+    parser.add_argument("--cpp-repo", type=Path, help="optional checkout for required path checks")
     args = parser.parse_args()
 
     corpus = load_corpus()

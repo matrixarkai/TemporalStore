@@ -6,8 +6,8 @@
 The control-plane cases currently use ``existing_test`` corpus commands because
 their workflows are service/harness oriented instead of direct engine
 command/response steps. This runner makes the Rust side executable by running
-the ``rust_runner`` commands embedded in those shared cases. The C++ side can
-be made native by supplying ``TS_CPP_CONTROL_PLANE_NATIVE_CMD``; otherwise C++
+the ``rust_runner`` commands embedded in those shared cases. The side can
+be made native by supplying ``TS_CPP_CONTROL_PLANE_NATIVE_CMD``; otherwise
 remains a required-path surface/evidence gate.
 """
 
@@ -62,7 +62,7 @@ def validate_case(case: dict, cpp_repo: Path | None) -> list[tuple[str, str]]:
         if command.get("mode") != RUST_EXECUTABLE_MODE:
             raise SystemExit(
                 f"{location}: mode must be {RUST_EXECUTABLE_MODE!r} so Rust execution "
-                "and C++ static status stay explicit"
+                "and static status stay explicit"
             )
         rust_runner = command.get("rust_runner")
         if not isinstance(rust_runner, str) or not rust_runner:
@@ -74,11 +74,11 @@ def validate_case(case: dict, cpp_repo: Path | None) -> list[tuple[str, str]]:
             raise SystemExit(f"{location}: missing control-plane rust_validator")
         required_paths = command.get("required_paths")
         if not isinstance(required_paths, list) or not required_paths:
-            raise SystemExit(f"{location}: missing C++ required_paths")
+            raise SystemExit(f"{location}: missing required_paths")
         if cpp_repo is not None:
             for required_path in required_paths:
                 if not (cpp_repo / required_path).exists():
-                    raise SystemExit(f"{location}: C++ required path missing: {required_path}")
+                    raise SystemExit(f"{location}: required path missing: {required_path}")
         commands.append((location, rust_runner))
     return commands
 
@@ -204,11 +204,11 @@ def main() -> int:
     native_template = os.environ.get("TS_CPP_CONTROL_PLANE_NATIVE_CMD")
     if args.require_cpp_native and not native_template:
         raise SystemExit(
-            "TS_CPP_CONTROL_PLANE_NATIVE_CMD is required for native C++ control-plane execution"
+            "TS_CPP_CONTROL_PLANE_NATIVE_CMD is required for native control-plane execution"
         )
     if args.cpp_native:
         if not native_template:
-            raise SystemExit("set TS_CPP_CONTROL_PLANE_NATIVE_CMD to run C++ control-plane cases")
+            raise SystemExit("set TS_CPP_CONTROL_PLANE_NATIVE_CMD to run control-plane cases")
         cwd = cpp_repo or ROOT
         for case, location, _ in case_commands:
             print(f"== c++ control-plane case: {location} ==")

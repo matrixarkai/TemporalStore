@@ -143,7 +143,7 @@ observability streams.
   cold source of truth;
 - supports retention policies, audit dashboards, and replay debugging;
 - avoids synchronous dual-write on hot requests;
-- lets C++/Rust optimize hot retrieval without becoming an analytics database.
+- lets conformance optimize hot retrieval without becoming an analytics database.
 
 **Cons**
 
@@ -197,7 +197,7 @@ block/object storage while still addressed by TemporalStore metadata.
 **Pros**
 
 - one logical database API;
-- C++/Rust can optimize page layout, min/max timestamp indexes, and prefetch;
+- conformance can optimize page layout, min/max timestamp indexes, and prefetch;
 - no external MatrixDB required for simple historical replay;
 - strong fit with TemporalStore-native temporal ordering.
 
@@ -211,7 +211,7 @@ block/object storage while still addressed by TemporalStore metadata.
 **Use when**
 
 - embedded/local deployments need one binary;
-- C++/Rust engine work is prioritized;
+- conformance engine work is prioritized;
 - historical replay needs to remain within TemporalStore APIs.
 
 ### Option 5: Query-Driven Lazy Compression
@@ -325,7 +325,7 @@ Required policy:
 - a cold scan can write a warm compression summary, but it must not warm all raw
   source pages unless the query/replay explicitly requests raw evidence.
 
-In storage-engine terms, this means C++ and Rust should expose read options like:
+In storage-engine terms, this means and Rust should expose read options like:
 
 ```json
 {
@@ -430,9 +430,9 @@ Serving retrieval should be explicit about when it touches old data:
 This keeps normal context retrieval fast while preserving the ability to replay
 or inspect raw history.
 
-## C++/Rust Implementation Requirements
+## conformance Implementation Requirements
 
-Both C++ and Rust should expose the same lifecycle primitives:
+Both and Rust should expose the same lifecycle primitives:
 
 - append `ContextEvent` with timestamp-keyed ordering;
 - update per-node time-bucket metadata during ingest;
@@ -452,7 +452,7 @@ Both C++ and Rust should expose the same lifecycle primitives:
   - compression safety failures;
   - replay cold-ref fetch latency.
 
-The key C++/Rust parity rule is that both backends can serve the same hot
+The key conformance parity rule is that both backends can serve the same hot
 records and compression summaries without requiring MatrixKV or MatrixDB on the
 retrieval hot path. MatrixKV is the cold archive/control-plane complement;
 MatrixDB is the optional analytics complement. Neither should be a normal
@@ -686,9 +686,9 @@ Full replay/audit can be expensive. The default should be telemetry-first and sa
 
 This gives MatrixArk operational visibility similar to production memory systems without making every retrieval write a large replay record.
 
-## C++ And Rust Responsibilities
+## And Rust Responsibilities
 
-C++ and Rust TemporalStore backends should implement the same hot/cold boundary:
+and Rust TemporalStore backends should implement the same hot/cold boundary:
 
 - native append and batch append for hot context records;
 - prefix scan by `scope_key`, record type, node, and timestamp;
@@ -698,7 +698,7 @@ C++ and Rust TemporalStore backends should implement the same hot/cold boundary:
 - metrics for archive lag, archive failures, cold-ref hits, TTL candidates, and replay fetches;
 - consistent structured errors for archive-not-ready, cold-ref-missing, and retention-blocked.
 
-Python MCP/model workers can orchestrate policies initially, but storage-facing primitives must be shared by C++ and Rust so benchmarks and production behavior stay aligned.
+Python MCP/model workers can orchestrate policies initially, but storage-facing primitives must be shared by and Rust so benchmarks and production behavior stay aligned.
 
 ## Metrics
 
@@ -739,7 +739,7 @@ MatrixArk should claim this design is production-ready only when:
 - archiver can restart from MatrixKV watermark without losing or duplicating records;
 - every cold ref has a checksum and replay test;
 - TemporalStore raw event pruning is blocked until cold archive and compression safety pass;
-- C++ and Rust shared tests cover archive markers, cold refs, retention policies, and replay fetches;
+- and Rust shared tests cover archive markers, cold refs, retention policies, and replay fetches;
 - the portal can show hot vs cold record counts, archive lag, and replay status per account/tenant/user.
 
 ## Implementation Backlog
@@ -750,7 +750,7 @@ MatrixArk should claim this design is production-ready only when:
 4. Add optional MatrixDB analytics tables for benchmark traces, token/quality metrics, dashboard aggregates, sampled retrieval traces, and offline reports.
 5. Add retrieval replay path that follows cold refs only when requested.
 6. Add retention safety gates tied to temporal compression and benchmark answer-hidden checks.
-7. Add C++/Rust shared corpus tests for archive, restore, replay, TTL, and failure recovery.
+7. Add conformance shared corpus tests for archive, restore, replay, TTL, and failure recovery.
 </script>
 <script>
   const source = document.getElementById('markdown-source').textContent;

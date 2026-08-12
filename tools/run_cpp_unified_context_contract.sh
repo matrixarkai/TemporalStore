@@ -14,7 +14,7 @@ if [[ ! -x "${RUNNER}" ]]; then
 fi
 
 if [[ ! -x "${RUNNER}" ]]; then
-  echo "missing shared C++ context runner: ${RUNNER}" >&2
+  echo "missing shared context runner: ${RUNNER}" >&2
   exit 2
 fi
 

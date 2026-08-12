@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Validate Rust/C++ Codex MCP integration parity wiring.
+"""Validate cross-format Codex MCP integration parity wiring.
 
 This is intentionally a contract validator, not a replacement for the shared
-MatrixArk MCP server tests in the C++ repo. It verifies that the Rust repo
+MatrixArk MCP server tests in the repo. It verifies that the Rust repo
     provides the Rust proxy/direct-SDK launcher expected by that shared server,
-    and that both C++ and Rust backend names remain documented.
+    and that both and Rust backend names remain documented.
 """
 
 from __future__ import annotations
@@ -85,7 +85,7 @@ def validate_cpp_server_when_available() -> dict[str, object]:
         return {
             "cpp_server_checked": False,
             "cpp_server_path": str(CPP_SERVER) if CPP_SERVER else "",
-            "reason": "C++ MatrixArk MCP server checkout not present",
+            "reason": "MatrixArk MCP server checkout not present",
         }
     text = read(CPP_SERVER)
     missing = [

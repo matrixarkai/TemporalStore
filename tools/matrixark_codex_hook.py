@@ -1679,7 +1679,7 @@ def is_codex_hook_heartbeat_text(value: str) -> bool:
         return False
     if text.startswith("user: "):
         text = text[6:].lstrip()
-    return text.startswith("Codex hook heartbeat ") and "C++ TemporalStore is live and accepting MatrixArk hook writes" in text
+    return text.startswith("Codex hook heartbeat ") and "TemporalStore is live and accepting MatrixArk hook writes" in text
 
 
 def _ref_is_codex_hook_heartbeat(ref: Json) -> bool:

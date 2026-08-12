@@ -270,7 +270,7 @@ call also appends a usage record.
 ```
 
 These records use the same adapter boundary as context data, so they work with
-local JSONL and C++ TemporalStore-backed runs.
+local JSONL and TemporalStore-backed runs.
 
 ## SSO Mapping
 

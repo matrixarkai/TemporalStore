@@ -21,34 +21,34 @@ td:nth-child(3), td:nth-child(4), td:nth-child(5), td:nth-child(2) { white-space
 <body>
 <h1>TemporalStore Line Of Code Inventory</h1>
 <p><strong>Date:</strong> 2026-07-07</p>
-<p>This document records the local source line counts for TemporalStore and the key local dependency trees used by the C++/Rust TemporalStore work.</p>
+<p>This document records the local source line counts for TemporalStore and the key local dependency trees used by the conformance TemporalStore work.</p>
 
 <h2>Counting Method</h2>
 <p>The counts below use nonblank source lines as the primary LOC number.</p>
-<p><strong>Included:</strong> maintained source files, tests/examples inside source trees, C/C++ headers and implementation files, Rust crates, Python tools/scripts, and protobuf definitions.</p>
+<p><strong>Included:</strong> maintained source files, tests/examples inside source trees, C/headers and implementation files, Rust crates, Python tools/scripts, and protobuf definitions.</p>
 <p><strong>Excluded:</strong> <code>.git</code>, build, output, target, cache, generated artifact directories, first-party vendored dependency trees, docs benchmark/debug artifacts, logs, and bulky generated reports.</p>
 
 <h2>First-Party TemporalStore</h2>
 <table>
 <thead><tr><th>Component</th><th>Path</th><th>Files</th><th>Total lines</th><th>Nonblank LOC</th></tr></thead>
 <tbody>
-<tr><td>TemporalStore C++ first-party</td><td><code>/opt/github-services/TemporalStore/src</code></td><td class="num">525</td><td class="num">126,663</td><td class="num"><strong>112,139</strong></td></tr>
+<tr><td>TemporalStore first-party</td><td><code>/opt/github-services/TemporalStore/src</code></td><td class="num">525</td><td class="num">126,663</td><td class="num"><strong>112,139</strong></td></tr>
 <tr><td>TemporalStore Rust first-party</td><td><code>/opt/github-services/TemporalStore/crates</code></td><td class="num">96</td><td class="num">144,510</td><td class="num"><strong>137,949</strong></td></tr>
 <tr><td>TemporalStore Python first-party</td><td><code>/opt/github-services/TemporalStore/tools</code>, <code>scripts</code>, <code>src</code>, <code>crates</code></td><td class="num">149</td><td class="num">88,787</td><td class="num"><strong>81,348</strong></td></tr>
 <tr><td>TemporalStore Proto</td><td><code>/opt/github-services/TemporalStore/src</code>, <code>crates</code>, <code>tools</code></td><td class="num">24</td><td class="num">3,481</td><td class="num"><strong>2,933</strong></td></tr>
 </tbody>
 </table>
-<p class="callout">First-party total, C++ + Rust + Python + Proto: <strong>334,369 nonblank LOC</strong>.</p>
+<p class="callout">First-party total, + Rust + Python + Proto: <strong>334,369 nonblank LOC</strong>.</p>
 
 <h2>Dependency Trees</h2>
 <table>
 <thead><tr><th>Dependency</th><th>Path</th><th>Files</th><th>Total lines</th><th>Nonblank LOC</th></tr></thead>
 <tbody>
-<tr><td>matrixraft C++ dependency</td><td><code>/opt/github-services/TemporalStore/.local/deps-src/matrixraft-master</code></td><td class="num">210</td><td class="num">50,287</td><td class="num"><strong>41,996</strong></td></tr>
-<tr><td>byte C++ dependency</td><td><code>/opt/github-services/TemporalStore/.local/deps-src/byte-master</code></td><td class="num">377</td><td class="num">85,916</td><td class="num"><strong>74,964</strong></td></tr>
+<tr><td>matrixraft dependency</td><td><code>/opt/github-services/TemporalStore/.local/deps-src/matrixraft-master</code></td><td class="num">210</td><td class="num">50,287</td><td class="num"><strong>41,996</strong></td></tr>
+<tr><td>byte dependency</td><td><code>/opt/github-services/TemporalStore/.local/deps-src/byte-master</code></td><td class="num">377</td><td class="num">85,916</td><td class="num"><strong>74,964</strong></td></tr>
 <tr><td>RustRaft external lib</td><td><code>/opt/github-services/RustRaft</code></td><td class="num">63</td><td class="num">36,819</td><td class="num"><strong>34,530</strong></td></tr>
 <tr><td>MatrixCache external lib</td><td><code>/opt/github-services/MatrixCache</code></td><td class="num">2</td><td class="num">24,790</td><td class="num"><strong>22,003</strong></td></tr>
-<tr><td>matrixcache C++ dependency</td><td><code>/root/TemporalStore-main-slice5/dependencies/matrixcache</code></td><td class="num">145</td><td class="num">31,099</td><td class="num"><strong>26,615</strong></td></tr>
+<tr><td>matrixcache dependency</td><td><code>/root/TemporalStore-main-slice5/dependencies/matrixcache</code></td><td class="num">145</td><td class="num">31,099</td><td class="num"><strong>26,615</strong></td></tr>
 </tbody>
 </table>
 <p class="callout">Listed dependency total: <strong>200,108 nonblank LOC</strong>.</p>
@@ -57,9 +57,9 @@ td:nth-child(3), td:nth-child(4), td:nth-child(5), td:nth-child(2) { white-space
 <table>
 <thead><tr><th>Rollup</th><th>Nonblank LOC</th></tr></thead>
 <tbody>
-<tr><td>TemporalStore first-party C++ + Rust + Python + Proto</td><td class="num"><strong>334,369</strong></td></tr>
+<tr><td>TemporalStore first-party + Rust + Python + Proto</td><td class="num"><strong>334,369</strong></td></tr>
 <tr><td>Listed dependencies total</td><td class="num"><strong>200,108</strong></td></tr>
-<tr><td>TemporalStore C++ plus C++ dependencies: matrixraft + byte + matrixcache</td><td class="num"><strong>255,714</strong></td></tr>
+<tr><td>TemporalStore plus dependencies: matrixraft + byte + matrixcache</td><td class="num"><strong>255,714</strong></td></tr>
 <tr><td>Rust ecosystem dependencies: RustRaft + MatrixCache</td><td class="num"><strong>56,533</strong></td></tr>
 </tbody>
 </table>

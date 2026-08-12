@@ -113,7 +113,7 @@ def save(img, name):
 def diagram_overall():
     img, d = canvas(1700, 1050)
     box(d, (650, 40, 1050, 130), "Applications\nRisk / Fraud / Ads / Feature Serving", "#fff7ed", "#f97316", FONT_B)
-    box(d, (330, 190, 650, 290), "Direct SDK\nC++ / Go / Java / Python / Rust", "#f0fdf4", "#16a34a")
+    box(d, (330, 190, 650, 290), "Direct SDK\n/ Go / Java / Python / Rust", "#f0fdf4", "#16a34a")
     box(d, (1050, 190, 1370, 290), "Proxy\nRedis path / Routing", "#f0fdf4", "#16a34a")
     box(d, (680, 330, 1020, 430), "Metaserver\nMetadata / Routing / Placement", "#eef6ff", "#2563eb", FONT_B)
     for sx in [500, 850, 1200]:

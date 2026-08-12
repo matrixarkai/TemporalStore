@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Run the unified TemporalStore C++/Rust parity contract.
+"""Run the unified TemporalStore conformance parity contract.
 
 Input API:
   --corpus third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json
@@ -11,8 +11,8 @@ Output API:
   unified_parity_report.json
   unified_parity_report.md
 
-The same corpus drives Python schema validation, the C++ context contract, and
-C++ parity awareness so test inputs, expected outputs, and command kinds do
+The same corpus drives Python schema validation, the context contract, and
+parity awareness so test inputs, expected outputs, and command kinds do
 not drift between implementations.
 """
 
@@ -98,8 +98,8 @@ def write_reports(report: dict[str, Any], result_dir: Path) -> None:
         f"- cases: `{report['input']['case_count']}`",
         f"- command kinds: `{report['input']['command_kind_count']}`",
         f"- context steps: `{report['input']['context_step_count']}`",
-        f"- C++ contract cases: `{report['input'].get('cpp_contract_case_count', 0)}`",
-        f"- C++ contract steps: `{report['input'].get('cpp_contract_step_count', 0)}`",
+        f"- contract cases: `{report['input'].get('cpp_contract_case_count', 0)}`",
+        f"- contract steps: `{report['input'].get('cpp_contract_step_count', 0)}`",
         "",
         "## Stages",
         "",
@@ -116,8 +116,8 @@ def write_reports(report: dict[str, Any], result_dir: Path) -> None:
         "- Input is one JSON corpus with `schema_version`, `coverage`, `cases`, `steps`, and `command.kind`.",
         "- Output is one JSON report plus this Markdown report.",
         "- Python validates schema and API shape.",
-        "- C++ validates behavior against the same command sequence.",
-        "- Rust validation is run by the Rust repo against the same external corpus; this C++ wrapper can run its legacy Rust SDK stage with `--run-rust`.",
+        "- validates behavior against the same command sequence.",
+        "- Rust validation is run by the Rust repo against the same external corpus; this wrapper can run its legacy Rust SDK stage with `--run-rust`.",
         "",
     ])
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -130,8 +130,8 @@ def main() -> int:
     parser.add_argument("--corpus", type=Path, default=DEFAULT_CORPUS)
     parser.add_argument("--result-dir", type=Path, default=DEFAULT_RESULT_DIR)
     parser.add_argument("--validate-only", action="store_true", help="Run schema validation only.")
-    parser.add_argument("--skip-cpp", action="store_true", help="Skip C++ behavior contract stage.")
-    parser.add_argument("--run-rust", action="store_true", help="Also run the legacy Rust SDK stage from this C++ checkout.")
+    parser.add_argument("--skip-cpp", action="store_true", help="Skip behavior contract stage.")
+    parser.add_argument("--run-rust", action="store_true", help="Also run the legacy Rust SDK stage from this checkout.")
     args = parser.parse_args()
 
     corpus = args.corpus.resolve()
