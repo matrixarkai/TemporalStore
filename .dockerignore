@@ -9,7 +9,7 @@ output
 target-rust-bench
 benchmark_reports
 bytestorelab-master
-abase2_images
+matrixdb2_images
 bytestore_images
 *.log
 **/CMakeFiles

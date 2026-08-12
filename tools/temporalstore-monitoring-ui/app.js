@@ -183,8 +183,8 @@ const fallbackHealth = {
   },
   products: [],
   product_services: [],
-  bytekv_scale: {},
-  abase_api: {},
+  matrixkv_scale: {},
+  matrixdb_api: {},
   context_ops: {
     status: "ready",
     kpis: [
@@ -3205,24 +3205,24 @@ function render(data) {
     { label: "Visibility", value: replication.visibility },
   ]);
 
-  const bytekv = data.bytekv_scale || {};
-  renderMetricList("bytekv-scale-list", [
-    { label: "Read QPS", value: bytekv.read_qps },
-    { label: "Read p95", value: bytekv.read_p95 },
-    { label: "Mixed QPS", value: bytekv.mixed_qps },
-    { label: "Write QPS", value: bytekv.write_qps },
-    { label: "Write p95", value: bytekv.write_p95 },
-    { label: "Open issue", value: bytekv.open_issue },
+  const matrixkv = data.matrixkv_scale || {};
+  renderMetricList("matrixkv-scale-list", [
+    { label: "Read QPS", value: matrixkv.read_qps },
+    { label: "Read p95", value: matrixkv.read_p95 },
+    { label: "Mixed QPS", value: matrixkv.mixed_qps },
+    { label: "Write QPS", value: matrixkv.write_qps },
+    { label: "Write p95", value: matrixkv.write_p95 },
+    { label: "Open issue", value: matrixkv.open_issue },
   ]);
 
-  const abase = data.abase_api || {};
-  renderMetricList("abase-api-list", [
-    { label: "Master", value: abase.master },
-    { label: "Proxy", value: abase.proxy },
-    { label: "Datanodes", value: abase.datanodes },
-    { label: "RESP endpoint", value: abase.resp_endpoint },
-    { label: "Redis PING", value: abase.redis_ping },
-    { label: "Next step", value: abase.next_step },
+  const matrixdb = data.matrixdb_api || {};
+  renderMetricList("matrixdb-api-list", [
+    { label: "Master", value: matrixdb.master },
+    { label: "Proxy", value: matrixdb.proxy },
+    { label: "Datanodes", value: matrixdb.datanodes },
+    { label: "RESP endpoint", value: matrixdb.resp_endpoint },
+    { label: "Redis PING", value: matrixdb.redis_ping },
+    { label: "Next step", value: matrixdb.next_step },
   ]);
 
   renderMetricList("diagnostics-list", [

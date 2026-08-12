@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BCache vs TemporalStore C++ Gap Analysis</title>
+<title>TemporalStore vs TemporalStore C++ Gap Analysis</title>
 <style>
 body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Arial, sans-serif; margin: 40px auto; max-width: 1040px; padding: 0 24px; line-height: 1.55; color: #172033; background: #fbfbfd; }
 h1 { font-size: 34px; line-height: 1.15; margin-bottom: 8px; }
@@ -15,14 +15,14 @@ li { margin: 4px 0; }
 </style>
 </head>
 <body>
-<h1>BCache Design PDF vs TemporalStore C++ Gap Analysis</h1>
+<h1>TemporalStore Design PDF vs TemporalStore C++ Gap Analysis</h1>
 <p>Date: 2026-07-07</p>
 <p>Source PDF: `%USERPROFILE%\Downloads\TEMPORALSTORE.pdf`</p>
 <p>Code reviewed: `/opt/github-services/TemporalStore`, C++ server/client/proxy/metaserver/storage tree.</p>
 <p>Note: the PDF is image-based, so this analysis is based on rendered page inspection. It should be treated as an engineering comparison against the visible architecture, storage, checkpoint, consistency, and client/proxy diagrams in the PDF.</p>
 <h2>Executive Summary</h2>
-<p>TemporalStore C++ is directionally aligned with the BCache design. It already has a real distributed skeleton: metaserver metadata, namespace/table/partition state, partition placement, proxy/client routing, object/index/oplog/page storage, log-based streams, block cache, local raft/snapshot support, and several business modules.</p>
-<p>It is not yet equivalent to the full BCache design. The biggest gaps are:</p>
+<p>TemporalStore C++ is directionally aligned with the TemporalStore design. It already has a real distributed skeleton: metaserver metadata, namespace/table/partition state, partition placement, proxy/client routing, object/index/oplog/page storage, log-based streams, block cache, local raft/snapshot support, and several business modules.</p>
+<p>It is not yet equivalent to the full TemporalStore design. The biggest gaps are:</p>
 <ol>
 <li>production-grade multi-AZ and multi-region replication;</li>
 <li>complete incremental checkpoint and object-stream lifecycle;</li>
@@ -33,7 +33,7 @@ li { margin: 4px 0; }
 <li>compression/erasure coding;</li>
 <li>mature placement, rebalance, QoS, and hot-key invalidation.</li>
 </ol>
-<h2>What The BCache PDF Describes</h2>
+<h2>What The TemporalStore PDF Describes</h2>
 <p>The PDF describes a distributed cache/storage system with these major concepts:</p>
 <ul>
 <li>Logical model: namespace, table, object, key, model.</li>
@@ -360,7 +360,7 @@ li { margin: 4px 0; }
 <li>Full Redis protocol and complete List/ZSet/Json/TimeSeries parity are not obvious in the current C++ tree.</li>
 </ul>
 <p>Gap:</p>
-<p>TemporalStore C++ is strong for custom serving/feature workloads, but not yet a complete Redis-compatible BCache-style model surface.</p>
+<p>TemporalStore C++ is strong for custom serving/feature workloads, but not yet a complete Redis-compatible TemporalStore-style model surface.</p>
 <p>Needed work:</p>
 <ul>
 <li>List model and commands;</li>
@@ -537,7 +537,7 @@ li { margin: 4px 0; }
 <li>Generic persistent memory containers, if still needed.</li>
 </ul>
 <h2>Bottom Line</h2>
-<p>TemporalStore C++ has the right base architecture for a BCache-like system, especially in metadata, partitioning, object/index/oplog/page storage, and local raft/snapshot work.</p>
+<p>TemporalStore C++ has the right base architecture for a TemporalStore-like system, especially in metadata, partitioning, object/index/oplog/page storage, and local raft/snapshot work.</p>
 <p>The code is missing the full production machinery from the PDF: robust checkpoint lifecycle, snapshot install/restore, split/merge, hot relocation, follower-read/session consistency, full model/protocol breadth, multi-region replication, and storage efficiency features such as compression and erasure coding.</p>
 <p>The next engineering push should focus on checkpoint/failover first. Without that, the higher-level scale, follower-read, rebalance, and multi-region pieces cannot be made safely production-ready.</p>
 </body>

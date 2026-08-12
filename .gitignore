@@ -35,7 +35,7 @@ dependencies/
 thirdparty/
 local_build/
 bytestorelab-master/
-abase2_images/
+matrixdb2_images/
 bytestore_images/
 
 # Terraform/runtime state

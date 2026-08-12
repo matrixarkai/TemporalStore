@@ -52,7 +52,7 @@ The defaults match the local validation harness:
 ## Run
 
 ```bash
-cd /path/to/BCache2-build-sandbox/tools/temporalstore-prometheus
+cd /path/to/TemporalStore-build-sandbox/tools/temporalstore-prometheus
 docker compose up -d
 ```
 

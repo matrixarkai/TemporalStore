@@ -41,7 +41,7 @@ function hookArgs(event, env) {
     "--table",
     env.TEMPORALSTORE_TABLE || "deploy_table",
     "--temporalstore-lib",
-    env.TEMPORALSTORE_LIBRARY || "output-ubuntu22/release/sdk/lib/libbcache2.so",
+    env.TEMPORALSTORE_LIBRARY || "output-ubuntu22/release/sdk/lib/libtemporalstore.so",
     "--storage-prefix",
     env.MATRIXARK_STORAGE_PREFIX || "matrixark:agent-hook",
     "--account-id",
