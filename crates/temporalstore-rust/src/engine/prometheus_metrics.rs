@@ -33,10 +33,10 @@ impl TemporalEngine {
             "# HELP temporalstore_wal_bytes_total Write-ahead log appended bytes by shard.\n",
         );
         out.push_str("# TYPE temporalstore_wal_bytes_total counter\n");
-        out.push_str("# HELP temporalstore_oplog_records_total Legacy alias for temporalstore_wal_records_total.\n");
-        out.push_str("# TYPE temporalstore_oplog_records_total counter\n");
-        out.push_str("# HELP temporalstore_oplog_bytes_total Legacy alias for temporalstore_wal_bytes_total.\n");
-        out.push_str("# TYPE temporalstore_oplog_bytes_total counter\n");
+        out.push_str("# HELP temporalstore_wal_records_total Legacy alias for temporalstore_wal_records_total.\n");
+        out.push_str("# TYPE temporalstore_wal_records_total counter\n");
+        out.push_str("# HELP temporalstore_wal_bytes_total Legacy alias for temporalstore_wal_bytes_total.\n");
+        out.push_str("# TYPE temporalstore_wal_bytes_total counter\n");
         out.push_str(
             "# HELP temporalstore_object_manager_objects Logical hot objects tracked by shard.\n",
         );
@@ -394,13 +394,13 @@ impl TemporalEngine {
             );
             push_metric(
                 &mut out,
-                "temporalstore_oplog_records_total",
+                "temporalstore_wal_records_total",
                 &[("shard_id", stats.shard_id.to_string())],
                 stats.write_ahead_log.writes,
             );
             push_metric(
                 &mut out,
-                "temporalstore_oplog_bytes_total",
+                "temporalstore_wal_bytes_total",
                 &[("shard_id", stats.shard_id.to_string())],
                 stats.write_ahead_log.bytes_written,
             );

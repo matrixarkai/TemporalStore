@@ -28,7 +28,7 @@ impl TemporalEngine {
             .metadata()
             .map(|metadata| metadata.len())
             .unwrap_or_default();
-        let oplog_records = self
+        let wal_records = self
             .wal_store
             .scan(shard_id, 0, u64::MAX, u64::MAX)
             .map(|records| records.len())
@@ -152,7 +152,7 @@ impl TemporalEngine {
             shard_id,
             index_bytes,
             index_write_atomic: true,
-            oplog_records,
+            wal_records,
             index_log_records,
             active_page_slab_ids,
             live_page_slab_ids,

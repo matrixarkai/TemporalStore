@@ -25,7 +25,7 @@ impl DataNodeRuntime {
                 shard_id,
                 selected_dump_buckets: Vec::new(),
                 max_dump_buckets_per_round: options.max_dump_buckets_per_round,
-                min_undumped_oplog_records: options.min_undumped_oplog_records,
+                min_undumped_wal_records: options.min_undumped_wal_records,
                 purge_delayed_destroy: options.enable_page_gc,
                 prune_bucket_dump_manifests: options.enable_index_gc,
                 roll_forward_bucket_dump_installs: options.enable_index_gc,
@@ -50,8 +50,8 @@ impl DataNodeRuntime {
                 shard_id,
                 dirty_bucket_count: plan.dirty_buckets.len(),
                 selected_dirty_bucket_count: plan.selected_dump_buckets.len(),
-                undumped_oplog_records: plan.undumped_oplog_records,
-                wal_bytes: plan.undumped_oplog_records,
+                undumped_wal_records: plan.undumped_wal_records,
+                wal_bytes: plan.undumped_wal_records,
                 index_log_bytes: log_pressure.index_log_bytes,
                 stale_page_slab_count: plan.stale_page_slab_ids.len(),
                 reclaim_candidate_count: plan.reclaim_candidates.len(),
@@ -76,7 +76,7 @@ impl DataNodeRuntime {
                     .len()
                     .saturating_add(plan.selected_dump_buckets.len())
                     as u64
-                    + plan.undumped_oplog_records
+                    + plan.undumped_wal_records
                     + log_pressure.index_log_bytes
                     + plan.reclaimable_physical_bytes
                     + cache.memory_bytes
@@ -142,7 +142,7 @@ impl DataNodeRuntime {
         ));
 
         let dump_pressure = pressure.dirty_bucket_count >= options.dirty_bucket_pressure.max(1)
-            || pressure.undumped_oplog_records >= options.min_undumped_oplog_records.max(1);
+            || pressure.undumped_wal_records >= options.min_undumped_wal_records.max(1);
         let cache_pressure = pressure.cache_memory_bytes
             >= options.cache_memory_bytes_pressure.max(1)
             || pressure.cache_disk_bytes >= options.cache_disk_bytes_pressure.max(1);
@@ -152,12 +152,12 @@ impl DataNodeRuntime {
             || pressure.reclaimable_physical_bytes
                 >= options.reclaimable_physical_bytes_pressure.max(1);
 
-        if options.enable_oplog_reclaim && dump_pressure {
+        if options.enable_wal_reclaim && dump_pressure {
             let response = self.apply_storage_lifecycle(StorageLifecycleRequest {
                 shard_id,
                 selected_dump_buckets: Vec::new(),
                 max_dump_buckets_per_round: options.max_dump_buckets_per_round,
-                min_undumped_oplog_records: options.min_undumped_oplog_records,
+                min_undumped_wal_records: options.min_undumped_wal_records,
                 purge_delayed_destroy: false,
                 prune_bucket_dump_manifests: false,
                 roll_forward_bucket_dump_installs: false,
@@ -183,20 +183,20 @@ impl DataNodeRuntime {
                     .lock()
                     .expect("runtime stats lock poisoned");
                 stats.dump_runs += 1;
-                stats.storage_manager_reclaim_oplog_runs += 1;
+                stats.storage_manager_reclaim_wal_runs += 1;
             }
             lifecycle_report = Some(response.report);
-            executed_stages.push("reclaim_oplog".to_string());
-        } else if !options.enable_oplog_reclaim {
-            skipped_stages.push("reclaim_oplog_disabled".to_string());
+            executed_stages.push("reclaim_wal".to_string());
+        } else if !options.enable_wal_reclaim {
+            skipped_stages.push("reclaim_wal_disabled".to_string());
         } else {
-            skipped_stages.push("reclaim_oplog_no_pressure".to_string());
+            skipped_stages.push("reclaim_wal_no_pressure".to_string());
         }
         pressure_decisions.push(storage_manager_pressure_decision(
-            "reclaim_oplog",
-            options.enable_oplog_reclaim,
+            "reclaim_wal",
+            options.enable_wal_reclaim,
             dump_pressure,
-            options.enable_oplog_reclaim && dump_pressure,
+            options.enable_wal_reclaim && dump_pressure,
             vec![
                 storage_manager_pressure_signal(
                     "dirty_slot_count",
@@ -204,9 +204,9 @@ impl DataNodeRuntime {
                     options.dirty_bucket_pressure.max(1) as u64,
                 ),
                 storage_manager_pressure_signal(
-                    "undumped_oplog_records",
-                    pressure.undumped_oplog_records,
-                    options.min_undumped_oplog_records.max(1),
+                    "undumped_wal_records",
+                    pressure.undumped_wal_records,
+                    options.min_undumped_wal_records.max(1),
                 ),
             ],
             storage_manager_trigger_reasons(&[
@@ -215,14 +215,14 @@ impl DataNodeRuntime {
                     "dirty_slot_pressure",
                 ),
                 (
-                    pressure.undumped_oplog_records >= options.min_undumped_oplog_records.max(1),
-                    "undumped_oplog_pressure",
+                    pressure.undumped_wal_records >= options.min_undumped_wal_records.max(1),
+                    "undumped_wal_pressure",
                 ),
             ]),
             storage_manager_skip_reason(
-                options.enable_oplog_reclaim,
+                options.enable_wal_reclaim,
                 dump_pressure,
-                "reclaim_oplog",
+                "reclaim_wal",
             ),
         ));
 
@@ -231,7 +231,7 @@ impl DataNodeRuntime {
                 shard_id,
                 selected_dump_buckets: Vec::new(),
                 max_dump_buckets_per_round: 0,
-                min_undumped_oplog_records: 0,
+                min_undumped_wal_records: 0,
                 purge_delayed_destroy: false,
                 prune_bucket_dump_manifests: false,
                 roll_forward_bucket_dump_installs: false,
@@ -330,10 +330,10 @@ impl DataNodeRuntime {
                 &self.inner,
                 GcRequest {
                     shard_id,
-                    retain_oplog_from_sequence: lifecycle_report
+                    retain_wal_from_sequence: lifecycle_report
                         .as_ref()
                         .and_then(|report| report.dump_manifest.as_ref())
-                        .map(|manifest| manifest.oplog_sequence),
+                        .map(|manifest| manifest.wal_sequence),
                     retain_index_log_from_sequence: lifecycle_report
                         .as_ref()
                         .and_then(|report| report.dump_manifest.as_ref())
@@ -469,7 +469,7 @@ impl DataNodeRuntime {
                 shard_id,
                 selected_dump_buckets: Vec::new(),
                 max_dump_buckets_per_round: 0,
-                min_undumped_oplog_records: 0,
+                min_undumped_wal_records: 0,
                 purge_delayed_destroy: true,
                 prune_bucket_dump_manifests: true,
                 roll_forward_bucket_dump_installs: true,

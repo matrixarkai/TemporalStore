@@ -113,14 +113,14 @@ fn verify_engine_dump_load_recovery(case: &StorageMigrationCase) {
         shard_id: case.shard_id,
         selected_dump_buckets: dirty_buckets,
         max_dump_buckets_per_round: 64,
-        min_undumped_oplog_records: 0,
+        min_undumped_wal_records: 0,
         purge_delayed_destroy: true,
         prune_bucket_dump_manifests: true,
         roll_forward_bucket_dump_installs: true,
         follower_replay_cursors: vec![BucketDumpFollowerReplayCursor {
             follower_id: "lagging-storage-corpus-follower".to_string(),
             shard_id: case.shard_id,
-            oplog_sequence: 0,
+            wal_sequence: 0,
             index_log_sequence: 0,
         }],
         page_gc_shared_store_cursors: Vec::new(),
@@ -201,7 +201,7 @@ async fn verify_shared_store_replay(case: &StorageMigrationCase, mode: SharedSto
         case.shard_id,
     );
     let replay = replicator
-        .replay_oplog_strict(case.shard_id, 0, &follower)
+        .replay_wal_strict(case.shard_id, 0, &follower)
         .await
         .expect("shared-store corpus replay should succeed");
     assert_eq!(

@@ -3527,14 +3527,14 @@ fn verify_storage_follower_safe_gc(case: &StorageMigrationCase) {
         shard_id: case.shard_id,
         selected_dump_buckets: dirty_buckets,
         max_dump_buckets_per_round: 64,
-        min_undumped_oplog_records: 0,
+        min_undumped_wal_records: 0,
         purge_delayed_destroy: true,
         prune_bucket_dump_manifests: true,
         roll_forward_bucket_dump_installs: true,
         follower_replay_cursors: vec![BucketDumpFollowerReplayCursor {
             follower_id: "unified-storage-lagging-follower".to_string(),
             shard_id: case.shard_id,
-            oplog_sequence: 0,
+            wal_sequence: 0,
             index_log_sequence: 0,
         }],
         page_gc_shared_store_cursors: Vec::new(),
@@ -3585,13 +3585,13 @@ fn verify_storage_wal_index_gc_generation_retention(shard_id: u64) {
     let child = engine
         .create_bucket_dump_manifest(shard_id, Vec::new())
         .unwrap();
-    assert!(child.oplog_sequence > parent.oplog_sequence);
+    assert!(child.wal_sequence > parent.wal_sequence);
     assert!(child.index_log_sequence > parent.index_log_sequence);
 
     let lagging_cursor = BucketDumpFollowerReplayCursor {
         follower_id: "unified-lagging-follower".to_string(),
         shard_id,
-        oplog_sequence: parent.oplog_sequence,
+        wal_sequence: parent.wal_sequence,
         index_log_sequence: parent.index_log_sequence,
     };
     let lagging_snapshot = BucketDumpRaftSnapshotRef {
@@ -3599,7 +3599,7 @@ fn verify_storage_wal_index_gc_generation_retention(shard_id: u64) {
         shard_id,
         last_included_index: 11,
         last_included_term: 2,
-        oplog_sequence: parent.oplog_sequence,
+        wal_sequence: parent.wal_sequence,
         index_log_sequence: parent.index_log_sequence,
     };
     let blocked = engine.storage_wal_reclaim_plan(
@@ -3611,14 +3611,14 @@ fn verify_storage_wal_index_gc_generation_retention(shard_id: u64) {
     assert_eq!(blocked.follower_cursor_block_count, 1);
     assert_eq!(blocked.raft_snapshot_block_count, 1);
     assert_eq!(
-        blocked.durable_bucket_generation_frontier_oplog_sequence,
-        child.oplog_sequence
+        blocked.durable_bucket_generation_frontier_wal_sequence,
+        child.wal_sequence
     );
     assert_eq!(
         blocked.durable_bucket_generation_frontier_index_log_sequence,
         child.index_log_sequence
     );
-    assert_eq!(blocked.retain_from_oplog_sequence, 0);
+    assert_eq!(blocked.retain_from_wal_sequence, 0);
     assert_eq!(blocked.retain_from_index_log_sequence, 0);
     assert!(blocked
         .blocker_reasons
@@ -3634,12 +3634,12 @@ fn verify_storage_wal_index_gc_generation_retention(shard_id: u64) {
         index_gc_index_log_bytes_threshold: 0,
         index_gc_usage_ratio_trigger_basis_points: 0,
         index_gc_max_entries_per_round: 8,
-        min_undumped_oplog_records: 0,
+        min_undumped_wal_records: 0,
         ..StorageManagerCycleRequest::default()
     });
     let blocked_wal = blocked_cycle.wal_reclaim_report.as_ref().unwrap();
     assert!(!blocked_wal.applied, "{blocked_wal:?}");
-    assert_eq!(blocked_wal.oplog_records_removed, 0);
+    assert_eq!(blocked_wal.wal_records_removed, 0);
     let blocked_index_gc = blocked_cycle.index_gc_report.as_ref().unwrap();
     assert!(!blocked_index_gc.applied, "{blocked_index_gc:?}");
     assert_eq!(
@@ -3653,7 +3653,7 @@ fn verify_storage_wal_index_gc_generation_retention(shard_id: u64) {
     let released_cursor = BucketDumpFollowerReplayCursor {
         follower_id: "unified-follower-caught-up".to_string(),
         shard_id,
-        oplog_sequence: released_anchor.oplog_sequence,
+        wal_sequence: released_anchor.wal_sequence,
         index_log_sequence: released_anchor.index_log_sequence,
     };
     let released_snapshot = BucketDumpRaftSnapshotRef {
@@ -3661,7 +3661,7 @@ fn verify_storage_wal_index_gc_generation_retention(shard_id: u64) {
         shard_id,
         last_included_index: 12,
         last_included_term: 2,
-        oplog_sequence: released_anchor.oplog_sequence,
+        wal_sequence: released_anchor.wal_sequence,
         index_log_sequence: released_anchor.index_log_sequence,
     };
     let released_cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
@@ -3671,13 +3671,13 @@ fn verify_storage_wal_index_gc_generation_retention(shard_id: u64) {
         index_gc_index_log_bytes_threshold: 0,
         index_gc_usage_ratio_trigger_basis_points: 0,
         index_gc_max_entries_per_round: 1,
-        min_undumped_oplog_records: 0,
+        min_undumped_wal_records: 0,
         ..StorageManagerCycleRequest::default()
     });
     let released_wal = released_cycle.wal_reclaim_report.as_ref().unwrap();
     assert!(released_wal.plan.safe_to_reclaim, "{released_wal:?}");
     assert!(released_wal.applied, "{released_wal:?}");
-    assert!(released_wal.oplog_records_removed > 0, "{released_wal:?}");
+    assert!(released_wal.wal_records_removed > 0, "{released_wal:?}");
     let released_index_gc = released_cycle.index_gc_report.as_ref().unwrap();
     assert!(released_index_gc.safe_to_truncate, "{released_index_gc:?}");
     assert!(released_index_gc.applied, "{released_index_gc:?}");
@@ -3759,7 +3759,7 @@ fn verify_storage_gc_dependency_retention_matrix(shard_id: u64) {
             shard_id,
             last_included_index: 7,
             last_included_term: 2,
-            oplog_sequence: manifest.oplog_sequence,
+            wal_sequence: manifest.wal_sequence,
             index_log_sequence: 0,
         }],
         Some(0),
@@ -4214,7 +4214,7 @@ async fn verify_storage_shared_store_replay(
         case.shard_id,
     );
     let replay = replicator
-        .replay_oplog_strict(case.shard_id, 0, &follower)
+        .replay_wal_strict(case.shard_id, 0, &follower)
         .await
         .expect("shared-store replay should succeed");
     assert_eq!(

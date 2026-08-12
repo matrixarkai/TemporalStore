@@ -1640,7 +1640,7 @@ fn local_recovery_proof_covers_raft_wal_write_ahead_log_indexlog_and_pages() {
     );
     recovered.load_shard(1);
     let recovery = recovered.storage_recovery_report(1);
-    assert_eq!(recovery.oplog_records, 2);
+    assert_eq!(recovery.wal_records, 2);
     assert_eq!(recovery.index_log_records, 2);
     assert!(recovery.index_bytes > 0);
     assert!(recovery.index_write_atomic);

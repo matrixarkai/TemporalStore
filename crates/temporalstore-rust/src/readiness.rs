@@ -80,7 +80,8 @@ pub struct ServiceReadinessGateReport {
 pub struct StorageCacheDependencyMatrixReport {
     pub local_file_store_ready: bool,
     pub shared_store_checkpoint_manifest_ready: bool,
-    pub oplog_cursor_retention_ready: bool,
+    #[serde(rename = "oplog_cursor_retention_ready")]
+    pub wal_cursor_retention_ready: bool,
     #[serde(alias = "page_segment_manifest_ready")]
     pub page_slab_manifest_ready: bool,
     pub follower_cursor_retention_ready: bool,
@@ -163,7 +164,8 @@ pub struct StorageProductionPostureReport {
     pub orphan_page_detection_ready: bool,
     pub missing_page_ref_detection_ready: bool,
     pub stale_page_ref_detection_ready: bool,
-    pub corrupt_page_index_oplog_snapshot_evidence_ready: bool,
+    #[serde(rename = "corrupt_page_index_oplog_snapshot_evidence_ready")]
+    pub corrupt_page_index_wal_snapshot_evidence_ready: bool,
     pub follower_cursor_safe_gc_ready: bool,
     pub cache_pressure_and_refill_ready: bool,
     pub shared_store_sync_async_replay_ready: bool,
@@ -798,7 +800,7 @@ mod tests {
         let matrix = storage_cache_dependency_matrix_report();
         assert!(matrix.local_file_store_ready);
         assert!(matrix.shared_store_checkpoint_manifest_ready);
-        assert!(matrix.oplog_cursor_retention_ready);
+        assert!(matrix.wal_cursor_retention_ready);
         assert!(matrix.page_slab_manifest_ready);
         assert!(matrix.follower_cursor_retention_ready);
         assert!(matrix.raft_snapshot_manifest_retention_ready);
@@ -1308,7 +1310,7 @@ mod tests {
         assert!(report.orphan_page_detection_ready);
         assert!(report.missing_page_ref_detection_ready);
         assert!(report.stale_page_ref_detection_ready);
-        assert!(report.corrupt_page_index_oplog_snapshot_evidence_ready);
+        assert!(report.corrupt_page_index_wal_snapshot_evidence_ready);
         assert!(report.follower_cursor_safe_gc_ready);
         assert!(report.cache_pressure_and_refill_ready);
         assert!(report.shared_store_sync_async_replay_ready);
@@ -1394,7 +1396,7 @@ mod tests {
             "mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop",
             "orphan page detection",
             "missing/stale page-reference detection",
-            "corrupt page/index/oplog/snapshot evidence",
+            "corrupt page/index/wal/snapshot evidence",
             "follower-cursor safe GC",
             "cache pressure/refill",
             "shared-store sync/async replay",

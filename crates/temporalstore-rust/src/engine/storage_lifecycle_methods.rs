@@ -30,17 +30,17 @@ impl TemporalEngine {
             .iter()
             .map(|summary| summary.routing_bucket)
             .collect::<Vec<_>>();
-        let latest_dump_oplog_sequence =
+        let latest_dump_wal_sequence =
             latest_bucket_dump_manifest_at(&self.index_dir, request.shard_id)
-                .map(|manifest| manifest.oplog_sequence)
+                .map(|manifest| manifest.wal_sequence)
                 .unwrap_or_default();
-        let current_oplog_sequence = self.wal_store.stats(request.shard_id).last_sequence;
-        let undumped_oplog_records =
-            current_oplog_sequence.saturating_sub(latest_dump_oplog_sequence);
+        let current_wal_sequence = self.wal_store.stats(request.shard_id).last_sequence;
+        let undumped_wal_records =
+            current_wal_sequence.saturating_sub(latest_dump_wal_sequence);
         let explicit_buckets = !request.selected_dump_buckets.is_empty();
         let dump_delayed = !explicit_buckets
-            && request.min_undumped_oplog_records > 0
-            && undumped_oplog_records < request.min_undumped_oplog_records;
+            && request.min_undumped_wal_records > 0
+            && undumped_wal_records < request.min_undumped_wal_records;
         let mut selected_dump_buckets = if explicit_buckets {
             request.selected_dump_buckets.clone()
         } else if dump_delayed {
@@ -149,7 +149,7 @@ impl TemporalEngine {
             shard_id: request.shard_id,
             dirty_buckets,
             selected_dump_buckets,
-            undumped_oplog_records,
+            undumped_wal_records,
             dump_delayed,
             bucket_summaries,
             live_page_slab_ids,
@@ -439,7 +439,7 @@ impl TemporalEngine {
                 // fingerprint still matches once the dirty objects are cleared.
                 bucket.dirty_generation = bucket.dirty_generation.max(captured_generation);
                 // C++ SetDumpedLogId analog (informational; not part of the fingerprint).
-                bucket.last_dump_sequence = bucket.last_dump_sequence.max(manifest.oplog_sequence);
+                bucket.last_dump_sequence = bucket.last_dump_sequence.max(manifest.wal_sequence);
                 bucket.dirty = false;
                 for page in bucket.page_index.values_mut() {
                     page.dirty = false;
@@ -462,8 +462,8 @@ impl TemporalEngine {
         if let Some(manifest) = &dump_manifest {
             // Parity with C++ SlotStore::DumpSlotInMemory -> Index::ClearSlotDirty: a
             // dumped bucket is no longer dirty, so the storage cycle stops re-selecting
-            // and re-dumping it every round. Dumped-state is anchored by the oplog
-            // watermark (last_dump_sequence / manifest.oplog_sequence, the C++
+            // and re-dumping it every round. Dumped-state is anchored by the wal
+            // watermark (last_dump_sequence / manifest.wal_sequence, the C++
             // SetDumpedLogId analog), not by the dirty flag.
             self.clear_dumped_bucket_dirty_state(request.shard_id, manifest);
         }
@@ -592,7 +592,7 @@ impl TemporalEngine {
     ) -> StorageWalReclaimPlan {
         let follower_replay_cursors = follower_replay_cursors.into_iter().collect::<Vec<_>>();
         let raft_snapshot_refs = raft_snapshot_refs.into_iter().collect::<Vec<_>>();
-        let current_oplog_sequence = self.write_ahead_log_store().stats(shard_id).last_sequence;
+        let current_wal_sequence = self.write_ahead_log_store().stats(shard_id).last_sequence;
         let current_index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
         let bucket_summaries = self.bucket_storage_summaries(shard_id);
         let current_bucket_fingerprints = self
@@ -605,7 +605,7 @@ impl TemporalEngine {
         let manifests = self.list_bucket_dump_manifests(shard_id);
         let mut missing_bucket_generations = Vec::new();
         let mut retained_manifest_ids = BTreeSet::<String>::new();
-        let mut durable_oplog_frontier = u64::MAX;
+        let mut durable_wal_frontier = u64::MAX;
         let mut durable_index_log_frontier = u64::MAX;
         let mut covered_bucket_count = 0usize;
 
@@ -633,7 +633,7 @@ impl TemporalEngine {
             };
             retained_manifest_ids.insert(manifest.manifest_id.clone());
             covered_bucket_count = covered_bucket_count.saturating_add(1);
-            durable_oplog_frontier = durable_oplog_frontier.min(manifest.oplog_sequence);
+            durable_wal_frontier = durable_wal_frontier.min(manifest.wal_sequence);
             durable_index_log_frontier =
                 durable_index_log_frontier.min(manifest.index_log_sequence);
         }
@@ -641,15 +641,15 @@ impl TemporalEngine {
         let mut blocker_reasons = Vec::new();
         if bucket_summaries.is_empty() {
             blocker_reasons.push("no_slot_generations_to_anchor_reclaim".to_string());
-            durable_oplog_frontier = 0;
+            durable_wal_frontier = 0;
             durable_index_log_frontier = 0;
         }
         if !missing_bucket_generations.is_empty() {
             blocker_reasons.push("slot_generation_without_durable_dump".to_string());
         }
 
-        if durable_oplog_frontier == u64::MAX {
-            durable_oplog_frontier = 0;
+        if durable_wal_frontier == u64::MAX {
+            durable_wal_frontier = 0;
         }
         if durable_index_log_frontier == u64::MAX {
             durable_index_log_frontier = 0;
@@ -659,7 +659,7 @@ impl TemporalEngine {
             .iter()
             .filter(|cursor| cursor.shard_id == shard_id)
         {
-            if cursor.oplog_sequence < durable_oplog_frontier
+            if cursor.wal_sequence < durable_wal_frontier
                 || cursor.index_log_sequence < durable_index_log_frontier
             {
                 follower_cursor_block_count = follower_cursor_block_count.saturating_add(1);
@@ -675,7 +675,7 @@ impl TemporalEngine {
             .iter()
             .filter(|snapshot| snapshot.shard_id == shard_id)
         {
-            if snapshot.oplog_sequence < durable_oplog_frontier
+            if snapshot.wal_sequence < durable_wal_frontier
                 || snapshot.index_log_sequence < durable_index_log_frontier
             {
                 raft_snapshot_block_count = raft_snapshot_block_count.saturating_add(1);
@@ -687,12 +687,12 @@ impl TemporalEngine {
         }
         let safe_to_reclaim = missing_bucket_generations.is_empty()
             && covered_bucket_count == bucket_summaries.len()
-            && durable_oplog_frontier > 0
+            && durable_wal_frontier > 0
             && durable_index_log_frontier > 0
             && follower_cursor_block_count == 0
             && raft_snapshot_block_count == 0;
-        let retain_from_oplog_sequence = if safe_to_reclaim {
-            durable_oplog_frontier.saturating_add(1)
+        let retain_from_wal_sequence = if safe_to_reclaim {
+            durable_wal_frontier.saturating_add(1)
         } else {
             0
         };
@@ -705,11 +705,11 @@ impl TemporalEngine {
         StorageWalReclaimPlan {
             shard_id,
             safe_to_reclaim,
-            durable_bucket_generation_frontier_oplog_sequence: durable_oplog_frontier,
+            durable_bucket_generation_frontier_wal_sequence: durable_wal_frontier,
             durable_bucket_generation_frontier_index_log_sequence: durable_index_log_frontier,
-            retain_from_oplog_sequence,
+            retain_from_wal_sequence,
             retain_from_index_log_sequence,
-            current_oplog_sequence,
+            current_wal_sequence,
             current_index_log_sequence,
             covered_bucket_count,
             uncovered_bucket_count: missing_bucket_generations.len(),
@@ -732,21 +732,21 @@ impl TemporalEngine {
                 ..StorageWalReclaimReport::default()
             };
         }
-        let oplog_gc = self
+        let wal_gc = self
             .write_ahead_log_store()
-            .gc_before_sequence(plan.shard_id, plan.retain_from_oplog_sequence)
+            .gc_before_sequence(plan.shard_id, plan.retain_from_wal_sequence)
             .ok();
         StorageWalReclaimReport {
-            applied: oplog_gc.is_some(),
-            oplog_records_removed: oplog_gc
+            applied: wal_gc.is_some(),
+            wal_records_removed: wal_gc
                 .as_ref()
                 .map(|report| report.records_removed)
                 .unwrap_or_default(),
-            oplog_bytes_before: oplog_gc
+            wal_bytes_before: wal_gc
                 .as_ref()
                 .map(|report| report.bytes_before)
                 .unwrap_or_default(),
-            oplog_bytes_after: oplog_gc
+            wal_bytes_after: wal_gc
                 .as_ref()
                 .map(|report| report.bytes_after)
                 .unwrap_or_default(),

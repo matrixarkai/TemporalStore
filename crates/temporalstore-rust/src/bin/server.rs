@@ -705,7 +705,7 @@ struct ApplyDataRaftLogRouteRequest {
 struct ApplyDataRaftLogRouteResponse {
     status: Status,
     applied_raft_index: u64,
-    applied_oplog_sequence: u64,
+    applied_wal_sequence: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1044,12 +1044,12 @@ fn apply_data_raft_log_route(
         Ok(_) => ApplyDataRaftLogRouteResponse {
             status: Status::ok(),
             applied_raft_index: applier.applied_raft_index(),
-            applied_oplog_sequence: applier.applied_oplog_sequence(),
+            applied_wal_sequence: applier.applied_wal_sequence(),
         },
         Err(err) => ApplyDataRaftLogRouteResponse {
             status: Status::error("invalid_data_raft_log", err.to_string()),
             applied_raft_index: applier.applied_raft_index(),
-            applied_oplog_sequence: applier.applied_oplog_sequence(),
+            applied_wal_sequence: applier.applied_wal_sequence(),
         },
     }
 }
@@ -1543,7 +1543,7 @@ mod tests {
             "temporalstore_storage_manager_phase_enabled{shard_id=\"73\",phase=\"prepare\"} 1"
         ));
         assert!(metrics.contains(
-            "temporalstore_storage_manager_phase_work{shard_id=\"73\",phase=\"reclaim_oplog\",kind=\"wal_records_removed\"}"
+            "temporalstore_storage_manager_phase_work{shard_id=\"73\",phase=\"reclaim_wal\",kind=\"wal_records_removed\"}"
         ));
         assert!(metrics.contains(
             "temporalstore_storage_manager_phase_pressure{shard_id=\"73\",phase=\"evict\",kind=\"eviction_before\"}"
@@ -2171,7 +2171,7 @@ mod tests {
             raft_index: 9,
             log_id: 10,
             log_size: 0,
-            oplog_sequence: 21,
+            wal_sequence: 21,
             command: Command::StringSet {
                 key: "cpp-service-raft-key".to_string(),
                 value: b"via-apply-data-raft-log".to_vec(),
@@ -2202,7 +2202,7 @@ mod tests {
         let response: ApplyDataRaftLogRouteResponse = serde_json::from_slice(&body).unwrap();
         assert!(response.status.ok, "{response:?}");
         assert_eq!(response.applied_raft_index, 9);
-        assert_eq!(response.applied_oplog_sequence, 21);
+        assert_eq!(response.applied_wal_sequence, 21);
 
         let duplicate: ApplyDataRaftLogRouteResponse = serde_json::from_slice(
             &handle_cpp_server_service_route(
@@ -2220,7 +2220,7 @@ mod tests {
         .unwrap();
         assert!(duplicate.status.ok, "{duplicate:?}");
         assert_eq!(duplicate.applied_raft_index, 9);
-        assert_eq!(duplicate.applied_oplog_sequence, 21);
+        assert_eq!(duplicate.applied_wal_sequence, 21);
 
         let read = engine.execute(ExecuteRequest {
             shard_id: 44,

@@ -195,7 +195,8 @@ pub struct ServerShardServingState {
     pub storage: ShardCanonicalStorageStats,
     #[serde(alias = "page_store_bytes_written")]
     pub block_store_bytes_written: u64,
-    pub oplog_sequence: u64,
+    #[serde(rename = "oplog_sequence")]
+    pub wal_sequence: u64,
     pub dirty_object_count: u64,
     #[serde(rename = "dirty_slot_count")]
     pub dirty_bucket_count: u64,
@@ -1125,7 +1126,7 @@ mod tests {
                 cache_memory_bytes: 64,
                 storage: ShardCanonicalStorageStats::default(),
                 block_store_bytes_written: 100,
-                oplog_sequence: 9,
+                wal_sequence: 9,
                 dirty_object_count: 1,
                 dirty_bucket_count: 1,
             }],
@@ -1146,7 +1147,7 @@ mod tests {
             vec!["background_queue_full"]
         );
         assert_eq!(server.shard_states[0].serving_state, "serving");
-        assert_eq!(server.shard_states[0].oplog_sequence, 9);
+        assert_eq!(server.shard_states[0].wal_sequence, 9);
         assert_eq!(meta.stats().server_heartbeat_total, 1);
     }
 
@@ -2253,7 +2254,7 @@ mod tests {
                 cache_memory_bytes: 1,
                 storage: ShardCanonicalStorageStats::default(),
                 block_store_bytes_written: 10,
-                oplog_sequence: 1,
+                wal_sequence: 1,
                 dirty_object_count: 0,
                 dirty_bucket_count: 0,
             }],
@@ -2393,7 +2394,7 @@ mod tests {
                 cache_memory_bytes: 2,
                 storage: ShardCanonicalStorageStats::default(),
                 block_store_bytes_written: 20,
-                oplog_sequence: 2,
+                wal_sequence: 2,
                 dirty_object_count: 0,
                 dirty_bucket_count: 0,
             }],

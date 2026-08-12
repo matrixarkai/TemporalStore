@@ -47,7 +47,7 @@ fn storage_crash_harness_recovers_after_abrupt_process_abort() {
         serde_json::from_slice(&recovered.stdout).expect("recover output should be JSON");
     assert_eq!(summary.before_value.as_deref(), Some("before-value"));
     assert_eq!(summary.after_value.as_deref(), Some("after-value"));
-    assert_eq!(summary.recovery.oplog_records, 2);
+    assert_eq!(summary.recovery.wal_records, 2);
     assert_eq!(summary.recovery.index_log_records, 2);
     assert_eq!(summary.recovery.active_page_slab_ids, vec![0, 1]);
     assert_eq!(summary.recovery.live_page_slab_ids, vec![0, 1]);

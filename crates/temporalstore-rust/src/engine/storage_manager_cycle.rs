@@ -12,7 +12,7 @@ impl TemporalEngine {
         let cycle_started_unix_ms = now_ms();
         let cxx_stage_order = [
             "prepare",
-            "reclaim_oplog",
+            "reclaim_wal",
             "expire",
             "evict",
             "reclaim_page",
@@ -27,8 +27,8 @@ impl TemporalEngine {
             shard_id: request.shard_id,
             selected_dump_buckets: Vec::new(),
             max_dump_buckets_per_round: request.max_dump_buckets_per_round,
-            min_undumped_oplog_records: if request.enable_oplog_reclaim {
-                request.min_undumped_oplog_records
+            min_undumped_wal_records: if request.enable_wal_reclaim {
+                request.min_undumped_wal_records
             } else {
                 u64::MAX
             },
@@ -154,8 +154,8 @@ impl TemporalEngine {
             .saturating_add(expired_bucket_object_scan_debt)
             .saturating_add(delayed_destroy_slab_count)
             .saturating_add(compaction_debt_model_count) as u64
-            + plan.undumped_oplog_records
-            + log_pressure.oplog_bytes
+            + plan.undumped_wal_records
+            + log_pressure.wal_bytes
             + log_pressure.index_log_bytes
             + reclaim_stale_bytes
             + cache_pressure.stats.disk_bytes
@@ -165,8 +165,8 @@ impl TemporalEngine {
             + compaction_debt_score;
         let mut pressure_signals = StorageManagerPressureSignals {
             dirty_bucket_count: plan.dirty_buckets.len(),
-            undumped_wal_records: plan.undumped_oplog_records,
-            wal_bytes: log_pressure.oplog_bytes,
+            undumped_wal_records: plan.undumped_wal_records,
+            wal_bytes: log_pressure.wal_bytes,
             index_log_bytes: log_pressure.index_log_bytes,
             stale_page_bytes: reclaim_stale_bytes,
             live_page_bytes: reclaim_live_bytes,
@@ -209,7 +209,7 @@ impl TemporalEngine {
             live_bytes: reclaim_live_bytes,
             stale_bytes: reclaim_stale_bytes,
             dirty_bucket_count: plan.dirty_buckets.len(),
-            undumped_oplog_records: plan.undumped_oplog_records,
+            undumped_wal_records: plan.undumped_wal_records,
             metrics_bucket_count: plan.bucket_summaries.len(),
             metrics_page_ref_count: plan
                 .bucket_summaries
@@ -340,7 +340,7 @@ impl TemporalEngine {
             request.follower_replay_cursors.clone(),
             request.raft_snapshot_refs.clone(),
         );
-        let wal_reclaim_report = if request.enable_oplog_reclaim {
+        let wal_reclaim_report = if request.enable_wal_reclaim {
             Some(if request.dry_run {
                 StorageWalReclaimReport {
                     plan: wal_reclaim_plan.clone(),
@@ -361,20 +361,20 @@ impl TemporalEngine {
         ));
 
         stages.push(StorageManagerStageReport {
-            stage: "reclaim_oplog".to_string(),
-            enabled: request.enable_oplog_reclaim,
+            stage: "reclaim_wal".to_string(),
+            enabled: request.enable_wal_reclaim,
             applied: wal_reclaim_report
                 .as_ref()
                 .map(|report| report.applied)
                 .unwrap_or(false),
-            skipped: !request.enable_oplog_reclaim
+            skipped: !request.enable_wal_reclaim
                 || plan.dump_delayed
                 || wal_reclaim_report
                     .as_ref()
                     .map(|report| !report.plan.safe_to_reclaim)
                     .unwrap_or(true),
-            reason: if !request.enable_oplog_reclaim {
-                "oplog reclaim disabled".to_string()
+            reason: if !request.enable_wal_reclaim {
+                "wal reclaim disabled".to_string()
             } else if plan.dump_delayed {
                 "dirty slot dump delayed until the configured undumped log threshold is reached"
                     .to_string()
@@ -404,9 +404,9 @@ impl TemporalEngine {
                 .saturating_add(pressure_signals.index_log_bytes),
             pressure_threshold: wal_reclaim_report
                 .as_ref()
-                .map(|report| report.plan.retain_from_oplog_sequence)
-                .unwrap_or(request.min_undumped_oplog_records),
-            pressure_triggered: request.enable_oplog_reclaim
+                .map(|report| report.plan.retain_from_wal_sequence)
+                .unwrap_or(request.min_undumped_wal_records),
+            pressure_triggered: request.enable_wal_reclaim
                 && wal_reclaim_report
                     .as_ref()
                     .map(|report| report.plan.safe_to_reclaim)
@@ -420,7 +420,7 @@ impl TemporalEngine {
             after_bytes: bucket_logical_bytes,
             live_bytes: bucket_logical_bytes,
             dirty_bucket_count: plan.dirty_buckets.len(),
-            undumped_oplog_records: plan.undumped_oplog_records,
+            undumped_wal_records: plan.undumped_wal_records,
             dumped_bucket_count: lifecycle_report
                 .as_ref()
                 .and_then(|report| report.dump_manifest.as_ref())
@@ -428,7 +428,7 @@ impl TemporalEngine {
                 .unwrap_or_default(),
             wal_records_removed: wal_reclaim_report
                 .as_ref()
-                .map(|report| report.oplog_records_removed)
+                .map(|report| report.wal_records_removed)
                 .unwrap_or_default(),
             index_log_records_removed: wal_reclaim_report
                 .as_ref()
@@ -445,7 +445,7 @@ impl TemporalEngine {
                 .unwrap_or_default(),
             retain_from_wal_sequence: wal_reclaim_report
                 .as_ref()
-                .map(|report| report.plan.retain_from_oplog_sequence)
+                .map(|report| report.plan.retain_from_wal_sequence)
                 .unwrap_or_default(),
             retain_from_index_log_sequence: wal_reclaim_report
                 .as_ref()
@@ -773,7 +773,7 @@ impl TemporalEngine {
         let mut merged_dump_load_policy =
             self.storage_merged_dump_load_policy_report(StorageMergedDumpLoadPolicyRequest {
                 lifecycle: plan_request.clone(),
-                create_dump_manifest: request.enable_oplog_reclaim,
+                create_dump_manifest: request.enable_wal_reclaim,
                 install_dump_manifest: false,
             });
 
@@ -991,11 +991,11 @@ impl TemporalEngine {
             .map(|manifest| {
                 // The replay base is the dumped checkpoint (which covers up to its own
                 // sequence) plus the retained WAL tail above it. Once the WAL is
-                // legitimately reclaimed past a dump (the C++ SetDumpedLogId + oplog
+                // legitimately reclaimed past a dump (the C++ SetDumpedLogId + wal
                 // Truncate step), latest_safe_* -- and thus selected_replay_* -- can sit
                 // below the manifest; the manifest checkpoint still covers it, so gate on
                 // the dump frontier rather than the possibly-reclaimed WAL tail.
-                boundary.latest_dump_oplog_sequence >= manifest.oplog_sequence
+                boundary.latest_dump_wal_sequence >= manifest.wal_sequence
                     && boundary.latest_dump_index_log_sequence >= manifest.index_log_sequence
             })
             .unwrap_or(false);
@@ -1030,7 +1030,7 @@ impl TemporalEngine {
             manifest_id,
             manifest_bucket_ids,
             manifest_page_slab_ids,
-            manifest_oplog_sequence,
+            manifest_wal_sequence,
             manifest_index_log_sequence,
         ) = manifest
             .as_ref()
@@ -1039,7 +1039,7 @@ impl TemporalEngine {
                     Some(manifest.manifest_id.clone()),
                     manifest.bucket_ids.clone(),
                     manifest.page_slab_ids.clone(),
-                    manifest.oplog_sequence,
+                    manifest.wal_sequence,
                     manifest.index_log_sequence,
                 )
             })
@@ -1058,9 +1058,9 @@ impl TemporalEngine {
             manifest_id,
             manifest_bucket_ids,
             manifest_page_slab_ids,
-            manifest_oplog_sequence,
+            manifest_wal_sequence,
             manifest_index_log_sequence,
-            selected_replay_oplog_sequence: boundary.selected_replay_oplog_sequence,
+            selected_replay_wal_sequence: boundary.selected_replay_wal_sequence,
             selected_replay_index_log_sequence: boundary.selected_replay_index_log_sequence,
             lifecycle,
             load_preflight,

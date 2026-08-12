@@ -623,7 +623,7 @@ struct SharedStoreModeReport {
 
 #[derive(Debug)]
 struct ConcurrentWriteResult {
-    oplog_index: u64,
+    wal_index: u64,
     key: String,
     value: Vec<u8>,
     write_latency: Duration,
@@ -671,7 +671,7 @@ where
                     .await
                     .expect("concurrent shared-store sync write should publish");
                 ConcurrentWriteResult {
-                    oplog_index: report.oplog_index,
+                    wal_index: report.wal_index,
                     key,
                     value,
                     write_latency: started.elapsed(),
@@ -684,13 +684,13 @@ where
     }
 
     let write_elapsed_ms = write_started.elapsed().as_millis();
-    write_results.sort_by_key(|result| result.oplog_index);
+    write_results.sort_by_key(|result| result.wal_index);
     let last_written = write_results
         .last()
-        .map(|result| result.oplog_index)
+        .map(|result| result.wal_index)
         .unwrap_or(0);
     let replay = replicator
-        .replay_oplog_strict(shard_id, 0, &follower)
+        .replay_wal_strict(shard_id, 0, &follower)
         .await
         .expect("concurrent follower replay should succeed");
     assert_eq!(
@@ -698,7 +698,7 @@ where
         "concurrent replay should apply every write"
     );
     let max_lag_before_replay = last_written;
-    let max_lag_after_replay = last_written.saturating_sub(replay.last_oplog_index);
+    let max_lag_after_replay = last_written.saturating_sub(replay.last_wal_index);
 
     let mut read_latencies = Vec::with_capacity(write_results.len());
     let read_started = Instant::now();
@@ -808,7 +808,7 @@ where
         if report.published {
             durable_write_latencies.push(storage_write_latencies.last().copied().unwrap());
         }
-        last_written = report.oplog_index;
+        last_written = report.wal_index;
         if mode == SharedStoreStorageMode::Async && (i + 1) % flush_every == 0 {
             let flush_start = Instant::now();
             let flush = writer
@@ -820,10 +820,10 @@ where
             flush_latencies.push(elapsed);
         }
         let replay = replicator
-            .replay_oplog(shard_id, last_replayed, &follower)
+            .replay_wal(shard_id, last_replayed, &follower)
             .await
             .expect("shared-store follower replay should succeed");
-        last_replayed = replay.last_oplog_index;
+        last_replayed = replay.last_wal_index;
         max_lag = max_lag.max(last_written.saturating_sub(last_replayed));
         if last_replayed == last_written {
             let read_start = Instant::now();
@@ -847,10 +847,10 @@ where
         flush_latencies.push(elapsed);
     }
     let replay = replicator
-        .replay_oplog(shard_id, last_replayed, &follower)
+        .replay_wal(shard_id, last_replayed, &follower)
         .await
         .expect("final shared-store replay should succeed");
-    last_replayed = replay.last_oplog_index;
+    last_replayed = replay.last_wal_index;
     max_lag = max_lag.max(last_written.saturating_sub(last_replayed));
 
     SharedStoreModeReport {

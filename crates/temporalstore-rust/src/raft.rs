@@ -170,7 +170,8 @@ pub struct DataRaftLogCodecEntry {
     pub raft_index: u64,
     pub log_id: u64,
     pub log_size: u64,
-    pub oplog_sequence: u64,
+    #[serde(rename = "oplog_sequence")]
+    pub wal_sequence: u64,
     pub command: Command,
 }
 
@@ -356,7 +357,7 @@ impl DataRaftConsensusBackend for UnavailableDataRaftConsensusBackend {
 pub struct DataRaftCommittedLogApplier {
     shard_id: ShardId,
     applied_raft_index: u64,
-    applied_oplog_sequence: u64,
+    applied_wal_sequence: u64,
 }
 
 impl DataRaftCommittedLogApplier {
@@ -364,7 +365,7 @@ impl DataRaftCommittedLogApplier {
         Self {
             shard_id,
             applied_raft_index: 0,
-            applied_oplog_sequence: 0,
+            applied_wal_sequence: 0,
         }
     }
 
@@ -372,8 +373,8 @@ impl DataRaftCommittedLogApplier {
         self.applied_raft_index
     }
 
-    pub fn applied_oplog_sequence(&self) -> u64 {
-        self.applied_oplog_sequence
+    pub fn applied_wal_sequence(&self) -> u64 {
+        self.applied_wal_sequence
     }
 
     pub fn apply(
@@ -409,7 +410,7 @@ impl DataRaftCommittedLogApplier {
             )));
         }
         self.applied_raft_index = entry.raft_index;
-        self.applied_oplog_sequence = entry.oplog_sequence;
+        self.applied_wal_sequence = entry.wal_sequence;
         Ok(Some(response.response))
     }
 }
@@ -3257,9 +3258,9 @@ pub enum RaftError {
 }
 
 pub fn serialize_data_raft_log(entry: &DataRaftLogCodecEntry) -> Result<Vec<u8>, RaftError> {
-    if entry.oplog_sequence == 0 {
+    if entry.wal_sequence == 0 {
         return Err(RaftError::InvalidDataRaftLog(
-            "oplog sequence must be nonzero".to_string(),
+            "wal sequence must be nonzero".to_string(),
         ));
     }
     let payload = serde_json::to_vec(&entry.command)
@@ -3281,7 +3282,7 @@ pub fn serialize_data_raft_log(entry: &DataRaftLogCodecEntry) -> Result<Vec<u8>,
     push_u64_le(&mut bytes, entry.raft_index);
     push_u64_le(&mut bytes, entry.log_id);
     push_u64_le(&mut bytes, log_size);
-    push_u64_le(&mut bytes, entry.oplog_sequence);
+    push_u64_le(&mut bytes, entry.wal_sequence);
     push_u64_le(&mut bytes, payload.len() as u64);
     bytes.extend_from_slice(&payload);
     Ok(bytes)
@@ -3311,11 +3312,11 @@ pub fn parse_data_raft_log(bytes: &[u8]) -> Result<DataRaftLogCodecEntry, RaftEr
     let raft_index = read_u64_le(bytes, 16)?;
     let log_id = read_u64_le(bytes, 24)?;
     let log_size = read_u64_le(bytes, 32)?;
-    let oplog_sequence = read_u64_le(bytes, 40)?;
+    let wal_sequence = read_u64_le(bytes, 40)?;
     let payload_size = read_u64_le(bytes, 48)?;
-    if oplog_sequence == 0 {
+    if wal_sequence == 0 {
         return Err(RaftError::InvalidDataRaftLog(
-            "oplog sequence must be nonzero".to_string(),
+            "wal sequence must be nonzero".to_string(),
         ));
     }
     if payload_size > u32::MAX as u64 {
@@ -3338,7 +3339,7 @@ pub fn parse_data_raft_log(bytes: &[u8]) -> Result<DataRaftLogCodecEntry, RaftEr
         raft_index,
         log_id,
         log_size,
-        oplog_sequence,
+        wal_sequence,
         command,
     })
 }

@@ -11,13 +11,13 @@ impl TemporalEngine {
         selected_buckets: impl IntoIterator<Item = u32>,
     ) -> Result<BucketDumpManifest, Status> {
         // Make the pages + WAL the manifest is about to reference durable before we
-        // capture their slab ids / oplog_sequence. In live mode each append already
+        // capture their slab ids / wal_sequence. In live mode each append already
         // fsyncs, but under MATRIXARK_BULK_INGEST appends defer fsync, so a dump firing
         // mid-bulk would otherwise name slabs whose bytes are not yet on disk (C++
         // DumpSlots always page_store_->Commit before UpdateIndex; slot_store.cc).
-        // The durability barrier MUST succeed before we capture slab ids / oplog_sequence and
+        // The durability barrier MUST succeed before we capture slab ids / wal_sequence and
         // advance the dumped-log frontier -- C++ OnCommitDone (slot_store.cc) refuses to touch
-        // the index if the page/oplog commit failed. Swallowing these errors let a dump whose
+        // the index if the page/wal commit failed. Swallowing these errors let a dump whose
         // pages never reached disk (e.g. a sync_data EIO/ENOSPC under bulk mode) still clear
         // the bucket dirty and let WAL reclaim truncate the records backing those pages ->
         // silent data loss on crash. Propagate: an Err here skips clear_dumped_bucket_dirty_state
@@ -78,7 +78,7 @@ impl TemporalEngine {
         // replay cursor always equals the state the index captured. Derive the watermark from the
         // embedded index's own anchor so reload replays exactly the WAL suffix it lacks. (None
         // only for a shard never written/flushed -> empty index -> fall back to the tail, 0.)
-        let oplog_sequence = dump_index_state
+        let wal_sequence = dump_index_state
             .applied_wal_sequence
             .unwrap_or_else(|| self.wal_store.stats(shard_id).last_sequence);
         let created_unix_ms = now_ms();
@@ -107,7 +107,7 @@ impl TemporalEngine {
                 .map(|summary| summary.routing_bucket)
                 .collect(),
             page_slab_ids,
-            oplog_sequence,
+            wal_sequence,
             index_log_sequence,
             live_page_refs: bucket_summaries
                 .iter()
@@ -349,7 +349,7 @@ impl TemporalEngine {
                         marker.shard_id,
                         &marker.manifest_id,
                         "commit",
-                        marker.oplog_sequence,
+                        marker.wal_sequence,
                         marker.index_log_sequence,
                     ) {
                         Ok(()) => {
@@ -679,7 +679,7 @@ impl TemporalEngine {
         &self,
         manifest: &BucketDumpManifest,
     ) -> BucketDumpInstallPreflightReport {
-        let current_oplog_sequence = self.wal_store.stats(manifest.shard_id).last_sequence;
+        let current_wal_sequence = self.wal_store.stats(manifest.shard_id).last_sequence;
         let current_index_log_sequence =
             self.index_log_store.stats(manifest.shard_id).last_sequence;
         let existing_slabs = self
@@ -790,9 +790,9 @@ impl TemporalEngine {
             manifest_id: manifest.manifest_id.clone(),
             install_safe: blockers.is_empty(),
             blockers,
-            current_oplog_sequence,
+            current_wal_sequence,
             current_index_log_sequence,
-            manifest_oplog_sequence: manifest.oplog_sequence,
+            manifest_wal_sequence: manifest.wal_sequence,
             manifest_index_log_sequence: manifest.index_log_sequence,
             missing_page_slab_ids,
             corrupt_page_slab_ids,
@@ -1084,7 +1084,7 @@ impl TemporalEngine {
                     restart_manifest.shard_id,
                     &restart_manifest.manifest_id,
                     "prepare",
-                    restart_manifest.oplog_sequence,
+                    restart_manifest.wal_sequence,
                     restart_manifest.index_log_sequence,
                 ) {
                     Ok(()) => {

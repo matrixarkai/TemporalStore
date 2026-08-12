@@ -1664,7 +1664,7 @@ fn prometheus_metrics_include_records_cache_page_and_wal() {
     assert!(metrics
         .contains("temporalstore_block_store_band_oldest_age_ms{shard_id=\"1\",scope=\"live\"}"));
     assert!(metrics.contains("temporalstore_wal_records_total{shard_id=\"1\"} 1"));
-    assert!(metrics.contains("temporalstore_oplog_records_total{shard_id=\"1\"} 1"));
+    assert!(metrics.contains("temporalstore_wal_records_total{shard_id=\"1\"} 1"));
     assert!(metrics.contains("temporalstore_object_manager_objects{shard_id=\"1\"} 1"));
     assert!(metrics.contains("temporalstore_object_manager_page_refs{shard_id=\"1\"} 1"));
     assert!(metrics.contains("temporalstore_object_manager_dirty_objects{shard_id=\"1\"} 1"));

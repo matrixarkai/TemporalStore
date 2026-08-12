@@ -226,7 +226,7 @@ impl LocalWriteAheadLogStore {
         self.append_with_sync(shard_id, command, !wal_bulk_relaxed_durability())
     }
 
-    /// Append a WAL/oplog record. `sync=true` fsyncs before returning (durable);
+    /// Append a WAL/wal record. `sync=true` fsyncs before returning (durable);
     /// `sync=false` writes the record but defers the fsync. Mirrors C++ OpLogger:
     /// StringModel::SetValue -> OpLogger::WritePage ALWAYS records the entry;
     /// EVENT_REPLICATION_SYNC vs ASYNC_STORAGE only changes whether the commit
@@ -408,7 +408,7 @@ impl LocalWriteAheadLogStore {
         // emptying it entirely on a full reclaim (retain_from > max) would regress the next
         // append to sequence 1 -> sequence REUSE + silent loss: the re-used seq is <= the
         // persisted applied_wal_sequence anchor, so replay's `sequence > watermark` filter drops
-        // it. C++'s zone-aligned oplog Truncate always retains the tail zone holding the highest
+        // it. C++'s zone-aligned wal Truncate always retains the tail zone holding the highest
         // sequence for exactly this continuity reason. Clamp the retain floor to keep the tail.
         let effective_retain = retain_from_sequence.min(last_sequence);
         let file = File::open(&path)?;
@@ -464,7 +464,7 @@ impl LocalWriteAheadLogStore {
     pub fn info(&self, shard_id: ShardId) -> Result<WriteAheadLogInfo, WriteAheadLogError> {
         let inner = self.inner.lock().expect("write-ahead log lock poisoned");
         let path = write_ahead_log_path(&inner.root, shard_id);
-        let legacy_path_active = path == legacy_oplog_path(&inner.root, shard_id);
+        let legacy_path_active = path == legacy_wal_path(&inner.root, shard_id);
         if !path.exists() {
             return Ok(WriteAheadLogInfo {
                 shard_id,
@@ -516,7 +516,7 @@ impl Default for LocalWriteAheadLogStore {
 
 fn write_ahead_log_path(root: &Path, shard_id: ShardId) -> PathBuf {
     let wal_path = root.join(format!("shard-{shard_id}.wal.jsonl"));
-    let legacy_path = legacy_oplog_path(root, shard_id);
+    let legacy_path = legacy_wal_path(root, shard_id);
     if legacy_path.exists() && !wal_path.exists() {
         legacy_path
     } else {
@@ -524,7 +524,7 @@ fn write_ahead_log_path(root: &Path, shard_id: ShardId) -> PathBuf {
     }
 }
 
-fn legacy_oplog_path(root: &Path, shard_id: ShardId) -> PathBuf {
+fn legacy_wal_path(root: &Path, shard_id: ShardId) -> PathBuf {
     root.join(format!("shard-{shard_id}.oplog.jsonl"))
 }
 
@@ -602,7 +602,7 @@ fn last_wal_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, WriteAhea
         // (\n-terminated) line is a complete write. Surface it as an error instead of breaking
         // -- treating interior corruption as end-of-log would set_len the file down to the last
         // parseable record, silently dropping every durable record after the corrupt one and
-        // defeating the strict replay-continuity DataLoss guard (C++ ReplayOplog returns
+        // defeating the strict replay-continuity DataLoss guard (C++ ReplayWal returns
         // DataLoss on a CRC failure / hole rather than trimming). A genuine torn tail lacks the
         // trailing '\n' and is still handled by the break above.
         let record = serde_json::from_slice::<WriteAheadLogRecord>(&line)?;
@@ -931,10 +931,10 @@ mod tests {
     }
 
     #[test]
-    // rust-internal: validates legacy WAL filename compatibility after the oplog rename
-    fn legacy_oplog_file_is_read_before_new_wal_file_exists() {
+    // rust-internal: validates legacy WAL filename compatibility after the wal rename
+    fn legacy_wal_file_is_read_before_new_wal_file_exists() {
         let dir = tempfile::tempdir().unwrap();
-        let legacy_path = legacy_oplog_path(dir.path(), 7);
+        let legacy_path = legacy_wal_path(dir.path(), 7);
         let record = WriteAheadLogRecord {
             shard_id: 7,
             sequence: 1,
@@ -967,7 +967,7 @@ mod tests {
         assert!(!dir.path().join("shard-7.wal.jsonl").exists());
     }
 
-    // shared-corpus: storage_wal_oplog_structure_api_flush_parity
+    // shared-corpus: storage_wal_wal_structure_api_flush_parity
     #[test]
     fn wal_record_metadata_tracks_cpp_style_log_item_shape() {
         let dir = tempfile::tempdir().unwrap();
@@ -996,7 +996,7 @@ mod tests {
         assert!(!item.meta_log);
     }
 
-    // shared-corpus: storage_wal_oplog_structure_api_flush_parity
+    // shared-corpus: storage_wal_wal_structure_api_flush_parity
     #[test]
     fn append_replayed_record_is_idempotent_and_flushes_like_stream_commit() {
         let dir = tempfile::tempdir().unwrap();
@@ -1029,7 +1029,7 @@ mod tests {
         assert!(stats.syncs >= 1);
     }
 
-    // shared-corpus: storage_wal_oplog_structure_api_flush_parity
+    // shared-corpus: storage_wal_wal_structure_api_flush_parity
     #[test]
     fn flush_and_info_report_persistent_wal_boundaries() {
         let dir = tempfile::tempdir().unwrap();

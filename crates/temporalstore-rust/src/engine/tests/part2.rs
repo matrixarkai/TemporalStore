@@ -841,7 +841,7 @@ fn async_storage_string_write_stays_on_hot_memory_path() {
     });
     assert!(write.status.ok);
     // C++ parity (StringModel::SetValue -> OpLogger::WritePage): the write records
-    // an oplog/WAL entry even in async mode; async only means the commit does not
+    // an wal/WAL entry even in async mode; async only means the commit does not
     // block (no fsync -> syncs == 0), and page/index materialization is deferred.
     assert_eq!(engine.block_store().stats().writes, 0);
     assert_eq!(engine.write_ahead_log_store().stats(1).writes, 1);
@@ -949,9 +949,9 @@ fn durable_index_survives_restart_and_points_to_page_file() {
 
 #[test]
 fn async_write_survives_restart_via_wal_replay_like_cpp() {
-    // C++ parity: an async_storage write records an oplog/WAL entry but defers page/
+    // C++ parity: an async_storage write records an wal/WAL entry but defers page/
     // index materialization to the background dump. If the crash beats the dump, C++
-    // ObjectManager::Load() replays the oplog and recovers the write. Rust must replay
+    // ObjectManager::Load() replays the wal and recovers the write. Rust must replay
     // its WAL on shard load the same way, or the async write is silently lost.
     let dir = tempfile::tempdir().unwrap();
     let page_dir = dir.path().join("pages");
@@ -1178,8 +1178,8 @@ fn eviction_ranks_victims_least_recently_used_first_like_cpp() {
 
 #[test]
 fn wal_replay_gap_refuses_load_like_cpp_dataloss() {
-    // C++ ObjectManager::ReplayOplog returns DataLoss and aborts Load on a hole in the
-    // retained oplog. Rust must likewise refuse the load (not-loaded) rather than
+    // C++ ObjectManager::ReplayWal returns DataLoss and aborts Load on a hole in the
+    // retained wal. Rust must likewise refuse the load (not-loaded) rather than
     // silently serve a truncated prefix.
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
@@ -1427,7 +1427,7 @@ fn wal_replay_rearmed_expire_does_not_abort_recovery_like_cpp() {
     // ORIGINAL (pre-re-arm) deadline has lapsed by restart time. Command preconditions are
     // a LEADER-time gate; re-running them during replay against the restart clock made a
     // replayed EXPIRE fail "not_found" and abort the WHOLE shard load (data unavailability
-    // for every key on the shard). C++ ReplayOplog re-applies logged effects without
+    // for every key on the shard). C++ ReplayWal re-applies logged effects without
     // re-checking preconditions. The canary below proves the shard actually recovered.
     let dir = tempfile::tempdir().unwrap();
     let page_dir = dir.path().join("pages");

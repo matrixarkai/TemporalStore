@@ -316,7 +316,7 @@ fn bucket_dump_manifest_validation_rejects_checksum_and_missing_slabs() {
 fn bucket_dump_manifest_watermark_tracks_embedded_index_not_wal_tail() {
     // Regression for silent data loss. create_bucket_dump_manifest embeds the on-disk index, but
     // under MATRIXARK_BULK_INGEST that index lags the WAL tail (per-command index persist is a
-    // no-op in bulk mode). It used to stamp the manifest's oplog_sequence from the LIVE WAL tail,
+    // no-op in bulk mode). It used to stamp the manifest's wal_sequence from the LIVE WAL tail,
     // so on reload install set replay_watermark past records the embedded index never captured
     // and WAL replay skipped them -> gone. C++ couples the two: Load replays from the DumpedLogId
     // stored inside the dumped index (object_manager.cc). We reproduce the same tail-ahead-of-index
@@ -352,7 +352,7 @@ fn bucket_dump_manifest_watermark_tracks_embedded_index_not_wal_tail() {
         .create_bucket_dump_manifest(1, Vec::new())
         .expect("manifest should persist");
     assert_eq!(
-        manifest.oplog_sequence, 1,
+        manifest.wal_sequence, 1,
         "manifest watermark must track the embedded index anchor (1), not the live WAL tail (2)"
     );
 
@@ -673,7 +673,7 @@ fn partial_compaction_failure_durably_persists_the_consistent_partial_index() {
 fn sync_write_surfaces_wal_commit_failure_instead_of_acking_ok() {
     // Durability parity: a synchronous write whose durable WAL commit fails must NOT be acked ok.
     // The WAL is the recovery source of truth, so a swallowed append error would tell the client a
-    // write that is gone after a crash succeeded. C++ surfaces the oplog Commit failure
+    // write that is gone after a crash succeeded. C++ surfaces the wal Commit failure
     // (partition.h OnExecuteCmdDone). We inject the failure by replacing the WAL file with a
     // directory so the next durable append cannot open it for writing (EISDIR fails even for
     // root, unlike a chmod which root bypasses).
@@ -970,7 +970,7 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
             shard_id: manifest.shard_id,
             manifest_id: manifest.manifest_id.clone(),
             phase: "install".to_string(),
-            oplog_sequence: manifest.oplog_sequence,
+            wal_sequence: manifest.wal_sequence,
             index_log_sequence: manifest.index_log_sequence,
             created_unix_ms: now_ms(),
         },
@@ -1070,7 +1070,7 @@ fn bucket_dump_install_markers_report_interrupted_prepare() {
             shard_id: manifest.shard_id,
             manifest_id: "interrupted".to_string(),
             phase: "prepare".to_string(),
-            oplog_sequence: manifest.oplog_sequence,
+            wal_sequence: manifest.wal_sequence,
             index_log_sequence: manifest.index_log_sequence,
             created_unix_ms: now_ms(),
         },
@@ -1118,7 +1118,7 @@ fn bucket_dump_install_roll_forward_completes_safe_installed_marker() {
             shard_id: manifest.shard_id,
             manifest_id: manifest.manifest_id.clone(),
             phase: "install".to_string(),
-            oplog_sequence: manifest.oplog_sequence,
+            wal_sequence: manifest.wal_sequence,
             index_log_sequence: manifest.index_log_sequence,
             created_unix_ms: now_ms(),
         },
@@ -1168,7 +1168,7 @@ fn bucket_dump_install_roll_forward_retries_safe_prepare_marker() {
             shard_id: manifest.shard_id,
             manifest_id: manifest.manifest_id.clone(),
             phase: "prepare".to_string(),
-            oplog_sequence: manifest.oplog_sequence,
+            wal_sequence: manifest.wal_sequence,
             index_log_sequence: manifest.index_log_sequence,
             created_unix_ms: now_ms(),
         },
@@ -1282,7 +1282,7 @@ fn bucket_dump_manifest_prune_keeps_latest_parent_chain_and_removes_obsolete_for
             shard_id: 1,
             manifest_id: fork.manifest_id.clone(),
             phase: "commit".to_string(),
-            oplog_sequence: fork.oplog_sequence,
+            wal_sequence: fork.wal_sequence,
             index_log_sequence: fork.index_log_sequence,
             created_unix_ms: now_ms(),
         },
@@ -1302,7 +1302,7 @@ fn bucket_dump_manifest_prune_keeps_latest_parent_chain_and_removes_obsolete_for
         shard_id: 1,
         selected_dump_buckets: Vec::new(),
         max_dump_buckets_per_round: 0,
-        min_undumped_oplog_records: 0,
+        min_undumped_wal_records: 0,
         purge_delayed_destroy: false,
         prune_bucket_dump_manifests: true,
         roll_forward_bucket_dump_installs: false,
@@ -1394,7 +1394,7 @@ fn dump_clears_dumped_buckets_so_they_are_not_redumped() {
         shard_id: 1,
         selected_dump_buckets: Vec::new(),
         max_dump_buckets_per_round: 0,
-        min_undumped_oplog_records: 0,
+        min_undumped_wal_records: 0,
         ..StorageLifecycleRequest::default()
     });
     assert!(
@@ -1456,7 +1456,7 @@ fn bucket_dump_manifest_prune_is_blocked_by_lagging_follower_cursor() {
     let lagging_cursor = BucketDumpFollowerReplayCursor {
         follower_id: "follower-a".to_string(),
         shard_id: 1,
-        oplog_sequence: fork.oplog_sequence,
+        wal_sequence: fork.wal_sequence,
         index_log_sequence: fork.index_log_sequence,
     };
     let blocked =
@@ -1473,7 +1473,7 @@ fn bucket_dump_manifest_prune_is_blocked_by_lagging_follower_cursor() {
     let caught_up = engine.bucket_dump_manifest_prune_plan_with_follower_cursors(
         1,
         vec![BucketDumpFollowerReplayCursor {
-            oplog_sequence: child.oplog_sequence,
+            wal_sequence: child.wal_sequence,
             index_log_sequence: child.index_log_sequence,
             ..lagging_cursor
         }],
@@ -1529,7 +1529,7 @@ fn bucket_dump_manifest_prune_is_blocked_by_raft_snapshot_reference() {
         shard_id: 1,
         last_included_index: 7,
         last_included_term: 2,
-        oplog_sequence: fork.oplog_sequence,
+        wal_sequence: fork.wal_sequence,
         index_log_sequence: fork.index_log_sequence,
     };
     let blocked = engine.bucket_dump_manifest_prune_plan_with_retention_refs(
@@ -1556,7 +1556,7 @@ fn bucket_dump_manifest_prune_is_blocked_by_raft_snapshot_reference() {
         1,
         Vec::<BucketDumpFollowerReplayCursor>::new(),
         vec![BucketDumpRaftSnapshotRef {
-            oplog_sequence: child.oplog_sequence,
+            wal_sequence: child.wal_sequence,
             index_log_sequence: child.index_log_sequence,
             ..snapshot_ref
         }],
@@ -1594,13 +1594,13 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
         },
     });
     let child = engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
-    assert!(child.oplog_sequence > parent.oplog_sequence);
+    assert!(child.wal_sequence > parent.wal_sequence);
     assert!(child.index_log_sequence > parent.index_log_sequence);
 
     let lagging_cursor = BucketDumpFollowerReplayCursor {
         follower_id: "follower-lagging".to_string(),
         shard_id: 1,
-        oplog_sequence: parent.oplog_sequence,
+        wal_sequence: parent.wal_sequence,
         index_log_sequence: parent.index_log_sequence,
     };
     let lagging_snapshot = BucketDumpRaftSnapshotRef {
@@ -1608,7 +1608,7 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
         shard_id: 1,
         last_included_index: 11,
         last_included_term: 2,
-        oplog_sequence: parent.oplog_sequence,
+        wal_sequence: parent.wal_sequence,
         index_log_sequence: parent.index_log_sequence,
     };
     let blocked = engine.storage_wal_reclaim_plan(
@@ -1620,14 +1620,14 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
     assert_eq!(blocked.follower_cursor_block_count, 1);
     assert_eq!(blocked.raft_snapshot_block_count, 1);
     assert_eq!(
-        blocked.durable_bucket_generation_frontier_oplog_sequence,
-        child.oplog_sequence
+        blocked.durable_bucket_generation_frontier_wal_sequence,
+        child.wal_sequence
     );
     assert_eq!(
         blocked.durable_bucket_generation_frontier_index_log_sequence,
         child.index_log_sequence
     );
-    assert_eq!(blocked.retain_from_oplog_sequence, 0);
+    assert_eq!(blocked.retain_from_wal_sequence, 0);
     assert_eq!(blocked.retain_from_index_log_sequence, 0);
     assert!(blocked
         .blocker_reasons
@@ -1643,12 +1643,12 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
         index_gc_index_log_bytes_threshold: 0,
         index_gc_usage_ratio_trigger_basis_points: 0,
         index_gc_max_entries_per_round: 8,
-        min_undumped_oplog_records: 0,
+        min_undumped_wal_records: 0,
         ..StorageManagerCycleRequest::default()
     });
     let blocked_wal = blocked_cycle.wal_reclaim_report.as_ref().unwrap();
     assert!(!blocked_wal.applied);
-    assert_eq!(blocked_wal.oplog_records_removed, 0);
+    assert_eq!(blocked_wal.wal_records_removed, 0);
     assert!(!blocked_cycle.index_gc_report.as_ref().unwrap().applied);
     assert_eq!(
         blocked_cycle
@@ -1662,19 +1662,19 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
         blocked_cycle
             .stages
             .iter()
-            .find(|stage| stage.stage == "reclaim_oplog")
+            .find(|stage| stage.stage == "reclaim_wal")
             .unwrap()
             .retention_blockers
             >= 2
     );
 
     let released_anchor = engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
-    assert!(released_anchor.oplog_sequence >= child.oplog_sequence);
+    assert!(released_anchor.wal_sequence >= child.wal_sequence);
     assert!(released_anchor.index_log_sequence >= child.index_log_sequence);
     let released_cursor = BucketDumpFollowerReplayCursor {
         follower_id: "follower-caught-up".to_string(),
         shard_id: 1,
-        oplog_sequence: released_anchor.oplog_sequence,
+        wal_sequence: released_anchor.wal_sequence,
         index_log_sequence: released_anchor.index_log_sequence,
     };
     let released_snapshot = BucketDumpRaftSnapshotRef {
@@ -1682,7 +1682,7 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
         shard_id: 1,
         last_included_index: 12,
         last_included_term: 2,
-        oplog_sequence: released_anchor.oplog_sequence,
+        wal_sequence: released_anchor.wal_sequence,
         index_log_sequence: released_anchor.index_log_sequence,
     };
     let released = engine.storage_wal_reclaim_plan(
@@ -1694,8 +1694,8 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
     assert_eq!(released.follower_cursor_block_count, 0);
     assert_eq!(released.raft_snapshot_block_count, 0);
     assert_eq!(
-        released.retain_from_oplog_sequence,
-        released_anchor.oplog_sequence.saturating_add(1)
+        released.retain_from_wal_sequence,
+        released_anchor.wal_sequence.saturating_add(1)
     );
     assert_eq!(
         released.retain_from_index_log_sequence,
@@ -1709,8 +1709,8 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
         index_gc_index_log_bytes_threshold: u64::MAX,
         index_gc_usage_ratio_trigger_basis_points: 0,
         index_gc_max_entries_per_round: 1,
-        min_undumped_oplog_records: 0,
-        enable_oplog_reclaim: false,
+        min_undumped_wal_records: 0,
+        enable_wal_reclaim: false,
         ..StorageManagerCycleRequest::default()
     });
     let threshold_blocked_index_gc = threshold_blocked_cycle.index_gc_report.as_ref().unwrap();
@@ -1724,7 +1724,7 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
     let final_cursor = BucketDumpFollowerReplayCursor {
         follower_id: "follower-final".to_string(),
         shard_id: 1,
-        oplog_sequence: final_anchor.oplog_sequence,
+        wal_sequence: final_anchor.wal_sequence,
         index_log_sequence: final_anchor.index_log_sequence,
     };
     let final_snapshot = BucketDumpRaftSnapshotRef {
@@ -1732,7 +1732,7 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
         shard_id: 1,
         last_included_index: 13,
         last_included_term: 2,
-        oplog_sequence: final_anchor.oplog_sequence,
+        wal_sequence: final_anchor.wal_sequence,
         index_log_sequence: final_anchor.index_log_sequence,
     };
     let released_cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
@@ -1742,13 +1742,13 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
         index_gc_index_log_bytes_threshold: 0,
         index_gc_usage_ratio_trigger_basis_points: 0,
         index_gc_max_entries_per_round: 1,
-        min_undumped_oplog_records: 0,
+        min_undumped_wal_records: 0,
         ..StorageManagerCycleRequest::default()
     });
     let released_wal = released_cycle.wal_reclaim_report.as_ref().unwrap();
     assert!(released_wal.plan.safe_to_reclaim, "{released_wal:?}");
     assert!(released_wal.applied, "{released_wal:?}");
-    assert!(released_wal.oplog_records_removed > 0, "{released_wal:?}");
+    assert!(released_wal.wal_records_removed > 0, "{released_wal:?}");
     let released_index_gc = released_cycle.index_gc_report.as_ref().unwrap();
     assert!(released_index_gc.safe_to_truncate, "{released_index_gc:?}");
     assert!(released_index_gc.applied, "{released_index_gc:?}");
@@ -1828,7 +1828,7 @@ fn storage_page_gc_blocks_all_retention_dependencies_before_reclaim() {
             shard_id: 1,
             last_included_index: 7,
             last_included_term: 2,
-            oplog_sequence: parent.oplog_sequence,
+            wal_sequence: parent.wal_sequence,
             index_log_sequence: 0,
         }],
         Some(0),
@@ -2183,7 +2183,7 @@ fn storage_lifecycle_plan_and_boundary_report_cover_dirty_and_orphan_slabs() {
         shard_id: 1,
         selected_dump_buckets: Vec::new(),
         max_dump_buckets_per_round: 0,
-        min_undumped_oplog_records: 0,
+        min_undumped_wal_records: 0,
         purge_delayed_destroy: false,
         prune_bucket_dump_manifests: false,
         roll_forward_bucket_dump_installs: false,
@@ -2209,7 +2209,7 @@ fn storage_lifecycle_plan_and_boundary_report_cover_dirty_and_orphan_slabs() {
         shard_id: 1,
         selected_dump_buckets: plan.selected_dump_buckets.clone(),
         max_dump_buckets_per_round: 0,
-        min_undumped_oplog_records: 0,
+        min_undumped_wal_records: 0,
         purge_delayed_destroy: false,
         prune_bucket_dump_manifests: false,
         roll_forward_bucket_dump_installs: false,
@@ -2223,8 +2223,8 @@ fn storage_lifecycle_plan_and_boundary_report_cover_dirty_and_orphan_slabs() {
     assert_eq!(report.object_lifecycle.live_page_refs, 1);
     assert_eq!(report.object_lifecycle.stale_object_ids, 1);
     let boundary = engine.storage_recovery_boundary_report(1);
-    assert_eq!(boundary.latest_safe_oplog_sequence, 2);
-    assert_eq!(boundary.latest_dump_oplog_sequence, 2);
+    assert_eq!(boundary.latest_safe_wal_sequence, 2);
+    assert_eq!(boundary.latest_dump_wal_sequence, 2);
     assert!(boundary.orphan_page_slab_ids.contains(&0));
 }
 
@@ -2265,7 +2265,7 @@ fn storage_production_readiness_reports_warnings_without_blocking_dirty_shard() 
     assert!(report.log_compatibility.rust_native_replay_safe);
     assert!(!report.log_compatibility.cxx_binary_compatible);
     assert_eq!(
-        report.log_compatibility.oplog_format,
+        report.log_compatibility.wal_format,
         "rust-jsonl-command-v1"
     );
     assert_eq!(
@@ -2339,11 +2339,11 @@ fn storage_log_compatibility_report_counts_jsonl_sequences_and_cxx_gaps() {
     assert!(!report.cxx_reader_supported);
     assert!(!report.cxx_writer_supported);
     assert!(report.golden_conversion_required);
-    assert_eq!(report.oplog_last_sequence, 2);
+    assert_eq!(report.wal_last_sequence, 2);
     assert_eq!(report.index_log_last_sequence, 2);
-    assert_eq!(report.oplog_records, 2);
+    assert_eq!(report.wal_records, 2);
     assert_eq!(report.index_log_records, 2);
-    assert!(report.oplog_bytes > 0);
+    assert!(report.wal_bytes > 0);
     assert!(report.index_log_bytes > 0);
     assert!(report.rust_native_replay_safe);
     assert!(!report.cxx_binary_compatible);
@@ -2354,7 +2354,7 @@ fn storage_log_compatibility_report_counts_jsonl_sequences_and_cxx_gaps() {
     assert!(report
         .compatibility_gaps
         .iter()
-        .any(|gap| gap.contains("C++ binary/protobuf oplog")));
+        .any(|gap| gap.contains("C++ binary/protobuf wal")));
     assert!(report
         .compatibility_gaps
         .iter()
@@ -2448,7 +2448,7 @@ fn storage_production_readiness_policy_can_block_dirty_dump_lag_and_missing_mani
         1,
         StorageProductionReadinessPolicy {
             max_dirty_buckets: Some(0),
-            max_undumped_oplog_records: Some(0),
+            max_undumped_wal_records: Some(0),
             require_bucket_dump_manifest: true,
             ..StorageProductionReadinessPolicy::default()
         },
@@ -2457,13 +2457,13 @@ fn storage_production_readiness_policy_can_block_dirty_dump_lag_and_missing_mani
     assert!(!report.production_ready, "{report:?}");
     assert_eq!(report.policy.max_dirty_buckets, Some(0));
     assert_eq!(report.dirty_bucket_count, 1);
-    assert!(report.undumped_oplog_records > 0);
+    assert!(report.undumped_wal_records > 0);
     assert!(report
         .blockers
         .contains(&"dirty_slots_exceed_policy".to_string()));
     assert!(report
         .blockers
-        .contains(&"undumped_oplog_records_exceed_policy".to_string()));
+        .contains(&"undumped_wal_records_exceed_policy".to_string()));
     assert!(report
         .blockers
         .contains(&"slot_dump_manifest_required".to_string()));
@@ -2580,7 +2580,7 @@ fn storage_lifecycle_apply_warms_cache_from_page_index() {
         shard_id: 1,
         selected_dump_buckets: Vec::new(),
         max_dump_buckets_per_round: 0,
-        min_undumped_oplog_records: 0,
+        min_undumped_wal_records: 0,
         purge_delayed_destroy: false,
         prune_bucket_dump_manifests: false,
         roll_forward_bucket_dump_installs: false,
@@ -2593,7 +2593,7 @@ fn storage_lifecycle_apply_warms_cache_from_page_index() {
         shard_id: 1,
         selected_dump_buckets: plan.selected_dump_buckets,
         max_dump_buckets_per_round: 0,
-        min_undumped_oplog_records: 0,
+        min_undumped_wal_records: 0,
         purge_delayed_destroy: false,
         prune_bucket_dump_manifests: false,
         roll_forward_bucket_dump_installs: false,
@@ -2874,7 +2874,7 @@ fn storage_lifecycle_plan_matches_cpp_delayed_and_limited_dirty_bucket_dump_poli
             shard_id: 1,
             selected_dump_buckets: Vec::new(),
             max_dump_buckets_per_round: 0,
-            min_undumped_oplog_records: 0,
+            min_undumped_wal_records: 0,
             purge_delayed_destroy: false,
             prune_bucket_dump_manifests: false,
             roll_forward_bucket_dump_installs: false,
@@ -2892,7 +2892,7 @@ fn storage_lifecycle_plan_matches_cpp_delayed_and_limited_dirty_bucket_dump_poli
         shard_id: 1,
         selected_dump_buckets: Vec::new(),
         max_dump_buckets_per_round: 0,
-        min_undumped_oplog_records: 99,
+        min_undumped_wal_records: 99,
         purge_delayed_destroy: false,
         prune_bucket_dump_manifests: false,
         roll_forward_bucket_dump_installs: false,
@@ -2911,7 +2911,7 @@ fn storage_lifecycle_plan_matches_cpp_delayed_and_limited_dirty_bucket_dump_poli
         shard_id: 1,
         selected_dump_buckets: Vec::new(),
         max_dump_buckets_per_round: 2,
-        min_undumped_oplog_records: 1,
+        min_undumped_wal_records: 1,
         purge_delayed_destroy: false,
         prune_bucket_dump_manifests: false,
         roll_forward_bucket_dump_installs: false,
@@ -2921,7 +2921,7 @@ fn storage_lifecycle_plan_matches_cpp_delayed_and_limited_dirty_bucket_dump_poli
         ..StorageLifecycleRequest::default()
     });
     assert!(!limited.dump_delayed);
-    assert!(limited.undumped_oplog_records >= 3);
+    assert!(limited.undumped_wal_records >= 3);
     assert_eq!(limited.selected_dump_buckets.len(), 2);
     assert!(limited.dirty_buckets.len() >= limited.selected_dump_buckets.len());
 
@@ -2929,7 +2929,7 @@ fn storage_lifecycle_plan_matches_cpp_delayed_and_limited_dirty_bucket_dump_poli
         shard_id: 1,
         selected_dump_buckets: vec![delayed.dirty_buckets[0]],
         max_dump_buckets_per_round: 0,
-        min_undumped_oplog_records: 99,
+        min_undumped_wal_records: 99,
         purge_delayed_destroy: false,
         prune_bucket_dump_manifests: false,
         roll_forward_bucket_dump_installs: false,

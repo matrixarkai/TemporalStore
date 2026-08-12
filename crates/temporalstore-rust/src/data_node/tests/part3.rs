@@ -661,7 +661,7 @@ fn gc_does_not_clear_the_dirty_scheduling_tracker() {
     let gc = runtime.submit_gc(
         GcRequest {
             shard_id: 1,
-            retain_oplog_from_sequence: None,
+            retain_wal_from_sequence: None,
             retain_index_log_from_sequence: None,
             retain_page_slabs_from_id: None,
         },
@@ -916,7 +916,7 @@ fn runtime_builds_cpp_style_server_load_report() {
     assert_eq!(shard.load_version, 42);
     assert_eq!(shard.table_name, "tbl");
     assert_eq!(shard.dirty_object_count, 1);
-    assert_eq!(shard.oplog_sequence, 1);
+    assert_eq!(shard.wal_sequence, 1);
 }
 
 #[test]
@@ -1010,7 +1010,7 @@ fn runtime_storage_lifecycle_scheduler_runs_periodically() {
             shard_id: 1,
             selected_dump_buckets: Vec::new(),
             max_dump_buckets_per_round: 0,
-            min_undumped_oplog_records: 0,
+            min_undumped_wal_records: 0,
             purge_delayed_destroy: false,
             prune_bucket_dump_manifests: false,
             roll_forward_bucket_dump_installs: false,
@@ -1074,7 +1074,7 @@ fn runtime_storage_manager_loop_runs_cpp_style_pressure_stages() {
         1,
         StorageManagerOptions {
             max_dump_buckets_per_round: 16,
-            min_undumped_oplog_records: 1,
+            min_undumped_wal_records: 1,
             dirty_bucket_pressure: 1,
             stale_page_slab_pressure: 1,
             reclaimable_physical_bytes_pressure: 1,
@@ -1087,7 +1087,7 @@ fn runtime_storage_manager_loop_runs_cpp_style_pressure_stages() {
     assert!(report.status.ok, "{report:?}");
     for stage in [
         "prepare",
-        "reclaim_oplog",
+        "reclaim_wal",
         "reclaim_memory",
         "expire",
         "reclaim_page",
@@ -1104,11 +1104,11 @@ fn runtime_storage_manager_loop_runs_cpp_style_pressure_stages() {
         );
     }
     assert!(report.pressure.dirty_bucket_count >= 1);
-    assert!(report.pressure.undumped_oplog_records >= 1);
+    assert!(report.pressure.undumped_wal_records >= 1);
     assert_eq!(report.pressure_decisions.len(), 8, "{report:?}");
     for stage in [
         "prepare",
-        "reclaim_oplog",
+        "reclaim_wal",
         "reclaim_memory",
         "expire",
         "reclaim_page",
@@ -1126,24 +1126,24 @@ fn runtime_storage_manager_loop_runs_cpp_style_pressure_stages() {
         assert!(!decision.signals.is_empty(), "{decision:?}");
         assert!(decision.skip_reason.is_none(), "{decision:?}");
     }
-    let reclaim_oplog = report
+    let reclaim_wal = report
         .pressure_decisions
         .iter()
-        .find(|decision| decision.stage == "reclaim_oplog")
+        .find(|decision| decision.stage == "reclaim_wal")
         .unwrap();
-    assert!(reclaim_oplog.pressure_active, "{reclaim_oplog:?}");
-    assert!(reclaim_oplog
+    assert!(reclaim_wal.pressure_active, "{reclaim_wal:?}");
+    assert!(reclaim_wal
         .signals
         .iter()
         .any(|signal| signal.name == "dirty_slot_count" && signal.over_threshold));
-    assert!(reclaim_oplog
+    assert!(reclaim_wal
         .signals
         .iter()
-        .any(|signal| signal.name == "undumped_oplog_records" && signal.over_threshold));
-    assert!(reclaim_oplog
+        .any(|signal| signal.name == "undumped_wal_records" && signal.over_threshold));
+    assert!(reclaim_wal
         .trigger_reasons
         .iter()
-        .any(|reason| reason == "dirty_slot_pressure" || reason == "undumped_oplog_pressure"));
+        .any(|reason| reason == "dirty_slot_pressure" || reason == "undumped_wal_pressure"));
     let reclaim_memory = report
         .pressure_decisions
         .iter()
@@ -1189,7 +1189,7 @@ fn runtime_storage_manager_loop_runs_cpp_style_pressure_stages() {
     let stats = runtime.stats();
     assert_eq!(stats.storage_manager_loops, 1);
     assert_eq!(stats.storage_manager_prepare_runs, 1);
-    assert_eq!(stats.storage_manager_reclaim_oplog_runs, 1);
+    assert_eq!(stats.storage_manager_reclaim_wal_runs, 1);
     assert_eq!(stats.storage_manager_reclaim_memory_runs, 1);
     assert_eq!(stats.storage_manager_expire_runs, 1);
     assert_eq!(stats.storage_manager_reclaim_page_runs, 1);
@@ -1252,7 +1252,7 @@ fn runtime_storage_manager_scale_repeats_cpp_style_pressure_stages() {
             17,
             StorageManagerOptions {
                 max_dump_buckets_per_round: 64,
-                min_undumped_oplog_records: 1,
+                min_undumped_wal_records: 1,
                 dirty_bucket_pressure: 1,
                 stale_page_slab_pressure: 1,
                 reclaimable_physical_bytes_pressure: 1,
@@ -1267,7 +1267,7 @@ fn runtime_storage_manager_scale_repeats_cpp_style_pressure_stages() {
 
     let required_stages = [
         "prepare",
-        "reclaim_oplog",
+        "reclaim_wal",
         "reclaim_memory",
         "expire",
         "reclaim_page",
@@ -1289,7 +1289,7 @@ fn runtime_storage_manager_scale_repeats_cpp_style_pressure_stages() {
             );
         }
         assert!(report.pressure.dirty_bucket_count >= 1, "{report:?}");
-        assert!(report.pressure.undumped_oplog_records >= 1, "{report:?}");
+        assert!(report.pressure.undumped_wal_records >= 1, "{report:?}");
         assert!(report.lifecycle_report.is_some(), "{report:?}");
         assert!(
             report.gc_report.as_ref().is_some_and(|gc| gc.status.ok),
@@ -1325,7 +1325,7 @@ fn runtime_storage_manager_scale_repeats_cpp_style_pressure_stages() {
     assert_eq!(stats.storage_manager_loops, reports.len() as u64);
     assert_eq!(stats.storage_manager_prepare_runs, reports.len() as u64);
     assert_eq!(
-        stats.storage_manager_reclaim_oplog_runs,
+        stats.storage_manager_reclaim_wal_runs,
         reports.len() as u64
     );
     assert_eq!(
@@ -1589,7 +1589,7 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
     let submitted = runtime.submit_gc(
         GcRequest {
             shard_id: 1,
-            retain_oplog_from_sequence: Some(3),
+            retain_wal_from_sequence: Some(3),
             retain_index_log_from_sequence: Some(2),
             retain_page_slabs_from_id: Some(2),
         },
@@ -1602,7 +1602,7 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
     assert!(output.status.ok);
     assert_eq!(output.cache_entries_removed, 2);
     assert!(output.cache_disk_bytes_removed > 0);
-    assert_eq!(output.oplog_records_removed, 2);
+    assert_eq!(output.wal_records_removed, 2);
     assert_eq!(output.index_log_records_removed, 1);
     assert_eq!(output.page_slabs_removed, 1);
     assert!(output.page_slabs_removed_physical_bytes > 0);
@@ -1670,7 +1670,7 @@ fn operator_gc_retains_slabs_referenced_by_dump_manifest() {
     let submitted = runtime.submit_gc(
         GcRequest {
             shard_id: 1,
-            retain_oplog_from_sequence: None,
+            retain_wal_from_sequence: None,
             retain_index_log_from_sequence: None,
             retain_page_slabs_from_id: Some(u64::MAX),
         },
@@ -1841,7 +1841,7 @@ fn runtime_honors_inflight_cancellation_before_gc_side_effects() {
         submitted_at_ms: now_ms(),
         request: TaskRequest::Gc(GcRequest {
             shard_id: 1,
-            retain_oplog_from_sequence: Some(2),
+            retain_wal_from_sequence: Some(2),
             retain_index_log_from_sequence: Some(2),
             retain_page_slabs_from_id: None,
         }),
@@ -1952,7 +1952,7 @@ fn runtime_rejects_background_work_when_background_queue_is_full() {
     let rejected = runtime.submit_gc(
         GcRequest {
             shard_id: 1,
-            retain_oplog_from_sequence: None,
+            retain_wal_from_sequence: None,
             retain_index_log_from_sequence: None,
             retain_page_slabs_from_id: None,
         },
@@ -2036,7 +2036,7 @@ fn storage_manager_cycle_runs_as_bounded_background_data_node_task() {
         response.report.cxx_stage_order,
         vec![
             "prepare",
-            "reclaim_oplog",
+            "reclaim_wal",
             "expire",
             "evict",
             "reclaim_page",
@@ -2049,7 +2049,7 @@ fn storage_manager_cycle_runs_as_bounded_background_data_node_task() {
         .report
         .stages
         .iter()
-        .any(|stage| stage.stage == "reclaim_oplog" && stage.dumped_bucket_count >= 1));
+        .any(|stage| stage.stage == "reclaim_wal" && stage.dumped_bucket_count >= 1));
     assert_eq!(runtime.stats().storage_manager_runs, 1);
     assert_eq!(runtime.stats().background_queue_depth, 0);
 }
@@ -2177,7 +2177,7 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
             shard_id: 8,
             max_dump_buckets_per_round: 3,
             enable_prepare: true,
-            enable_oplog_reclaim: true,
+            enable_wal_reclaim: true,
             enable_expire: false,
             enable_evict: true,
             enable_page_reclaim: true,
@@ -2187,7 +2187,7 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
             follower_replay_cursors: vec![crate::engine::reports::BucketDumpFollowerReplayCursor {
                 follower_id: "follower-lagging-runtime".to_string(),
                 shard_id: 8,
-                oplog_sequence: 1,
+                wal_sequence: 1,
                 index_log_sequence: 1,
             }],
             raft_snapshot_refs: vec![crate::engine::reports::BucketDumpRaftSnapshotRef {
@@ -2195,7 +2195,7 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
                 shard_id: 8,
                 last_included_index: 1,
                 last_included_term: 1,
-                oplog_sequence: 1,
+                wal_sequence: 1,
                 index_log_sequence: 1,
             }],
             page_gc_raft_install_floor_slab_id: Some(1),
@@ -2237,7 +2237,7 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
     assert!(running.last_pressure_snapshot.is_some());
     let pressure = running.last_pressure_snapshot.as_ref().unwrap();
     assert!(pressure.dirty_bucket_count >= 1, "{pressure:?}");
-    assert!(pressure.undumped_oplog_records >= 1, "{pressure:?}");
+    assert!(pressure.undumped_wal_records >= 1, "{pressure:?}");
     assert!(pressure.wal_bytes >= 1, "{pressure:?}");
     assert!(pressure.index_log_bytes >= 1, "{pressure:?}");
     assert!(pressure.cache_memory_bytes >= 1, "{pressure:?}");
@@ -2262,7 +2262,7 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
             && stage.pressure_signal.contains("dirty_slots")
             && stage.pressure_before >= stage.pressure_after));
     assert!(running.last_phase_reports.iter().any(|stage| {
-        stage.stage == "reclaim_oplog"
+        stage.stage == "reclaim_wal"
             && !stage.selected_buckets.is_empty()
             && stage.wal_floor_sequence >= 1
             && stage.index_log_floor_sequence >= 1
@@ -2285,7 +2285,7 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
         running
             .last_phase_reports
             .iter()
-            .any(|stage| stage.stage == "reclaim_oplog"
+            .any(|stage| stage.stage == "reclaim_wal"
                 && stage.pressure_signal.contains("wal_bytes"))
     );
     assert!(!running.last_phase_reports.is_empty());

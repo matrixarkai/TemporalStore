@@ -1550,7 +1550,7 @@ fn storage_manager_cycle_runs_prepare_reclaim_evict_expire_compact_and_index_gc(
     let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
         shard_id: 1,
         max_dump_buckets_per_round: 16,
-        min_undumped_oplog_records: 0,
+        min_undumped_wal_records: 0,
         warm_cache: true,
         ..StorageManagerCycleRequest::default()
     });
@@ -1558,7 +1558,7 @@ fn storage_manager_cycle_runs_prepare_reclaim_evict_expire_compact_and_index_gc(
     assert!(report.completed, "{report:?}");
     for phase in [
         "prepare",
-        "reclaim_oplog",
+        "reclaim_wal",
         "evict",
         "expire",
         "compact",
@@ -1594,7 +1594,7 @@ fn storage_manager_cycle_runs_prepare_reclaim_evict_expire_compact_and_index_gc(
         report.cxx_stage_order,
         vec![
             "prepare",
-            "reclaim_oplog",
+            "reclaim_wal",
             "expire",
             "evict",
             "reclaim_page",
@@ -1660,7 +1660,7 @@ fn storage_data_structure_api_parity_report_covers_stream_block_and_manager_surf
         report.storage_manager_stage_order,
         vec![
             "prepare",
-            "reclaim_oplog",
+            "reclaim_wal",
             "expire",
             "evict",
             "reclaim_page",
@@ -1729,7 +1729,7 @@ fn storage_manager_loop_runs_prepare_reclaim_evict_expire_compact_and_index_gc()
         lifecycle: StorageLifecycleRequest {
             shard_id: 1,
             max_dump_buckets_per_round: 16,
-            min_undumped_oplog_records: 0,
+            min_undumped_wal_records: 0,
             purge_delayed_destroy: true,
             prune_bucket_dump_manifests: true,
             roll_forward_bucket_dump_installs: true,
@@ -1883,7 +1883,7 @@ fn recovery_reports_reused_object_id_conflicts() {
 }
 
 #[test]
-fn crash_recovery_report_covers_oplog_index_page_and_band_manifest() {
+fn crash_recovery_report_covers_wal_index_page_and_band_manifest() {
     let cache_dir = unique_temp_path("recovery-cache");
     let page_dir = unique_temp_path("recovery-pages");
     let index_dir = unique_temp_path("recovery-index");
@@ -1923,7 +1923,7 @@ fn crash_recovery_report_covers_oplog_index_page_and_band_manifest() {
 
     assert!(report.index_bytes > 0);
     assert!(report.index_write_atomic);
-    assert_eq!(report.oplog_records, 2);
+    assert_eq!(report.wal_records, 2);
     assert_eq!(report.index_log_records, 2);
     assert_eq!(report.active_page_slab_ids, vec![0, 1]);
     assert_eq!(report.live_page_slab_ids, vec![0, 1]);
@@ -2209,7 +2209,7 @@ fn crash_recovery_rebuilds_missing_band_manifest_from_page_stream() {
     recovered.load_shard(1);
     let report = recovered.storage_recovery_report(1);
 
-    assert_eq!(report.oplog_records, 2);
+    assert_eq!(report.wal_records, 2);
     assert_eq!(report.index_log_records, 2);
     assert_eq!(report.active_page_slab_ids, vec![0, 1]);
     assert_eq!(report.live_page_slab_ids, vec![0, 1]);

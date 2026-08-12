@@ -55,7 +55,7 @@ fn data_raft_log_codec_round_trips_cxx_style_header() {
         raft_index: 11,
         log_id: 13,
         log_size: 0,
-        oplog_sequence: 17,
+        wal_sequence: 17,
         command: Command::StringSet {
             key: "k".to_string(),
             value: b"v".to_vec(),
@@ -75,7 +75,7 @@ fn data_raft_log_codec_round_trips_cxx_style_header() {
     assert_eq!(decoded.shard_id, entry.shard_id);
     assert_eq!(decoded.raft_index, entry.raft_index);
     assert_eq!(decoded.log_id, entry.log_id);
-    assert_eq!(decoded.oplog_sequence, entry.oplog_sequence);
+    assert_eq!(decoded.wal_sequence, entry.wal_sequence);
     assert_eq!(decoded.command, entry.command);
     assert!(decoded.log_size > 0);
 }
@@ -88,7 +88,7 @@ fn data_raft_log_codec_rejects_bad_header_and_sequence() {
         raft_index: 11,
         log_id: 13,
         log_size: 0,
-        oplog_sequence: 17,
+        wal_sequence: 17,
         command: Command::StringSet {
             key: "k".to_string(),
             value: b"v".to_vec(),
@@ -116,7 +116,7 @@ fn data_raft_log_codec_rejects_bad_header_and_sequence() {
     ));
 
     let zero_sequence = DataRaftLogCodecEntry {
-        oplog_sequence: 0,
+        wal_sequence: 0,
         ..entry
     };
     assert!(matches!(
@@ -138,7 +138,7 @@ fn cpp_data_raft_replication_rejects_corrupt_log_payload() {
         raft_index: 1,
         log_id: 1,
         log_size: 0,
-        oplog_sequence: 1,
+        wal_sequence: 1,
         command: Command::StringSet {
             key: "clicks".to_string(),
             value: b"1".to_vec(),
@@ -361,7 +361,7 @@ fn temporal_raft_data_node_backend_persists_log_snapshot_read_index_and_leader_t
         raft_index: 1,
         log_id: 1,
         log_size: 0,
-        oplog_sequence: 1,
+        wal_sequence: 1,
         command,
     })
     .unwrap();
@@ -445,7 +445,7 @@ fn temporal_raft_data_node_backend_rejects_corrupt_storage_apply_fence_on_restar
         raft_index: 1,
         log_id: 1,
         log_size: 0,
-        oplog_sequence: 1,
+        wal_sequence: 1,
         command: Command::StringSet {
             key: "TemporalRaft-corrupt-fence".to_string(),
             value: b"value".to_vec(),
@@ -610,7 +610,7 @@ fn committed_data_raft_applier_replays_once_and_rejects_wrong_shard() {
         raft_index: 11,
         log_id: 13,
         log_size: 0,
-        oplog_sequence: 17,
+        wal_sequence: 17,
         command: Command::StringSet {
             key: "k".to_string(),
             value: b"v".to_vec(),
@@ -622,7 +622,7 @@ fn committed_data_raft_applier_replays_once_and_rejects_wrong_shard() {
     let response = applier.apply(11, &committed, &engine).unwrap();
     assert_eq!(response, Some(CommandResponse::Empty));
     assert_eq!(applier.applied_raft_index(), 11);
-    assert_eq!(applier.applied_oplog_sequence(), 17);
+    assert_eq!(applier.applied_wal_sequence(), 17);
     assert_eq!(applier.apply(11, &committed, &engine).unwrap(), None);
 
     let read = engine.execute(ExecuteRequest {
@@ -643,7 +643,7 @@ fn committed_data_raft_applier_replays_once_and_rejects_wrong_shard() {
         raft_index: 12,
         log_id: 14,
         log_size: 0,
-        oplog_sequence: 18,
+        wal_sequence: 18,
         command: Command::StringSet {
             key: "k".to_string(),
             value: b"bad".to_vec(),
@@ -683,7 +683,7 @@ fn committed_data_raft_applier_forces_durable_storage_when_async_storage_enabled
         raft_index: 11,
         log_id: 13,
         log_size: 0,
-        oplog_sequence: 17,
+        wal_sequence: 17,
         command: Command::StringSet {
             key: "raft".to_string(),
             value: b"durable".to_vec(),

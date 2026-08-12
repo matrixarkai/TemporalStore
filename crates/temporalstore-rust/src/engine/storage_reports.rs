@@ -192,7 +192,7 @@ impl TemporalEngine {
             shard_id,
             selected_dump_buckets: Vec::new(),
             max_dump_buckets_per_round: 0,
-            min_undumped_oplog_records: 0,
+            min_undumped_wal_records: 0,
             purge_delayed_destroy: false,
             prune_bucket_dump_manifests: false,
             roll_forward_bucket_dump_installs: false,
@@ -221,9 +221,9 @@ impl TemporalEngine {
         let page_format_compatibility = self.storage_page_format_compatibility_report(shard_id);
         let bucket_dump_manifest_count = self.list_bucket_dump_manifests(shard_id).len();
         let interrupted_bucket_dump_install_count = boundary.interrupted_bucket_dump_installs.len();
-        let undumped_oplog_records = boundary
-            .latest_safe_oplog_sequence
-            .saturating_sub(boundary.latest_dump_oplog_sequence);
+        let undumped_wal_records = boundary
+            .latest_safe_wal_sequence
+            .saturating_sub(boundary.latest_dump_wal_sequence);
         let mut blockers = Vec::new();
         if !boundary.stale_index_page_refs.is_empty() {
             blockers.push("stale_index_page_refs".to_string());
@@ -295,11 +295,11 @@ impl TemporalEngine {
             blockers.push("orphan_page_segments_exceed_policy".to_string());
         }
         if policy
-            .max_undumped_oplog_records
-            .map(|limit| undumped_oplog_records > limit)
+            .max_undumped_wal_records
+            .map(|limit| undumped_wal_records > limit)
             .unwrap_or(false)
         {
-            blockers.push("undumped_oplog_records_exceed_policy".to_string());
+            blockers.push("undumped_wal_records_exceed_policy".to_string());
         }
         if policy.require_bucket_dump_manifest
             && bucket_dump_manifest_count == 0
@@ -320,7 +320,7 @@ impl TemporalEngine {
             dirty_bucket_count: plan.dirty_buckets.len(),
             stale_page_slab_count: plan.stale_page_slab_ids.len(),
             orphan_page_slab_count: boundary.orphan_page_slab_ids.len(),
-            undumped_oplog_records,
+            undumped_wal_records,
             corrupt_page_slab_count: boundary.corrupt_page_slab_ids.len(),
             unreadable_page_ref_count: recovery.unreadable_page_refs.len(),
             owner_mismatch_page_ref_count: boundary.owner_mismatch_page_refs.len(),
@@ -353,9 +353,9 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
     ) -> StorageLogCompatibilityReport {
-        let oplog_stats = self.wal_store.stats(shard_id);
+        let wal_stats = self.wal_store.stats(shard_id);
         let index_log_stats = self.index_log_store.stats(shard_id);
-        let oplog_records = self
+        let wal_records = self
             .wal_store
             .scan(shard_id, 0, u64::MAX, u64::MAX)
             .map(|records| records.len())
@@ -367,7 +367,7 @@ impl TemporalEngine {
             .unwrap_or_default();
         StorageLogCompatibilityReport {
             shard_id,
-            oplog_format: "rust-jsonl-command-v1".to_string(),
+            wal_format: "rust-jsonl-command-v1".to_string(),
             index_log_format: "rust-jsonl-shard-index-v1".to_string(),
             compatibility_mode: "rust_native_migration_only".to_string(),
             migration_required: true,
@@ -376,16 +376,16 @@ impl TemporalEngine {
             golden_conversion_required: true,
             rust_native_replay_safe: true,
             cxx_binary_compatible: false,
-            oplog_last_sequence: oplog_stats.last_sequence,
+            wal_last_sequence: wal_stats.last_sequence,
             index_log_last_sequence: index_log_stats.last_sequence,
-            oplog_records,
+            wal_records,
             index_log_records,
-            oplog_bytes: oplog_stats.bytes_written,
+            wal_bytes: wal_stats.bytes_written,
             index_log_bytes: index_log_stats.bytes_written,
             compatibility_gaps: vec![
                 "compatibility mode is migration-only; direct mixed Rust/C++ binary log serving is not supported"
                     .to_string(),
-                "C++ binary/protobuf oplog reader and writer are not implemented".to_string(),
+                "C++ binary/protobuf wal reader and writer are not implemented".to_string(),
                 "C++ binary/protobuf index-log reader and writer are not implemented".to_string(),
                 "golden log conversion/replay suite is required before C++ migration".to_string(),
             ],
@@ -542,9 +542,9 @@ impl TemporalEngine {
         shard_id: ShardId,
     ) -> StorageRecoveryBoundaryReport {
         let manifests = self.list_bucket_dump_manifests(shard_id);
-        let latest_dump_oplog_sequence = manifests
+        let latest_dump_wal_sequence = manifests
             .iter()
-            .map(|manifest| manifest.oplog_sequence)
+            .map(|manifest| manifest.wal_sequence)
             .max()
             .unwrap_or_default();
         let latest_dump_index_log_sequence = manifests
@@ -552,7 +552,7 @@ impl TemporalEngine {
             .map(|manifest| manifest.index_log_sequence)
             .max()
             .unwrap_or_default();
-        let latest_safe_oplog_sequence = self.wal_store.stats(shard_id).last_sequence;
+        let latest_safe_wal_sequence = self.wal_store.stats(shard_id).last_sequence;
         let latest_safe_index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
         let live_page_slab_ids = self
             .live_page_slab_ids(shard_id)
@@ -601,12 +601,12 @@ impl TemporalEngine {
         let object_lifecycle = recovery.object_lifecycle.clone();
         StorageRecoveryBoundaryReport {
             shard_id,
-            latest_safe_oplog_sequence,
+            latest_safe_wal_sequence,
             latest_safe_index_log_sequence,
-            latest_dump_oplog_sequence,
+            latest_dump_wal_sequence,
             latest_dump_index_log_sequence,
-            selected_replay_oplog_sequence: latest_dump_oplog_sequence
-                .min(latest_safe_oplog_sequence),
+            selected_replay_wal_sequence: latest_dump_wal_sequence
+                .min(latest_safe_wal_sequence),
             selected_replay_index_log_sequence: latest_dump_index_log_sequence
                 .min(latest_safe_index_log_sequence),
             orphan_page_slab_ids,

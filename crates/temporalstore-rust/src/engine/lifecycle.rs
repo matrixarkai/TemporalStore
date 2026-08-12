@@ -61,9 +61,9 @@ impl TemporalEngine {
 
     #[deprecated(
         since = "0.1.0",
-        note = "use write_ahead_log_store; oplog naming remains only for legacy compatibility"
+        note = "use write_ahead_log_store; wal naming remains only for legacy compatibility"
     )]
-    pub fn oplog_store(&self) -> LocalWriteAheadLogStore {
+    pub fn wal_store(&self) -> LocalWriteAheadLogStore {
         self.write_ahead_log_store()
     }
 
@@ -134,7 +134,7 @@ impl TemporalEngine {
         // If the latest durable dump manifest is newer than the served index, install
         // it as the load base first (recovers data already dumped into a manifest and
         // then WAL-GC'd). C++ analog: index_->Load() restores the dumped index before
-        // ObjectManager::Load() replays the oplog on top.
+        // ObjectManager::Load() replays the wal on top.
         let installed_manifest_watermark =
             match self.install_latest_manifest_if_newer_on_load(request.shard_id) {
                 Ok(watermark) => watermark,
@@ -145,7 +145,7 @@ impl TemporalEngine {
             };
         let loaded = self.load_index(request.shard_id, eager_cache_warm_on_load());
         // WAL replay watermark, mirroring C++ ObjectManager::Load() reading
-        // index_->GetDumpedLogId(): installed manifest -> its oplog_sequence; no index
+        // index_->GetDumpedLogId(): installed manifest -> its wal_sequence; no index
         // file -> 0 (fresh/async-only shard, replay whole retained WAL); anchored index
         // -> its anchor; unanchored (pre-field) index -> current last_sequence (replay
         // nothing, safe upgrade).
@@ -208,11 +208,11 @@ impl TemporalEngine {
             .entry(AdmissionScope::Shard(request.shard_id))
             .or_default();
         // Replay any WAL records not yet reflected in the loaded index, rebuilding
-        // in-memory state the way C++ ObjectManager::Load() replays the oplog. Without
+        // in-memory state the way C++ ObjectManager::Load() replays the wal. Without
         // this an async_storage write (WAL entry recorded, page/index deferred to the
         // dump) is silently lost on restart if the crash beats the dump.
         if let Err(status) = self.replay_wal_into_shard(request.shard_id, replay_watermark) {
-            // C++ ReplayOplog returns DataLoss on a WAL hole and aborts Load. Unwind the
+            // C++ ReplayWal returns DataLoss on a WAL hole and aborts Load. Unwind the
             // partially-loaded shard and refuse the load rather than serve truncated
             // state -- a not-loaded shard is recoverable/re-routable; silent truncation
             // is not.
@@ -257,7 +257,7 @@ impl TemporalEngine {
 
     /// If the latest durable bucket-dump manifest is newer than the served index,
     /// install it (validate + preflight + restore embedded index) and return its
-    /// oplog_sequence as the WAL replay watermark. `Ok(None)` when nothing newer exists.
+    /// wal_sequence as the WAL replay watermark. `Ok(None)` when nothing newer exists.
     /// `Err` when a newer manifest IS present but will not install: C++ treats
     /// index_->Load() failure as fatal (partition.cc), because once the served snapshot
     /// lags the manifest the intervening WAL records may already be reclaimed, so a
@@ -274,11 +274,11 @@ impl TemporalEngine {
             .load_index(shard_id, false)
             .and_then(|state| state.applied_wal_sequence)
             .unwrap_or(0);
-        if manifest.oplog_sequence <= served_anchor {
+        if manifest.wal_sequence <= served_anchor {
             return Ok(None);
         }
         match self.install_bucket_dump_manifest(&manifest) {
-            Ok(()) => Ok(Some(manifest.oplog_sequence)),
+            Ok(()) => Ok(Some(manifest.wal_sequence)),
             Err(status) => Err(status),
         }
     }
@@ -286,7 +286,7 @@ impl TemporalEngine {
     /// Replay WAL records with sequence greater than `watermark`, re-driving each
     /// through execute (which rebuilds the bucket index + model maps) WITHOUT
     /// re-appending to the WAL or re-persisting the index per record, then anchor and
-    /// persist the reconstructed index once. Mirrors C++ ObjectManager::ReplayOplog,
+    /// persist the reconstructed index once. Mirrors C++ ObjectManager::ReplayWal,
     /// including its strict sequence-continuity check.
     pub(super) fn replay_wal_into_shard(
         &self,
@@ -311,7 +311,7 @@ impl TemporalEngine {
         let mut expected = watermark.saturating_add(1);
         let mut replayed_through = watermark;
         for record in pending {
-            // Strict sequence continuity, matching C++ ObjectManager::ReplayOplog, which
+            // Strict sequence continuity, matching C++ ObjectManager::ReplayWal, which
             // returns DataLoss and aborts Load on a hole in the retained WAL. A gap means
             // a WAL record was lost (partial-GC crash / corruption); refuse the load
             // rather than silently serve a truncated prefix.

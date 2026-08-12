@@ -279,7 +279,7 @@ impl TemporalEngine {
         }
         // Command preconditions are a LEADER-time gate: a command only reaches the WAL after
         // passing them on the leader. WAL replay re-applies already-committed effects (like
-        // C++ ReplayOplog, which does not re-check preconditions), so re-validating here
+        // C++ ReplayWal, which does not re-check preconditions), so re-validating here
         // against reconstructed state + the restart clock is both redundant and unsafe --
         // e.g. a replayed EXPIRE whose earlier deadline has since lapsed would fail the
         // liveness precondition and abort the whole shard load. Skip validation during
@@ -386,7 +386,7 @@ impl TemporalEngine {
                 refresh_bucket_runtime_flags(shard);
             }
             // Parity with C++ TemporalStore (partition.h OnExecuteCmdDone): every
-            // write records an oplog/WAL entry (StringModel::SetValue -> WritePage).
+            // write records an wal/WAL entry (StringModel::SetValue -> WritePage).
             // async_storage only changes whether the commit BLOCKS: sync -> fsync,
             // async (or bulk backfill) -> buffered, no fsync (op_logger_->Commit
             // (nullptr, nullptr)). Page/index materialization stays deferred to dump.
@@ -400,7 +400,7 @@ impl TemporalEngine {
                         // A synchronous write whose durable WAL commit failed is NOT durable: the
                         // WAL is the recovery source of truth (replayed on load), so returning ok
                         // would tell the client a write that is gone after a crash succeeded. C++
-                        // surfaces the oplog Commit failure to the client (partition.h
+                        // surfaces the wal Commit failure to the client (partition.h
                         // OnExecuteCmdDone: it copies the failed commit status into the response)
                         // rather than acking a non-durable write. Match that instead of swallowing
                         // the error. (async/bulk mode is fire-and-forget -- C++
@@ -917,7 +917,7 @@ impl TemporalEngine {
         });
         let expected_stages = [
             "prepare",
-            "reclaim_oplog",
+            "reclaim_wal",
             "expire",
             "evict",
             "reclaim_page",

@@ -81,7 +81,7 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
     let mut status = Status::ok();
     let mut cache_entries_removed = 0;
     let mut cache_disk_bytes_removed = 0;
-    let mut oplog_records_removed = 0;
+    let mut wal_records_removed = 0;
     let mut index_log_records_removed = 0;
     let mut page_slabs_removed = 0;
     let mut page_slabs_removed_physical_bytes = 0;
@@ -97,16 +97,16 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
             status = Status::error("cache_gc_failed", &err.to_string());
         }
     }
-    if let Some(retain_from_sequence) = request.retain_oplog_from_sequence {
+    if let Some(retain_from_sequence) = request.retain_wal_from_sequence {
         if status.ok {
             match inner
                 .engine
                 .write_ahead_log_store()
                 .gc_before_sequence(request.shard_id, retain_from_sequence)
             {
-                Ok(report) => oplog_records_removed = report.records_removed,
+                Ok(report) => wal_records_removed = report.records_removed,
                 Err(err) => {
-                    status = Status::error("oplog_gc_failed", &err.to_string());
+                    status = Status::error("wal_gc_failed", &err.to_string());
                 }
             }
         }
@@ -165,7 +165,7 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
                 shard_id: request.shard_id,
                 selected_dump_buckets: Vec::new(),
                 max_dump_buckets_per_round: 0,
-                min_undumped_oplog_records: 0,
+                min_undumped_wal_records: 0,
                 purge_delayed_destroy: false,
                 prune_bucket_dump_manifests: false,
                 roll_forward_bucket_dump_installs: false,
@@ -190,7 +190,7 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
         collected_objects,
         cache_entries_removed,
         cache_disk_bytes_removed,
-        oplog_records_removed,
+        wal_records_removed,
         index_log_records_removed,
         page_slabs_removed,
         page_slabs_removed_physical_bytes,

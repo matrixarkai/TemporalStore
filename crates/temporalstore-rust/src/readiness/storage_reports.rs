@@ -187,13 +187,13 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
 pub fn storage_cache_dependency_matrix_report() -> StorageCacheDependencyMatrixReport {
     let local_file_store_ready = true;
     let shared_store_checkpoint_manifest_ready = true;
-    let oplog_cursor_retention_ready = true;
+    let wal_cursor_retention_ready = true;
     let page_slab_manifest_ready = true;
     let follower_cursor_retention_ready = true;
     let raft_snapshot_manifest_retention_ready = true;
     let local_shared_store_production_ready = local_file_store_ready
         && shared_store_checkpoint_manifest_ready
-        && oplog_cursor_retention_ready
+        && wal_cursor_retention_ready
         && page_slab_manifest_ready
         && follower_cursor_retention_ready
         && raft_snapshot_manifest_retention_ready;
@@ -221,7 +221,7 @@ pub fn storage_cache_dependency_matrix_report() -> StorageCacheDependencyMatrixR
     StorageCacheDependencyMatrixReport {
         local_file_store_ready,
         shared_store_checkpoint_manifest_ready,
-        oplog_cursor_retention_ready,
+        wal_cursor_retention_ready,
         page_slab_manifest_ready,
         follower_cursor_retention_ready,
         raft_snapshot_manifest_retention_ready,
@@ -246,7 +246,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
     let orphan_page_detection_ready = true;
     let missing_page_ref_detection_ready = true;
     let stale_page_ref_detection_ready = true;
-    let corrupt_page_index_oplog_snapshot_evidence_ready = true;
+    let corrupt_page_index_wal_snapshot_evidence_ready = true;
     let follower_cursor_safe_gc_ready = dependency.follower_cursor_retention_ready
         && dependency.raft_snapshot_manifest_retention_ready;
     let cache_pressure_and_refill_ready = cache_pressure.local_pressure_ready
@@ -327,7 +327,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         "index-GC phase prunes slot dump manifests and rolls forward interrupted installs".to_string(),
         "WAL/index-log reclaim is tied to durable slot dump generations and shared case storage_wal_index_gc_generation_retention validates lagging follower cursor and Raft snapshot blockers before bounded index-GC can truncate logs".to_string(),
         "page-GC dependency planning fails closed for live refs, slot dump manifests, shared-store follower cursors, checkpoint floors, Raft snapshot refs, Raft install floors, and delayed-destroy grace via shared case storage_gc_dependency_retention_matrix".to_string(),
-        "StorageManager pressure decisions expose observed/threshold signals for dirty slots, oplog backlog, cache bytes, stale segments, reclaimable bytes, expired records, manifest/index-GC work, and queue depth".to_string(),
+        "StorageManager pressure decisions expose observed/threshold signals for dirty slots, wal backlog, cache bytes, stale segments, reclaimable bytes, expired records, manifest/index-GC work, and queue depth".to_string(),
         "shared case storage_manager_pressure_scale_evidence runs repeated pressure rounds and validates every C++-style StorageManager phase stays active under scale-like write/read/TTL/cache/stale-page pressure".to_string(),
         "continuous StorageManager runtime report preserves stoppable loop, jitter/backoff, pause/resume, dirty-slot, WAL byte, index-log byte, stale-density, cache-pressure, expired scan debt, delayed-destroy, follower cursor, Raft snapshot floor, retention blocker, selected-slot, skipped-reason, reclaimed-byte, pressure before/after, and compaction-debt evidence".to_string(),
     ];
@@ -373,8 +373,8 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
     if !stale_page_ref_detection_ready {
         missing.push("stale page reference detection".to_string());
     }
-    if !corrupt_page_index_oplog_snapshot_evidence_ready {
-        missing.push("corrupt page/index/oplog/snapshot evidence".to_string());
+    if !corrupt_page_index_wal_snapshot_evidence_ready {
+        missing.push("corrupt page/index/wal/snapshot evidence".to_string());
     }
     if !follower_cursor_safe_gc_ready {
         missing.push("follower-cursor and Raft-snapshot safe GC".to_string());
@@ -419,7 +419,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         orphan_page_detection_ready,
         missing_page_ref_detection_ready,
         stale_page_ref_detection_ready,
-        corrupt_page_index_oplog_snapshot_evidence_ready,
+        corrupt_page_index_wal_snapshot_evidence_ready,
         follower_cursor_safe_gc_ready,
         cache_pressure_and_refill_ready,
         shared_store_sync_async_replay_ready,

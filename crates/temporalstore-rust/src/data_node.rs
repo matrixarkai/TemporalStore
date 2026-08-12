@@ -170,8 +170,8 @@ pub struct DataNodeRuntimeStats {
     pub storage_manager_loops: u64,
     #[serde(default)]
     pub storage_manager_prepare_runs: u64,
-    #[serde(default)]
-    pub storage_manager_reclaim_oplog_runs: u64,
+    #[serde(rename = "storage_manager_reclaim_oplog_runs", default)]
+    pub storage_manager_reclaim_wal_runs: u64,
     #[serde(default)]
     pub storage_manager_reclaim_memory_runs: u64,
     #[serde(default)]
@@ -330,7 +330,7 @@ fn data_node_storage_lifecycle_metrics(stats: &DataNodeRuntimeStats) -> BTreeMap
     metrics.insert(
         "storage_manager_reclaim_count".to_string(),
         stats
-            .storage_manager_reclaim_oplog_runs
+            .storage_manager_reclaim_wal_runs
             .saturating_add(stats.storage_manager_reclaim_memory_runs)
             .saturating_add(stats.storage_manager_reclaim_page_runs),
     );
@@ -461,7 +461,7 @@ fn apply_shard_storage_metrics(
             "bytes_written",
             storage.bytes_written.max(shard.block_store_bytes_written),
         );
-        add(metrics, "append_watermark", shard.oplog_sequence);
+        add(metrics, "append_watermark", shard.wal_sequence);
         add(
             metrics,
             "compaction_watermark",
@@ -740,8 +740,8 @@ pub struct CompactionResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GcRequest {
     pub shard_id: ShardId,
-    #[serde(default)]
-    pub retain_oplog_from_sequence: Option<u64>,
+    #[serde(rename = "retain_oplog_from_sequence", default)]
+    pub retain_wal_from_sequence: Option<u64>,
     #[serde(default)]
     pub retain_index_log_from_sequence: Option<u64>,
     #[serde(default)]
@@ -756,7 +756,8 @@ pub struct GcResponse {
     pub collected_objects: usize,
     pub cache_entries_removed: usize,
     pub cache_disk_bytes_removed: u64,
-    pub oplog_records_removed: usize,
+    #[serde(rename = "oplog_records_removed")]
+    pub wal_records_removed: usize,
     pub index_log_records_removed: usize,
     #[serde(alias = "page_segments_removed")]
     pub page_slabs_removed: usize,
@@ -781,8 +782,8 @@ pub struct StorageManagerOptions {
     #[serde(default = "default_storage_manager_max_dump_buckets_per_round")]
     #[serde(rename = "max_dump_slots_per_round")]
     pub max_dump_buckets_per_round: usize,
-    #[serde(default)]
-    pub min_undumped_oplog_records: u64,
+    #[serde(rename = "min_undumped_oplog_records", default)]
+    pub min_undumped_wal_records: u64,
     #[serde(default)]
     #[serde(rename = "dirty_slot_pressure")]
     pub dirty_bucket_pressure: usize,
@@ -797,8 +798,8 @@ pub struct StorageManagerOptions {
     pub cache_disk_bytes_pressure: u64,
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_prepare: bool,
-    #[serde(default = "default_storage_manager_stage_enabled")]
-    pub enable_oplog_reclaim: bool,
+    #[serde(rename = "enable_oplog_reclaim", default = "default_storage_manager_stage_enabled")]
+    pub enable_wal_reclaim: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_memory_reclaim: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
@@ -817,14 +818,14 @@ impl Default for StorageManagerOptions {
     fn default() -> Self {
         Self {
             max_dump_buckets_per_round: default_storage_manager_max_dump_buckets_per_round(),
-            min_undumped_oplog_records: 1,
+            min_undumped_wal_records: 1,
             dirty_bucket_pressure: 1,
             stale_page_slab_pressure: 1,
             reclaimable_physical_bytes_pressure: 1,
             cache_memory_bytes_pressure: 1,
             cache_disk_bytes_pressure: 1,
             enable_prepare: true,
-            enable_oplog_reclaim: true,
+            enable_wal_reclaim: true,
             enable_memory_reclaim: true,
             enable_expire: true,
             enable_page_gc: true,
@@ -904,7 +905,8 @@ pub struct StorageManagerPressureSnapshot {
     pub dirty_bucket_count: usize,
     #[serde(rename = "selected_dirty_slot_count")]
     pub selected_dirty_bucket_count: usize,
-    pub undumped_oplog_records: u64,
+    #[serde(rename = "undumped_oplog_records")]
+    pub undumped_wal_records: u64,
     #[serde(default)]
     pub wal_bytes: u64,
     #[serde(default)]
@@ -1266,7 +1268,7 @@ struct MutableRuntimeStats {
     storage_manager_runs: u64,
     storage_manager_loops: u64,
     storage_manager_prepare_runs: u64,
-    storage_manager_reclaim_oplog_runs: u64,
+    storage_manager_reclaim_wal_runs: u64,
     storage_manager_reclaim_memory_runs: u64,
     storage_manager_expire_runs: u64,
     storage_manager_reclaim_page_runs: u64,

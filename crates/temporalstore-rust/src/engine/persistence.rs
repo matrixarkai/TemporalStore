@@ -17,7 +17,7 @@ impl TemporalEngine {
             bucket_dump_manifest_path(&self.index_dir, manifest.shard_id, &manifest.manifest_id);
         let bytes = serde_json::to_vec_pretty(manifest)
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
-        // The manifest is the durable reclaim watermark (oplog_sequence) + recovery
+        // The manifest is the durable reclaim watermark (wal_sequence) + recovery
         // index; WAL reclaim durably truncates the WAL based on it. It MUST be written
         // durably and atomically -- a bare fs::write left it in the page cache, so a
         // crash after the (durable) WAL reclaim but before the manifest reached disk
@@ -36,7 +36,7 @@ impl TemporalEngine {
             manifest.shard_id,
             &manifest.manifest_id,
             phase,
-            manifest.oplog_sequence,
+            manifest.wal_sequence,
             manifest.index_log_sequence,
         )
     }
@@ -46,7 +46,7 @@ impl TemporalEngine {
         shard_id: ShardId,
         manifest_id: &str,
         phase: &str,
-        oplog_sequence: u64,
+        wal_sequence: u64,
         index_log_sequence: u64,
     ) -> Result<(), std::io::Error> {
         write_bucket_dump_install_marker(
@@ -55,7 +55,7 @@ impl TemporalEngine {
                 shard_id,
                 manifest_id: manifest_id.to_string(),
                 phase: phase.to_string(),
-                oplog_sequence,
+                wal_sequence,
                 index_log_sequence,
                 created_unix_ms: now_ms(),
             },
@@ -89,7 +89,7 @@ impl TemporalEngine {
                 || !requested_buckets.is_disjoint(&existing_buckets);
             if overlaps
                 && existing.index_log_sequence >= manifest.index_log_sequence
-                && existing.oplog_sequence >= manifest.oplog_sequence
+                && existing.wal_sequence >= manifest.wal_sequence
             {
                 return Err(Status::error(
                     "slot_dump_generation_conflict",

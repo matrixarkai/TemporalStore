@@ -221,7 +221,7 @@ pub(super) fn bucket_dump_manifest_prune_plan_at(
         .filter(|cursor| cursor.shard_id == shard_id)
     {
         let Some(anchor) = manifests.iter().rev().find(|manifest| {
-            manifest.oplog_sequence <= cursor.oplog_sequence
+            manifest.wal_sequence <= cursor.wal_sequence
                 && manifest.index_log_sequence <= cursor.index_log_sequence
         }) else {
             continue;
@@ -230,9 +230,9 @@ pub(super) fn bucket_dump_manifest_prune_plan_at(
             follower_blocks.push(BucketDumpFollowerRetentionBlock {
                 follower_id: cursor.follower_id.clone(),
                 manifest_id: anchor.manifest_id.clone(),
-                manifest_oplog_sequence: anchor.oplog_sequence,
+                manifest_wal_sequence: anchor.wal_sequence,
                 manifest_index_log_sequence: anchor.index_log_sequence,
-                cursor_oplog_sequence: cursor.oplog_sequence,
+                cursor_wal_sequence: cursor.wal_sequence,
                 cursor_index_log_sequence: cursor.index_log_sequence,
                 reason: "follower_cursor_anchor".to_string(),
             });
@@ -243,7 +243,7 @@ pub(super) fn bucket_dump_manifest_prune_plan_at(
         .filter(|snapshot| snapshot.shard_id == shard_id)
     {
         let Some(anchor) = manifests.iter().rev().find(|manifest| {
-            manifest.oplog_sequence <= snapshot.oplog_sequence
+            manifest.wal_sequence <= snapshot.wal_sequence
                 && manifest.index_log_sequence <= snapshot.index_log_sequence
         }) else {
             continue;
@@ -252,9 +252,9 @@ pub(super) fn bucket_dump_manifest_prune_plan_at(
             raft_snapshot_blocks.push(BucketDumpRaftSnapshotRetentionBlock {
                 snapshot_id: snapshot.snapshot_id.clone(),
                 manifest_id: anchor.manifest_id.clone(),
-                manifest_oplog_sequence: anchor.oplog_sequence,
+                manifest_wal_sequence: anchor.wal_sequence,
                 manifest_index_log_sequence: anchor.index_log_sequence,
-                snapshot_oplog_sequence: snapshot.oplog_sequence,
+                snapshot_wal_sequence: snapshot.wal_sequence,
                 snapshot_index_log_sequence: snapshot.index_log_sequence,
                 last_included_index: snapshot.last_included_index,
                 last_included_term: snapshot.last_included_term,
@@ -405,7 +405,7 @@ pub(super) fn bucket_dump_fault_scenario(
 pub(super) fn bucket_dump_generation_id(manifest: &BucketDumpManifest) -> String {
     let mut digest = Sha256::new();
     digest.update(manifest.shard_id.to_le_bytes());
-    digest.update(manifest.oplog_sequence.to_le_bytes());
+    digest.update(manifest.wal_sequence.to_le_bytes());
     digest.update(manifest.index_log_sequence.to_le_bytes());
     for bucket_id in &manifest.bucket_ids {
         digest.update(bucket_id.to_le_bytes());

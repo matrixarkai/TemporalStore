@@ -3031,7 +3031,7 @@ fn verify_shared_store_replay(
                 follower_root.join("indexes"),
             );
             follower.load_shard(1);
-            replicator.replay_oplog_strict(1, 0, &follower).await?;
+            replicator.replay_wal_strict(1, 0, &follower).await?;
             Ok::<bool, temporalstore_rust::SharedStoreReplicationError>(
                 context_node_and_event_read_ok(&follower, extract),
             )

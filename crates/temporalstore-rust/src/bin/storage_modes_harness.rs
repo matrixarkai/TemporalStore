@@ -43,14 +43,14 @@ struct SharedStoreModeSummary {
 #[derive(Debug, Serialize)]
 struct ReplaySummary {
     applied: usize,
-    last_oplog_index: u64,
+    last_wal_index: u64,
 }
 
 impl From<ReplayReport> for ReplaySummary {
     fn from(report: ReplayReport) -> Self {
         Self {
             applied: report.applied,
-            last_oplog_index: report.last_oplog_index,
+            last_wal_index: report.last_wal_index,
         }
     }
 }
@@ -243,7 +243,7 @@ async fn replay_dynamic_shared_store(
     );
     follower.load_shard(shard_id);
     replicator
-        .replay_oplog_strict(shard_id, 0, &follower)
+        .replay_wal_strict(shard_id, 0, &follower)
         .await
         .expect("dynamic shared-store replay should succeed");
     match follower
@@ -316,7 +316,7 @@ async fn run_shared_store_mode(
     );
     follower.load_shard(shard_id);
     let replay = replicator
-        .replay_oplog_strict(shard_id, 0, &follower)
+        .replay_wal_strict(shard_id, 0, &follower)
         .await
         .expect("strict shared-store replay should succeed");
     let read_value = match follower

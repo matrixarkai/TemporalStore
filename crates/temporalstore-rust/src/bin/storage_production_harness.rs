@@ -104,7 +104,7 @@ struct StorageRecoveryErrorSummary {
     missing_indexed_timestamps: usize,
     orphan_packed_timestamps: usize,
     duplicate_packed_timestamps: usize,
-    replay_boundary_oplog_sequence: u64,
+    replay_boundary_wal_sequence: u64,
     replay_boundary_index_log_sequence: u64,
 }
 
@@ -180,14 +180,14 @@ async fn run_case(root: &Path, case: &StorageMigrationCase) -> StorageProduction
         shard_id: case.shard_id,
         selected_dump_buckets: dirty_buckets,
         max_dump_buckets_per_round: 64,
-        min_undumped_oplog_records: 0,
+        min_undumped_wal_records: 0,
         purge_delayed_destroy: true,
         prune_bucket_dump_manifests: true,
         roll_forward_bucket_dump_installs: true,
         follower_replay_cursors: vec![BucketDumpFollowerReplayCursor {
             follower_id: "storage-production-lagging-follower".to_string(),
             shard_id: case.shard_id,
-            oplog_sequence: 0,
+            wal_sequence: 0,
             index_log_sequence: 0,
         }],
         page_gc_shared_store_cursors: Vec::new(),
@@ -287,7 +287,7 @@ async fn run_shared_store_mode(
         case.shard_id,
     );
     let replay = replicator
-        .replay_oplog_strict(case.shard_id, 0, &follower)
+        .replay_wal_strict(case.shard_id, 0, &follower)
         .await
         .expect("storage production shared-store replay should succeed");
     assert_eq!(replay.applied, mutation_count(case));
@@ -414,7 +414,7 @@ fn recovery_error_summary(report: &StorageRecoveryReport) -> StorageRecoveryErro
         missing_indexed_timestamps: report.feature_page_layout.missing_indexed_timestamps.len(),
         orphan_packed_timestamps: report.feature_page_layout.orphan_packed_timestamps.len(),
         duplicate_packed_timestamps: report.feature_page_layout.duplicate_packed_timestamps.len(),
-        replay_boundary_oplog_sequence: report.boundary.selected_replay_oplog_sequence,
+        replay_boundary_wal_sequence: report.boundary.selected_replay_wal_sequence,
         replay_boundary_index_log_sequence: report.boundary.selected_replay_index_log_sequence,
     }
 }
