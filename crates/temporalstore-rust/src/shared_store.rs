@@ -1139,6 +1139,24 @@ where
         Ok(serde_json::from_slice(&bytes)?)
     }
 
+    fn parse_wal_entry_object(
+        &self,
+        key: &str,
+        bytes: &[u8],
+    ) -> Result<SharedStoreWalEntry, SharedStoreReplicationError> {
+        if let Ok(object) = serde_json::from_slice::<SharedStoreOplogObject>(bytes) {
+            let entry_bytes = serde_json::to_vec(&object.entry)?;
+            verify_checksum(
+                key,
+                &entry_bytes,
+                object.entry_byte_size,
+                &object.entry_sha256,
+            )?;
+            return Ok(object.entry);
+        }
+        Ok(serde_json::from_slice(bytes)?)
+    }
+
     async fn load_wal_entries(
         &self,
         shard_id: ShardId,
