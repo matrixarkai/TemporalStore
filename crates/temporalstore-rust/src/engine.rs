@@ -234,12 +234,13 @@ impl TemporalEngine {
             .as_ref()
             .map(|info| info.end_routing_bucket)
             .unwrap_or(u32::MAX);
-        // Bulk backfill defers this model-map -> bucket-index promotion (an O(store)
-        // scan plus secondary-view rebuild) to a single flush_shard_index() call.
-        // Run per command it is the dominant O(n^2) cost of bulk ingest; fresh
-        // writes live in the model maps, so flush reconstructs bucket_index and the
-        // secondary views losslessly.
-        if !bulk_ingest_mode()
+        // Bulk backfill AND WAL replay defer this model-map -> bucket-index promotion
+        // (an O(store) scan plus secondary-view rebuild) to a single reconstruct pass
+        // (flush_shard_index() / replay_wal_into_shard()'s tail). Run per command it is
+        // the dominant O(n^2) cost of a large ingest/reload; fresh writes live in the
+        // model maps, so the single reconstruct rebuilds bucket_index and the secondary
+        // views losslessly.
+        if !defer_bucket_index_reconstruct()
             && promote_model_maps_to_bucket_index_authority(
                 request.shard_id,
                 shard,
@@ -362,14 +363,15 @@ impl TemporalEngine {
                     }
                 }
             }
-            // Rebuild the first-index only outside bulk backfill. In bulk mode the
-            // promote step that would populate bucket_map is deferred to
-            // flush_shard_index(), so bucket_map stays empty for the whole backfill;
-            // the `is_empty()` clause would then fire a full O(store) rebuild on
-            // EVERY record -> O(n^2) (the context path never updates bucket_index
-            // directly, so it hit this every time). flush_shard_index() rebuilds the
-            // first-index once at the end, so deferring here is correctness-preserving.
-            if !bulk_ingest_mode()
+            // Rebuild the first-index only outside the deferred-reconstruct windows
+            // (bulk backfill / WAL replay). In those windows the promote step that
+            // would populate bucket_map is deferred to the single reconstruct, so
+            // bucket_map stays empty; the `is_empty()` clause (and the context path,
+            // which never updates bucket_index directly) would then fire a full
+            // O(store) rebuild on EVERY record -> O(n^2). The single reconstruct
+            // rebuilds the first-index once at the end, so deferring here is
+            // correctness-preserving.
+            if !defer_bucket_index_reconstruct()
                 && (!command_updates_bucket_index_directly(&command)
                     || shard.bucket_index.bucket_map.is_empty())
             {
@@ -380,7 +382,7 @@ impl TemporalEngine {
                     end_routing_bucket,
                 );
             }
-            if !bulk_ingest_mode() {
+            if !defer_bucket_index_reconstruct() {
                 refresh_bucket_runtime_flags(shard);
             }
             // Parity with C++ TemporalStore (partition.h OnExecuteCmdDone): every
@@ -1073,6 +1075,19 @@ fn bulk_ingest_mode() -> bool {
             .as_str(),
         "1" | "true" | "yes" | "on"
     )
+}
+
+/// Whether the per-command model-map -> bucket-index promotion and first-index
+/// rebuild should be DEFERRED to a single reconstruct pass. True during bulk
+/// backfill (MATRIXARK_BULK_INGEST) and during WAL replay on load: both re-drive
+/// many already-committed writes with no interleaved client reads, so running the
+/// O(store) promote/rebuild per command is the dominant O(n^2) cost. Deferring is
+/// lossless because point string/hash/set reads+writes maintain the bucket_map /
+/// object_page_lookup directly via upsert_bucket_index_page/read_bucket_index_value,
+/// and the deferred context (model-map) records are append-only until the single
+/// reconstruct folds them in (bulk: flush_shard_index(); replay: replay_wal_into_shard()).
+fn defer_bucket_index_reconstruct() -> bool {
+    bulk_ingest_mode() || replaying_wal()
 }
 
 /// Whether load_shard should eagerly warm the in-memory cache tier from the page

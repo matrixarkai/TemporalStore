@@ -348,6 +348,27 @@ impl TemporalEngine {
                 let mut shards = self.shards.write().expect("engine lock poisoned");
                 match shards.get_mut(&shard_id) {
                     Some(shard) => {
+                        // The per-command model-map -> bucket-index promotion and
+                        // first-index rebuild were deferred for every replayed command
+                        // (defer_bucket_index_reconstruct() is true under the WalReplayGuard),
+                        // which is what turns an O(n^2) reload into O(n). Fold every
+                        // replayed record into the bucket index ONCE here, mirroring
+                        // flush_shard_index()'s reconstruct-once pass, so serving reads see
+                        // the replayed records and the persisted index reflects them.
+                        if promote_model_maps_to_bucket_index_authority(
+                            shard_id,
+                            shard,
+                            0,
+                            u32::MAX,
+                        ) {
+                            reconcile_secondary_views_from_bucket_index(
+                                &self.page_store,
+                                shard,
+                                None,
+                            );
+                        }
+                        rebuild_bucket_first_index(shard_id, shard, 0, u32::MAX);
+                        refresh_bucket_runtime_flags(shard);
                         shard.applied_wal_sequence = Some(replayed_through);
                         Some(serialize_index(shard))
                     }
