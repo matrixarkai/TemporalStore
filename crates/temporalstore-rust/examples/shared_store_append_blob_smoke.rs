@@ -39,14 +39,14 @@ async fn main() {
     let replicator = SharedStoreReplicator::new("cluster-a", store.clone())
         .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
 
-    for (oplog_index, key, value) in [
+    for (wal_index, key, value) in [
         (1, "proto-a", b"one".to_vec()),
         (2, "proto-b", b"two".to_vec()),
     ] {
         replicator
             .publish_wal_entry(SharedStoreWalEntry {
                 shard_id: 1,
-                oplog_index,
+                wal_index,
                 command: Command::StringSet {
                     key: key.to_string(),
                     value,
@@ -56,10 +56,10 @@ async fn main() {
             .unwrap();
     }
 
-    let blob_key = "cluster-a/shards/1/shared/oplog/oplog.protobuf.blob";
+    let blob_key = "cluster-a/shards/1/shared/wal/wal.protobuf.blob";
     assert_eq!(
         store
-            .list("cluster-a/shards/1/shared/oplog/")
+            .list("cluster-a/shards/1/shared/wal/")
             .await
             .unwrap(),
         vec![blob_key.to_string()]
@@ -80,7 +80,7 @@ async fn main() {
         restarted.replay_wal_strict(1, 0, &follower).await.unwrap(),
         ReplayReport {
             applied: 2,
-            last_oplog_index: 2,
+            last_wal_index: 2,
             offset_index_reads: 0,
             range_bytes_read: 0,
         }

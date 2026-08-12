@@ -2933,7 +2933,7 @@ fn run_with_client(client: &Client, command: Command) -> Result<Value, String> {
                     "batch_lowering": "rust_proxy_hset_count_lowering",
                     "append_blob_parity": false,
                     "route_metadata_ignored": true,
-                    "next_native_gap": "rust_sdk_append_blob_oplog_index_metadata_hot_path"
+                    "next_native_gap": "rust_sdk_append_blob_wal_index_metadata_hot_path"
                 }));
             }
             client

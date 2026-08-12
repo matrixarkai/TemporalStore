@@ -41,7 +41,7 @@ struct ReportWalFrameProto {
     #[prost(uint64, tag = "1")]
     shard_id: u64,
     #[prost(uint64, tag = "2")]
-    oplog_index: u64,
+    wal_index: u64,
     #[prost(bytes = "vec", tag = "3")]
     command_payload: Vec<u8>,
     #[prost(uint64, tag = "4")]
@@ -64,14 +64,14 @@ struct OffsetFrameValidation {
 struct OffsetIndexValidation {
     checked_entries: usize,
     matched_entries: usize,
-    all_oplog_indexes_have_offset_metadata: bool,
+    all_wal_indexes_have_offset_metadata: bool,
     all_metadata_ranges_match_append_receipts: bool,
 }
 
 #[derive(Debug, Serialize)]
 struct OffsetMetadataMapping {
     shard_id: u64,
-    oplog_index: u64,
+    wal_index: u64,
     blob_key: String,
     start_offset: u64,
     end_offset: u64,
@@ -98,7 +98,7 @@ struct AuthoritativeOffsetLookupReport {
     range_reads_smaller_than_blob: u64,
     band_metadata_entries: u64,
     first_physical_offset_entries: u64,
-    all_oplog_indexes_directly_read_from_offset_metadata: bool,
+    all_wal_indexes_directly_read_from_offset_metadata: bool,
     all_direct_reads_match_expected_entries: bool,
     all_direct_reads_have_band_metadata: bool,
     lower_layer_range_reads_exact_offset_slices: bool,
@@ -205,7 +205,7 @@ struct Summary {
     direct_offsets_monotonic: bool,
     direct_offsets_contiguous: bool,
     direct_offset_slices_decode_expected_frames: bool,
-    direct_offset_index_maps_oplog_to_blob_offsets: bool,
+    direct_offset_index_maps_wal_to_blob_offsets: bool,
     authoritative_offset_lookup_reads_all_records: bool,
     authoritative_offset_lookup_matches_all_records: bool,
     authoritative_offset_lookup_has_band_metadata: bool,
@@ -321,21 +321,21 @@ async fn main() {
         direct_offset_slices_decode_expected_frames: direct_publish
             .offset_frame_validation
             .all_offsets_decode_expected_frame,
-        direct_offset_index_maps_oplog_to_blob_offsets: direct_publish
+        direct_offset_index_maps_wal_to_blob_offsets: direct_publish
             .offset_index_validation
-            .all_oplog_indexes_have_offset_metadata
+            .all_wal_indexes_have_offset_metadata
             && direct_publish
                 .offset_index_validation
                 .all_metadata_ranges_match_append_receipts,
         authoritative_offset_lookup_reads_all_records: direct_publish
             .authoritative_offset_lookup
-            .all_oplog_indexes_directly_read_from_offset_metadata
+            .all_wal_indexes_directly_read_from_offset_metadata
             && sync_writer
                 .authoritative_offset_lookup
-                .all_oplog_indexes_directly_read_from_offset_metadata
+                .all_wal_indexes_directly_read_from_offset_metadata
             && async_writer
                 .authoritative_offset_lookup
-                .all_oplog_indexes_directly_read_from_offset_metadata,
+                .all_wal_indexes_directly_read_from_offset_metadata,
         authoritative_offset_lookup_matches_all_records: direct_publish
             .authoritative_offset_lookup
             .all_direct_reads_match_expected_entries
@@ -843,7 +843,7 @@ fn validate_offset_index(
     OffsetIndexValidation {
         checked_entries: receipts.len(),
         matched_entries,
-        all_oplog_indexes_have_offset_metadata: offset_metadata.len() >= receipts.len(),
+        all_wal_indexes_have_offset_metadata: offset_metadata.len() >= receipts.len(),
         all_metadata_ranges_match_append_receipts: matched_entries == receipts.len(),
     }
 }
@@ -874,7 +874,7 @@ fn expected_offsets_from_write_reports(
         .iter()
         .filter_map(|report| {
             Some((
-                report.oplog_index,
+                report.wal_index,
                 (
                     report.wal_blob_start_offset?,
                     report.wal_blob_end_offset?,
@@ -891,8 +891,8 @@ fn build_offset_metadata_mappings(
 ) -> Vec<OffsetMetadataMapping> {
     offset_metadata
         .iter()
-        .map(|(oplog_index, metadata)| {
-            let expected = expected_offsets.and_then(|offsets| offsets.get(oplog_index));
+        .map(|(wal_index, metadata)| {
+            let expected = expected_offsets.and_then(|offsets| offsets.get(wal_index));
             let (
                 expected_start_offset,
                 expected_end_offset,
@@ -911,7 +911,7 @@ fn build_offset_metadata_mappings(
             };
             OffsetMetadataMapping {
                 shard_id: metadata.shard_id,
-                oplog_index: *oplog_index,
+                wal_index: *wal_index,
                 blob_key: metadata.wal_blob_key.clone(),
                 start_offset: metadata.wal_blob_start_offset,
                 end_offset: metadata.wal_blob_end_offset,
@@ -965,7 +965,7 @@ async fn validate_authoritative_offset_lookup(
                     exact_offset_slice_reads += 1;
                 } else {
                     errors.push(format!(
-                        "lower-layer range read did not match offset slice at oplog index {index}"
+                        "lower-layer range read did not match offset slice at wal index {index}"
                     ));
                 }
                 if read.metadata.wal_blob_object_length > read.range_bytes_read {
@@ -980,12 +980,12 @@ async fn validate_authoritative_offset_lookup(
                 if read.entry == entry(shard_id, index, phase, value_bytes) {
                     matched_entries += 1;
                 } else {
-                    errors.push(format!("decoded entry mismatch at oplog index {index}"));
+                    errors.push(format!("decoded entry mismatch at wal index {index}"));
                 }
             }
-            Ok(None) => errors.push(format!("missing offset metadata at oplog index {index}")),
+            Ok(None) => errors.push(format!("missing offset metadata at wal index {index}")),
             Err(err) => errors.push(format!(
-                "offset metadata lookup failed at oplog index {index}: {err}"
+                "offset metadata lookup failed at wal index {index}: {err}"
             )),
         }
     }
@@ -999,7 +999,7 @@ async fn validate_authoritative_offset_lookup(
         range_reads_smaller_than_blob,
         band_metadata_entries,
         first_physical_offset_entries,
-        all_oplog_indexes_directly_read_from_offset_metadata: metadata_hits == entry_count
+        all_wal_indexes_directly_read_from_offset_metadata: metadata_hits == entry_count
             && decoded_entries == entry_count,
         all_direct_reads_match_expected_entries: matched_entries == entry_count,
         all_direct_reads_have_band_metadata: band_metadata_entries == entry_count
@@ -1050,7 +1050,7 @@ fn validate_offset_frames(
         };
         let command_sha256 = sha256_hex(&frame.command_payload);
         if frame.shard_id == shard_id
-            && frame.oplog_index == expected_index as u64 + 1
+            && frame.wal_index == expected_index as u64 + 1
             && frame.command_byte_size == frame.command_payload.len() as u64
             && frame.command_sha256 == command_sha256
         {
@@ -1088,7 +1088,7 @@ fn matrixobject_metadata(
 fn entry(shard_id: u64, index: u64, phase: &str, value_bytes: usize) -> SharedStoreWalEntry {
     SharedStoreWalEntry {
         shard_id,
-        oplog_index: index,
+        wal_index: index,
         command: command(shard_id, index, phase, value_bytes),
     }
 }
@@ -1105,7 +1105,7 @@ fn key_for(shard_id: u64, index: u64, phase: &str) -> String {
 }
 
 fn blob_key(shard_id: u64) -> String {
-    format!("cluster-a/shards/{shard_id}/shared/oplog/oplog.protobuf.blob")
+    format!("cluster-a/shards/{shard_id}/shared/wal/wal.protobuf.blob")
 }
 
 fn offsets_monotonic(receipts: &[AppendBlobReceipt]) -> bool {

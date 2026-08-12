@@ -175,7 +175,6 @@ pub struct WriteAheadLogAppendReport {
 pub struct WriteAheadLogInfo {
     pub shard_id: ShardId,
     pub path: PathBuf,
-    pub legacy_path_active: bool,
     pub start_sequence: u64,
     pub current_sequence: u64,
     pub records: usize,
@@ -464,12 +463,10 @@ impl LocalWriteAheadLogStore {
     pub fn info(&self, shard_id: ShardId) -> Result<WriteAheadLogInfo, WriteAheadLogError> {
         let inner = self.inner.lock().expect("write-ahead log lock poisoned");
         let path = write_ahead_log_path(&inner.root, shard_id);
-        let legacy_path_active = path == legacy_wal_path(&inner.root, shard_id);
         if !path.exists() {
             return Ok(WriteAheadLogInfo {
                 shard_id,
                 path,
-                legacy_path_active,
                 format_version: WRITE_AHEAD_LOG_FORMAT_VERSION,
                 ..WriteAheadLogInfo::default()
             });
@@ -496,7 +493,6 @@ impl LocalWriteAheadLogStore {
         Ok(WriteAheadLogInfo {
             shard_id,
             path,
-            legacy_path_active,
             start_sequence,
             current_sequence,
             records,
@@ -515,16 +511,6 @@ impl Default for LocalWriteAheadLogStore {
 }
 
 fn write_ahead_log_path(root: &Path, shard_id: ShardId) -> PathBuf {
-    let wal_path = root.join(format!("shard-{shard_id}.wal.jsonl"));
-    let legacy_path = legacy_wal_path(root, shard_id);
-    if legacy_path.exists() && !wal_path.exists() {
-        legacy_path
-    } else {
-        wal_path
-    }
-}
-
-fn legacy_wal_path(root: &Path, shard_id: ShardId) -> PathBuf {
     root.join(format!("shard-{shard_id}.wal.jsonl"))
 }
 
@@ -930,44 +916,7 @@ mod tests {
         assert_eq!(reopened.scan(7, 0, u64::MAX, u64::MAX).unwrap().len(), 3);
     }
 
-    #[test]
-    // rust-internal: validates legacy WAL filename compatibility after the wal rename
-    fn legacy_wal_file_is_read_before_new_wal_file_exists() {
-        let dir = tempfile::tempdir().unwrap();
-        let legacy_path = legacy_wal_path(dir.path(), 7);
-        let record = WriteAheadLogRecord {
-            shard_id: 7,
-            sequence: 1,
-            metadata: None,
-            command: Command::StringSet {
-                key: "legacy".to_string(),
-                value: b"v".to_vec(),
-            },
-        };
-        {
-            let mut file = File::create(&legacy_path).unwrap();
-            serde_json::to_writer(&mut file, &record).unwrap();
-            file.write_all(b"\n").unwrap();
-        }
-
-        let store = LocalWriteAheadLogStore::new(dir.path());
-        assert_eq!(store.stats(7).last_sequence, 1);
-        assert_eq!(store.scan(7, 0, u64::MAX, u64::MAX).unwrap().len(), 1);
-        let appended = store
-            .append(
-                7,
-                Command::StringSet {
-                    key: "new".to_string(),
-                    value: b"v".to_vec(),
-                },
-            )
-            .unwrap();
-        assert_eq!(appended.sequence, 2);
-        assert!(legacy_path.exists());
-        assert!(!dir.path().join("shard-7.wal.jsonl").exists());
-    }
-
-    // shared-corpus: storage_wal_wal_structure_api_flush_parity
+    // shared-corpus: storage_wal_structure_api_flush_parity
     #[test]
     fn wal_record_metadata_tracks_cpp_style_log_item_shape() {
         let dir = tempfile::tempdir().unwrap();
@@ -996,7 +945,7 @@ mod tests {
         assert!(!item.meta_log);
     }
 
-    // shared-corpus: storage_wal_wal_structure_api_flush_parity
+    // shared-corpus: storage_wal_structure_api_flush_parity
     #[test]
     fn append_replayed_record_is_idempotent_and_flushes_like_stream_commit() {
         let dir = tempfile::tempdir().unwrap();
@@ -1029,7 +978,7 @@ mod tests {
         assert!(stats.syncs >= 1);
     }
 
-    // shared-corpus: storage_wal_wal_structure_api_flush_parity
+    // shared-corpus: storage_wal_structure_api_flush_parity
     #[test]
     fn flush_and_info_report_persistent_wal_boundaries() {
         let dir = tempfile::tempdir().unwrap();
@@ -1063,6 +1012,5 @@ mod tests {
         assert_eq!(info.records, 2);
         assert_eq!(info.persistent_length_bytes, flush.persistent_bytes);
         assert_eq!(info.format_version, WRITE_AHEAD_LOG_FORMAT_VERSION);
-        assert!(!info.legacy_path_active);
     }
 }
