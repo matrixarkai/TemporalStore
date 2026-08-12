@@ -213,8 +213,7 @@ README alone:
   [technical blog](docs/blog_context_management_temporalstore.md)
 - Deploy: [Windows Docker](docs/windows_docker_install.md) · [Linux](docs/linux_deploy.md) · [macOS](docs/macos_deploy.md)
 
-Out of scope unless separately re-added: brpc/thrift wire compatibility in Rust; byte-for-byte
-C++ page/log layout; live ByteStore/S3 integration.
+Out of scope unless separately re-added: alternate wire-protocol compatibility and live external object-store (S3) integration.
 
 ## Contributing
 
