@@ -55,8 +55,8 @@ above is the stronger evidence. Both agree on direction: **managed ≥ local, ev
 
 ### Detailed reports
 
-- [7b sweep (primary)](local_context_token_quality/local_context_token_quality_qwen7b_1k_ratio.md) · [JSON](local_context_token_quality/local_context_token_quality_qwen7b_1k_ratio.json)
-- [1.5b sweep (tool-inclusive corroboration)](local_context_token_quality/local_context_token_quality_tool_inclusive.md) · [JSON](local_context_token_quality/local_context_token_quality_tool_inclusive.json)
+- 7b sweep (primary): [JSON](local_context_token_quality/local_context_token_quality_qwen7b_1k_ratio.json)
+- 1.5b sweep (tool-inclusive corroboration): [JSON](local_context_token_quality/local_context_token_quality_tool_inclusive.json)
 
 ### Methodology note: the judge must grade against topical ground truth, not recency
 
@@ -103,8 +103,3 @@ This benchmark measures **conversational + tool memory**. TemporalStore ingests 
 Competing memory products that unify memory + resources + skills will show breadth this
 benchmark does not exercise. Closing the skills gap is tracked as a follow-up; until then,
 adoption claims should be scoped to memory + resources, not skills.
-
-## Other benchmarks
-
-- [OSS comparison: TemporalStore vs OpenViking (LoCoMo + LongMemEval)](../benchmark_archives/temporalstore_vs_openviking_oss_2026-08-08.md)
-- [Benchmark & readiness evidence](../benchmark_readiness_evidence_20260629.md)

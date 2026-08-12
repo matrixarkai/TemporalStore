@@ -491,9 +491,6 @@ tools/matrixark_codex_session_bridge.py   stream live Codex desktop/CLI sessions
 tools/matrixark_context_backfill.py       replay/repair the raw ingestion log into context-serving prefixes
 ```
 
-See the [Context Backfill Manual](matrixark_context_backfill.md) for the raw-log
-shadow-first workflow, validation, and activation/repair modes.
-
 ## Troubleshooting
 
 | Symptom | First check |

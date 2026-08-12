@@ -14,11 +14,8 @@ caps and related controls on TemporalStore.
 Control State sits next to Context and Feature in the first open-source
 TemporalStore surface. Read this blog with:
 
-- [TemporalStore open-source surface](open_source_surface.md)
 - [Feature sequences and aggregates technical blog](blog_feature_sequences_and_aggregates.md)
 - [Context Management technical blog](blog_context_management_temporalstore.md)
-- [Cross-storage control/agent parity](cross_storage_control_agent_parity.md)
-- [Client/proxy control-plane parity](client_proxy_control_plane_parity.md)
 
 ## Why Control State
 

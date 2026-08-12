@@ -206,11 +206,8 @@ Apache-2.0. Production-readiness claims should be read from passing readiness re
 README alone:
 
 - [Benchmarks: token & quality vs full local replay](docs/benchmarks/README.md)
-- [Rust vs C++ parity report](docs/rust_vs_cpp_temporalstore_parity_report.md)
-- [Benchmark & readiness evidence](docs/benchmark_readiness_evidence_20260629.md)
 - [Context Management on TemporalStore](docs/context_management_on_temporalstore.md) ·
   [technical blog](docs/blog_context_management_temporalstore.md)
-- [Storage/Raft readiness plan](docs/storage_raft_production_readiness_plan.md)
 - Deploy: [Windows Docker](docs/windows_docker_install.md) · [Linux](docs/linux_deploy.md) · [macOS](docs/macos_deploy.md)
 
 Out of scope unless separately re-added: brpc/thrift wire compatibility in Rust; byte-for-byte

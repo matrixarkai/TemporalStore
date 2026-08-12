@@ -110,9 +110,6 @@ cargo run -p temporalstore-rust --bin raft_secondary_replication_harness -- --ro
 ## Documentation
 
 - `docs/distributed_raft_readiness.md`
-- `docs/matrixraft_production_readiness.md`
-- `docs/open_source_readiness.md`
-- `docs/unified_test_case_inventory.md`
 
 Keep benchmark and production-readiness documents strict: deterministic
 engineering evidence, live-reader evidence, and paper-comparable evidence are

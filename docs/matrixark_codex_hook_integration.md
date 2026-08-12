@@ -83,12 +83,6 @@ retrieval, summaries, entities, segments, indexes, embeddings, and ContextPack
 audits all go through the MatrixArk direct adapter backed by the live C++
 TemporalStore SDK.
 
-Validation report:
-
-- [matrixark_codex_cpp_hook_e2e.md](matrixark_codex_cpp_hook_e2e.md)
-- [matrixark_codex_cpp_hook_e2e.html](matrixark_codex_cpp_hook_e2e.html)
-- [matrixark_codex_cpp_hook_e2e.json](matrixark_codex_cpp_hook_e2e.json)
-
 ## 2026-06-23 Live C++ Hook Validation
 
 The Windows hook command path was validated end to end:

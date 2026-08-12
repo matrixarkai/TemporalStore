@@ -20,8 +20,6 @@ links to the deeper MatrixArk context writeups:
 - [Secondary-index tree retrieval for LOCOMO-style recall](matrixark_secondary_index_tree_retrieval_locomo_flow.md)
 - [Resource and skill parsing pipeline](matrixark_resource_skill_parsing_pipeline.md)
 - [Context node materialization](matrixark_context_node_materialization.md)
-- [Context tree embedding, summary, and compression contract](context_tree_embedding_summary_compression_contract.md)
-- [Context injection prompt pack contract](context_injection_prompt_pack_contract.md)
 
 ## Why TemporalStore
 

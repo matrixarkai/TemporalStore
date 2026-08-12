@@ -173,12 +173,11 @@ Future heavier rerank:
 - use strict deadlines with fallback to weighted recall;
 - report rerank latency and judge-score delta in benchmark artifacts.
 
-Backlog note: this is the first auxiliary path. The full Keyword Graph backlog
-is tracked in `docs/BACKLOG.md`: build `ContextKeyword` and
+Backlog note: this is the first auxiliary path. The full Keyword Graph backlog is to build `ContextKeyword` and
 `ContextKeywordEdge`, average keyword embeddings from linked memory segments,
 then expand from query-matched keywords to associated memories.
 
-Second-stage rerank backlog: `docs/BACKLOG.md` also tracks a future
+Second-stage rerank backlog: a future
 ColBERT-style multi-vector reranker. The intended flow is to keep this weighted
 recall as the low-latency first stage, then rerank only a bounded top-K
 candidate set with precomputed compressed multi-vectors and strict deadline
