@@ -237,7 +237,7 @@ fn client_retry_classifier_separates_safe_topology_retry_from_unsafe_write_retry
     assert!(safe_topology_retry.safe_budget_free_write_retry);
     assert!(
         safe_topology_retry.would_retry,
-        "C++ stale topology rejection may refresh and retry once even with no write retry budget"
+        "stale topology rejection may refresh and retry once even with no write retry budget"
     );
 
     let duplicate_topology_retry = classify_cpp_retry_decision(

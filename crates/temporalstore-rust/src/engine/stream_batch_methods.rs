@@ -125,7 +125,7 @@ impl TemporalEngine {
         }
         let mut shards = self.shards.write().expect("engine lock poisoned");
         let Some(shard) = shards.get_mut(&request.shard_id) else {
-            // C++ returns a BATCH-LEVEL topology error with ZERO CmdResponse entries when the
+            // returns a BATCH-LEVEL topology error with ZERO CmdResponse entries when the
             // partition is missing/not-primary (partition_manager.cc: TopomError, "client should
             // refresh table topo"), not an OK batch full of per-command errors. The Rust client
             // treats a batch-level shard_not_loaded status as topology-retryable
@@ -151,7 +151,7 @@ impl TemporalEngine {
                 .map(|info| info.recovering)
                 .unwrap_or(false)
         {
-            // Batch-level topology-retryable error with empty responses, as above (C++ returns a
+            // Batch-level topology-retryable error with empty responses, as above (returns a
             // partition-level error here, not a per-command one), so the client refreshes topology
             // and retries rather than seeing an ok batch of failed commands.
             return BatchExecuteResponse {
@@ -263,7 +263,7 @@ impl TemporalEngine {
                 shard,
                 command,
             );
-            // LRU recency (C++ SlotNode GetLastUsed): stamp the bucket(s) this command
+            // LRU recency (SlotNode GetLastUsed): stamp the bucket(s) this command
             // touched, read or write, so eviction can prefer least-recently-used buckets.
             {
                 let now = now_ms();
@@ -315,7 +315,7 @@ impl TemporalEngine {
         }
         if mutated_any {
             refresh_bucket_runtime_flags(shard);
-            // Parity with C++ TemporalStore (partition.h OnExecuteCmdDone): every
+            // Parity with TemporalStore (partition.h OnExecuteCmdDone): every
             // write records a WAL entry (StringModel::SetValue -> WritePage).
             // async_storage only changes whether the commit BLOCKS: sync -> fsync,
             // async (or bulk backfill) -> buffered, no fsync (op_logger_->Commit

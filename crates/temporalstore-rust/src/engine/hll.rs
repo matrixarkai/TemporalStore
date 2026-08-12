@@ -6,10 +6,10 @@
 //! Control State distinct/CHANGE counts are otherwise exact `BTreeSet` unions, whose memory
 //! grows with cardinality — unbounded for high-cardinality long-window distincts. This sketch
 //! gives a fixed-memory (2^P registers) approximate count, mergeable register-wise, so it can
-//! back a bounded distinct mode (exact until a threshold, then sketch — the C++ DC→LDC shape).
+//! back a bounded distinct mode (exact until a threshold, then sketch — the DC→LDC shape).
 //!
 //! Fixed, version-stable hashing (FNV-1a + splitmix64 finalizer) so a persisted sketch stays
-//! valid across builds. P=12 (4096 registers, ~1.6% standard error), matching the C++ CPC lgK.
+//! valid across builds. P=12 (4096 registers, ~1.6% standard error), matching the CPC lgK.
 //! Everything here is only reachable behind a config gate; the exact path is unchanged by default.
 
 use serde::{Deserialize, Serialize};
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use super::state::ShardState;
 
 /// A bucket's exact distinct set is converted to a fixed-size HLL once it exceeds this many
-/// distinct values, mirroring the C++ control_state DC→LDC upgrade threshold.
+/// distinct values, mirroring the control_state DC→LDC upgrade threshold.
 pub(crate) const DISTINCT_SKETCH_THRESHOLD: usize = 4096;
 
 const P: u32 = 12;

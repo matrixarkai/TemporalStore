@@ -274,7 +274,7 @@ fn main() {
     push_missing(
         &mut missing,
         cplusplus_workload_replay_ready,
-        "C++ workload replay/golden corpus evidence",
+        "workload replay/golden corpus evidence",
     );
     push_missing(
         &mut missing,

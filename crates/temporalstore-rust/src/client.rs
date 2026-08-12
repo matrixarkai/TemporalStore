@@ -270,9 +270,9 @@ impl Default for ClientMigrationCompatibilityReport {
             placement_hooks_ready: true,
             production_replacement_contract: ClientProductionReplacementContract::default(),
             blockers: vec![
-                "legacy C++ wire compatibility is explicitly out of scope for the Rust-native target"
+                "legacy wire compatibility is explicitly out of scope for the Rust-native target"
                     .to_string(),
-                "existing C++ callers must migrate through the documented Rust HTTP/JSON, RESP, and tonic API"
+                "existing legacy callers must migrate through the documented Rust HTTP/JSON, RESP, and tonic API"
                     .to_string(),
             ],
         }
@@ -311,7 +311,7 @@ impl Default for ClientProductionReplacementContract {
     fn default() -> Self {
         Self {
             compatibility_decision:
-                "legacy C++ wire migration shims are out of scope; use Rust-native migration contract"
+                "legacy wire migration shims are out of scope; use Rust-native migration contract"
                     .to_string(),
             legacy_cplusplus_wire_protocols_in_scope: Vec::new(),
             production_protocols: vec![

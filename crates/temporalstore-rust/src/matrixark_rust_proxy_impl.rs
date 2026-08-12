@@ -946,7 +946,7 @@ fn monotonic_record_count_enabled() -> bool {
         .unwrap_or(true)
 }
 
-// C++ TemporalStore parity (bjmeetsfo/TemporalStore-cpp): the storage engine's
+// TemporalStore parity (bjmeetsfo/TemporalStore-cpp): the storage engine's
 // record/serving SEQUENCE is an engine-owned MONOTONIC log id -- src/partition/index/
 // index.cc:845 `log_id_ = iter_->Id();` with `GetLogId() { return log_id_; }` (index.h
 // :236). It is advanced only by the append log / commit and is never a client
@@ -957,7 +957,7 @@ fn monotonic_record_count_enabled() -> bool {
 // Under SYNCHRONOUS commit a stale/low counter read makes a subsequent write REGRESS the
 // stored counter; that cascades (later turns read low, replay low sequences and OVERWRITE
 // earlier serving records -> fact records clobbered -> sync retrieval collapses to 0/14,
-// while async stays 14/14). Mirror the C++ contract at the engine boundary: a record_count
+// while async stays 14/14). Mirror the contract at the engine boundary: a record_count
 // write can only ADVANCE the stored counter, never lower it -> the client always reads a
 // correct high sequence -> placement never regresses. Gated (default on;
 // MATRIXARK_MONOTONIC_RECORD_COUNT=0 restores prior behavior). Inert for async, whose
@@ -1527,7 +1527,7 @@ fn scan_matrixark_candidates(
             "secondary_index_dropped_candidate_count": secondary_dropped,
             "native_pack_assembly": false,
             "pack_assembly_location": "python_reference_packer",
-            "next_native_gap": "C++/Rust ContextPack scoring and budget assembly APIs"
+            "next_native_gap": "conformance ContextPack scoring and budget assembly APIs"
         }
     });
     if let Ok(mut cache) = matrixark_scan_cache().lock() {
@@ -2265,7 +2265,7 @@ fn env_i32_any(names: &[&str], default: i32) -> i32 {
 }
 
 fn execute_empty(engine: &TemporalEngine, command: Command) -> Result<(), String> {
-    // C++-parity monotonic serving sequence: never let a record_count write regress.
+    // parity monotonic serving sequence: never let a record_count write regress.
     let command = clamp_record_count_command(engine, command);
     let retrieve_cache_keys = match &command {
         Command::HashSet { key, .. }
@@ -2336,7 +2336,7 @@ fn execute_empty_batch_runtime(
     if commands.is_empty() {
         return Ok(());
     }
-    // C++-parity monotonic serving sequence: never let a record_count write regress
+    // parity monotonic serving sequence: never let a record_count write regress
     // (mirrors the append-log's advance-only log id). Applies to the serving append
     // batch that carries the {prefix}:record_count StringSet.
     let commands: Vec<Command> = commands

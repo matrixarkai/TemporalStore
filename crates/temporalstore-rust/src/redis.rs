@@ -399,7 +399,7 @@ mod tests {
             )
         };
 
-        // DECRBY i64::MIN: negating it overflows i64. C++ returns an overflow error; Rust
+        // DECRBY i64::MIN: negating it overflows i64. returns an overflow error; Rust
         // must not panic (debug) or wrap-and-store a wrong value (release).
         run(&mut state, vec!["SET", "n", "0"]);
         assert!(matches!(
@@ -412,7 +412,7 @@ mod tests {
             "the failed DECRBY must not have mutated the key"
         );
 
-        // SRANDMEMBER with the i64::MIN negative count must be BOUNDED (C++ fills zero
+        // SRANDMEMBER with the i64::MIN negative count must be BOUNDED (fills zero
         // elements). unsigned_abs() would attempt ~2^63 iterations (hang / OOM).
         run(&mut state, vec!["SADD", "s", "a", "b", "c"]);
         assert!(
@@ -493,7 +493,7 @@ mod tests {
         };
 
         // Non-positive expiry is rejected on SETEX / PSETEX / SET EX (would otherwise write
-        // an already-expired key). Matches C++ and real Redis.
+        // an already-expired key). Matches real Redis.
         assert!(matches!(
             run(&mut state, vec!["SETEX", "a", "0", "v"]),
             RespValue::Error(_)

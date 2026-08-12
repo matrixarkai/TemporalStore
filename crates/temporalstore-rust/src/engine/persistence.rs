@@ -21,7 +21,7 @@ impl TemporalEngine {
         // index; WAL reclaim durably truncates the WAL based on it. It MUST be written
         // durably and atomically -- a bare fs::write left it in the page cache, so a
         // crash after the (durable) WAL reclaim but before the manifest reached disk
-        // lost the records in between (C++ commits the dumped index before advancing
+        // lost the records in between (commits the dumped index before advancing
         // the dumped-log-id; slot_store.cc OnCommitDone waits both). Atomic temp+rename
         // also prevents a torn manifest from hiding the whole listing on load.
         atomic_write_bytes(&path, &bytes)
@@ -130,7 +130,7 @@ impl TemporalEngine {
         // dirty flags that were persisted before unload (the durable dirty_generation
         // identity is preserved). refresh_bucket_runtime_flags below then recomputes
         // dirty purely from the live (empty on load) dirty_objects set. This mirrors
-        // the C++ ClearSlotDirty-on-load contract and keeps `bucket.dirty |= ...` from
+        // the ClearSlotDirty-on-load contract and keeps `bucket.dirty |= ...` from
         // resurrecting a stale persisted dirty flag.
         for bucket in shard.bucket_index.bucket_map.values_mut() {
             bucket.dirty = false;
@@ -150,7 +150,7 @@ impl TemporalEngine {
         // served index: fsync page segments + band manifest, then the WAL. If the
         // barrier FAILS, bail without pinning applied_wal_sequence or writing the index:
         // advancing the durable anchor past pages that never reached disk would suppress
-        // their replay on reload -> silent data loss. C++ advances the watermark only after
+        // their replay on reload -> silent data loss. advances the watermark only after
         // the commit succeeds; the next flush retries.
         if self.page_store.sync_durable().is_err() || self.wal_store.flush(shard_id).is_err() {
             return;

@@ -127,7 +127,7 @@ impl LocalBlockStore {
                 .min_age_ms
                 .map(|min_age| candidate.age_ms.unwrap_or_default() >= min_age)
                 .unwrap_or(true);
-            // Garbage-ratio gate (C++ GetGarbageRate threshold): keep bands whose
+            // Garbage-ratio gate (GetGarbageRate threshold): keep bands whose
             // garbage ratio is below the floor. garbage = 10_000 - live-fraction.
             let garbage_allowed = policy
                 .min_band_garbage_basis_points
@@ -266,7 +266,7 @@ impl LocalBlockStore {
         candidates.sort_by(|left, right| {
             // Reclaim the highest-garbage band first: a lower band live-fraction
             // (utility_basis_points) means more garbage, so ascending live-fraction ==
-            // descending garbage ratio. This is the C++ GC victim order (zone_manager.
+            // descending garbage ratio. This is the GC victim order (zone_manager.
             // cpp gc_list_ sorted by GetGarbageRate() descending), which the previous
             // key (a categorical utility_score, uniformly 0 for all candidates) never
             // actually applied.

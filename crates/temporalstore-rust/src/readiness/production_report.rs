@@ -58,12 +58,12 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
             covered: vec![
                 "typed table client, pipeline, retries/timeouts, route refresh".to_string(),
                 "primary routing for writes and optional secondary routing for reads".to_string(),
-                "background topology sync and C++ crc64 slot formula".to_string(),
+                "background topology sync and crc64 slot formula".to_string(),
                 "client preflight report exposes route/table cache, backend-failure backlog, stats, and options"
                     .to_string(),
                 "client retry classifier separates budget-free safe topology retries from unsafe write retries that require explicit write retry budget"
                     .to_string(),
-                "shared C++/Rust corpus runs through the typed table client API and direct engine path for common, feature, sequence, control_state, context, and restart reads"
+                "shared conformance corpus runs through the typed table client API and direct engine path for common, feature, sequence, control_state, context, and restart reads"
                     .to_string(),
                 "versioned Rust-native SDK contract committed in proto/temporalstore/v1 with validation in the local parity gate"
                     .to_string(),
@@ -73,9 +73,9 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "generated tonic OpenTable, SyncTopology, and ClientPreflight adapters delegate to the existing TemporalStoreClient table, topology, and preflight paths"
                     .to_string(),
-                "client preflight exposes a C++-style partition-set compatibility view derived from cached table ranges and shard routes"
+                "client preflight exposes a standard partition-set compatibility view derived from cached table ranges and shard routes"
                     .to_string(),
-                "client routing readiness covers typed table client, topology sync, retry budgets, topology preflight, Neptune routing hooks, deployment placement hooks, and the tracked Rust-native HTTP/JSON, RESP, and tonic migration contract while keeping legacy C++ wire migration explicitly out of scope"
+                "client routing readiness covers typed table client, topology sync, retry budgets, topology preflight, Neptune routing hooks, deployment placement hooks, and the tracked Rust-native HTTP/JSON, RESP, and tonic migration contract while keeping legacy wire migration explicitly out of scope"
                     .to_string(),
             ],
             missing: client_routing.missing,
@@ -90,15 +90,15 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "backend-error route refresh and failure-streak avoidance".to_string(),
                 "namespace/table open path and table-routed proxy execute/batch routes"
                     .to_string(),
-                "C++ service-name JSON aliases for ExecuteCmd, BatchExecuteCmd, OpenTable, and table execute/batch execute"
+                "service-name JSON aliases for ExecuteCmd, BatchExecuteCmd, OpenTable, and table execute/batch execute"
                     .to_string(),
-                "C++ service-name admin aliases expose proxy info, heartbeat/config, and embedded client preflight"
+                "service-name admin aliases expose proxy info, heartbeat/config, and embedded client preflight"
                     .to_string(),
-                "C++ command-shaped proxy HTTP/JSON aliases cover Get, Set, FeatureAdd, ControlStateHset, HMGet, HMSet, HGetAll, and HLen through the normal routed client path"
+                "command-shaped proxy HTTP/JSON aliases cover Get, Set, FeatureAdd, ControlStateHset, HMGet, HMSet, HGetAll, and HLen through the normal routed client path"
                     .to_string(),
                 "Rust-native service discovery replacement for consul via proxy auto-register, heartbeat TTL, admin inspection, and Prometheus stale/registered metrics"
                     .to_string(),
-                "proxy serving readiness covers HTTP execute routes, heartbeat/config application, topology-version invalidation, admission policy, route quarantine, Rust-native service discovery, RESP migration, tonic streaming/callback shape, and the tracked HTTP/JSON, RESP, and tonic migration contract while keeping legacy C++ wire proxy transport out of scope"
+                "proxy serving readiness covers HTTP execute routes, heartbeat/config application, topology-version invalidation, admission policy, route quarantine, Rust-native service discovery, RESP migration, tonic streaming/callback shape, and the tracked HTTP/JSON, RESP, and tonic migration contract while keeping legacy wire proxy transport out of scope"
                     .to_string(),
             ],
             missing: proxy_serving.missing,
@@ -120,7 +120,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "metaserver preflight is exposed for both single-node and Raft-backed metadata runtimes, including MasterService aliases"
                     .to_string(),
-                "metaserver control-plane readiness covers inventory heartbeat, namespace/table topology, C++ partition-set/member/version topology, local Raft mutation path, load-aware placement, local snapshots, scheduler admin, scheduler snapshots, scheduler retry/task Raft persistence, networked metaserver Raft rollout, and metaserver-owned data-Raft membership execution"
+                "metaserver control-plane readiness covers inventory heartbeat, namespace/table topology, partition-set/member/version topology, local Raft mutation path, load-aware placement, local snapshots, scheduler admin, scheduler snapshots, scheduler retry/task Raft persistence, networked metaserver Raft rollout, and metaserver-owned data-Raft membership execution"
                     .to_string(),
                 "networked metaserver scheduler execution readiness covers multi-process metaserver Raft, real data-node process scheduling for missing primary, under-replication, stale/dead server, load/reload/unload, membership changes, cooldowns, safe mode, scheduler task replay, durable data-Raft membership coupling, and stale scheduler token/generation rejection"
                     .to_string(),
@@ -135,7 +135,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "local model covers majority commit, catch-up, failover, safe scale up/down"
                     .to_string(),
-                "data Raft supports C++ replicator-style bounded follower catch-up with lag/progress reports"
+                "data Raft supports replicator-style bounded follower catch-up with lag/progress reports"
                     .to_string(),
                 "production Raft timer loop uses bounded follower catch-up per heartbeat"
                     .to_string(),
@@ -155,7 +155,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "raft_node and raft-enabled server expose /raft/membership/apply for networked safe membership changes, and the OS-process harness verifies scale down/up through that route"
                     .to_string(),
-                "C++-style deterministic metaserver task scheduler model covers priority ordering, retry-later backoff, abort, and UpdateMembership task enqueue"
+                "standard deterministic metaserver task scheduler model covers priority ordering, retry-later backoff, abort, and UpdateMembership task enqueue"
                     .to_string(),
                 "scheduler task queue can be snapshotted/restored and freezing shard replicas can be repaired into UpdateMembership tasks"
                     .to_string(),
@@ -220,7 +220,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "page-address persistence and Prometheus metrics endpoint".to_string(),
                 "load rejects duplicate loaded shards and unload removes shard metadata with not-found semantics"
                     .to_string(),
-                "config get/set follows C++ partition-map not-found semantics".to_string(),
+                "config get/set follows partition-map not-found semantics".to_string(),
                 "data-node membership update rejects stale global/unit versions and reports whether local replica remains active"
                     .to_string(),
                 "data-node runtime uses shard-affine worker lanes so one partition has FIFO single-lane execution while different shards run in parallel"
@@ -238,7 +238,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "local shard/table/tenant read/write QPS admission is enforced from Config quota fields"
                     .to_string(),
-                "C++ ServerService admin aliases expose runtime stats, preflight, dirty-object, and queued-worker state"
+                "ServerService admin aliases expose runtime stats, preflight, dirty-object, and queued-worker state"
                     .to_string(),
                 "crash recovery reports and tests cover wal, index-log, page stream, and band-manifest ordering"
                     .to_string(),
@@ -299,19 +299,19 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "storage lifecycle cache warmup returns selected slots, page-ref hits/fills/failures, block-store read count, and warmed bytes"
                     .to_string(),
-                "storage production report exposes Rust JSONL wal/index-log format, replay-safe status, sequence/record/byte counts, and C++ binary compatibility gaps"
+                "storage production report exposes Rust JSONL wal/index-log format, replay-safe status, sequence/record/byte counts, and binary compatibility gaps"
                     .to_string(),
-                "storage production report exposes Rust page-envelope version, checksum/object-id/routing-slot/compression support, band bytes, and C++ page-header compatibility gaps"
+                "storage production report exposes Rust page-envelope version, checksum/object-id/routing-slot/compression support, band bytes, and page-header compatibility gaps"
                     .to_string(),
-                "storage compatibility decision is explicit: Rust log/page formats are migration-only versus C++ binary logs/page headers, with golden conversion/replay required before C++ migration"
+                "storage compatibility decision is explicit: Rust log/page formats are migration-only versus binary logs/page headers, with golden conversion/replay required before migration"
                     .to_string(),
                 "chunked timestamped KV page format is covered by sync and async shared-store replay plus Raft follower-read replication tests"
                     .to_string(),
                 "chunked timestamped KV page recovery strictly rejects malformed or unsupported packed-page payloads"
                     .to_string(),
-                "storage migration corpus converts C++ logical object/page/slot/index/wal exports into Rust-native pages and replays through engine restart, slot dump, cache warmup, shared-store sync/async replay, and Raft leader-transfer reads"
+                "storage migration corpus converts logical object/page/slot/index/wal exports into Rust-native pages and replays through engine restart, slot dump, cache warmup, shared-store sync/async replay, and Raft leader-transfer reads"
                     .to_string(),
-                "storage migration corpus readiness covers Rust-local converted corpus replay through engine restart, Redis/admin, shared-store sync/async replay, cache warmup, Raft read paths, external C++ binary-artifact export, CI-published golden artifacts, and the unified C++/Rust runner"
+                "storage migration corpus readiness covers Rust-local converted corpus replay through engine restart, Redis/admin, shared-store sync/async replay, cache warmup, Raft read paths, external binary-artifact export, CI-published golden artifacts, and the unified conformance runner"
                     .to_string(),
                 "local storage production harness combines dump, cache pressure, restart recovery, shared-store replay, and Raft movement into one repeatable gate"
                     .to_string(),
@@ -347,7 +347,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
             covered: vec![
                 "common/string/hash/set plus Redis compatibility subset".to_string(),
                 "feature append/query/replace/delete/agg and 5k sequence test".to_string(),
-                "feature writes pack many timestamp/value entries into one page and the timestamp index shares that page address, matching the C++ storage shape"
+                "feature writes pack many timestamp/value entries into one page and the timestamp index shares that page address, matching the storage shape"
                     .to_string(),
                 "feature aggregate query covers count/events/sum/avg/min/max/first/last over selected timestamp windows"
                     .to_string(),
@@ -355,13 +355,13 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "oversized single timestamped values remain readable as one packed page without creating empty chunks"
                     .to_string(),
-                "feature/sequence C++ protobuf golden corpus exercises filters, aggregates, sequence queries, and packed timestamped KV page layout"
+                "feature/sequence binary protobuf golden corpus exercises filters, aggregates, sequence queries, and packed timestamped KV page layout"
                     .to_string(),
-                "full Rust-local C++ API golden corpus covers feature, sequence, ControlState, Redis-compatible core commands, and admin storage readiness"
+                "full Rust-local API golden corpus covers feature, sequence, ControlState, Redis-compatible core commands, and admin storage readiness"
                     .to_string(),
                 "ControlState debug report exposes H/CPC/FOL full and window counters plus FOL selection metadata through engine, typed client, and RESP"
                     .to_string(),
-                "feature module production readiness covers golden C++ corpus replay, exact Feature nested point/proto semantics, deployment-specific time-range behavior, ControlState CPC/list internals, manager/debug APIs, and engine/client/RESP coverage"
+                "feature module production readiness covers golden corpus replay, exact Feature nested point/proto semantics, deployment-specific time-range behavior, ControlState CPC/list internals, manager/debug APIs, and engine/client/RESP coverage"
                     .to_string(),
             ],
             missing: feature_modules.missing,
@@ -384,7 +384,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "OpenAI-compatible context extraction can call a live HTTP provider with bounded deadlines, retries, Authorization header loaded from an environment variable, JSON response parsing, and fallback provider execution"
                     .to_string(),
-                "C++/reference context corpus replay covers engine, client, proxy, Redis/admin, shared-store, and Raft paths"
+                "golden context corpus replay covers engine, client, proxy, Redis/admin, shared-store, and Raft paths"
                     .to_string(),
                 "context workflow production policy covers provider/model selection, PII filtering, tenant isolation, prompt-size admission, rate limiting, and provider failure budgets"
                     .to_string(),
@@ -398,7 +398,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "Docker and existing-EKS Terraform skeleton".to_string(),
                 "Prometheus text metrics for core local surfaces".to_string(),
                 "local scale harness".to_string(),
-                "C++-style membership update task model filters sibling replicas, applies success thresholds, treats not_found as acceptable reboot state, and gates FSM submit"
+                "standard membership update task model filters sibling replicas, applies success thresholds, treats not_found as acceptable reboot state, and gates FSM submit"
                     .to_string(),
                 "rolling upgrade and rollback runbook covers metaserver, data-node, proxy, client, storage, ingestion, preflight, quick chaos gate, and audit artifacts"
                     .to_string(),
@@ -427,7 +427,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "distributed Raft harness covers lag, catch-up, election, membership scale up/down, leader transfer, snapshot bootstrap, and secondary reads under load"
                     .to_string(),
-                "unified C++/Rust workload corpus covers Feature, ControlState, Redis, Context, and admin API replay evidence"
+                "unified conformance workload corpus covers Feature, ControlState, Redis, Context, and admin API replay evidence"
                     .to_string(),
                 "Docker/AWS SLO report covers metaserver, proxy, client, data-node, Raft failover, storage pressure, cache pressure, proxy convergence, workload replay, p50/p95/p99, throughput, error budget, CPU/memory/disk/network collectors, replica lag, failover count, and scale events"
                     .to_string(),
@@ -694,10 +694,10 @@ pub(crate) fn service_next_action(service: &str, blocker_classes: &[String]) -> 
     };
     match (service, first_class) {
         ("client", "client_sync_preflight") => {
-            "keep legacy C++ client wire shims explicitly out of scope and migrate C++ callers through the tracked HTTP/JSON, RESP, and tonic contract"
+            "keep legacy client wire shims explicitly out of scope and migrate legacy callers through the tracked HTTP/JSON, RESP, and tonic contract"
         }
         ("proxy", "proxy_topology_admission") => {
-            "keep legacy C++ proxy wire transport explicitly out of scope and use the tracked HTTP/JSON plus tonic migration contract"
+            "keep legacy proxy wire transport explicitly out of scope and use the tracked HTTP/JSON plus tonic migration contract"
         }
         ("ingestion", "ingestion_durability") => {
             "finish network Kafka/Flink runtime failover, lag metrics, and dead-letter export"
@@ -715,10 +715,10 @@ pub(crate) fn service_next_action(service: &str, blocker_classes: &[String]) -> 
             "finish matrixcache-class async writeback/backpressure and mature latency metrics"
         }
         ("feature_modules", "feature_module_parity") => {
-            "finish exact C++ feature/control_state corpus coverage and deployment-specific module edge cases"
+            "finish exact feature/control_state corpus coverage and deployment-specific module edge cases"
         }
         ("context_workflow", "context_model_provider_parity") => {
-            "finish C++/reference corpus replay and production policy controls"
+            "finish golden corpus replay and production policy controls"
         }
         ("fault_tolerance", "fault_tolerance_validation") => {
             "ready"

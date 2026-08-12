@@ -4477,7 +4477,7 @@ fn assert_step_status(case: &UnifiedCase, step: &UnifiedStep, actual: &Status) {
         .and_then(expected_status_code)
         .is_some()
     {
-        // The expected payload can carry a C++ status contract that maps onto
+        // The expected payload can carry a status contract that maps onto
         // a Rust response value. assert_step_expect performs that translation.
     } else {
         assert!(

@@ -215,7 +215,7 @@ pub struct BlockStoreGcPolicy {
     pub min_age_ms: Option<u64>,
     /// Reclaim only bands whose garbage ratio (10_000 - utility_basis_points) is at
     /// least this many basis points. `None`/0 reclaims every eligible band (today's
-    /// behavior). The C++ garbage-ratio gate (reclaim the most-garbage zones),
+    /// behavior). The garbage-ratio gate (reclaim the most-garbage zones),
     /// expressed against Rust bands.
     #[serde(default)]
     pub min_band_garbage_basis_points: Option<u64>,
@@ -234,7 +234,7 @@ impl BlockStoreGcPolicy {
 
     /// Reclaim eligible bands whose garbage ratio is at least
     /// `min_band_garbage_basis_points`, highest-garbage first, optionally bounded by a
-    /// minimum band age. Mirrors C++ selecting the maximum-garbage-rate zone under GC.
+    /// minimum band age. Mirrors selecting the maximum-garbage-rate zone under GC.
     pub fn with_band_garbage_floor(
         min_band_garbage_basis_points: u64,
         min_age_ms: Option<u64>,
@@ -629,7 +629,7 @@ impl LocalBlockStore {
         // includes uncommitted/partial bytes past the last intact record; reconcile computed
         // the intact `readable_prefix`. Resuming appends at raw EOF would embed the torn record
         // permanently mid-slab and, via the early-halting page-id scan, regress next_page_id ->
-        // page-id/generation reuse -> stale reads. Mirror C++'s resume-at-committed-length:
+        // page-id/generation reuse -> stale reads. Mirror the resume-at-committed-length:
         // physically truncate the active slab to its readable prefix and resume there.
         let active_readable_prefix = bands
             .get(&page_slab_id)
@@ -1016,7 +1016,7 @@ mod tests {
         }
         assert!(std::fs::metadata(&slab).unwrap().len() > clean_len);
         // Reopen: the torn tail must be physically fenced back to the readable prefix (mirrors
-        // C++ resume-at-committed-length), not left embedded mid-slab.
+        // resume-at-committed-length), not left embedded mid-slab.
         let reopened = LocalBlockStore::new(dir.path());
         assert_eq!(
             std::fs::metadata(&slab).unwrap().len(),
@@ -2229,7 +2229,7 @@ mod tests {
 
     #[test]
     fn band_garbage_floor_gates_reclaim_by_garbage_ratio() {
-        // C++ garbage-ratio GC parity: reclaim is gated on a minimum band garbage ratio
+        // garbage-ratio GC parity: reclaim is gated on a minimum band garbage ratio
         // (garbage = 10_000 - band live-fraction). Floor 0 (the default) reclaims every
         // eligible band as before; a floor above a band's garbage ratio excludes it.
         let dir = tempfile::tempdir().unwrap();

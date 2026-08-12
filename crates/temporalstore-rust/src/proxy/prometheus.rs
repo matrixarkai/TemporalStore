@@ -100,7 +100,7 @@ impl ProxyService {
             options.drop_percent as u64,
         );
 
-        out.push_str("# HELP temporalstore_proxy_metric_family_parity C++ proxy operational metric surface mapped to Rust Prometheus families.\n");
+        out.push_str("# HELP temporalstore_proxy_metric_family_parity proxy operational metric surface mapped to Rust Prometheus families.\n");
         out.push_str("# TYPE temporalstore_proxy_metric_family_parity gauge\n");
         for mapping in proxy_metrics_parity_mappings() {
             push_proxy_metric(

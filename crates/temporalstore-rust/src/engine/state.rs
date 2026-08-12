@@ -58,7 +58,7 @@ pub(super) struct ShardState {
     #[serde(default, alias = "control_state_fol")]
     pub(super) control_state_selection: HashMap<String, ControlStateSelectionValue>,
     // UUID idempotency ledger for control-state writes: uuid -> expiry_ms. Mirrors
-    // the C++ control_state 300s dedup window so at-least-once queue replays do not
+    // the control_state 300s dedup window so at-least-once queue replays do not
     // double-count. Lazily garbage-collected on write; in-memory + serde-default so
     // it is rebuilt via command replay and never blocks recovery.
     #[serde(default)]
@@ -126,7 +126,7 @@ pub(super) struct ShardState {
     pub(super) bucket_index: CoreIndex,
     /// Highest WAL sequence whose effect is already materialized in this
     /// serialized index. On shard load, WAL records with sequence greater than this
-    /// are replayed to rebuild in-memory state, mirroring C++ ObjectManager::Load()
+    /// are replayed to rebuild in-memory state, Mirroring ObjectManager::Load()
     /// replaying the wal from index_->GetDumpedLogId(). `None` marks an index
     /// written before this anchor existed (treated as fully authoritative -> no
     /// replay); a missing index file replays the whole retained WAL onto empty state.
@@ -135,7 +135,7 @@ pub(super) struct ShardState {
     /// Per-bucket LRU recency: wall-clock ms of the last read/write that touched the
     /// bucket. In-memory and ephemeral (serde-skipped, like context_dirty_index); on
     /// restart every bucket resets to 0 (== never touched == evicted first), which
-    /// self-corrects as traffic re-warms hot buckets. Mirrors C++ SlotNode last_used
+    /// self-corrects as traffic re-warms hot buckets. Mirrors SlotNode last_used
     /// without persisting it.
     #[serde(skip)]
     pub(super) bucket_recency: HashMap<u32, u64>,
@@ -176,7 +176,7 @@ pub(super) struct ComponentPageLookupRef {
     pub(super) page_ref_key: String,
 }
 
-/// Rust-native core index mirroring the C++ shape:
+/// Rust-native core index mirroring the shape:
 /// Index -> BucketMap -> BucketNode -> PageIndex/ObjectIndex.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub(super) struct BucketNode {

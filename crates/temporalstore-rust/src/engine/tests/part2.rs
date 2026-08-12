@@ -840,7 +840,7 @@ fn async_storage_string_write_stays_on_hot_memory_path() {
         },
     });
     assert!(write.status.ok);
-    // C++ parity (StringModel::SetValue via the WAL writer): the write records
+    // parity (StringModel::SetValue via the WAL writer): the write records
     // a WAL entry even in async mode; async only means the commit does not
     // block (no fsync -> syncs == 0), and page/index materialization is deferred.
     assert_eq!(engine.block_store().stats().writes, 0);
@@ -949,8 +949,8 @@ fn durable_index_survives_restart_and_points_to_page_file() {
 
 #[test]
 fn async_write_survives_restart_via_wal_replay_like_cpp() {
-    // C++ parity: an async_storage write records a WAL entry but defers page/
-    // index materialization to the background dump. If the crash beats the dump, C++
+    // parity: an async_storage write records a WAL entry but defers page/
+    // index materialization to the background dump. If the crash beats the dump,
     // ObjectManager::Load() replays the wal and recovers the write. Rust must replay
     // its WAL on shard load the same way, or the async write is silently lost.
     let dir = tempfile::tempdir().unwrap();
@@ -1127,7 +1127,7 @@ fn async_storage_batch_write_records_wal_without_sync_or_index() {
 
 #[test]
 fn eviction_ranks_victims_least_recently_used_first_like_cpp() {
-    // C++ PolicyLru: eviction victims are ordered least-recently-used first, so a
+    // PolicyLru: eviction victims are ordered least-recently-used first, so a
     // repeatedly-read hot bucket is evicted last. Rust stamps per-bucket recency on
     // every read/write and sorts victims oldest-first.
     let dir = tempfile::tempdir().unwrap();
@@ -1178,7 +1178,7 @@ fn eviction_ranks_victims_least_recently_used_first_like_cpp() {
 
 #[test]
 fn wal_replay_gap_refuses_load_like_cpp_dataloss() {
-    // C++ ObjectManager::ReplayWal returns DataLoss and aborts Load on a hole in the
+    // ObjectManager::ReplayWal returns DataLoss and aborts Load on a hole in the
     // retained wal. Rust must likewise refuse the load (not-loaded) rather than
     // silently serve a truncated prefix.
     let dir = tempfile::tempdir().unwrap();
@@ -1233,7 +1233,7 @@ fn wal_replay_gap_refuses_load_like_cpp_dataloss() {
 
 #[test]
 fn expiry_sweep_emits_wal_tombstone_like_cpp() {
-    // C++ parity (object_manager DoExpireObject -> op_logger_->DeleteObject; expirer.cc
+    // parity (object_manager DoExpireObject -> op_logger_->DeleteObject; expirer.cc
     // Commit): active expiry is a logged, replicated delete. Rust's sweep must append a
     // WAL tombstone per expired key so followers / WAL replay observe the deletion,
     // instead of removing only in-memory + index.
@@ -1273,7 +1273,7 @@ fn expiry_sweep_emits_wal_tombstone_like_cpp() {
 
 #[test]
 fn wal_replay_uses_leader_timestamp_for_ttl_deadline_like_cpp() {
-    // C++ resolves a TTL to an ABSOLUTE deadline on the leader before logging it
+    // resolves a TTL to an ABSOLUTE deadline on the leader before logging it
     // (common_module.h ttl = request.ttl_ms + GetCurrentTimeInMs()); replay uses that
     // value. Rust must resolve replayed TTLs against the leader's logged timestamp, not
     // the (later) restart clock -- otherwise crash recovery resurrects a key past its
@@ -1427,7 +1427,7 @@ fn wal_replay_rearmed_expire_does_not_abort_recovery_like_cpp() {
     // ORIGINAL (pre-re-arm) deadline has lapsed by restart time. Command preconditions are
     // a LEADER-time gate; re-running them during replay against the restart clock made a
     // replayed EXPIRE fail "not_found" and abort the WHOLE shard load (data unavailability
-    // for every key on the shard). C++ ReplayWal re-applies logged effects without
+    // for every key on the shard). ReplayWal re-applies logged effects without
     // re-checking preconditions. The canary below proves the shard actually recovered.
     let dir = tempfile::tempdir().unwrap();
     let page_dir = dir.path().join("pages");
@@ -1507,7 +1507,7 @@ fn wal_replay_rearmed_expire_does_not_abort_recovery_like_cpp() {
 
 #[test]
 fn hdel_last_field_removes_key_like_cpp() {
-    // C++ hash2::Del removes the whole object once the last field is deleted; Rust left an
+    // hash2::Del removes the whole object once the last field is deleted; Rust left an
     // empty field map behind, so the key still reported as existing (EXISTS=1, TYPE=hash).
     let engine = TemporalEngine::default();
     engine.load_shard(1);
@@ -1535,7 +1535,7 @@ fn hdel_last_field_removes_key_like_cpp() {
     assert_eq!(
         exists.response,
         CommandResponse::Integer { value: 0 },
-        "an emptied hash must not leave a phantom key (C++ deletes the object on last HDEL)"
+        "an emptied hash must not leave a phantom key (deletes the object on last HDEL)"
     );
 }
 
@@ -1664,7 +1664,7 @@ fn reconcile_does_not_resurrect_evicted_feature_points_on_reload() {
     // A single FeatureAppend packs all timestamps into one page; the feature_max_size trim
     // drops the oldest from the in-memory series, but the page still physically holds them.
     // reconcile-from-pages must keep the persisted (trimmed) membership -- the evicted points
-    // must NOT resurrect on reload (C++ writes per-timestamp deleted tombstones for this).
+    // must NOT resurrect on reload (writes per-timestamp deleted tombstones for this).
     let dir = tempfile::tempdir().unwrap();
     let page_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
@@ -1792,10 +1792,10 @@ fn hash_incrby_rejects_non_integer_and_overflow_like_cpp() {
 
 #[test]
 fn hash_incrby_skips_leading_whitespace_in_stored_value_like_cpp() {
-    // C++ hash IncrBy parses the stored field via strtoll (extension/hash/implement.cc:138), which
+    // hash IncrBy parses the stored field via strtoll (extension/hash/implement.cc:138), which
     // skips leading whitespace, so a field stored as " 5" is the valid integer 5. Rust parse_i64
     // previously used str::parse (rejects leading whitespace) and wrongly failed it as
-    // "not an integer". A leading-space integer must now increment like C++.
+    // "not an integer". A leading-space integer must now increment like.
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     engine.execute(ExecuteRequest {
@@ -1816,12 +1816,12 @@ fn hash_incrby_skips_leading_whitespace_in_stored_value_like_cpp() {
     });
     assert!(
         response.status.ok,
-        "leading-whitespace integer must parse like C++ strtoll, got {:?}",
+        "leading-whitespace integer must parse like C strtoll, got {:?}",
         response.status
     );
     assert_eq!(response.response, CommandResponse::Integer { value: 6 });
 
-    // Trailing garbage must still be rejected on both sides (C++ *end != '\0').
+    // Trailing garbage must still be rejected on both sides (*end != '\0').
     engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::HashSet {
@@ -1840,7 +1840,7 @@ fn hash_incrby_skips_leading_whitespace_in_stored_value_like_cpp() {
     });
     assert_eq!(
         rejected.status.code, "unmatched",
-        "trailing whitespace must still be rejected like C++"
+        "trailing whitespace must still be rejected like"
     );
 }
 
@@ -1988,7 +1988,7 @@ fn feature_cpp_policy_aliases_first_update_and_block() {
         "policy": "FIRST",
         "points": [{"timestamp_ms": 10, "value": [120]}]
     }))
-    .expect("C++ FIRST policy alias should deserialize");
+    .expect("FIRST policy alias should deserialize");
     let first_existing = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: first_existing,
@@ -2004,7 +2004,7 @@ fn feature_cpp_policy_aliases_first_update_and_block() {
         "policy": "FIRST",
         "points": [{"timestamp_ms": 20, "value": [98]}]
     }))
-    .expect("C++ FIRST policy alias should deserialize");
+    .expect("FIRST policy alias should deserialize");
     let first_new = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: first_new,
@@ -2017,7 +2017,7 @@ fn feature_cpp_policy_aliases_first_update_and_block() {
         "policy": "UPDATE",
         "points": [{"timestamp_ms": 30, "value": [99]}]
     }))
-    .expect("C++ UPDATE policy alias should deserialize");
+    .expect("UPDATE policy alias should deserialize");
     let update_missing = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: update_missing,
@@ -2033,7 +2033,7 @@ fn feature_cpp_policy_aliases_first_update_and_block() {
         "policy": "UPDATE",
         "points": [{"timestamp_ms": 10, "value": [65]}]
     }))
-    .expect("C++ UPDATE policy alias should deserialize");
+    .expect("UPDATE policy alias should deserialize");
     let update_existing = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: update_existing,
@@ -2049,7 +2049,7 @@ fn feature_cpp_policy_aliases_first_update_and_block() {
         "policy": "BLOCK",
         "points": [{"timestamp_ms": 40, "value": [100]}]
     }))
-    .expect("C++ BLOCK policy alias should deserialize");
+    .expect("BLOCK policy alias should deserialize");
     let block = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: block,
@@ -2700,7 +2700,7 @@ fn feature_replace_delete_and_agg_query() {
                 })
                 .response,
             CommandResponse::Aggregate { value: expected },
-            "{aggregator} aggregate should match C++ window semantics"
+            "{aggregator} aggregate should Match window semantics"
         );
     }
     assert_eq!(
@@ -3401,7 +3401,7 @@ fn control_state_rollup_matches_raw_scan_through_engine() {
     assert!(raw.iter().any(|value| *value != 0), "test series should be non-trivial");
 }
 
-// C++ MANAGER op-code parity: QUERY(2) / FIELD_LIST(5) / FIELD_COUNT(6) / ALL_DATA_VALUE(7)
+// MANAGER op-code parity: QUERY(2) / FIELD_LIST(5) / FIELD_COUNT(6) / ALL_DATA_VALUE(7)
 // over the H family series, plus the default summary path.
 #[test]
 fn control_state_manager_op_codes_match_cpp_hash_manager() {

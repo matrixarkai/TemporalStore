@@ -632,7 +632,7 @@ fn previously_misclassified_writes_mark_shard_dirty() {
 
 #[test]
 fn gc_does_not_clear_the_dirty_scheduling_tracker() {
-    // C++ GC (ReclaimPage/ReclaimIndex) never touches the dirty-slot set -- a slot leaves it
+    // GC (ReclaimPage/ReclaimIndex) never touches the dirty-slot set -- a slot leaves it
     // only via a completed dump/replay (Index::ClearSlotDirty). GC must not drop the re-dump
     // scheduling state, or schedule_dirty_shard_dumps would stop scheduling those objects.
     let engine = TemporalEngine::default();

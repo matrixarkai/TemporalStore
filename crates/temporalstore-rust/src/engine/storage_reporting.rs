@@ -192,7 +192,7 @@ pub(super) fn bucket_storage_summaries(
         // fields (compared by bucket_dump_summary_matches_current_generation to anchor
         // WAL/index reclaim). They must reflect durable bucket content, not the
         // transient `dirty` flag -- so a bucket that was dumped and then had its dirty
-        // flag cleared (C++ Index::ClearSlotDirty) but still owns live pages keeps its
+        // flag cleared (Index::ClearSlotDirty) but still owns live pages keeps its
         // reclaim fingerprint. Populate whenever the bucket is dirty OR already has a
         // live-page summary; behaviour is unchanged for every pre-clear state (a bucket
         // with content is dirty today, so the branch was always taken).

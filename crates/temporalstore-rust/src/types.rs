@@ -205,7 +205,7 @@ pub struct SequenceQuerySpec {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlStateFamily {
-    // Wire/disk form is pinned to the historical C++-derived tags (h/cpc/fol) so this
+    // Wire/disk form is pinned to the historical historical tags (h/cpc/fol) so this
     // rename to descriptive Rust names carries zero on-disk/wire migration.
     #[serde(rename = "h")]
     Counter,
@@ -260,13 +260,13 @@ pub struct ContextEvent {
     pub kind: u32,
     #[serde(default, rename = "type", alias = "event_type")]
     pub event_type: u32,
-    // Deprecated hot-schema field: C++ reserves this field.
+    // Deprecated hot-schema field: reserves this field.
     #[serde(default, skip_serializing)]
     pub actor_hash: u64,
     // Deprecated hot-schema field: use secondary index status_hash instead.
     #[serde(default, skip_serializing)]
     pub status: u32,
-    // Deprecated hot-schema field: C++ reserves this field.
+    // Deprecated hot-schema field: reserves this field.
     #[serde(default, skip_serializing)]
     pub valid_until_ms: u64,
     #[serde(default)]
@@ -610,7 +610,7 @@ impl ContextWire for ContextNode {
         // raw_metadata_ref is a deprecated hot-schema field (like status,
         // summary_dirty, and l1_ref, all #[serde(default, skip_serializing)]);
         // source provenance moved to resource/provenance sidecars. It is the last
-        // deprecated field still being written to the canonical C++ wire payload,
+        // deprecated field still being written to the canonical wire payload,
         // so encoding it round-trips a value the trimmed schema must drop. Stop
         // emitting field 10; decode still accepts it for legacy on-disk pages.
         out
@@ -793,10 +793,10 @@ impl ContextWire for ContextAuditRef {
 impl ContextWire for ContextPackAudit {
     fn encode_cpp_context_value(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        // Field numbers MUST match the C++ proto (context interface.proto ContextPackAudit):
+        // Field numbers MUST match the wire proto (context interface.proto ContextPackAudit):
         // query_id=1, session_hash=2, request_time_ms=3, max_prompt_tokens=4,
-        // selected_tokens=5, selected_refs=6. Rust-only fields go AFTER C++'s max tag so
-        // they never shift a C++ field (previously query_hash sat at 4, shifting three C++
+        // selected_tokens=5, selected_refs=6. Rust-only fields go AFTER the reserved max tag so
+        // they never shift a reserved field (previously query_hash sat at 4, shifting three
         // fields and dropping selected_refs on cross-impl decode).
         encode_bytes_field(&mut out, 1, self.query_id.as_bytes());
         encode_varint_field(&mut out, 2, self.session_hash);
@@ -806,7 +806,7 @@ impl ContextWire for ContextPackAudit {
         for selected in &self.selected_refs {
             encode_bytes_field(&mut out, 6, &selected.encode_cpp_context_value());
         }
-        // Rust-only extensions (no C++ counterpart), on non-colliding tags.
+        // Rust-only extensions (no wire counterpart), on non-colliding tags.
         encode_varint_field(&mut out, 9, self.query_hash);
         for blocked in &self.blocked_refs {
             encode_bytes_field(&mut out, 10, &blocked.encode_cpp_context_value());
@@ -863,8 +863,8 @@ impl ContextWire for ContextPackAudit {
 impl ContextWire for ContextSummaryDirtyMarker {
     fn encode_cpp_context_value(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        // C++ SummaryDirtyMarker (context interface.proto): node_hash=1, event_time_ms=2,
-        // propagate_depth=3. Rust's extra `reason` must NOT sit at 3 (it would land in C++'s
+        // SummaryDirtyMarker (context interface.proto): node_hash=1, event_time_ms=2,
+        // propagate_depth=3. Rust's extra `reason` must NOT sit at 3 (it would land in's
         // propagate_depth); place it at 4.
         encode_varint_field(&mut out, 1, self.node_hash);
         encode_varint_field(&mut out, 2, self.event_time_ms);
@@ -1302,7 +1302,7 @@ pub enum Command {
         end_ms: u64,
         aggregator: String,
     },
-    /// Full-parity analog of the C++ control_state `HSETANDGET` operator: an
+    /// Full-parity analog of the control_state `HSETANDGET` operator: an
     /// atomic increment-then-read that additionally supports precision bucketing,
     /// per-key TTL, and UUID idempotency (dedup within a bounded window so
     /// at-least-once queue replays do not double-count). `aggregator` accepts the
@@ -1344,12 +1344,12 @@ pub enum Command {
     },
     ControlStateManager {
         key: String,
-        /// Optional manager op-code for C++ `MANAGER` parity: QUERY(2), FIELD_LIST(5),
+        /// Optional manager op-code for `MANAGER` parity: QUERY(2), FIELD_LIST(5),
         /// FIELD_COUNT(6), ALL_DATA_VALUE(7). `None` / unknown returns the family summary.
         #[serde(default)]
         op_type: Option<String>,
         /// Exact field keys (timestamp_ms) for QUERY; the second tuple element is unused
-        /// (kept for wire symmetry with the C++ KvPair field_list).
+        /// (kept for wire symmetry with the KvPair field_list).
         #[serde(default)]
         field_list: Vec<(String, String)>,
         /// Inclusive range start for FIELD_LIST (timestamp_ms as string).
@@ -1973,9 +1973,9 @@ mod tests {
 
     #[test]
     fn context_pack_audit_wire_matches_cpp_field_numbers() {
-        // C++ ContextPackAudit proto: query_id=1, session_hash=2, request_time_ms=3,
+        // ContextPackAudit proto: query_id=1, session_hash=2, request_time_ms=3,
         // max_prompt_tokens=4, selected_tokens=5, selected_refs=6. Rust-only fields must NOT
-        // occupy tag 4 (query_hash previously did, shifting three C++ fields and dropping
+        // occupy tag 4 (query_hash previously did, shifting three reserved fields and dropping
         // selected_refs entirely on a cross-impl decode).
         let audit = ContextPackAudit {
             query_id: "q".to_string(),
@@ -2007,19 +2007,19 @@ mod tests {
         assert_eq!(
             varint_fields.get(&4),
             Some(&4444),
-            "field 4 must be max_prompt_tokens (C++ proto), not the Rust-only query_hash"
+            "field 4 must be max_prompt_tokens (wire proto), not the Rust-only query_hash"
         );
         assert_eq!(
             varint_fields.get(&5),
             Some(&5555),
-            "field 5 must be selected_tokens (C++ proto)"
+            "field 5 must be selected_tokens (wire proto)"
         );
         assert_eq!(
             varint_fields.get(&9),
             Some(&9999),
-            "Rust-only query_hash must live on a non-C++ tag (9)"
+            "Rust-only query_hash must live on a reserved-safe tag (9)"
         );
-        // Encoder and decoder agree on the C++ layout (round-trip).
+        // Encoder and decoder agree on the wire layout (round-trip).
         let decoded = ContextPackAudit::decode_cpp_context_value(&bytes).unwrap();
         assert_eq!(decoded.max_prompt_tokens, 4444);
         assert_eq!(decoded.selected_tokens, 5555);

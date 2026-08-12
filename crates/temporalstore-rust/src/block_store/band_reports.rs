@@ -274,9 +274,9 @@ impl LocalBlockStore {
                     .to_string(),
                 "band manifest descriptors are validated against inspected stream boundaries"
                     .to_string(),
-                "open-time reconciliation repairs manifest/live stream divergence like C++ zone updates"
+                "open-time reconciliation repairs manifest/live stream divergence like zone updates"
                     .to_string(),
-                "zone usage reports map band ids to page-store used bytes like C++ ZoneStats"
+                "zone usage reports map band ids to page-store used bytes like ZoneStats"
                     .to_string(),
             ],
         })

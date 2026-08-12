@@ -193,7 +193,7 @@ impl TemporalStoreTable {
         }
     }
 
-    /// Full-parity control-state atomic increment-then-read (C++ `HSETANDGET`
+    /// Full-parity control-state atomic increment-then-read (`HSETANDGET`
     /// analog) with precision bucketing, per-key TTL, and UUID idempotency.
     /// A repeated `uuid` within the dedup window is a no-op write that still
     /// returns the current windowed aggregate, so at-least-once queue replays do

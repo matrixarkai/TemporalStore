@@ -14,13 +14,13 @@ pub const MAX_PARTITION_SET_INDEX: u32 = 0xFFFF;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum PartitionIdError {
-    #[error("table_id out of C++ partition id range: {0}")]
+    #[error("table_id out of partition id range: {0}")]
     TableIdOutOfRange(u64),
-    #[error("partition_set_index out of C++ partition id range: {0}")]
+    #[error("partition_set_index out of partition id range: {0}")]
     PartitionSetIndexOutOfRange(u64),
-    #[error("partition_index out of C++ partition id range: {0}")]
+    #[error("partition_index out of partition id range: {0}")]
     PartitionIndexOutOfRange(u64),
-    #[error("partition_version out of C++ partition id range: {0}")]
+    #[error("partition_version out of partition id range: {0}")]
     PartitionVersionOutOfRange(u64),
     #[error("partition set count must be > 0 and <= {max}: {value}")]
     InvalidPartitionSetCount { value: u32, max: u32 },

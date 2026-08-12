@@ -7,7 +7,7 @@ use super::*;
 impl TemporalEngine {
     pub fn storage_lifecycle_plan(&self, request: StorageLifecycleRequest) -> StorageLifecyclePlan {
         let bucket_summaries = self.bucket_storage_summaries(request.shard_id);
-        // Select the least-recently-dumped (most overdue) dirty buckets first, matching the C++
+        // Select the least-recently-dumped (most overdue) dirty buckets first, matching the
         // WAL-reclaim routine's oldest-first-dirty ordering (storage_manager.cc:234-245:
         // GetLastDirtySlot/PopLastDirtySlot consume slots in non-decreasing first-dirty-log-id).
         // bucket_summaries arrives in ascending routing_bucket order (a BTreeMap), so truncating to
@@ -386,7 +386,7 @@ impl TemporalEngine {
         }
     }
 
-    /// Clear the dirty state of buckets just captured by `manifest` (C++ SlotStore::
+    /// Clear the dirty state of buckets just captured by `manifest` (SlotStore::
     /// DumpSlotInMemory -> Index::ClearSlotDirty), so the storage cycle does not
     /// re-select and re-dump them every round. A bucket re-dirtied since the manifest
     /// snapshot (its current derived generation no longer equals the captured one) is
@@ -438,7 +438,7 @@ impl TemporalEngine {
                 // Hold the generation at the captured (derived) value so the reclaim
                 // fingerprint still matches once the dirty objects are cleared.
                 bucket.dirty_generation = bucket.dirty_generation.max(captured_generation);
-                // C++ SetDumpedLogId analog (informational; not part of the fingerprint).
+                // SetDumpedLogId analog (informational; not part of the fingerprint).
                 bucket.last_dump_sequence = bucket.last_dump_sequence.max(manifest.wal_sequence);
                 bucket.dirty = false;
                 for page in bucket.page_index.values_mut() {
@@ -460,10 +460,10 @@ impl TemporalEngine {
                 .ok()
         };
         if let Some(manifest) = &dump_manifest {
-            // Parity with C++ SlotStore::DumpSlotInMemory -> Index::ClearSlotDirty: a
+            // Parity with SlotStore::DumpSlotInMemory -> Index::ClearSlotDirty: a
             // dumped bucket is no longer dirty, so the storage cycle stops re-selecting
             // and re-dumping it every round. Dumped-state is anchored by the wal
-            // watermark (last_dump_sequence / manifest.wal_sequence, the C++
+            // watermark (last_dump_sequence / manifest.wal_sequence, the
             // SetDumpedLogId analog), not by the dirty flag.
             self.clear_dumped_bucket_dirty_state(request.shard_id, manifest);
         }
@@ -950,7 +950,7 @@ impl TemporalEngine {
             })
             .filter(|victim| victim.weight > 0)
             .collect::<Vec<_>>();
-        // C++ PolicyLru (evicter.cc GetBestObjects sorts by slot->GetLastUsed()): evict
+        // PolicyLru (evicter.cc GetBestObjects sorts by slot->GetLastUsed()): evict
         // least-recently-used buckets first. Never-touched buckets (last_touched_ms ==
         // 0) are coldest and go first; ties fall back to the heavier bucket, then the
         // lower routing_bucket for determinism.
@@ -1022,8 +1022,8 @@ impl TemporalEngine {
                     // replay reapplied the earlier SET. Emit a CommonDelete tombstone per dropped
                     // key (buffered/unfsynced, mirroring the expiry sweep) and anchor
                     // applied_wal_sequence past them so replay observes the deletion instead of the
-                    // stale write. (C++ eviction never deletes -- evicter.cc DumpActuator -- so
-                    // there is no C++ analog; this aligns the Rust-only delete_drop path with the
+                    // stale write. (eviction never deletes -- evicter.cc DumpActuator -- so
+                    // there is no analog; this aligns the Rust-only delete_drop path with the
                     // engine's own tombstone discipline.)
                     if !replaying_wal() {
                         for key in &deleted_keys {

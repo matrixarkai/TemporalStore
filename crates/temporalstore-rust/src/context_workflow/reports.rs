@@ -161,7 +161,7 @@ pub fn reference_open_source_model_profiles() -> Vec<ContextReferenceModelProfil
                 "semantic_retrieval".to_string(),
                 "locomo_context_benchmark".to_string(),
             ],
-            notes: "Matches the MatrixArk/C++ path OSS benchmark setup from the LLM Specific TemporalStore Use Cases thread: transformers extraction with google/flan-t5-small and sentence-transformers/all-MiniLM-L6-v2 embeddings."
+            notes: "Matches the MatrixArk OSS benchmark setup from the LLM Specific TemporalStore Use Cases thread: transformers extraction with google/flan-t5-small and sentence-transformers/all-MiniLM-L6-v2 embeddings."
                 .to_string(),
         },
         ContextReferenceModelProfile {

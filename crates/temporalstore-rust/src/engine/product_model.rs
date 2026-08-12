@@ -133,7 +133,7 @@ pub(super) fn is_control_state_change_aggregator(aggregator: &str) -> bool {
 }
 
 /// UUID idempotency dedup window for control-state writes (300s), matching the
-/// C++ control_state `kUUIDExpiredTime` production value.
+/// control_state `kUUIDExpiredTime` production value.
 pub(super) const CONTROL_STATE_UUID_DEDUP_MS: u64 = 300_000;
 
 /// Soft cap on the in-memory UUID dedup ledger before a reclaiming sweep runs.
@@ -169,7 +169,7 @@ pub(super) fn control_state_family_name(family: ControlStateFamily) -> &'static 
     }
 }
 
-/// C++ `MANAGER` op-code parity. Accepts the numeric code or its symbolic name.
+/// `MANAGER` op-code parity. Accepts the numeric code or its symbolic name.
 /// `None` / unknown -> the family summary (the historical default).
 pub(super) fn control_state_manager_op_code(op_type: Option<&str>) -> Option<i64> {
     let value = op_type?.trim();
@@ -195,7 +195,7 @@ fn control_state_manager_series<'a>(
     shard.control_state.get(&control_state_family_key(family, key))
 }
 
-/// Dispatch a Control State MANAGER request. Mirrors the C++ `Manager`/`CPCManager`
+/// Dispatch a Control State MANAGER request. Mirrors the `Manager`/`CPCManager`
 /// read op-codes QUERY(2), FIELD_LIST(5), FIELD_COUNT(6), ALL_DATA_VALUE(7); any
 /// other op (or `None`) returns the cross-family summary.
 pub(super) fn control_state_manager_entries(

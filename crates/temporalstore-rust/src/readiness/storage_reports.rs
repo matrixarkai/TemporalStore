@@ -38,7 +38,7 @@ pub fn storage_migration_corpus_readiness_report() -> StorageMigrationCorpusRead
         Vec::new()
     } else {
         vec![
-            "external C++ binary-artifact exporter plus CI-published golden corpus for the migration-only storage compatibility path"
+            "external binary-artifact exporter plus CI-published golden corpus for the migration-only storage compatibility path"
                 .to_string(),
         ]
     };
@@ -78,7 +78,7 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
     let rust_native_weighted_eviction_evidence = vec![
         "memory and disk cache entries carry hotness and routing-slot metadata".to_string(),
         "pressure eviction chooses victims with weighted hotness/LRU scoring".to_string(),
-        "cache pressure selects victims by routing-slot/object group before individual block, matching C++ Evicter slot-first pressure behavior".to_string(),
+        "cache pressure selects victims by routing-slot/object group before individual block, Matching Evicter slot-first pressure behavior".to_string(),
         "pin-aware eviction skip counters preserve active page/block handles".to_string(),
         "eviction reason counters distinguish cold, low-hit, stale, and pressure paths".to_string(),
         "shared case storage_cache_replacement_policy_soak exercises repeated pressure rounds, memory/disk pressure, dump-before-evict, delete/drop eviction, cold read refill, async writeback backpressure, and bucketed latency histograms through TemporalStore storage".to_string(),
@@ -277,8 +277,8 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
             .to_string(),
     ];
     let native_object_manager_runtime_blockers = vec![
-        "C++ ObjectManager byte-for-byte hot-object memory layout remains out of scope".to_string(),
-        "C++ ObjectManager allocator and hot-object byte layout remain separate from Rust-native ownership policy".to_string(),
+        "ObjectManager byte-for-byte hot-object memory layout remains out of scope".to_string(),
+        "ObjectManager allocator and hot-object byte layout remain separate from Rust-native ownership policy".to_string(),
     ];
     let native_bucket_store_layout_transition_ready = true;
     let native_bucket_store_layout_transition_evidence = vec![
@@ -300,7 +300,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
             .to_string(),
     ];
     let stream_backed_band_runtime_blockers = vec![
-        "C++ byte-for-byte stream backend layout remains out of scope".to_string(),
+        "byte-for-byte stream backend layout remains out of scope".to_string(),
         "distributed/control-plane compression policy remains separate evidence".to_string(),
     ];
     let model_layout_compaction_ready = true;
@@ -320,7 +320,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         "prepare phase builds dirty-slot, live/stale segment, delayed-destroy, and manifest/index-log plans"
             .to_string(),
         "reclaim phase ranks stale and delayed-destroy candidates by pressure and utility".to_string(),
-        "block-store GC candidates report C++ PageGc-style total/used/stale bytes and utility basis points".to_string(),
+        "block-store GC candidates report PageGc-style total/used/stale bytes and utility basis points".to_string(),
         "evict phase performs shard-scoped cache invalidation with entry/byte accounting".to_string(),
         "expire phase sweeps TTL metadata and persists removals through index-log".to_string(),
         "compact phase calls model-layout/tombstone page compaction".to_string(),
@@ -328,7 +328,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         "WAL/index-log reclaim is tied to durable slot dump generations and shared case storage_wal_index_gc_generation_retention validates lagging follower cursor and Raft snapshot blockers before bounded index-GC can truncate logs".to_string(),
         "page-GC dependency planning fails closed for live refs, slot dump manifests, shared-store follower cursors, checkpoint floors, Raft snapshot refs, Raft install floors, and delayed-destroy grace via shared case storage_gc_dependency_retention_matrix".to_string(),
         "StorageManager pressure decisions expose observed/threshold signals for dirty slots, wal backlog, cache bytes, stale segments, reclaimable bytes, expired records, manifest/index-GC work, and queue depth".to_string(),
-        "shared case storage_manager_pressure_scale_evidence runs repeated pressure rounds and validates every C++-style StorageManager phase stays active under scale-like write/read/TTL/cache/stale-page pressure".to_string(),
+        "shared case storage_manager_pressure_scale_evidence runs repeated pressure rounds and validates every standard StorageManager phase stays active under scale-like write/read/TTL/cache/stale-page pressure".to_string(),
         "continuous StorageManager runtime report preserves stoppable loop, jitter/backoff, pause/resume, dirty-slot, WAL byte, index-log byte, stale-density, cache-pressure, expired scan debt, delayed-destroy, follower cursor, Raft snapshot floor, retention blocker, selected-slot, skipped-reason, reclaimed-byte, pressure before/after, and compaction-debt evidence".to_string(),
     ];
     let mature_background_storage_manager_blockers = Vec::new();
@@ -410,7 +410,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         );
     }
     if !merged_dump_load_policy_ready {
-        missing.push("full C++ merged dump/load policy".to_string());
+        missing.push("full merged dump/load policy".to_string());
     }
 
     StorageProductionPostureReport {

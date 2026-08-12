@@ -525,7 +525,7 @@ fn context_models_match_cpp_keys_timeline_pages_and_filters() {
 
 #[test]
 fn context_query_events_applies_limit_after_filter_like_cpp() {
-    // C++ QueryEvents filters within the (bounded) scan and applies `limit` AFTER filtering.
+    // QueryEvents filters within the (bounded) scan and applies `limit` AFTER filtering.
     // Rust previously took `limit` off the raw timeline first, so matching events beyond the
     // first `limit` timeline entries were silently dropped -- e.g. many earlier
     // low-confidence events hid the high-confidence matches on the live retrieval path.

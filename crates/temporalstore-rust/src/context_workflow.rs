@@ -1302,17 +1302,17 @@ impl Default for ContextPipelineParityEvidence {
 
 pub fn context_pipeline_parity_evidence() -> ContextPipelineParityEvidence {
     let evidence = vec![
-        "C++ ContextNode/Event/IndexRef/PackAudit/SummaryDirty model aliases and protobuf wire encoders are implemented"
+        "ContextNode/Event/IndexRef/PackAudit/SummaryDirty model aliases and protobuf wire encoders are implemented"
             .to_string(),
-        "C++ Context model ids 9-13 are exposed as first-class Rust descriptors".to_string(),
-        "C++ Context timeline fanout, key shapes, range windows, and validation limits are enforced"
+        "Context model ids 9-13 are exposed as first-class Rust descriptors".to_string(),
+        "Context timeline fanout, key shapes, range windows, and validation limits are enforced"
             .to_string(),
         "Hierarchical L0/L1/L2 tiers are produced during extraction and consumed during retrieval/injection"
             .to_string(),
         "Context extraction persists node, event, index-ref, and dirty-summary commands through TemporalEngine"
             .to_string(),
         "Context injection persists ContextPackAudit selected and blocked refs".to_string(),
-        "Context workflow harness validates local restart, shared-store sync/async replay, Raft replica reads, and unified C++/Rust context corpus evidence"
+        "Context workflow harness validates local restart, shared-store sync/async replay, Raft replica reads, and unified conformance context corpus evidence"
             .to_string(),
     ];
     ContextPipelineParityEvidence {

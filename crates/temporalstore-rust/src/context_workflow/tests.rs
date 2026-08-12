@@ -1181,7 +1181,7 @@ fn context_workflow_exposes_reference_open_source_vlm_profiles() {
     let matrixark_cpp_provider = providers
         .iter()
         .find(|provider| provider.provider_name == "matrixark-cpp-oss-context")
-        .expect("MatrixArk C++ path OSS provider profile should be exposed");
+        .expect("MatrixArk OSS provider profile should be exposed");
     assert_eq!(matrixark_cpp_provider.model, "google/flan-t5-small");
     assert_eq!(
         matrixark_cpp_provider.embedding_model,

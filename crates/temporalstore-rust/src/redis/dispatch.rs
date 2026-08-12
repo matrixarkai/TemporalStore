@@ -133,10 +133,10 @@ pub fn execute_redis_command_with_state(
                 Ok(options) => options,
                 Err(err) => return RespValue::Error(err),
             };
-            // NOTE: C++'s redis bridge rejects TTL+NX/XX ("not supported ... yet"), but that
+            // NOTE: the redis bridge rejects TTL+NX/XX ("not supported ... yet"), but that
             // is a stopgap limitation, not a semantic -- real Redis supports SET k v NX EX 10
             // and Rust deliberately does too (see the redis_string_hash_set_and_feature test).
-            // We keep the more-capable Rust behavior rather than match a C++ shim's TODO.
+            // We keep the more-capable Rust behavior rather than match a shim's TODO.
             match execute(Command::StringSetConditional {
                 key: key.clone(),
                 value,
@@ -234,7 +234,7 @@ pub fn execute_redis_command_with_state(
             }
         }
         "SETEX" if args.len() == 4 => match parse_u64(&args[2], "seconds") {
-            // C++ rejects a non-positive expiry ("invalid expire time"); Rust otherwise
+            // rejects a non-positive expiry ("invalid expire time"); Rust otherwise
             // stored a key with deadline now+0 that vanishes on the next access.
             Ok(0) => RespValue::Error("ERR invalid expire time in setex".to_string()),
             Ok(seconds) => match execute(Command::StringSetEx {
@@ -365,7 +365,7 @@ pub fn execute_redis_command_with_state(
         "TTL" if args.len() == 2 => match execute(Command::CommonTtl {
             key: string_arg(&args[1]),
         }) {
-            // C++ TTL: the negative sentinels (-2 missing, -1 no-expiry) pass through
+            // TTL: the negative sentinels (-2 missing, -1 no-expiry) pass through
             // unchanged; a positive remaining-ms value rounds UP to seconds ((ms+999)/1000).
             // The old `value / 1000` turned -1/-2 into 0 and floored sub-second remainders.
             Ok(CommandResponse::Integer { value }) => {
@@ -450,7 +450,7 @@ pub fn execute_redis_command_with_state(
             response
         }
         "DECRBY" if args.len() == 3 => match parse_i64_arg(&args[2], "decrement") {
-            // C++ rejects DECRBY i64::MIN ("decrement would overflow"): negating it
+            // rejects DECRBY i64::MIN ("decrement would overflow"): negating it
             // overflows i64. Plain `-decrement` panics in debug and wraps to i64::MIN in
             // release (then silently stores a wrong value). Guard with checked_neg.
             Ok(decrement) => match decrement.checked_neg() {
@@ -822,7 +822,7 @@ pub fn execute_redis_command_with_state(
                             .collect(),
                     ),
                     Some(count) => {
-                        // Negative count = |count| members WITH repetition. C++ computes
+                        // Negative count = |count| members WITH repetition. computes
                         // n = -count; for i64::MIN that overflows to a negative n so the
                         // fill loop runs zero times. unsigned_abs() would instead yield
                         // 2^63 here and attempt an unbounded allocation (hang / OOM DoS).
@@ -1379,7 +1379,7 @@ pub fn execute_redis_command_with_state(
             end_offset: String::new(),
             is_distinct: false,
         })),
-        // C++ MANAGER op parity: CONTROLSTATEMANAGER key op_type is_distinct [start_offset end_offset | field...]
+        // MANAGER op parity: CONTROLSTATEMANAGER key op_type is_distinct [start_offset end_offset | field...]
         // op_type: QUERY(2)|FIELD_LIST(5)|FIELD_COUNT(6)|ALL_DATA_VALUE(7). is_distinct: 0/1.
         "CONTROLSTATEMANAGER" if args.len() >= 4 => {
             let op_type = string_arg(&args[2]);

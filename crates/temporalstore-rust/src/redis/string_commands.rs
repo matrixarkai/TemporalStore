@@ -27,7 +27,7 @@ pub(crate) fn parse_set_options(args: &[Vec<u8>]) -> Result<SetOptions, String> 
                     return Err("ERR syntax error".to_string());
                 };
                 let seconds = parse_u64(value, "seconds")?;
-                // C++ rejects a non-positive expiry rather than writing an already-expired key.
+                // rejects a non-positive expiry rather than writing an already-expired key.
                 if seconds == 0 {
                     return Err("ERR invalid expire time in set".to_string());
                 }

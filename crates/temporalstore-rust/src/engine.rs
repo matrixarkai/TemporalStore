@@ -174,7 +174,7 @@ impl TemporalEngine {
             };
         };
         // While a shard is replaying its WAL on load it is present in `shards` but not yet
-        // serving (C++ keeps it in PartitionLoadStage::LOADING). Reject client commands with
+        // serving (keeps it in PartitionLoadStage::LOADING). Reject client commands with
         // a retryable status so a concurrent write cannot interleave with replay -- which
         // would regress the WAL anchor and double-apply on the next restart. The replay
         // thread re-drives records under replaying_wal(), which bypasses this gate.
@@ -264,7 +264,7 @@ impl TemporalEngine {
                 // purge), not the cumulative-ever `bytes_written` counter. The old gate
                 // was a monotonic tripwire that reclamation could never clear, so a
                 // long-running node permanently rejected all writes once it tripped.
-                // C++ compares live resident size and evicts; this at least lets
+                // compares live resident size and evicts; this at least lets
                 // reclamation re-admit writes.
                 .map(|limit| self.page_store.zone_summary().total_known_physical_bytes >= limit)
                 .unwrap_or(false)
@@ -279,7 +279,7 @@ impl TemporalEngine {
         }
         // Command preconditions are a LEADER-time gate: a command only reaches the WAL after
         // passing them on the leader. WAL replay re-applies already-committed effects (like
-        // C++ ReplayWal, which does not re-check preconditions), so re-validating here
+        // ReplayWal, which does not re-check preconditions), so re-validating here
         // against reconstructed state + the restart clock is both redundant and unsafe --
         // e.g. a replayed EXPIRE whose earlier deadline has since lapsed would fail the
         // liveness precondition and abort the whole shard load. Skip validation during
@@ -312,7 +312,7 @@ impl TemporalEngine {
             shard,
             command.clone(),
         );
-        // LRU recency (C++ SlotNode GetLastUsed): record that this command touched its
+        // LRU recency (SlotNode GetLastUsed): record that this command touched its
         // bucket(s), read or write, so eviction can prefer least-recently-used buckets.
         {
             let now = now_ms();
@@ -385,7 +385,7 @@ impl TemporalEngine {
             if !defer_bucket_index_reconstruct() {
                 refresh_bucket_runtime_flags(shard);
             }
-            // Parity with C++ TemporalStore (partition.h OnExecuteCmdDone): every
+            // Parity with TemporalStore (partition.h OnExecuteCmdDone): every
             // write records a WAL entry (StringModel::SetValue -> WritePage).
             // async_storage only changes whether the commit BLOCKS: sync -> fsync,
             // async (or bulk backfill) -> buffered, no fsync (op_logger_->Commit
@@ -399,11 +399,11 @@ impl TemporalEngine {
                     if sync {
                         // A synchronous write whose durable WAL commit failed is NOT durable: the
                         // WAL is the recovery source of truth (replayed on load), so returning ok
-                        // would tell the client a write that is gone after a crash succeeded. C++
+                        // would tell the client a write that is gone after a crash succeeded.
                         // surfaces the wal Commit failure to the client (partition.h
                         // OnExecuteCmdDone: it copies the failed commit status into the response)
                         // rather than acking a non-durable write. Match that instead of swallowing
-                        // the error. (async/bulk mode is fire-and-forget -- C++
+                        // the error. (async/bulk mode is fire-and-forget --
                         // op_logger_->Commit(nullptr,nullptr) -- so its append errors stay
                         // best-effort and do not fail the command.) We also skip the index anchor
                         // + persist below, so durable state never advances past a write the WAL
@@ -421,7 +421,7 @@ impl TemporalEngine {
             if !config.async_storage && !bulk_ingest_mode() && !replaying_wal() {
                 // Anchor the served index to the WAL sequence it now reflects, so a
                 // later load replays only records written after this point (the analog
-                // of C++ index_->SetDumpedLogId / GetDumpedLogId).
+                // of index_->SetDumpedLogId / GetDumpedLogId).
                 shard.applied_wal_sequence =
                     Some(self.wal_store.stats(request.shard_id).last_sequence);
                 let index_bytes = serialize_index(shard);
@@ -445,7 +445,7 @@ impl TemporalEngine {
         if !read_command {
             return None;
         }
-        // A shard replaying its WAL on load is present but not yet serving (C++ keeps it in
+        // A shard replaying its WAL on load is present but not yet serving (keeps it in
         // PartitionLoadStage::LOADING). The durable / replicated read routes reach this fast
         // path BEFORE execute_with_storage_override's recovering gate, so without this a read
         // would be served from half-reconstructed state (and skip admission). Decline the fast
@@ -1020,7 +1020,7 @@ impl TemporalEngine {
                     .to_string(),
                 "stream-backed storage exposes active/sealed/delayed-destroy/purged band lifecycle while accepting legacy zone aliases"
                     .to_string(),
-                "StorageManager exposes C++-style prepare/reclaim/expire/evict/reclaim-page/index-GC/compact/reap-metrics phases"
+                "StorageManager exposes standard prepare/reclaim/expire/evict/reclaim-page/index-GC/compact/reap-metrics phases"
                     .to_string(),
             ],
         }
@@ -1049,7 +1049,7 @@ impl TemporalEngine {
 /// Inclusive `[start, end]` timestamp bounds for `BTreeMap::range` that yield an EMPTY range
 /// (never panic) when `start > end`. `BTreeMap::range` panics on reversed bounds, and every
 /// range query runs under the shard write lock, so a client sending `start_ms > end_ms` would
-/// poison the lock and take the whole shard down (every later `.lock().expect()` panics). C++
+/// poison the lock and take the whole shard down (every later `.lock().expect()` panics).
 /// `RangeGet` simply iterates and returns an empty result with Status::OK when `min > max`
 /// so match that: reversed bounds → empty range, not a crash. For
 /// `start <= end` this is byte-for-byte the same set as `start..=end`.
@@ -1124,7 +1124,7 @@ thread_local! {
     // During a replayed command, the leader's wall-clock timestamp captured in the
     // replayed record's metadata. Time-dependent resolution (TTL deadlines, context
     // event time) reads this instead of the live clock so a re-executed command
-    // resolves the SAME absolute value the leader did (C++ resolve-then-log), keeping
+    // resolves the SAME absolute value the leader did (resolve-then-log), keeping
     // replay deterministic across crash recovery and followers instead of drifting to a
     // later restart-time deadline.
     static REPLAY_CLOCK_MS: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
@@ -1575,7 +1575,7 @@ fn collect_live_page_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
     // control_state_pages is the page-backed control-state model and MUST be in the
     // GC live set: it feeds both the reclaim live-slab set and the page-gc dependency plan.
     // Omitting it let a slab holding only a control-state page be reclaimed while the index
-    // still referenced it -> DataLoss on the next read. C++ keeps any model's live pages
+    // still referenced it -> DataLoss on the next read. keeps any model's live pages
     // counted in the zone's used_bytes so the zone is never destroyed while referenced. The
     // sibling collect_model_live_page_entries already includes it -- the two lists had drifted.
     ids.extend(
@@ -1799,11 +1799,11 @@ fn cache_entry_routing_bucket(entry: &CacheEntryInfo) -> Option<u32> {
 }
 
 fn parse_i64(bytes: &Vec<u8>) -> Option<i64> {
-    // Match C++ ParseInt64Value / strtoll (extension/string/implement.cc:22, hash/implement.cc:138):
+    // Match ParseInt64Value / strtoll (extension/string/implement.cc:22, hash/implement.cc:138):
     // strtoll skips leading whitespace, so a stored counter like " 5" is the valid integer 5.
     // Rust's str::parse rejects leading whitespace; trim it (ASCII only, so we do not accept
     // Unicode whitespace strtoll's isspace would reject). Trailing/embedded garbage still fails on
-    // both sides (C++ checks *end != '\0'), so only the previously-erroring leading-space case
+    // both sides (checks *end != '\0'), so only the previously-erroring leading-space case
     // changes.
     std::str::from_utf8(bytes)
         .ok()?

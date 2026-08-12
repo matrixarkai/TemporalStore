@@ -226,7 +226,7 @@ impl LocalWriteAheadLogStore {
     }
 
     /// Append a WAL record. `sync=true` fsyncs before returning (durable);
-    /// `sync=false` writes the record but defers the fsync. Mirrors the C++ WAL
+    /// `sync=false` writes the record but defers the fsync. Mirrors the WAL
     /// writer: StringModel::SetValue ALWAYS records the entry; EVENT_REPLICATION_SYNC
     /// vs ASYNC_STORAGE only changes whether the commit blocks (partition.h
     /// OnExecuteCmdDone: the WAL commit runs synchronously vs deferred).
@@ -407,7 +407,7 @@ impl LocalWriteAheadLogStore {
         // emptying it entirely on a full reclaim (retain_from > max) would regress the next
         // append to sequence 1 -> sequence REUSE + silent loss: the re-used seq is <= the
         // persisted applied_wal_sequence anchor, so replay's `sequence > watermark` filter drops
-        // it. C++'s zone-aligned wal Truncate always retains the tail zone holding the highest
+        // it. the zone-aligned wal Truncate always retains the tail zone holding the highest
         // sequence for exactly this continuity reason. Clamp the retain floor to keep the tail.
         let effective_retain = retain_from_sequence.min(last_sequence);
         let file = File::open(&path)?;
@@ -588,7 +588,7 @@ fn last_wal_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, WriteAhea
         // (\n-terminated) line is a complete write. Surface it as an error instead of breaking
         // -- treating interior corruption as end-of-log would set_len the file down to the last
         // parseable record, silently dropping every durable record after the corrupt one and
-        // defeating the strict replay-continuity DataLoss guard (C++ ReplayWal returns
+        // defeating the strict replay-continuity DataLoss guard (ReplayWal returns
         // DataLoss on a CRC failure / hole rather than trimming). A genuine torn tail lacks the
         // trailing '\n' and is still handled by the break above.
         let record = serde_json::from_slice::<WriteAheadLogRecord>(&line)?;

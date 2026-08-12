@@ -249,7 +249,7 @@ impl TemporalEngine {
             match self.page_store.gc_slabs_before_with_live_refs_policy(
                 retain_from_page_slab_id,
                 plan.live_page_slab_ids.clone(),
-                // C++ garbage-ratio GC victim selection (zone_manager.cpp): reclaim the
+                // garbage-ratio GC victim selection (reference source): reclaim the
                 // highest-garbage bands first, keeping bands below the garbage floor.
                 // Floor 0 (the default) reclaims every eligible band as before.
                 BlockStoreGcPolicy::with_band_garbage_floor(
@@ -991,7 +991,7 @@ impl TemporalEngine {
             .map(|manifest| {
                 // The replay base is the dumped checkpoint (which covers up to its own
                 // sequence) plus the retained WAL tail above it. Once the WAL is
-                // legitimately reclaimed past a dump (the C++ SetDumpedLogId + wal
+                // legitimately reclaimed past a dump (the SetDumpedLogId + wal
                 // Truncate step), latest_safe_* -- and thus selected_replay_* -- can sit
                 // below the manifest; the manifest checkpoint still covers it, so gate on
                 // the dump frontier rather than the possibly-reclaimed WAL tail.

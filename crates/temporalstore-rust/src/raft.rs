@@ -3154,7 +3154,7 @@ struct RaftNode {
     installed_snapshot: Option<RaftSnapshot>,
     applied_index: u64,
     applied: BTreeSet<u64>,
-    // Monotonic exactly-once floor, mirroring the C++ applier's `applied_raft_index_`
+    // Monotonic exactly-once floor, mirroring the applier's `applied_raft_index_`
     // (data_raft_replication.cc): the highest raft index ever applied. It is NEVER
     // lowered by a log truncation, so an entry at or below it is never re-executed even
     // if `applied`/`applied_index` were rewound.
@@ -4692,7 +4692,7 @@ fn apply_committed(node: &mut RaftNode) -> Option<CommandResponse> {
         .iter()
         .take_while(|entry| entry.index <= node.commit_index)
     {
-        // Monotonic exactly-once floor (C++ applied_raft_index_ guard): never
+        // Monotonic exactly-once floor (applied_raft_index_ guard): never
         // re-execute an index that was already applied, even if `applied`/applied_index
         // were rewound by a truncation. Still advance the apply cursor so health/lag
         // reflects that the entry IS applied -- catch-up after a rewind reconciles the

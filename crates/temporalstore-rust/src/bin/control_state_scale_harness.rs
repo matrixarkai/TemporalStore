@@ -14,7 +14,7 @@
 //     read current state -> apply rule -> atomically update state -> return decision
 //
 // The atomic increment-then-read primitive is `Command::ControlStateSetAndGet`, the Rust
-// analog of the C++ control_state `HSETANDGET` operator. Frequency-cap enforcement
+// analog of the control_state `HSETANDGET` operator. Frequency-cap enforcement
 // is validated to be *exact*: for every (user, campaign, day) the number of allowed
 // impressions equals min(attempts, cap) with zero violations.
 //

@@ -383,11 +383,11 @@ impl TemporalEngine {
             wal_bytes: wal_stats.bytes_written,
             index_log_bytes: index_log_stats.bytes_written,
             compatibility_gaps: vec![
-                "compatibility mode is migration-only; direct mixed Rust/C++ binary log serving is not supported"
+                "compatibility mode is migration-only; direct mixed-format binary log serving is not supported"
                     .to_string(),
-                "C++ binary/protobuf wal reader and writer are not implemented".to_string(),
-                "C++ binary/protobuf index-log reader and writer are not implemented".to_string(),
-                "golden log conversion/replay suite is required before C++ migration".to_string(),
+                "binary/protobuf wal reader and writer are not implemented".to_string(),
+                "binary/protobuf index-log reader and writer are not implemented".to_string(),
+                "golden log conversion/replay suite is required before migration".to_string(),
             ],
         }
     }
@@ -423,11 +423,11 @@ impl TemporalEngine {
             logical_bytes_written: stats.logical_bytes_written,
             compressed_records_written: stats.compressed_records_written,
             compatibility_gaps: vec![
-                "compatibility mode is migration-only; direct mixed Rust-envelope/C++ page-header serving is not supported"
+                "compatibility mode is migration-only; direct mixed mixed-format page-header serving is not supported"
                     .to_string(),
-                "C++ protobuf page header reader and writer are not implemented".to_string(),
-                "C++ slot/page layout and page-id allocation are not byte-compatible".to_string(),
-                "golden page conversion/replay suite is required before C++ migration".to_string(),
+                "binary protobuf page header reader and writer are not implemented".to_string(),
+                "slot/page layout and page-id allocation are not byte-compatible".to_string(),
+                "golden page conversion/replay suite is required before migration".to_string(),
             ],
         }
     }

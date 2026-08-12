@@ -318,7 +318,7 @@ fn bucket_dump_manifest_watermark_tracks_embedded_index_not_wal_tail() {
     // under MATRIXARK_BULK_INGEST that index lags the WAL tail (per-command index persist is a
     // no-op in bulk mode). It used to stamp the manifest's wal_sequence from the LIVE WAL tail,
     // so on reload install set replay_watermark past records the embedded index never captured
-    // and WAL replay skipped them -> gone. C++ couples the two: Load replays from the DumpedLogId
+    // and WAL replay skipped them -> gone. couples the two: Load replays from the DumpedLogId
     // stored inside the dumped index (object_manager.cc). We reproduce the same tail-ahead-of-index
     // divergence deterministically (no bulk env) by appending straight to the WAL.
     let dir = tempfile::tempdir().unwrap();
@@ -393,7 +393,7 @@ fn bucket_dump_manifest_watermark_tracks_embedded_index_not_wal_tail() {
 fn reversed_range_bounds_return_empty_not_a_lock_poisoning_panic() {
     // BTreeMap::range PANICS when start > end, and range queries run under the shard write lock,
     // so a reversed-bounds query would poison the lock and take the whole shard down (every later
-    // lock().expect() panics). C++ RangeGet returns an empty result with OK for min > max. Assert
+    // lock().expect() panics). RangeGet returns an empty result with OK for min > max. Assert
     // reversed bounds return empty AND leave the engine usable.
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
@@ -444,7 +444,7 @@ fn reversed_range_bounds_return_empty_not_a_lock_poisoning_panic() {
 
 #[test]
 fn batch_execute_on_unloaded_shard_returns_a_batch_level_topology_error() {
-    // C++ returns a batch-level topology error with ZERO response entries when the partition is
+    // returns a batch-level topology error with ZERO response entries when the partition is
     // not loaded (partition_manager.cc), so the topology-retryable client refreshes + retries.
     // Rust previously returned an OK batch full of per-command shard_not_loaded errors, leaving the
     // batch-level status ok, so the client (which keys retry on the batch status) never refreshed.
@@ -483,7 +483,7 @@ fn batch_execute_on_unloaded_shard_returns_a_batch_level_topology_error() {
 
 #[test]
 fn dump_selection_prioritizes_the_least_recently_dumped_bucket_not_the_lowest_id() {
-    // The C++ WAL-reclaim routine dumps dirty slots oldest-first (by first-dirty-log-id,
+    // The WAL-reclaim routine dumps dirty slots oldest-first (by first-dirty-log-id,
     // storage_manager.cc). Rust selected dirty buckets by ascending routing_bucket id then
     // truncated to the per-round cap, so a high-id bucket dirtied once was starved forever by
     // low-id buckets re-dirtied every round. The fix orders by last_dump_sequence (0 = never
@@ -607,7 +607,7 @@ fn partial_compaction_failure_durably_persists_the_consistent_partial_index() {
     // half-advanced (relocated pages point at the fresh slab) but UNPERSISTED, so it diverged from
     // the on-disk index -- and the independent reclaim path could then physically purge a
     // fully-vacated old slab the durable index still referenced -> silent data loss on reload. The
-    // fix durably commits the consistent partial state before propagating the error. C++ avoids the
+    // fix durably commits the consistent partial state before propagating the error. avoids the
     // desync structurally (page_compactor.cc: update_index=false on failure + one atomic Commit).
     //
     // Setup: k1 (string, relocated FIRST by compact_shard_pages) lives in an earlier slab; k2 (hash,
@@ -673,7 +673,7 @@ fn partial_compaction_failure_durably_persists_the_consistent_partial_index() {
 fn sync_write_surfaces_wal_commit_failure_instead_of_acking_ok() {
     // Durability parity: a synchronous write whose durable WAL commit fails must NOT be acked ok.
     // The WAL is the recovery source of truth, so a swallowed append error would tell the client a
-    // write that is gone after a crash succeeded. C++ surfaces the wal Commit failure
+    // write that is gone after a crash succeeded. surfaces the wal Commit failure
     // (partition.h OnExecuteCmdDone). We inject the failure by replacing the WAL file with a
     // directory so the next durable append cannot open it for writing (EISDIR fails even for
     // root, unlike a chmod which root bypasses).
@@ -1363,7 +1363,7 @@ fn torn_manifest_does_not_hide_valid_manifests() {
 
 #[test]
 fn dump_clears_dumped_buckets_so_they_are_not_redumped() {
-    // Parity with C++ SlotStore::DumpSlotInMemory -> Index::ClearSlotDirty: once a
+    // Parity with SlotStore::DumpSlotInMemory -> Index::ClearSlotDirty: once a
     // dirty bucket is dumped it is no longer dirty, so the storage cycle does not
     // re-select and re-dump the same buckets (and re-export the whole index) forever.
     let dir = tempfile::tempdir().unwrap();
@@ -2354,7 +2354,7 @@ fn storage_log_compatibility_report_counts_jsonl_sequences_and_cxx_gaps() {
     assert!(report
         .compatibility_gaps
         .iter()
-        .any(|gap| gap.contains("C++ binary/protobuf wal")));
+        .any(|gap| gap.contains("binary/protobuf wal")));
     assert!(report
         .compatibility_gaps
         .iter()
@@ -2414,7 +2414,7 @@ fn storage_page_format_compatibility_report_counts_zones_and_header_gaps() {
     assert!(report
         .compatibility_gaps
         .iter()
-        .any(|gap| gap.contains("C++ protobuf page header")));
+        .any(|gap| gap.contains("binary protobuf page header")));
     assert!(report
         .compatibility_gaps
         .iter()

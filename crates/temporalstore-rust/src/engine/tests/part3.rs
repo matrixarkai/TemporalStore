@@ -778,7 +778,7 @@ fn control_state_selection_matches_cpp_first_last_string_semantics() {
 
 #[test]
 fn control_state_selection_omitted_occur_time_resolves_to_now_like_cpp() {
-    // C++ FirstOrLastSet substitutes occur_time==0 with the current time before the FIRST/LAST
+    // FirstOrLastSet substitutes occur_time==0 with the current time before the FIRST/LAST
     // comparison; an omitted-occur-time FIRST set must NOT beat an earlier explicit record.
     let engine = TemporalEngine::default();
     engine.load_shard(1);
@@ -1004,7 +1004,7 @@ fn sequence_rows_fold_into_shared_feature_storage_and_survive_reload() {
 
 #[test]
 fn insert_if_absent_keeps_the_first_in_batch_duplicate_timestamp() {
-    // C++ feature ADD FIRST policy (extension/feature/implement.cc:122-131) walks point_list in
+    // feature ADD FIRST policy (extension/feature/implement.cc:122-131) walks point_list in
     // request order and skips a timestamp already present, so for an in-batch duplicate the FIRST
     // value wins. Rust previously pre-collapsed the batch by timestamp (last-wins) before the
     // policy loop, silently keeping the LAST duplicate. Same batch, same timestamp, InsertIfAbsent
@@ -1046,7 +1046,7 @@ fn insert_if_absent_keeps_the_first_in_batch_duplicate_timestamp() {
                 value: b"A".to_vec(),
             }]
         },
-        "InsertIfAbsent must keep the FIRST in-batch duplicate value (C++ FIRST policy), not the last"
+        "InsertIfAbsent must keep the FIRST in-batch duplicate value (FIRST policy), not the last"
     );
 }
 
@@ -1300,7 +1300,7 @@ fn write_qps_config_rejects_writes_after_admission_limit() {
 
 #[test]
 fn write_qps_zero_means_unlimited_not_deny_all_like_cpp() {
-    // C++ QuotaManager treats a configured qps of 0 as UNLIMITED (it installs no limiter
+    // QuotaManager treats a configured qps of 0 as UNLIMITED (it installs no limiter
     // and ConsumeQuota always succeeds), NOT deny-all. The live admission path must not
     // push a limit==0 (which the downstream gate rejects as "is zero"). Regression for the
     // case where the >0 filter existed only in an orphaned, never-compiled module.
@@ -2400,7 +2400,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
 
 #[test]
 fn control_state_set_and_get_with_options_buckets_by_precision() {
-    // C++ HSETANDGET parity: precision floors the write into a single bucket, and
+    // HSETANDGET parity: precision floors the write into a single bucket, and
     // the atomic increment-then-read returns the post-increment windowed aggregate.
     let engine = TemporalEngine::default();
     engine.load_shard(1);

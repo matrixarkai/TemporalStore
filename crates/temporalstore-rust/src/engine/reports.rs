@@ -2706,7 +2706,7 @@ pub struct StorageEvictionVictim {
     pub dirty_object_count: u64,
     pub weight: u64,
     /// Wall-clock ms this bucket was last read or written (0 == never touched).
-    /// Eviction victims are ranked least-recently-used first, matching C++ PolicyLru.
+    /// Eviction victims are ranked least-recently-used first, Matching PolicyLru.
     #[serde(default)]
     pub last_touched_ms: u64,
 }
@@ -2943,7 +2943,7 @@ pub struct StorageManagerCycleRequest {
     pub index_gc_commit_dirty_buckets_before_truncation: bool,
     /// Reclaim only bands whose garbage ratio is at least this many basis points
     /// (garbage = 10_000 - band live-fraction). 0 reclaims every eligible band
-    /// (today's behavior). The C++ garbage-ratio GC gate, expressed against bands.
+    /// (today's behavior). The garbage-ratio GC gate, expressed against bands.
     #[serde(default)]
     pub page_gc_min_band_garbage_basis_points: u64,
 }

@@ -20,7 +20,7 @@ pub(super) fn admission_limits(
     } else {
         config.read_qps
     })
-    // C++ QuotaManager treats qps == 0 as UNLIMITED (no limiter), not deny-all; only a
+    // QuotaManager treats qps == 0 as UNLIMITED (no limiter), not deny-all; only a
     // positive value installs a rate limit.
     .filter(|&limit| limit > 0)
     {

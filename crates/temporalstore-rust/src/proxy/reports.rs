@@ -240,7 +240,7 @@ impl ProxyService {
                     "Proxy::UpdateConfig",
                     "/proxy/config",
                     "/ProxyService/UpdateConfig",
-                    "Applies C++-style duplicate config no-op and rebuilds the Rust client only when the effective config changes.",
+                    "Applies standard duplicate config no-op and rebuilds the Rust client only when the effective config changes.",
                 ),
                 proxy_operational_surface_entry(
                     "HeartBeat::InitHeartbeatRequest / SendHeartbeat",

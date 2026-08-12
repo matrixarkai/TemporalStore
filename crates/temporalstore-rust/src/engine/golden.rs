@@ -42,7 +42,7 @@ pub fn cpp_feature_sequence_golden_corpus_report() -> CppGoldenCorpusReport {
             matching.timestamp_ms,
             &matching.encode_cpp_feature_value(),
         ) == Some(matching.clone()),
-        "C++ feature protobuf fields gid/action_type/duration/author_id round-trip",
+        "feature protobuf fields gid/action_type/duration/author_id round-trip",
     );
 
     let duplicate_filters = parse_cpp_feature_filters(["gid = 42", "duration > 30", "gid != 42"]);
@@ -54,7 +54,7 @@ pub fn cpp_feature_sequence_golden_corpus_report() -> CppGoldenCorpusReport {
             && filters[0].op == FeatureFilterOp::NotEqual
             && filters[0].value == 42
             && filters[1].field == "duration"),
-        "C++ duplicate filter fields replace the previous field predicate",
+        "duplicate filter fields replace the previous field predicate",
     );
 
     let append = engine.execute(ExecuteRequest {
@@ -81,7 +81,7 @@ pub fn cpp_feature_sequence_golden_corpus_report() -> CppGoldenCorpusReport {
         &mut cases,
         "cpp_feature_append_status",
         append.status.ok,
-        "C++ feature points append through the Rust engine",
+        "feature points append through the Rust engine",
     );
 
     let filtered = engine.execute(ExecuteRequest {
@@ -104,7 +104,7 @@ pub fn cpp_feature_sequence_golden_corpus_report() -> CppGoldenCorpusReport {
                 if points.iter().map(|point| point.timestamp_ms).collect::<Vec<_>>()
                     == vec![matching.timestamp_ms, replacement.timestamp_ms]
         ),
-        "C++ protobuf feature filters select matching timestamp/value rows",
+        "binary protobuf feature filters select matching timestamp/value rows",
     );
 
     let aggregate = engine.execute(ExecuteRequest {
@@ -121,7 +121,7 @@ pub fn cpp_feature_sequence_golden_corpus_report() -> CppGoldenCorpusReport {
         &mut cases,
         "cpp_feature_empty_sum_aggregate",
         aggregate.response == CommandResponse::Aggregate { value: 0 },
-        "Empty C++ feature aggregate returns neutral zero",
+        "Empty feature aggregate returns neutral zero",
     );
 
     let rows = vec![matching.clone(), replacement.clone(), non_matching.clone()];
@@ -136,7 +136,7 @@ pub fn cpp_feature_sequence_golden_corpus_report() -> CppGoldenCorpusReport {
         &mut cases,
         "cpp_sequence_add_status",
         add_rows.status.ok,
-        "C++ sequence rows append through timestamped KV pages",
+        "sequence rows append through timestamped KV pages",
     );
 
     let sequence_query = engine.execute(ExecuteRequest {
@@ -157,7 +157,7 @@ pub fn cpp_feature_sequence_golden_corpus_report() -> CppGoldenCorpusReport {
             == CommandResponse::SequenceRows {
                 rows: vec![matching, replacement],
             },
-        "C++ sequence filters reuse the feature predicate semantics",
+        "sequence filters reuse the feature predicate semantics",
     );
 
     let page_layout = engine.storage_recovery_report(1).feature_page_layout;
@@ -246,7 +246,7 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
                 == CommandResponse::Members {
                     members: vec![b"member".to_vec()],
                 },
-        "Redis-compatible string, hash, and set command shapes match expected C++ core behavior",
+        "Redis-compatible string, hash, and set command shapes match expected core behavior",
     );
 
     let common_exists = engine.execute(ExecuteRequest {
@@ -319,7 +319,7 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
         "cpp_control_state_family_aggregates",
         control_state_sum.response == CommandResponse::Integer { value: 12 }
             && control_state_cpc.response == CommandResponse::Integer { value: 7 },
-        "ControlState H/CPC/FOL family aggregate command shapes preserve C++ local semantics",
+        "ControlState H/CPC/FOL family aggregate command shapes preserve local semantics",
     );
 
     let _ = engine.execute(ExecuteRequest {
@@ -422,7 +422,7 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
         storage_readiness.production_ready
             && storage_readiness.page_store_bytes_written > 0
             && storage_readiness.feature_page_layout.packed_feature_pages >= 1,
-        "Admin/storage readiness report is queryable after mixed C++ API corpus writes",
+        "Admin/storage readiness report is queryable after mixed API corpus writes",
     );
 
     let total_cases = cases.len();

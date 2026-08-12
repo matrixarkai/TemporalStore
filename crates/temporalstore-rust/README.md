@@ -4,9 +4,9 @@ Rust-native TemporalStore library surfaces for the storage engine, client/proxy
 contracts, context pipeline, ingestion, and production Raft readiness.
 
 This crate is designed as an open-source Rust implementation path. It is not a
-legacy C++ wire-compatible clone: brpc and Thrift are intentionally out of scope.
+legacy wire-compatible clone: brpc and Thrift are intentionally out of scope.
 The production migration contract is Rust APIs plus HTTP/JSON, RESP, tonic/gRPC,
-and executable shared C++/Rust test cases.
+and executable shared conformance test cases.
 
 ## Raft Library Contract
 
@@ -67,7 +67,7 @@ python3 tools/validate_no_duplicate_tests.py
 
 ## Storage Tuning Parity
 
-Rust exposes the same public production tuning surface used by C++ benchmark and
+Rust exposes the same public production tuning surface used by benchmark and
 deployment profiles. `StorageTuningConfig::from_env()` reads:
 
 - `TS_CONTEXT_PAGE_TARGET_BYTES`: target bytes for packed context timestamp pages.
@@ -83,17 +83,17 @@ deployment profiles. `StorageTuningConfig::from_env()` reads:
 
 The block store consumes the segment/blob knobs directly for append rolling, and
 context packed pages consume `TS_CONTEXT_PAGE_TARGET_BYTES`. The remaining knobs
-are part of the shared lifecycle/cold-scan config surface so C++ and Rust
+are part of the shared lifecycle/cold-scan config surface so and Rust
 benchmarks can run with the same named production profile.
 
-C++ launchers consume the same names through `tools/temporalstore_runtime_env.sh`.
-The C++ storage-facing subset maps into existing gflags:
+launchers consume the same names through `tools/temporalstore_runtime_env.sh`.
+The storage-facing subset maps into existing gflags:
 `TS_STORAGE_ZONE_SIZE -> --storage_zone_size` and
 `TS_STREAM_MAX_BLOB_SIZE -> --stream_max_blob_size`. Existing
 `TEMPORALSTORE_STORAGE_ZONE_SIZE` and `TEMPORALSTORE_STREAM_MAX_BLOB_SIZE`
 overrides still work for compatibility.
 
-Keep the C++ and Rust surfaces synchronized with:
+Keep the and Rust surfaces synchronized with:
 
 ```bash
 python3 tools/validate_storage_tuning_parity.py

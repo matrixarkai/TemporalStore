@@ -562,7 +562,7 @@ fn is_raft_read_command(command: &Command) -> bool {
             // NB: neither ControlStateSetAndGet nor ...WithOptions belongs here. Both MUTATE
             // (they add `amount` to the series and persist a control-state page --
             // execute_on_shard.rs) and the engine's is_write_command classifies both as writes,
-            // exactly as C++ registers HSETANDGET/CPCSETANDGET/FOLSETANDGET as Write
+            // exactly as registers HSETANDGET/CPCSETANDGET/FOLSETANDGET as Write
             // (extension/control_state/implement.cc). Serving a mutation on the local read path
             // applies it only on the leader and skips the raft log, so followers never see it ->
             // replica divergence + loss on failover. They must fall through to `propose`.

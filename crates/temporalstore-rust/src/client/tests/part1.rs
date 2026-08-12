@@ -104,7 +104,7 @@ fn client_exposes_neptune_placement_hooks_and_migration_scope() {
         migration
             .production_replacement_contract
             .compatibility_decision,
-        "legacy C++ wire migration shims are out of scope; use Rust-native migration contract"
+        "legacy wire migration shims are out of scope; use Rust-native migration contract"
     );
     assert!(migration
         .production_replacement_contract
@@ -181,7 +181,7 @@ fn client_exposes_neptune_placement_hooks_and_migration_scope() {
     assert!(migration
         .blockers
         .iter()
-        .any(|blocker| blocker.contains("legacy C++ wire")));
+        .any(|blocker| blocker.contains("legacy wire")));
     for family in [
         "common", "string", "hash", "set", "feature", "sequence", "control_state", "redis", "admin",
         "context",

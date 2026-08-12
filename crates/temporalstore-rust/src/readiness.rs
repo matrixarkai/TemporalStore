@@ -360,7 +360,7 @@ pub fn feature_module_production_readiness_report() -> FeatureModuleProductionRe
         Vec::new()
     } else {
         vec![
-            "exact C++ Feature nested point/proto semantics and deployment-specific time-range edge cases"
+            "exact Feature nested point/proto semantics and deployment-specific time-range edge cases"
                 .to_string(),
             "ControlState production CPC/list internals and deployment-specific manager/debug APIs"
                 .to_string(),
@@ -413,7 +413,7 @@ pub fn context_workflow_production_readiness_report() -> ContextWorkflowProducti
         Vec::new()
     } else {
         vec![
-            "C++/reference golden context corpus replay through engine, client, proxy, Redis/admin, shared-store, and Raft paths"
+            "golden golden context corpus replay through engine, client, proxy, Redis/admin, shared-store, and Raft paths"
                 .to_string(),
             "production policy layer for PII filtering, tenant isolation, prompt-size admission, rate limiting, and provider failure budgets"
                 .to_string(),
@@ -1475,7 +1475,7 @@ mod tests {
         assert!(context_area
             .covered
             .iter()
-            .any(|item| item.contains("C++/reference context corpus replay")));
+            .any(|item| item.contains("golden context corpus replay")));
         assert!(context_area
             .covered
             .iter()

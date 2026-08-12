@@ -405,7 +405,7 @@ pub(crate) fn execute_on_shard(
             mutated |= mark_bucket_index_page_deleted(shard, "hash", &key, Some(field.as_str()));
             if let Some(fields) = shard.hashes.get_mut(&key) {
                 mutated |= fields.remove(&field).is_some();
-                // Mirror C++ hash2::Del: deleting the last field removes the whole key
+                // Mirror hash2::Del: deleting the last field removes the whole key
                 // (DeleteObject on empty). Leaving an empty field map behind makes the key
                 // still report as existing (EXISTS=1, TYPE=hash) -- a phantom hash. (Sets do
                 // NOT do this on either side, so only Hash needs the cleanup.)
@@ -524,12 +524,12 @@ pub(crate) fn execute_on_shard(
             let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             let mut accepted_points = Vec::new();
             let mut accepted_timestamps = BTreeSet::new();
-            // Process points in REQUEST order, NOT pre-collapsed by timestamp. C++ feature ADD
+            // Process points in REQUEST order, NOT pre-collapsed by timestamp. feature ADD
             // FIRST policy (extension/feature/implement.cc:122-131) walks point_list in order and
             // skips any ts already present, so for an in-batch duplicate timestamp the FIRST
             // value wins. Pre-collapsing here via sorted_feature_points (last-wins) would silently
             // keep the LAST duplicate under InsertIfAbsent. accepted_points is sorted+collapsed
-            // just before the append below (UPSERT/ReplaceExisting keep last-wins, matching C++).
+            // just before the append below (UPSERT/ReplaceExisting keep last-wins, matching).
             for point in points {
                 let exists = series.contains_key(&point.timestamp_ms)
                     || accepted_timestamps.contains(&point.timestamp_ms);
@@ -1151,7 +1151,7 @@ pub(crate) fn execute_on_shard(
             remove_if_expired(shard, &key);
             let key = control_state_family_key(family, &key);
             // UUID idempotency: dedup at-least-once replays within a bounded window,
-            // mirroring the C++ control_state dedup ledger. A duplicate is a no-op
+            // mirroring the control_state dedup ledger. A duplicate is a no-op
             // write that still returns the current windowed aggregate (idempotent).
             let now = resolve_now_ms();
             let is_duplicate = if let Some(uuid) = uuid.as_ref().filter(|u| !u.is_empty()) {
@@ -1259,7 +1259,7 @@ pub(crate) fn execute_on_shard(
             selection_type,
         } => {
             remove_if_expired(shard, &key);
-            // C++ FirstOrLastSet substitutes occur_time==0 with the current time BEFORE the
+            // FirstOrLastSet substitutes occur_time==0 with the current time BEFORE the
             // FIRST/LAST comparison (implement.cc: `if (occur_time == 0) time(&occur_time)`).
             // occur_time defaults to 0 on the proto, so a caller that omits it must compare as
             // "now" -- taking 0 literally made an omitted-time FIRST set always win (0 < any)
@@ -1497,7 +1497,7 @@ pub(crate) fn execute_on_shard(
             // multiple ContextEvent writes at the same millisecond map to stable,
             // timestamp-keyed pages instead of overwriting one another.
             // context_models_match_cpp_keys_timeline_pages_and_filters keeps this
-            // key shape aligned with the C++ context event timeline contract.
+            // key shape aligned with the context event timeline contract.
             let timeline_key = context_timeline_key(event.primary_time_ms(), event.event_id_hash);
             let series = shard.context_events.entry(object_key.clone()).or_default();
             if !(first_write_only && series.contains_key(&timeline_key)) {
@@ -1553,7 +1553,7 @@ pub(crate) fn execute_on_shard(
             let primary_time_ms = event.primary_time_ms();
             // Extracted events use the same CONTEXT_TIMELINE_FANOUT timeline as
             // raw context events so index refs, filters, and event pages share the
-            // C++ wire-compatible timestamp key discipline.
+            // wire-compatible timestamp key discipline.
             let event_timeline_key = context_timeline_key(primary_time_ms, event.event_id_hash);
             let event_series = shard
                 .context_events
@@ -1679,8 +1679,8 @@ pub(crate) fn execute_on_shard(
                             context_timeline_start(start_time_ms)
                                 ..context_timeline_end(end_time_ms),
                         )
-                        // Bound the SCAN (C++ kMaxLimit), NOT the result: the caller's
-                        // `limit` must be applied AFTER filtering (C++ LimitOrDefault runs
+                        // Bound the SCAN (kMaxLimit), NOT the result: the caller's
+                        // `limit` must be applied AFTER filtering (LimitOrDefault runs
                         // post-filter). Taking `limit` here would drop matching events when
                         // the earliest-by-time window entries are filtered out.
                         .take(CONTEXT_MAX_LIMIT)

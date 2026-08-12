@@ -377,7 +377,7 @@ impl Default for ProxyCppMigrationContract {
     fn default() -> Self {
         Self {
             compatibility_decision:
-                "legacy C++ command transport is out of scope; use Rust-native HTTP/JSON, RESP, and tonic"
+                "legacy command transport is out of scope; use Rust-native HTTP/JSON, RESP, and tonic"
                     .to_string(),
             legacy_cplusplus_wire_in_scope: false,
             cpp_wire_proxy_transport_ready: false,
@@ -1179,7 +1179,7 @@ mod tests {
         let migration = proxy.cpp_migration_contract();
         assert_eq!(
             migration.compatibility_decision,
-            "legacy C++ command transport is out of scope; use Rust-native HTTP/JSON, RESP, and tonic"
+            "legacy command transport is out of scope; use Rust-native HTTP/JSON, RESP, and tonic"
         );
         assert!(!migration.legacy_cplusplus_wire_in_scope);
         assert!(!migration.cpp_wire_proxy_transport_ready);
