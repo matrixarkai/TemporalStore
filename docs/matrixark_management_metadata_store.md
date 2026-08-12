@@ -15,7 +15,7 @@ This lets the backend portal use a normal transactional SQL store for user manag
 | `sqlite` | Local tests and single-node demos | `MATRIXARK_METADATA_BACKEND=sqlite` plus `MATRIXARK_METADATA_DSN=/tmp/matrixark_metadata.sqlite3` |
 | `mysql` | Cloud/control-plane deployment | `MATRIXARK_METADATA_BACKEND=mysql` plus MySQL DSN |
 | `matrixkv_sql` | MatrixKV SQL-compatible deployment | `MATRIXARK_METADATA_BACKEND=matrixkv_sql` plus MatrixKV MySQL-compatible DSN |
-| `bytekv_sql` | Legacy ByteKV SQL-compatible alias | `MATRIXARK_METADATA_BACKEND=bytekv_sql` plus ByteKV MySQL-compatible DSN |
+| `matrixkv_sql` | Legacy MatrixKV SQL-compatible alias | `MATRIXARK_METADATA_BACKEND=matrixkv_sql` plus MatrixKV MySQL-compatible DSN |
 
 ## Production Requirement
 
@@ -23,11 +23,11 @@ Production/cloud deployment should fail closed unless a live SQL control plane i
 
 ```bash
 export MATRIXARK_REQUIRE_SQL_METADATA=1
-export MATRIXARK_METADATA_BACKEND=matrixkv_sql  # or mysql / bytekv_sql
+export MATRIXARK_METADATA_BACKEND=matrixkv_sql  # or mysql / matrixkv_sql
 export MATRIXARK_METADATA_AUTO_INIT=1        # create schema on startup, or pre-create it and keep live checks enabled
 ```
 
-When `MATRIXARK_REQUIRE_SQL_METADATA=1` is set, MatrixArk rejects `record_log` and `sqlite` metadata backends. It also performs a live SQL readiness probe during access-manager startup, so a missing database, bad DSN, or unavailable MySQL/MatrixKV/ByteKV SQL endpoint fails deployment early.
+When `MATRIXARK_REQUIRE_SQL_METADATA=1` is set, MatrixArk rejects `record_log` and `sqlite` metadata backends. It also performs a live SQL readiness probe during access-manager startup, so a missing database, bad DSN, or unavailable MySQL/MatrixKV/MatrixKV SQL endpoint fails deployment early.
 
 ## Local MySQL Docker
 
@@ -61,7 +61,7 @@ export MATRIXARK_REQUIRE_SQL_METADATA=1
 
 ## MatrixKV SQL
 
-MatrixKV should be used as a MySQL-compatible control-plane database when its SQL service is enabled. The product backend name is `matrixkv_sql`; `bytekv_sql` remains only as a legacy-compatible alias.
+MatrixKV should be used as a MySQL-compatible control-plane database when its SQL service is enabled. The product backend name is `matrixkv_sql`; `matrixkv_sql` remains only as a legacy-compatible alias.
 
 ```bash
 export MATRIXARK_METADATA_BACKEND=matrixkv_sql
@@ -73,16 +73,16 @@ PYTHONPATH=tools python3 tools/check_matrixark_metadata_sql.py
 
 The current MatrixKV source tree is expected at `<repo>/github-services/MatrixKV`. Its SQL service exposes a MySQL-compatible protocol; MatrixArk stores only portal/control-plane metadata there, not raw context chunks, embeddings, or ContextPacks.
 
-## ByteKV SQL
+## MatrixKV SQL
 
 ```bash
-export MATRIXARK_METADATA_BACKEND=bytekv_sql
-export MATRIXARK_METADATA_DSN='bytekv+mysql://matrixark:password@bytekv-sql:3306/matrixark'
+export MATRIXARK_METADATA_BACKEND=matrixkv_sql
+export MATRIXARK_METADATA_DSN='matrixkv+mysql://matrixark:password@matrixkv-sql:3306/matrixark'
 export MATRIXARK_METADATA_AUTO_INIT=1
 export MATRIXARK_REQUIRE_SQL_METADATA=1
 ```
 
-ByteKV SQL is expected to expose a MySQL-compatible protocol for this MVP path.
+MatrixKV SQL is expected to expose a MySQL-compatible protocol for this MVP path.
 
 ## Tables
 
@@ -114,7 +114,7 @@ The management portal now shows:
 
 - configured metadata backend;
 - active runtime backend from `matrixark_management_portal`;
-- env snippets for record-log, MySQL, MatrixKV SQL, and ByteKV SQL;
+- env snippets for record-log, MySQL, MatrixKV SQL, and MatrixKV SQL;
 - the metadata schema and storage policy;
 - users, API keys, SSO links, usage, and audit without exposing raw key material.
 
@@ -126,4 +126,4 @@ For production portal analytics, query the normalized tables first. Use `matrixa
 
 `tools/check_matrixark_metadata_sql.py` verifies the configured SQL backend by building the MatrixArk metadata store, running `SELECT 1`, checking every normalized table, appending a `matrixark_metadata_probe` record, and reading it back. This is the deployment smoke test for the management portal control plane.
 
-The probe requires `pymysql` or `mysql-connector-python` for MySQL/MatrixKV/ByteKV SQL.
+The probe requires `pymysql` or `mysql-connector-python` for MySQL/MatrixKV/MatrixKV SQL.

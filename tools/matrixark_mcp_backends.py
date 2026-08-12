@@ -114,7 +114,7 @@ def add_backend_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--temporalstore-lib",
         default=os.environ.get("TEMPORALSTORE_LIB", ""),
-        help="Path to libbcache2.so for --backend temporalstore-direct.",
+        help="Path to libtemporalstore.so for --backend temporalstore-direct.",
     )
     parser.add_argument(
         "--storage-prefix",

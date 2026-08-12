@@ -81,15 +81,15 @@ Send that body to `/execute_replicated`. For batches, send `ReplicatedBatchExecu
 C++ client usage:
 
 ```cpp
-bcache2::client::RequestOptions async_opts =
-    bcache2::client::RequestOptions::ForReplication(
-        bcache2::client::EventReplicationMode::kAsyncStorage);
-bcache2::client::RequestOptions sync_opts =
-    bcache2::client::RequestOptions::ForReplication(
-        bcache2::client::EventReplicationMode::kSyncStorage);
-bcache2::client::RequestOptions raft_opts =
-    bcache2::client::RequestOptions::ForReplication(
-        bcache2::client::EventReplicationMode::kRaft);
+temporalstore::client::RequestOptions async_opts =
+    temporalstore::client::RequestOptions::ForReplication(
+        temporalstore::client::EventReplicationMode::kAsyncStorage);
+temporalstore::client::RequestOptions sync_opts =
+    temporalstore::client::RequestOptions::ForReplication(
+        temporalstore::client::EventReplicationMode::kSyncStorage);
+temporalstore::client::RequestOptions raft_opts =
+    temporalstore::client::RequestOptions::ForReplication(
+        temporalstore::client::EventReplicationMode::kRaft);
 
 table->Set("async-key", "value", async_opts);
 table->Set("sync-key", "value", sync_opts);

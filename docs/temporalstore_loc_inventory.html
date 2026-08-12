@@ -44,11 +44,11 @@ td:nth-child(3), td:nth-child(4), td:nth-child(5), td:nth-child(2) { white-space
 <table>
 <thead><tr><th>Dependency</th><th>Path</th><th>Files</th><th>Total lines</th><th>Nonblank LOC</th></tr></thead>
 <tbody>
-<tr><td>byteraft C++ dependency</td><td><code>/opt/github-services/TemporalStore/.local/deps-src/byteraft-master</code></td><td class="num">210</td><td class="num">50,287</td><td class="num"><strong>41,996</strong></td></tr>
+<tr><td>matrixraft C++ dependency</td><td><code>/opt/github-services/TemporalStore/.local/deps-src/matrixraft-master</code></td><td class="num">210</td><td class="num">50,287</td><td class="num"><strong>41,996</strong></td></tr>
 <tr><td>byte C++ dependency</td><td><code>/opt/github-services/TemporalStore/.local/deps-src/byte-master</code></td><td class="num">377</td><td class="num">85,916</td><td class="num"><strong>74,964</strong></td></tr>
 <tr><td>RustRaft external lib</td><td><code>/opt/github-services/RustRaft</code></td><td class="num">63</td><td class="num">36,819</td><td class="num"><strong>34,530</strong></td></tr>
 <tr><td>MatrixCache external lib</td><td><code>/opt/github-services/MatrixCache</code></td><td class="num">2</td><td class="num">24,790</td><td class="num"><strong>22,003</strong></td></tr>
-<tr><td>mtcache C++ dependency</td><td><code>/root/TemporalStore-main-slice5/dependencies/mtcache</code></td><td class="num">145</td><td class="num">31,099</td><td class="num"><strong>26,615</strong></td></tr>
+<tr><td>matrixcache C++ dependency</td><td><code>/root/TemporalStore-main-slice5/dependencies/matrixcache</code></td><td class="num">145</td><td class="num">31,099</td><td class="num"><strong>26,615</strong></td></tr>
 </tbody>
 </table>
 <p class="callout">Listed dependency total: <strong>200,108 nonblank LOC</strong>.</p>
@@ -59,7 +59,7 @@ td:nth-child(3), td:nth-child(4), td:nth-child(5), td:nth-child(2) { white-space
 <tbody>
 <tr><td>TemporalStore first-party C++ + Rust + Python + Proto</td><td class="num"><strong>334,369</strong></td></tr>
 <tr><td>Listed dependencies total</td><td class="num"><strong>200,108</strong></td></tr>
-<tr><td>TemporalStore C++ plus C++ dependencies: byteraft + byte + mtcache</td><td class="num"><strong>255,714</strong></td></tr>
+<tr><td>TemporalStore C++ plus C++ dependencies: matrixraft + byte + matrixcache</td><td class="num"><strong>255,714</strong></td></tr>
 <tr><td>Rust ecosystem dependencies: RustRaft + MatrixCache</td><td class="num"><strong>56,533</strong></td></tr>
 </tbody>
 </table>
@@ -67,7 +67,7 @@ td:nth-child(3), td:nth-child(4), td:nth-child(5), td:nth-child(2) { white-space
 <h2>Notes</h2>
 <ul>
 <li><code>thirdparty/byte</code> points to <code>.local/deps-src/byte-master</code>.</li>
-<li><code>thirdparty/byteraft</code> points to <code>.local/deps-src/byteraft-master</code>.</li>
+<li><code>thirdparty/matrixraft</code> points to <code>.local/deps-src/matrixraft-master</code>.</li>
 <li>The Rust count includes maintained core, raft, Redis, server/metaserver/proxy binaries, and tests.</li>
 <li>The Python count includes MatrixArk MCP/core adapter code, backfill tooling, benchmark/report scripts, validation scripts, and <code>cpplint.py</code>.</li>
 <li>These numbers are local-source inventory numbers, not a statement of what is linked into any single final binary.</li>

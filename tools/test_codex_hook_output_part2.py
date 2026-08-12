@@ -1295,7 +1295,7 @@ class _CodexHookOutputPart2:
             "--table",
             "missing_table",
             "--temporalstore-lib",
-            "/tmp/definitely-missing-libbcache2.so",
+            "/tmp/definitely-missing-libtemporalstore.so",
             "--request-timeout-ms",
             "1",
             "--io-timeout-ms",

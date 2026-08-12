@@ -56,7 +56,7 @@ class MatrixArkMetadataStore:
 
     Context records still live in TemporalStore. This store is for account,
     tenant, user, SSO, API-key, usage, and admin audit metadata that a portal
-    needs to query transactionally. MySQL, MatrixKV SQL, and ByteKV SQL share
+    needs to query transactionally. MySQL, MatrixKV SQL, and MatrixKV SQL share
     the same schema.
     """
 
@@ -89,7 +89,7 @@ def _matrixark_env_truthy(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-MATRIXARK_MYSQL_COMPATIBLE_METADATA_BACKENDS = {"mysql", "matrixkv_sql", "bytekv_sql"}
+MATRIXARK_MYSQL_COMPATIBLE_METADATA_BACKENDS = {"mysql", "matrixkv_sql", "matrixkv_sql"}
 MATRIXARK_OAUTH_TOKEN_FIELDS = {
     "access_token",
     "refresh_token",
@@ -112,7 +112,7 @@ class MatrixArkSqlMetadataStore(MatrixArkMetadataStore):
     - sqlite: local/dev smoke tests, no extra dependency.
     - mysql: PyMySQL or mysql-connector-python DB-API connection.
     - matrixkv_sql: MySQL-compatible MatrixKV SQL endpoint, same table shape.
-    - bytekv_sql: MySQL-compatible ByteKV SQL endpoint, same table shape.
+    - matrixkv_sql: MySQL-compatible MatrixKV SQL endpoint, same table shape.
     """
 
     TABLE = "matrixark_metadata_records"
@@ -156,9 +156,9 @@ class MatrixArkSqlMetadataStore(MatrixArkMetadataStore):
             from urllib.parse import urlparse, parse_qs, unquote
 
             parsed = urlparse(self.dsn)
-            if parsed.scheme not in {"mysql", "matrixkv", "matrixkv+mysql", "bytekv", "bytekv+mysql"}:
+            if parsed.scheme not in {"mysql", "matrixkv", "matrixkv+mysql", "matrixkv", "matrixkv+mysql"}:
                 raise MatrixArkError(
-                    "MATRIXARK_METADATA_DSN must be mysql://, matrixkv+mysql://, or bytekv+mysql:// for SQL metadata"
+                    "MATRIXARK_METADATA_DSN must be mysql://, matrixkv+mysql://, or matrixkv+mysql:// for SQL metadata"
                 )
             params = {
                 "host": parsed.hostname or "127.0.0.1",
@@ -786,7 +786,7 @@ class MatrixArkSqlMetadataStore(MatrixArkMetadataStore):
             else self.backend_name,
             "product_family": "matrixkv"
             if self.backend_name == "matrixkv_sql"
-            else ("bytekv" if self.backend_name == "bytekv_sql" else self.backend_name),
+            else ("matrixkv" if self.backend_name == "matrixkv_sql" else self.backend_name),
         }
 
     def backend_info(self) -> Json:
@@ -801,7 +801,7 @@ class MatrixArkSqlMetadataStore(MatrixArkMetadataStore):
             else self.backend_name,
             "product_family": "matrixkv"
             if self.backend_name == "matrixkv_sql"
-            else ("bytekv" if self.backend_name == "bytekv_sql" else self.backend_name),
+            else ("matrixkv" if self.backend_name == "matrixkv_sql" else self.backend_name),
         }
 
 
@@ -812,25 +812,25 @@ def build_matrixark_metadata_store(adapter: "MatrixArkLocalAdapter") -> MatrixAr
     if backend in {"", "record_log", "temporalstore", "adapter"}:
         if require_sql:
             raise MatrixArkError(
-                "MATRIXARK_REQUIRE_SQL_METADATA=1 requires MATRIXARK_METADATA_BACKEND=mysql, matrixkv_sql, or bytekv_sql and a live MATRIXARK_METADATA_DSN"
+                "MATRIXARK_REQUIRE_SQL_METADATA=1 requires MATRIXARK_METADATA_BACKEND=mysql, matrixkv_sql, or matrixkv_sql and a live MATRIXARK_METADATA_DSN"
             )
         return MatrixArkRecordLogMetadataStore(adapter)
     if backend == "sqlite" and require_sql:
         raise MatrixArkError(
-            "MATRIXARK_REQUIRE_SQL_METADATA=1 requires MATRIXARK_METADATA_BACKEND=mysql, matrixkv_sql, or bytekv_sql; sqlite is local-test only"
+            "MATRIXARK_REQUIRE_SQL_METADATA=1 requires MATRIXARK_METADATA_BACKEND=mysql, matrixkv_sql, or matrixkv_sql; sqlite is local-test only"
         )
     if backend in {"sqlite", *MATRIXARK_MYSQL_COMPATIBLE_METADATA_BACKENDS}:
         dsn = os.environ.get("MATRIXARK_METADATA_DSN", "").strip()
         if backend == "sqlite" and not dsn:
             dsn = "/tmp/matrixark_metadata.sqlite3"
         if backend in MATRIXARK_MYSQL_COMPATIBLE_METADATA_BACKENDS and not dsn:
-            raise MatrixArkError("MATRIXARK_METADATA_DSN is required for mysql/matrixkv_sql/bytekv_sql metadata backend")
+            raise MatrixArkError("MATRIXARK_METADATA_DSN is required for mysql/matrixkv_sql/matrixkv_sql metadata backend")
         auto_init = os.environ.get("MATRIXARK_METADATA_AUTO_INIT", "1").strip().lower() in {"1", "true", "yes"}
         store = MatrixArkSqlMetadataStore(backend=backend, dsn=dsn, auto_init=auto_init)
         if require_live:
             store.check_ready()
         return store
-    raise MatrixArkError("MATRIXARK_METADATA_BACKEND must be record_log, sqlite, mysql, matrixkv_sql, or bytekv_sql")
+    raise MatrixArkError("MATRIXARK_METADATA_BACKEND must be record_log, sqlite, mysql, matrixkv_sql, or matrixkv_sql")
 
 try:  # mixin
     from tools.matrixark_access_portal import _AccessPortalMixin

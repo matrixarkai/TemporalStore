@@ -342,7 +342,7 @@ class _CppHookStoreReader(_HookStoreReader):
         lib_path = str(
             args.get("cpp_library_path")
             or os.environ.get("TEMPORALSTORE_LIB")
-            or repo_root / "output-ubuntu22/release/sdk/lib/libbcache2.so"
+            or repo_root / "output-ubuntu22/release/sdk/lib/libtemporalstore.so"
         )
         metaserver = str(args.get("cpp_metaserver") or os.environ.get("MATRIXARK_TEMPORALSTORE_METASERVER") or "127.0.0.1:18000")
         namespace = str(args.get("namespace") or os.environ.get("MATRIXARK_NAMESPACE") or "deploy_ns")

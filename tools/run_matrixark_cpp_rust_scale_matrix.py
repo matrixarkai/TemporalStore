@@ -230,7 +230,7 @@ def main() -> int:
     parser.add_argument("--write-mode", default="async")
     parser.add_argument("--oplog-mode", default="async")
     parser.add_argument("--replication-mode", default="shared_store")
-    parser.add_argument("--cpp-lib", default=str(ROOT / "output-ubuntu22/release/sdk/lib/libbcache2.so"))
+    parser.add_argument("--cpp-lib", default=str(ROOT / "output-ubuntu22/release/sdk/lib/libtemporalstore.so"))
     parser.add_argument("--rust-cli", default=str(ROOT / "target/release/matrixark_rust_proxy"))
     parser.add_argument("--request-timeout-ms", type=int, default=60000)
     parser.add_argument("--io-timeout-ms", type=int, default=60000)

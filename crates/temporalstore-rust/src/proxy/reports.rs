@@ -267,13 +267,13 @@ impl ProxyService {
                     "Rust marks local discovery stopped; metaserver freeze/drop APIs are the production stop/drain path.",
                 ),
                 proxy_operational_surface_entry(
-                    "Bcache2ThriftService command dispatch",
+                    "TemporalStoreThriftService command dispatch",
                     "/proxy/cpp_migration_contract",
                     "/ProxyService/GetCppMigrationContract",
                     "Legacy brpc/thrift remains out of scope; Rust-native HTTP/JSON, RESP, and tonic are the migration contract.",
                 ),
                 proxy_operational_surface_entry(
-                    "Bcache2ThriftService admission/inflight checks",
+                    "TemporalStoreThriftService admission/inflight checks",
                     "/proxy/policy",
                     "/ProxyService/GetPolicy",
                     "Rust policy covers serving mode, write-disabled/readonly rejection, drop-percent admission, and rejection counters.",

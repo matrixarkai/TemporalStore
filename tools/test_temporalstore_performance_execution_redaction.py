@@ -101,7 +101,7 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
                                     "python3",
                                     "tool.py",
                                     "--cpp-lib",
-                                    "/mnt/c/Users/Deeproute/libbcache2.so",
+                                    "/mnt/c/Users/Deeproute/libtemporalstore.so",
                                     "--require-perf-parity",
                                     *SAME_CONFIG_ARGV,
                                 ]

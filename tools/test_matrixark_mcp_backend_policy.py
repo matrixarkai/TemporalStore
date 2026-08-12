@@ -1252,7 +1252,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase, _BackendPolicyPart4, _Bac
         validate_cpp_runtime_host.__globals__["_is_windows_host"] = lambda: True
         try:
             with self.assertRaisesRegex(RuntimeError, "invalid_host_platform"):
-                validate_cpp_runtime_host("C:\\repo\\output-ubuntu22\\release\\sdk\\lib\\libbcache2.so")
+                validate_cpp_runtime_host("C:\\repo\\output-ubuntu22\\release\\sdk\\lib\\libtemporalstore.so")
         finally:
             validate_cpp_runtime_host.__globals__["_is_windows_host"] = original
 
@@ -1260,7 +1260,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase, _BackendPolicyPart4, _Bac
         with tempfile.TemporaryDirectory(prefix="matrixark-cpp-lib-policy-") as tmpdir:
             active_root = Path(tmpdir) / "clean-worktree"
             canonical_root = Path(tmpdir) / "canonical"
-            canonical_lib = canonical_root / "output-ubuntu22" / "release" / "sdk" / "lib" / "libbcache2.so"
+            canonical_lib = canonical_root / "output-ubuntu22" / "release" / "sdk" / "lib" / "libtemporalstore.so"
             canonical_lib.parent.mkdir(parents=True)
             canonical_lib.write_text("", encoding="utf-8")
 
@@ -1449,7 +1449,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase, _BackendPolicyPart4, _Bac
         search_path = rust_proxy_library_search_path(
             "/opt/temporalstore/bin/matrixark_rust_proxy",
             {
-                "TEMPORALSTORE_LIB": "/opt/temporalstore/sdk/lib/libbcache2.so",
+                "TEMPORALSTORE_LIB": "/opt/temporalstore/sdk/lib/libtemporalstore.so",
                 "LD_LIBRARY_PATH": "/usr/local/lib:/opt/temporalstore/bin",
             },
         )

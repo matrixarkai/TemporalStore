@@ -5,7 +5,7 @@ from pathlib import Path
 import json
 import sys
 
-pattern = sys.argv[1] if len(sys.argv) > 1 else "aws_bytekv_logs_post_reset_*.jsonl"
+pattern = sys.argv[1] if len(sys.argv) > 1 else "aws_matrixkv_logs_post_reset_*.jsonl"
 p = max(Path("outputs").glob(pattern), key=lambda x: x.stat().st_mtime)
 print("FILE", p)
 raw = p.read_text(errors="replace")

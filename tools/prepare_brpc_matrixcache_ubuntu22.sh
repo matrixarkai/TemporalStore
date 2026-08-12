@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE_LIB="${BRPC_STATIC_LIBRARY:?set BRPC_STATIC_LIBRARY to the existing libbrpc.a}"
-OUT_DIR="${BRPC_MTCACHE_DIR:-${ROOT}/.local/ubuntu22/brpc-mtcache}"
+OUT_DIR="${BRPC_MATRIXCACHE_DIR:-${ROOT}/.local/ubuntu22/brpc-matrixcache}"
 OUT_LIB="${OUT_DIR}/lib/libbrpc.a"
 
 mkdir -p "${OUT_DIR}/lib" "${OUT_DIR}/output"

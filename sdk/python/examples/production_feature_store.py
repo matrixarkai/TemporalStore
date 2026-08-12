@@ -190,7 +190,7 @@ def build_client(config: StoreConfig) -> StoreClient:
 
     The proxy client is pure-Python (stdlib HTTP) and needs no shared library —
     the right default for portable services. The native client is faster but
-    requires ``libbcache2.so`` (set ``library_path`` / ``TEMPORALSTORE_LIB``).
+    requires ``libtemporalstore.so`` (set ``library_path`` / ``TEMPORALSTORE_LIB``).
     """
 
     if config.backend == "native":

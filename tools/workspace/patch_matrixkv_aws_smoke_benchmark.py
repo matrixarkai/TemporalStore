@@ -3,7 +3,7 @@
 # Copyright 2026 MatrixArkAI
 from pathlib import Path
 
-target = Path("/home/vj/bytekv-rocksdb-server/bytekv/tools/aws_smoke/main.cc")
+target = Path("/home/vj/matrixkv-rocksdb-server/matrixkv/tools/aws_smoke/main.cc")
 target.write_text(r'''#include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -33,7 +33,7 @@ DEFINE_string(table, "smoke_table", "table name without namespace");
 DEFINE_string(key, "smoke_key", "key to write");
 DEFINE_string(value, "smoke_value", "value to write");
 DEFINE_uint32(cluster_id, 1001, "cluster id");
-DEFINE_string(cluster_name, "bytekv_aws_test", "cluster name");
+DEFINE_string(cluster_name, "matrixkv_aws_test", "cluster name");
 DEFINE_uint32(replica_count, 1, "table replica count");
 DEFINE_uint32(wait_seconds, 30, "seconds to wait for table readiness");
 DEFINE_uint32(quota_gb, 1, "table/namespace quota in GB");
@@ -51,97 +51,97 @@ namespace {
 
 std::string FullTableName() { return FLAGS_ns + ":" + FLAGS_table; }
 
-void PrintCode(const std::string& label, bytekv::Errorcode code) {
-  std::cout << label << ": " << bytekv::GetErrorString(code) << " (" << code
+void PrintCode(const std::string& label, matrixkv::Errorcode code) {
+  std::cout << label << ": " << matrixkv::GetErrorString(code) << " (" << code
             << ")" << std::endl;
 }
 
-bytekv::Errorcode CreateNamespace(
-    const std::shared_ptr<bytekv::common::MasterBrpcClient>& master) {
-  bytekv::CreateNamespaceRequest req;
-  bytekv::CreateNamespaceResponse resp;
+matrixkv::Errorcode CreateNamespace(
+    const std::shared_ptr<matrixkv::common::MasterBrpcClient>& master) {
+  matrixkv::CreateNamespaceRequest req;
+  matrixkv::CreateNamespaceResponse resp;
   req.set_ns(FLAGS_ns);
   req.mutable_options()->set_quota_in_gb(FLAGS_quota_gb);
   auto code = master->GetNamespaceServiceRpcClient()->CreateNamespace(req, &resp);
-  if (code == bytekv::BYTEKV_ERR_OK) {
-    code = static_cast<bytekv::Errorcode>(resp.code());
+  if (code == matrixkv::MATRIXKV_ERR_OK) {
+    code = static_cast<matrixkv::Errorcode>(resp.code());
   }
   PrintCode("create_namespace", code);
   return code;
 }
 
-bytekv::Errorcode CreateTable(
-    const std::shared_ptr<bytekv::common::MasterBrpcClient>& master) {
-  bytekv::CreateTableRequest req;
-  bytekv::CreateTableResponse resp;
+matrixkv::Errorcode CreateTable(
+    const std::shared_ptr<matrixkv::common::MasterBrpcClient>& master) {
+  matrixkv::CreateTableRequest req;
+  matrixkv::CreateTableResponse resp;
   req.set_table(FullTableName());
   req.mutable_options()->set_quota_in_gb(FLAGS_quota_gb);
   req.mutable_options()->set_replica_count(FLAGS_replica_count);
-  req.mutable_options()->set_security(bytekv::TABLE_SECURITY_LEVEL_SERVER);
+  req.mutable_options()->set_security(matrixkv::TABLE_SECURITY_LEVEL_SERVER);
   req.mutable_options()->set_partition_size_mb_lower(FLAGS_partition_size_mb);
   req.mutable_options()->set_partition_size_mb_upper(FLAGS_partition_size_mb);
   auto code = master->GetNamespaceServiceRpcClient()->Create(req, &resp);
-  if (code == bytekv::BYTEKV_ERR_OK) {
-    code = static_cast<bytekv::Errorcode>(resp.code());
+  if (code == matrixkv::MATRIXKV_ERR_OK) {
+    code = static_cast<matrixkv::Errorcode>(resp.code());
   }
   PrintCode("create_table", code);
   return code;
 }
 
-std::shared_ptr<bytekv::client::KVClientImpl> BuildClient() {
-  auto config = std::make_shared<bytekv::client::Config>();
+std::shared_ptr<matrixkv::client::KVClientImpl> BuildClient() {
+  auto config = std::make_shared<matrixkv::client::Config>();
   config->cluster_id = FLAGS_cluster_id;
   config->master_addrs = std::vector<std::string>{FLAGS_master};
   config->tso_addrs = std::vector<std::string>{FLAGS_tso};
   config->refresh_table_timeval_seconds = 1;
-  return std::make_shared<bytekv::client::KVClientImpl>(config);
+  return std::make_shared<matrixkv::client::KVClientImpl>(config);
 }
 
-bytekv::Errorcode PutOne(bytekv::client::KVClientImpl* client,
+matrixkv::Errorcode PutOne(matrixkv::client::KVClientImpl* client,
                          const std::string& key,
                          const std::string& value) {
-  bytekv::PutRequest put;
-  bytekv::PutResponse put_resp;
+  matrixkv::PutRequest put;
+  matrixkv::PutResponse put_resp;
   put.set_table_name(FullTableName());
   put.set_key(key);
   put.set_value(value);
   put.set_timeout_ms(FLAGS_timeout_ms);
   auto put_code = client->Put(put, &put_resp);
-  if (put_code != bytekv::BYTEKV_ERR_OK ||
-      put_resp.code() != bytekv::BYTEKV_ERR_OK) {
-    return put_code == bytekv::BYTEKV_ERR_OK
-               ? static_cast<bytekv::Errorcode>(put_resp.code())
+  if (put_code != matrixkv::MATRIXKV_ERR_OK ||
+      put_resp.code() != matrixkv::MATRIXKV_ERR_OK) {
+    return put_code == matrixkv::MATRIXKV_ERR_OK
+               ? static_cast<matrixkv::Errorcode>(put_resp.code())
                : put_code;
   }
-  return bytekv::BYTEKV_ERR_OK;
+  return matrixkv::MATRIXKV_ERR_OK;
 }
 
-bytekv::Errorcode GetOne(bytekv::client::KVClientImpl* client,
+matrixkv::Errorcode GetOne(matrixkv::client::KVClientImpl* client,
                          const std::string& key,
                          std::string* value) {
-  bytekv::GetRequest get;
-  bytekv::GetResponse get_resp;
+  matrixkv::GetRequest get;
+  matrixkv::GetResponse get_resp;
   get.set_table_name(FullTableName());
   get.set_key(key);
   get.set_timeout_ms(FLAGS_timeout_ms);
   auto get_code = client->Get(get, &get_resp);
-  if (get_code != bytekv::BYTEKV_ERR_OK ||
-      get_resp.code() != bytekv::BYTEKV_ERR_OK) {
-    return get_code == bytekv::BYTEKV_ERR_OK
-               ? static_cast<bytekv::Errorcode>(get_resp.code())
+  if (get_code != matrixkv::MATRIXKV_ERR_OK ||
+      get_resp.code() != matrixkv::MATRIXKV_ERR_OK) {
+    return get_code == matrixkv::MATRIXKV_ERR_OK
+               ? static_cast<matrixkv::Errorcode>(get_resp.code())
                : get_code;
   }
   *value = get_resp.value();
-  return bytekv::BYTEKV_ERR_OK;
+  return matrixkv::MATRIXKV_ERR_OK;
 }
 
-bytekv::Errorcode TryPutGet(bytekv::client::KVClientImpl* client,
+matrixkv::Errorcode TryPutGet(matrixkv::client::KVClientImpl* client,
                             bool verbose) {
   auto put_code = PutOne(client, FLAGS_key, FLAGS_value);
   if (verbose) {
     PrintCode("put_result", put_code);
   }
-  if (put_code != bytekv::BYTEKV_ERR_OK) {
+  if (put_code != matrixkv::MATRIXKV_ERR_OK) {
     return put_code;
   }
 
@@ -151,15 +151,15 @@ bytekv::Errorcode TryPutGet(bytekv::client::KVClientImpl* client,
     PrintCode("get_result", get_code);
     std::cout << "get_value: " << value << std::endl;
   }
-  if (get_code != bytekv::BYTEKV_ERR_OK) {
+  if (get_code != matrixkv::MATRIXKV_ERR_OK) {
     return get_code;
   }
   if (value != FLAGS_value) {
     std::cerr << "value mismatch: expected " << FLAGS_value << " got "
               << value << std::endl;
-    return bytekv::BYTEKV_ERR_INVALID_PARAMETER;
+    return matrixkv::MATRIXKV_ERR_INVALID_PARAMETER;
   }
-  return bytekv::BYTEKV_ERR_OK;
+  return matrixkv::MATRIXKV_ERR_OK;
 }
 
 uint64_t Percentile(const std::vector<uint64_t>& sorted, double pct) {
@@ -176,7 +176,7 @@ int RunBenchmark() {
   std::cout << "benchmark_prefill_start keys=" << FLAGS_key_count << std::endl;
   for (uint32_t i = 0; i < FLAGS_key_count; ++i) {
     auto code = PutOne(client.get(), "bench_key_" + std::to_string(i), value);
-    if (code != bytekv::BYTEKV_ERR_OK) {
+    if (code != matrixkv::MATRIXKV_ERR_OK) {
       PrintCode("benchmark_prefill_error", code);
       return 1;
     }
@@ -204,7 +204,7 @@ int RunBenchmark() {
         uint32_t key_idx = static_cast<uint32_t>(seq % FLAGS_key_count);
         bool do_read = (seq % 100) < FLAGS_read_percent;
         auto op_start = std::chrono::steady_clock::now();
-        bytekv::Errorcode code;
+        matrixkv::Errorcode code;
         if (do_read) {
           code = GetOne(local_client.get(), "bench_key_" + std::to_string(key_idx),
                         &out);
@@ -215,7 +215,7 @@ int RunBenchmark() {
           writes.fetch_add(1, std::memory_order_relaxed);
         }
         auto op_end = std::chrono::steady_clock::now();
-        if (code != bytekv::BYTEKV_ERR_OK) {
+        if (code != matrixkv::MATRIXKV_ERR_OK) {
           errors.fetch_add(1, std::memory_order_relaxed);
         }
         latencies[t].push_back(
@@ -257,7 +257,7 @@ int RunBenchmark() {
 
 int main(int argc, char** argv) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
-  bytekv::logger->set_level(spdlog::level::warn);
+  matrixkv::logger->set_level(spdlog::level::warn);
 
   if (FLAGS_master.empty() || FLAGS_tso.empty()) {
     std::cerr << "--master and --tso are required" << std::endl;
@@ -268,8 +268,8 @@ int main(int argc, char** argv) {
     return 2;
   }
 
-  bytekv::common::InternalAuth::Init(FLAGS_cluster_name, FLAGS_cluster_id);
-  auto master = std::make_shared<bytekv::common::MasterBrpcClient>(
+  matrixkv::common::InternalAuth::Init(FLAGS_cluster_name, FLAGS_cluster_id);
+  auto master = std::make_shared<matrixkv::common::MasterBrpcClient>(
       std::vector<std::string>{FLAGS_master}, std::vector<std::string>{FLAGS_tso});
 
   auto ns_code = CreateNamespace(master);
@@ -278,10 +278,10 @@ int main(int argc, char** argv) {
   (void)table_code;
 
   auto client = BuildClient();
-  bytekv::Errorcode code = bytekv::BYTEKV_ERR_UNDEFINED;
+  matrixkv::Errorcode code = matrixkv::MATRIXKV_ERR_UNDEFINED;
   for (uint32_t i = 0; i <= FLAGS_wait_seconds; ++i) {
     code = TryPutGet(client.get(), i == FLAGS_wait_seconds);
-    if (code == bytekv::BYTEKV_ERR_OK) {
+    if (code == matrixkv::MATRIXKV_ERR_OK) {
       std::cout << "smoke_result: PASS table=" << FullTableName()
                 << " key=" << FLAGS_key << " value=" << FLAGS_value
                 << std::endl;

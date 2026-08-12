@@ -23,7 +23,7 @@ fn main() {
     };
     let lib_dir =
         env::var("TEMPORALSTORE_LIB_DIR").unwrap_or_else(|_| default_lib_dir.display().to_string());
-    let lib_name = env::var("TEMPORALSTORE_LIB_NAME").unwrap_or_else(|_| "bcache2".to_string());
+    let lib_name = env::var("TEMPORALSTORE_LIB_NAME").unwrap_or_else(|_| "temporalstore".to_string());
 
     println!("cargo:rustc-link-search=native={lib_dir}");
     println!("cargo:rustc-link-lib={lib_name}");

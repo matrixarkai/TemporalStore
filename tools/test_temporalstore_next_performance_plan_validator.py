@@ -98,7 +98,7 @@ class NextPerformancePlanValidatorTest(unittest.TestCase):
     def test_backend_path_leak_in_wsl_command_fails(self) -> None:
         plan = build_execution_plan(_valid_audit())
         run_command = plan["commands"][0]
-        run_command["wsl_argv"].extend(["--cpp-lib", "/mnt/c/private/libbcache2.so"])
+        run_command["wsl_argv"].extend(["--cpp-lib", "/mnt/c/private/libtemporalstore.so"])
 
         failures = validate_plan(plan)
 

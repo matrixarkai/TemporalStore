@@ -33,7 +33,7 @@ The stronger evidence points elsewhere: MatrixArk retrieval still includes query
 
 ```bash
 cd <repo>
-LIB=<repo>/output-ubuntu22/release/sdk/lib/libbcache2.so
+LIB=<repo>/output-ubuntu22/release/sdk/lib/libtemporalstore.so
 PYTHONPATH=. TEMPORALSTORE_LIB="$LIB" python3 tools/run_temporalstore_raw_sdk_microbench.py \
   --ops 1000 \
   --write-workers 2 \

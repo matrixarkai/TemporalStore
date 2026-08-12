@@ -36,19 +36,19 @@ Important options:
 Use typed sequence rows for the default long-sequence feature schema:
 
 ```cpp
-std::vector<bcache2::client::SequenceFeatureRow> rows = {
+std::vector<temporalstore::client::SequenceFeatureRow> rows = {
     {1700000000000ULL, 900, 1, 31, 7000},
     {1700000001000ULL, 901, 3, 120, 7001},
 };
 client->AddSequenceFeatureRows("user:42:sequence", rows);
 
-bcache2::client::TemporalFeatureQuery query;
+temporalstore::client::TemporalFeatureQuery query;
 query.start_ts = 1700000000000ULL;
 query.end_ts = 1700000002000ULL;
 query.count = 10;
-query.filters.push_back({"action_type", bcache2::client::TemporalFeatureFilterOp::kEqual, 3});
+query.filters.push_back({"action_type", temporalstore::client::TemporalFeatureFilterOp::kEqual, 3});
 
-std::vector<bcache2::client::SequenceFeatureRow> out;
+std::vector<temporalstore::client::SequenceFeatureRow> out;
 client->QuerySequenceFeatureRows("user:42:sequence", query, &out);
 ```
 
@@ -59,20 +59,20 @@ The SDK builds the server filter strings for you, validates the query window, an
 The old raw feature API is still available:
 
 ```cpp
-std::vector<bcache2::client::TemporalFeaturePoint> points;
+std::vector<temporalstore::client::TemporalFeaturePoint> points;
 client->QueryFeaturePoints("user:42:sequence", 1700000000000ULL, 1700000002000ULL, 100, &points);
 ```
 
 For filtered raw reads, use `TemporalFeatureQuery`:
 
 ```cpp
-bcache2::client::TemporalFeatureQuery query;
+temporalstore::client::TemporalFeatureQuery query;
 query.start_ts = 1700000000000ULL;
 query.end_ts = 1700000002000ULL;
 query.count = 100;
-query.filters.push_back({"duration", bcache2::client::TemporalFeatureFilterOp::kGreaterThan, 120});
+query.filters.push_back({"duration", temporalstore::client::TemporalFeatureFilterOp::kGreaterThan, 120});
 
-std::vector<bcache2::client::TemporalFeaturePoint> points;
+std::vector<temporalstore::client::TemporalFeaturePoint> points;
 client->QueryFeaturePoints("user:42:sequence", query, &points);
 ```
 
@@ -113,8 +113,8 @@ Latest local run passed both examples:
 The shared library target also builds and exports the C ABI symbols:
 
 ```bash
-cmake --build build-ubuntu22 --target bcache2-shared -j4
-nm -D output/sdk/lib/libbcache2d.so | grep temporalstore_
+cmake --build build-ubuntu22 --target temporalstore-shared -j4
+nm -D output/sdk/lib/libtemporalstored.so | grep temporalstore_
 ```
 
 See `sdk/README.md` for Python and Rust wrapper usage.
@@ -124,7 +124,7 @@ Full direct SDK smoke test:
 ```bash
 RUN_PYTHON_SDK=1 RUN_RUST_SDK=1 \
   RUN_UNIFIED_TESTS=1 \
-  TEMPORALSTORE_PYTHON_LIB=/path/to/libbcache2.so \
+  TEMPORALSTORE_PYTHON_LIB=/path/to/libtemporalstore.so \
   tools/run_sdk_smoke_ubuntu22.sh
 ```
 

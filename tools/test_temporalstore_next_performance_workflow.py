@@ -124,7 +124,7 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
                     "python",
                     "tool.py",
                     "--cpp-lib",
-                    "/mnt/c/private/libbcache2.so",
+                    "/mnt/c/private/libtemporalstore.so",
                     "--rust-cli=/mnt/c/private/matrixark_record_log",
                     _wsl_path(Path(__file__).resolve().parents[1]),
                 ]
@@ -169,20 +169,20 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
                 "python",
                 "tools/run_matrixark_cpp_rust_scale_report.py",
                 "--cpp-lib",
-                "/custom/libbcache2.so",
+                "/custom/libtemporalstore.so",
                 "--rust-cli",
                 "/custom/matrixark_record_log",
             ]
         )
         self.assertEqual(command.count("--cpp-lib"), 1)
         self.assertEqual(command.count("--rust-cli"), 1)
-        self.assertIn("/custom/libbcache2.so", command)
+        self.assertIn("/custom/libtemporalstore.so", command)
         self.assertIn("/custom/matrixark_record_log", command)
 
     def test_backend_artifact_overrides_use_environment_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            cpp_lib = root / "libbcache2.so"
+            cpp_lib = root / "libtemporalstore.so"
             rust_cli = root / "matrixark_record_log"
             cpp_lib.write_text("", encoding="utf-8")
             rust_cli.write_text("", encoding="utf-8")
@@ -199,13 +199,13 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
 
         self.assertIn("--cpp-lib", command)
         self.assertIn("--rust-cli", command)
-        self.assertIn("libbcache2.so", command[command.index("--cpp-lib") + 1])
+        self.assertIn("libtemporalstore.so", command[command.index("--cpp-lib") + 1])
         self.assertIn("matrixark_record_log", command[command.index("--rust-cli") + 1])
 
     def test_backend_artifact_preflight_reports_environment_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            cpp_lib = root / "libbcache2.so"
+            cpp_lib = root / "libtemporalstore.so"
             rust_cli = root / "matrixark_record_log"
             cpp_lib.write_text("", encoding="utf-8")
             rust_cli.write_text("", encoding="utf-8")
@@ -237,7 +237,7 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            cpp_lib = root / "private" / "libbcache2.so"
+            cpp_lib = root / "private" / "libtemporalstore.so"
             rust_cli = root / "private" / "matrixark_record_log"
             cpp_lib.parent.mkdir()
             cpp_lib.write_text("", encoding="utf-8")
@@ -379,7 +379,7 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
                         "python",
                         "tools/run_matrixark_cpp_rust_scale_report.py",
                         "--cpp-lib",
-                        "/mnt/c/private/libbcache2.so",
+                        "/mnt/c/private/libtemporalstore.so",
                         "--rust-cli",
                         "/mnt/c/private/matrixark_record_log",
                     ],
@@ -397,7 +397,7 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
         ) as run:
             result = run_plan(plan, include_post_validation=False)
 
-        self.assertIn("/mnt/c/private/libbcache2.so", run.call_args.args[0])
+        self.assertIn("/mnt/c/private/libtemporalstore.so", run.call_args.args[0])
         self.assertEqual(
             result["results"][0]["argv"],
             [

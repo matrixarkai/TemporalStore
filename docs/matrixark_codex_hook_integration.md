@@ -71,7 +71,7 @@ MATRIXARK_TEMPORALSTORE_METASERVER=127.0.0.1:18000
 MATRIXARK_TEMPORALSTORE_NAMESPACE=deploy_ns
 MATRIXARK_TEMPORALSTORE_TABLE=deploy_table
 MATRIXARK_TEMPORALSTORE_PREFIX=matrixark:codex-hook
-TEMPORALSTORE_LIB=<repo>/output-ubuntu22/release/sdk/lib/libbcache2.so
+TEMPORALSTORE_LIB=<repo>/output-ubuntu22/release/sdk/lib/libtemporalstore.so
 MATRIXARK_EMBEDDING_PROVIDER=oss
 MATRIXARK_REQUIRE_OSS_EMBEDDINGS=1
 MATRIXARK_UNDERSTANDING_PROVIDER=oss_encoder
@@ -220,7 +220,7 @@ export MATRIXARK_TEMPORALSTORE_METASERVER=127.0.0.1:18000
 export MATRIXARK_TEMPORALSTORE_NAMESPACE=deploy_ns
 export MATRIXARK_TEMPORALSTORE_TABLE=deploy_table
 export MATRIXARK_TEMPORALSTORE_PREFIX=matrixark:codex-hook
-export TEMPORALSTORE_LIB=<repo>/output-ubuntu22/release/sdk/lib/libbcache2.so
+export TEMPORALSTORE_LIB=<repo>/output-ubuntu22/release/sdk/lib/libtemporalstore.so
 ```
 
 Then run the same hook command. The hook will persist Codex-derived context

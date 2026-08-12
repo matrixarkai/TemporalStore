@@ -39,15 +39,15 @@ temporalstore_vars_exporter_role_samples_scraped
 4. We can see server metrics and meta metrics separately
 
 ```promql
-count({__name__=~"bcache2_.*"})
+count({__name__=~"temporalstore_.*"})
 ```
 
 ```promql
-sum by (service_role, source) ({__name__=~"bcache2_server_.*|temporalstore_nodeserver_.*"})
+sum by (service_role, source) ({__name__=~"temporalstore_server_.*|temporalstore_nodeserver_.*"})
 ```
 
 ```promql
-sum by (service_role, source) ({__name__=~"bcache2_metaserver_.*"})
+sum by (service_role, source) ({__name__=~"temporalstore_metaserver_.*"})
 ```
 
 ```promql

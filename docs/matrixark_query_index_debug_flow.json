@@ -12724,7 +12724,7 @@
     "namespace": "deploy_ns",
     "storage_prefix": "matrixark:cpp:query:index:oss-understanding:1782232028871",
     "table": "deploy_table",
-    "temporalstore_lib": "<repo>/output-ubuntu22/release/sdk/lib/libbcache2.so"
+    "temporalstore_lib": "<repo>/output-ubuntu22/release/sdk/lib/libtemporalstore.so"
   },
   "understanding_provider": "oss_encoder"
 }

@@ -1942,8 +1942,8 @@ mod tests {
             "HeartBeat::HandleHeartbeatResponse",
             "HeartBeat::RegisterService / Proxy::GetConsulNames",
             "HeartBeat::SendStopSignal",
-            "Bcache2ThriftService command dispatch",
-            "Bcache2ThriftService admission/inflight checks",
+            "TemporalStoreThriftService command dispatch",
+            "TemporalStoreThriftService admission/inflight checks",
             "proxy metrics/status",
         ] {
             assert!(

@@ -137,7 +137,7 @@
   <div class="callout">
     <strong>Read this as diagnostic, not final parity:</strong> the Rust side used an older/debug
     <code>matrixark_record_log</code> bridge from the previous worktree, while C++ used an older reusable
-    release <code>libbcache2.so</code>. This was the best available local live run, but the next clean run should
+    release <code>libtemporalstore.so</code>. This was the best available local live run, but the next clean run should
     use freshly rebuilt release artifacts from the same commit.
   </div>
 
@@ -151,7 +151,7 @@
     <tr><td>Retrieve queries</td><td>20</td></tr>
     <tr><td>Max context tokens</td><td>12,000</td></tr>
     <tr><td>Storage</td><td><code>shared_store</code>, <code>multi_node</code>, async write/oplog/replication</td></tr>
-    <tr><td>C++ artifact</td><td><code>.../TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so</code></td></tr>
+    <tr><td>C++ artifact</td><td><code>.../TemporalStore/output-ubuntu22/release/sdk/lib/libtemporalstore.so</code></td></tr>
     <tr><td>Rust artifact</td><td><code>.../TemporalStore/target/debug/matrixark_record_log</code></td></tr>
   </table>
 

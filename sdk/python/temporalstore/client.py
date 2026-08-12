@@ -215,7 +215,7 @@ def _load_library(path: Optional[str] = None) -> ctypes.CDLL:
     env_path = os.environ.get("TEMPORALSTORE_LIB")
     if env_path:
         candidates.append(env_path)
-    candidates.extend(["libbcache2.so", "bcache2.dll", "libbcache2.dylib"])
+    candidates.extend(["libtemporalstore.so", "temporalstore.dll", "libtemporalstore.dylib"])
 
     load_mode = getattr(ctypes, "RTLD_GLOBAL", None)
     preload_errors = []

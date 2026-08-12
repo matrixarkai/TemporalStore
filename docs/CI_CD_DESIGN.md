@@ -61,7 +61,7 @@ Every built artifact should include:
 - build timestamp
 - compiler version
 - dependency manifest
-- feature flags, such as `ENABLE_MTCACHE`
+- feature flags, such as `ENABLE_MATRIXCACHE`
 - ABI/API version for client SDKs
 
 ## 3. Pipeline Overview
@@ -273,8 +273,8 @@ Runtime feature matrix:
 
 | Feature | CI expectation |
 |---|---|
-| `ENABLE_MTCACHE=OFF` | always build |
-| `ENABLE_MTCACHE=ON` | always build for release candidate |
+| `ENABLE_MATRIXCACHE=OFF` | always build |
+| `ENABLE_MATRIXCACHE=ON` | always build for release candidate |
 | SSD blockcache | smoke test with a temp SSD path |
 | shared-file store | component test |
 | S3/object store | future integration lane |
@@ -315,7 +315,7 @@ Example `MANIFEST.json`:
   "version": "0.1.0",
   "git_sha": "2f9c094",
   "build_type": "release",
-  "features": ["mtcache", "shared-file"],
+  "features": ["matrixcache", "shared-file"],
   "created_at": "2026-06-07T00:00:00Z",
   "entrypoints": ["bin/temporalstore-server"],
   "runtime_libs": ["libthrift.so.0.11.0", "librocksdb.so.6.11"]

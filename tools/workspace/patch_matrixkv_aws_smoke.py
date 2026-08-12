@@ -3,7 +3,7 @@
 # Copyright 2026 MatrixArkAI
 from pathlib import Path
 
-p = Path("/home/vj/bytekv-rocksdb-server/bytekv/tools/aws_smoke/main.cc")
+p = Path("/home/vj/matrixkv-rocksdb-server/matrixkv/tools/aws_smoke/main.cc")
 s = p.read_text()
 s = s.replace(
     'DEFINE_uint32(replica_count, 1, "table replica count");\n'
@@ -22,12 +22,12 @@ s = s.replace(
 s = s.replace(
     "req.mutable_options()->set_quota_in_gb(1);\n"
     "  req.mutable_options()->set_replica_count(FLAGS_replica_count);\n"
-    "  req.mutable_options()->set_security(bytekv::TABLE_SECURITY_LEVEL_SERVER);\n"
+    "  req.mutable_options()->set_security(matrixkv::TABLE_SECURITY_LEVEL_SERVER);\n"
     "  req.mutable_options()->set_partition_size_mb_lower(64);\n"
     "  req.mutable_options()->set_partition_size_mb_upper(64);",
     "req.mutable_options()->set_quota_in_gb(FLAGS_quota_gb);\n"
     "  req.mutable_options()->set_replica_count(FLAGS_replica_count);\n"
-    "  req.mutable_options()->set_security(bytekv::TABLE_SECURITY_LEVEL_SERVER);\n"
+    "  req.mutable_options()->set_security(matrixkv::TABLE_SECURITY_LEVEL_SERVER);\n"
     "  req.mutable_options()->set_partition_size_mb_lower(FLAGS_partition_size_mb);\n"
     "  req.mutable_options()->set_partition_size_mb_upper(FLAGS_partition_size_mb);",
 )

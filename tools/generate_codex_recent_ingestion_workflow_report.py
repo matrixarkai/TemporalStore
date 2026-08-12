@@ -20,7 +20,7 @@ OUT_JSON = OUT_DIR / "codex_recent_ingestion_workflow.json"
 OUT_MD = OUT_DIR / "codex_recent_ingestion_workflow.md"
 OUT_HTML = OUT_DIR / "codex_recent_ingestion_workflow.html"
 
-CPP_LIB = "/opt/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so"
+CPP_LIB = "/opt/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libtemporalstore.so"
 CPP_PREFIX = "matrixark:codex-hook:cpp-live-v2"
 RUST_PREFIX = "matrixark:codex-hook:rust-live-v2"
 
@@ -994,7 +994,7 @@ def main(argv: list[str] | None = None) -> None:
         "generated_at_ms": int(time.time() * 1000),
         "query_paths": {
             "rust": "HTTP /execute through matrixark_rust_service_proxy on 127.0.0.1:17100",
-            "cpp": "TemporalStore Python SDK using libbcache2.so against 127.0.0.1:18000",
+            "cpp": "TemporalStore Python SDK using libtemporalstore.so against 127.0.0.1:18000",
         },
         "backends": [
             summarize_backend("Rust TemporalStore", RUST_PREFIX, rust_raw_count, rust_raw_hot_count, rust_raw, rust_serving_count, rust_serving_hot_count, rust_serving),

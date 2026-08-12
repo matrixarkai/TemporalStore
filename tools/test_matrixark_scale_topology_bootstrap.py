@@ -41,7 +41,7 @@ class MatrixArkScaleTopologyBootstrapTest(unittest.TestCase):
             deploy = root / "tools" / "deploy_local_ubuntu22.sh"
             deploy.parent.mkdir(parents=True)
             deploy.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-            lib = root / "output-ubuntu22" / "release" / "sdk" / "lib" / "libbcache2.so"
+            lib = root / "output-ubuntu22" / "release" / "sdk" / "lib" / "libtemporalstore.so"
             lib.parent.mkdir(parents=True)
             lib.write_text("", encoding="utf-8")
 

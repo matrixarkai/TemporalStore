@@ -2,7 +2,7 @@
   "generated_at_ms": 1784865708137,
   "query_paths": {
     "rust": "HTTP /execute through matrixark_rust_service_proxy on 127.0.0.1:17100",
-    "cpp": "TemporalStore Python SDK using libbcache2.so against 127.0.0.1:18000"
+    "cpp": "TemporalStore Python SDK using libtemporalstore.so against 127.0.0.1:18000"
   },
   "backends": [
     {

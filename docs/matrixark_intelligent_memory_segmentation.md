@@ -130,12 +130,12 @@ C++ TemporalStore direct:
 
 ```bash
 PYTHONPATH=$PWD/sdk/python \
-TEMPORALSTORE_LIB=$PWD/output-ubuntu22/release/sdk/lib/libbcache2.so \
+TEMPORALSTORE_LIB=$PWD/output-ubuntu22/release/sdk/lib/libtemporalstore.so \
 python3 tools/run_matrixark_memory_segmentation_test.py \
   --backend temporalstore-direct \
   --metaserver 127.0.0.1:18000 \
   --namespace deploy_ns \
   --table deploy_table \
-  --temporalstore-lib $PWD/output-ubuntu22/release/sdk/lib/libbcache2.so \
+  --temporalstore-lib $PWD/output-ubuntu22/release/sdk/lib/libtemporalstore.so \
   --report-json /tmp/matrixark_segmentation_cpp_direct.json
 ```

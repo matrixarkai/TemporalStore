@@ -31,8 +31,8 @@ The sidecar writes both converted TemporalStore metrics and exporter health metr
   `tools/run_raft_stress_suite_ubuntu22.sh` after raft/failover gates finish,
   including failed gates.
 - Converted server/metaserver metrics keep their source label, for example
-  `bcache2_server_*{service_role="nodeserver",source="nodeserver"}` and
-  `bcache2_metaserver_*{service_role="metaserver",source="metaserver"}`.
+  `temporalstore_server_*{service_role="nodeserver",source="nodeserver"}` and
+  `temporalstore_metaserver_*{service_role="metaserver",source="metaserver"}`.
 - `temporalstore-alerts.yml` installs local production-readiness alerts for
   service availability, exporter scrape errors, client validation, proxy smoke,
   client benchmark errors, retry exhaustion, ingestion lag/backpressure, cache
@@ -67,7 +67,7 @@ Verify:
 
 This starts a local C++ cluster, uses the successful smoke deployment as the
 client signal, writes client textfile metrics, starts Prometheus, and checks
-Prometheus queries twice. If the `bcache2-proxy` release artifact is present, it
+Prometheus queries twice. If the `temporalstore-proxy` release artifact is present, it
 also starts proxy and validates proxy `/vars` scraping.
 
 ```bash

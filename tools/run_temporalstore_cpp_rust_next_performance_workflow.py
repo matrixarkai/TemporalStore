@@ -36,7 +36,7 @@ RUST_CLI_ENV = "MATRIXARK_PARITY_RUST_CLI"
 
 
 CPP_LIB_CANDIDATES = [
-    ROOT / "output-ubuntu22/release/sdk/lib/libbcache2.so",
+    ROOT / "output-ubuntu22/release/sdk/lib/libtemporalstore.so",
 ]
 
 
@@ -427,7 +427,7 @@ def main() -> int:
     parser.add_argument("--matrix", type=Path, default=DEFAULT_MATRIX)
     parser.add_argument("--max-workloads", type=int, default=1)
     parser.add_argument("--execute", action="store_true", help="Run the generated commands. Default is dry-run JSON output.")
-    parser.add_argument("--execute-in-wsl", action="store_true", help="With --execute, run workload commands through WSL so Linux libbcache2.so can load.")
+    parser.add_argument("--execute-in-wsl", action="store_true", help="With --execute, run workload commands through WSL so Linux libtemporalstore.so can load.")
     parser.add_argument(
         "--wsl-distro",
         default=os.environ.get(WSL_DISTRO_ENV, DEFAULT_WSL_DISTRO),

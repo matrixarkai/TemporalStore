@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RustRaftNamingTest(unittest.TestCase):
-    def test_rust_surfaces_do_not_expose_byteraft_names(self) -> None:
+    def test_rust_surfaces_do_not_expose_matrixraft_names(self) -> None:
         checked_roots = [
             ROOT / "crates" / "temporalstore-rust",
             ROOT / "docs" / "rustraft_production_readiness.md",
@@ -26,7 +26,7 @@ class RustRaftNamingTest(unittest.TestCase):
                 if path.suffix not in {".rs", ".md", ".py", ".toml", ".json"}:
                     continue
                 text = path.read_text(encoding="utf-8", errors="ignore")
-                if "byteraft" in text.lower():
+                if "matrixraft" in text.lower():
                     offenders.append(str(path.relative_to(ROOT)))
         self.assertEqual(offenders, [])
 

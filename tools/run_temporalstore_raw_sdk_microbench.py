@@ -28,7 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--table", default="deploy_table")
     parser.add_argument(
         "--temporalstore-lib",
-        default=str(root / "output-ubuntu22" / "release" / "sdk" / "lib" / "libbcache2.so"),
+        default=str(root / "output-ubuntu22" / "release" / "sdk" / "lib" / "libtemporalstore.so"),
     )
     parser.add_argument("--request-timeout-ms", type=int, default=60000)
     parser.add_argument("--io-timeout-ms", type=int, default=60000)

@@ -43,9 +43,9 @@ def _wsl_path(path: str) -> str:
 
 def _linux_so_on_windows_error(path: str) -> str:
     return (
-        "invalid_host_platform: C++ direct SDK parity requires loading libbcache2.so from "
+        "invalid_host_platform: C++ direct SDK parity requires loading libtemporalstore.so from "
         "a Linux process. The current runner is Windows Python, which cannot load a Linux .so. "
-        "Run this command from WSL/Linux or provide a Windows-compatible bcache2.dll. "
+        "Run this command from WSL/Linux or provide a Windows-compatible temporalstore.dll. "
         f"WSL path hint: {_wsl_path(path)}"
     )
 
@@ -58,8 +58,8 @@ def validate_cpp_runtime_host(cpp_lib: str) -> None:
 
 def default_cpp_lib_path() -> str:
     candidates = [
-        ROOT / "output-ubuntu22/release/sdk/lib/libbcache2.so",
-        CANONICAL_UBUNTU_REPO / "output-ubuntu22/release/sdk/lib/libbcache2.so",
+        ROOT / "output-ubuntu22/release/sdk/lib/libtemporalstore.so",
+        CANONICAL_UBUNTU_REPO / "output-ubuntu22/release/sdk/lib/libtemporalstore.so",
     ]
     for candidate in candidates:
         if candidate.exists():
@@ -119,7 +119,7 @@ def ensure_local_topology(
             "deploy_script": str(deploy_script),
             "precheck": before,
         }
-    if not (out_dir / "sdk" / "lib" / "libbcache2.so").exists():
+    if not (out_dir / "sdk" / "lib" / "libtemporalstore.so").exists():
         return {
             "status": "failed",
             "reason": "canonical_release_bundle_missing",

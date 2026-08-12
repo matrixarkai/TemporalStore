@@ -13,14 +13,14 @@ import vars_to_prom
 class VarsToPromTest(unittest.TestCase):
     def test_parse_line_sanitizes_metric_and_labels(self):
         parsed = vars_to_prom.parse_line(
-            'bcache2.server.request.latency{partition-id=7,role="primary"} : 12.5',
+            'temporalstore.server.request.latency{partition-id=7,role="primary"} : 12.5',
             "server",
         )
 
         self.assertEqual(
             parsed,
             (
-                "bcache2_server_request_latency",
+                "temporalstore_server_request_latency",
                 12.5,
                 'partition_id="7",role="primary",service_role="nodeserver",source="server"',
             ),
@@ -28,20 +28,20 @@ class VarsToPromTest(unittest.TestCase):
 
     def test_write_prom_emits_help_type_once_per_metric(self):
         samples = {
-            ("bcache2_server_cpu", 1.0, 'source="server"'),
-            ("bcache2_server_cpu", 2.0, 'source="metaserver"'),
-            ("bcache2_server_memory", 3.0, 'source="server"'),
+            ("temporalstore_server_cpu", 1.0, 'source="server"'),
+            ("temporalstore_server_cpu", 2.0, 'source="metaserver"'),
+            ("temporalstore_server_memory", 3.0, 'source="server"'),
         }
 
         with tempfile.TemporaryDirectory() as tmp:
             vars_to_prom.write_prom(Path(tmp), "temporalstore-vars.prom", samples)
             payload = Path(tmp, "temporalstore-vars.prom").read_text(encoding="utf-8")
 
-        self.assertEqual(payload.count("# HELP bcache2_server_cpu "), 1)
-        self.assertEqual(payload.count("# TYPE bcache2_server_cpu "), 1)
-        self.assertIn('bcache2_server_cpu{source="server"} 1.0', payload)
-        self.assertIn('bcache2_server_cpu{source="metaserver"} 2.0', payload)
-        self.assertEqual(payload.count("# HELP bcache2_server_memory "), 1)
+        self.assertEqual(payload.count("# HELP temporalstore_server_cpu "), 1)
+        self.assertEqual(payload.count("# TYPE temporalstore_server_cpu "), 1)
+        self.assertIn('temporalstore_server_cpu{source="server"} 1.0', payload)
+        self.assertIn('temporalstore_server_cpu{source="metaserver"} 2.0', payload)
+        self.assertEqual(payload.count("# HELP temporalstore_server_memory "), 1)
 
     def test_parse_line_does_not_split_host_port_metric_names(self):
         parsed = vars_to_prom.parse_line(
@@ -54,14 +54,14 @@ class VarsToPromTest(unittest.TestCase):
 
     def test_parse_page_store_cache_fallback_metric(self):
         parsed = vars_to_prom.parse_line(
-            "bcache2.server.partition.page_store.persistent_read_qps : 3",
+            "temporalstore.server.partition.page_store.persistent_read_qps : 3",
             "nodeserver",
         )
 
         self.assertEqual(
             parsed,
             (
-                "bcache2_server_partition_page_store_persistent_read_qps",
+                "temporalstore_server_partition_page_store_persistent_read_qps",
                 3.0,
                 'service_role="nodeserver",source="nodeserver"',
             ),
@@ -96,7 +96,7 @@ class VarsToPromTest(unittest.TestCase):
     def test_run_once_emits_target_health_metrics(self):
         def fake_scrape(source, url, timeout):
             self.assertEqual(timeout, 1.0)
-            return ["bcache2.server.request.count : 7"]
+            return ["temporalstore.server.request.count : 7"]
 
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch("vars_to_prom.scrape_target", fake_scrape):
@@ -110,7 +110,7 @@ class VarsToPromTest(unittest.TestCase):
             payload = Path(tmp, "temporalstore-vars.prom").read_text(encoding="utf-8")
 
         self.assertEqual(code, 0)
-        self.assertIn("bcache2_server_request_count", payload)
+        self.assertIn("temporalstore_server_request_count", payload)
         self.assertIn("temporalstore_vars_exporter_target_up", payload)
         self.assertIn(
             'service_role="nodeserver",source="server",url="http://127.0.0.1:18001/vars"} 1.0',
@@ -130,7 +130,7 @@ class VarsToPromTest(unittest.TestCase):
         def fake_scrape(source, url, timeout):
             if source == "metaserver":
                 raise TimeoutError("boom")
-            return ["bcache2.server.request.count : 7"]
+            return ["temporalstore.server.request.count : 7"]
 
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch("vars_to_prom.scrape_target", fake_scrape):
@@ -147,7 +147,7 @@ class VarsToPromTest(unittest.TestCase):
             payload = Path(tmp, "temporalstore-vars.prom").read_text(encoding="utf-8")
 
         self.assertEqual(code, 1)
-        self.assertIn("bcache2_server_request_count", payload)
+        self.assertIn("temporalstore_server_request_count", payload)
         self.assertIn(
             'temporalstore_vars_exporter_target_up{service_role="metaserver",source="metaserver",url="http://127.0.0.1:18000/vars"} 0.0',
             payload,
