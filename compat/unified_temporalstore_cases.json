@@ -6628,7 +6628,7 @@
       ]
     },
     {
-      "description": "Shared C++/Rust Context resource lifecycle case for reference-style add/watch/refresh/delete behavior across URL, Git, PDF/document, and Feishu-style imports.",
+      "description": "Shared C++/Rust Context resource lifecycle case for reference-style add/watch/refresh/delete behavior across URL, Git, PDF/document, and Wiki-style imports.",
       "family": "context",
       "name": "context_resource_lifecycle_reference_parity",
       "shard_id": 60,

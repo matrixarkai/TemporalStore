@@ -332,7 +332,7 @@ pub enum ContextResourceImportKind {
     CodeRepo,
     Pdf,
     Document,
-    FeishuDoc,
+    WikiDoc,
     WatchedResource,
 }
 

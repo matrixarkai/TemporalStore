@@ -360,8 +360,8 @@ fn context_resource_import_kind(raw_uri: &str, resource_type: &str) -> ContextRe
     let scheme = context_resource_uri_scheme(raw_uri);
     let lower_uri = raw_uri.to_ascii_lowercase();
     let resource_type = resource_type.to_ascii_lowercase();
-    if lower_uri.contains("feishu") || scheme == "feishu" || scheme == "lark" {
-        ContextResourceImportKind::FeishuDoc
+    if lower_uri.contains("wiki") || scheme == "wiki" {
+        ContextResourceImportKind::WikiDoc
     } else if matches!(scheme.as_str(), "git" | "ssh")
         || lower_uri.ends_with(".git")
         || lower_uri.starts_with("git@")
@@ -403,7 +403,7 @@ fn context_resource_import_kind_name(kind: ContextResourceImportKind) -> &'stati
         ContextResourceImportKind::CodeRepo => "code_repo",
         ContextResourceImportKind::Pdf => "pdf",
         ContextResourceImportKind::Document => "document",
-        ContextResourceImportKind::FeishuDoc => "feishu_doc",
+        ContextResourceImportKind::WikiDoc => "wiki_doc",
         ContextResourceImportKind::WatchedResource => "watched_resource",
     }
 }

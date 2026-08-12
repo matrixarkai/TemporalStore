@@ -1892,17 +1892,17 @@ fn context_resource_lifecycle_models_import_paths_refresh_and_delete() {
         watch_interval_minutes: 0,
         parser_name: "pdf-parser".to_string(),
     });
-    let feishu = parse_context_resource(ContextResourceParseRequest {
-        raw_uri: "feishu://doc/abc123".to_string(),
+    let wiki = parse_context_resource(ContextResourceParseRequest {
+        raw_uri: "wiki://doc/abc123".to_string(),
         resource_type: Some("doc".to_string()),
-        text: "Feishu imported document".to_string(),
+        text: "Wiki imported document".to_string(),
         max_chunk_chars: 1_400,
         overlap_chars: 120,
         chunk_hash_base: None,
         owner_scope: "team:docs".to_string(),
         version: "doc-v1".to_string(),
         watch_interval_minutes: 10,
-        parser_name: "feishu-parser".to_string(),
+        parser_name: "wiki-parser".to_string(),
     });
 
     assert_eq!(url.lifecycle.import_kind, ContextResourceImportKind::Url);
@@ -1912,8 +1912,8 @@ fn context_resource_lifecycle_models_import_paths_refresh_and_delete() {
     );
     assert_eq!(pdf.lifecycle.import_kind, ContextResourceImportKind::Pdf);
     assert_eq!(
-        feishu.lifecycle.import_kind,
-        ContextResourceImportKind::FeishuDoc
+        wiki.lifecycle.import_kind,
+        ContextResourceImportKind::WikiDoc
     );
     assert!(url.chunks[0].metadata.contains_key("parser_name"));
 
@@ -1922,7 +1922,7 @@ fn context_resource_lifecycle_models_import_paths_refresh_and_delete() {
             url.lifecycle.clone(),
             git.lifecycle.clone(),
             pdf.lifecycle.clone(),
-            feishu.lifecycle.clone(),
+            wiki.lifecycle.clone(),
         ],
         vec![
             ContextResourceLifecycleUpdate {
@@ -1959,7 +1959,7 @@ fn context_resource_lifecycle_models_import_paths_refresh_and_delete() {
     assert_eq!(report.import_kinds.get("url").copied(), Some(1));
     assert_eq!(report.import_kinds.get("git_repo").copied(), Some(1));
     assert_eq!(report.import_kinds.get("pdf").copied(), Some(1));
-    assert_eq!(report.import_kinds.get("feishu_doc").copied(), Some(1));
+    assert_eq!(report.import_kinds.get("wiki_doc").copied(), Some(1));
 }
 
 // shared-corpus: context_resource_skill_parser_reference_parity
