@@ -79,7 +79,7 @@ pub struct ServiceReadinessGateReport {
 pub struct StorageCacheDependencyMatrixReport {
     pub local_file_store_ready: bool,
     pub shared_store_checkpoint_manifest_ready: bool,
-    #[serde(rename = "oplog_cursor_retention_ready")]
+    #[serde(rename = "wal_cursor_retention_ready")]
     pub wal_cursor_retention_ready: bool,
     #[serde(alias = "page_segment_manifest_ready")]
     pub page_slab_manifest_ready: bool,
@@ -163,7 +163,7 @@ pub struct StorageProductionPostureReport {
     pub orphan_page_detection_ready: bool,
     pub missing_page_ref_detection_ready: bool,
     pub stale_page_ref_detection_ready: bool,
-    #[serde(rename = "corrupt_page_index_oplog_snapshot_evidence_ready")]
+    #[serde(rename = "corrupt_page_index_wal_snapshot_evidence_ready")]
     pub corrupt_page_index_wal_snapshot_evidence_ready: bool,
     pub follower_cursor_safe_gc_ready: bool,
     pub cache_pressure_and_refill_ready: bool,

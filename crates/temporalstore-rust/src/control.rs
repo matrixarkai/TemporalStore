@@ -260,7 +260,6 @@ pub struct ShardStats {
     #[serde(default)]
     #[serde(alias = "block_store_zones")]
     pub block_store_bands: BlockStoreBandSummary,
-    #[serde(alias = "oplog")]
     pub write_ahead_log: WriteAheadLogStats,
 }
 
@@ -301,7 +300,6 @@ pub struct CheckedBatchExecuteResponse {
 pub enum StreamKind {
     Index,
     IndexLog,
-    #[serde(alias = "oplog")]
     Wal,
     Block,
     Page,

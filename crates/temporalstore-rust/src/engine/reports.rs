@@ -234,7 +234,7 @@ pub struct StorageRecoveryReport {
     pub index_bytes: u64,
     #[serde(default)]
     pub index_write_atomic: bool,
-    #[serde(rename = "oplog_records")]
+    #[serde(rename = "wal_records")]
     pub wal_records: usize,
     pub index_log_records: usize,
     #[serde(alias = "active_page_segment_ids")]
@@ -601,7 +601,7 @@ pub struct BucketDumpManifest {
     pub bucket_ids: Vec<u32>,
     #[serde(alias = "page_segment_ids")]
     pub page_slab_ids: Vec<u64>,
-    #[serde(rename = "oplog_sequence")]
+    #[serde(rename = "wal_sequence")]
     pub wal_sequence: u64,
     pub index_log_sequence: u64,
     pub live_page_refs: u64,
@@ -640,7 +640,7 @@ pub struct BucketDumpInstallMarker {
     pub shard_id: ShardId,
     pub manifest_id: String,
     pub phase: String,
-    #[serde(rename = "oplog_sequence")]
+    #[serde(rename = "wal_sequence")]
     pub wal_sequence: u64,
     pub index_log_sequence: u64,
     pub created_unix_ms: u64,
@@ -652,10 +652,10 @@ pub struct BucketDumpInstallPreflightReport {
     pub manifest_id: String,
     pub install_safe: bool,
     pub blockers: Vec<String>,
-    #[serde(rename = "current_oplog_sequence")]
+    #[serde(rename = "current_wal_sequence")]
     pub current_wal_sequence: u64,
     pub current_index_log_sequence: u64,
-    #[serde(rename = "manifest_oplog_sequence")]
+    #[serde(rename = "manifest_wal_sequence")]
     pub manifest_wal_sequence: u64,
     pub manifest_index_log_sequence: u64,
     #[serde(alias = "missing_page_segment_ids")]
@@ -784,7 +784,7 @@ pub struct BucketDumpInstallRollForwardReport {
 pub struct BucketDumpFollowerReplayCursor {
     pub follower_id: String,
     pub shard_id: ShardId,
-    #[serde(rename = "oplog_sequence")]
+    #[serde(rename = "wal_sequence")]
     pub wal_sequence: u64,
     pub index_log_sequence: u64,
 }
@@ -795,7 +795,7 @@ pub struct BucketDumpRaftSnapshotRef {
     pub shard_id: ShardId,
     pub last_included_index: u64,
     pub last_included_term: u64,
-    #[serde(rename = "oplog_sequence")]
+    #[serde(rename = "wal_sequence")]
     pub wal_sequence: u64,
     pub index_log_sequence: u64,
 }
@@ -804,10 +804,10 @@ pub struct BucketDumpRaftSnapshotRef {
 pub struct BucketDumpFollowerRetentionBlock {
     pub follower_id: String,
     pub manifest_id: String,
-    #[serde(rename = "manifest_oplog_sequence")]
+    #[serde(rename = "manifest_wal_sequence")]
     pub manifest_wal_sequence: u64,
     pub manifest_index_log_sequence: u64,
-    #[serde(rename = "cursor_oplog_sequence")]
+    #[serde(rename = "cursor_wal_sequence")]
     pub cursor_wal_sequence: u64,
     pub cursor_index_log_sequence: u64,
     pub reason: String,
@@ -817,10 +817,10 @@ pub struct BucketDumpFollowerRetentionBlock {
 pub struct BucketDumpRaftSnapshotRetentionBlock {
     pub snapshot_id: String,
     pub manifest_id: String,
-    #[serde(rename = "manifest_oplog_sequence")]
+    #[serde(rename = "manifest_wal_sequence")]
     pub manifest_wal_sequence: u64,
     pub manifest_index_log_sequence: u64,
-    #[serde(rename = "snapshot_oplog_sequence")]
+    #[serde(rename = "snapshot_wal_sequence")]
     pub snapshot_wal_sequence: u64,
     pub snapshot_index_log_sequence: u64,
     pub last_included_index: u64,
@@ -835,7 +835,7 @@ pub struct StorageLifecyclePlan {
     pub dirty_buckets: Vec<u32>,
     #[serde(rename = "selected_dump_slots")]
     pub selected_dump_buckets: Vec<u32>,
-    #[serde(rename = "undumped_oplog_records", default)]
+    #[serde(rename = "undumped_wal_records", default)]
     pub undumped_wal_records: u64,
     #[serde(default)]
     pub dump_delayed: bool,
@@ -2632,14 +2632,14 @@ pub fn default_storage_reclaim_contract(
 pub struct StorageWalReclaimPlan {
     pub shard_id: ShardId,
     pub safe_to_reclaim: bool,
-    #[serde(rename = "durable_slot_generation_frontier_oplog_sequence")]
+    #[serde(rename = "durable_slot_generation_frontier_wal_sequence")]
     pub durable_bucket_generation_frontier_wal_sequence: u64,
     #[serde(rename = "durable_slot_generation_frontier_index_log_sequence")]
     pub durable_bucket_generation_frontier_index_log_sequence: u64,
-    #[serde(rename = "retain_from_oplog_sequence")]
+    #[serde(rename = "retain_from_wal_sequence")]
     pub retain_from_wal_sequence: u64,
     pub retain_from_index_log_sequence: u64,
-    #[serde(rename = "current_oplog_sequence")]
+    #[serde(rename = "current_wal_sequence")]
     pub current_wal_sequence: u64,
     pub current_index_log_sequence: u64,
     #[serde(rename = "covered_slot_count")]
@@ -2658,12 +2658,12 @@ pub struct StorageWalReclaimPlan {
 pub struct StorageWalReclaimReport {
     pub plan: StorageWalReclaimPlan,
     pub applied: bool,
-    #[serde(rename = "oplog_records_removed")]
+    #[serde(rename = "wal_records_removed")]
     pub wal_records_removed: usize,
     pub index_log_records_removed: usize,
-    #[serde(rename = "oplog_bytes_before")]
+    #[serde(rename = "wal_bytes_before")]
     pub wal_bytes_before: u64,
-    #[serde(rename = "oplog_bytes_after")]
+    #[serde(rename = "wal_bytes_after")]
     pub wal_bytes_after: u64,
     pub index_log_bytes_before: u64,
     pub index_log_bytes_after: u64,
@@ -2756,10 +2756,10 @@ pub struct StorageMergedDumpLoadPolicyReport {
     pub manifest_bucket_ids: Vec<u32>,
     #[serde(alias = "manifest_page_segment_ids")]
     pub manifest_page_slab_ids: Vec<u64>,
-    #[serde(rename = "manifest_oplog_sequence")]
+    #[serde(rename = "manifest_wal_sequence")]
     pub manifest_wal_sequence: u64,
     pub manifest_index_log_sequence: u64,
-    #[serde(rename = "selected_replay_oplog_sequence")]
+    #[serde(rename = "selected_replay_wal_sequence")]
     pub selected_replay_wal_sequence: u64,
     pub selected_replay_index_log_sequence: u64,
     pub lifecycle: StorageLifecycleReport,
@@ -2793,13 +2793,13 @@ pub struct StorageCacheWarmupReport {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageRecoveryBoundaryReport {
     pub shard_id: ShardId,
-    #[serde(rename = "latest_safe_oplog_sequence")]
+    #[serde(rename = "latest_safe_wal_sequence")]
     pub latest_safe_wal_sequence: u64,
     pub latest_safe_index_log_sequence: u64,
-    #[serde(rename = "latest_dump_oplog_sequence")]
+    #[serde(rename = "latest_dump_wal_sequence")]
     pub latest_dump_wal_sequence: u64,
     pub latest_dump_index_log_sequence: u64,
-    #[serde(rename = "selected_replay_oplog_sequence")]
+    #[serde(rename = "selected_replay_wal_sequence")]
     pub selected_replay_wal_sequence: u64,
     pub selected_replay_index_log_sequence: u64,
     #[serde(alias = "orphan_page_segment_ids")]
@@ -2841,7 +2841,7 @@ pub struct StorageLifecycleRequest {
     #[serde(default)]
     #[serde(rename = "max_dump_slots_per_round")]
     pub max_dump_buckets_per_round: usize,
-    #[serde(rename = "min_undumped_oplog_records", default)]
+    #[serde(rename = "min_undumped_wal_records", default)]
     pub min_undumped_wal_records: u64,
     #[serde(default)]
     pub purge_delayed_destroy: bool,
@@ -2878,7 +2878,7 @@ pub struct StorageManagerCycleRequest {
     pub dry_run: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_prepare: bool,
-    #[serde(rename = "enable_oplog_reclaim", default = "default_storage_manager_stage_enabled")]
+    #[serde(rename = "enable_wal_reclaim", default = "default_storage_manager_stage_enabled")]
     pub enable_wal_reclaim: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_evict: bool,
@@ -2893,7 +2893,7 @@ pub struct StorageManagerCycleRequest {
     #[serde(default)]
     #[serde(rename = "max_dump_slots_per_round")]
     pub max_dump_buckets_per_round: usize,
-    #[serde(rename = "min_undumped_oplog_records", default)]
+    #[serde(rename = "min_undumped_wal_records", default)]
     pub min_undumped_wal_records: u64,
     #[serde(default)]
     pub warm_cache: bool,
@@ -3039,7 +3039,7 @@ pub struct StorageManagerStageReport {
     #[serde(default)]
     #[serde(rename = "dirty_slot_count")]
     pub dirty_bucket_count: usize,
-    #[serde(rename = "undumped_oplog_records", default)]
+    #[serde(rename = "undumped_wal_records", default)]
     pub undumped_wal_records: u64,
     #[serde(default)]
     #[serde(rename = "dumped_slot_count")]
@@ -3236,7 +3236,7 @@ pub struct StorageProductionReadinessPolicy {
     #[serde(default)]
     #[serde(alias = "max_orphan_page_segments")]
     pub max_orphan_page_slabs: Option<usize>,
-    #[serde(rename = "max_undumped_oplog_records", default)]
+    #[serde(rename = "max_undumped_wal_records", default)]
     pub max_undumped_wal_records: Option<u64>,
     #[serde(default)]
     #[serde(rename = "require_slot_dump_manifest")]
@@ -3266,7 +3266,7 @@ pub struct StorageProductionReadinessReport {
     pub stale_page_slab_count: usize,
     #[serde(alias = "orphan_page_segment_count")]
     pub orphan_page_slab_count: usize,
-    #[serde(rename = "undumped_oplog_records", default)]
+    #[serde(rename = "undumped_wal_records", default)]
     pub undumped_wal_records: u64,
     #[serde(alias = "corrupt_page_segment_count")]
     pub corrupt_page_slab_count: usize,
@@ -3310,7 +3310,7 @@ pub struct StorageProductionReadinessReport {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageLogCompatibilityReport {
     pub shard_id: ShardId,
-    #[serde(rename = "oplog_format")]
+    #[serde(rename = "wal_format")]
     pub wal_format: String,
     pub index_log_format: String,
     #[serde(default)]
@@ -3325,13 +3325,13 @@ pub struct StorageLogCompatibilityReport {
     pub golden_conversion_required: bool,
     pub rust_native_replay_safe: bool,
     pub cxx_binary_compatible: bool,
-    #[serde(rename = "oplog_last_sequence")]
+    #[serde(rename = "wal_last_sequence")]
     pub wal_last_sequence: u64,
     pub index_log_last_sequence: u64,
-    #[serde(rename = "oplog_records")]
+    #[serde(rename = "wal_records")]
     pub wal_records: usize,
     pub index_log_records: usize,
-    #[serde(rename = "oplog_bytes")]
+    #[serde(rename = "wal_bytes")]
     pub wal_bytes: u64,
     pub index_log_bytes: u64,
     pub compatibility_gaps: Vec<String>,

@@ -7,8 +7,8 @@ use super::*;
 impl TemporalEngine {
     pub fn storage_lifecycle_plan(&self, request: StorageLifecycleRequest) -> StorageLifecyclePlan {
         let bucket_summaries = self.bucket_storage_summaries(request.shard_id);
-        // Select the least-recently-dumped (most overdue) dirty buckets first, matching C++
-        // ReclaimOpLogWithLimit's oldest-first-dirty ordering (storage_manager.cc:234-245:
+        // Select the least-recently-dumped (most overdue) dirty buckets first, matching the C++
+        // WAL-reclaim routine's oldest-first-dirty ordering (storage_manager.cc:234-245:
         // GetLastDirtySlot/PopLastDirtySlot consume slots in non-decreasing first-dirty-log-id).
         // bucket_summaries arrives in ascending routing_bucket order (a BTreeMap), so truncating to
         // max_dump_buckets_per_round always dropped the same high-id buckets -- a bucket dirtied

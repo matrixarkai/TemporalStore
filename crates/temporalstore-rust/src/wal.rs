@@ -226,11 +226,11 @@ impl LocalWriteAheadLogStore {
         self.append_with_sync(shard_id, command, !wal_bulk_relaxed_durability())
     }
 
-    /// Append a WAL/wal record. `sync=true` fsyncs before returning (durable);
-    /// `sync=false` writes the record but defers the fsync. Mirrors C++ OpLogger:
-    /// StringModel::SetValue -> OpLogger::WritePage ALWAYS records the entry;
-    /// EVENT_REPLICATION_SYNC vs ASYNC_STORAGE only changes whether the commit
-    /// blocks (partition.h OnExecuteCmdDone: op_logger_->Commit(ctrl) vs (nullptr)).
+    /// Append a WAL record. `sync=true` fsyncs before returning (durable);
+    /// `sync=false` writes the record but defers the fsync. Mirrors the C++ WAL
+    /// writer: StringModel::SetValue ALWAYS records the entry; EVENT_REPLICATION_SYNC
+    /// vs ASYNC_STORAGE only changes whether the commit blocks (partition.h
+    /// OnExecuteCmdDone: the WAL commit runs synchronously vs deferred).
     pub fn append_with_sync(
         &self,
         shard_id: ShardId,
@@ -525,7 +525,7 @@ fn write_ahead_log_path(root: &Path, shard_id: ShardId) -> PathBuf {
 }
 
 fn legacy_wal_path(root: &Path, shard_id: ShardId) -> PathBuf {
-    root.join(format!("shard-{shard_id}.oplog.jsonl"))
+    root.join(format!("shard-{shard_id}.wal.jsonl"))
 }
 
 fn wal_bulk_relaxed_durability() -> bool {

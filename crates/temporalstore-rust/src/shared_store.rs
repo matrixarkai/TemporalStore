@@ -62,7 +62,7 @@ pub enum SharedStoreReplicationError {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SharedStoreWalEntry {
     pub shard_id: ShardId,
-    #[serde(rename = "oplog_index")]
+    #[serde(rename = "wal_index")]
     pub wal_index: u64,
     pub command: Command,
 }
@@ -78,7 +78,7 @@ pub struct SharedStoreWalObject {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SharedStoreWalOffsetMetadata {
     pub shard_id: ShardId,
-    #[serde(rename = "oplog_index")]
+    #[serde(rename = "wal_index")]
     pub wal_index: u64,
     pub wal_blob_key: String,
     pub wal_blob_start_offset: u64,
@@ -114,7 +114,7 @@ pub struct SharedStoreCheckpointManifest {
     pub cluster_id: String,
     pub shard_id: ShardId,
     pub checkpoint_id: String,
-    #[serde(rename = "checkpoint_oplog_index")]
+    #[serde(rename = "checkpoint_wal_index")]
     pub checkpoint_wal_index: u64,
     pub created_at_ms: u64,
     pub index_key: String,
@@ -127,7 +127,7 @@ pub struct SharedStoreCheckpointManifest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SharedStoreReplayCursor {
     pub shard_id: ShardId,
-    #[serde(rename = "last_oplog_index")]
+    #[serde(rename = "last_wal_index")]
     pub last_wal_index: u64,
     pub last_replay_time_ms: u64,
 }
@@ -176,7 +176,7 @@ impl Default for SharedStoreWalAppendMode {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SharedStoreWriteReport {
-    #[serde(rename = "oplog_index")]
+    #[serde(rename = "wal_index")]
     pub wal_index: u64,
     pub published: bool,
     pub queued: bool,
@@ -194,7 +194,7 @@ pub struct SharedStoreWriteReport {
 pub struct SharedStoreFlushReport {
     pub flushed: usize,
     pub remaining: usize,
-    #[serde(rename = "last_oplog_index")]
+    #[serde(rename = "last_wal_index")]
     pub last_wal_index: u64,
     #[serde(default)]
     pub last_wal_blob_start_offset: Option<u64>,
@@ -207,12 +207,12 @@ pub struct SharedStoreFlushReport {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SharedStoreGcReport {
     pub shard_id: ShardId,
-    #[serde(rename = "deleted_oplog_objects")]
+    #[serde(rename = "deleted_wal_objects")]
     pub deleted_wal_objects: usize,
     pub deleted_checkpoints: usize,
     pub deleted_checkpoint_objects: usize,
     pub retained_checkpoint_ids: Vec<String>,
-    #[serde(rename = "retained_for_cursor_oplog_index", default)]
+    #[serde(rename = "retained_for_cursor_wal_index", default)]
     pub retained_for_cursor_wal_index: Option<u64>,
     #[serde(default)]
     pub retained_for_cursor_checkpoint_id: Option<String>,
@@ -307,7 +307,7 @@ pub struct SharedStoreStorageWriter<O> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplayReport {
     pub applied: usize,
-    #[serde(rename = "last_oplog_index")]
+    #[serde(rename = "last_wal_index")]
     pub last_wal_index: u64,
     #[serde(default)]
     pub offset_index_reads: usize,

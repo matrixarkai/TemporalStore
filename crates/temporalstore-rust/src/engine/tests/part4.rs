@@ -483,7 +483,7 @@ fn batch_execute_on_unloaded_shard_returns_a_batch_level_topology_error() {
 
 #[test]
 fn dump_selection_prioritizes_the_least_recently_dumped_bucket_not_the_lowest_id() {
-    // C++ ReclaimOpLogWithLimit dumps dirty slots oldest-first (by first-dirty-log-id,
+    // The C++ WAL-reclaim routine dumps dirty slots oldest-first (by first-dirty-log-id,
     // storage_manager.cc). Rust selected dirty buckets by ascending routing_bucket id then
     // truncated to the per-round cap, so a high-id bucket dirtied once was starved forever by
     // low-id buckets re-dirtied every round. The fix orders by last_dump_sequence (0 = never

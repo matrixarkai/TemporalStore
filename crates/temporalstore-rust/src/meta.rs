@@ -194,7 +194,7 @@ pub struct ServerShardServingState {
     pub storage: ShardCanonicalStorageStats,
     #[serde(alias = "page_store_bytes_written")]
     pub block_store_bytes_written: u64,
-    #[serde(rename = "oplog_sequence")]
+    #[serde(rename = "wal_sequence")]
     pub wal_sequence: u64,
     pub dirty_object_count: u64,
     #[serde(rename = "dirty_slot_count")]

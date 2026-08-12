@@ -124,7 +124,7 @@ pub(super) struct ShardState {
     #[serde(default)]
     #[serde(rename = "slot_index")]
     pub(super) bucket_index: CoreIndex,
-    /// Highest WAL/wal sequence whose effect is already materialized in this
+    /// Highest WAL sequence whose effect is already materialized in this
     /// serialized index. On shard load, WAL records with sequence greater than this
     /// are replayed to rebuild in-memory state, mirroring C++ ObjectManager::Load()
     /// replaying the wal from index_->GetDumpedLogId(). `None` marks an index

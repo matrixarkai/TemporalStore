@@ -386,7 +386,7 @@ impl TemporalEngine {
                 refresh_bucket_runtime_flags(shard);
             }
             // Parity with C++ TemporalStore (partition.h OnExecuteCmdDone): every
-            // write records an wal/WAL entry (StringModel::SetValue -> WritePage).
+            // write records a WAL entry (StringModel::SetValue -> WritePage).
             // async_storage only changes whether the commit BLOCKS: sync -> fsync,
             // async (or bulk backfill) -> buffered, no fsync (op_logger_->Commit
             // (nullptr, nullptr)). Page/index materialization stays deferred to dump.

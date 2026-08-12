@@ -170,7 +170,7 @@ pub struct DataRaftLogCodecEntry {
     pub raft_index: u64,
     pub log_id: u64,
     pub log_size: u64,
-    #[serde(rename = "oplog_sequence")]
+    #[serde(rename = "wal_sequence")]
     pub wal_sequence: u64,
     pub command: Command,
 }

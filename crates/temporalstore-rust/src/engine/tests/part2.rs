@@ -840,8 +840,8 @@ fn async_storage_string_write_stays_on_hot_memory_path() {
         },
     });
     assert!(write.status.ok);
-    // C++ parity (StringModel::SetValue -> OpLogger::WritePage): the write records
-    // an wal/WAL entry even in async mode; async only means the commit does not
+    // C++ parity (StringModel::SetValue via the WAL writer): the write records
+    // a WAL entry even in async mode; async only means the commit does not
     // block (no fsync -> syncs == 0), and page/index materialization is deferred.
     assert_eq!(engine.block_store().stats().writes, 0);
     assert_eq!(engine.write_ahead_log_store().stats(1).writes, 1);
@@ -949,7 +949,7 @@ fn durable_index_survives_restart_and_points_to_page_file() {
 
 #[test]
 fn async_write_survives_restart_via_wal_replay_like_cpp() {
-    // C++ parity: an async_storage write records an wal/WAL entry but defers page/
+    // C++ parity: an async_storage write records a WAL entry but defers page/
     // index materialization to the background dump. If the crash beats the dump, C++
     // ObjectManager::Load() replays the wal and recovers the write. Rust must replay
     // its WAL on shard load the same way, or the async write is silently lost.
