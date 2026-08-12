@@ -141,15 +141,6 @@ pub(super) struct ShardState {
     pub(super) bucket_recency: HashMap<u32, u64>,
     #[serde(skip)]
     pub(super) dirty_objects: BTreeSet<String>,
-    /// Synchronous-commit writes applied since the served index was last checkpointed
-    /// to disk. Under sync storage the WAL is fsync'd per write (durability), but the
-    /// full O(store) served-index snapshot is rewritten only at a DUMP cadence (every
-    /// `MATRIXARK_SYNC_INDEX_CHECKPOINT_EVERY` writes) rather than per write -- mirroring
-    /// C++ dumping at intervals and replaying the oplog for the gap. In-memory and
-    /// ephemeral (serde-skipped); on load it resets to 0 and the WAL tail past the
-    /// persisted anchor is replayed, so a checkpoint that never fired loses nothing.
-    #[serde(skip)]
-    pub(super) sync_writes_since_index_checkpoint: u32,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]

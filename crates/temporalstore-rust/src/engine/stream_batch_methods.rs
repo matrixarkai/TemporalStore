@@ -329,19 +329,15 @@ impl TemporalEngine {
             // Page/index materialization stays deferred to the background dump in
             // async and bulk modes (index_log/persist already no-op under bulk).
             if !config.async_storage && !bulk_ingest_mode() {
-                // Checkpoint the served index at a dump cadence, not per batch (see the
-                // single-command path): the fsync'd WAL is the durable source of truth,
-                // the served index is a reconstructable cache re-anchored to the WAL
-                // sequence it reflects, and load replays the WAL tail past the anchor.
-                if sync_should_checkpoint_index(shard) {
-                    shard.applied_wal_sequence =
-                        Some(self.wal_store.stats(request.shard_id).last_sequence);
-                    let index_bytes = serialize_index(shard);
-                    let _ = self
-                        .index_log_store
-                        .append_json(request.shard_id, &index_bytes);
-                    let _ = self.persist_index_bytes(request.shard_id, &index_bytes);
-                }
+                // Anchor the served index to the WAL sequence it reflects (see the
+                // single-command path) so shard load replays only records after it.
+                shard.applied_wal_sequence =
+                    Some(self.wal_store.stats(request.shard_id).last_sequence);
+                let index_bytes = serialize_index(shard);
+                let _ = self
+                    .index_log_store
+                    .append_json(request.shard_id, &index_bytes);
+                let _ = self.persist_index_bytes(request.shard_id, &index_bytes);
             }
         }
         BatchExecuteResponse {
