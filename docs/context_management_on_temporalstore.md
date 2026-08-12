@@ -247,7 +247,6 @@ The first open-source surface should stay small and legible:
 ## Learn More
 
 - [Context ingestion, extraction, retrieval manual](context_ingestion_extraction_retrieval_manual.md)
-- [Context management deep-dive blog](matrixark_context_management_ingestion_extraction_retrieval_blog.md)
 - [Secondary index mechanism](matrixark_context_secondary_index_mechanism.md)
 - [Weighted multi-path recall](matrixark_weighted_multi_path_recall.md)
 - [Resource and skill parsing pipeline](matrixark_resource_skill_parsing_pipeline.md)

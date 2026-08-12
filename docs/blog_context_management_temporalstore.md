@@ -15,7 +15,6 @@ This page is the product-level technical blog. It intentionally summarizes and
 links to the deeper MatrixArk context writeups:
 
 - [Context ingestion, extraction, retrieval manual](context_ingestion_extraction_retrieval_manual.md)
-- [MatrixArk context management deep dive](matrixark_context_management_ingestion_extraction_retrieval_blog.md)
 - [Context secondary index mechanism](matrixark_context_secondary_index_mechanism.md)
 - [Secondary-index tree retrieval for LOCOMO-style recall](matrixark_secondary_index_tree_retrieval_locomo_flow.md)
 - [Resource and skill parsing pipeline](matrixark_resource_skill_parsing_pipeline.md)
