@@ -68,12 +68,12 @@ struct ContextWorkflowHarnessSummary {
     pipeline_stage_ready_count: usize,
     policy_controls: Vec<String>,
     provider_names: Vec<String>,
-    openviking_model_profile_count: usize,
-    openviking_model_profile_names: Vec<String>,
-    openviking_vlm_models: Vec<String>,
-    openviking_embedding_models: Vec<String>,
-    openviking_parity_case_count: usize,
-    openviking_parity_categories: Vec<String>,
+    reference_model_profile_count: usize,
+    reference_model_profile_names: Vec<String>,
+    reference_vlm_models: Vec<String>,
+    reference_embedding_models: Vec<String>,
+    reference_parity_case_count: usize,
+    reference_parity_categories: Vec<String>,
     open_model_provider_packaged: bool,
     open_model_local_run_proven: bool,
     vlm_provider_configured: bool,
@@ -289,12 +289,12 @@ struct ExternalOnlyContextBenchmarkSummary {
     external_benchmark_retrieved_source_sets: usize,
     external_benchmark_total_retrieved_blocks: usize,
     provider_names: Vec<String>,
-    openviking_model_profile_count: usize,
-    openviking_model_profile_names: Vec<String>,
-    openviking_vlm_models: Vec<String>,
-    openviking_embedding_models: Vec<String>,
-    openviking_parity_case_count: usize,
-    openviking_parity_categories: Vec<String>,
+    reference_model_profile_count: usize,
+    reference_model_profile_names: Vec<String>,
+    reference_vlm_models: Vec<String>,
+    reference_embedding_models: Vec<String>,
+    reference_parity_case_count: usize,
+    reference_parity_categories: Vec<String>,
     open_model_provider_packaged: bool,
     open_model_local_run_proven: bool,
     vlm_provider_configured: bool,
@@ -361,24 +361,24 @@ fn main() {
                     .iter()
                     .map(|provider| provider.provider_name.clone())
                     .collect(),
-                openviking_model_profile_count: state.openviking_model_profiles.len(),
-                openviking_model_profile_names: state
-                    .openviking_model_profiles
+                reference_model_profile_count: state.reference_model_profiles.len(),
+                reference_model_profile_names: state
+                    .reference_model_profiles
                     .iter()
                     .map(|profile| profile.profile_name.clone())
                     .collect(),
-                openviking_vlm_models: state
-                    .openviking_model_profiles
+                reference_vlm_models: state
+                    .reference_model_profiles
                     .iter()
                     .map(|profile| profile.vlm_model.clone())
                     .collect(),
-                openviking_embedding_models: state
-                    .openviking_model_profiles
+                reference_embedding_models: state
+                    .reference_model_profiles
                     .iter()
                     .map(|profile| profile.embedding_model.clone())
                     .collect(),
-                openviking_parity_case_count: state.openviking_parity_cases.len(),
-                openviking_parity_categories: state.openviking_parity_categories,
+                reference_parity_case_count: state.reference_parity_cases.len(),
+                reference_parity_categories: state.reference_parity_categories,
                 open_model_provider_packaged: state.open_model_provider_packaged,
                 open_model_local_run_proven: state.open_model_local_run_proven,
                 vlm_provider_configured: state.vlm_provider_configured,
@@ -536,7 +536,7 @@ fn main() {
         ContextPipelineBenchmarkRequest {
             shard_id: 1,
             tenant_hash: 20260617,
-            profile: "vikingmem_harness_profile".to_string(),
+            profile: "reference_harness_profile".to_string(),
             source_count: 48,
             query_count: 6,
             max_events: 8,
@@ -574,13 +574,13 @@ fn main() {
             tenant_hash: 20260618,
             profiles: vec![
                 ContextPipelineBenchmarkSweepProfile {
-                    profile: "vikingmem_harness_sweep_small".to_string(),
+                    profile: "reference_harness_sweep_small".to_string(),
                     source_count: 16,
                     query_count: 2,
                     max_events: 6,
                 },
                 ContextPipelineBenchmarkSweepProfile {
-                    profile: "vikingmem_harness_sweep_medium".to_string(),
+                    profile: "reference_harness_sweep_medium".to_string(),
                     source_count: 32,
                     query_count: 4,
                     max_events: 8,
@@ -704,24 +704,24 @@ fn main() {
             pipeline_stages: manage.stages,
             policy_controls: manage.policy_controls,
             provider_names: manage.provider_names,
-            openviking_model_profile_count: state.openviking_model_profiles.len(),
-            openviking_model_profile_names: state
-                .openviking_model_profiles
+            reference_model_profile_count: state.reference_model_profiles.len(),
+            reference_model_profile_names: state
+                .reference_model_profiles
                 .iter()
                 .map(|profile| profile.profile_name.clone())
                 .collect(),
-            openviking_vlm_models: state
-                .openviking_model_profiles
+            reference_vlm_models: state
+                .reference_model_profiles
                 .iter()
                 .map(|profile| profile.vlm_model.clone())
                 .collect(),
-            openviking_embedding_models: state
-                .openviking_model_profiles
+            reference_embedding_models: state
+                .reference_model_profiles
                 .iter()
                 .map(|profile| profile.embedding_model.clone())
                 .collect(),
-            openviking_parity_case_count: state.openviking_parity_cases.len(),
-            openviking_parity_categories: state.openviking_parity_categories,
+            reference_parity_case_count: state.reference_parity_cases.len(),
+            reference_parity_categories: state.reference_parity_categories,
             open_model_provider_packaged: state.open_model_provider_packaged,
             open_model_local_run_proven: state.open_model_local_run_proven,
             vlm_provider_configured: state.vlm_provider_configured,
@@ -841,9 +841,9 @@ fn run_resource_skill_conversation_scale(
             parser_name: "context-scale-harness".to_string(),
         },
         ContextResourceParseRequest {
-            raw_uri: "https://docs.example.com/context/openviking-debug".to_string(),
+            raw_uri: "https://docs.example.com/context/reference-debug".to_string(),
             resource_type: Some("url".to_string()),
-            text: "# OpenViking Query Debug\n\nResource parsing must preserve source refs, parser provenance, selected refs, filter groups, and injection ordering. Stale memory should be invalidated after refresh.".to_string(),
+            text: "# Reference Query Debug\n\nResource parsing must preserve source refs, parser provenance, selected refs, filter groups, and injection ordering. Stale memory should be invalidated after refresh.".to_string(),
             max_chunk_chars: 240,
             overlap_chars: 32,
             chunk_hash_base: Some(20_260_626),

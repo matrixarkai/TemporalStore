@@ -21,7 +21,7 @@ pub fn default_context_model_providers() -> Vec<ContextModelProviderConfig> {
             mock_mode: false,
         },
         ContextModelProviderConfig {
-            provider_name: "openviking-open-source-vlm".to_string(),
+            provider_name: "reference-open-source-vlm".to_string(),
             provider_kind: ContextProviderKind::OpenAiCompatible,
             base_url: "http://127.0.0.1:11434/v1".to_string(),
             api_key_env: "OPENVIKING_MODEL_API_KEY".to_string(),
@@ -34,7 +34,7 @@ pub fn default_context_model_providers() -> Vec<ContextModelProviderConfig> {
             mock_mode: false,
         },
         ContextModelProviderConfig {
-            provider_name: "vikingmem-gpt-4o-mini-reader".to_string(),
+            provider_name: "reference-gpt-4o-mini-reader".to_string(),
             provider_kind: ContextProviderKind::OpenAiCompatible,
             base_url: "https://api.openai.com/v1".to_string(),
             api_key_env: "OPENAI_API_KEY".to_string(),
@@ -60,7 +60,7 @@ pub fn default_context_model_providers() -> Vec<ContextModelProviderConfig> {
             mock_mode: false,
         },
         ContextModelProviderConfig {
-            provider_name: "openviking-open-source-gpt-vlm".to_string(),
+            provider_name: "reference-open-source-gpt-vlm".to_string(),
             provider_kind: ContextProviderKind::OpenAiCompatible,
             base_url: "http://127.0.0.1:8000/v1".to_string(),
             api_key_env: "OPENVIKING_MODEL_API_KEY".to_string(),
@@ -75,11 +75,11 @@ pub fn default_context_model_providers() -> Vec<ContextModelProviderConfig> {
     ]
 }
 
-pub fn openviking_open_source_model_profiles() -> Vec<ContextOpenVikingModelProfile> {
+pub fn reference_open_source_model_profiles() -> Vec<ContextReferenceModelProfile> {
     vec![
-        ContextOpenVikingModelProfile {
-            profile_name: "openviking-qwen2_5_vl-local".to_string(),
-            provider_name: "openviking-open-source-vlm".to_string(),
+        ContextReferenceModelProfile {
+            profile_name: "reference-qwen2_5_vl-local".to_string(),
+            provider_name: "reference-open-source-vlm".to_string(),
             provider_kind: ContextProviderKind::OpenAiCompatible,
             base_url: "http://127.0.0.1:11434/v1".to_string(),
             chat_model: "qwen2.5:7b-instruct".to_string(),
@@ -91,12 +91,12 @@ pub fn openviking_open_source_model_profiles() -> Vec<ContextOpenVikingModelProf
                 "embedding_vectorization".to_string(),
                 "semantic_retrieval".to_string(),
             ],
-            notes: "Recommended local OpenViking-style profile for Ollama or another OpenAI-compatible local gateway."
+            notes: "Recommended local reference-style profile for Ollama or another OpenAI-compatible local gateway."
                 .to_string(),
         },
-        ContextOpenVikingModelProfile {
-            profile_name: "openviking-llava-local".to_string(),
-            provider_name: "openviking-llava-vlm".to_string(),
+        ContextReferenceModelProfile {
+            profile_name: "reference-llava-local".to_string(),
+            provider_name: "reference-llava-vlm".to_string(),
             provider_kind: ContextProviderKind::OpenAiCompatible,
             base_url: "http://127.0.0.1:11434/v1".to_string(),
             chat_model: "llama3.1:8b-instruct".to_string(),
@@ -111,9 +111,9 @@ pub fn openviking_open_source_model_profiles() -> Vec<ContextOpenVikingModelProf
             notes: "Fallback local profile for LLaVA-compatible OpenAI gateway deployments."
                 .to_string(),
         },
-        ContextOpenVikingModelProfile {
-            profile_name: "openviking-internvl-vllm".to_string(),
-            provider_name: "openviking-internvl-vlm".to_string(),
+        ContextReferenceModelProfile {
+            profile_name: "reference-internvl-vllm".to_string(),
+            provider_name: "reference-internvl-vlm".to_string(),
             provider_kind: ContextProviderKind::OpenAiCompatible,
             base_url: "http://127.0.0.1:8000/v1".to_string(),
             chat_model: "Qwen/Qwen2.5-7B-Instruct".to_string(),
@@ -125,28 +125,28 @@ pub fn openviking_open_source_model_profiles() -> Vec<ContextOpenVikingModelProf
                 "embedding_vectorization".to_string(),
                 "semantic_retrieval".to_string(),
             ],
-            notes: "OpenViking-style vLLM or OpenAI-compatible gateway profile for GPU deployments."
+            notes: "reference-style vLLM or OpenAI-compatible gateway profile for GPU deployments."
                 .to_string(),
         },
-        ContextOpenVikingModelProfile {
-            profile_name: "vikingmem-gpt-4o-mini-reader".to_string(),
-            provider_name: "vikingmem-gpt-4o-mini-reader".to_string(),
+        ContextReferenceModelProfile {
+            profile_name: "reference-gpt-4o-mini-reader".to_string(),
+            provider_name: "reference-gpt-4o-mini-reader".to_string(),
             provider_kind: ContextProviderKind::OpenAiCompatible,
             base_url: "https://api.openai.com/v1".to_string(),
             chat_model: "gpt-4o-mini".to_string(),
             vlm_model: "none".to_string(),
             embedding_model: "sentence-transformers/all-MiniLM-L6-v2".to_string(),
             capabilities: vec![
-                "vikingmem_reader_parity".to_string(),
+                "reference_reader_parity".to_string(),
                 "chat_context_extraction".to_string(),
                 "semantic_retrieval".to_string(),
                 "locomo_context_benchmark".to_string(),
                 "longmemeval_s_context_benchmark".to_string(),
             ],
-            notes: "VikingMem benchmark parity reader profile using GPT-4o-mini through an OpenAI-compatible /v1/chat/completions endpoint."
+            notes: "Reference benchmark reader profile using GPT-4o-mini through an OpenAI-compatible /v1/chat/completions endpoint."
                 .to_string(),
         },
-        ContextOpenVikingModelProfile {
+        ContextReferenceModelProfile {
             profile_name: "matrixark-cpp-oss-context".to_string(),
             provider_name: "matrixark-cpp-oss-context".to_string(),
             provider_kind: ContextProviderKind::OpenAiCompatible,
@@ -164,9 +164,9 @@ pub fn openviking_open_source_model_profiles() -> Vec<ContextOpenVikingModelProf
             notes: "Matches the MatrixArk/C++ path OSS benchmark setup from the LLM Specific TemporalStore Use Cases thread: transformers extraction with google/flan-t5-small and sentence-transformers/all-MiniLM-L6-v2 embeddings."
                 .to_string(),
         },
-        ContextOpenVikingModelProfile {
-            profile_name: "openviking-minigpt4-gpt-style-vlm".to_string(),
-            provider_name: "openviking-open-source-gpt-vlm".to_string(),
+        ContextReferenceModelProfile {
+            profile_name: "reference-minigpt4-gpt-style-vlm".to_string(),
+            provider_name: "reference-open-source-gpt-vlm".to_string(),
             provider_kind: ContextProviderKind::OpenAiCompatible,
             base_url: "http://127.0.0.1:8000/v1".to_string(),
             chat_model: "lmsys/vicuna-7b-v1.5".to_string(),
@@ -179,15 +179,15 @@ pub fn openviking_open_source_model_profiles() -> Vec<ContextOpenVikingModelProf
                 "embedding_vectorization".to_string(),
                 "semantic_retrieval".to_string(),
             ],
-            notes: "Open-source GPT-4-style VLM profile inspired by MiniGPT-4; serve through an OpenAI-compatible gateway for OpenViking-style image/content understanding."
+            notes: "Open-source GPT-4-style VLM profile inspired by MiniGPT-4; serve through an OpenAI-compatible gateway for reference-style image/content understanding."
                 .to_string(),
         },
     ]
 }
 
-pub fn openviking_context_parity_cases() -> Vec<ContextOpenVikingParityCase> {
+pub fn reference_context_parity_cases() -> Vec<ContextReferenceParityCase> {
     vec![
-        ContextOpenVikingParityCase {
+        ContextReferenceParityCase {
             case_name: "locomo_multi_hop_project_selection".to_string(),
             category: "multi_hop_reasoning".to_string(),
             query: "Which project did Lee pick because Dana suggested it during planning?"
@@ -195,63 +195,63 @@ pub fn openviking_context_parity_cases() -> Vec<ContextOpenVikingParityCase> {
             positive_memory: "Later planning note: Dana suggested the observability dashboard because the team needed better benchmark traces, so Lee picked that project.".to_string(),
             stale_memory: "Initial planning thread: Lee considered a search cleanup project and had not chosen the final work item.".to_string(),
             expected_terms: vec!["Dana".to_string(), "observability dashboard".to_string()],
-            expected_model_profile: "vikingmem-gpt-4o-mini-reader".to_string(),
+            expected_model_profile: "reference-gpt-4o-mini-reader".to_string(),
             uses_vlm: false,
             benchmark_proven: true,
         },
-        ContextOpenVikingParityCase {
+        ContextReferenceParityCase {
             case_name: "locomo_temporal_reschedule".to_string(),
             category: "temporal".to_string(),
             query: "When is Maya's dentist appointment after it was rescheduled?".to_string(),
             positive_memory: "Latest calendar update: Maya rescheduled the dentist appointment to Thursday at 3pm after the clinic called.".to_string(),
             stale_memory: "Earlier memory: Maya had a dentist appointment scheduled for Tuesday morning.".to_string(),
             expected_terms: vec!["Thursday".to_string(), "3pm".to_string()],
-            expected_model_profile: "vikingmem-gpt-4o-mini-reader".to_string(),
+            expected_model_profile: "reference-gpt-4o-mini-reader".to_string(),
             uses_vlm: false,
             benchmark_proven: true,
         },
-        ContextOpenVikingParityCase {
+        ContextReferenceParityCase {
             case_name: "longmem_memory_update_risk_score".to_string(),
             category: "memory_update".to_string(),
             query: "What risk score was recorded after the latest fraud review?".to_string(),
             positive_memory: "Latest fraud review: the checkout risk score was updated to 87 after the payment incident escalated.".to_string(),
             stale_memory: "Earlier fraud review: the checkout risk score was 42 before the payment incident escalated.".to_string(),
             expected_terms: vec!["87".to_string()],
-            expected_model_profile: "vikingmem-gpt-4o-mini-reader".to_string(),
+            expected_model_profile: "reference-gpt-4o-mini-reader".to_string(),
             uses_vlm: false,
             benchmark_proven: true,
         },
-        ContextOpenVikingParityCase {
+        ContextReferenceParityCase {
             case_name: "locomo_stale_memory_current_pet".to_string(),
             category: "stale_memory".to_string(),
             query: "What is the dog's name in the latest pet update?".to_string(),
             positive_memory: "Latest pet update: the newly adopted dog is named Miso and needs evening walks.".to_string(),
             stale_memory: "Old profile note: the family dog was called Pepper in a previous home.".to_string(),
             expected_terms: vec!["Miso".to_string()],
-            expected_model_profile: "vikingmem-gpt-4o-mini-reader".to_string(),
+            expected_model_profile: "reference-gpt-4o-mini-reader".to_string(),
             uses_vlm: false,
             benchmark_proven: true,
         },
-        ContextOpenVikingParityCase {
+        ContextReferenceParityCase {
             case_name: "locomo_open_domain_cafe_recommendation".to_string(),
             category: "open_domain_retrieval".to_string(),
             query: "Who recommended the cafe that Nina booked after the conference?".to_string(),
             positive_memory: "Later chat: Omar recommended the quiet riverside cafe, and Nina booked it after the conference.".to_string(),
             stale_memory: "Earlier conversation: Nina wanted to book a cafe after the conference but had not chosen one yet.".to_string(),
             expected_terms: vec!["Omar".to_string(), "riverside cafe".to_string()],
-            expected_model_profile: "vikingmem-gpt-4o-mini-reader".to_string(),
+            expected_model_profile: "reference-gpt-4o-mini-reader".to_string(),
             uses_vlm: false,
             benchmark_proven: true,
         },
-        ContextOpenVikingParityCase {
-            case_name: "openviking_vlm_receipt_context".to_string(),
+        ContextReferenceParityCase {
+            case_name: "reference_vlm_receipt_context".to_string(),
             category: "vlm_image_content_understanding".to_string(),
             query: "What merchant and total should be remembered from the receipt image?"
                 .to_string(),
             positive_memory: "VLM extraction note: the receipt image shows merchant Northstar Cafe and total $18.40 for the lunch order.".to_string(),
             stale_memory: "Older image note: a different receipt showed merchant Harbor Books and total $42.00.".to_string(),
             expected_terms: vec!["Northstar Cafe".to_string(), "$18.40".to_string()],
-            expected_model_profile: "openviking-minigpt4-gpt-style-vlm".to_string(),
+            expected_model_profile: "reference-minigpt4-gpt-style-vlm".to_string(),
             uses_vlm: true,
             benchmark_proven: false,
         },
@@ -259,32 +259,32 @@ pub fn openviking_context_parity_cases() -> Vec<ContextOpenVikingParityCase> {
 }
 
 pub fn context_workflow_state_report() -> ContextWorkflowStateReport {
-    let openviking_parity_cases = openviking_context_parity_cases();
-    let mut openviking_parity_categories = openviking_parity_cases
+    let reference_parity_cases = reference_context_parity_cases();
+    let mut reference_parity_categories = reference_parity_cases
         .iter()
         .map(|case| case.category.clone())
         .collect::<Vec<_>>();
-    openviking_parity_categories.sort();
-    openviking_parity_categories.dedup();
-    let openviking_model_profiles = openviking_open_source_model_profiles();
-    let vlm_provider_configured = openviking_model_profiles
+    reference_parity_categories.sort();
+    reference_parity_categories.dedup();
+    let reference_model_profiles = reference_open_source_model_profiles();
+    let vlm_provider_configured = reference_model_profiles
         .iter()
         .any(|profile| profile.vlm_model != "none");
     ContextWorkflowStateReport {
         status: Status::ok(),
         providers: default_context_model_providers(),
         context_model_descriptors: context_model_descriptors(),
-        openviking_model_profiles,
-        openviking_parity_cases,
-        openviking_parity_categories,
+        reference_model_profiles,
+        reference_parity_cases,
+        reference_parity_categories,
         open_model_provider_packaged: true,
         open_model_local_run_proven: false,
         vlm_provider_configured,
         vlm_benchmark_proven: false,
         policy: ContextWorkflowPolicy::default(),
         parity: context_pipeline_parity_evidence(),
-        openviking_comparison:
-            "TemporalStore keeps OpenViking-style L0/L1/L2 hierarchical context, but stores it in ContextNode/Event/Index/Audit models instead of a separate viking:// filesystem."
+        reference_comparison:
+            "TemporalStore keeps hierarchical L0/L1/L2 context, but stores it in ContextNode/Event/Index/Audit models instead of a separate archival filesystem."
                 .to_string(),
         supported_routes: vec![
             "/context/extract".to_string(),

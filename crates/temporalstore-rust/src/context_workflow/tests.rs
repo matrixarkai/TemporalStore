@@ -516,7 +516,7 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
             .any(|group_id| group_id.starts_with("filter_group_"))));
     assert!(retrieve.parity.pipeline_ready);
     assert!(retrieve.parity.cpp_context_models_ready);
-    assert!(retrieve.parity.openviking_tiers_ready);
+    assert!(retrieve.parity.reference_tiers_ready);
     assert!(retrieve.parity.shared_store_sync_ready);
     assert!(retrieve.parity.raft_read_ready);
 
@@ -1017,7 +1017,7 @@ fn context_management_ingest_extract_builds_retrieval_pipeline() {
         ContextPipelineBenchmarkRequest {
             shard_id: 1,
             tenant_hash: 88,
-            profile: "vikingmem_unit_profile".to_string(),
+            profile: "reference_unit_profile".to_string(),
             source_count: 12,
             query_count: 3,
             max_events: 6,
@@ -1028,9 +1028,9 @@ fn context_management_ingest_extract_builds_retrieval_pipeline() {
     assert!(benchmark.status.ok, "{:?}", benchmark.status);
     assert_eq!(
         benchmark.benchmark_name,
-        "vikingmem_style_context_management_local"
+        "reference_style_context_management_local"
     );
-    assert_eq!(benchmark.profile, "vikingmem_unit_profile");
+    assert_eq!(benchmark.profile, "reference_unit_profile");
     assert_ne!(benchmark.workload_signature, 0);
     assert_eq!(benchmark.topic_count, 3);
     assert_eq!(benchmark.min_sources_per_topic, 4);
@@ -1101,7 +1101,7 @@ fn context_management_ingest_extract_builds_retrieval_pipeline() {
     assert!(sweep.status.ok, "{:?}", sweep.status);
     assert_eq!(
         sweep.benchmark_name,
-        "vikingmem_style_context_management_sweep"
+        "reference_style_context_management_sweep"
     );
     assert_eq!(sweep.profile_count, 2);
     assert!(sweep.all_profiles_ready);
@@ -1167,17 +1167,17 @@ fn context_workflow_policy_controls_provider_model_and_pii() {
 #[test]
 fn context_workflow_exposes_openviking_open_source_vlm_profiles() {
     let providers = default_context_model_providers();
-    let openviking_provider = providers
+    let reference_provider = providers
         .iter()
-        .find(|provider| provider.provider_name == "openviking-open-source-vlm")
-        .expect("OpenViking open-source provider profile should be exposed");
+        .find(|provider| provider.provider_name == "reference-open-source-vlm")
+        .expect("reference open-source provider profile should be exposed");
     assert_eq!(
-        openviking_provider.provider_kind,
+        reference_provider.provider_kind,
         ContextProviderKind::OpenAiCompatible
     );
-    assert_eq!(openviking_provider.vlm_model, "qwen2.5vl:7b");
-    assert_eq!(openviking_provider.embedding_model, "nomic-embed-text");
-    assert_eq!(openviking_provider.base_url, "http://127.0.0.1:11434/v1");
+    assert_eq!(reference_provider.vlm_model, "qwen2.5vl:7b");
+    assert_eq!(reference_provider.embedding_model, "nomic-embed-text");
+    assert_eq!(reference_provider.base_url, "http://127.0.0.1:11434/v1");
     let matrixark_cpp_provider = providers
         .iter()
         .find(|provider| provider.provider_name == "matrixark-cpp-oss-context")
@@ -1187,12 +1187,12 @@ fn context_workflow_exposes_openviking_open_source_vlm_profiles() {
         matrixark_cpp_provider.embedding_model,
         "sentence-transformers/all-MiniLM-L6-v2"
     );
-    let vikingmem_reader = providers
+    let reference_reader = providers
         .iter()
-        .find(|provider| provider.provider_name == "vikingmem-gpt-4o-mini-reader")
-        .expect("VikingMem GPT-4o-mini reader profile should be exposed");
-    assert_eq!(vikingmem_reader.model, "gpt-4o-mini");
-    assert_eq!(vikingmem_reader.api_key_env, "OPENAI_API_KEY");
+        .find(|provider| provider.provider_name == "reference-gpt-4o-mini-reader")
+        .expect("reference GPT-4o-mini reader profile should be exposed");
+    assert_eq!(reference_reader.model, "gpt-4o-mini");
+    assert_eq!(reference_reader.api_key_env, "OPENAI_API_KEY");
 
     let state = context_workflow_state_report();
     assert_eq!(
@@ -1217,7 +1217,7 @@ fn context_workflow_exposes_openviking_open_source_vlm_profiles() {
     assert!(state.parity.cpp_context_timeline_semantics_ready);
     assert!(state.parity.cpp_context_validation_limits_ready);
     assert!(state
-        .openviking_model_profiles
+        .reference_model_profiles
         .iter()
         .any(|profile| profile.vlm_model == "qwen2.5vl:7b"
             && profile.embedding_model == "nomic-embed-text"
@@ -1225,17 +1225,17 @@ fn context_workflow_exposes_openviking_open_source_vlm_profiles() {
                 .capabilities
                 .contains(&"vlm_image_content_understanding".to_string())));
     assert!(state
-        .openviking_model_profiles
+        .reference_model_profiles
         .iter()
         .any(|profile| profile.vlm_model.contains("InternVL")));
-    assert!(state.openviking_model_profiles.iter().any(|profile| {
-        profile.profile_name == "vikingmem-gpt-4o-mini-reader"
+    assert!(state.reference_model_profiles.iter().any(|profile| {
+        profile.profile_name == "reference-gpt-4o-mini-reader"
             && profile.chat_model == "gpt-4o-mini"
             && profile
                 .capabilities
-                .contains(&"vikingmem_reader_parity".to_string())
+                .contains(&"reference_reader_parity".to_string())
     }));
-    assert!(state.openviking_model_profiles.iter().any(|profile| {
+    assert!(state.reference_model_profiles.iter().any(|profile| {
         profile.profile_name == "matrixark-cpp-oss-context"
             && profile.chat_model == "google/flan-t5-small"
             && profile.embedding_model == "sentence-transformers/all-MiniLM-L6-v2"
@@ -1243,8 +1243,8 @@ fn context_workflow_exposes_openviking_open_source_vlm_profiles() {
                 .capabilities
                 .contains(&"cpp_path_oss_model_parity".to_string())
     }));
-    assert!(state.openviking_model_profiles.iter().any(|profile| {
-        profile.profile_name == "openviking-minigpt4-gpt-style-vlm"
+    assert!(state.reference_model_profiles.iter().any(|profile| {
+        profile.profile_name == "reference-minigpt4-gpt-style-vlm"
             && profile.vlm_model == "Vision-CAIR/MiniGPT-4"
             && profile
                 .capabilities
@@ -1270,8 +1270,8 @@ fn context_openviking_blocks_and_provider_model_switches_are_reported() {
         mock_mode: true,
         ..ContextModelProviderConfig::default()
     };
-    let openviking_vlm_provider = ContextModelProviderConfig {
-        provider_name: "openviking-minigpt4-gpt-style-vlm".to_string(),
+    let reference_vlm_provider = ContextModelProviderConfig {
+        provider_name: "reference-minigpt4-gpt-style-vlm".to_string(),
         provider_kind: ContextProviderKind::OpenAiCompatible,
         base_url: "http://127.0.0.1:8000/v1".to_string(),
         model: "lmsys/vicuna-7b-v1.5".to_string(),
@@ -1302,9 +1302,9 @@ fn context_openviking_blocks_and_provider_model_switches_are_reported() {
                         source_kind: ContextSourceKind::Document,
                         source_id: "vlm-receipt-memory".to_string(),
                         title: "Receipt image memory".to_string(),
-                        body: "OpenViking VLM memory: receipt image shows Northstar Cafe total $18.40.".to_string(),
+                        body: "Reference VLM memory: receipt image shows Northstar Cafe total $18.40.".to_string(),
                         timestamp_ms: 2_000,
-                        provider: openviking_vlm_provider.clone(),
+                        provider: reference_vlm_provider.clone(),
                     },
                 ],
                 query: "Which project did Dana suggest and what receipt total did the VLM see?"
@@ -1328,7 +1328,7 @@ fn context_openviking_blocks_and_provider_model_switches_are_reported() {
         ingest
             .summary
             .provider_counts
-            .get("openviking-minigpt4-gpt-style-vlm"),
+            .get("reference-minigpt4-gpt-style-vlm"),
         Some(&1)
     );
     assert!(ingest
@@ -1487,23 +1487,23 @@ fn context_openviking_reasoning_vlm_cases_cover_required_gaps() {
     ] {
         assert!(
             state
-                .openviking_parity_categories
+                .reference_parity_categories
                 .contains(&required_category.to_string()),
-            "missing OpenViking parity category {required_category}"
+            "missing reference parity category {required_category}"
         );
     }
-    assert_eq!(state.openviking_parity_cases.len(), 6);
+    assert_eq!(state.reference_parity_cases.len(), 6);
     assert!(state
-        .openviking_parity_cases
+        .reference_parity_cases
         .iter()
         .any(|case| case.uses_vlm && !case.benchmark_proven));
     assert!(state
-        .openviking_parity_cases
+        .reference_parity_cases
         .iter()
         .filter(|case| !case.uses_vlm)
         .all(|case| case.benchmark_proven));
 
-    for case in state.openviking_parity_cases {
+    for case in state.reference_parity_cases {
         assert!(
             context_query_matches(&case.query, &case.positive_memory),
             "{} did not match its positive memory",
@@ -1791,7 +1791,7 @@ fn context_resource_parser_matches_openviking_stable_refs() {
     assert_eq!(report.resource_title, "runbook.md");
     assert_eq!(report.lifecycle.owner_scope, "team:ops");
     assert_eq!(report.lifecycle.parser_name, "unit-test-parser");
-    assert_eq!(report.lifecycle.parser_version, "openviking-compatible-v1");
+    assert_eq!(report.lifecycle.parser_version, "reference-compatible-v1");
     assert_eq!(report.lifecycle.version, "v1");
     assert_eq!(
         report.lifecycle.import_kind,
@@ -1967,7 +1967,7 @@ fn context_resource_lifecycle_models_import_paths_refresh_and_delete() {
 fn context_skill_parser_extracts_frontmatter_and_capability_sections() {
     let skill = parse_context_skill_markdown(
             "skills/context-debug/SKILL.md",
-            "---\nname: context-debug\ndescription: Trace context ingestion and retrieval.\nversion: 1.2.0\nowner_scope: team:context\nprecedence: high\nenabled: true\ntags: [context, debug, openviking]\nallowed_tools:\n  - context_workflow_harness\n  - codex_context_hook\ntriggers: [context-debug, retrieval-trace]\nmodels: [nomic-embed-text, qwen2.5vl]\n---\n\n# Context Debug\n\n## When To Use\n\n- Use for context trace debugging.\n\n## Tools\n\n- context_workflow_harness\n- `codex_context_hook` captures prompt context.\n\n## Resources\n\n- [Debug Resource](viking://resources/context-debug.md)\n\n## Examples\n\n- Query the context debug flow for stale entity filters.\n",
+            "---\nname: context-debug\ndescription: Trace context ingestion and retrieval.\nversion: 1.2.0\nowner_scope: team:context\nprecedence: high\nenabled: true\ntags: [context, debug, reference]\nallowed_tools:\n  - context_workflow_harness\n  - codex_context_hook\ntriggers: [context-debug, retrieval-trace]\nmodels: [nomic-embed-text, qwen2.5vl]\n---\n\n# Context Debug\n\n## When To Use\n\n- Use for context trace debugging.\n\n## Tools\n\n- context_workflow_harness\n- `codex_context_hook` captures prompt context.\n\n## Resources\n\n- [Debug Resource](viking://resources/context-debug.md)\n\n## Examples\n\n- Query the context debug flow for stale entity filters.\n",
         );
     assert!(skill.status.ok);
     assert_eq!(skill.skill_name, "context-debug");
@@ -1978,11 +1978,11 @@ fn context_skill_parser_extracts_frontmatter_and_capability_sections() {
     assert_eq!(skill.precedence, ContextSkillPrecedence::High);
     assert_eq!(
         skill.front_matter.get("tags").map(String::as_str),
-        Some("[context, debug, openviking]")
+        Some("[context, debug, reference]")
     );
     assert!(skill.tag_refs.contains(&"context".to_string()));
     assert!(skill.tag_refs.contains(&"debug".to_string()));
-    assert!(skill.tag_refs.contains(&"openviking".to_string()));
+    assert!(skill.tag_refs.contains(&"reference".to_string()));
     assert!(skill.capability_refs.contains(&"when-to-use".to_string()));
     assert!(skill.capability_refs.contains(&"tools".to_string()));
     assert!(skill

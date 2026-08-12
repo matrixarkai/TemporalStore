@@ -322,7 +322,7 @@ pub struct FeatureModuleProductionReadinessReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContextWorkflowProductionReadinessReport {
-    pub openviking_corpus_ready: bool,
+    pub reference_corpus_ready: bool,
     pub engine_replay_ready: bool,
     pub client_replay_ready: bool,
     pub proxy_replay_ready: bool,
@@ -380,7 +380,7 @@ pub fn feature_module_production_readiness_report() -> FeatureModuleProductionRe
 }
 
 pub fn context_workflow_production_readiness_report() -> ContextWorkflowProductionReadinessReport {
-    let openviking_corpus_ready = true;
+    let reference_corpus_ready = true;
     let engine_replay_ready = true;
     let client_replay_ready = true;
     let proxy_replay_ready = true;
@@ -394,7 +394,7 @@ pub fn context_workflow_production_readiness_report() -> ContextWorkflowProducti
     let prompt_size_policy_ready = true;
     let rate_limit_policy_ready = true;
     let provider_failure_budget_ready = true;
-    let production_ready = openviking_corpus_ready
+    let production_ready = reference_corpus_ready
         && engine_replay_ready
         && client_replay_ready
         && proxy_replay_ready
@@ -412,17 +412,17 @@ pub fn context_workflow_production_readiness_report() -> ContextWorkflowProducti
         Vec::new()
     } else {
         vec![
-            "C++/OpenViking golden context corpus replay through engine, client, proxy, Redis/admin, shared-store, and Raft paths"
+            "C++/reference golden context corpus replay through engine, client, proxy, Redis/admin, shared-store, and Raft paths"
                 .to_string(),
             "production policy layer for PII filtering, tenant isolation, prompt-size admission, rate limiting, and provider failure budgets"
                 .to_string(),
-            "OpenViking-style open-source VLM and embedding model profiles for local/provider-backed deployments"
+            "Hierarchical open-source VLM and embedding model profiles for local/provider-backed deployments"
                 .to_string(),
         ]
     };
 
     ContextWorkflowProductionReadinessReport {
-        openviking_corpus_ready,
+        reference_corpus_ready,
         engine_replay_ready,
         client_replay_ready,
         proxy_replay_ready,
@@ -1435,7 +1435,7 @@ mod tests {
         assert!(feature.missing.is_empty());
 
         let context = context_workflow_production_readiness_report();
-        assert!(context.openviking_corpus_ready);
+        assert!(context.reference_corpus_ready);
         assert!(context.engine_replay_ready);
         assert!(context.client_replay_ready);
         assert!(context.proxy_replay_ready);
@@ -1475,7 +1475,7 @@ mod tests {
         assert!(context_area
             .covered
             .iter()
-            .any(|item| item.contains("C++/OpenViking context corpus replay")));
+            .any(|item| item.contains("C++/reference context corpus replay")));
         assert!(context_area
             .covered
             .iter()

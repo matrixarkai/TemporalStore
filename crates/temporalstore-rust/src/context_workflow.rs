@@ -1208,21 +1208,21 @@ pub struct ContextWorkflowStateReport {
     pub status: Status,
     pub providers: Vec<ContextModelProviderConfig>,
     pub context_model_descriptors: Vec<ContextModelDescriptor>,
-    pub openviking_model_profiles: Vec<ContextOpenVikingModelProfile>,
-    pub openviking_parity_cases: Vec<ContextOpenVikingParityCase>,
-    pub openviking_parity_categories: Vec<String>,
+    pub reference_model_profiles: Vec<ContextReferenceModelProfile>,
+    pub reference_parity_cases: Vec<ContextReferenceParityCase>,
+    pub reference_parity_categories: Vec<String>,
     pub open_model_provider_packaged: bool,
     pub open_model_local_run_proven: bool,
     pub vlm_provider_configured: bool,
     pub vlm_benchmark_proven: bool,
     pub policy: ContextWorkflowPolicy,
     pub parity: ContextPipelineParityEvidence,
-    pub openviking_comparison: String,
+    pub reference_comparison: String,
     pub supported_routes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ContextOpenVikingModelProfile {
+pub struct ContextReferenceModelProfile {
     pub profile_name: String,
     pub provider_name: String,
     pub provider_kind: ContextProviderKind,
@@ -1235,7 +1235,7 @@ pub struct ContextOpenVikingModelProfile {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ContextOpenVikingParityCase {
+pub struct ContextReferenceParityCase {
     pub case_name: String,
     pub category: String,
     pub query: String,
@@ -1278,7 +1278,7 @@ pub struct ContextPipelineParityEvidence {
     pub cpp_context_model_ids_ready: bool,
     pub cpp_context_timeline_semantics_ready: bool,
     pub cpp_context_validation_limits_ready: bool,
-    pub openviking_tiers_ready: bool,
+    pub reference_tiers_ready: bool,
     pub extraction_stage_ready: bool,
     pub retrieval_stage_ready: bool,
     pub injection_stage_ready: bool,
@@ -1307,7 +1307,7 @@ pub fn context_pipeline_parity_evidence() -> ContextPipelineParityEvidence {
         "C++ Context model ids 9-13 are exposed as first-class Rust descriptors".to_string(),
         "C++ Context timeline fanout, key shapes, range windows, and validation limits are enforced"
             .to_string(),
-        "OpenViking-style L0/L1/L2 tiers are produced during extraction and consumed during retrieval/injection"
+        "Hierarchical L0/L1/L2 tiers are produced during extraction and consumed during retrieval/injection"
             .to_string(),
         "Context extraction persists node, event, index-ref, and dirty-summary commands through TemporalEngine"
             .to_string(),
@@ -1320,7 +1320,7 @@ pub fn context_pipeline_parity_evidence() -> ContextPipelineParityEvidence {
         cpp_context_model_ids_ready: true,
         cpp_context_timeline_semantics_ready: true,
         cpp_context_validation_limits_ready: true,
-        openviking_tiers_ready: true,
+        reference_tiers_ready: true,
         extraction_stage_ready: true,
         retrieval_stage_ready: true,
         injection_stage_ready: true,
@@ -2242,14 +2242,14 @@ fn context_sentences(body: &str) -> Vec<&str> {
 
 /// Whether a source carries enough to justify the (more expensive) richer L1
 /// synthesis; thin sources skip it and stay cheap. Thresholds mirror the
-/// OpenViking `node_l1_generation_policy` (>=3 events / >=180 tokens); at
+/// internal `node_l1_generation_policy` (>=3 events / >=180 tokens); at
 /// extract time sentences stand in for events.
 pub(crate) fn context_source_warrants_l1(body: &str) -> bool {
     context_sentences(body).len() >= 3 || body.split_whitespace().count() >= 180
 }
 
-/// L0: the short routing/preview summary (OpenViking/VikingMem "required
-/// traversal summary"). Title plus the single leading sentence, kept short --
+/// L0: the short routing/preview summary (the required
+/// traversal summary). Title plus the single leading sentence, kept short --
 /// just enough to route and recall. L1 is a strict superset that carries more
 /// content; raw event evidence lives in the separate L2 tier.
 fn summarize_l0(title: &str, body: &str) -> String {
@@ -2296,8 +2296,8 @@ fn context_fact_score(sentence: &str) -> i32 {
     score
 }
 
-/// L1: the richer summary that "carries more content for broader traversal"
-/// (OpenViking/VikingMem). It is a strict **superset** of L0 -- the same leading
+/// L1: the richer summary that "carries more content for broader traversal".
+/// It is a strict **superset** of L0 -- the same leading
 /// sentence L0 previews, followed by the most information-dense remaining
 /// sentences ranked by `context_fact_score`. So L0 and L1 never merely reformat
 /// the same facts: L1 always adds detail on top of L0. Raw event evidence stays
@@ -2512,7 +2512,7 @@ fn default_skill_selection_limit() -> usize {
 }
 
 fn default_benchmark_profile() -> String {
-    "vikingmem_local_synthetic".to_string()
+    "reference_local_synthetic".to_string()
 }
 
 fn default_benchmark_source_count() -> usize {
@@ -2550,19 +2550,19 @@ fn default_max_benchmark_selected_tokens_per_query() -> u32 {
 fn default_benchmark_sweep_profiles() -> Vec<ContextPipelineBenchmarkSweepProfile> {
     vec![
         ContextPipelineBenchmarkSweepProfile {
-            profile: "vikingmem_sweep_small".to_string(),
+            profile: "reference_sweep_small".to_string(),
             source_count: 16,
             query_count: 2,
             max_events: 6,
         },
         ContextPipelineBenchmarkSweepProfile {
-            profile: "vikingmem_sweep_medium".to_string(),
+            profile: "reference_sweep_medium".to_string(),
             source_count: 32,
             query_count: 4,
             max_events: 8,
         },
         ContextPipelineBenchmarkSweepProfile {
-            profile: "vikingmem_sweep_large".to_string(),
+            profile: "reference_sweep_large".to_string(),
             source_count: 64,
             query_count: 6,
             max_events: 10,

@@ -308,7 +308,7 @@ pub(crate) fn call_openai_compatible_context_provider(
         "l1: this source is thin; keep l1 minimal (a single distilled fact line, <=220 characters). Do NOT pad or repeat l0."
     };
     let prompt = format!(
-        "Generate OpenViking/VikingMem ContextNode traversal summaries for source_kind={:?}, source_id={}, title={}.\n\
+        "Generate hierarchical ContextNode traversal summaries for source_kind={:?}, source_id={}, title={}.\n\
          Return ONLY JSON with string fields l0 and l1.\n\
          l0: a compact routing abstract (<=220 characters) used for embedding-scored tree traversal.\n\
          {l1_guidance}\n\
@@ -321,7 +321,7 @@ pub(crate) fn call_openai_compatible_context_provider(
         messages: vec![
             OpenAiChatMessage {
                 role: "system",
-                content: "You generate TemporalStore/OpenViking ContextNode traversal summaries. \
+                content: "You generate TemporalStore ContextNode traversal summaries. \
                           Be faithful to the supplied source; prefer current state and resolved \
                           contradictions; never invent facts. l0 is a compact routing abstract; \
                           l1 is a richer synthesis whose length scales to the source's information."

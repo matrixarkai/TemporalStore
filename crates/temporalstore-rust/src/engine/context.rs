@@ -93,7 +93,7 @@ pub(super) fn context_compression_key(tenant_hash: u64, node_hash: u64) -> Strin
 
 /// Configurable temporal-compression policy for a context node.
 ///
-/// Modeled on OpenViking (volcengine/OpenViking) session archival: keep a recent
+/// Hierarchical session archival: keep a recent
 /// window of raw memory and progressively compress/fade older windows into summary
 /// records once a threshold is crossed. Here the trigger is per-node and evidence-
 /// oriented (count- or age-based) rather than per-session token budget, but the shape

@@ -324,7 +324,7 @@ pub(super) fn default_resource_parser_name() -> String {
 }
 
 pub(super) fn default_resource_parser_version() -> String {
-    "openviking-compatible-v1".to_string()
+    "reference-compatible-v1".to_string()
 }
 
 fn infer_context_resource_type(raw_uri: &str, resource_type: Option<&str>) -> String {

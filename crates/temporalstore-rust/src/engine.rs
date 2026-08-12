@@ -419,16 +419,24 @@ impl TemporalEngine {
                 }
             }
             if !config.async_storage && !bulk_ingest_mode() && !replaying_wal() {
-                // Anchor the served index to the WAL sequence it now reflects, so a
-                // later load replays only records written after this point (the analog
-                // of C++ index_->SetDumpedLogId / GetDumpedLogId).
-                shard.applied_wal_sequence =
-                    Some(self.wal_store.stats(request.shard_id).last_sequence);
-                let index_bytes = serialize_index(shard);
-                let _ = self
-                    .index_log_store
-                    .append_json(request.shard_id, &index_bytes);
-                let _ = self.persist_index_bytes(request.shard_id, &index_bytes);
+                // Checkpoint the served index at a DUMP cadence, not per write. The WAL
+                // fsync above already made this write durable; the served index is a
+                // reconstructable read cache re-anchored to the WAL sequence it reflects
+                // (the analog of C++ index_->SetDumpedLogId / GetDumpedLogId, which C++
+                // advances at dump time and covers the gap by replaying the oplog).
+                // Persisting the full O(store) snapshot on every sync write starved the
+                // write path; checkpoint every N writes instead. On load, the WAL tail
+                // past the last persisted anchor is replayed, so a skipped checkpoint
+                // costs replay work, never records.
+                if sync_should_checkpoint_index(shard) {
+                    shard.applied_wal_sequence =
+                        Some(self.wal_store.stats(request.shard_id).last_sequence);
+                    let index_bytes = serialize_index(shard);
+                    let _ = self
+                        .index_log_store
+                        .append_json(request.shard_id, &index_bytes);
+                    let _ = self.persist_index_bytes(request.shard_id, &index_bytes);
+                }
             }
         }
         ExecuteResponse {
@@ -1077,6 +1085,58 @@ fn bulk_ingest_mode() -> bool {
     )
 }
 
+/// Whether the synchronous-commit path should CHECKPOINT the served index at a dump
+/// cadence instead of rewriting the full O(store) snapshot on every write. Default ON.
+/// Set MATRIXARK_SYNC_DEFER_INDEX_MATERIALIZE=0/false/off/no to restore the legacy
+/// per-write index persist. Durability is unaffected either way: the WAL is fsync'd per
+/// sync write and is the recovery source of truth (replayed on load); the served index
+/// is a reconstructable read cache. Per-write full-index persistence made every sync
+/// write O(store) and starved the write path -- the daemon could not drain all writes to
+/// the fsync'd WAL before the short-lived hook window closed, so ~half the serving records
+/// never reached the WAL and were absent from the reopened engine. C++ materializes the
+/// index at DUMP intervals (index_->SetDumpedLogId) and replays the oplog for the gap.
+fn sync_defer_index_materialize() -> bool {
+    !matches!(
+        std::env::var("MATRIXARK_SYNC_DEFER_INDEX_MATERIALIZE")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "0" | "false" | "no" | "off"
+    )
+}
+
+/// How many synchronous-commit writes may apply between served-index checkpoints when
+/// MATRIXARK_SYNC_DEFER_INDEX_MATERIALIZE is on. Bounds both the amortized per-write cost
+/// (one O(store) snapshot per N writes) and the reload replay tail (at most N WAL records
+/// past the last checkpoint). MATRIXARK_SYNC_INDEX_CHECKPOINT_EVERY overrides; default 256.
+/// Clamped to >= 1 so a checkpoint always eventually fires.
+fn sync_index_checkpoint_every() -> u32 {
+    std::env::var("MATRIXARK_SYNC_INDEX_CHECKPOINT_EVERY")
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|value| *value >= 1)
+        .unwrap_or(256)
+}
+
+/// Advance the shard's synchronous-commit checkpoint counter and report whether THIS
+/// write should rewrite the served index. With MATRIXARK_SYNC_DEFER_INDEX_MATERIALIZE
+/// off, every write checkpoints (legacy per-write persist). On, the full snapshot is
+/// written once per `sync_index_checkpoint_every()` writes and the counter resets.
+fn sync_should_checkpoint_index(shard: &mut ShardState) -> bool {
+    if !sync_defer_index_materialize() {
+        return true;
+    }
+    shard.sync_writes_since_index_checkpoint =
+        shard.sync_writes_since_index_checkpoint.saturating_add(1);
+    if shard.sync_writes_since_index_checkpoint >= sync_index_checkpoint_every() {
+        shard.sync_writes_since_index_checkpoint = 0;
+        true
+    } else {
+        false
+    }
+}
+
 /// Whether the per-command model-map -> bucket-index promotion and first-index
 /// rebuild should be DEFERRED to a single reconstruct pass. True during bulk
 /// backfill (MATRIXARK_BULK_INGEST) and during WAL replay on load: both re-drive
@@ -1212,7 +1272,7 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
 }
 
-/// Configurable, OpenViking-style temporal-compression trigger for one context node.
+/// Configurable, reference-style temporal-compression trigger for one context node.
 ///
 /// Called on the event-write path (guarded by policy, disabled by default). When a
 /// node crosses the configured raw-event count or age threshold, it folds the oldest

@@ -233,7 +233,7 @@ pub fn run_context_pipeline_benchmark(
 
     ContextPipelineBenchmarkReport {
         status,
-        benchmark_name: "vikingmem_style_context_management_local".to_string(),
+        benchmark_name: "reference_style_context_management_local".to_string(),
         workload_signature: stable_hash64(&format!(
             "context-benchmark:{profile}:{source_count}:{query_count}:{}:{}",
             request.max_events, provider.provider_name
@@ -278,7 +278,7 @@ pub fn run_context_pipeline_benchmark(
         source_kind_counts: ingest.summary.source_kind_counts,
         provider_counts: ingest.summary.provider_counts,
         evidence: vec![
-            "VikingMem-style local benchmark covers extraction, hierarchical retrieval, budgeted injection, latency, hit@k, MRR, throughput, recall proxy, evidence retention, and token reduction".to_string(),
+            "Local benchmark covers extraction, hierarchical retrieval, budgeted injection, latency, hit@k, MRR, throughput, recall proxy, evidence retention, and token reduction".to_string(),
             "Synthetic workload uses mixed Context source kinds and deterministic local providers".to_string(),
         ],
     }
@@ -403,7 +403,7 @@ pub fn run_context_pipeline_benchmark_sweep(
 
     ContextPipelineBenchmarkSweepReport {
         status,
-        benchmark_name: "vikingmem_style_context_management_sweep".to_string(),
+        benchmark_name: "reference_style_context_management_sweep".to_string(),
         profile_count,
         reports,
         all_profiles_ready,
@@ -555,7 +555,7 @@ pub(crate) fn benchmark_context_body(index: usize, topic_index: usize, topic_seq
         (_, false) => "support ticket captured the first user ask before the agent follow-up action",
     };
     format!(
-        "VikingMem-style benchmark context item {index}: {update_marker} for topic {topic_index}; {detail}; retrieval hint and follow-up action are preserved."
+        "Benchmark context item {index}: {update_marker} for topic {topic_index}; {detail}; retrieval hint and follow-up action are preserved."
     )
 }
 

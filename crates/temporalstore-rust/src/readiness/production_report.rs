@@ -372,11 +372,11 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
             covered: vec![
                 "Rust-native Context extraction/retrieval/injection workflow persists ContextNode, ContextEvent, ContextIndexRef, ContextSummaryDirtyMarker, and ContextPackAudit"
                     .to_string(),
-                "OpenViking-style L0/L1/L2 context tiers are generated deterministically for local mocked sources"
+                "Hierarchical L0/L1/L2 context tiers are generated deterministically for local mocked sources"
                     .to_string(),
                 "context model provider config can switch between mock and OpenAI-compatible provider shapes without changing API payloads"
                     .to_string(),
-                "OpenViking-style open-source model profiles expose VLM, chat, and embedding model choices for local Ollama/vLLM/OpenAI-compatible deployments"
+                "Hierarchical open-source model profiles expose VLM, chat, and embedding model choices for local Ollama/vLLM/OpenAI-compatible deployments"
                     .to_string(),
                 "data-node server exposes /context/extract, /context/retrieve, /context/inject, /context/workflow/state, and provider inspection routes"
                     .to_string(),
@@ -384,7 +384,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "OpenAI-compatible context extraction can call a live HTTP provider with bounded deadlines, retries, Authorization header loaded from an environment variable, JSON response parsing, and fallback provider execution"
                     .to_string(),
-                "C++/OpenViking context corpus replay covers engine, client, proxy, Redis/admin, shared-store, and Raft paths"
+                "C++/reference context corpus replay covers engine, client, proxy, Redis/admin, shared-store, and Raft paths"
                     .to_string(),
                 "context workflow production policy covers provider/model selection, PII filtering, tenant isolation, prompt-size admission, rate limiting, and provider failure budgets"
                     .to_string(),
@@ -663,7 +663,7 @@ pub(crate) fn evidence_field_for(area: &str, capability: &str) -> &'static str {
             "feature_module_corpus.control_state_production_semantics_ready"
         }
         "context_workflow" if capability.contains("corpus") => {
-            "context_workflow_corpus.openviking_replay_ready"
+            "context_workflow_corpus.reference_replay_ready"
         }
         "context_workflow" => "context_workflow_policy.production_policy_ready",
         _ => "readiness_evidence.unspecified",
@@ -719,7 +719,7 @@ pub(crate) fn service_next_action(service: &str, blocker_classes: &[String]) -> 
             "finish exact C++ feature/control_state corpus coverage and deployment-specific module edge cases"
         }
         ("context_workflow", "context_model_provider_parity") => {
-            "finish C++/OpenViking corpus replay and production policy controls"
+            "finish C++/reference corpus replay and production policy controls"
         }
         ("fault_tolerance", "fault_tolerance_validation") => {
             "ready"

@@ -155,8 +155,6 @@ fn infer_native_question_type(query: &str) -> &'static str {
             "cross-session memory",
             "session memory",
             "memory feature",
-            "openviking",
-            "vikingmem",
             "mem0",
         ],
     ) {

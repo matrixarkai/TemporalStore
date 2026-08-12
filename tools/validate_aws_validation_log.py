@@ -337,7 +337,7 @@ def validate_context_workflow(job, summary):
         "cpp_context_model_ids_ready",
         "cpp_context_timeline_semantics_ready",
         "cpp_context_validation_limits_ready",
-        "openviking_tiers_ready",
+        "reference_tiers_ready",
         "extraction_stage_ready",
         "retrieval_stage_ready",
         "injection_stage_ready",
@@ -352,7 +352,7 @@ def validate_context_workflow(job, summary):
     ]:
         require(parity[field], f"{job}: context parity report field {field} is false")
     require(
-        any("OpenViking-style L0/L1/L2" in item for item in summary["parity_evidence"]),
+        any("Hierarchical L0/L1/L2" in item for item in summary["parity_evidence"]),
         f"{job}: context parity evidence missing OpenViking tier coverage",
     )
     require(

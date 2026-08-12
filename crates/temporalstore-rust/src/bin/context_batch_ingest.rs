@@ -194,7 +194,7 @@ fn main() {
         groups.entry(session_id.clone()).or_default().push(mk(&session_id));
         // Cross-session/global mirror: resources + explicitly-global sessions.
         if let Some(gs) = &global_session {
-            let is_global = session_id == "_resources" || session_id.starts_with("openviking");
+            let is_global = session_id == "_resources" || session_id.starts_with("_global");
             if is_global && gs != &session_id {
                 groups.entry(gs.clone()).or_default().push(mk(gs));
             }
