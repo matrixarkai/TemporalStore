@@ -21,7 +21,7 @@ usage() {
   cat <<'EOF'
 Usage: install_context_oss_models.sh [options]
 
-Install OpenViking/VikingMem-style OSS model dependencies for MatrixArk
+Install reference-style OSS model dependencies for MatrixArk
 TemporalStore context ingestion, extraction, retrieval, and benchmarks.
 
 Options:
@@ -165,7 +165,7 @@ MATRIXARK_EXTRACTION_MODEL=$reader_model
 MATRIXARK_SUMMARY_MODEL=$reader_model
 TEMPORALSTORE_READER_MODEL=$reader_model
 TEMPORALSTORE_READER_BASE_URL=\${TEMPORALSTORE_READER_BASE_URL:-http://127.0.0.1:11434/v1}
-OPENVIKING_MODEL_API_KEY=\${OPENVIKING_MODEL_API_KEY:-ollama}
+MATRIXARK_MODEL_API_KEY=\${MATRIXARK_MODEL_API_KEY:-ollama}
 EOF
   echo "$env_file"
 fi

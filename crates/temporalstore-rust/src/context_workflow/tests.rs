@@ -1165,7 +1165,7 @@ fn context_workflow_policy_controls_provider_model_and_pii() {
 
 // shared-corpus: context_management_ingest_retrieve_pipeline
 #[test]
-fn context_workflow_exposes_openviking_open_source_vlm_profiles() {
+fn context_workflow_exposes_reference_open_source_vlm_profiles() {
     let providers = default_context_model_providers();
     let reference_provider = providers
         .iter()
@@ -1256,9 +1256,9 @@ fn context_workflow_exposes_openviking_open_source_vlm_profiles() {
     assert!(!state.vlm_benchmark_proven);
 }
 
-// shared-corpus: context_openviking_blocks_provider_switches
+// shared-corpus: context_reference_blocks_provider_switches
 #[test]
-fn context_openviking_blocks_and_provider_model_switches_are_reported() {
+fn context_reference_blocks_and_provider_model_switches_are_reported() {
     let engine = test_engine();
     let open_source_text_provider = ContextModelProviderConfig {
         provider_name: "matrixark-cpp-oss-context".to_string(),
@@ -1473,9 +1473,9 @@ fn context_injection_prompt_pack_preserves_retrieved_evidence_ordering() {
     assert_eq!(inject.audit.selected_refs[1].event_time_ms, 1_000);
 }
 
-// shared-corpus: context_openviking_reasoning_vlm_parity
+// shared-corpus: context_reference_reasoning_vlm_parity
 #[test]
-fn context_openviking_reasoning_vlm_cases_cover_required_gaps() {
+fn context_reference_reasoning_vlm_cases_cover_required_gaps() {
     let state = context_workflow_state_report();
     for required_category in [
         "multi_hop_reasoning",
@@ -1770,9 +1770,9 @@ fn context_resource_parser_spills_large_resource_body_to_object_store_ref() {
     }));
 }
 
-// shared-corpus: context_resource_skill_parser_openviking_parity
+// shared-corpus: context_resource_skill_parser_reference_parity
 #[test]
-fn context_resource_parser_matches_openviking_stable_refs() {
+fn context_resource_parser_matches_reference_stable_refs() {
     let report = parse_context_resource(ContextResourceParseRequest {
         raw_uri: "runbook.md".to_string(),
         resource_type: Some("md".to_string()),
@@ -1853,7 +1853,7 @@ fn context_resource_parser_matches_openviking_stable_refs() {
     );
 }
 
-// shared-corpus: context_resource_lifecycle_openviking_parity
+// shared-corpus: context_resource_lifecycle_reference_parity
 #[test]
 fn context_resource_lifecycle_models_import_paths_refresh_and_delete() {
     let url = parse_context_resource(ContextResourceParseRequest {
@@ -1962,7 +1962,7 @@ fn context_resource_lifecycle_models_import_paths_refresh_and_delete() {
     assert_eq!(report.import_kinds.get("feishu_doc").copied(), Some(1));
 }
 
-// shared-corpus: context_resource_skill_parser_openviking_parity
+// shared-corpus: context_resource_skill_parser_reference_parity
 #[test]
 fn context_skill_parser_extracts_frontmatter_and_capability_sections() {
     let skill = parse_context_skill_markdown(
@@ -2015,7 +2015,7 @@ fn context_skill_parser_extracts_frontmatter_and_capability_sections() {
         == Some("skill")));
 }
 
-// shared-corpus: context_resource_skill_registry_openviking_parity
+// shared-corpus: context_resource_skill_registry_reference_parity
 #[test]
 fn context_skill_registry_supports_updates_and_retrieval_selection() {
     let active = parse_context_skill_markdown(
@@ -2088,7 +2088,7 @@ fn context_skill_registry_supports_updates_and_retrieval_selection() {
         .contains(&"context-debug".to_string()));
 }
 
-// shared-corpus: context_resource_skill_parser_openviking_parity
+// shared-corpus: context_resource_skill_parser_reference_parity
 #[test]
 fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
     let dir = tempfile::tempdir().unwrap();

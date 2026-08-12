@@ -25,7 +25,7 @@ gateway secrets, benchmark dataset credentials, or generated service configs
 containing secrets.
 
 Common environment variables used by tests and local runs include
-`OPENAI_API_KEY`, `OPENVIKING_MODEL_API_KEY`, `MATRIXARK_MODEL_API_KEY`,
+`OPENAI_API_KEY`, `MATRIXARK_MODEL_API_KEY`,
 `TS_RAFT_AUTH_TOKEN`, and TLS certificate paths. They must stay outside git.
 
 ## Security Boundaries

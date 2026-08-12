@@ -103,7 +103,7 @@ fn unified_corpus_proxy_contract() {
             "context_events_segments_entities_child_refs",
             "context_embeddings_summaries_l0_l1_pipeline",
             "context_compression_secondary_index_query_debug_flow",
-            "context_resource_skill_parser_openviking_parity",
+            "context_resource_skill_parser_reference_parity",
             "context_benchmark_fixture_gates",
             "context_benchmark_full_dataset_gates",
         ] {

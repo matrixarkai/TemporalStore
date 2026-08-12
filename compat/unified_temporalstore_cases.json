@@ -4413,7 +4413,7 @@
       "steps": [
         {
           "command": {
-            "description": "Shared C++/Rust Context pipeline case for management readiness, batch ingest/extract, retrieval handoff, provider routing, and OpenViking-style Context block construction.",
+            "description": "Shared C++/Rust Context pipeline case for management readiness, batch ingest/extract, retrieval handoff, provider routing, and reference-style Context block construction.",
             "expect_ingest_extract_fanout_counts": true,
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
@@ -4450,12 +4450,12 @@
       ]
     },
     {
-      "name": "context_openviking_reasoning_vlm_parity",
+      "name": "context_reference_reasoning_vlm_parity",
       "shard_id": 1,
       "steps": [
         {
           "command": {
-            "description": "Shared C++/Rust Context pipeline case for OpenViking/VikingMem-style multi-hop, temporal, update, stale-memory, open-domain, and VLM context evidence. Live OSS and VLM benchmark proof must be explicit and cannot be inferred from configuration.",
+            "description": "Shared C++/Rust Context pipeline case for reference-style multi-hop, temporal, update, stale-memory, open-domain, and VLM context evidence. Live OSS and VLM benchmark proof must be explicit and cannot be inferred from configuration.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_categories": [
@@ -4467,34 +4467,34 @@
               "vlm_image_content_understanding"
             ],
             "required_paths": [
-              "docs/context_openviking_parity_cases.md",
+              "docs/context_reference_parity_cases.md",
               "docs/context_benchmarks_docker_open_model.md"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust context_openviking_reasoning_vlm_cases_cover_required_gaps -- --test-threads=1",
+            "rust_runner": "cargo test -p temporalstore-rust context_reference_reasoning_vlm_cases_cover_required_gaps -- --test-threads=1",
             "rust_validator": "tools/run_context_workflow_local.sh",
             "suite": "cpp_context_pipeline_parity"
           },
-          "name": "context_openviking_reasoning_vlm_shared"
+          "name": "context_reference_reasoning_vlm_shared"
         }
       ]
     },
     {
-      "name": "context_openviking_blocks_provider_switches",
+      "name": "context_reference_blocks_provider_switches",
       "shard_id": 1,
       "steps": [
         {
           "command": {
-            "description": "Shared C++/Rust Context case for OpenViking-style L2 context blocks, open-source text reader profile switching, VLM provider switching, and provider/model accounting in ingest/extract summaries.",
+            "description": "Shared C++/Rust Context case for reference-style L2 context blocks, open-source text reader profile switching, VLM provider switching, and provider/model accounting in ingest/extract summaries.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [
               "docs/context_provider_model_switch_contract.md"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust context_openviking_blocks_and_provider_model_switches_are_reported --lib -- --test-threads=1",
+            "rust_runner": "cargo test -p temporalstore-rust context_reference_blocks_and_provider_model_switches_are_reported --lib -- --test-threads=1",
             "rust_validator": "tools/run_context_workflow_local.sh",
             "suite": "cpp_context_pipeline_parity"
           },
-          "name": "context_openviking_blocks_provider_switches_shared"
+          "name": "context_reference_blocks_provider_switches_shared"
         }
       ]
     },
@@ -6605,12 +6605,12 @@
       ]
     },
     {
-      "name": "context_resource_skill_parser_openviking_parity",
+      "name": "context_resource_skill_parser_reference_parity",
       "shard_id": 60,
       "steps": [
         {
           "command": {
-            "description": "Shared C++/Rust Context parser case for OpenViking-style resource chunking, stable source refs, heading paths, line ranges, linked refs, code-language metadata, SKILL.md front matter, version/owner scope, allowed tools, triggers, model refs, tag refs, capability sections, tool refs, instruction refs, resource/reference refs, example refs, chunk embeddings, and Rust TemporalStore ingestion/retrieval of parsed chunks.",
+            "description": "Shared C++/Rust Context parser case for reference-style resource chunking, stable source refs, heading paths, line ranges, linked refs, code-language metadata, SKILL.md front matter, version/owner scope, allowed tools, triggers, model refs, tag refs, capability sections, tool refs, instruction refs, resource/reference refs, example refs, chunk embeddings, and Rust TemporalStore ingestion/retrieval of parsed chunks.",
             "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-resource-skill-parser-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
@@ -6628,9 +6628,9 @@
       ]
     },
     {
-      "description": "Shared C++/Rust Context resource lifecycle case for OpenViking-style add/watch/refresh/delete behavior across URL, Git, PDF/document, and Feishu-style imports.",
+      "description": "Shared C++/Rust Context resource lifecycle case for reference-style add/watch/refresh/delete behavior across URL, Git, PDF/document, and Feishu-style imports.",
       "family": "context",
-      "name": "context_resource_lifecycle_openviking_parity",
+      "name": "context_resource_lifecycle_reference_parity",
       "shard_id": 60,
       "steps": [
         {
@@ -6652,9 +6652,9 @@
       ]
     },
     {
-      "description": "Shared C++/Rust Context skill registry case for OpenViking-style enable/disable, precedence, owner scope, allowed tools, triggers, version updates, and retrieval-time skill selection.",
+      "description": "Shared C++/Rust Context skill registry case for reference-style enable/disable, precedence, owner scope, allowed tools, triggers, version updates, and retrieval-time skill selection.",
       "family": "context",
-      "name": "context_resource_skill_registry_openviking_parity",
+      "name": "context_resource_skill_registry_reference_parity",
       "shard_id": 60,
       "steps": [
         {
@@ -12596,8 +12596,8 @@
       "ingestion_lag_metrics",
       "ingestion_restart_idempotence",
       "context_retrieval_qa_synonym_ranking",
-      "context_openviking_reasoning_vlm_parity",
-      "context_openviking_blocks_provider_switches",
+      "context_reference_reasoning_vlm_parity",
+      "context_reference_blocks_provider_switches",
       "context_injection_prompt_pack_ordering",
       "context_benchmark_injection_entity_segment_index",
       "context_tree_embedding_summary_compression",
@@ -12651,9 +12651,9 @@
       "ops_scale_readiness_slo_gate",
       "ops_production_readiness_service_summary",
       "ops_grafana_metrics_cpp_parity",
-      "context_resource_skill_parser_openviking_parity",
-      "context_resource_lifecycle_openviking_parity",
-      "context_resource_skill_registry_openviking_parity",
+      "context_resource_skill_parser_reference_parity",
+      "context_resource_lifecycle_reference_parity",
+      "context_resource_skill_registry_reference_parity",
       "context_resource_skill_live_embedding_summary_retrieval",
       "redis_operational_admin_commands",
       "redis_slot_hash_cpp_crc64",
