@@ -6,7 +6,7 @@
 use super::*;
 use std::collections::BTreeSet;
 use crate::types::{ShardId, Status};
-use crate::partition_id::{PartitionId, PartitionIdError};
+use crate::partition_id::PartitionId;
 
 pub(super) fn table_shard_id(
     table: &TableMetaInfo,

@@ -23,7 +23,6 @@ pub use benchmark::{run_context_pipeline_benchmark, run_context_pipeline_benchma
 pub(crate) use benchmark::*;
 pub use reports::*;
 pub use ingest::{ingest_extract_context, ingest_resource_skill_context, validate_resource_skill_secondary_indexes};
-pub(crate) use ingest::*;
 pub(crate) use model_provider::*;
 pub use skill::{
     context_skill_registry_from_parsed, parse_context_skill_markdown,
