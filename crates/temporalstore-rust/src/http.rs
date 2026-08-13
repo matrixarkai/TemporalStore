@@ -1,11 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+
+/// Idle read timeout for a kept-alive server connection. A persistent client
+/// connection parks here between requests; if nothing arrives for this long the
+/// server reaps the connection (the client transparently reconnects).
+const SERVER_KEEPALIVE_IDLE_MS: u64 = 120_000;
+/// Max idle client sockets pooled per destination address, per thread.
+const CLIENT_POOL_MAX_PER_ADDR: usize = 8;
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -123,29 +132,113 @@ fn handle_stream(
     mut stream: TcpStream,
     handler: &dyn Fn(HttpRequest) -> (u16, Vec<u8>),
 ) -> Result<(), HttpError> {
-    let buffer = read_http_request(&mut stream)?;
-    let request = parse_request(&buffer)?;
-    let (status, body) = handler(request);
-    let status_text = if status == 200 { "OK" } else { "ERROR" };
-    let content_type = if body.starts_with(b"# HELP ") || body.starts_with(b"# TYPE ") {
-        "text/plain; version=0.0.4"
-    } else {
-        "application/json"
-    };
-    let header = format!(
-        "HTTP/1.1 {status} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    // Coalesce header + body into a single write so the response leaves in one
-    // TCP segment where possible (avoids a small-segment Nagle stall).
-    let mut response = Vec::with_capacity(header.len() + body.len());
-    response.extend_from_slice(header.as_bytes());
-    response.extend_from_slice(&body);
-    stream.write_all(&response)?;
-    stream.flush()?;
-    Ok(())
+    // HTTP/1.1 keep-alive: serve every request on this connection until the peer
+    // closes it or goes idle. This removes the per-request TCP handshake + thread
+    // spawn that otherwise caps throughput under concurrency.
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(SERVER_KEEPALIVE_IDLE_MS)));
+    loop {
+        let buffer = match read_http_request_framed(&mut stream)? {
+            Some(buffer) => buffer,
+            None => return Ok(()), // clean EOF / idle reap at a request boundary
+        };
+        let request = parse_request(&buffer)?;
+        let keep_alive = request_wants_keep_alive(&buffer);
+        let (status, body) = handler(request);
+        let status_text = if status == 200 { "OK" } else { "ERROR" };
+        let content_type = if body.starts_with(b"# HELP ") || body.starts_with(b"# TYPE ") {
+            "text/plain; version=0.0.4"
+        } else {
+            "application/json"
+        };
+        let connection = if keep_alive { "keep-alive" } else { "close" };
+        let header = format!(
+            "HTTP/1.1 {status} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: {connection}\r\n\r\n",
+            body.len()
+        );
+        // Coalesce header + body into a single write so the response leaves in one
+        // TCP segment where possible (avoids a small-segment Nagle stall).
+        let mut response = Vec::with_capacity(header.len() + body.len());
+        response.extend_from_slice(header.as_bytes());
+        response.extend_from_slice(&body);
+        stream.write_all(&response)?;
+        stream.flush()?;
+        if !keep_alive {
+            return Ok(());
+        }
+    }
 }
 
+/// True unless the request explicitly asks to close (HTTP/1.1 default is
+/// keep-alive). Cheap header scan over the raw request bytes.
+fn request_wants_keep_alive(buffer: &[u8]) -> bool {
+    let marker = b"\r\n\r\n";
+    let header_end = buffer
+        .windows(marker.len())
+        .position(|w| w == marker)
+        .unwrap_or(buffer.len());
+    let headers = String::from_utf8_lossy(&buffer[..header_end]);
+    for line in headers.lines() {
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("connection") {
+                return !value.trim().eq_ignore_ascii_case("close");
+            }
+        }
+    }
+    true
+}
+
+/// Read one full HTTP request from a kept-alive connection. Returns `Ok(None)`
+/// when the peer cleanly closes (or goes idle) at a request boundary, so the
+/// caller can retire the connection without treating it as an error.
+fn read_http_request_framed(stream: &mut TcpStream) -> Result<Option<Vec<u8>>, HttpError> {
+    let marker = b"\r\n\r\n";
+    let mut buffer = Vec::new();
+    let mut chunk = [0; 4096];
+    let mut expected_len = None;
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => {
+                if buffer.is_empty() {
+                    return Ok(None); // clean close at boundary
+                }
+                // EOF mid-request: surface as a (retryable) bad response.
+                return Err(HttpError::BadResponse("incomplete request".to_string()));
+            }
+            Ok(size) => {
+                buffer.extend_from_slice(&chunk[..size]);
+                if expected_len.is_none() {
+                    if let Some(header_end) =
+                        buffer.windows(marker.len()).position(|w| w == marker)
+                    {
+                        let headers = String::from_utf8_lossy(&buffer[..header_end]);
+                        let content_length = headers
+                            .lines()
+                            .filter_map(|line| line.split_once(':'))
+                            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                            .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+                            .unwrap_or_default();
+                        expected_len = Some(header_end + marker.len() + content_length);
+                    }
+                }
+                if expected_len.is_some_and(|len| buffer.len() >= len) {
+                    return Ok(Some(buffer));
+                }
+            }
+            Err(err) if buffer.is_empty() && is_idle_timeout(&err) => {
+                // Idle keep-alive connection: reap it.
+                return Ok(None);
+            }
+            Err(err) if matches!(err.kind(), ErrorKind::Interrupted) => continue,
+            Err(err) => return Err(HttpError::Io(err)),
+        }
+    }
+}
+
+fn is_idle_timeout(err: &std::io::Error) -> bool {
+    matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+}
+
+#[cfg(test)]
 fn read_http_request(stream: &mut TcpStream) -> Result<Vec<u8>, HttpError> {
     let marker = b"\r\n\r\n";
     let mut buffer = Vec::new();
@@ -249,20 +342,36 @@ fn is_retryable_request_error(err: &HttpError) -> bool {
     }
 }
 
-fn request_raw_once(
-    addr: &str,
-    method: &str,
-    path: &str,
-    body: &[u8],
-    extra_headers: &str,
-    options: HttpRequestOptions,
-) -> Result<Vec<u8>, HttpError> {
+thread_local! {
+    /// Per-thread pool of idle keep-alive sockets, keyed by destination address.
+    /// Thread-local keeps the hot path lock-free; each worker reuses its own
+    /// connections instead of paying a TCP handshake + server thread spawn per op.
+    static CLIENT_CONN_POOL: RefCell<HashMap<String, Vec<TcpStream>>> =
+        RefCell::new(HashMap::new());
+}
+
+fn pool_take(addr: &str) -> Option<TcpStream> {
+    CLIENT_CONN_POOL.with(|pool| pool.borrow_mut().get_mut(addr).and_then(Vec::pop))
+}
+
+fn pool_put(addr: &str, stream: TcpStream) {
+    CLIENT_CONN_POOL.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        let bucket = pool.entry(addr.to_string()).or_default();
+        if bucket.len() < CLIENT_POOL_MAX_PER_ADDR {
+            bucket.push(stream);
+        }
+        // else: drop the socket (bucket full)
+    });
+}
+
+fn connect_fresh(addr: &str, options: HttpRequestOptions) -> Result<TcpStream, HttpError> {
     let connect_timeout = Duration::from_millis(options.connect_timeout_ms);
     let mut addrs = addr.to_socket_addrs()?;
     let socket_addr = addrs
         .next()
         .ok_or_else(|| HttpError::BadResponse(format!("cannot resolve address {addr}")))?;
-    let mut stream = TcpStream::connect_timeout(&socket_addr, connect_timeout)?;
+    let stream = TcpStream::connect_timeout(&socket_addr, connect_timeout)?;
     // Disable Nagle: the request is header+small body written back-to-back; with
     // Nagle on, the body waits for an ACK of the header, colliding with the peer's
     // delayed-ACK timer for a ~40ms per-request stall.
@@ -270,8 +379,22 @@ fn request_raw_once(
     let io_timeout = Some(Duration::from_millis(options.io_timeout_ms));
     stream.set_read_timeout(io_timeout)?;
     stream.set_write_timeout(io_timeout)?;
+    Ok(stream)
+}
+
+/// Perform one request/response exchange on `stream` (which must be freshly
+/// readable). Returns the response body on success.
+fn exchange_once(
+    stream: &mut TcpStream,
+    addr: &str,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    extra_headers: &str,
+    options: HttpRequestOptions,
+) -> Result<Vec<u8>, HttpError> {
     let header = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\n{extra_headers}Connection: close\r\n\r\n",
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\n{extra_headers}Connection: keep-alive\r\n\r\n",
         body.len()
     );
     // Coalesce header + body into a single buffer so the request leaves in one
@@ -279,10 +402,10 @@ fn request_raw_once(
     let mut framed = Vec::with_capacity(header.len() + body.len());
     framed.extend_from_slice(header.as_bytes());
     framed.extend_from_slice(body);
-    write_all_with_would_block_retry(&mut stream, &framed, options.io_timeout_ms)?;
-    flush_with_would_block_retry(&mut stream, options.io_timeout_ms)?;
+    write_all_with_would_block_retry(stream, &framed, options.io_timeout_ms)?;
+    flush_with_would_block_retry(stream, options.io_timeout_ms)?;
 
-    let response = read_http_response(&mut stream, options.io_timeout_ms)?;
+    let response = read_http_response(stream, options.io_timeout_ms)?;
     let (header_end, content_length) = parse_response_header(&response)?;
     if response.len() < header_end + b"\r\n\r\n".len() + content_length {
         return Err(HttpError::BadResponse(
@@ -300,6 +423,32 @@ fn request_raw_once(
     }
     let body_start = header_end + marker.len();
     Ok(response[body_start..body_start + content_length].to_vec())
+}
+
+fn request_raw_once(
+    addr: &str,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    extra_headers: &str,
+    options: HttpRequestOptions,
+) -> Result<Vec<u8>, HttpError> {
+    // Fast path: reuse a pooled keep-alive socket. A pooled socket may have been
+    // reaped by the server's idle timeout, so on any failure we discard it and
+    // fall back to a fresh connection (transparent to the caller).
+    if let Some(mut stream) = pool_take(addr) {
+        match exchange_once(&mut stream, addr, method, path, body, extra_headers, options) {
+            Ok(response) => {
+                pool_put(addr, stream);
+                return Ok(response);
+            }
+            Err(_) => { /* stale/broken pooled connection: drop it, reconnect */ }
+        }
+    }
+    let mut stream = connect_fresh(addr, options)?;
+    let response = exchange_once(&mut stream, addr, method, path, body, extra_headers, options)?;
+    pool_put(addr, stream);
+    Ok(response)
 }
 
 fn read_http_response(stream: &mut TcpStream, timeout_ms: u64) -> Result<Vec<u8>, HttpError> {
@@ -435,5 +584,50 @@ mod tests {
             started.elapsed() < Duration::from_millis(200),
             "client waited for connection close instead of returning after Content-Length"
         );
+    }
+
+    #[test]
+    fn keep_alive_reuses_a_single_connection_for_many_requests() {
+        // The server accepts exactly ONE connection and serves every request on
+        // it via the keep-alive loop in `handle_stream`. If client pooling +
+        // server keep-alive work, all requests succeed over that one connection;
+        // if either regressed, the 2nd request would need a 2nd (never-accepted)
+        // connection and time out.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let pool_key = addr.clone();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let _ = stream.set_nodelay(true);
+            let _ = handle_stream(stream, &|request| {
+                json_response(200, &serde_json::json!({ "path": request.path }))
+            });
+        });
+
+        for i in 0..5 {
+            let response: Value = post_json_with_options(
+                &addr,
+                &format!("/p{i}"),
+                &serde_json::json!({ "i": i }),
+                HttpRequestOptions {
+                    connect_timeout_ms: 200,
+                    io_timeout_ms: 500,
+                    max_retries: 1,
+                },
+            )
+            .unwrap();
+            assert_eq!(response["path"], format!("/p{i}"));
+        }
+
+        // Exactly one idle socket should be pooled for this destination.
+        let pooled =
+            CLIENT_CONN_POOL.with(|pool| pool.borrow().get(&pool_key).map(Vec::len).unwrap_or(0));
+        assert_eq!(pooled, 1, "expected the keep-alive socket to be pooled for reuse");
+
+        // Closing the pooled socket lets the server loop observe EOF and exit.
+        CLIENT_CONN_POOL.with(|pool| {
+            pool.borrow_mut().remove(&pool_key);
+        });
+        server.join().unwrap();
     }
 }

@@ -159,13 +159,44 @@ For ingest-heavy enterprise workloads (metadata KV + large attachments):
   latencies; scale out horizontally beyond that (single-box throughput plateaus ~5,300 ops/s
   by 16 cores until the connection-per-request and per-client-lock limits are addressed).
 
+## Follow-up optimization pass
+
+### Iteration 4 — HTTP/1.1 keep-alive + client connection pooling
+
+**Change (`src/http.rs`):** the datanode server now serves every request on a connection in a
+keep-alive loop (`Connection: keep-alive`, honoring `Connection: close`, with an idle-reap
+read timeout) instead of one-request-then-close; the client keeps a **thread-local pool of
+idle sockets per destination** and reuses them, falling back to a fresh connection (and
+retrying transparently) when a pooled socket has been reaped. This removes the per-request TCP
+handshake **and** the per-request server thread spawn that were the churn source behind the
+~5.3k single-box plateau.
+
+**Measurement note (important):** absolute QPS on this single box drifts with host thermal / IO
+state between sessions (the same binary measured ~5.3k in the baseline session and ~2.5-3.8k
+here after many back-to-back builds). To remove that drift the before→after was taken as an
+**interleaved A/B**: OLD (commit 29250fdd, connection-per-request) and NEW (keep-alive) binaries
+run alternately in the same session, 4-5 reps each, medians reported. Read the **deltas**.
+
+| Config | OLD ops/s (med) | NEW ops/s (med) | Δ throughput | OLD read p50 | NEW read p50 | OLD write p50 | NEW write p50 |
+|---|---|---|---|---|---|---|---|
+| 8 CPU · 16 workers · 8 datanodes | 2,560 | **3,756** | **+47%** | 2.71 ms | **0.74 ms** (−73%) | 4.76 ms | 2.92 ms |
+| 16 CPU · 24 workers · 8 datanodes | 1,993 | **3,035** | **+52%** | 4.78 ms | **1.97 ms** (−59%) | 8.20 ms | 5.49 ms |
+
+Keep-alive delivers **+47-52% mixed throughput** and **−60 to −73% read latency** at both core
+counts, with zero backend errors (the pooled-socket reuse was confirmed: `backend_errors = 0`,
+route-cache hit-rate unchanged). Reads benefit most because they no longer pay a handshake per
+lookup. A unit test (`keep_alive_reuses_a_single_connection_for_many_requests`) pins the
+behavior: a server that accepts exactly one connection serves five sequential requests over it.
+
 ## Correctness & safety
 
-- Code change this work introduces (`src/http.rs`): set `TCP_NODELAY` on both accepted
-  server sockets and client sockets, and coalesce header+body into a single write on each
-  side. Library build clean; single-threaded lib suite **604 passed / 1 failed** — the one
-  failure (`data_node … storage_manager … jitter_backoff`) is the pre-existing environmental
-  flake also present on the `main` baseline (604/1). **Zero regressions.**
+- Iteration 0-3 code change (`src/http.rs`): `TCP_NODELAY` on accepted server + client sockets,
+  header+body coalesced into a single write. Iteration 4 (`src/http.rs`): HTTP keep-alive server
+  loop + thread-local client connection pool (above).
+- Single-threaded lib suite **604 passed / 1 failed** — the one failure
+  (`data_node … storage_manager … jitter_backoff`) is the pre-existing environmental flake also
+  present on the `main` baseline (604/1). **Zero regressions.** Two `http::tests` (keep-alive
+  reuse; Content-Length framing) pass.
 - New file `examples/large_blob_throughput_bench.rs` (FileObjectStore always; MatrixObject
   under `--features matrixobject`).
 
