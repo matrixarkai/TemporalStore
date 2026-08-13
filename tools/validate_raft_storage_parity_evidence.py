@@ -153,7 +153,7 @@ AREAS: tuple[ParityArea, ...] = (
             RustEvidence(
                 "crates/temporalstore-rust/src/raft/tests.rs",
                 (
-                    "data_raft_log_codec_round_trips_cxx_style_header",
+                    "data_raft_log_codec_round_trips_native_style_header",
                 ),
             ),
             RustEvidence(

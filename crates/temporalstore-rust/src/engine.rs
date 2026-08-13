@@ -385,7 +385,7 @@ impl TemporalEngine {
             if !defer_bucket_index_reconstruct() {
                 refresh_bucket_runtime_flags(shard);
             }
-            // Parity with TemporalStore (partition.h OnExecuteCmdDone): every
+            // Every
             // write records a WAL entry (StringModel::SetValue -> WritePage).
             // async_storage only changes whether the commit BLOCKS: sync -> fsync,
             // async (or bulk backfill) -> buffered, no fsync (op_logger_->Commit
@@ -400,8 +400,8 @@ impl TemporalEngine {
                         // A synchronous write whose durable WAL commit failed is NOT durable: the
                         // WAL is the recovery source of truth (replayed on load), so returning ok
                         // would tell the client a write that is gone after a crash succeeded.
-                        // surfaces the wal Commit failure to the client (partition.h
-                        // OnExecuteCmdDone: it copies the failed commit status into the response)
+                        // surfaces the wal Commit failure to the client
+                        // The failed commit status is copied into the response.
                         // rather than acking a non-durable write. Match that instead of swallowing
                         // the error. (async/bulk mode is fire-and-forget --
                         // op_logger_->Commit(nullptr,nullptr) -- so its append errors stay
@@ -928,7 +928,7 @@ impl TemporalEngine {
         let storage_manager_phase_api_ready = storage_manager.completed
             && expected_stages.iter().all(|stage| {
                 storage_manager
-                    .cxx_stage_order
+                    .native_stage_order
                     .iter()
                     .any(|observed| observed == stage)
                     && storage_manager
@@ -1011,7 +1011,7 @@ impl TemporalEngine {
                 .as_ref()
                 .map(|report| report.stream_record_count)
                 .unwrap_or_default(),
-            storage_manager_stage_order: storage_manager.cxx_stage_order,
+            storage_manager_stage_order: storage_manager.native_stage_order,
             blockers,
             evidence: vec![
                 "slot/object/page authority is reported from the first-class slot index"

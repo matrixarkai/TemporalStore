@@ -1591,7 +1591,7 @@ fn storage_manager_cycle_runs_prepare_reclaim_evict_expire_compact_and_index_gc(
             >= 1
     );
     assert_eq!(
-        report.cxx_stage_order,
+        report.native_stage_order,
         vec![
             "prepare",
             "reclaim_wal",

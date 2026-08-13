@@ -10,7 +10,7 @@ impl TemporalEngine {
         request: StorageManagerCycleRequest,
     ) -> StorageManagerCycleReport {
         let cycle_started_unix_ms = now_ms();
-        let cxx_stage_order = [
+        let native_stage_order = [
             "prepare",
             "reclaim_wal",
             "expire",
@@ -895,7 +895,7 @@ impl TemporalEngine {
         );
 
         let production_parity_slice = errors.is_empty()
-            && cxx_stage_order
+            && native_stage_order
                 .iter()
                 .all(|stage| stages.iter().any(|report| &report.stage == stage))
             && stages.iter().all(|stage| stage.enabled)
@@ -903,7 +903,7 @@ impl TemporalEngine {
         StorageManagerCycleReport {
             shard_id: request.shard_id,
             dry_run: request.dry_run,
-            cxx_stage_order,
+            native_stage_order,
             completed: errors.is_empty(),
             production_parity_slice,
             pressure_snapshot: pressure_signals.clone(),

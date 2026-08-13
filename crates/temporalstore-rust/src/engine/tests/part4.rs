@@ -674,7 +674,7 @@ fn sync_write_surfaces_wal_commit_failure_instead_of_acking_ok() {
     // Durability parity: a synchronous write whose durable WAL commit fails must NOT be acked ok.
     // The WAL is the recovery source of truth, so a swallowed append error would tell the client a
     // write that is gone after a crash succeeded. surfaces the wal Commit failure
-    // (partition.h OnExecuteCmdDone). We inject the failure by replacing the WAL file with a
+    // We inject the failure by replacing the WAL file with a
     // directory so the next durable append cannot open it for writing (EISDIR fails even for
     // root, unlike a chmod which root bypasses).
     let dir = tempfile::tempdir().unwrap();
@@ -2263,7 +2263,7 @@ fn storage_production_readiness_reports_warnings_without_blocking_dirty_shard() 
     assert_eq!(report.unreadable_page_ref_count, 0);
     assert_eq!(report.owner_mismatch_page_ref_count, 0);
     assert!(report.log_compatibility.rust_native_replay_safe);
-    assert!(!report.log_compatibility.cxx_binary_compatible);
+    assert!(!report.log_compatibility.native_binary_compatible);
     assert_eq!(
         report.log_compatibility.wal_format,
         "rust-jsonl-command-v1"
@@ -2278,10 +2278,10 @@ fn storage_production_readiness_reports_warnings_without_blocking_dirty_shard() 
     );
     assert!(report.log_compatibility.migration_required);
     assert!(report.log_compatibility.golden_conversion_required);
-    assert!(!report.log_compatibility.cxx_reader_supported);
-    assert!(!report.log_compatibility.cxx_writer_supported);
+    assert!(!report.log_compatibility.native_reader_supported);
+    assert!(!report.log_compatibility.native_writer_supported);
     assert!(report.page_format_compatibility.rust_native_read_safe);
-    assert!(!report.page_format_compatibility.cxx_page_header_compatible);
+    assert!(!report.page_format_compatibility.native_page_header_compatible);
     assert_eq!(
         report.page_format_compatibility.page_format,
         "rust-page-envelope-v6"
@@ -2295,12 +2295,12 @@ fn storage_production_readiness_reports_warnings_without_blocking_dirty_shard() 
     assert!(
         !report
             .page_format_compatibility
-            .cxx_page_header_reader_supported
+            .native_page_header_reader_supported
     );
     assert!(
         !report
             .page_format_compatibility
-            .cxx_page_header_writer_supported
+            .native_page_header_writer_supported
     );
     assert!(report.page_format_compatibility.checksum_protected);
     assert!(report.page_format_compatibility.object_ids_embedded);
@@ -2308,7 +2308,7 @@ fn storage_production_readiness_reports_warnings_without_blocking_dirty_shard() 
 }
 
 #[test]
-fn storage_log_compatibility_report_counts_jsonl_sequences_and_cxx_gaps() {
+fn storage_log_compatibility_report_counts_jsonl_sequences_and_native_gaps() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -2336,8 +2336,8 @@ fn storage_log_compatibility_report_counts_jsonl_sequences_and_cxx_gaps() {
     assert_eq!(report.shard_id, 1);
     assert_eq!(report.compatibility_mode, "rust_native_migration_only");
     assert!(report.migration_required);
-    assert!(!report.cxx_reader_supported);
-    assert!(!report.cxx_writer_supported);
+    assert!(!report.native_reader_supported);
+    assert!(!report.native_writer_supported);
     assert!(report.golden_conversion_required);
     assert_eq!(report.wal_last_sequence, 2);
     assert_eq!(report.index_log_last_sequence, 2);
@@ -2346,7 +2346,7 @@ fn storage_log_compatibility_report_counts_jsonl_sequences_and_cxx_gaps() {
     assert!(report.wal_bytes > 0);
     assert!(report.index_log_bytes > 0);
     assert!(report.rust_native_replay_safe);
-    assert!(!report.cxx_binary_compatible);
+    assert!(!report.native_binary_compatible);
     assert!(report
         .compatibility_gaps
         .iter()
@@ -2391,11 +2391,11 @@ fn storage_page_format_compatibility_report_counts_zones_and_header_gaps() {
     assert_eq!(report.rust_envelope_version, 6);
     assert_eq!(report.compatibility_mode, "rust_envelope_migration_only");
     assert!(report.migration_required);
-    assert!(!report.cxx_page_header_reader_supported);
-    assert!(!report.cxx_page_header_writer_supported);
+    assert!(!report.native_page_header_reader_supported);
+    assert!(!report.native_page_header_writer_supported);
     assert!(report.golden_conversion_required);
     assert!(report.rust_native_read_safe);
-    assert!(!report.cxx_page_header_compatible);
+    assert!(!report.native_page_header_compatible);
     assert!(report.checksum_protected);
     assert!(report.object_ids_embedded);
     assert!(report.routing_buckets_embedded);

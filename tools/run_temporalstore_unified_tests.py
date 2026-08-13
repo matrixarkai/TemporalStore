@@ -127,7 +127,7 @@ NATIVE_ADAPTER_STATUSES = {
 }
 STATIC_NATIVE_MODES = {
     "static",
-    "rust_executable_cxx_static",
+    "rust_executable_native_static",
 }
 COMPARISON_OUTPUT_FIELDS = {
     "rust_only_misses",

@@ -951,7 +951,7 @@ fn durable_index_survives_restart_and_points_to_page_file() {
 fn async_write_survives_restart_via_wal_replay_like_native() {
     // parity: an async_storage write records a WAL entry but defers page/
     // index materialization to the background dump. If the crash beats the dump,
-    // ObjectManager::Load() replays the wal and recovers the write. Rust must replay
+    // Startup load replays the wal and recovers the write. Rust must replay
     // its WAL on shard load the same way, or the async write is silently lost.
     let dir = tempfile::tempdir().unwrap();
     let page_dir = dir.path().join("pages");
@@ -1178,7 +1178,7 @@ fn eviction_ranks_victims_least_recently_used_first_like_native() {
 
 #[test]
 fn wal_replay_gap_refuses_load_like_dataloss() {
-    // ObjectManager::ReplayWal returns DataLoss and aborts Load on a hole in the
+    // WAL replay returns DataLoss and aborts load on a hole in the
     // retained wal. Rust must likewise refuse the load (not-loaded) rather than
     // silently serve a truncated prefix.
     let dir = tempfile::tempdir().unwrap();

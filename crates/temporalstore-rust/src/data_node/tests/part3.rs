@@ -2032,7 +2032,7 @@ fn storage_manager_cycle_runs_as_bounded_background_data_node_task() {
         response.report
     );
     assert_eq!(
-        response.report.cxx_stage_order,
+        response.report.native_stage_order,
         vec![
             "prepare",
             "reclaim_wal",

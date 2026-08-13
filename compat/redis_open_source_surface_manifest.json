@@ -48,8 +48,8 @@
     "scripting",
     "streams"
   ],
-  "cxx_command_count": 16,
-  "cxx_commands": [
+  "native_command_count": 16,
+  "native_commands": [
     "INFO",
     "AUTH",
     "PING",
@@ -151,5 +151,5 @@
     "HSETANDGET"
   ],
   "rust_normal_helpers": [],
-  "unsupported_policy": "Only commands listed in cxx_commands and rust_extra_commands are public in the first open-source release; all other Redis-style commands and capabilities fail closed without being part of the public contract. CONTROL* is the preferred Control State spelling; CONTROL_STATE* remains a compatibility alias during migration."
+  "unsupported_policy": "Only commands listed in native_commands and rust_extra_commands are public in the first open-source release; all other Redis-style commands and capabilities fail closed without being part of the public contract. CONTROL* is the preferred Control State spelling; CONTROL_STATE* remains a compatibility alias during migration."
 }

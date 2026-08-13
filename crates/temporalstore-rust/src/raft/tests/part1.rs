@@ -49,7 +49,7 @@ fn matrixraft_parity_report_tracks_distributed_readiness_fields() {
 
 // shared-corpus: raft_matrixraft_wal_log_codec_segment_lifecycle
 #[test]
-fn data_raft_log_codec_round_trips_cxx_style_header() {
+fn data_raft_log_codec_round_trips_native_style_header() {
     let entry = DataRaftLogCodecEntry {
         shard_id: 7,
         raft_index: 11,

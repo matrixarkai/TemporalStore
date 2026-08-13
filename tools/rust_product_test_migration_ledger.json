@@ -1924,9 +1924,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::storage_log_compatibility_report_counts_jsonl_sequences_and_cxx_gaps",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::storage_log_compatibility_report_counts_jsonl_sequences_and_native_gaps",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "storage_log_compatibility_report_counts_jsonl_sequences_and_cxx_gaps",
+      "test_name": "storage_log_compatibility_report_counts_jsonl_sequences_and_native_gaps",
       "family": "Sequence",
       "classification": "move_to_shared",
       "next_migration_target": "Sequence shared cases for ordering, bounds, and batch/filter semantics",
@@ -2770,9 +2770,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::data_raft_log_codec_round_trips_cxx_style_header",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::data_raft_log_codec_round_trips_native_style_header",
       "file": "crates/temporalstore-rust/src/raft/tests.rs",
-      "test_name": "data_raft_log_codec_round_trips_cxx_style_header",
+      "test_name": "data_raft_log_codec_round_trips_native_style_header",
       "family": "Raft",
       "classification": "move_to_shared",
       "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",

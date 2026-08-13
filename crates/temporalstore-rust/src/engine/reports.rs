@@ -3133,7 +3133,7 @@ pub type StorageManagerPressureSnapshot = StorageManagerPressureSignals;
 pub struct StorageManagerCycleReport {
     pub shard_id: ShardId,
     pub dry_run: bool,
-    pub cxx_stage_order: Vec<String>,
+    pub native_stage_order: Vec<String>,
     pub completed: bool,
     pub production_parity_slice: bool,
     #[serde(default)]
@@ -3318,13 +3318,13 @@ pub struct StorageLogCompatibilityReport {
     #[serde(default)]
     pub migration_required: bool,
     #[serde(default)]
-    pub cxx_reader_supported: bool,
+    pub native_reader_supported: bool,
     #[serde(default)]
-    pub cxx_writer_supported: bool,
+    pub native_writer_supported: bool,
     #[serde(default)]
     pub golden_conversion_required: bool,
     pub rust_native_replay_safe: bool,
-    pub cxx_binary_compatible: bool,
+    pub native_binary_compatible: bool,
     #[serde(rename = "wal_last_sequence")]
     pub wal_last_sequence: u64,
     pub index_log_last_sequence: u64,
@@ -3347,13 +3347,13 @@ pub struct StoragePageFormatCompatibilityReport {
     #[serde(default)]
     pub migration_required: bool,
     #[serde(default)]
-    pub cxx_page_header_reader_supported: bool,
+    pub native_page_header_reader_supported: bool,
     #[serde(default)]
-    pub cxx_page_header_writer_supported: bool,
+    pub native_page_header_writer_supported: bool,
     #[serde(default)]
     pub golden_conversion_required: bool,
     pub rust_native_read_safe: bool,
-    pub cxx_page_header_compatible: bool,
+    pub native_page_header_compatible: bool,
     pub checksum_protected: bool,
     pub object_ids_embedded: bool,
     #[serde(rename = "routing_slots_embedded")]

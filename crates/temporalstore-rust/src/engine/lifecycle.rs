@@ -134,7 +134,7 @@ impl TemporalEngine {
         // If the latest durable dump manifest is newer than the served index, install
         // it as the load base first (recovers data already dumped into a manifest and
         // then WAL-GC'd). analog: index_->Load() restores the dumped index before
-        // ObjectManager::Load() replays the wal on top.
+        // Startup load replays the wal on top.
         let installed_manifest_watermark =
             match self.install_latest_manifest_if_newer_on_load(request.shard_id) {
                 Ok(watermark) => watermark,
@@ -144,7 +144,7 @@ impl TemporalEngine {
                 Err(status) => return LoadShardResponse { status },
             };
         let loaded = self.load_index(request.shard_id, eager_cache_warm_on_load());
-        // WAL replay watermark, Mirroring ObjectManager::Load() reading
+        // WAL replay watermark, matching how startup load reads
         // index_->GetDumpedLogId(): installed manifest -> its wal_sequence; no index
         // file -> 0 (fresh/async-only shard, replay whole retained WAL); anchored index
         // -> its anchor; unanchored (pre-field) index -> current last_sequence (replay
@@ -208,7 +208,7 @@ impl TemporalEngine {
             .entry(AdmissionScope::Shard(request.shard_id))
             .or_default();
         // Replay any WAL records not yet reflected in the loaded index, rebuilding
-        // in-memory state the way ObjectManager::Load() replays the wal. Without
+        // in-memory state the way startup load replays the wal. Without
         // this an async_storage write (WAL entry recorded, page/index deferred to the
         // dump) is silently lost on restart if the crash beats the dump.
         if let Err(status) = self.replay_wal_into_shard(request.shard_id, replay_watermark) {
@@ -286,7 +286,7 @@ impl TemporalEngine {
     /// Replay WAL records with sequence greater than `watermark`, re-driving each
     /// through execute (which rebuilds the bucket index + model maps) WITHOUT
     /// re-appending to the WAL or re-persisting the index per record, then anchor and
-    /// persist the reconstructed index once. Mirrors ObjectManager::ReplayWal,
+    /// persist the reconstructed index once. Matches the WAL replay path,
     /// including its strict sequence-continuity check.
     pub(super) fn replay_wal_into_shard(
         &self,
@@ -311,7 +311,7 @@ impl TemporalEngine {
         let mut expected = watermark.saturating_add(1);
         let mut replayed_through = watermark;
         for record in pending {
-            // Strict sequence continuity, Matching ObjectManager::ReplayWal, which
+            // Strict sequence continuity, matching the WAL replay, which
             // returns DataLoss and aborts Load on a hole in the retained WAL. A gap means
             // a WAL record was lost (partial-GC crash / corruption); refuse the load
             // rather than silently serve a truncated prefix.

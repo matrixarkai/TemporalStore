@@ -126,7 +126,7 @@ pub(super) struct ShardState {
     pub(super) bucket_index: CoreIndex,
     /// Highest WAL sequence whose effect is already materialized in this
     /// serialized index. On shard load, WAL records with sequence greater than this
-    /// are replayed to rebuild in-memory state, Mirroring ObjectManager::Load()
+    /// are replayed to rebuild in-memory state, matching startup load
     /// replaying the wal from index_->GetDumpedLogId(). `None` marks an index
     /// written before this anchor existed (treated as fully authoritative -> no
     /// replay); a missing index file replays the whole retained WAL onto empty state.

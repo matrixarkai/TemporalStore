@@ -2987,7 +2987,7 @@
             "description": "Shared storage cold-read case: logical model map is unavailable, so Rust and must follow slot/object/page index address into cache, disk/page store, or shared-store fallback and refill memory.",
             "kind": "storage_cold_read_page_address_fallback",
             "migration_case": "native_logical_storage_models_packed_timestamped_pages",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_path": "slot_page_address_to_cache_disk_shared_store",
             "rust_runner": "cargo test -p temporalstore-rust cold_read_uses_slot_page_address_after_cache_and_model_maps_are_cleared --lib -- --test-threads=1",
             "suite": "native_storage_parity"
@@ -3021,7 +3021,7 @@
             "native_runner_contract": "SlotStore runner emits the same layout state counts and runtime flags from SlotMap, SlotNode, and PageIndex structures.",
             "description": "Shared SlotStore case for empty, single-object, single-page-object, multi-page-object, and multi-object layouts plus dirty, deleted, loading, in-memory, and TTL flags.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "rust_runner": "cargo test -p temporalstore-rust slot_store_reports_all_layout_states_and_runtime_flags --lib -- --test-threads=1",
             "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
             "suite": "native_storage_parity"
@@ -3040,7 +3040,7 @@
             "native_runner_contract": "ObjectManager runner emits matching hot, cold, deleted residency, object-page ownership, dirty generation, and reload-stability fields.",
             "description": "Shared ObjectManager case for hot/cold/tombstone object residency, object-page ownership transitions, compaction, dump/load install, unload/load recovery, and conflict-free owner refs.",
             "kind": "storage_disk_shared_store_persistence_parity",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "rust_runner": "cargo test -p temporalstore-rust object_manager_runtime_report_tracks_residency_layout_and_tombstones --lib -- --test-threads=1",
             "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
             "suite": "native_storage_parity"
@@ -3059,7 +3059,7 @@
             "native_runner_contract": "compaction runner emits before/after stale density, tombstone preservation, rewritten page/object counts, and per-model layout policy evidence.",
             "description": "Shared compaction case for model-layout-aware rewrites, tombstone preservation, stale-page density improvement, packed timestamped pages, context/Risk page-backed layouts, and slot layout transition evidence.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "rust_runner": "cargo test -p temporalstore-rust page_compaction_reports_model_layouts_tombstones_object_pages_and_density --lib -- --test-threads=1",
             "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
             "suite": "native_storage_parity"
@@ -3082,7 +3082,7 @@
               "raft"
             ],
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "crates/temporalstore-rust/src/types.rs",
               "crates/temporalstore-rust/src/engine.rs",
@@ -3138,7 +3138,7 @@
           "command": {
             "native_contract": "ObjectManager/PageStore persists local disk state, restores a checkpoint into a follower, replays sync and async WAL entries, and blocks unsafe cursor GC.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/partition/storage/object_manager.*",
               "src/partition/storage/page_store.*",
@@ -3166,7 +3166,7 @@
           "command": {
             "native_contract": "OpLogger exposes versioned OpLog LogItem metadata, AppendReplayedLog idempotence, Commit flush durability, stream length/persistent length, start/current sequence, and truncate/replay APIs.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/partition/storage/op_logger.cc",
               "src/partition/storage/op_logger.h"
@@ -4093,7 +4093,7 @@
           "command": {
             "description": "Shared conformance control-plane case for topology-version changes. Rust validates table topology sync, proxy/meta topology refresh, and readiness evidence; surfaces keep the caller migration and deployment routing hooks visible.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/client/temporalstore_client.cc",
               "src/client/temporalstore_client.h",
@@ -4116,7 +4116,7 @@
           "command": {
             "description": "Shared conformance stale-route invalidation case covering client stale cached routes, proxy topology-version guarded invalidation, and one-refresh retry behavior.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/client/router_factory.h",
               "src/client/server_pool.h",
@@ -4138,7 +4138,7 @@
           "command": {
             "description": "Shared conformance proxy admission case for drop-percent, degraded/overload reporting, and request preflight policy counters.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/proxy/main.cc",
               "src/proxy/test/proxy_test.cc",
@@ -4160,7 +4160,7 @@
           "command": {
             "description": "Shared conformance table policy case for frozen/not-serving/readonly/write-disabled states rejecting writes before backend execution while allowing safe reads where applicable.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/metaserver_v2/meta/table.cc",
               "src/metaserver_v2/meta/table.h",
@@ -4182,7 +4182,7 @@
           "command": {
             "description": "Shared conformance route quarantine/recovery case for repeated backend failures, quarantined route avoidance, recovery probing, and degraded preflight evidence.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/metaserver_v2/ha/failure_detector.cc",
               "src/metaserver_v2/ha/failure_detector.h",
@@ -4204,7 +4204,7 @@
           "command": {
             "description": "Shared conformance data-node lifecycle case for load, reload, readonly serving, unload, stale load-version rejection, lifecycle write barriers, and restart persistence evidence.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/partition/test/partition_load_test.cc",
               "src/partition/test/partition_test.cc",
@@ -4226,7 +4226,7 @@
           "command": {
             "description": "Shared conformance data-node ServerService alias case for lifecycle-token, load, reload, unload, snapshot, and status route compatibility over the Rust-native migration surface.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/server/service.h"
             ],
@@ -4246,7 +4246,7 @@
           "command": {
             "description": "Shared conformance metaserver scheduler case for scheduler-issued load/reload/unload tokens, stale generation rejection, task retry persistence, and data-node lifecycle callback verification.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/metaserver_v2/fsm.cc",
               "src/metaserver_v2/meta/partition.cc",
@@ -4268,7 +4268,7 @@
           "command": {
             "description": "Shared conformance ingestion case for durable Kafka topic/partition/offset ledger commits, duplicate offset rejection, and valid-record continuation after duplicate detection.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/client/example/queue_ingestion_replay_example.cc",
               "tools/run_queue_ingestion_replay_ubuntu22.sh"
@@ -4290,7 +4290,7 @@
             "description": "Shared conformance cross-subsystem parity case tying storage dump/load and cache recovery, client/proxy topology refresh and admission, data-node lifecycle barriers, metaserver scheduler tokens, and Context agent resource/skill parser workflow evidence into one gate.",
             "expected_runner_command": "TS_NATIVE_UNIFIED_NATIVE_CMD='<native-cross-subsystem-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --native --require-native-native",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "docs/cross_storage_control_agent_parity.md"
             ],
@@ -4310,7 +4310,7 @@
           "command": {
             "description": "Shared conformance ingestion case for consumer-group partition assignment, rebalance-required detection, and backpressure admission under in-flight pressure.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "docs/proxy_ingestion_local_validation.md",
               "tools/run_production_gap_queue_ubuntu22.sh"
@@ -4331,7 +4331,7 @@
           "command": {
             "description": "Shared conformance ingestion case for Flink checkpoint precommit, commit, abort, durable state transitions, and production handshake readiness.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/client/example/module_ingest_query_example.cc",
               "docs/TEMPORALSTORE_ONE_CLUSTER_TEMPORAL_FEATURES.md"
@@ -4352,7 +4352,7 @@
           "command": {
             "description": "Shared conformance ingestion case for malformed/poison record dead-letter capture, export reports, and non-blocking good-record ingestion.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/client/example/proxy_ingestion_pressure_example.cc",
               "docs/production_gap_queue_runbook.md"
@@ -4373,7 +4373,7 @@
           "command": {
             "description": "Shared conformance ingestion case for max Kafka lag, committed offset, dead-letter counters, and Prometheus/state-report metric visibility.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "docs/runtime_tuning.md",
               "docs/TEMPORALSTORE_AWS_SCALE30_PROMETHEUS_2026-06-07.md"
@@ -4394,7 +4394,7 @@
           "command": {
             "description": "Shared conformance ingestion case for restart/failover idempotence: committed Kafka offsets and Flink checkpoint state prevent duplicate writes after replay.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "tools/run_soak_profile_ubuntu22.sh",
               "docs/client_proxy_data_meta_production_gap_plan.md"
@@ -4416,7 +4416,7 @@
             "description": "Shared conformance Context pipeline case for management readiness, batch ingest/extract, retrieval handoff, provider routing, and reference-style Context block construction.",
             "expect_ingest_extract_fanout_counts": true,
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "docs/context_extraction_injection_workflow.md",
               "docs/native_temporalstore_api_parity.md"
@@ -4437,7 +4437,7 @@
           "command": {
             "description": "Shared conformance Context retrieval case for QA-style synonym and adjacent-phrase ranking, covering payment/fraud wording against checkout/risk memories.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/model/context_model.h"
             ],
@@ -4457,7 +4457,7 @@
           "command": {
             "description": "Shared conformance Context pipeline case for reference-style multi-hop, temporal, update, stale-memory, open-domain, and VLM context evidence. Live OSS and VLM benchmark proof must be explicit and cannot be inferred from configuration.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_categories": [
               "multi_hop_reasoning",
               "temporal",
@@ -4486,7 +4486,7 @@
           "command": {
             "description": "Shared conformance Context case for reference-style L2 context blocks, open-source text reader profile switching, VLM provider switching, and provider/model accounting in ingest/extract summaries.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "docs/context_provider_model_switch_contract.md"
             ],
@@ -4506,7 +4506,7 @@
           "command": {
             "description": "Shared conformance Context case for retrieved evidence ordering and prompt-pack injection: current/high-relevance evidence must appear before stale conflicting evidence and audit selected refs must preserve that order.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "docs/context_injection_prompt_pack_contract.md"
             ],
@@ -4526,7 +4526,7 @@
           "command": {
             "description": "Shared conformance Context benchmark-injection case proving ContextEntity/ContextSegment vocabulary maps to node/event storage, source secondary indexes route to the segment, and L0/L1/L2 blocks are injected with audit refs.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "docs/context_benchmark_entity_segment_index_contract.md"
             ],
@@ -4547,7 +4547,7 @@
             "native_reference": "<repo>/src/extension/context/test.cc",
             "description": "Shared conformance Context case translated from WRITE_EXTRACTED_EVENT debug tests: an extracted event writes event_kind, entity, status, source, and event_time_bucket internal indexes, and disabled indexes are not queryable.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "docs/rust_vs_temporalstore_parity_report.md"
             ],
@@ -4567,7 +4567,7 @@
           "command": {
             "description": "Shared conformance Context case translated from TreeEmbeddingSummaryAndCompressionRoundTrip: child refs, embeddings, tree traversal, summaries, compression events, and node-context query must round-trip through TemporalStore.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "docs/context_tree_embedding_summary_compression_contract.md"
             ],
@@ -4587,7 +4587,7 @@
           "command": {
             "description": "Shared conformance Context case translated from TemporalCompressionBuildsReplayableSummaryWithoutDeletingSources: compression creates a replayable summary and leaves raw source events queryable.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "docs/context_temporal_compression_replayable_summary_contract.md"
             ],
@@ -4826,12 +4826,12 @@
               "temporalstore-direct",
               "temporalstore-rust"
             ],
-            "cxx_reference_paths": [
+            "native_reference_paths": [
               "<repo>/tools/matrixark_mcp_server.py"
             ],
             "description": "Shared MatrixArk MCP server can select temporalstore-direct for or temporalstore-rust for Rust; the Rust backend provides the record-log put/get/hset/hget boundary expected by the shared server.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "crates/temporalstore-rust/src/bin/matrixark_record_log.rs",
               "tools/run_matrixark_mcp_server.sh",
@@ -4856,7 +4856,7 @@
             "description": "Validates the Rust context hook behavior used by Codex, Claude, Cursor, and generic agents: accepted payload shapes, transcript flattening, agent-specific session-index paths, source-kind mapping, and event role mapping. parity remains a static gate until the shared MatrixArk MCP runner consumes this case.",
             "expected_runner_command": "TS_NATIVE_UNIFIED_NATIVE_CMD='<native-codex-multi-agent-hook-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --native --require-native-native",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "crates/temporalstore-rust/src/bin/codex_context_hook.rs",
               "docs/rust_codex_hook_integration.md"
@@ -5194,7 +5194,7 @@
         {
           "command": {
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "suite": "native_data_raft_parity",
             "description": "MatrixRaft-style leader election and learner promotion parity: observe no-quorum pre-vote rejection, healed-quorum leader election, learner add/catch-up/promote, auto-promote, and exact-once transfer evidence in one report.",
             "acceptance": {
@@ -6044,7 +6044,7 @@
           "command": {
             "description": "Shared Context pipeline case for ContextEvent, ContextSegment, ContextEntity, child refs, extracted-event fanout, and node-context query behavior.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "docs/rust_code_deep_dive_vs_native.md"
             ],
@@ -6065,7 +6065,7 @@
             "description": "Shared conformance Context model descriptor and wire-payload case for Context model IDs, key families, aliases, and JSON payload round trips for node, event, entity, child, embedding, summary, compression, index, audit, and dirty-marker models.",
             "expect_alias_lookup": true,
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/model/model_context.cc"
             ],
@@ -6085,7 +6085,7 @@
           "command": {
             "description": "Shared Context pipeline case for embedding records, L0/L1 summaries, summary dirty tracking, provider/model selection, and prompt block construction.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "docs/context_ingestion_extraction_retrieval_manual.md"
             ],
@@ -6105,7 +6105,7 @@
           "command": {
             "description": "Shared Context pipeline case for temporal compression, secondary-index filter groups, query debug flow, retrieved evidence ordering, and audit refs.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "docs/rust_matrixark_query_index_debug_flow.md"
             ],
@@ -6125,7 +6125,7 @@
           "command": {
             "description": "Shared control-plane case for multi-proxy topology convergence, backend quarantine, recovery probing, and stale-cache comparison.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/proxy/proxy_server.cc"
             ],
@@ -6145,7 +6145,7 @@
           "command": {
             "description": "Shared control-plane case for metaserver scheduler-issued load/reload/unload tokens and stale generation rejection.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/metaserver_v2/meta_task_scheduler.cc"
             ],
@@ -6165,7 +6165,7 @@
           "command": {
             "description": "Shared control-plane case for data-node load/reload/readonly/unload lifecycle, lifecycle snapshot restore, and restart diagnostics.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/partition/partition_manager.cc"
             ],
@@ -6185,7 +6185,7 @@
           "command": {
             "description": "Shared control-plane case for client read/write retry budgets, topology refresh on version changes, stale route invalidation, and no duplicate unsafe writes.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/client/table_client.cc"
             ],
@@ -6205,7 +6205,7 @@
           "command": {
             "description": "Shared ingestion case for Kafka consumer-group runtime, assignment changes, rebalance-required detection, and backpressure under in-flight pressure.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/client/example/kafka_consumer_group_runtime.cc"
             ],
@@ -6225,7 +6225,7 @@
           "command": {
             "description": "Shared ingestion case for Flink precommit/commit/abort lifecycle across restart/failover idempotence.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/client/example/flink_checkpoint_replay_example.cc"
             ],
@@ -6245,7 +6245,7 @@
           "command": {
             "description": "Shared ingestion case for dead-letter export, lag metrics, committed offsets, and non-blocking valid-record continuation.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "docs/rust_ingestion_api_kafka_flink_20_cycle_plan.md"
             ],
@@ -6565,7 +6565,7 @@
           "command": {
             "description": "Shared ops/scale gate for readiness filtering, external chaos plan, rolling restart, Docker/AWS SLO evidence, and scale workload replay.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "docs/aws_existing_eks_deployment.md",
               "docs/storage_raft_production_readiness_plan.md",
@@ -6589,7 +6589,7 @@
             "description": "Shared conformance ops case for Grafana dashboard, alert, and Prometheus metric-family parity across readiness, Raft, metaserver scheduler, proxy/client, storage/cache, data-node, ingestion, secondary replication, and scale SLO evidence.",
             "expected_runner_command": "TS_NATIVE_UNIFIED_NATIVE_CMD='<native-ops-metrics-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --native --require-native-native",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "docs/ops/temporalstore-dashboard.json",
               "docs/ops/temporalstore-alerts.yml",
@@ -6613,7 +6613,7 @@
             "description": "Shared conformance Context parser case for reference-style resource chunking, stable source refs, heading paths, line ranges, linked refs, code-language metadata, SKILL.md front matter, version/owner scope, allowed tools, triggers, model refs, tag refs, capability sections, tool refs, instruction refs, resource/reference refs, example refs, chunk embeddings, and Rust TemporalStore ingestion/retrieval of parsed chunks.",
             "expected_runner_command": "TS_NATIVE_UNIFIED_NATIVE_CMD='<native-context-resource-skill-parser-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --native --require-native-native",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "tools/matrixark_resource_parser.py",
               "tools/test_matrixark_resource_parser.py",
@@ -6638,7 +6638,7 @@
             "description": "Validates governed resource lifecycle metadata: URI import kind, parser provenance, owner scope, version refresh, stale resource invalidation, watch scheduling, delete markers, and import-kind reporting. Rust executes the production context lifecycle model; parity remains a static gate until the native context resource lifecycle runner consumes this shared case.",
             "expected_runner_command": "TS_NATIVE_UNIFIED_NATIVE_CMD='<native-context-resource-lifecycle-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --native --require-native-native",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "crates/temporalstore-rust/src/context_workflow/tests.rs"
             ],
@@ -6662,7 +6662,7 @@
             "description": "Validates skill registry semantics over parsed SKILL.md records: disabled skills stay registered but are skipped by retrieval, precedence is honored, owner/tool filters are enforced, version updates are reported, and trigger matches drive selected skill ordering. Rust executes the production skill registry model; parity remains a static gate until the native skill registry runner consumes this shared case.",
             "expected_runner_command": "TS_NATIVE_UNIFIED_NATIVE_CMD='<native-context-skill-registry-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --native --require-native-native",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust context_skill_registry_supports_updates_and_retrieval_selection --lib -- --test-threads=1",
             "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
@@ -6684,7 +6684,7 @@
             "description": "Validates the production embedding provider path and summary traversal: OpenAI-compatible chat and embedding calls with no mock fallback, provider metadata, vector dimensions, generated embedding refs, summary embedding candidates, selected summary refs, and expansion into retrieved evidence. Rust executes the live local endpoint fixture; parity remains a static gate until the native context model-provider runner consumes this shared case.",
             "expected_runner_command": "TS_NATIVE_UNIFIED_NATIVE_CMD='<native-context-live-embedding-summary-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --native --require-native-native",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "crates/temporalstore-rust/src/context_workflow/tests.rs#resource_ingest_uses_live_embeddings_and_summary_retrieval"
             ],
@@ -6739,7 +6739,7 @@
             "native_runner_contract": "context debug flow must emit equivalent ContextEvent hot fields plus sidecar/index fanout for resource_ref, skill_ref, entity_ref, source_ref, summary_ref, child refs, compression, dirty markers, and selected evidence ordering.",
             "description": "-aligned context hot schema boundary: ContextEvent stores event id/time/type/confidence/importance/text/ingestion time only; source/resource/skill/entity/summary refs, node links, compression payloads, dirty markers, and query-debug selected refs are sidecar/index records.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "crates/temporalstore-rust/src/context_workflow.rs",
               "docs/rust_context_pipeline_debug_trace.md",
@@ -6785,7 +6785,7 @@
             "native_runner_contract": "storage corpus runner must report equivalent orphan pages, missing refs, stale refs, corrupt bytes, replay boundary, follower cursor retention, cache refill, and shared-store replay evidence.",
             "description": "Shared storage case tying dump/load, recovery, corrupt page/index/oplog/snapshot, follower-safe GC, cache refill, and context sidecar/index refs into one dependency matrix.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "compat/storage_migration_corpus.json",
               "crates/temporalstore-rust/src/page_store.rs",
@@ -6896,7 +6896,7 @@
           "command": {
             "description": "Runs the broad Redis-compatible product command flow through the Rust engine-backed Redis parser; parity remains tied to the Redis/admin/API product surface docs until a native shared runner consumes this case.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "crates/temporalstore-rust/src/redis.rs",
               "docs/rust_product_test_reduction_guard.md"
@@ -8102,7 +8102,7 @@
           "command": {
             "description": "Data-node Raft status/admin election route parity.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/server/test/server_test.cc",
               "src/protocol/server.proto"
@@ -8125,7 +8125,7 @@
           "command": {
             "description": "Data-node Raft apply-health route parity.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/server/metrics.h"
             ],
@@ -8147,7 +8147,7 @@
           "command": {
             "description": "Data-node Raft membership apply route parity.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/server/partition_manager.h",
               "src/metaserver_v2/scheduler/update_membership_task.h"
@@ -8170,7 +8170,7 @@
           "command": {
             "description": "Data-node Raft scale down/up route parity.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/metaserver_v2/service/raft_control_service.h"
             ],
@@ -8192,7 +8192,7 @@
           "command": {
             "description": "Data-node Raft leadership-transfer route parity.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/metaserver_v2/raft_connector.h"
             ],
@@ -8214,7 +8214,7 @@
           "command": {
             "description": "Data-node Raft wait-applied and local-catch-up route parity.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/server/meta_tinker.cc"
             ],
@@ -8237,7 +8237,7 @@
             "description": "Rust executes TemporalEngine load_shard_with, set_config/get_config, update_membership, get_info/get_stats, and unload_shard_with. parity maps to partition/server load/unload, configuration, and membership surfaces.",
             "expected_runner_command": "TS_NATIVE_UNIFIED_NATIVE_CMD='<native-engine-lifecycle-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --native --require-native-native",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "crates/temporalstore-rust/src/engine/lifecycle.rs",
               "src/server/partition_manager.cc",
@@ -8262,7 +8262,7 @@
             "description": "Rust executes TemporalEngine reload_shard_with and validates stale generation rejection, metadata refresh, preserved replica membership, and readonly write rejection. parity maps to partition reload, load version, and readonly serving behavior.",
             "expected_runner_command": "TS_NATIVE_UNIFIED_NATIVE_CMD='<native-engine-lifecycle-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --native --require-native-native",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "crates/temporalstore-rust/src/engine/tests.rs",
               "src/partition/partition.cc"
@@ -8286,7 +8286,7 @@
             "description": "Rust runs a mixed relevant/unrelated context retrieval and emits matrixark_context_query_debug_v1 with secondary-index filter groups, per-group candidate_decisions, dropped candidate reasons, batched summary embedding traversal, selected refs, and injection ordering. parity maps to the MatrixArk query/index debug flow and Context model filter-group diagnostics.",
             "expected_runner_command": "TS_NATIVE_UNIFIED_NATIVE_CMD='<native-context-query-debug-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --native --require-native-native",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "crates/temporalstore-rust/src/context_workflow/query.rs",
               "src/model/model_manager.cc"
@@ -8329,7 +8329,7 @@
             "native_runner_contract": "consumes the same case as object/page/slot lifecycle, storage manager, and shared-store replay parity evidence.",
             "description": "Unified storage/cache case tying per-event async/sync/Raft selection to dump/load, corruption, follower-safe GC, cache refill, and shared-store sync/async replay evidence.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "docs/shared_store_replication.md"
             ],
@@ -8370,7 +8370,7 @@
             "native_runner_contract": "RustRaft scenarios emit the same election/failover/snapshot/membership/secondary-read report shape.",
             "description": "Unified Raft case for data-node and metaserver process rollout, leader election, failover, snapshot install, restart recovery, FSM apply crash-window atomicity, learner add/promote/remove, secondary reads, and lag gates.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "docs/distributed_raft_readiness.md"
             ],
@@ -8426,7 +8426,7 @@
             "native_runner_contract": "context pipeline emits the same event/segment/entity/node/child/embedding/summary/compression/index fanout report.",
             "description": "Unified context case for resource lifecycle, SKILL.md registry semantics, embedding provider metadata, summary-embedding coarse retrieval, secondary indexes, and query debug traces.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "docs/matrixark_resource_skill_parsing_pipeline.md"
             ],
@@ -8473,7 +8473,7 @@
             "native_runner_contract": "client/proxy/metaserver/data-node tests consume the same topology/admission/lifecycle report contract.",
             "description": "Unified control-plane case for topology version changes, stale route invalidation, admission policy, route quarantine/recovery, lifecycle load/reload/unload, and scheduler token rejection.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "docs/client_proxy_control_plane_parity.md"
             ],
@@ -8513,7 +8513,7 @@
             "native_runner_contract": "ingestion runtime emits the same offset/checkpoint/dead-letter/lag/idempotence report contract.",
             "description": "Unified ingestion case for Kafka offset ledger, rebalance/backpressure, Flink precommit/commit/abort, dead letters, lag metrics, and restart/failover idempotence.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "docs/ingestion_rust_parity.md"
             ],
@@ -8535,7 +8535,7 @@
           "command": {
             "kind": "existing_test",
             "suite": "native_ingestion_parity",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "description": "Shared conformance ingestion case for streaming and batch ingestion parity: ordered stream sequence fences, replay duplicate rejection, active in-flight backpressure, batch continuation, durable stream commits, Kafka offsets, Flink checkpoint state, and Prometheus/state-report visibility.",
             "native_runner_contract": "ingestion runtime emits the same streaming/batch report fields: stream_id, start_sequence, committed_sequence, duplicate_count, backpressure_rejected_count, batch accepted/failed counts, Kafka offsets, Flink checkpoints, dead letters, and lag metrics.",
             "rust_runner": "cargo test -p temporalstore-rust streaming_ingestion_ ingestion_batch_executes_api_kafka_and_flink_records --lib -- --test-threads=1",
@@ -8603,7 +8603,7 @@
             "native_runner_contract": "product modules execute the same command/response corpus for Redis/admin/Feature/Sequence/IPS/Risk behavior.",
             "description": "Unified API case covering Redis/admin aliases plus Feature nested point semantics, Sequence edge cases, IPS snap/stat/filter metadata, and Risk CPC/list/manager/debug behavior.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "docs/product_api_rust_parity.md"
             ],
@@ -8650,7 +8650,7 @@
             ],
             "description": "Unified benchmark case for LOCOMO and LongMemEval_s report contracts, requiring Rust TemporalStore backend evidence and separate deterministic/live-reader/paper-comparable labels.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "report_contract": {
               "required_fields": [
                 "benchmark_family",
@@ -8713,14 +8713,14 @@
             "native_runner_contract": "runner emits temporalstore_unified_case_report_v1 for WAL magic/version, partition id, raft index, log id, op/WAL sequence, first/last retained index, segment release floor, and corrupt payload rejection, including latency_ms.",
             "description": "Shared Raft library case for MatrixRaft WAL/log record compatibility: standard data-Raft log headers, command batch payloads, corrupt header rejection, WAL segment first/last index evidence, and snapshot/retention floor accounting.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/partition/storage/data_raft_consensus.cc",
               "src/partition/storage/data_raft_replication.cc",
               "src/partition/storage/data_raft_log.pb.h"
             ],
             "runner": "cmake --build build-ubuntu22/release --target data_raft_replication_test -j2",
-            "rust_runner": "cargo test -p temporalstore-rust data_raft_log_codec_round_trips_cxx_style_header data_raft_log_codec_rejects_bad_header_and_sequence data_raft_command_codec_round_trips_batch_request data_raft_command_codec_round_trips_chunked_timestamped_kv_payload native_data_raft_replication_rejects_corrupt_log_payload --lib -- --test-threads=1",
+            "rust_runner": "cargo test -p temporalstore-rust data_raft_log_codec_round_trips_native_style_header data_raft_log_codec_rejects_bad_header_and_sequence data_raft_command_codec_round_trips_batch_request data_raft_command_codec_round_trips_chunked_timestamped_kv_payload native_data_raft_replication_rejects_corrupt_log_payload --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-library-validation --log <raft-library.json>",
             "suite": "native_data_raft_parity",
             "report_contract": {
@@ -8768,7 +8768,7 @@
             "native_runner_contract": "runner emits read-index and lease evidence with stale leader/follower rejections, minority partition failures, healed follower catch-up, and secondary-read eligibility; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
             "description": "Shared Raft library case for MatrixRaft-style read safety: read-index, leader lease expiry, lagging follower read/write rejection, minority partition rejection, bounded-stale policy, and healed follower catch-up.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "tools/run_data_raft_failover_ubuntu22.sh",
               "tools/run_data_raft_mixed_rw_ubuntu22.sh",
@@ -8824,7 +8824,7 @@
             "native_runner_contract": "runner emits per-peer inflight counts/bytes, append queue depth, reorder queue depth, timeout/drop counters, stale-term append rejection counters, oversized-log rejection, and apply backpressure counters; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
             "description": "Shared Raft library case for MatrixRaft replication pipeline controls: in-flight append limits, retry release, oversized-log rejection, memory replicate bytes, reorder queue gap recovery, stale-term rejection, timeouts, and dropped package metrics.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "tools/run_raft_stress_suite_ubuntu22.sh",
               "src/partition/storage/data_raft_consensus.cc",
@@ -8884,7 +8884,7 @@
             "native_runner_contract": "runner emits snapshot send attempts, chunk retry/backpressure, send timeout, rate limit, install progress, stale snapshot rejection, rollback count, membership-change snapshot evidence, compacted-log rejoin evidence, external snapshot refs, and restart recovery evidence; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms; includes snapshot evidence fields for send timeout, rate limiting, install progress, install rollback, snapshot during membership change, and follower rejoin after compacted logs.",
             "description": "Shared Raft library case for MatrixRaft snapshot sender/downloader lifecycle: chunked install progress, retry/backpressure, stale-term rejection before buffering, external snapshot reference handoff, and restart recovery.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
               "src/partition/storage/data_raft_consensus.cc",
@@ -8950,7 +8950,7 @@
             "native_runner_contract": "runner emits matrixark/TemporalStore report fields for learner add/catch-up/promote/remove, auto-promote, witness role behavior or scoped-blocker status, pending config index, joint consensus restart, leader-transfer exact-once commit IDs, data-node/metaserver process rollout, failover on both planes, secondary lag/catch-up, snapshot restart after compaction, and latency deltas; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms; includes evidence.leader_transfer_exact_once_commit_ids with unique committed Raft indexes for active leader-transfer writes.",
             "description": "Shared Raft library case for MatrixRaft membership roles: learner bootstrap, auto-promote, voter add/remove, leader transfer, witness/pending joint-consensus evidence, and rolling restart persistence of pending joint state.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "tools/run_data_raft_scale_up_down_ubuntu22.sh",
               "tools/run_metaserver_raft_membership_ubuntu22.sh",
@@ -9005,7 +9005,7 @@
             "native_runner_contract": "runner emits transport auth, deadline, retry, inflight, append/vote/snapshot route, and local status evidence using the same temporalstore_unified_case_report_v1 shape, including latency_ms.",
             "description": "Shared Raft library case for production transport contracts: auth token enforcement, deadlines, retry counters, append/vote/snapshot HTTP transport, and inflight release after transport errors.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "tools/run_live_raft_metrics_ubuntu22.sh",
               "src/partition/storage/data_raft_consensus.cc",
@@ -9054,7 +9054,7 @@
           "command": {
             "kind": "existing_test",
             "suite": "native_data_raft_parity",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "description": "Multi-process data-node and metaserver Raft rollout must be proven by spawned processes with independent WAL/snapshot dirs, observed process API writes/mutations, read-index responses, restart recovery, and per-node log-store inspection.",
             "acceptance": {
               "data_node_processes_spawned": true,
@@ -9114,7 +9114,7 @@
           "command": {
             "kind": "existing_test",
             "suite": "native_data_raft_parity",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "description": "Data-node and metaserver failover must both be observed from process-path reports, including post-failover read-index and log-store recovery evidence.",
             "acceptance": {
               "data_node_failover_validated": true,
@@ -9168,7 +9168,7 @@
           "command": {
             "kind": "existing_test",
             "suite": "native_data_raft_parity",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "description": "Membership add/remove under load must emit learner add, catch-up, promote, voter remove, leader transfer, exact-once commit IDs, and stale generation rejection evidence.",
             "acceptance": {
               "learner_add": true,
@@ -9226,7 +9226,7 @@
           "command": {
             "kind": "existing_test",
             "suite": "native_data_raft_parity",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "description": "Secondary lag and catch-up must be measured before secondary-read eligibility is granted; stale follower writes and lagging follower reads must be rejected.",
             "acceptance": {
               "secondary_lag_observed": true,
@@ -9281,7 +9281,7 @@
           "command": {
             "kind": "existing_test",
             "suite": "native_data_raft_parity",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "description": "Snapshot/restart after compaction must prove snapshot install progress, compacted-log rejoin, rollback reporting, restart recovery, and retained-tail replay.",
             "acceptance": {
               "snapshot_install_progress": true,
@@ -9354,7 +9354,7 @@
             "native_runner_contract": "runner emits MatrixRaft admin/local-status and Prometheus metric-family evidence in temporalstore_unified_case_report_v1, including latency_ms.",
             "description": "Shared Raft admin/status case for MatrixRaft-style runtime report fields: capability matrix, read-index/lease counters, per-peer match/next indexes, inflight bytes/count, append/reorder queue depths, snapshot lifecycle counters, transfer-leader state, offline timeout state, and Prometheus metric families.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "tools/run_live_raft_metrics_ubuntu22.sh",
               "src/partition/storage/data_raft_consensus.cc",
@@ -9409,7 +9409,7 @@
             "native_runner_contract": "MatrixRaft local-status/admin runner emits non-vacuous WAL first/last index, quorum peer progress, per-peer runtime pipeline activity, per-peer queue/limit fields, snapshot progress fields, and transfer/election counters before the admin surface is marked complete; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
             "description": "Shared MatrixRaft admin-surface case: Rust and must not mark the status/admin surface complete from API presence alone; durable WAL segment evidence, quorum peer progress, and non-vacuous per-peer pipeline activity are required.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/metaserver_v2/service/raft_control_service.cc"
             ],
@@ -9460,7 +9460,7 @@
             "native_runner_contract": "server/admin runner emits the corresponding MatrixRaft local-status/admin report for comparison; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
             "description": "Shared data-node API case for the Rust-native /raft/control/matrixraft_runtime_admin route and equivalent admin/status surface.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/server/test/server_test.cc",
               "src/protocol/server.proto",
@@ -9508,7 +9508,7 @@
             "native_runner_contract": "storage manager runner emits phase duration, selected slots, skipped reasons, bytes reclaimed, pressure before/after, WAL/index floors, and retention blockers.",
             "description": "Shared storage-manager admin/metrics case for prepare, WAL reclaim, expire, evict, page GC, compaction, and index-GC phase reports.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust server_exposes_storage_manager_metrics_admin_phase_reports --bin server -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-storage-manager-validation --log <storage-manager-admin.json>",
@@ -9528,7 +9528,7 @@
             "native_runner_contract": "cache runner emits eviction/admission/replacement, pinned handle, placement, writeback/backpressure, restart, and latency histogram evidence.",
             "description": "Shared cache parity case for long-running replacement-policy soak under memory/disk pressure, pinned handles, placement semantics, async writeback/backpressure, restart, and latency metrics.",
             "kind": "storage_cache_replacement_policy_soak",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust cache_replacement_policy_soak --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-cache-soak-validation --log <cache-soak.json>",
@@ -9548,7 +9548,7 @@
             "native_runner_contract": "shared runner emits matching temporalstore_unified_case_report_v1 fields for this case.",
             "description": "Shared client direct SDK route-cache case for partition-set/member/version topology, MetaSyncer state, retry-budget defaults, placement hooks, primary-write routing, location-affine secondary reads, stale route invalidation, and topology-version guarded refresh. Rust emits ClientDirectSdkParityReport evidence.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust control_client_partition_set_route_cache --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
@@ -9568,7 +9568,7 @@
             "native_runner_contract": "shared runner emits matching temporalstore_unified_case_report_v1 fields for this case.",
             "description": "Shared client MetaSyncer case for jitter, backoff, per-table deadlines, topology-version refresh, metaserver outage, and cached-route survival.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust control_client_metasync_outage_churn_stress --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
@@ -9588,7 +9588,7 @@
             "native_runner_contract": "shared runner emits matching temporalstore_unified_case_report_v1 fields for this case.",
             "description": "Shared client placement/routing case for deployment-aware routing, location-affine secondary reads, and primary-only writes.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust control_client_deployment_placement_routing_hooks --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
@@ -9608,7 +9608,7 @@
             "native_runner_contract": "shared runner emits matching temporalstore_unified_case_report_v1 fields for this case.",
             "description": "Shared client pipeline case for batching, partial failures, retry-safe vs unsafe writes, timeout propagation, and duplicate write prevention.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust control_client_pipeline_batch_partial_timeout_contract --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
@@ -9628,7 +9628,7 @@
             "native_runner_contract": "shared runner emits matching temporalstore_unified_case_report_v1 fields for this case.",
             "description": "Shared proxy scale case for two-plus proxies under topology churn, stale cache invalidation, backend quarantine, recovery probing, and convergence.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust control_multi_proxy_topology_churn_scale --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
@@ -9648,7 +9648,7 @@
             "native_runner_contract": "shared runner emits matching temporalstore_unified_case_report_v1 fields for this case.",
             "description": "Shared proxy operational surface case for Rust-native aliases covering admin/config/heartbeat/status behavior without brpc/thrift.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust control_proxy_operational_surface_aliases --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
@@ -9668,7 +9668,7 @@
             "native_runner_contract": "shared runner emits matching temporalstore_unified_case_report_v1 fields for this case.",
             "description": "Shared proxy tonic streaming/callback case for long-running request, cancellation, backpressure, and reconnect behavior.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust control_proxy_tonic_streaming_maturity --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
@@ -9688,7 +9688,7 @@
             "native_runner_contract": "shared runner emits matching temporalstore_unified_case_report_v1 fields for this case.",
             "description": "Shared data-node storage case for dump/load atomicity, manifest install, rollback-safe restart, and logical read verification.",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust storage_matrixraft_dump_load_atomicity --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
@@ -9708,7 +9708,7 @@
             "native_runner_contract": "shared runner emits matching temporalstore_unified_case_report_v1 fields for this case.",
             "description": "Shared data-node cache pressure case for GC plus eviction under cold reads: memory miss, disk/page/shared-store fallback, refill, eviction counters, latency samples, and restart recovery.",
             "kind": "storage_matrixraft_cache_refill_pressure",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust cold_index_page_address_reads_from_disk_cache_or_block_store_and_refills_memory --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
@@ -9753,7 +9753,7 @@
               "wal_index_log_floors"
             ],
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_flags --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
@@ -9774,7 +9774,7 @@
           "command": {
             "native_contract": "ObjectManager/PageStore cold read reloads by PageAddress after eviction and preserves logical reads",
             "kind": "storage_cache_cold_read_after_eviction",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/partition/storage/test/cold_read_eviction_shared_test.cc"
             ],
@@ -9800,7 +9800,7 @@
           "command": {
             "native_contract": "StorageManager merged dump/load install is atomic across slots and reports stale object/page conflicts",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/partition/storage/test/merged_dump_load_interruption_shared_test.cc"
             ],
@@ -9831,7 +9831,7 @@
             ],
             "native_contract": "MatrixRaft process harness proves per-node WAL status, read-index, restart recovery, and log-store inspection",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/partition/storage/test/raft_process_path_log_inspection_shared_test.cc"
             ],
@@ -9858,7 +9858,7 @@
           "command": {
             "native_contract": "client/proxy handles topology churn with retry-safe classification, stale route invalidation, quarantine, and convergence",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/proxy/test/client_proxy_route_churn_shared_test.cc"
             ],
@@ -9883,7 +9883,7 @@
           "command": {
             "native_contract": "context pipeline writes resource, skill, entity, summary, embedding, dirty marker, and secondary index records with restart-safe lookup",
             "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "required_paths": [
               "src/context/test/resource_skill_secondary_index_shared_test.cc"
             ],
@@ -9907,7 +9907,7 @@
         {
           "command": {
             "suite": "native_storage_parity",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "report_schema": "temporalstore_unified_case_report_v1",
             "native_runner_contract": "runner emits the same case id, status, observed fields, latency, and mismatch list; until native execution is wired this remains a static surface gate.",
             "kind": "storage_slot_object_block_index_authority",
@@ -9953,7 +9953,7 @@
         {
           "command": {
             "suite": "native_storage_parity",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "report_schema": "temporalstore_unified_case_report_v1",
             "native_runner_contract": "runner emits the same case id, status, observed fields, latency, and mismatch list; until native execution is wired this remains a static surface gate.",
             "kind": "storage_slot_layout_transitions",
@@ -9996,7 +9996,7 @@
         {
           "command": {
             "suite": "native_storage_parity",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "report_schema": "temporalstore_unified_case_report_v1",
             "native_runner_contract": "runner emits the same case id, status, observed fields, latency, and mismatch list; until native execution is wired this remains a static surface gate.",
             "kind": "storage_block_address_fallback",
@@ -10033,7 +10033,7 @@
         {
           "command": {
             "suite": "native_storage_parity",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "report_schema": "temporalstore_unified_case_report_v1",
             "native_runner_contract": "runner emits the same case id, status, observed fields, latency, and mismatch list; until native execution is wired this remains a static surface gate.",
             "kind": "storage_stream_segment_manifest_rebuild",
@@ -10078,7 +10078,7 @@
         {
           "command": {
             "suite": "native_storage_parity",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "report_schema": "temporalstore_unified_case_report_v1",
             "native_runner_contract": "runner emits the same case id, status, observed fields, latency, and mismatch list; until native execution is wired this remains a static surface gate.",
             "kind": "storage_model_aware_block_compaction",
@@ -10122,7 +10122,7 @@
         {
           "command": {
             "suite": "native_storage_parity",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "report_schema": "temporalstore_unified_case_report_v1",
             "native_runner_contract": "runner emits the same case id, status, observed fields, latency, and mismatch list; until native execution is wired this remains a static surface gate.",
             "kind": "storage_gc_eviction_cold_reads",
@@ -10165,7 +10165,7 @@
         {
           "command": {
             "suite": "native_storage_parity",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "report_schema": "temporalstore_unified_case_report_v1",
             "native_runner_contract": "runner emits the same case id, status, observed fields, latency, and mismatch list; until native execution is wired this remains a static surface gate.",
             "kind": "storage_wal_index_gc_reclaim",
@@ -10206,7 +10206,7 @@
         {
           "command": {
             "suite": "native_storage_parity",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "report_schema": "temporalstore_unified_case_report_v1",
             "native_runner_contract": "runner emits the same case id, status, observed fields, latency, and mismatch list; until native execution is wired this remains a static surface gate.",
             "kind": "storage_cache_replacement_soak",
@@ -10241,7 +10241,7 @@
         {
           "command": {
             "suite": "native_storage_parity",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "report_schema": "temporalstore_unified_case_report_v1",
             "native_runner_contract": "runner validates equivalent storage tuning defaults and public knob names; until native execution is wired this remains a static surface gate.",
             "kind": "existing_test",
@@ -11783,7 +11783,7 @@
           "command": {
             "kind": "existing_test",
             "suite": "native_storage_parity",
-            "mode": "rust_executable_cxx_static",
+            "mode": "rust_executable_native_static",
             "description": "Shared conformance storage API and data-structure case for slot/object/page-first authority, SlotStore layout states, ObjectManager runtime, block-address metadata, stream-backed extent lifecycle with legacy zone aliases, block-store segment indexes, and StorageManager phase/pressure/merged-dump-load surfaces.",
             "native_runner_contract": "emits comparable Index -> SlotMap -> SlotNode -> PageIndex/Object, Stream/Zone, PageStore/BlockStore, and StorageManager API fields for case-by-case comparison.",
             "rust_runner": "cargo test -p temporalstore-rust storage_data_structure_api_parity_report_covers_stream_block_and_manager_surfaces --lib -- --test-threads=1",

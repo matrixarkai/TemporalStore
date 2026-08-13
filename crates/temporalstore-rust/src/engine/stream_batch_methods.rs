@@ -315,7 +315,7 @@ impl TemporalEngine {
         }
         if mutated_any {
             refresh_bucket_runtime_flags(shard);
-            // Parity with TemporalStore (partition.h OnExecuteCmdDone): every
+            // Every
             // write records a WAL entry (StringModel::SetValue -> WritePage).
             // async_storage only changes whether the commit BLOCKS: sync -> fsync,
             // async (or bulk backfill) -> buffered, no fsync (op_logger_->Commit

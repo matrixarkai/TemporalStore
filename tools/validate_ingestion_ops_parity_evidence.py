@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CORPUS = ROOT / "compat" / "unified_temporalstore_cases.json"
 INGESTION_SUITE = "native_ingestion_parity"
-RUST_EXECUTABLE_MODE = "rust_executable_cxx_static"
+RUST_EXECUTABLE_MODE = "rust_executable_native_static"
 
 
 @dataclass(frozen=True)

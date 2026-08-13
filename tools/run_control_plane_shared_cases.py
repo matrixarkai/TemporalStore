@@ -31,7 +31,7 @@ CONTROL_SUITES = {
     "native_metaserver_control_plane_parity",
     "native_data_node_lifecycle_parity",
 }
-RUST_EXECUTABLE_MODE = "rust_executable_cxx_static"
+RUST_EXECUTABLE_MODE = "rust_executable_native_static"
 
 
 def load_control_cases(corpus_path: Path) -> list[dict]:
