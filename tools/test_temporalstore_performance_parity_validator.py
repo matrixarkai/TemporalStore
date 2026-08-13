@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import unittest
 
-from validate_temporalstore_cpp_rust_performance_parity import (
+from validate_temporalstore_rust_performance_parity import (
     REQUIRED_STORAGE_MODE_MATRIX,
     _exceeds_limit,
     _validate_global_blocker_ledger,
@@ -36,36 +36,36 @@ class PerformanceParityValidatorTest(unittest.TestCase):
 
     def test_selected_ref_parity_is_required_by_default(self) -> None:
         failures: list[str] = []
-        row = {"workload": "1K_event_ingestion", "cpp": {"selected_ref_parity": False}}
+        row = {"workload": "1K_event_ingestion", "native": {"selected_ref_parity": False}}
 
-        _validate_metric_block(row, "cpp", failures)
+        _validate_metric_block(row, "native", failures)
 
-        self.assertIn("1K_event_ingestion cpp.selected_ref_parity must be true", failures)
+        self.assertIn("1K_event_ingestion native.selected_ref_parity must be true", failures)
 
     def test_selected_ref_parity_can_follow_threshold_policy(self) -> None:
         failures: list[str] = []
-        row = {"workload": "1K_event_ingestion", "cpp": {"selected_ref_parity": False}}
+        row = {"workload": "1K_event_ingestion", "native": {"selected_ref_parity": False}}
 
-        _validate_metric_block(row, "cpp", failures, require_selected_ref_parity=False)
+        _validate_metric_block(row, "native", failures, require_selected_ref_parity=False)
 
-        self.assertNotIn("1K_event_ingestion cpp.selected_ref_parity must be true", failures)
+        self.assertNotIn("1K_event_ingestion native.selected_ref_parity must be true", failures)
 
     def test_watermarks_must_show_valid_lifecycle_progress(self) -> None:
         failures: list[str] = []
         row = {
             "workload": "1K_event_ingestion",
-            "cpp": {
+            "native": {
                 "append_watermark": 0,
                 "compaction_watermark": 1,
                 "selected_ref_parity": True,
             },
         }
 
-        _validate_metric_block(row, "cpp", failures)
+        _validate_metric_block(row, "native", failures)
 
-        self.assertIn("1K_event_ingestion cpp.append_watermark must be positive", failures)
+        self.assertIn("1K_event_ingestion native.append_watermark must be positive", failures)
         self.assertIn(
-            "1K_event_ingestion cpp.compaction_watermark cannot exceed append_watermark",
+            "1K_event_ingestion native.compaction_watermark cannot exceed append_watermark",
             failures,
         )
 
@@ -73,7 +73,7 @@ class PerformanceParityValidatorTest(unittest.TestCase):
         failures: list[str] = []
         row = {
             "workload": "1K_event_ingestion",
-            "cpp": {
+            "native": {
                 "message_qps": 0,
                 "retrieve_qps": 0,
                 "p50_ms": 0,
@@ -86,14 +86,14 @@ class PerformanceParityValidatorTest(unittest.TestCase):
             },
         }
 
-        _validate_metric_block(row, "cpp", failures)
+        _validate_metric_block(row, "native", failures)
 
-        self.assertIn("1K_event_ingestion cpp.message_qps must be positive", failures)
-        self.assertIn("1K_event_ingestion cpp.retrieve_qps must be positive", failures)
-        self.assertIn("1K_event_ingestion cpp.p50_ms must be positive", failures)
-        self.assertIn("1K_event_ingestion cpp.p95_ms must be positive", failures)
-        self.assertIn("1K_event_ingestion cpp.p99_ms must be positive", failures)
-        self.assertIn("1K_event_ingestion cpp.cache_hit_rate must be <= 1", failures)
+        self.assertIn("1K_event_ingestion native.message_qps must be positive", failures)
+        self.assertIn("1K_event_ingestion native.retrieve_qps must be positive", failures)
+        self.assertIn("1K_event_ingestion native.p50_ms must be positive", failures)
+        self.assertIn("1K_event_ingestion native.p95_ms must be positive", failures)
+        self.assertIn("1K_event_ingestion native.p99_ms must be positive", failures)
+        self.assertIn("1K_event_ingestion native.cache_hit_rate must be <= 1", failures)
 
     def test_qps_ratios_are_required_for_completed_rows(self) -> None:
         failures: list[str] = []
@@ -106,7 +106,7 @@ class PerformanceParityValidatorTest(unittest.TestCase):
             },
         }
 
-        _validate_ratios(row, {"min_rust_cpp_qps_ratio": 0.8, "max_rust_cpp_latency_ratio": 2.0}, failures)
+        _validate_ratios(row, {"min_rust_qps_ratio": 0.8, "max_rust_latency_ratio": 2.0}, failures)
 
         self.assertIn("1K_event_ingestion message_qps_ratio missing", failures)
         self.assertIn("1K_event_ingestion retrieve_qps_ratio missing", failures)
@@ -124,7 +124,7 @@ class PerformanceParityValidatorTest(unittest.TestCase):
             },
         }
 
-        _validate_ratios(row, {"min_rust_cpp_qps_ratio": 0.8, "max_rust_cpp_latency_ratio": 2.0}, failures)
+        _validate_ratios(row, {"min_rust_qps_ratio": 0.8, "max_rust_latency_ratio": 2.0}, failures)
 
         self.assertIn("1K_event_ingestion message_qps_ratio below 0.8", failures)
         self.assertNotIn("1K_event_ingestion retrieve_qps_ratio below 0.8", failures)
@@ -199,11 +199,11 @@ class PerformanceParityValidatorTest(unittest.TestCase):
 
     def test_global_blocker_ledger_must_cover_every_row_blocker(self) -> None:
         failures: list[str] = []
-        status = {"open_blockers": ["1K_event_ingestion:cpp_backend_not_passed"]}
+        status = {"open_blockers": ["1K_event_ingestion:native_backend_not_passed"]}
         rows = {
             "1K_event_ingestion": {
                 "workload": "1K_event_ingestion",
-                "open_blockers": ["cpp_backend_not_passed", "rust_backend_not_passed"],
+                "open_blockers": ["native_backend_not_passed", "rust_backend_not_passed"],
             }
         }
 
@@ -215,14 +215,14 @@ class PerformanceParityValidatorTest(unittest.TestCase):
         failures: list[str] = []
         status = {
             "open_blockers": [
-                "1K_event_ingestion:cpp_backend_not_passed",
-                "1K_event_ingestion:cpp_backend_not_passed",
+                "1K_event_ingestion:native_backend_not_passed",
+                "1K_event_ingestion:native_backend_not_passed",
             ]
         }
         rows = {
             "1K_event_ingestion": {
                 "workload": "1K_event_ingestion",
-                "open_blockers": ["cpp_backend_not_passed", "cpp_backend_not_passed"],
+                "open_blockers": ["native_backend_not_passed", "native_backend_not_passed"],
             }
         }
 
@@ -244,11 +244,11 @@ class PerformanceParityValidatorTest(unittest.TestCase):
                         "comparison_path": "docs/benchmarks/parity_retrieve_workers_4/shared_store_async/comparison.json",
                         "command": [
                             "python",
-                            "tools/run_matrixark_cpp_rust_scale_report.py",
+                            "tools/run_matrixark_rust_scale_report.py",
                             "--retrieve-workers",
                             "4",
                             "--backends",
-                            "cpp",
+                            "native",
                             "rust",
                             "--artifact-dir",
                             "docs/benchmarks/parity_retrieve_workers_4/shared_store_async",
@@ -311,11 +311,11 @@ class PerformanceParityValidatorTest(unittest.TestCase):
                         "comparison_path": "docs/benchmarks/parity_1K_event_ingestion/raft_sync/comparison.json",
                         "command": [
                             "python",
-                            "tools/run_matrixark_cpp_rust_scale_report.py",
+                            "tools/run_matrixark_rust_scale_report.py",
                             "--events",
                             "1000",
                             "--backends",
-                            "cpp",
+                            "native",
                             "rust",
                             "--artifact-dir",
                             "docs/benchmarks/parity_1K_event_ingestion/raft_sync",

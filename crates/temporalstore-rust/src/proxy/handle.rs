@@ -33,9 +33,9 @@ impl ProxyService {
             ("GET", "/proxy/metrics_parity") | ("GET", "/ProxyService/GetMetricsParity") => {
                 json_response(200, &self.metrics_parity_report())
             }
-            ("GET", "/proxy/cpp_migration_contract")
-            | ("GET", "/ProxyService/GetCppMigrationContract") => {
-                json_response(200, &self.cpp_migration_contract())
+            ("GET", "/proxy/native_migration_contract")
+            | ("GET", "/ProxyService/GetMigrationContract") => {
+                json_response(200, &self.native_migration_contract())
             }
             ("GET", "/proxy/service_discovery") | ("GET", "/ProxyService/GetServiceDiscovery") => {
                 json_response(200, &self.service_discovery_report())

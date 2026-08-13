@@ -20,51 +20,51 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="ts-context-report-compare-") as tmp:
         tmp_path = Path(tmp)
         rust = sample_report()
-        cpp = sample_report()
+        native = sample_report()
         rust_path = tmp_path / "rust.json"
-        cpp_path = tmp_path / "cpp.json"
+        native_path = tmp_path / "native.json"
         out_path = tmp_path / "compare.json"
         write_json(rust_path, rust)
-        write_json(cpp_path, cpp)
-        result = run_compare(rust_path, cpp_path, out_path)
+        write_json(native_path, native)
+        result = run_compare(rust_path, native_path, out_path)
         if result.returncode != 0:
             raise SystemExit(f"identical report comparison should pass:\n{result.stdout}\n{result.stderr}")
         passed = json.loads(out_path.read_text())
         if not passed.get("ready"):
             raise SystemExit("identical report comparison did not produce ready=true")
 
-        cpp["benchmark_per_query"][1]["hit"] = False
-        cpp["benchmark_per_query"][1]["rank"] = None
-        cpp["benchmark_hit_at_k"] = 0.5
-        cpp["hit_rate"] = 0.5
-        cpp["benchmark_mean_reciprocal_rank"] = 0.5
-        cpp["mean_reciprocal_rank"] = 0.5
-        cpp["category_breakdown"]["temporal"]["hit_rate"] = 0.0
-        cpp["category_breakdown"]["temporal"]["mean_reciprocal_rank"] = 0.0
-        write_json(cpp_path, cpp)
-        result = run_compare(rust_path, cpp_path, out_path)
+        native["benchmark_per_query"][1]["hit"] = False
+        native["benchmark_per_query"][1]["rank"] = None
+        native["benchmark_hit_at_k"] = 0.5
+        native["hit_rate"] = 0.5
+        native["benchmark_mean_reciprocal_rank"] = 0.5
+        native["mean_reciprocal_rank"] = 0.5
+        native["category_breakdown"]["temporal"]["hit_rate"] = 0.0
+        native["category_breakdown"]["temporal"]["mean_reciprocal_rank"] = 0.0
+        write_json(native_path, native)
+        result = run_compare(rust_path, native_path, out_path)
         if result.returncode == 0:
             raise SystemExit("mismatched report comparison should fail")
         failed = json.loads(out_path.read_text())
-        if failed.get("cpp_only_miss_count") != 1:
-            raise SystemExit(f"expected cpp_only_miss_count=1, got {failed.get('cpp_only_miss_count')}")
-        if failed.get("misses_by_category", {}).get("retrieval", {}).get("temporal", {}).get("cpp_only") != 1:
-            raise SystemExit("expected temporal cpp_only miss taxonomy")
+        if failed.get("native_only_miss_count") != 1:
+            raise SystemExit(f"expected native_only_miss_count=1, got {failed.get('native_only_miss_count')}")
+        if failed.get("misses_by_category", {}).get("retrieval", {}).get("temporal", {}).get("native_only") != 1:
+            raise SystemExit("expected temporal native_only miss taxonomy")
         if "q2" not in failed.get("field_mismatches_by_query", {}):
             raise SystemExit("expected field_mismatches_by_query to include q2")
     print("context benchmark comparator self-test passed")
     return 0
 
 
-def run_compare(rust_path: Path, cpp_path: Path, out_path: Path) -> subprocess.CompletedProcess[str]:
+def run_compare(rust_path: Path, native_path: Path, out_path: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             sys.executable,
             str(COMPARATOR),
             "--rust-report",
             str(rust_path),
-            "--cpp-report",
-            str(cpp_path),
+            "--native-report",
+            str(native_path),
             "--case-name",
             "context_benchmark_full_dataset_gates",
             "--dataset",

@@ -46,7 +46,7 @@ pub struct SequenceFeatureRow {
 }
 
 impl SequenceFeatureRow {
-    pub fn encode_cpp_feature_value(&self) -> Vec<u8> {
+    pub fn encode_feature_proto_value(&self) -> Vec<u8> {
         let mut out = Vec::new();
         encode_varint_field(&mut out, 1, self.gid);
         encode_varint_field(&mut out, 2, self.action_type as u64);
@@ -55,7 +55,7 @@ impl SequenceFeatureRow {
         out
     }
 
-    pub fn decode_cpp_feature_value(timestamp_ms: u64, value: &[u8]) -> Option<Self> {
+    pub fn decode_feature_proto_value(timestamp_ms: u64, value: &[u8]) -> Option<Self> {
         let mut cursor = 0;
         let mut gid = None;
         let mut action_type = None;
@@ -134,7 +134,7 @@ pub struct FeatureFilter {
 }
 
 impl FeatureFilter {
-    pub fn parse_cpp_filter(value: &str) -> Result<Self, String> {
+    pub fn parse_feature_filter(value: &str) -> Result<Self, String> {
         let mut parts = value.split_whitespace();
         let field = parts
             .next()
@@ -171,7 +171,7 @@ impl FeatureFilter {
     }
 }
 
-pub fn parse_cpp_feature_filters<'a>(
+pub fn parse_feature_filters<'a>(
     filters: impl IntoIterator<Item = &'a str>,
 ) -> Result<Vec<FeatureFilter>, String> {
     let mut parsed = Vec::new();
@@ -179,7 +179,7 @@ pub fn parse_cpp_feature_filters<'a>(
         .into_iter()
         .filter(|filter| !filter.trim().is_empty())
     {
-        let filter = FeatureFilter::parse_cpp_filter(filter)?;
+        let filter = FeatureFilter::parse_feature_filter(filter)?;
         if let Some(index) = parsed
             .iter()
             .position(|existing: &FeatureFilter| existing.field == filter.field)
@@ -586,20 +586,20 @@ pub fn context_model_descriptor(selector: &str) -> Option<ContextModelDescriptor
 }
 
 pub trait ContextWire: Sized + Serialize + for<'de> Deserialize<'de> {
-    fn encode_cpp_context_value(&self) -> Vec<u8>;
-    fn decode_cpp_context_value(bytes: &[u8]) -> Option<Self>;
+    fn encode_context_proto_value(&self) -> Vec<u8>;
+    fn decode_context_proto_value(bytes: &[u8]) -> Option<Self>;
 
     fn encode_context_value(&self) -> Vec<u8> {
-        self.encode_cpp_context_value()
+        self.encode_context_proto_value()
     }
 
     fn decode_context_value(bytes: &[u8]) -> Option<Self> {
-        Self::decode_cpp_context_value(bytes).or_else(|| serde_json::from_slice(bytes).ok())
+        Self::decode_context_proto_value(bytes).or_else(|| serde_json::from_slice(bytes).ok())
     }
 }
 
 impl ContextWire for ContextNode {
-    fn encode_cpp_context_value(&self) -> Vec<u8> {
+    fn encode_context_proto_value(&self) -> Vec<u8> {
         let mut out = Vec::new();
         encode_varint_field(&mut out, 1, self.node_hash);
         encode_varint_field(&mut out, 2, self.parent_hash);
@@ -616,7 +616,7 @@ impl ContextWire for ContextNode {
         out
     }
 
-    fn decode_cpp_context_value(bytes: &[u8]) -> Option<Self> {
+    fn decode_context_proto_value(bytes: &[u8]) -> Option<Self> {
         let mut cursor = 0;
         let mut value = Self {
             node_hash: 0,
@@ -652,7 +652,7 @@ impl ContextWire for ContextNode {
 }
 
 impl ContextWire for ContextEvent {
-    fn encode_cpp_context_value(&self) -> Vec<u8> {
+    fn encode_context_proto_value(&self) -> Vec<u8> {
         let mut out = Vec::new();
         encode_varint_field(&mut out, 1, self.event_id_hash);
         encode_varint_field(&mut out, 2, self.event_time_ms);
@@ -664,7 +664,7 @@ impl ContextWire for ContextEvent {
         out
     }
 
-    fn decode_cpp_context_value(bytes: &[u8]) -> Option<Self> {
+    fn decode_context_proto_value(bytes: &[u8]) -> Option<Self> {
         let mut cursor = 0;
         let mut value = Self {
             event_id_hash: 0,
@@ -733,7 +733,7 @@ impl ContextWire for ContextEvent {
 }
 
 impl ContextWire for ContextIndexRef {
-    fn encode_cpp_context_value(&self) -> Vec<u8> {
+    fn encode_context_proto_value(&self) -> Vec<u8> {
         let mut out = Vec::new();
         encode_varint_field(&mut out, 1, self.primary_node_hash);
         encode_varint_field(&mut out, 2, self.primary_event_time_ms);
@@ -741,7 +741,7 @@ impl ContextWire for ContextIndexRef {
         out
     }
 
-    fn decode_cpp_context_value(bytes: &[u8]) -> Option<Self> {
+    fn decode_context_proto_value(bytes: &[u8]) -> Option<Self> {
         let mut cursor = 0;
         let mut value = Self {
             primary_node_hash: 0,
@@ -762,7 +762,7 @@ impl ContextWire for ContextIndexRef {
 }
 
 impl ContextWire for ContextAuditRef {
-    fn encode_cpp_context_value(&self) -> Vec<u8> {
+    fn encode_context_proto_value(&self) -> Vec<u8> {
         let mut out = Vec::new();
         encode_varint_field(&mut out, 1, self.node_hash);
         encode_varint_field(&mut out, 2, self.event_time_ms);
@@ -770,7 +770,7 @@ impl ContextWire for ContextAuditRef {
         out
     }
 
-    fn decode_cpp_context_value(bytes: &[u8]) -> Option<Self> {
+    fn decode_context_proto_value(bytes: &[u8]) -> Option<Self> {
         let mut cursor = 0;
         let mut value = Self {
             node_hash: 0,
@@ -791,7 +791,7 @@ impl ContextWire for ContextAuditRef {
 }
 
 impl ContextWire for ContextPackAudit {
-    fn encode_cpp_context_value(&self) -> Vec<u8> {
+    fn encode_context_proto_value(&self) -> Vec<u8> {
         let mut out = Vec::new();
         // Field numbers MUST match the wire proto (context interface.proto ContextPackAudit):
         // query_id=1, session_hash=2, request_time_ms=3, max_prompt_tokens=4,
@@ -804,17 +804,17 @@ impl ContextWire for ContextPackAudit {
         encode_varint_field(&mut out, 4, u64::from(self.max_prompt_tokens));
         encode_varint_field(&mut out, 5, u64::from(self.selected_tokens));
         for selected in &self.selected_refs {
-            encode_bytes_field(&mut out, 6, &selected.encode_cpp_context_value());
+            encode_bytes_field(&mut out, 6, &selected.encode_context_proto_value());
         }
         // Rust-only extensions (no wire counterpart), on non-colliding tags.
         encode_varint_field(&mut out, 9, self.query_hash);
         for blocked in &self.blocked_refs {
-            encode_bytes_field(&mut out, 10, &blocked.encode_cpp_context_value());
+            encode_bytes_field(&mut out, 10, &blocked.encode_context_proto_value());
         }
         out
     }
 
-    fn decode_cpp_context_value(bytes: &[u8]) -> Option<Self> {
+    fn decode_context_proto_value(bytes: &[u8]) -> Option<Self> {
         let mut cursor = 0;
         let mut value = Self {
             query_id: String::new(),
@@ -861,7 +861,7 @@ impl ContextWire for ContextPackAudit {
 }
 
 impl ContextWire for ContextSummaryDirtyMarker {
-    fn encode_cpp_context_value(&self) -> Vec<u8> {
+    fn encode_context_proto_value(&self) -> Vec<u8> {
         let mut out = Vec::new();
         // SummaryDirtyMarker (context interface.proto): node_hash=1, event_time_ms=2,
         // propagate_depth=3. Rust's extra `reason` must NOT sit at 3 (it would land in's
@@ -873,7 +873,7 @@ impl ContextWire for ContextSummaryDirtyMarker {
         out
     }
 
-    fn decode_cpp_context_value(bytes: &[u8]) -> Option<Self> {
+    fn decode_context_proto_value(bytes: &[u8]) -> Option<Self> {
         let mut cursor = 0;
         let mut value = Self {
             node_hash: 0,
@@ -899,7 +899,7 @@ impl ContextWire for ContextSummaryDirtyMarker {
 }
 
 impl ContextWire for ContextEntity {
-    fn encode_cpp_context_value(&self) -> Vec<u8> {
+    fn encode_context_proto_value(&self) -> Vec<u8> {
         let mut out = Vec::new();
         encode_varint_field(&mut out, 1, self.entity_hash);
         encode_varint_field(&mut out, 2, self.node_hash);
@@ -915,7 +915,7 @@ impl ContextWire for ContextEntity {
         out
     }
 
-    fn decode_cpp_context_value(bytes: &[u8]) -> Option<Self> {
+    fn decode_context_proto_value(bytes: &[u8]) -> Option<Self> {
         let mut cursor = 0;
         let mut value = Self {
             entity_hash: 0,
@@ -961,7 +961,7 @@ impl ContextWire for ContextEntity {
 }
 
 impl ContextWire for ContextChildRef {
-    fn encode_cpp_context_value(&self) -> Vec<u8> {
+    fn encode_context_proto_value(&self) -> Vec<u8> {
         let mut out = Vec::new();
         encode_varint_field(&mut out, 1, self.parent_hash);
         encode_varint_field(&mut out, 2, self.child_hash);
@@ -969,7 +969,7 @@ impl ContextWire for ContextChildRef {
         out
     }
 
-    fn decode_cpp_context_value(bytes: &[u8]) -> Option<Self> {
+    fn decode_context_proto_value(bytes: &[u8]) -> Option<Self> {
         let mut cursor = 0;
         let mut value = Self {
             parent_hash: 0,
@@ -990,7 +990,7 @@ impl ContextWire for ContextChildRef {
 }
 
 impl ContextWire for ContextEmbedding {
-    fn encode_cpp_context_value(&self) -> Vec<u8> {
+    fn encode_context_proto_value(&self) -> Vec<u8> {
         let mut out = Vec::new();
         encode_varint_field(&mut out, 1, self.ref_hash);
         encode_varint_field(&mut out, 2, u64::from(self.level));
@@ -1002,7 +1002,7 @@ impl ContextWire for ContextEmbedding {
         out
     }
 
-    fn decode_cpp_context_value(bytes: &[u8]) -> Option<Self> {
+    fn decode_context_proto_value(bytes: &[u8]) -> Option<Self> {
         let mut cursor = 0;
         let mut value = Self {
             ref_hash: 0,
@@ -1038,7 +1038,7 @@ impl ContextWire for ContextEmbedding {
 }
 
 impl ContextWire for ContextSummary {
-    fn encode_cpp_context_value(&self) -> Vec<u8> {
+    fn encode_context_proto_value(&self) -> Vec<u8> {
         let mut out = Vec::new();
         encode_varint_field(&mut out, 2, self.node_hash);
         encode_varint_field(&mut out, 3, u64::from(self.level));
@@ -1047,7 +1047,7 @@ impl ContextWire for ContextSummary {
         out
     }
 
-    fn decode_cpp_context_value(bytes: &[u8]) -> Option<Self> {
+    fn decode_context_proto_value(bytes: &[u8]) -> Option<Self> {
         let mut cursor = 0;
         let mut value = Self {
             node_hash: 0,
@@ -1070,7 +1070,7 @@ impl ContextWire for ContextSummary {
 }
 
 impl ContextWire for ContextCompressionEvent {
-    fn encode_cpp_context_value(&self) -> Vec<u8> {
+    fn encode_context_proto_value(&self) -> Vec<u8> {
         let mut out = Vec::new();
         encode_varint_field(&mut out, 1, self.compression_id_hash);
         encode_varint_field(&mut out, 2, self.node_hash);
@@ -1081,7 +1081,7 @@ impl ContextWire for ContextCompressionEvent {
         out
     }
 
-    fn decode_cpp_context_value(bytes: &[u8]) -> Option<Self> {
+    fn decode_context_proto_value(bytes: &[u8]) -> Option<Self> {
         let mut cursor = 0;
         let mut value = Self {
             compression_id_hash: 0,
@@ -1972,7 +1972,7 @@ mod tests {
     }
 
     #[test]
-    fn context_pack_audit_wire_matches_cpp_field_numbers() {
+    fn context_pack_audit_wire_matches_field_numbers() {
         // ContextPackAudit proto: query_id=1, session_hash=2, request_time_ms=3,
         // max_prompt_tokens=4, selected_tokens=5, selected_refs=6. Rust-only fields must NOT
         // occupy tag 4 (query_hash previously did, shifting three reserved fields and dropping
@@ -1987,7 +1987,7 @@ mod tests {
             selected_refs: Vec::new(),
             blocked_refs: Vec::new(),
         };
-        let bytes = audit.encode_cpp_context_value();
+        let bytes = audit.encode_context_proto_value();
         // Collect top-level varint fields as (field_number -> value).
         let mut cursor = 0;
         let mut varint_fields = std::collections::HashMap::new();
@@ -2020,15 +2020,15 @@ mod tests {
             "Rust-only query_hash must live on a reserved-safe tag (9)"
         );
         // Encoder and decoder agree on the wire layout (round-trip).
-        let decoded = ContextPackAudit::decode_cpp_context_value(&bytes).unwrap();
+        let decoded = ContextPackAudit::decode_context_proto_value(&bytes).unwrap();
         assert_eq!(decoded.max_prompt_tokens, 4444);
         assert_eq!(decoded.selected_tokens, 5555);
         assert_eq!(decoded.query_hash, 9999);
     }
 
-    // shared-corpus: context_cpp_wire_model_descriptor_roundtrip
+    // shared-corpus: context_wire_model_descriptor_roundtrip
     #[test]
-    fn context_models_round_trip_cpp_wire_payloads_and_type_alias() {
+    fn context_models_round_trip_wire_payloads_and_type_alias() {
         assert_eq!(
             context_model_descriptors()
                 .iter()
@@ -2090,7 +2090,7 @@ mod tests {
             l1_ref: "l1".to_string(),
             raw_metadata_ref: "raw".to_string(),
         };
-        let cpp_node = ContextNode {
+        let native_node = ContextNode {
             status: 0,
             summary_dirty: false,
             l1_ref: String::new(),
@@ -2098,8 +2098,8 @@ mod tests {
             ..node.clone()
         };
         assert_eq!(
-            ContextNode::decode_cpp_context_value(&node.encode_cpp_context_value()),
-            Some(cpp_node)
+            ContextNode::decode_context_proto_value(&node.encode_context_proto_value()),
+            Some(native_node)
         );
 
         let entity = ContextEntity {
@@ -2114,7 +2114,7 @@ mod tests {
             source_event_hashes: vec![5, 6],
         };
         assert_eq!(
-            ContextEntity::decode_cpp_context_value(&entity.encode_cpp_context_value()),
+            ContextEntity::decode_context_proto_value(&entity.encode_context_proto_value()),
             Some(entity)
         );
 
@@ -2124,7 +2124,7 @@ mod tests {
             updated_at_ms: 1_000,
         };
         assert_eq!(
-            ContextChildRef::decode_cpp_context_value(&child.encode_cpp_context_value()),
+            ContextChildRef::decode_context_proto_value(&child.encode_context_proto_value()),
             Some(child)
         );
         let embedding = ContextEmbedding {
@@ -2135,7 +2135,7 @@ mod tests {
             updated_at_ms: 1_000,
         };
         assert_eq!(
-            ContextEmbedding::decode_cpp_context_value(&embedding.encode_cpp_context_value()),
+            ContextEmbedding::decode_context_proto_value(&embedding.encode_context_proto_value()),
             Some(embedding)
         );
         let summary = ContextSummary {
@@ -2145,7 +2145,7 @@ mod tests {
             valid_from_ms: 1_000,
         };
         assert_eq!(
-            ContextSummary::decode_cpp_context_value(&summary.encode_cpp_context_value()),
+            ContextSummary::decode_context_proto_value(&summary.encode_context_proto_value()),
             Some(summary)
         );
         let compression = ContextCompressionEvent {
@@ -2157,8 +2157,8 @@ mod tests {
             summary: "compressed".to_string(),
         };
         assert_eq!(
-            ContextCompressionEvent::decode_cpp_context_value(
-                &compression.encode_cpp_context_value()
+            ContextCompressionEvent::decode_context_proto_value(
+                &compression.encode_context_proto_value()
             ),
             Some(compression)
         );
@@ -2182,7 +2182,7 @@ mod tests {
         let event: ContextEvent = serde_json::from_slice(event_json).unwrap();
         assert_eq!(event.event_type, 2);
         assert_eq!(event.primary_time_ms(), 1001);
-        let cpp_event = ContextEvent {
+        let native_event = ContextEvent {
             ingestion_time_ms: 1001,
             kind: 0,
             actor_hash: 0,
@@ -2194,8 +2194,8 @@ mod tests {
             ..event.clone()
         };
         assert_eq!(
-            ContextEvent::decode_cpp_context_value(&event.encode_cpp_context_value()),
-            Some(cpp_event)
+            ContextEvent::decode_context_proto_value(&event.encode_context_proto_value()),
+            Some(native_event)
         );
 
         let index = ContextIndexRef {
@@ -2204,7 +2204,7 @@ mod tests {
             event_id_hash: 5,
         };
         assert_eq!(
-            ContextIndexRef::decode_cpp_context_value(&index.encode_cpp_context_value()),
+            ContextIndexRef::decode_context_proto_value(&index.encode_context_proto_value()),
             Some(index)
         );
 
@@ -2224,7 +2224,7 @@ mod tests {
             blocked_refs: Vec::new(),
         };
         assert_eq!(
-            ContextPackAudit::decode_cpp_context_value(&audit.encode_cpp_context_value()),
+            ContextPackAudit::decode_context_proto_value(&audit.encode_context_proto_value()),
             Some(audit)
         );
 
@@ -2235,7 +2235,7 @@ mod tests {
             propagate_depth: 2,
         };
         assert_eq!(
-            ContextSummaryDirtyMarker::decode_cpp_context_value(&dirty.encode_cpp_context_value()),
+            ContextSummaryDirtyMarker::decode_context_proto_value(&dirty.encode_context_proto_value()),
             Some(dirty)
         );
     }

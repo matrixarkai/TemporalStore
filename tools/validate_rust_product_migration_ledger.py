@@ -23,7 +23,7 @@ LEDGER = ROOT / "tools" / "rust_product_test_migration_ledger.json"
 VALID_CLASSIFICATIONS = {
     "move_to_shared",
     "rust_internal",
-    "cpp_out_of_scope",
+    "native_out_of_scope",
     "duplicate/remove",
 }
 

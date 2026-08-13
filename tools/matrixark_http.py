@@ -273,7 +273,7 @@ _CODEX_HOOK_SYNTHETIC_MARKERS = {
     "matrixark synthetic",
     "synthetic probe",
     "codex-live-probe",
-    "codex-cpp-live-probe",
+    "codex-native-live-probe",
     "manual validation",
     "hook verification",
     "reply ok only",
@@ -329,8 +329,8 @@ class _HookStoreReader:
         raise NotImplementedError
 
 
-class _CppHookStoreReader(_HookStoreReader):
-    name = "c++"
+class _HookStoreReader(_HookStoreReader):
+    name = "native"
 
     def __init__(self, args: Json) -> None:
         repo_root = Path(__file__).resolve().parents[1]
@@ -340,11 +340,11 @@ class _CppHookStoreReader(_HookStoreReader):
         from temporalstore.client import Client, Options  # type: ignore
 
         lib_path = str(
-            args.get("cpp_library_path")
+            args.get("native_library_path")
             or os.environ.get("TEMPORALSTORE_LIB")
             or repo_root / "output-ubuntu22/release/sdk/lib/libtemporalstore.so"
         )
-        metaserver = str(args.get("cpp_metaserver") or os.environ.get("MATRIXARK_TEMPORALSTORE_METASERVER") or "127.0.0.1:18000")
+        metaserver = str(args.get("native_metaserver") or os.environ.get("MATRIXARK_TEMPORALSTORE_METASERVER") or "127.0.0.1:18000")
         namespace = str(args.get("namespace") or os.environ.get("MATRIXARK_NAMESPACE") or "deploy_ns")
         table = str(args.get("table") or os.environ.get("MATRIXARK_TABLE") or "deploy_table")
         self.client = Client(
@@ -452,9 +452,9 @@ def _hook_prefixes(args: Json, backend: str) -> list[str]:
     explicit = str(args.get("prefix") or "").strip()
     if explicit:
         return [explicit]
-    if backend == "c++":
-        configured = os.environ.get("MATRIXARK_CPP_TEMPORALSTORE_PREFIX")
-        return [prefix for prefix in [configured, "matrixark:codex-hook:cpp-live-v2", "matrixark:codex-hook"] if prefix]
+    if backend == "native":
+        configured = os.environ.get("MATRIXARK_NATIVE_TEMPORALSTORE_PREFIX")
+        return [prefix for prefix in [configured, "matrixark:codex-hook:native-live-v2", "matrixark:codex-hook"] if prefix]
     configured = os.environ.get("MATRIXARK_RUST_TEMPORALSTORE_PREFIX")
     return [prefix for prefix in [configured, "matrixark:codex-hook:rust-live-v2", "matrixark:codex-hook:rust"] if prefix]
 
@@ -652,11 +652,11 @@ def query_codex_hook_messages(args: Json) -> Json:
     backend = str(args.get("backend") or "both").strip().lower()
     readers: list[tuple[str, _HookStoreReader]] = []
     errors: list[Json] = []
-    if backend in {"both", "c++", "cpp"}:
+    if backend in {"both", "native", "native"}:
         try:
-            readers.append(("c++", _CppHookStoreReader(args)))
+            readers.append(("native", _HookStoreReader(args)))
         except Exception as exc:
-            errors.append({"backend": "c++", "error": str(exc)})
+            errors.append({"backend": "native", "error": str(exc)})
     if backend in {"both", "rust", "rust-service"}:
         try:
             readers.append(("rust", _RustServiceHookStoreReader(args)))
@@ -669,7 +669,7 @@ def query_codex_hook_messages(args: Json) -> Json:
             errors.append({"backend": "rust-local-proxy", "error": str(exc)})
     results: list[Json] = []
     for backend_kind, reader in readers:
-        for prefix in _hook_prefixes(args, "c++" if backend_kind == "c++" else "rust"):
+        for prefix in _hook_prefixes(args, "native" if backend_kind == "native" else "rust"):
             result = _hook_collect(reader, prefix, args)
             results.append(result)
             if result.get("rows"):

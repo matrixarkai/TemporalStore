@@ -144,7 +144,7 @@ impl ProxyService {
     pub fn metrics_parity_report(&self) -> ProxyMetricsParityReport {
         ProxyMetricsParityReport {
             status: Status::ok(),
-            compared_cpp_files: vec![
+            compared_files: vec![
                 "<repo>/src/common/metrics.h".to_string(),
                 "<repo>/src/common/metrics.cc".to_string(),
                 "<repo>/src/proxy/heartbeat.cc".to_string(),
@@ -161,8 +161,8 @@ impl ProxyService {
         }
     }
 
-    pub fn cpp_migration_contract(&self) -> ProxyCppMigrationContract {
-        ProxyCppMigrationContract::default()
+    pub fn native_migration_contract(&self) -> ProxyMigrationContract {
+        ProxyMigrationContract::default()
     }
 
     pub fn service_discovery_report(&self) -> ProxyServiceDiscoveryReport {
@@ -215,7 +215,7 @@ impl ProxyService {
             status: Status::ok(),
             legacy_brpc_thrift_in_scope: false,
             rust_native_aliases_ready: true,
-            compared_cpp_files: vec![
+            compared_files: vec![
                 "<repo>/src/proxy/proxy.h".to_string(),
                 "<repo>/src/proxy/proxy.cc".to_string(),
                 "<repo>/src/proxy/heartbeat.h".to_string(),
@@ -268,8 +268,8 @@ impl ProxyService {
                 ),
                 proxy_operational_surface_entry(
                     "TemporalStoreThriftService command dispatch",
-                    "/proxy/cpp_migration_contract",
-                    "/ProxyService/GetCppMigrationContract",
+                    "/proxy/native_migration_contract",
+                    "/ProxyService/GetMigrationContract",
                     "Legacy brpc/thrift remains out of scope; Rust-native HTTP/JSON, RESP, and tonic are the migration contract.",
                 ),
                 proxy_operational_surface_entry(

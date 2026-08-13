@@ -20,10 +20,10 @@ find "$IDEMPOTENCY_DIR" -type d -mmin +10 -name 'hook-*' -exec rm -rf {} + 2>/de
 find "$IDEMPOTENCY_DIR" -type d -mmin +1440 -name 'record-*' -exec rm -rf {} + 2>/dev/null || true
 PAYLOAD_HASH="$(sha256sum "$TMP_PAYLOAD" | awk '{print $1}')"
 PAYLOAD_BYTES="$(wc -c <"$TMP_PAYLOAD" | tr -d '[:space:]')"
-CPP_HOOK_STDOUT="/dev/null"
-CPP_HOOK_STDERR="/dev/null"
+NATIVE_HOOK_STDOUT="/dev/null"
+NATIVE_HOOK_STDERR="/dev/null"
 RUST_PUBLISH_STDERR="/dev/null"
-CPP_PUBLISH_STDERR="/dev/null"
+NATIVE_PUBLISH_STDERR="/dev/null"
 export MATRIXARK_CODEX_HOOK_DIAG_LOG=""
 HOOK_USER_ID="${MATRIXARK_HOOK_USER_ID:-${MATRIXARK_USER_ID:-${MATRIXARK_LOCAL_USER_ID:-${USER:-codex_user}}}}"
 LOCK_KEY="$(printf '%s:%s' "$EVENT" "$PAYLOAD_HASH" | sha256sum | awk '{print $1}')"
@@ -46,15 +46,15 @@ COMMON_ARGS=(
   --idle-commit-timeout-ms "${MATRIXARK_HOOK_IDLE_COMMIT_TIMEOUT_MS:-300000}"
 )
 
-run_cpp_hook() {
+run_hook() {
   (
     export MATRIXARK_REPO_ROOT="$ROOT"
     export MATRIXARK_MCP_BACKEND=temporalstore-direct
-    export MATRIXARK_TEMPORALSTORE_METASERVER="${MATRIXARK_CPP_TEMPORALSTORE_METASERVER:-127.0.0.1:18000}"
-    CPP_HOT_PREFIX="${MATRIXARK_CPP_TEMPORALSTORE_PREFIX:-matrixark:codex-hook:cpp-live-v2}"
-    export MATRIXARK_TEMPORALSTORE_PREFIX="${MATRIXARK_CPP_FULL_HOOK_PREFIX:-matrixark:mcp:codex}"
-    export MATRIXARK_HOOK_AUTOSTART_CPP="${MATRIXARK_HOOK_AUTOSTART_CPP:-1}"
-    export MATRIXARK_CPP_DEPLOY_DIR="${MATRIXARK_CPP_DEPLOY_DIR:-$ROOT/.local/runtime/matrixark-cpp-live}"
+    export MATRIXARK_TEMPORALSTORE_METASERVER="${MATRIXARK_NATIVE_TEMPORALSTORE_METASERVER:-127.0.0.1:18000}"
+    NATIVE_HOT_PREFIX="${MATRIXARK_NATIVE_TEMPORALSTORE_PREFIX:-matrixark:codex-hook:native-live-v2}"
+    export MATRIXARK_TEMPORALSTORE_PREFIX="${MATRIXARK_NATIVE_FULL_HOOK_PREFIX:-matrixark:mcp:codex}"
+    export MATRIXARK_HOOK_AUTOSTART_NATIVE="${MATRIXARK_HOOK_AUTOSTART_NATIVE:-1}"
+    export MATRIXARK_NATIVE_DEPLOY_DIR="${MATRIXARK_NATIVE_DEPLOY_DIR:-$ROOT/.local/runtime/matrixark-native-live}"
     export MATRIXARK_HOOK_FAIL_OPEN=1
     export MATRIXARK_HOOK_FAST_ASYNC_INGEST="${MATRIXARK_HOOK_FAST_ASYNC_INGEST:-1}"
     export MATRIXARK_HOOK_AUTO_BATCH_EXTRACT="${MATRIXARK_HOOK_AUTO_BATCH_EXTRACT:-1}"
@@ -64,11 +64,11 @@ run_cpp_hook() {
     export MATRIXARK_HOOK_STORAGE_ROUTE="${MATRIXARK_HOOK_STORAGE_ROUTE:-shared_store_async}"
     export MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT="${MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT:-40000}"
     export TEMPORALSTORE_LIB="${TEMPORALSTORE_LIB:-}"
-    bash tools/matrixark_codex_cpp_hook.sh \
+    bash tools/matrixark_codex_hook.sh \
       "${COMMON_ARGS[@]}" \
       --backend temporalstore-direct \
       --storage-prefix "$MATRIXARK_TEMPORALSTORE_PREFIX" \
-      --project "${MATRIXARK_CPP_HOOK_PROJECT:-codex-global-cpp}" \
+      --project "${MATRIXARK_NATIVE_HOOK_PROJECT:-codex-global-native}" \
       --codex-strict-output \
       <"$TMP_PAYLOAD"
   )
@@ -86,8 +86,8 @@ run_rust_hook() {
   export MATRIXARK_TEMPORALSTORE_PREFIX="${MATRIXARK_RUST_FULL_HOOK_PREFIX:-matrixark:mcp:codex}"
   export MATRIXARK_TEMPORALSTORE_RUST_PROXY="${MATRIXARK_TEMPORALSTORE_RUST_PROXY:-$ROOT/target/release/matrixark_rust_proxy}"
   export MATRIXARK_TEMPORALSTORE_RUST_CLI="${MATRIXARK_TEMPORALSTORE_RUST_CLI:-$ROOT/target/release/matrixark_rust_proxy}"
-  export MATRIXARK_HOOK_AUTOSTART_CPP=0
-  export MATRIXARK_MCP_AUTOSTART_CPP=0
+  export MATRIXARK_HOOK_AUTOSTART_NATIVE=0
+  export MATRIXARK_MCP_AUTOSTART_NATIVE=0
   export MATRIXARK_RUST_PROXY_ASYNC_STORAGE="${MATRIXARK_RUST_PROXY_ASYNC_STORAGE:-true}"
   export MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS="${MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS:-0}"
   export MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES="${MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES:-0}"
@@ -394,7 +394,7 @@ synthetic_markers = (
     "matrixark synthetic",
     "synthetic probe",
     "codex-live-probe",
-    "codex-cpp-live-probe",
+    "codex-native-live-probe",
     "manual validation",
     "hook verification",
     "reply ok only",
@@ -582,7 +582,7 @@ def live_topic_entities(prompt_text):
     lowered = (prompt_text or "").lower()
     topics = [
         ("rust_temporalstore", ("rust", "rust temporalstore", "rust hook", "rust service")),
-        ("cpp_temporalstore", ("c++", "cpp", "c++ temporalstore")),
+        ("native_temporalstore", ("native", "native", "native temporalstore")),
         ("codex_hook", ("codex", "hook", "userpromptsubmit", "realtime ingestion")),
         ("context_management", ("context", "entity", "summary", "segment", "retrieval")),
         ("oss_reader_benchmark", ("qwen", "ollama", "vllm", "locomo", "longmemeval", "vikingmem")),
@@ -803,13 +803,13 @@ if event_name == "UserPromptSubmit" and published_raw:
 PY
 }
 
-publish_cpp_direct_records() {
+publish_direct_records() {
   MATRIXARK_TEMPORALSTORE_NAMESPACE="${MATRIXARK_TEMPORALSTORE_NAMESPACE:-deploy_ns}" \
   MATRIXARK_TEMPORALSTORE_TABLE="${MATRIXARK_TEMPORALSTORE_TABLE:-deploy_table}" \
-  MATRIXARK_CPP_TEMPORALSTORE_PREFIX="${MATRIXARK_CPP_TEMPORALSTORE_PREFIX:-matrixark:codex-hook:cpp-live-v2}" \
-  MATRIXARK_CPP_TEMPORALSTORE_METASERVER="${MATRIXARK_CPP_TEMPORALSTORE_METASERVER:-127.0.0.1:18000}" \
+  MATRIXARK_NATIVE_TEMPORALSTORE_PREFIX="${MATRIXARK_NATIVE_TEMPORALSTORE_PREFIX:-matrixark:codex-hook:native-live-v2}" \
+  MATRIXARK_NATIVE_TEMPORALSTORE_METASERVER="${MATRIXARK_NATIVE_TEMPORALSTORE_METASERVER:-127.0.0.1:18000}" \
   TEMPORALSTORE_LIB="${TEMPORALSTORE_LIB:-}" \
-  python3 - "$DIRECT_PAYLOAD" 2>>"$CPP_PUBLISH_STDERR" <<'PY'
+  python3 - "$DIRECT_PAYLOAD" 2>>"$NATIVE_PUBLISH_STDERR" <<'PY'
 import base64
 import json
 import hashlib
@@ -1052,13 +1052,13 @@ if not prompt:
 prompt = prompt.strip()
 event_name = os.environ.get("EVENT", "UserPromptSubmit")
 if event_name != "UserPromptSubmit":
-    print(f"skip non-user-prompt cpp hot publish event={event_name}", file=sys.stderr)
+    print(f"skip non-user-prompt native hot publish event={event_name}", file=sys.stderr)
     raise SystemExit(0)
 
 now_ms = int(time.time() * 1000)
 namespace = os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "deploy_ns")
 table = os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table")
-prefix = os.environ.get("MATRIXARK_CPP_TEMPORALSTORE_PREFIX", "matrixark:codex-hook:cpp-live-v2")
+prefix = os.environ.get("MATRIXARK_NATIVE_TEMPORALSTORE_PREFIX", "matrixark:codex-hook:native-live-v2")
 profile_prefix = os.environ.get("MATRIXARK_CODEX_PROFILE_PREFIX", "matrixark:mcp:codex").rstrip(":")
 account_id = os.environ.get("MATRIXARK_ACCOUNT_ID", "acct_codex")
 tenant_id = os.environ.get("MATRIXARK_TENANT_ID", "tenant_codex")
@@ -1070,11 +1070,11 @@ payload_hash = hashlib.sha256(raw_payload_bytes).hexdigest()
 turn_component = identity.get("turn_id") or payload_hash
 record_hash = hashlib.sha256(f"{session_id}\n{turn_component}\n{prompt}".encode("utf-8", "replace")).hexdigest()
 idempotency_dir = Path(os.environ.get("MATRIXARK_CODEX_HOOK_IDEMPOTENCY_DIR", ""))
-user_prompt_marker = idempotency_dir / f"user-prompt-cpp-{record_hash}"
+user_prompt_marker = idempotency_dir / f"user-prompt-native-{record_hash}"
 if event_name == "Stop" and user_prompt_marker.exists():
     print(f"skip stop prompt already ingested by UserPromptSubmit session={session_id} hash={record_hash[:12]}", file=sys.stderr)
     raise SystemExit(0)
-record_marker = idempotency_dir / f"record-cpp-{event_name}-{record_hash}"
+record_marker = idempotency_dir / f"record-native-{event_name}-{record_hash}"
 try:
     record_marker.mkdir()
 except FileExistsError:
@@ -1087,7 +1087,7 @@ synthetic_markers = (
     "matrixark synthetic",
     "synthetic probe",
     "codex-live-probe",
-    "codex-cpp-live-probe",
+    "codex-native-live-probe",
     "manual validation",
     "hook verification",
     "reply ok only",
@@ -1127,7 +1127,7 @@ def retention_fields(prompt_text):
 try:
     client = Client(
         Options(
-            metaserver_addr=os.environ.get("MATRIXARK_CPP_TEMPORALSTORE_METASERVER", "127.0.0.1:18000"),
+            metaserver_addr=os.environ.get("MATRIXARK_NATIVE_TEMPORALSTORE_METASERVER", "127.0.0.1:18000"),
             namespace_name=namespace,
             table_name=table,
             request_timeout_ms=3000,
@@ -1136,7 +1136,7 @@ try:
         library_path=os.environ.get("TEMPORALSTORE_LIB", ""),
     )
 except Exception as exc:
-    print(f"connect cpp temporalstore failed: {exc}", file=sys.stderr)
+    print(f"connect native temporalstore failed: {exc}", file=sys.stderr)
     raise SystemExit(0)
 
 def get_value(key):
@@ -1166,7 +1166,7 @@ def live_topic_entities(prompt_text):
     lowered = (prompt_text or "").lower()
     topics = [
         ("rust_temporalstore", ("rust", "rust temporalstore", "rust hook", "rust service")),
-        ("cpp_temporalstore", ("c++", "cpp", "c++ temporalstore")),
+        ("native_temporalstore", ("native", "native", "native temporalstore")),
         ("codex_hook", ("codex", "hook", "userpromptsubmit", "realtime ingestion")),
         ("context_management", ("context", "entity", "summary", "segment", "retrieval")),
         ("oss_reader_benchmark", ("qwen", "ollama", "vllm", "locomo", "longmemeval", "vikingmem")),
@@ -1179,7 +1179,7 @@ def live_topic_entities(prompt_text):
             selected.append(name)
     return selected[:4]
 
-def cpp_live_extraction_records():
+def native_live_extraction_records():
     if event_name != "UserPromptSubmit" or is_synthetic_prompt(prompt):
         return []
     event_id_hash = serving_record["event_id_hash"]
@@ -1395,7 +1395,7 @@ for count_key, records_prefix, record in (
     except Exception as exc:
         print(f"publish {records_prefix} failed: {exc}", file=sys.stderr)
 
-for record in cpp_live_extraction_records():
+for record in native_live_extraction_records():
     for destination_prefix in dict.fromkeys((prefix, profile_prefix)):
         try:
             append_record(
@@ -1416,15 +1416,15 @@ PY
 }
 
 publish_rust_service_records || true
-publish_cpp_direct_records || true
+publish_direct_records || true
 
-run_cpp_hook >"$CPP_HOOK_STDOUT" 2>"$CPP_HOOK_STDERR" &
-CPP_PID=$!
+run_hook >"$NATIVE_HOOK_STDOUT" 2>"$NATIVE_HOOK_STDERR" &
+NATIVE_PID=$!
 
 status=0
 run_rust_hook || status=$?
 
-if ! wait "$CPP_PID"; then
+if ! wait "$NATIVE_PID"; then
   true
 fi
 

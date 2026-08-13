@@ -174,7 +174,7 @@ def try_native_context_pack(target: Any, args: Json) -> Json | None:
             return blocker
         return None
     pack.setdefault("context_pack_id", str(stable_hash(f"native:{query}:{canonical_scope_key(scope)}:{now_ms()}")))
-    pack["context_pack_assembly"] = "native_cpp_direct"
+    pack["context_pack_assembly"] = "native_direct"
     pack.setdefault("native_context_pack", True)
     pack.setdefault("query_embedding_model", embedding_model_name())
     pack.setdefault("embedding_execution_mode", embedding_execution_mode_name())

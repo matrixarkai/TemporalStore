@@ -1030,7 +1030,7 @@ QUERY_INDEX_LABELS: dict[str, str] = {
     "entity_type:job_status": "job role work status position responsibility",
     "entity_type:identity_profile": "identity name nickname pronouns call me address user",
     "entity_type:communication_profile": "communication style language locale concise detailed bullet format tone",
-    "entity_type:workspace_profile": "workspace repo branch remote main github ubuntu wsl build deployment folder rust cpp temporalstore",
+    "entity_type:workspace_profile": "workspace repo branch remote main github ubuntu wsl build deployment folder rust native temporalstore",
     "entity_type:memory_feature_profile": "memory feature parity openviking vikingmem mem0 extraction retrieval profile session threshold idle batch live ingestion profile promotion retrieval budget secondary index context event context entity context summary feature focused features only no testing monitoring debugging evidence",
     "event_type:status_update": "job status role work update",
     "entity_type:current_plan": "plan current plan goal user request requirement upcoming task schedule next milestone",

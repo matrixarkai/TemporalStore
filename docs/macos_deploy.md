@@ -340,7 +340,7 @@ Common OpenViking-style profiles:
 
 | Profile | Reader/VLM | Embedding |
 | --- | --- | --- |
-| `matrixark-cpp-oss-context` | `google/flan-t5-small` | `sentence-transformers/all-MiniLM-L6-v2` |
+| `matrixark-native-oss-context` | `google/flan-t5-small` | `sentence-transformers/all-MiniLM-L6-v2` |
 | `openviking-qwen2_5_vl-local` | `qwen2.5vl:7b` | `nomic-embed-text` |
 | `openviking-llava-local` | `llava:7b` | `nomic-embed-text` |
 | `openviking-internvl-vllm` | `OpenGVLab/InternVL2_5-8B` | `BAAI/bge-m3` |

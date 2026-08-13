@@ -348,7 +348,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
     Python stays as API/auth/model orchestration. Production retrieval should
     call native proxy/direct APIs for append, prefix scan, secondary-index
     prefiltering, scoring, and ContextPack assembly. Direct SDK remains the
-    embedded/local path; MATRIXARK_TEMPORALSTORE_CPP_PROXY_ENDPOINT selects the
+    embedded/local path; MATRIXARK_TEMPORALSTORE_NATIVE_PROXY_ENDPOINT selects the
     proxy boundary.
     """
 
@@ -410,14 +410,14 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         sys.path.insert(0, str(sdk_root))
         from temporalstore import Client, Options, ProxyClient, ProxyOptions  # type: ignore
 
-        proxy_endpoint = os.environ.get("MATRIXARK_TEMPORALSTORE_CPP_PROXY_ENDPOINT", "").strip()
+        proxy_endpoint = os.environ.get("MATRIXARK_TEMPORALSTORE_NATIVE_PROXY_ENDPOINT", "").strip()
         force_generic_batch_fallback = os.environ.get("MATRIXARK_FORCE_GENERIC_BATCH_HSET_FALLBACK", "").strip().lower() in {
             "1",
             "true",
             "yes",
             "on",
         }
-        self._cpp_proxy_endpoint = proxy_endpoint
+        self._proxy_endpoint = proxy_endpoint
         if proxy_endpoint:
             proxy_options = ProxyOptions(
                 endpoint=proxy_endpoint,
@@ -427,7 +427,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             )
             self._client = ProxyClient(proxy_options)
             self._matrixark_native_batch_append_available = True
-            self._matrixark_append_write_path = "cpp_proxy_matrixark_batch_append_records"
+            self._matrixark_append_write_path = "native_proxy_matrixark_batch_append_records"
         else:
             options = Options(
                 metaserver_addr=metaserver,
@@ -443,7 +443,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                 getattr(getattr(self._client, "_native", None), "has_matrixark_batch_append_records", False)
             )
             self._matrixark_append_write_path = (
-                "cpp_direct_existing_batch_execute_raw_batch_mset"
+                "native_direct_existing_batch_execute_raw_batch_mset"
                 if self._matrixark_native_batch_append_available
                 else "fallback_python_batch_hset_loop"
             )
@@ -453,7 +453,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         self._matrixark_append_uses_per_record_hset = not self._matrixark_native_batch_append_available
         self._matrixark_batch_append_uses_existing_batch_execute = bool(
             self._matrixark_native_batch_append_available
-            and self._matrixark_append_write_path == "cpp_direct_existing_batch_execute_raw_batch_mset"
+            and self._matrixark_append_write_path == "native_direct_existing_batch_execute_raw_batch_mset"
         )
         self._matrixark_proxy_mode = bool(proxy_endpoint)
         # has a native CONTEXT extension (WRITE_EVENT / WRITE_EXTRACTED_EVENT)
@@ -593,7 +593,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             )
 
     def _backend_label(self) -> str:
-        return "temporalstore-cpp-proxy" if getattr(self, "_matrixark_proxy_mode", False) else "temporalstore-cpp"
+        return "temporalstore-native-proxy" if getattr(self, "_matrixark_proxy_mode", False) else "temporalstore-native"
 
     def python_hot_cache_enabled(self) -> bool:
         return python_hot_cache_allowed(backend_label=self._backend_label())
@@ -996,7 +996,7 @@ class MatrixArkRustCdylibClient:
             "p99_latency_ms": round(self._percentile(self._latency_samples_ms, 0.99), 3),
             "matrixark_append_blob_parity_total": 0,
             "matrixark_append_hset_count_lowering_total": 0,
-            "matrixark_append_hot_path": "cpp_c_api_bridge_diagnostic",
+            "matrixark_append_hot_path": "native_c_api_bridge_diagnostic",
             "matrixark_append_write_path": "rust_direct_cdylib_matrixark_batch_append_records",
             "matrixark_native_batch_append_available": True,
             "matrixark_batch_append_uses_existing_batch_execute": True,
@@ -1238,13 +1238,13 @@ class MatrixArkRustProxyClient:
             self._close_proc(proc)
         env = os.environ.copy()
         env["LD_LIBRARY_PATH"] = self._rust_proxy_library_search_path(env)
-        if env.get("MATRIXARK_RUST_PROXY_CPP_MATRIXARK_C_API_COMPAT", "0").strip().lower() in {
+        if env.get("MATRIXARK_RUST_PROXY_NATIVE_MATRIXARK_C_API_COMPAT", "0").strip().lower() in {
             "1",
             "true",
             "yes",
             "on",
         }:
-            env.setdefault("TEMPORALSTORE_RUST_ALLOW_CPP_MATRIXARK_C_API", "1")
+            env.setdefault("TEMPORALSTORE_RUST_ALLOW_NATIVE_MATRIXARK_C_API", "1")
         lane["proc"] = subprocess.Popen(
             [self.cli_path, "--serve"],
             stdin=subprocess.PIPE,
@@ -2555,11 +2555,11 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
             "metrics_format": "prometheus",
             "gateway_mode": gateway_mode,
             "sdk_mode": sdk_mode,
-            "production_path": "rust_native_proxy" if not self._rust_direct_cdylib_enabled else "rust_cpp_c_api_bridge_diagnostic",
+            "production_path": "rust_native_proxy" if not self._rust_direct_cdylib_enabled else "rust_c_api_bridge_diagnostic",
             "process_per_operation_enabled": False,
             "single_shot_mode": "debug_only",
             "direct_sdk_bridge": False,
-            "cpp_c_api_bridge_diagnostic": bool(self._rust_direct_cdylib_enabled),
+            "native_c_api_bridge_diagnostic": bool(self._rust_direct_cdylib_enabled),
             "pure_embedded_direct_sdk": False,
             "capabilities": {
                 "health_endpoint": True,
@@ -2578,7 +2578,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
                 "backpressure": True,
                 "graceful_shutdown": True,
                 "timeout_handling": True,
-                "structured_errors_cpp_compatible": True,
+                "structured_errors_compatible": True,
             },
             "health": health,
             "readiness": readiness,

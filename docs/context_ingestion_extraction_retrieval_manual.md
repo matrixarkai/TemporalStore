@@ -385,12 +385,12 @@ For VikingMem benchmark parity, use the GPT-4o-mini reader profile:
 ```
 
 The legacy open-source text profile used by older MatrixArk LOCOMO runs remains available as
-`matrixark-cpp-oss-context`:
+`matrixark-native-oss-context`:
 
 ```json
 {
   "provider": {
-    "provider_name": "matrixark-cpp-oss-context",
+    "provider_name": "matrixark-native-oss-context",
     "provider_kind": "open_ai_compatible",
     "base_url": "http://127.0.0.1:8000/v1",
     "api_key_env": "MATRIXARK_MODEL_API_KEY",

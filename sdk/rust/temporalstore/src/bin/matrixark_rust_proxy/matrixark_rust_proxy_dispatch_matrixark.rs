@@ -9,8 +9,8 @@ use crate::matrixark_rust_proxy_protocol::Command;
 use crate::matrixark_rust_proxy_records::{read_matrixark_record, write_matrixark_record};
 use crate::matrixark_rust_proxy_runtime::required;
 
-fn cpp_matrixark_c_api_bridge_enabled() -> bool {
-    std::env::var("TEMPORALSTORE_RUST_ALLOW_CPP_MATRIXARK_C_API")
+fn native_matrixark_c_api_bridge_enabled() -> bool {
+    std::env::var("TEMPORALSTORE_RUST_ALLOW_NATIVE_MATRIXARK_C_API")
         .map(|value| {
             matches!(
                 value.trim().to_ascii_lowercase().as_str(),
@@ -62,7 +62,7 @@ pub(crate) fn append_records(client: &Client, command: &Command) -> Result<Value
         .and_then(|options| options.get("append_path"))
         .and_then(Value::as_str)
         .unwrap_or("native_batch_append_records");
-    if !cpp_matrixark_c_api_bridge_enabled() {
+    if !native_matrixark_c_api_bridge_enabled() {
         for entry in &entries {
             client
                 .hset(entry.key, entry.field, entry.value)

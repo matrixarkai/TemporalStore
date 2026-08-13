@@ -20,8 +20,8 @@ OUT_JSON = OUT_DIR / "codex_recent_ingestion_workflow.json"
 OUT_MD = OUT_DIR / "codex_recent_ingestion_workflow.md"
 OUT_HTML = OUT_DIR / "codex_recent_ingestion_workflow.html"
 
-CPP_LIB = "/opt/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libtemporalstore.so"
-CPP_PREFIX = "matrixark:codex-hook:cpp-live-v2"
+NATIVE_LIB = "/opt/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libtemporalstore.so"
+NATIVE_PREFIX = "matrixark:codex-hook:native-live-v2"
 RUST_PREFIX = "matrixark:codex-hook:rust-live-v2"
 
 
@@ -661,7 +661,7 @@ def scan_rust(base: str, limit: int = 500) -> tuple[int, int, list[dict[str, Any
     return count, hot_count, rows
 
 
-def scan_cpp(base: str, limit: int = 500) -> tuple[int, int, list[dict[str, Any]]]:
+def scan_native(base: str, limit: int = 500) -> tuple[int, int, list[dict[str, Any]]]:
     sys.path.insert(0, str(ROOT / "sdk" / "python"))
     from temporalstore.client import Client, Options
 
@@ -674,7 +674,7 @@ def scan_cpp(base: str, limit: int = 500) -> tuple[int, int, list[dict[str, Any]
             io_timeout_ms=5000,
             max_read_retries=1,
         ),
-        library_path=CPP_LIB,
+        library_path=NATIVE_LIB,
     )
     try:
         count = int(client.get_string(base + ":record_count") or 0)
@@ -852,15 +852,15 @@ def render_markdown(report: dict[str, Any]) -> str:
         "  participant Codex",
         "  participant Hook as matrixark_codex_dual_hook.sh",
         "  participant Rust as Rust TemporalStore 17100/17101/17102",
-        "  participant Cpp as TemporalStore 18000/18001",
+        "  participant  as TemporalStore 18000/18001",
         "  participant Async as Async extraction/summary",
         "  Codex->>Hook: UserPromptSubmit JSON payload",
         "  Hook->>Rust: raw agent_message append",
-        "  Hook->>Cpp: raw agent_message append",
+        "  Hook->>: raw agent_message append",
         "  Rust->>Rust: publish context_event serving projection",
-        "  Cpp->>Cpp: publish compact context_event serving projection",
-        "  Cpp->>Cpp: publish compact segment/entity/index/summary rows",
-        "  Async-->>Cpp: optional debug/audit rows go to debug prefix",
+        "  ->>: publish compact context_event serving projection",
+        "  ->>: publish compact segment/entity/index/summary rows",
+        "  Async-->>: optional debug/audit rows go to debug prefix",
         "```",
         "",
         "## Backend Counts",
@@ -988,17 +988,17 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     rust_raw_count, rust_raw_hot_count, rust_raw = scan_rust(RUST_PREFIX + ":raw_ingestion")
     rust_serving_count, rust_serving_hot_count, rust_serving = scan_rust(RUST_PREFIX)
-    cpp_raw_count, cpp_raw_hot_count, cpp_raw = scan_cpp(CPP_PREFIX + ":raw_ingestion")
-    cpp_serving_count, cpp_serving_hot_count, cpp_serving = scan_cpp(CPP_PREFIX)
+    native_raw_count, native_raw_hot_count, native_raw = scan_native(NATIVE_PREFIX + ":raw_ingestion")
+    native_serving_count, native_serving_hot_count, native_serving = scan_native(NATIVE_PREFIX)
     report = {
         "generated_at_ms": int(time.time() * 1000),
         "query_paths": {
             "rust": "HTTP /execute through matrixark_rust_service_proxy on 127.0.0.1:17100",
-            "cpp": "TemporalStore Python SDK using libtemporalstore.so against 127.0.0.1:18000",
+            "native": "TemporalStore Python SDK using libtemporalstore.so against 127.0.0.1:18000",
         },
         "backends": [
             summarize_backend("Rust TemporalStore", RUST_PREFIX, rust_raw_count, rust_raw_hot_count, rust_raw, rust_serving_count, rust_serving_hot_count, rust_serving),
-            summarize_backend("TemporalStore", CPP_PREFIX, cpp_raw_count, cpp_raw_hot_count, cpp_raw, cpp_serving_count, cpp_serving_hot_count, cpp_serving),
+            summarize_backend("TemporalStore", NATIVE_PREFIX, native_raw_count, native_raw_hot_count, native_raw, native_serving_count, native_serving_hot_count, native_serving),
         ],
     }
     report["serving_visibility"] = serving_visibility_summary(report)

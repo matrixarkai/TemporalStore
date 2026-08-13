@@ -30,7 +30,7 @@ mod routing;
 
 use commands::{command_is_dropped, command_key, command_routing_key, is_write};
 use retry::{
-    classify_cpp_retry_decision, replica_read_policy_from_meta, retry_attempts_for,
+    classify_retry_decision, replica_read_policy_from_meta, retry_attempts_for,
     sleep_before_retry,
 };
 pub use routing::{
@@ -38,7 +38,7 @@ pub use routing::{
 };
 
 use crate::types::{
-    parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
+    parse_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
     ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit, ContextSummaryDirtyMarker,
     ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy,
     ControlStateFamily, ControlStateSelectionType, SequenceFeatureRow, SequenceQuerySpec,
@@ -189,7 +189,7 @@ pub enum ReplicaReadPolicy {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ClientCompatibilityMode {
     RustNative,
-    CppWireMigrationOutOfScope,
+    WireMigrationOutOfScope,
 }
 
 impl Default for ClientCompatibilityMode {
@@ -237,7 +237,7 @@ pub struct ClientMigrationCompatibilityReport {
     pub rust_native_http_ready: bool,
     pub rust_native_tonic_ready: bool,
     pub legacy_cplusplus_wire_in_scope: bool,
-    pub cpp_wire_compatible_ready: bool,
+    pub native_wire_compatible_ready: bool,
     pub migration_layer_ready: bool,
     #[serde(default)]
     pub typed_table_client_ready: bool,
@@ -257,11 +257,11 @@ pub struct ClientMigrationCompatibilityReport {
 impl Default for ClientMigrationCompatibilityReport {
     fn default() -> Self {
         Self {
-            compatibility_mode: ClientCompatibilityMode::CppWireMigrationOutOfScope,
+            compatibility_mode: ClientCompatibilityMode::WireMigrationOutOfScope,
             rust_native_http_ready: true,
             rust_native_tonic_ready: true,
             legacy_cplusplus_wire_in_scope: false,
-            cpp_wire_compatible_ready: false,
+            native_wire_compatible_ready: false,
             migration_layer_ready: false,
             typed_table_client_ready: true,
             topology_sync_ready: true,
@@ -378,7 +378,7 @@ pub struct ClientPreflightReport {
     pub options: ClientOptions,
     pub topology_cache: ClientTopologyCacheReport,
     #[serde(default)]
-    pub cpp_partition_sets: Vec<ClientCppPartitionSetReport>,
+    pub native_partition_sets: Vec<ClientPartitionSetReport>,
     #[serde(default)]
     pub meta_sync: ClientMetaSyncReport,
     pub degraded_reasons: Vec<String>,
@@ -388,7 +388,7 @@ pub struct ClientPreflightReport {
 pub struct ClientDirectSdkParityReport {
     pub rust_native_migration_contract_ready: bool,
     pub typed_table_client_ready: bool,
-    pub cpp_partition_set_route_cache_ready: bool,
+    pub native_partition_set_route_cache_ready: bool,
     pub partition_member_version_ready: bool,
     pub topology_sync_ready: bool,
     pub meta_syncer_ready: bool,
@@ -398,8 +398,8 @@ pub struct ClientDirectSdkParityReport {
     pub location_affine_secondary_reads_ready: bool,
     pub primary_only_writes_ready: bool,
     pub direct_sdk_command_families: Vec<String>,
-    pub cpp_partition_set_count: usize,
-    pub cpp_partition_member_count: usize,
+    pub native_partition_set_count: usize,
+    pub native_partition_member_count: usize,
     pub missing_route_count: usize,
     pub max_topology_version: u64,
     pub meta_sync_generation: u64,
@@ -408,7 +408,7 @@ pub struct ClientDirectSdkParityReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClientCppPartitionSetReport {
+pub struct ClientPartitionSetReport {
     pub table_id: u64,
     pub namespace: String,
     pub table_name: String,
@@ -419,11 +419,11 @@ pub struct ClientCppPartitionSetReport {
     pub topology_version: u64,
     pub partition_count: usize,
     pub missing_route_count: usize,
-    pub members: Vec<ClientCppPartitionMemberReport>,
+    pub members: Vec<ClientPartitionMemberReport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClientCppPartitionMemberReport {
+pub struct ClientPartitionMemberReport {
     pub partition_id: ShardId,
     pub shard_id: ShardId,
     #[serde(rename = "start_slot")]
@@ -756,11 +756,11 @@ impl TemporalStoreClient {
     pub fn direct_sdk_parity_report(&self) -> ClientDirectSdkParityReport {
         let migration = self.migration_compatibility_report();
         let replacement = &migration.production_replacement_contract;
-        let partition_sets = self.cpp_partition_set_report();
+        let partition_sets = self.native_partition_set_report();
         let topology = self.topology_cache_report();
         let meta_sync = self.meta_sync_report();
-        let cpp_partition_set_count = partition_sets.len();
-        let cpp_partition_member_count = partition_sets
+        let native_partition_set_count = partition_sets.len();
+        let native_partition_member_count = partition_sets
             .iter()
             .map(|partition_set| partition_set.members.len())
             .sum::<usize>();
@@ -768,8 +768,8 @@ impl TemporalStoreClient {
             .iter()
             .map(|partition_set| partition_set.missing_route_count)
             .sum::<usize>();
-        let cpp_partition_set_route_cache_ready = cpp_partition_set_count > 0
-            && cpp_partition_member_count > 0
+        let native_partition_set_route_cache_ready = native_partition_set_count > 0
+            && native_partition_member_count > 0
             && missing_route_count == 0;
         let partition_member_version_ready = partition_sets.iter().all(|partition_set| {
             partition_set.partition_count == partition_set.shard_count as usize
@@ -781,7 +781,7 @@ impl TemporalStoreClient {
                 })
         });
         let topology_sync_ready = replacement.topology_sync_tested
-            && topology.route_count >= cpp_partition_member_count
+            && topology.route_count >= native_partition_member_count
             && topology.max_topology_version > 0
             && topology.unknown_topology_version_routes == 0;
         let meta_syncer_ready = meta_sync.table_count > 0
@@ -823,8 +823,8 @@ impl TemporalStoreClient {
             ),
             (typed_table_client_ready, "typed_table_client_missing"),
             (
-                cpp_partition_set_route_cache_ready,
-                "cpp_partition_set_route_cache_missing",
+                native_partition_set_route_cache_ready,
+                "native_partition_set_route_cache_missing",
             ),
             (
                 partition_member_version_ready,
@@ -849,7 +849,7 @@ impl TemporalStoreClient {
         ClientDirectSdkParityReport {
             rust_native_migration_contract_ready,
             typed_table_client_ready,
-            cpp_partition_set_route_cache_ready,
+            native_partition_set_route_cache_ready,
             partition_member_version_ready,
             topology_sync_ready,
             meta_syncer_ready,
@@ -859,8 +859,8 @@ impl TemporalStoreClient {
             location_affine_secondary_reads_ready,
             primary_only_writes_ready,
             direct_sdk_command_families: replacement.supported_command_families.clone(),
-            cpp_partition_set_count,
-            cpp_partition_member_count,
+            native_partition_set_count,
+            native_partition_member_count,
             missing_route_count,
             max_topology_version: topology.max_topology_version,
             meta_sync_generation: meta_sync.total_sync_generation,
@@ -1201,7 +1201,7 @@ impl TemporalStoreTable {
                     Some(table_options.preferred_location.as_str())
                 },
             )?;
-            let decision = classify_cpp_retry_decision(
+            let decision = classify_retry_decision(
                 &current.status,
                 write,
                 attempt,
@@ -1279,7 +1279,7 @@ impl TemporalStoreTable {
                 self.http_options(),
                 Some(table_options.continuous_failed_time_ms),
             )?;
-            let decision = classify_cpp_retry_decision(
+            let decision = classify_retry_decision(
                 &current.status,
                 write,
                 attempt,

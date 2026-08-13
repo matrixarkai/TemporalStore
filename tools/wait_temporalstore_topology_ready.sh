@@ -68,7 +68,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     -h|--help)
       cat <<EOF
-usage: $0 [--backend cpp|rust|rust-direct] [--metaserver host:port] [--namespace name] [--table name]
+usage: $0 [--backend native|rust|rust-direct] [--metaserver host:port] [--namespace name] [--table name]
           [--prefix key-prefix] [--timeout-sec seconds] [--temporalstore-lib path] [--rust-cli path]
 EOF
       exit 0
@@ -135,7 +135,7 @@ if not meta_check.get("ok"):
     }
 else:
     try:
-        if backend == "cpp":
+        if backend == "native":
             adapter = MatrixArkTemporalStoreDirectAdapter(library_path=temporalstore_lib, **common)
         elif backend == "rust":
             adapter = MatrixArkTemporalStoreRustAdapter(rust_cli=rust_cli, **common)

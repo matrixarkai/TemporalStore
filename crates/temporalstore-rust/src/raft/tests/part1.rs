@@ -127,7 +127,7 @@ fn data_raft_log_codec_rejects_bad_header_and_sequence() {
 
 // shared-corpus: raft_matrixraft_wal_log_codec_segment_lifecycle
 #[test]
-fn cpp_data_raft_replication_rejects_corrupt_log_payload() {
+fn native_data_raft_replication_rejects_corrupt_log_payload() {
     assert!(matches!(
         parse_data_raft_log(b"bad"),
         Err(RaftError::InvalidDataRaftLog(_))
@@ -206,7 +206,7 @@ fn data_raft_command_codec_round_trips_chunked_timestamped_kv_payload() {
 
 // shared-corpus: raft_matrixraft_wal_log_codec_segment_lifecycle
 #[test]
-fn cpp_data_raft_replication_rejects_invalid_command_payload() {
+fn native_data_raft_replication_rejects_invalid_command_payload() {
     assert!(matches!(
         parse_data_raft_command(b"bad"),
         Err(RaftError::InvalidDataRaftCommand(_))
@@ -255,7 +255,7 @@ fn cpp_data_raft_replication_rejects_invalid_command_payload() {
 }
 
 #[test]
-fn cpp_data_raft_unavailable_consensus_fails_closed_for_safety_operations() {
+fn native_data_raft_unavailable_consensus_fails_closed_for_safety_operations() {
     let options = DataRaftConsensusOptions {
         shard_id: 11,
         replica_id: 11,

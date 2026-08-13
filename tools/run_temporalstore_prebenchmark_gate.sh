@@ -11,9 +11,9 @@ TABLE="${MATRIXARK_TEMPORALSTORE_TABLE:-deploy_table}"
 TOPOLOGY_TIMEOUT_MS="${TOPOLOGY_TIMEOUT_MS:-30000}"
 RUN_TOPOLOGY_GATE="${RUN_TOPOLOGY_GATE:-1}"
 RUN_PROXY_CLIENT_GATE="${RUN_PROXY_CLIENT_GATE:-1}"
-RUN_CPP_CLIENT_BUILD_GATE="${RUN_CPP_CLIENT_BUILD_GATE:-0}"
-CPP_CLIENT_BUILD_TIMEOUT_S="${CPP_CLIENT_BUILD_TIMEOUT_S:-300}"
-CPP_CLIENT_BUILD_TARGETS="${CPP_CLIENT_BUILD_TARGETS:-}"
+RUN_NATIVE_CLIENT_BUILD_GATE="${RUN_NATIVE_CLIENT_BUILD_GATE:-0}"
+NATIVE_CLIENT_BUILD_TIMEOUT_S="${NATIVE_CLIENT_BUILD_TIMEOUT_S:-300}"
+NATIVE_CLIENT_BUILD_TARGETS="${NATIVE_CLIENT_BUILD_TARGETS:-}"
 RUN_INGESTION_GATE="${RUN_INGESTION_GATE:-1}"
 RUN_CACHE_EVICTION_GATE="${RUN_CACHE_EVICTION_GATE:-1}"
 RUN_CONTEXT_PARITY_GATE="${RUN_CONTEXT_PARITY_GATE:-0}"
@@ -172,23 +172,23 @@ if [[ "${RUN_TOPOLOGY_GATE}" == "1" ]]; then
 fi
 
 
-if [[ "${RUN_CPP_CLIENT_BUILD_GATE}" == "1" ]]; then
-  if [[ "${BACKEND}" != "cpp" ]]; then
-    write_stage cpp_client_target_build skip "client target build gate is-specific" 0 "${RESULT_DIR}/cpp_client_target_build"
+if [[ "${RUN_NATIVE_CLIENT_BUILD_GATE}" == "1" ]]; then
+  if [[ "${BACKEND}" != "native" ]]; then
+    write_stage native_client_target_build skip "client target build gate is-specific" 0 "${RESULT_DIR}/native_client_target_build"
   else
-    run_stage cpp_client_target_build \
+    run_stage native_client_target_build \
       "fix stale build tree, missing client target dependencies, long compile fan-in, or local client build timeout before proxy/client pressure" \
-      env BUILD_TYPE="${BUILD_TYPE}" BUILD_TARGETS="${CPP_CLIENT_BUILD_TARGETS}" BUILD_TIMEOUT_S="${CPP_CLIENT_BUILD_TIMEOUT_S}" ARTIFACT_DIR="${RESULT_DIR}/cpp_client_target_build/artifacts" true
+      env BUILD_TYPE="${BUILD_TYPE}" BUILD_TARGETS="${NATIVE_CLIENT_BUILD_TARGETS}" BUILD_TIMEOUT_S="${NATIVE_CLIENT_BUILD_TIMEOUT_S}" ARTIFACT_DIR="${RESULT_DIR}/native_client_target_build/artifacts" true
   fi
 fi
 
 if [[ "${RUN_PROXY_CLIENT_GATE}" == "1" ]]; then
-  if [[ "${BACKEND}" != "cpp" ]]; then
+  if [[ "${BACKEND}" != "native" ]]; then
     write_stage proxy_client skip "proxy/client gate is-specific; use Rust proxy/direct SDK parity for rust" 0 "${RESULT_DIR}/proxy_client"
   else
     run_stage proxy_client \
       "fix launcher, live proxy port, direct SDK oracle, request timeout, or proxy status warnings" \
-      env BUILD_TYPE="${BUILD_TYPE}" bash tools/run_cpp_benchmark_transport_parity_ubuntu22.sh
+      env BUILD_TYPE="${BUILD_TYPE}" bash tools/run_benchmark_transport_parity_ubuntu22.sh
   fi
 fi
 

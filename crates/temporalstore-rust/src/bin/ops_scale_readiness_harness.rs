@@ -147,7 +147,7 @@ fn main() {
         "control_state_counter_window",
         "redis_compatible_set_core",
         "context_event_index_audit_dirty_models",
-        "cpp_redis_live_storage_smoke_parity_surfaces",
+        "native_redis_live_storage_smoke_parity_surfaces",
     ]
     .iter()
     .all(|case| case_names.contains(*case))

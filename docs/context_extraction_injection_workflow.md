@@ -103,7 +103,7 @@ profiles through `GET /context/workflow/state`:
 - `vikingmem-gpt-4o-mini-reader`: `gpt-4o-mini` reader/chat model for VikingMem benchmark parity,
   `sentence-transformers/all-MiniLM-L6-v2` embedding model, OpenAI-compatible gateway at
   `https://api.openai.com/v1`
-- `matrixark-cpp-oss-context`: `google/flan-t5-small` extraction model and
+- `matrixark-native-oss-context`: `google/flan-t5-small` extraction model and
   `sentence-transformers/all-MiniLM-L6-v2` embedding model, retained for legacy open-source
   MatrixArk comparison runs
 - `openviking-minigpt4-gpt-style-vlm`: `Vision-CAIR/MiniGPT-4` as the open-source GPT-4-style VLM,

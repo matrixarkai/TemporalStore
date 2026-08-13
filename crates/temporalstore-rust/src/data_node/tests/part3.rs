@@ -769,7 +769,7 @@ fn runtime_preflight_reports_dirty_backlog_and_queue_degradation() {
 }
 
 #[test]
-fn runtime_builds_cpp_style_server_load_report() {
+fn runtime_builds_style_server_load_report() {
     let engine = TemporalEngine::default();
     assert!(
         engine
@@ -1032,7 +1032,7 @@ fn runtime_storage_lifecycle_scheduler_runs_periodically() {
 
 #[test]
 // shared-corpus: storage_dump_load_recovery storage_cache_refill;
-fn runtime_storage_manager_loop_runs_cpp_style_pressure_stages() {
+fn runtime_storage_manager_loop_runs_style_pressure_stages() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     let runtime = DataNodeRuntime::new_without_workers_for_test(engine.clone(), 8);
@@ -1198,7 +1198,7 @@ fn runtime_storage_manager_loop_runs_cpp_style_pressure_stages() {
 
 #[test]
 // shared-corpus: storage_manager_pressure_scale_evidence;
-fn runtime_storage_manager_scale_repeats_cpp_style_pressure_stages() {
+fn runtime_storage_manager_scale_repeats_style_pressure_stages() {
     let dir = tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         512,

@@ -88,7 +88,7 @@ impl TemporalStoreTable {
         }
     }
 
-    pub fn feature_query_cpp_filters(
+    pub fn feature_query_filters(
         &self,
         key: impl Into<String>,
         start_ms: u64,
@@ -96,7 +96,7 @@ impl TemporalStoreTable {
         count: Option<usize>,
         filters: &[String],
     ) -> Result<Vec<FeaturePoint>, ClientError> {
-        let filters = parse_cpp_feature_filters(filters.iter().map(String::as_str))
+        let filters = parse_feature_filters(filters.iter().map(String::as_str))
             .map_err(ClientError::InvalidRequest)?;
         self.feature_query_filtered(key, start_ms, end_ms, count, filters)
     }

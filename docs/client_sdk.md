@@ -35,7 +35,7 @@ Important options:
 
 Use typed sequence rows for the default long-sequence feature schema:
 
-```cpp
+```native
 std::vector<temporalstore::client::SequenceFeatureRow> rows = {
     {1700000000000ULL, 900, 1, 31, 7000},
     {1700000001000ULL, 901, 3, 120, 7001},
@@ -58,14 +58,14 @@ The SDK builds the server filter strings for you, validates the query window, an
 
 The old raw feature API is still available:
 
-```cpp
+```native
 std::vector<temporalstore::client::TemporalFeaturePoint> points;
 client->QueryFeaturePoints("user:42:sequence", 1700000000000ULL, 1700000002000ULL, 100, &points);
 ```
 
 For filtered raw reads, use `TemporalFeatureQuery`:
 
-```cpp
+```native
 temporalstore::client::TemporalFeatureQuery query;
 query.start_ts = 1700000000000ULL;
 query.end_ts = 1700000002000ULL;
@@ -150,15 +150,15 @@ RUN_RUST_SDK=1 RUN_UNIFIED_TESTS=1 tools/run_sdk_smoke_ubuntu22.sh
 ```
 
 Use `RUST_UNIFIED_VALIDATE_ONLY=1` for a fast schema/contract validation pass.
-Use `TS_CPP_UNIFIED_NATIVE_CMD='...'` when the unified run should also execute a
+Use `TS_NATIVE_UNIFIED_NATIVE_CMD='...'` when the unified run should also execute a
 full corpus command; the command string can reference `{corpus}` and
-`{cpp_repo}`. Use `RUST_UNIFIED_CORPUS=/path/to/corpus.json` to test an
+`{native_repo}`. Use `RUST_UNIFIED_CORPUS=/path/to/corpus.json` to test an
 alternate corpus.
 
 To execute the existing cache/storage/RAFT runners listed in the corpus:
 
 ```bash
-TS_CPP_UNIFIED_RUN_EXISTING=1 tools/run_rust_unified_tests.sh
+TS_NATIVE_UNIFIED_RUN_EXISTING=1 tools/run_rust_unified_tests.sh
 ```
 
 This path is intentionally opt-in because it includes heavier smoke and stress

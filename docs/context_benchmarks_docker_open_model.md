@@ -6,7 +6,7 @@ reader endpoint in Docker, runs the benchmark runners from a Python container,
 and archives reports under `benchmark_reports/`.
 
 The repo also includes a Hugging Face Transformers endpoint for the exact
-`matrixark-cpp-oss-context` text-reader profile. It serves the OpenAI-compatible
+`matrixark-native-oss-context` text-reader profile. It serves the OpenAI-compatible
 `/v1/models` and `/v1/chat/completions` APIs from
 `tools/openai_compatible_hf_reader.py`, defaults to `google/flan-t5-small`, and
 is packaged by `Dockerfile.context-oss-reader`.
@@ -52,7 +52,7 @@ bash tools/run_context_benchmarks_docker_open_model.sh
 
 The Docker/Ollama path above is useful when the chosen model is available in
 Ollama. The/MatrixArk/OpenViking benchmark path uses the
-`matrixark-cpp-oss-context` profile with `google/flan-t5-small`. Run that exact
+`matrixark-native-oss-context` profile with `google/flan-t5-small`. Run that exact
 reader/model through the packaged Hugging Face endpoint with:
 
 ```bash
@@ -69,7 +69,7 @@ set `TEMPORALSTORE_OSS_READER_RUN_SMOKE=0` and use:
 
 ```bash
 TEMPORALSTORE_READER_BASE_URL=http://127.0.0.1:8000/v1 \
-TEMPORALSTORE_READER_PROVIDER_NAME=matrixark-cpp-oss-context \
+TEMPORALSTORE_READER_PROVIDER_NAME=matrixark-native-oss-context \
 TEMPORALSTORE_READER_MODEL=google/flan-t5-small \
 bash tools/run_context_benchmarks_oss_reader_endpoint.sh
 ```
@@ -86,7 +86,7 @@ with:
 
 ```bash
 TEMPORALSTORE_READER_BASE_URL=http://127.0.0.1:8000/v1 \
-TEMPORALSTORE_READER_PROVIDER_NAME=matrixark-cpp-oss-context \
+TEMPORALSTORE_READER_PROVIDER_NAME=matrixark-native-oss-context \
 TEMPORALSTORE_READER_MODEL=google/flan-t5-small \
 TEMPORALSTORE_LOCOMO_INPUT=/tmp/locomo10.json \
 TEMPORALSTORE_LONGMEMEVAL_INPUT=/tmp/longmemeval_s.json \

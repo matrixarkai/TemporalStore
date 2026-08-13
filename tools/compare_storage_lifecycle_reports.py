@@ -20,19 +20,19 @@ from validate_storage_lifecycle_parity import _load_json, validate_contract_and_
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cpp-report", required=True, type=pathlib.Path)
+    parser.add_argument("--native-report", required=True, type=pathlib.Path)
     parser.add_argument("--rust-report", required=True, type=pathlib.Path)
     args = parser.parse_args()
 
     failures = validate_contract_and_runner()
-    failures.extend(validate_report_pair(_load_json(args.cpp_report), _load_json(args.rust_report)))
+    failures.extend(validate_report_pair(_load_json(args.native_report), _load_json(args.rust_report)))
     if failures:
         for failure in failures:
             print(failure, file=sys.stderr)
         return 1
 
     print("live conformance storage lifecycle reports match the canonical public contract")
-    print(f"- cpp_report={args.cpp_report}")
+    print(f"- native_report={args.native_report}")
     print(f"- rust_report={args.rust_report}")
     return 0
 

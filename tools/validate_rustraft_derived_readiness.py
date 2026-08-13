@@ -143,7 +143,7 @@ AREAS: tuple[ReadinessArea, ...] = (
                     "read_index",
                     "leader_lease_valid",
                     "raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat",
-                    "data_raft_read_policy_matches_cpp_partition_manager_modes",
+                    "data_raft_read_policy_matches_partition_manager_modes",
                     "raft_read_index_and_transfer_reject_lagging_replica",
                 ),
             ),

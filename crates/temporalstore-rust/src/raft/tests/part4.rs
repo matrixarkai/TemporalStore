@@ -392,7 +392,7 @@ fn metaserver_raft_replicates_shard_location_metadata() {
 }
 
 #[test]
-fn metaserver_raft_replays_scheduler_state_and_cpp_partition_set_topology() {
+fn metaserver_raft_replays_scheduler_state_and_partition_set_topology() {
     let meta = MetaRaftCluster::new([10, 11, 12]);
     let mut scheduler = DeterministicTaskScheduler::default();
     let task = scheduler.submit(
@@ -412,7 +412,7 @@ fn metaserver_raft_replays_scheduler_state_and_cpp_partition_set_topology() {
             TaskSchedulerOptions::default(),
         )
         .unwrap();
-    let topology = CppPartitionSetTopology::from_replicas(
+    let topology = PartitionSetTopology::from_replicas(
         "ns",
         "tbl",
         7,
@@ -676,7 +676,7 @@ fn production_meta_raft_runtime_ticks_failover_and_failure_detection() {
 }
 
 #[test]
-fn production_meta_raft_runtime_matches_cpp_multinode_control_and_fault_contract() {
+fn production_meta_raft_runtime_matches_multinode_control_and_fault_contract() {
     let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
         engine: ProductionRaftEngineKind::TemporalRaft,
         local_node_id: 10,

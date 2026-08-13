@@ -116,7 +116,7 @@ fn client_drop_percent_sampler_is_deterministic_and_bounded() {
 }
 
 #[test]
-fn client_retries_cpp_retryable_read_status_before_returning() {
+fn client_retries_retryable_read_status_before_returning() {
     let proxy_addr = free_local_addr();
     let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let attempts_for_server = attempts.clone();
@@ -210,7 +210,7 @@ fn client_does_not_retry_write_status_without_write_retry_budget() {
 
 #[test]
 fn client_retry_classifier_separates_safe_topology_retry_from_unsafe_write_retry() {
-    let unsafe_write_retry = classify_cpp_retry_decision(
+    let unsafe_write_retry = classify_retry_decision(
         &Status::error("retry_later", "possibly applied"),
         true,
         0,
@@ -225,7 +225,7 @@ fn client_retry_classifier_separates_safe_topology_retry_from_unsafe_write_retry
         "write retry without budget must not duplicate a possibly applied write"
     );
 
-    let safe_topology_retry = classify_cpp_retry_decision(
+    let safe_topology_retry = classify_retry_decision(
         &Status::error("meta_changed", "not applied on stale route"),
         true,
         0,
@@ -240,7 +240,7 @@ fn client_retry_classifier_separates_safe_topology_retry_from_unsafe_write_retry
         "stale topology rejection may refresh and retry once even with no write retry budget"
     );
 
-    let duplicate_topology_retry = classify_cpp_retry_decision(
+    let duplicate_topology_retry = classify_retry_decision(
         &Status::error("meta_changed", "still stale"),
         true,
         1,
@@ -538,7 +538,7 @@ fn pipeline_batches_partial_failures_and_timeout_budget_contract() {
         "unsafe write batches must not be retried without explicit write budget"
     );
 
-    let unsafe_write_retry = classify_cpp_retry_decision(
+    let unsafe_write_retry = classify_retry_decision(
         &Status::error("retry_later", "possibly applied"),
         true,
         0,
@@ -547,7 +547,7 @@ fn pipeline_batches_partial_failures_and_timeout_budget_contract() {
     );
     assert!(unsafe_write_retry.retryable);
     assert!(!unsafe_write_retry.would_retry);
-    let stale_route_retry = classify_cpp_retry_decision(
+    let stale_route_retry = classify_retry_decision(
         &Status::error("meta_changed", "not applied"),
         true,
         0,

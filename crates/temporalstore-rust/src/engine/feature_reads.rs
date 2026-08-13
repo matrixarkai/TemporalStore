@@ -109,7 +109,7 @@ pub(super) fn read_filtered_feature_points(
     .into_iter()
     .filter(|point| {
         let Some(row) =
-            SequenceFeatureRow::decode_cpp_feature_value(point.timestamp_ms, &point.value)
+            SequenceFeatureRow::decode_feature_proto_value(point.timestamp_ms, &point.value)
         else {
             return false;
         };

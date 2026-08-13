@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Split out of run_matrixark_cpp_rust_scale_report.py; re-exported at that module's end via the dual
+"""Split out of run_matrixark_rust_scale_report.py; re-exported at that module's end via the dual
 relative/absolute import pattern so the same module object is reused under both
 the package path (tools.<mod>) and the top-level path. No import-time cycle.
 __all__ lists every moved name for total re-export."""
@@ -9,13 +9,13 @@ import resource
 import sys
 import time
 
-try:  # package path (tools.run_matrixark_cpp_rust_scale_report)
-    from .run_matrixark_cpp_rust_scale_report import (
+try:  # package path (tools.run_matrixark_rust_scale_report)
+    from .run_matrixark_rust_scale_report import (
         Json,
         Path,
     )
-except ImportError:  # top-level path (run_matrixark_cpp_rust_scale_report)
-    from run_matrixark_cpp_rust_scale_report import (
+except ImportError:  # top-level path (run_matrixark_rust_scale_report)
+    from run_matrixark_rust_scale_report import (
         Json,
         Path,
     )

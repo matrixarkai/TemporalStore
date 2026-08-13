@@ -36,7 +36,7 @@ Add this to `<workspace>\.codex\config.toml`:
 ```toml
 [mcp_servers.matrixark]
 command = "wsl.exe"
-args = ["--cd", "<repo>", "-e", "bash", "-lc", "exec tools/matrixark_mcp_cpp_server.sh"]
+args = ["--cd", "<repo>", "-e", "bash", "-lc", "exec tools/matrixark_mcp_server.sh"]
 startup_timeout_sec = 180
 ```
 
@@ -83,7 +83,7 @@ Restart Codex after editing `config.toml`.
 
 ## 3. Backend Environment Variables
 
-The hook launcher `tools/matrixark_codex_cpp_hook.sh` defaults to:
+The hook launcher `tools/matrixark_codex_hook.sh` defaults to:
 
 ```bash
 MATRIXARK_MCP_BACKEND=temporalstore-direct
@@ -93,7 +93,7 @@ MATRIXARK_TEMPORALSTORE_TABLE=deploy_table
 MATRIXARK_TEMPORALSTORE_PREFIX=matrixark:codex-hook
 TEMPORALSTORE_LIB=<repo>/output-ubuntu22/release/sdk/lib/libtemporalstore.so
 MATRIXARK_HOOK_FAIL_OPEN=1
-MATRIXARK_HOOK_AUTOSTART_CPP=1
+MATRIXARK_HOOK_AUTOSTART_NATIVE=1
 ```
 
 The Rust hook launcher `tools/matrixark_codex_rust_hook.sh` defaults to:
@@ -147,25 +147,25 @@ Codex hook availability depends on the Codex surface/version. If hooks are not v
   "hooks": {
     "UserPromptSubmit": [
       {
-        "command": "<repo>/tools/matrixark_codex_cpp_hook.sh --event UserPromptSubmit",
+        "command": "<repo>/tools/matrixark_codex_hook.sh --event UserPromptSubmit",
         "timeout_ms": 60000
       }
     ],
     "PostToolUse": [
       {
-        "command": "<repo>/tools/matrixark_codex_cpp_hook.sh --event PostToolUse",
+        "command": "<repo>/tools/matrixark_codex_hook.sh --event PostToolUse",
         "timeout_ms": 60000
       }
     ],
     "Stop": [
       {
-        "command": "<repo>/tools/matrixark_codex_cpp_hook.sh --event Stop",
+        "command": "<repo>/tools/matrixark_codex_hook.sh --event Stop",
         "timeout_ms": 60000
       }
     ],
     "PostCompact": [
       {
-        "command": "<repo>/tools/matrixark_codex_cpp_hook.sh --event PostCompact",
+        "command": "<repo>/tools/matrixark_codex_hook.sh --event PostCompact",
         "timeout_ms": 60000
       }
     ]
@@ -697,11 +697,11 @@ Expected output includes:
 
 ```bash
 cd <repo>
-printf '%s\n' '{"prompt":"Alice approved the GPU request.","thread_id":"manual-hook-cpp","cwd":"<repo>"}' \
+printf '%s\n' '{"prompt":"Alice approved the GPU request.","thread_id":"manual-hook-native","cwd":"<repo>"}' \
   | MATRIXARK_ACCOUNT_ID=acct_local \
     MATRIXARK_TENANT_ID=tenant_codex \
     MATRIXARK_USER_ID="${USER:-local_user}" \
-    tools/matrixark_codex_cpp_hook.sh --event UserPromptSubmit
+    tools/matrixark_codex_hook.sh --event UserPromptSubmit
 ```
 
 ### Rust TemporalStore hook smoke
@@ -722,7 +722,7 @@ List tools through the configured MCP launcher:
 ```powershell
 $req = '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' + "`n"
 Set-Content -NoNewline -Encoding ascii "$env:TEMP\matrixark-mcp-smoke.jsonl" $req
-wsl --cd <repo> -e bash -lc 'timeout 30s tools/matrixark_mcp_cpp_server.sh --line-json < <workspace>/AppData/Local/Temp/matrixark-mcp-smoke.jsonl | head -c 1000'
+wsl --cd <repo> -e bash -lc 'timeout 30s tools/matrixark_mcp_server.sh --line-json < <workspace>/AppData/Local/Temp/matrixark-mcp-smoke.jsonl | head -c 1000'
 ```
 
 Call a tool directly over line JSON:
@@ -732,7 +732,7 @@ cd <repo>
 cat > /tmp/matrixark-ingest-call.jsonl <<'JSON'
 {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"matrixark_ingest","arguments":{"messages":[{"role":"user","content":"Alice approved the GPU request."}],"scope":{"account_id":"acct_local","tenant_id":"tenant_codex","user_id":"local_user","session_id":"manual-mcp-demo"}}}}
 JSON
-MATRIXARK_MCP_PROFILE=production tools/matrixark_mcp_cpp_server.sh --line-json < /tmp/matrixark-ingest-call.jsonl
+MATRIXARK_MCP_PROFILE=production tools/matrixark_mcp_server.sh --line-json < /tmp/matrixark-ingest-call.jsonl
 ```
 
 ## 12. What To Verify In MatrixArk
@@ -780,7 +780,7 @@ ContextIndex(source_type, resource_type, unit_kind, heading_slug, relative_path,
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | MCP startup timeout | conformance backend or models are warming up. | Increase `startup_timeout_sec` to 180 or 240. |
-| `MATRIXARK_CPP_TEMPORALSTORE_ENDPOINT is not set` | HTTP gateway mode requested but endpoint is missing. | Use `tools/matrixark_mcp_cpp_server.sh` direct SDK mode or set the gateway endpoint. |
+| `MATRIXARK_NATIVE_TEMPORALSTORE_ENDPOINT is not set` | HTTP gateway mode requested but endpoint is missing. | Use `tools/matrixark_mcp_server.sh` direct SDK mode or set the gateway endpoint. |
 | `Slot not found` / `Partition info not found` | TemporalStore topology is still installing slots. | Run backend readiness/warmup and retry after metaserver reports slot coverage. |
 | MCP tools work but messages are not automatic | MCP is callable, not a lifecycle hook by itself. | Install hook commands or ask Codex to call `matrixark_ingest` explicitly. |
 | Hook blocks Codex | Backend slow or unavailable. | Keep `MATRIXARK_HOOK_FAIL_OPEN=1` so Codex continues and MatrixArk logs a warning. |

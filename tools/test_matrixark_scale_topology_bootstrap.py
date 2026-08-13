@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import run_matrixark_cpp_rust_scale_report as scale
+import run_matrixark_rust_scale_report as scale
 
 
 def _args(**overrides):

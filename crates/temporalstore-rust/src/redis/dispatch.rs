@@ -1033,7 +1033,7 @@ pub fn execute_redis_command_with_state(
                 .skip(5)
                 .map(|filter| string_arg(filter))
                 .collect::<Vec<_>>();
-            let filters = match parse_cpp_feature_filters(raw_filters.iter().map(String::as_str)) {
+            let filters = match parse_feature_filters(raw_filters.iter().map(String::as_str)) {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(format!("ERR {err}")),
             };

@@ -1313,7 +1313,7 @@ class _BackendPolicyPart2:
             self.assertTrue(report["replay_gate"]["override"])
             self.assertEqual(1, report["recovered_records"])
 
-    def test_cpp_backend_metrics_report_recovery_and_cache_state(self) -> None:
+    def test_backend_metrics_report_recovery_and_cache_state(self) -> None:
         client = _HashStoreClient()
         adapter = _direct_adapter_for_hash_store(client)
         adapter._disk_fallback_recovery_status = {

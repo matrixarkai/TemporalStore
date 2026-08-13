@@ -203,7 +203,7 @@ agent session.
 
 ## Difference From Hook
 
-- hook default: `matrixark_codex_cpp_hook.sh` plus MatrixArk direct adapter
+- hook default: `matrixark_codex_hook.sh` plus MatrixArk direct adapter
   backed by the SDK.
 - Rust hook default: `codex_context_hook` plus Rust `TemporalEngine`.
 - Rust keeps the same high-level lifecycle contract but does not use brpc/thrift

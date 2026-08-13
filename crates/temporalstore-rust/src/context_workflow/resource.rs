@@ -369,7 +369,7 @@ fn context_resource_import_kind(raw_uri: &str, resource_type: &str) -> ContextRe
         ContextResourceImportKind::GitRepo
     } else if matches!(
         resource_type.as_str(),
-        "rs" | "py" | "cpp" | "cc" | "c" | "h" | "hpp" | "js" | "ts" | "go" | "java"
+        "rs" | "py" | "native" | "cc" | "c" | "h" | "hpp" | "js" | "ts" | "go" | "java"
     ) || lower_uri.contains("/src/")
     {
         ContextResourceImportKind::CodeRepo

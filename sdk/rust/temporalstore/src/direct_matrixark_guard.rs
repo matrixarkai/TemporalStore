@@ -3,8 +3,8 @@
 
 use crate::{Error, Result};
 
-pub(crate) fn cpp_matrixark_c_api_bridge_allowed(op: &str) -> Result<()> {
-    let allowed = std::env::var("TEMPORALSTORE_RUST_ALLOW_CPP_MATRIXARK_C_API")
+pub(crate) fn native_matrixark_c_api_bridge_allowed(op: &str) -> Result<()> {
+    let allowed = std::env::var("TEMPORALSTORE_RUST_ALLOW_NATIVE_MATRIXARK_C_API")
         .map(|value| {
             matches!(
                 value.trim().to_ascii_lowercase().as_str(),
@@ -20,7 +20,7 @@ pub(crate) fn cpp_matrixark_c_api_bridge_allowed(op: &str) -> Result<()> {
         message: format!(
             "Rust MatrixArk hot path {op} would call the shared C API bridge. \
              Use the Rust-native temporalstore-rust matrixark_rust_proxy/direct SDK path, \
-             or set TEMPORALSTORE_RUST_ALLOW_CPP_MATRIXARK_C_API=1 only for compatibility diagnostics."
+             or set TEMPORALSTORE_RUST_ALLOW_NATIVE_MATRIXARK_C_API=1 only for compatibility diagnostics."
         ),
     })
 }

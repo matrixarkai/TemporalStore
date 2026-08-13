@@ -26,9 +26,9 @@ try:
     from tools import matrixark_mcp_retrieve_planning as retrieve_planning
     from tools import matrixark_mcp_summary_runtime as mcp_summary_runtime
     from tools.matrixark_mcp_rust_proxy_process import rust_proxy_library_search_path
-    from tools.run_matrixark_cpp_rust_scale_report import (
+    from tools.run_matrixark_rust_scale_report import (
         comparison,
-        default_cpp_lib_path,
+        default_lib_path,
         effective_storage_tuning_from_env,
         fallback_flags_from_backend,
         phase_scale_matrix_gate,
@@ -37,7 +37,7 @@ try:
         storage_tuning_failures,
         summarize_retrieval_metrics,
         timeout_count,
-        validate_cpp_runtime_host,
+        validate_runtime_host,
         validate_rust_runtime_path,
     )
     from tools.validate_storage_lifecycle_parity import REPORT_PAIR_CORPUS, _load_json, validate_report_pair
@@ -52,9 +52,9 @@ except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
     import matrixark_mcp_retrieve_planning as retrieve_planning
     import matrixark_mcp_summary_runtime as mcp_summary_runtime
     from matrixark_mcp_rust_proxy_process import rust_proxy_library_search_path
-    from run_matrixark_cpp_rust_scale_report import (
+    from run_matrixark_rust_scale_report import (
         comparison,
-        default_cpp_lib_path,
+        default_lib_path,
         effective_storage_tuning_from_env,
         fallback_flags_from_backend,
         phase_scale_matrix_gate,
@@ -63,7 +63,7 @@ except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
         storage_tuning_failures,
         summarize_retrieval_metrics,
         timeout_count,
-        validate_cpp_runtime_host,
+        validate_runtime_host,
         validate_rust_runtime_path,
     )
     from validate_storage_lifecycle_parity import REPORT_PAIR_CORPUS, _load_json, validate_report_pair
@@ -164,7 +164,7 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
 
     def test_rust_scale_keeps_shared_writer_and_enables_pack_lanes(self) -> None:
         repo = Path(__file__).resolve().parents[1]
-        source = (repo / "tools" / "run_matrixark_cpp_rust_scale_report.py").read_text()
+        source = (repo / "tools" / "run_matrixark_rust_scale_report.py").read_text()
         allow_start = source.index("MATRIXARK_RUST_PROXY_ALLOW_ISOLATED_CLIENTS")
         allow_body = source[allow_start : source.index("else:", allow_start)]
         shared_body = source[source.index("else:", allow_start) : source.index("allow_c_api_bridge", allow_start)]
@@ -271,7 +271,7 @@ class _NativeContextPackClient:
         self.requests.append(dict(request))
         context_pack = {
             "context_pack_id": "native-pack-1",
-            "context_pack_assembly": "native_cpp_direct",
+            "context_pack_assembly": "native_direct",
             "selected_refs": [
                 {
                     "ref_type": "event",
@@ -945,7 +945,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase, _BackendPolicyPart4, _Bac
         report = {
             "config": {"effective_storage_tuning": dict(tuning)},
             "backends": {
-                "cpp": {"status": "passed", "effective_storage_tuning": dict(tuning)},
+                "native": {"status": "passed", "effective_storage_tuning": dict(tuning)},
                 "rust": {
                     "status": "passed",
                     "effective_storage_tuning": {
@@ -962,72 +962,72 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase, _BackendPolicyPart4, _Bac
             "rust effective_storage_tuning.TS_STREAM_MAX_BLOB_SIZE drift: backend=20971520 config=10485760",
             failures,
         )
-        del report["backends"]["cpp"]["effective_storage_tuning"]["TS_PAGE_INDEX_CACHE_BYTES"]
+        del report["backends"]["native"]["effective_storage_tuning"]["TS_PAGE_INDEX_CACHE_BYTES"]
         failures = storage_tuning_failures(report)
-        self.assertIn("cpp missing effective_storage_tuning.TS_PAGE_INDEX_CACHE_BYTES", failures)
+        self.assertIn("native missing effective_storage_tuning.TS_PAGE_INDEX_CACHE_BYTES", failures)
 
     def test_storage_lifecycle_read_sequence_is_exact_and_top_level(self) -> None:
         corpus = _load_json(REPORT_PAIR_CORPUS)
-        self.assertEqual(validate_report_pair(corpus["cpp"], corpus["rust"]), [])
+        self.assertEqual(validate_report_pair(corpus["native"], corpus["rust"]), [])
 
-        cpp_drift = json.loads(json.dumps(corpus["cpp"]))
-        cpp_drift["storage_read_sequence"] = [
+        native_drift = json.loads(json.dumps(corpus["native"]))
+        native_drift["storage_read_sequence"] = [
             "logical_key_timestamp_range",
             "page_read",
             "decode_records",
         ]
-        failures = validate_report_pair(cpp_drift, corpus["rust"])
-        self.assertTrue(any("cpp storage_read_sequence drift" in failure for failure in failures))
+        failures = validate_report_pair(native_drift, corpus["rust"])
+        self.assertTrue(any("native storage_read_sequence drift" in failure for failure in failures))
 
         rust_missing = json.loads(json.dumps(corpus["rust"]))
         del rust_missing["storage_read_sequence"]
-        failures = validate_report_pair(corpus["cpp"], rust_missing)
+        failures = validate_report_pair(corpus["native"], rust_missing)
         self.assertIn("rust report missing required top-level `storage_read_sequence`", failures)
 
     def test_storage_lifecycle_write_sequence_is_required_top_level(self) -> None:
         corpus = _load_json(REPORT_PAIR_CORPUS)
-        self.assertEqual(validate_report_pair(corpus["cpp"], corpus["rust"]), [])
+        self.assertEqual(validate_report_pair(corpus["native"], corpus["rust"]), [])
 
-        cpp_drift = json.loads(json.dumps(corpus["cpp"]))
-        cpp_drift["storage_write_sequence"] = [
+        native_drift = json.loads(json.dumps(corpus["native"]))
+        native_drift["storage_write_sequence"] = [
             "append_record",
             "route_shard_slot",
             "flush_page_block_segment",
             "publish_append_watermark",
         ]
-        failures = validate_report_pair(cpp_drift, corpus["rust"])
-        self.assertTrue(any("cpp storage_write_sequence drift" in failure for failure in failures))
+        failures = validate_report_pair(native_drift, corpus["rust"])
+        self.assertTrue(any("native storage_write_sequence drift" in failure for failure in failures))
 
         rust_missing = json.loads(json.dumps(corpus["rust"]))
         del rust_missing["storage_write_sequence"]
-        failures = validate_report_pair(corpus["cpp"], rust_missing)
+        failures = validate_report_pair(corpus["native"], rust_missing)
         self.assertIn("rust report missing required top-level `storage_write_sequence`", failures)
 
     def test_storage_lifecycle_cold_scan_sequence_is_exact_and_top_level(self) -> None:
         corpus = _load_json(REPORT_PAIR_CORPUS)
-        self.assertEqual(validate_report_pair(corpus["cpp"], corpus["rust"]), [])
+        self.assertEqual(validate_report_pair(corpus["native"], corpus["rust"]), [])
 
-        cpp_drift = json.loads(json.dumps(corpus["cpp"]))
-        cpp_drift["storage_cold_scan_sequence"] = [
+        native_drift = json.loads(json.dumps(corpus["native"]))
+        native_drift["storage_cold_scan_sequence"] = [
             "timestamp_page_index_scan",
             "page_read",
             "bounded_decode",
             "hot_cache_promotion",
         ]
-        failures = validate_report_pair(cpp_drift, corpus["rust"])
-        self.assertTrue(any("cpp storage_cold_scan_sequence drift" in failure for failure in failures))
+        failures = validate_report_pair(native_drift, corpus["rust"])
+        self.assertTrue(any("native storage_cold_scan_sequence drift" in failure for failure in failures))
 
         rust_missing = json.loads(json.dumps(corpus["rust"]))
         del rust_missing["storage_cold_scan_sequence"]
-        failures = validate_report_pair(corpus["cpp"], rust_missing)
+        failures = validate_report_pair(corpus["native"], rust_missing)
         self.assertIn("rust report missing required top-level `storage_cold_scan_sequence`", failures)
 
     def test_storage_lifecycle_phases_are_exact_and_top_level(self) -> None:
         corpus = _load_json(REPORT_PAIR_CORPUS)
-        self.assertEqual(validate_report_pair(corpus["cpp"], corpus["rust"]), [])
+        self.assertEqual(validate_report_pair(corpus["native"], corpus["rust"]), [])
 
-        cpp_drift = json.loads(json.dumps(corpus["cpp"]))
-        cpp_drift["storage_lifecycle_phases"] = [
+        native_drift = json.loads(json.dumps(corpus["native"]))
+        native_drift["storage_lifecycle_phases"] = [
             "prepare",
             "reclaim",
             "evict",
@@ -1040,57 +1040,57 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase, _BackendPolicyPart4, _Bac
             "follower_cursor_safety",
             "watermark_progress",
         ]
-        failures = validate_report_pair(cpp_drift, corpus["rust"])
-        self.assertTrue(any("cpp storage_lifecycle_phases drift" in failure for failure in failures))
+        failures = validate_report_pair(native_drift, corpus["rust"])
+        self.assertTrue(any("native storage_lifecycle_phases drift" in failure for failure in failures))
 
         rust_missing = json.loads(json.dumps(corpus["rust"]))
         del rust_missing["storage_lifecycle_phases"]
-        failures = validate_report_pair(corpus["cpp"], rust_missing)
+        failures = validate_report_pair(corpus["native"], rust_missing)
         self.assertIn("rust report missing required top-level `storage_lifecycle_phases`", failures)
 
     def test_storage_cache_layers_are_exact_and_top_level(self) -> None:
         corpus = _load_json(REPORT_PAIR_CORPUS)
-        self.assertEqual(validate_report_pair(corpus["cpp"], corpus["rust"]), [])
+        self.assertEqual(validate_report_pair(corpus["native"], corpus["rust"]), [])
 
-        cpp_drift = json.loads(json.dumps(corpus["cpp"]))
-        cpp_drift["storage_cache_layers"] = [
+        native_drift = json.loads(json.dumps(corpus["native"]))
+        native_drift["storage_cache_layers"] = [
             "memory_object_cache",
             "page_index_cache",
             "block_index_cache",
             "disk_cache",
             "shared_store_read_through",
         ]
-        failures = validate_report_pair(cpp_drift, corpus["rust"])
-        self.assertTrue(any("cpp storage_cache_layers drift" in failure for failure in failures))
+        failures = validate_report_pair(native_drift, corpus["rust"])
+        self.assertTrue(any("native storage_cache_layers drift" in failure for failure in failures))
 
         rust_missing = json.loads(json.dumps(corpus["rust"]))
         del rust_missing["storage_cache_layers"]
-        failures = validate_report_pair(corpus["cpp"], rust_missing)
+        failures = validate_report_pair(corpus["native"], rust_missing)
         self.assertIn("rust report missing required top-level `storage_cache_layers`", failures)
 
     def test_storage_cache_semantics_are_exact_and_top_level(self) -> None:
         corpus = _load_json(REPORT_PAIR_CORPUS)
-        self.assertEqual(validate_report_pair(corpus["cpp"], corpus["rust"]), [])
+        self.assertEqual(validate_report_pair(corpus["native"], corpus["rust"]), [])
 
-        cpp_drift = json.loads(json.dumps(corpus["cpp"]))
-        cpp_drift["storage_cache_semantics"] = [
+        native_drift = json.loads(json.dumps(corpus["native"]))
+        native_drift["storage_cache_semantics"] = [
             "lookup_hot_to_cold",
             "refill_from_durable_on_miss",
             "invalidate_on_append_watermark",
             "invalidate_on_compaction_watermark",
             "cold_scan_promote",
         ]
-        failures = validate_report_pair(cpp_drift, corpus["rust"])
-        self.assertTrue(any("cpp storage_cache_semantics drift" in failure for failure in failures))
+        failures = validate_report_pair(native_drift, corpus["rust"])
+        self.assertTrue(any("native storage_cache_semantics drift" in failure for failure in failures))
 
         rust_missing = json.loads(json.dumps(corpus["rust"]))
         del rust_missing["storage_cache_semantics"]
-        failures = validate_report_pair(corpus["cpp"], rust_missing)
+        failures = validate_report_pair(corpus["native"], rust_missing)
         self.assertIn("rust report missing required top-level `storage_cache_semantics`", failures)
 
     def test_storage_reclaim_metrics_and_scope_are_required(self) -> None:
         corpus = _load_json(REPORT_PAIR_CORPUS)
-        self.assertEqual(validate_report_pair(corpus["cpp"], corpus["rust"]), [])
+        self.assertEqual(validate_report_pair(corpus["native"], corpus["rust"]), [])
 
         required_reclaim_metrics = [
             "tombstone_records",
@@ -1108,26 +1108,26 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase, _BackendPolicyPart4, _Bac
         for metric in required_reclaim_metrics:
             rust_missing = json.loads(json.dumps(corpus["rust"]))
             del rust_missing["storage_lifecycle_metrics"][metric]
-            failures = validate_report_pair(corpus["cpp"], rust_missing)
+            failures = validate_report_pair(corpus["native"], rust_missing)
             self.assertIn(f"rust metrics missing `{metric}`", failures)
 
-        cpp_bad_scope = json.loads(json.dumps(corpus["cpp"]))
-        cpp_bad_scope["storage_reclaim_scope"] = {
+        native_bad_scope = json.loads(json.dumps(corpus["native"]))
+        native_bad_scope["storage_reclaim_scope"] = {
             "owner": "matrixark_context_gc",
             "matrixark_context_gc_role": "owns_physical_reclaim",
             "physical_reclaim_context_specific": True,
         }
-        failures = validate_report_pair(cpp_bad_scope, corpus["rust"])
-        self.assertTrue(any("cpp storage_reclaim_scope drift" in failure for failure in failures))
+        failures = validate_report_pair(native_bad_scope, corpus["rust"])
+        self.assertTrue(any("native storage_reclaim_scope drift" in failure for failure in failures))
 
         rust_missing_scope = json.loads(json.dumps(corpus["rust"]))
         del rust_missing_scope["storage_reclaim_scope"]
-        failures = validate_report_pair(corpus["cpp"], rust_missing_scope)
+        failures = validate_report_pair(corpus["native"], rust_missing_scope)
         self.assertIn("rust report missing required top-level `storage_reclaim_scope`", failures)
 
     def test_storage_lifecycle_gap_fill_metrics_are_required(self) -> None:
         corpus = _load_json(REPORT_PAIR_CORPUS)
-        self.assertEqual(validate_report_pair(corpus["cpp"], corpus["rust"]), [])
+        self.assertEqual(validate_report_pair(corpus["native"], corpus["rust"]), [])
 
         lifecycle_gap_metrics = {
             "StorageManager": [
@@ -1151,10 +1151,10 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase, _BackendPolicyPart4, _Bac
 
         for metrics in lifecycle_gap_metrics.values():
             for metric in metrics:
-                cpp_missing = json.loads(json.dumps(corpus["cpp"]))
-                del cpp_missing["storage_lifecycle_metrics"][metric]
-                failures = validate_report_pair(cpp_missing, corpus["rust"])
-                self.assertIn(f"cpp metrics missing `{metric}`", failures)
+                native_missing = json.loads(json.dumps(corpus["native"]))
+                del native_missing["storage_lifecycle_metrics"][metric]
+                failures = validate_report_pair(native_missing, corpus["rust"])
+                self.assertIn(f"native metrics missing `{metric}`", failures)
 
     def test_production_policy_gate_blocks_perf_claims_before_correct_refs(self) -> None:
         report = {
@@ -1178,7 +1178,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase, _BackendPolicyPart4, _Bac
             },
             "comparison": {"phase0_correctness": {"status": "failed"}},
             "backends": {
-                "cpp": {
+                "native": {
                     "status": "passed",
                     "effective_storage_tuning": self._storage_tuning(),
                     "retrieve": {
@@ -1203,8 +1203,8 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase, _BackendPolicyPart4, _Bac
         self.assertEqual(gate["status"], "failed")
         blocker_names = {item["name"] for item in gate["blockers"]}
         self.assertIn("correctness_before_latency", blocker_names)
-        self.assertIn("cpp_selected_refs_non_empty", blocker_names)
-        self.assertIn("cpp_placement_index_driven", blocker_names)
+        self.assertIn("native_selected_refs_non_empty", blocker_names)
+        self.assertIn("native_placement_index_driven", blocker_names)
 
     def test_production_policy_gate_fails_selected_refs_when_backend_not_passed(self) -> None:
         report = {
@@ -1228,7 +1228,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase, _BackendPolicyPart4, _Bac
             },
             "comparison": {"phase0_correctness": {"status": "failed"}},
             "backends": {
-                "cpp": {
+                "native": {
                     "status": "backend_startup_failed",
                     "effective_storage_tuning": self._storage_tuning(),
                     "retrieve": {"stage_metrics": {"selected_refs_max": 0, "stage_p95_ms": {"audit_ms": 0}}},
@@ -1244,35 +1244,35 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase, _BackendPolicyPart4, _Bac
         gate = production_policy_gate(report)
 
         blocker_names = {item["name"] for item in gate["blockers"]}
-        self.assertIn("cpp_selected_refs_non_empty", blocker_names)
+        self.assertIn("native_selected_refs_non_empty", blocker_names)
         self.assertIn("rust_selected_refs_non_empty", blocker_names)
 
-    def test_cpp_linux_so_preflight_rejects_windows_python(self) -> None:
-        original = validate_cpp_runtime_host.__globals__["_is_windows_host"]
-        validate_cpp_runtime_host.__globals__["_is_windows_host"] = lambda: True
+    def test_linux_so_preflight_rejects_windows_python(self) -> None:
+        original = validate_runtime_host.__globals__["_is_windows_host"]
+        validate_runtime_host.__globals__["_is_windows_host"] = lambda: True
         try:
             with self.assertRaisesRegex(RuntimeError, "invalid_host_platform"):
-                validate_cpp_runtime_host("C:\\repo\\output-ubuntu22\\release\\sdk\\lib\\libtemporalstore.so")
+                validate_runtime_host("C:\\repo\\output-ubuntu22\\release\\sdk\\lib\\libtemporalstore.so")
         finally:
-            validate_cpp_runtime_host.__globals__["_is_windows_host"] = original
+            validate_runtime_host.__globals__["_is_windows_host"] = original
 
-    def test_cpp_lib_default_prefers_canonical_ubuntu_release_when_worktree_is_clean(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="matrixark-cpp-lib-policy-") as tmpdir:
+    def test_lib_default_prefers_canonical_ubuntu_release_when_worktree_is_clean(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matrixark-native-lib-policy-") as tmpdir:
             active_root = Path(tmpdir) / "clean-worktree"
             canonical_root = Path(tmpdir) / "canonical"
             canonical_lib = canonical_root / "output-ubuntu22" / "release" / "sdk" / "lib" / "libtemporalstore.so"
             canonical_lib.parent.mkdir(parents=True)
             canonical_lib.write_text("", encoding="utf-8")
 
-            original_root = default_cpp_lib_path.__globals__["ROOT"]
-            original_canonical = default_cpp_lib_path.__globals__["CANONICAL_UBUNTU_REPO"]
+            original_root = default_lib_path.__globals__["ROOT"]
+            original_canonical = default_lib_path.__globals__["CANONICAL_UBUNTU_REPO"]
             try:
-                default_cpp_lib_path.__globals__["ROOT"] = active_root
-                default_cpp_lib_path.__globals__["CANONICAL_UBUNTU_REPO"] = canonical_root
-                self.assertEqual(default_cpp_lib_path(), str(canonical_lib))
+                default_lib_path.__globals__["ROOT"] = active_root
+                default_lib_path.__globals__["CANONICAL_UBUNTU_REPO"] = canonical_root
+                self.assertEqual(default_lib_path(), str(canonical_lib))
             finally:
-                default_cpp_lib_path.__globals__["ROOT"] = original_root
-                default_cpp_lib_path.__globals__["CANONICAL_UBUNTU_REPO"] = original_canonical
+                default_lib_path.__globals__["ROOT"] = original_root
+                default_lib_path.__globals__["CANONICAL_UBUNTU_REPO"] = original_canonical
 
     def test_rust_parity_preflight_requires_proxy_or_explicit_compat(self) -> None:
         with tempfile.TemporaryDirectory(prefix="matrixark-rust-cli-policy-") as tmpdir:
@@ -1345,7 +1345,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase, _BackendPolicyPart4, _Bac
             },
             "comparison": {"phase0_correctness": {"status": "passed"}},
             "backends": {
-                "cpp": {
+                "native": {
                     "status": "passed",
                     "effective_storage_tuning": self._storage_tuning(),
                     "retrieve": {"stage_metrics": dict(metrics)},
@@ -1382,7 +1382,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase, _BackendPolicyPart4, _Bac
             },
             "comparison": {"phase0_correctness": {"status": "passed"}},
             "backends": {
-                "cpp": {"status": "passed", "retrieve": {"stage_metrics": dict(metrics)}},
+                "native": {"status": "passed", "retrieve": {"stage_metrics": dict(metrics)}},
                 "rust": {"status": "passed", "retrieve": {"stage_metrics": dict(metrics)}},
             },
         }
@@ -1554,7 +1554,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase, _BackendPolicyPart4, _Bac
         result = comparison(base, rust)
 
         self.assertEqual(result["phase0_correctness"]["status"], "passed")
-        self.assertTrue(result["phase0_correctness"]["backend_values"]["cpp"]["correctness_evidence"]["selected_ref_parity"])
+        self.assertTrue(result["phase0_correctness"]["backend_values"]["native"]["correctness_evidence"]["selected_ref_parity"])
         self.assertTrue(result["phase0_correctness"]["backend_values"]["rust"]["correctness_evidence"]["selected_ref_parity"])
 
     def test_scale_report_rejects_empty_selected_ref_parity(self) -> None:
@@ -1582,7 +1582,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase, _BackendPolicyPart4, _Bac
         result = comparison(base, rust)
 
         self.assertEqual(result["phase0_correctness"]["status"], "failed")
-        self.assertFalse(result["phase0_correctness"]["backend_values"]["cpp"]["correctness_evidence"]["selected_ref_parity"])
+        self.assertFalse(result["phase0_correctness"]["backend_values"]["native"]["correctness_evidence"]["selected_ref_parity"])
         self.assertFalse(result["phase0_correctness"]["backend_values"]["rust"]["correctness_evidence"]["selected_ref_parity"])
         selected_row = next(row for row in result["rows"] if row["metric"] == "selected_refs_avg")
         self.assertFalse(selected_row["parity_passed"])
@@ -1661,11 +1661,11 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase, _BackendPolicyPart4, _Bac
         self.assertTrue(result["status_labels"]["feature_correct"])
         self.assertTrue(result["status_labels"]["performance_candidate"])
         self.assertTrue(result["status_labels"]["production_performance_parity"])
-        self.assertEqual(result["rust_vs_cpp_parity"]["feature_parity"]["status"], "passed")
-        self.assertTrue(result["rust_vs_cpp_parity"]["feature_parity"]["passed"])
-        self.assertEqual(result["rust_vs_cpp_parity"]["performance_parity"]["status"], "passed")
-        self.assertTrue(result["rust_vs_cpp_parity"]["performance_parity"]["passed"])
-        self.assertTrue(result["rust_vs_cpp_parity"]["production_performance_parity"]["passed"])
+        self.assertEqual(result["rust_vs_parity"]["feature_parity"]["status"], "passed")
+        self.assertTrue(result["rust_vs_parity"]["feature_parity"]["passed"])
+        self.assertEqual(result["rust_vs_parity"]["performance_parity"]["status"], "passed")
+        self.assertTrue(result["rust_vs_parity"]["performance_parity"]["passed"])
+        self.assertTrue(result["rust_vs_parity"]["production_performance_parity"]["passed"])
 
 
 
@@ -1676,7 +1676,7 @@ class MatrixArkRustProxyAliasPolicyTest(unittest.TestCase):
     def test_rust_proxy_client_alias_keeps_cli_compatibility(self) -> None:
         self.assertIs(mcp.MatrixArkRustCliClient, mcp.MatrixArkRustProxyClient)
 
-    def test_rust_proxy_reports_cpp_parity_hot_path_capabilities(self) -> None:
+    def test_rust_proxy_reports_parity_hot_path_capabilities(self) -> None:
         client = mcp.MatrixArkRustProxyClient(
             proxy_path="/bin/true",
             metaserver="127.0.0.1:18000",

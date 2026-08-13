@@ -13,7 +13,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "docs" / "temporalstore_page_block_address_contract.md"
-SCALE_REPORT = ROOT / "tools" / "run_matrixark_cpp_rust_scale_report.py"
+SCALE_REPORT = ROOT / "tools" / "run_matrixark_rust_scale_report.py"
 
 REQUIRED_METRICS = [
     "page_index_lookup_count",

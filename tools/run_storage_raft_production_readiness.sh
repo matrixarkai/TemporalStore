@@ -13,9 +13,9 @@ fi
 cd "${ROOT}"
 export CARGO_TARGET_DIR="${TARGET_DIR}"
 mkdir -p "${ARTIFACT_DIR}"
-RAFT_CPP_EVIDENCE_ARGS=()
-if [[ -n "${TS_CPP_REPO:-}" ]]; then
-  RAFT_CPP_EVIDENCE_ARGS+=(--cpp-repo "${TS_CPP_REPO}")
+RAFT_NATIVE_EVIDENCE_ARGS=()
+if [[ -n "${TS_NATIVE_REPO:-}" ]]; then
+  RAFT_NATIVE_EVIDENCE_ARGS+=(--native-repo "${TS_NATIVE_REPO}")
 fi
 
 echo "== 1/8 storage recovery/fault matrix hardening =="
@@ -35,7 +35,7 @@ python3 tools/validate_aws_validation_log.py \
   --log "${ARTIFACT_DIR}/storage-production.json"
 
 echo "== 3/8 storage migration artifact export =="
-python3 tools/export_cpp_storage_migration_artifacts.py \
+python3 tools/export_storage_migration_artifacts.py \
   --output "${ARTIFACT_DIR}/storage-migration-artifacts" \
   > "${ARTIFACT_DIR}/storage-migration-artifacts-manifest.json"
 
@@ -109,11 +109,11 @@ python3 tools/validate_aws_validation_log.py \
   --job temporalstore-raft-distributed-parity-validation \
   --log "${ARTIFACT_DIR}/raft-distributed-parity.json"
 
-python3 tools/run_cpp_raft_cases_on_rust.py \
+python3 tools/run_raft_cases_on_rust.py \
   --validate-only \
   --artifact-dir "${ARTIFACT_DIR}" \
-  "${RAFT_CPP_EVIDENCE_ARGS[@]}"
-test -s "${ARTIFACT_DIR}/cpp-raft-cases-on-rust.json"
+  "${RAFT_NATIVE_EVIDENCE_ARGS[@]}"
+test -s "${ARTIFACT_DIR}/native-raft-cases-on-rust.json"
 
 echo "== 7/8 combined storage plus raft production harness =="
 timeout "${TIMEOUT}" cargo run "${PROFILE_ARGS[@]}" -p temporalstore-rust --bin external_chaos_gate -- \
@@ -137,7 +137,7 @@ python3 tools/build_storage_raft_production_proof.py \
 
 echo "== 8/8 unified corpus and readiness docs =="
 python3 tools/run_temporalstore_unified_tests.py --validate-only
-python3 tools/validate_raft_storage_parity_evidence.py "${RAFT_CPP_EVIDENCE_ARGS[@]}"
+python3 tools/validate_raft_storage_parity_evidence.py "${RAFT_NATIVE_EVIDENCE_ARGS[@]}"
 python3 tools/validate_no_duplicate_tests.py
 git diff --check
 

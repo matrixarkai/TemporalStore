@@ -202,7 +202,7 @@ Add to `%USERPROFILE%\.codex\config.toml`:
 ```toml
 [mcp_servers.matrixark]
 command = 'wsl.exe'
-args = [ '--cd', '<repo>', '-e', 'bash', '-lc', 'exec tools/matrixark_mcp_cpp_server.sh' ]
+args = [ '--cd', '<repo>', '-e', 'bash', '-lc', 'exec tools/matrixark_mcp_server.sh' ]
 startup_timeout_sec = 120
 ```
 
@@ -223,7 +223,7 @@ Add to Claude Desktop's MCP config file:
         "-e",
         "bash",
         "-lc",
-        "exec tools/matrixark_mcp_cpp_server.sh"
+        "exec tools/matrixark_mcp_server.sh"
       ],
       "command": "wsl.exe",
       "env": {
@@ -282,7 +282,7 @@ Use the same MCP server shape:
         "-e",
         "bash",
         "-lc",
-        "exec tools/matrixark_mcp_cpp_server.sh"
+        "exec tools/matrixark_mcp_server.sh"
       ],
       "env": {
         "MATRIXARK_LOCAL_MODE": "cluster",

@@ -14,7 +14,7 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from audit_temporalstore_cpp_rust_performance_artifacts import (
+from audit_temporalstore_rust_performance_artifacts import (
     DEFAULT_ARTIFACT_ROOT,
     DEFAULT_MATRIX,
     GOAL_VALIDATOR,
@@ -23,18 +23,18 @@ from audit_temporalstore_cpp_rust_performance_artifacts import (
     RUNNER,
     audit_artifacts,
 )
-from run_temporalstore_cpp_rust_next_performance_workflow import (
+from run_temporalstore_rust_next_performance_workflow import (
     DEFAULT_WSL_DISTRO,
     WORKSPACE_ROOT_WSL_PLACEHOLDER,
     build_execution_plan,
 )
-from validate_temporalstore_cpp_rust_performance_parity import (
+from validate_temporalstore_rust_performance_parity import (
     REQUIRED_SAME_CONFIG_COMMAND_ARGS,
     SAME_CONFIG_KEYS,
 )
 
 
-SCHEMA = "temporalstore_cpp_rust_next_performance_workflow_v1"
+SCHEMA = "temporalstore_rust_next_performance_workflow_v1"
 REQUIRED_RUN_FLAGS = {
     "--require-perf-parity",
     "--require-phase-scale-matrix",
@@ -44,7 +44,7 @@ REQUIRED_POST_VALIDATORS = {
     ("python", NINE_PHASE_VALIDATOR, "--loops", "9"),
 }
 SENSITIVE_PLACEHOLDERS = {
-    "<MATRIXARK_PARITY_CPP_LIB>",
+    "<MATRIXARK_PARITY_NATIVE_LIB>",
     "<MATRIXARK_PARITY_RUST_CLI>",
 }
 
@@ -121,7 +121,7 @@ def _validate_run_command(index: int, command: dict[str, Any]) -> list[str]:
                 )
         if "--cd" not in wsl_argv or WORKSPACE_ROOT_WSL_PLACEHOLDER not in _items_after_flags(wsl_argv, {"--cd"}):
             failures.append(f"{prefix}: wsl_argv must redact --cd workspace root")
-        backend_values = _items_after_flags(wsl_argv, {"--cpp-lib", "--rust-cli"})
+        backend_values = _items_after_flags(wsl_argv, {"--native-lib", "--rust-cli"})
         leaked_backend_values = [
             value for value in backend_values if value not in SENSITIVE_PLACEHOLDERS
         ]

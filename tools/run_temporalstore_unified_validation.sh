@@ -4,11 +4,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/temporalstore-unified-validation-target}"
 LOCAL_SCALE_TIMEOUT="${TS_UNIFIED_SCALE_TIMEOUT:-90s}"
-RUN_CPP="${TS_UNIFIED_RUN_CPP:-0}"
+RUN_NATIVE="${TS_UNIFIED_RUN_NATIVE:-0}"
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run_temporalstore_unified_validation.sh [--with-cpp]
+usage: run_temporalstore_unified_validation.sh [--with-native]
 
 Runs one local unified TemporalStore validation pass across:
   - unit/compat tests
@@ -18,7 +18,7 @@ Runs one local unified TemporalStore validation pass across:
   - local scale/shared-store validation
   - production-readiness reporting
 
-Set TS_UNIFIED_RUN_CPP=1 or pass --with-cpp to also run the configured
+Set TS_UNIFIED_RUN_NATIVE=1 or pass --with-native to also run the configured
 corpus hook through tools/run_temporalstore_unified_tests.py --both.
 USAGE
   exit 2
@@ -26,8 +26,8 @@ USAGE
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --with-cpp)
-      RUN_CPP=1
+    --with-native)
+      RUN_NATIVE=1
       shift
       ;;
     -h|--help)
@@ -41,17 +41,17 @@ done
 
 cd "${ROOT}"
 export CARGO_TARGET_DIR="${TARGET_DIR}"
-RAFT_CPP_EVIDENCE_ARGS=()
-if [[ -n "${TS_CPP_REPO:-}" ]]; then
-  RAFT_CPP_EVIDENCE_ARGS+=(--cpp-repo "${TS_CPP_REPO}")
+RAFT_NATIVE_EVIDENCE_ARGS=()
+if [[ -n "${TS_NATIVE_REPO:-}" ]]; then
+  RAFT_NATIVE_EVIDENCE_ARGS+=(--native-repo "${TS_NATIVE_REPO}")
 fi
 
 echo "== unified: workflow/test contract guards =="
 python3 tools/validate_readiness_workflow.py
-python3 tools/validate_rust_vs_cpp_parity_report.py
+python3 tools/validate_rust_vs_parity_report.py
 python3 tools/run_temporalstore_unified_tests.py --validate-only
 python3 tools/validate_no_duplicate_tests.py
-python3 tools/validate_raft_storage_parity_evidence.py "${RAFT_CPP_EVIDENCE_ARGS[@]}"
+python3 tools/validate_raft_storage_parity_evidence.py "${RAFT_NATIVE_EVIDENCE_ARGS[@]}"
 python3 tools/run_raft_shared_cases.py --validate-only
 python3 tools/validate_storage_raft_production_plan.py
 python3 tools/validate_control_plane_parity_evidence.py
@@ -73,8 +73,8 @@ python3 tools/run_ingestion_shared_cases.py --rust
 
 echo "== unified: shared API corpus =="
 tools/run_temporalstore_unified_tests.sh
-if [[ "${RUN_CPP}" == "1" ]]; then
-  python3 tools/run_temporalstore_unified_tests.py --both --require-cpp
+if [[ "${RUN_NATIVE}" == "1" ]]; then
+  python3 tools/run_temporalstore_unified_tests.py --both --require-native
 fi
 
 echo "== unified: storage integration tests =="
@@ -127,12 +127,12 @@ if isinstance(report, list):
     blocker_count = sum(service["blocker_count"] for service in services)
     production_ready = all(service["ready"] for service in services)
     print(f"production_ready={production_ready}")
-    print("cpp_parity_ready=false")
+    print("native_parity_ready=false")
     print(f"blocker_count={blocker_count}")
 else:
     services = report["service_summaries"]
     print(f"production_ready={report['production_ready']}")
-    print(f"cpp_parity_ready={report['cpp_parity_ready']}")
+    print(f"native_parity_ready={report['native_parity_ready']}")
     print(f"blocker_count={report['blocker_count']}")
 for service in services:
     print(

@@ -515,7 +515,7 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
             .iter()
             .any(|group_id| group_id.starts_with("filter_group_"))));
     assert!(retrieve.parity.pipeline_ready);
-    assert!(retrieve.parity.cpp_context_models_ready);
+    assert!(retrieve.parity.native_context_models_ready);
     assert!(retrieve.parity.reference_tiers_ready);
     assert!(retrieve.parity.shared_store_sync_ready);
     assert!(retrieve.parity.raft_read_ready);
@@ -1178,13 +1178,13 @@ fn context_workflow_exposes_reference_open_source_vlm_profiles() {
     assert_eq!(reference_provider.vlm_model, "qwen2.5vl:7b");
     assert_eq!(reference_provider.embedding_model, "nomic-embed-text");
     assert_eq!(reference_provider.base_url, "http://127.0.0.1:11434/v1");
-    let matrixark_cpp_provider = providers
+    let matrixark_provider = providers
         .iter()
-        .find(|provider| provider.provider_name == "matrixark-cpp-oss-context")
+        .find(|provider| provider.provider_name == "matrixark-native-oss-context")
         .expect("MatrixArk OSS provider profile should be exposed");
-    assert_eq!(matrixark_cpp_provider.model, "google/flan-t5-small");
+    assert_eq!(matrixark_provider.model, "google/flan-t5-small");
     assert_eq!(
-        matrixark_cpp_provider.embedding_model,
+        matrixark_provider.embedding_model,
         "sentence-transformers/all-MiniLM-L6-v2"
     );
     let reference_reader = providers
@@ -1213,9 +1213,9 @@ fn context_workflow_exposes_reference_open_source_vlm_profiles() {
             ("ContextEntityModel", 18),
         ]
     );
-    assert!(state.parity.cpp_context_model_ids_ready);
-    assert!(state.parity.cpp_context_timeline_semantics_ready);
-    assert!(state.parity.cpp_context_validation_limits_ready);
+    assert!(state.parity.native_context_model_ids_ready);
+    assert!(state.parity.native_context_timeline_semantics_ready);
+    assert!(state.parity.native_context_validation_limits_ready);
     assert!(state
         .reference_model_profiles
         .iter()
@@ -1236,12 +1236,12 @@ fn context_workflow_exposes_reference_open_source_vlm_profiles() {
                 .contains(&"reference_reader_parity".to_string())
     }));
     assert!(state.reference_model_profiles.iter().any(|profile| {
-        profile.profile_name == "matrixark-cpp-oss-context"
+        profile.profile_name == "matrixark-native-oss-context"
             && profile.chat_model == "google/flan-t5-small"
             && profile.embedding_model == "sentence-transformers/all-MiniLM-L6-v2"
             && profile
                 .capabilities
-                .contains(&"cpp_path_oss_model_parity".to_string())
+                .contains(&"native_path_oss_model_parity".to_string())
     }));
     assert!(state.reference_model_profiles.iter().any(|profile| {
         profile.profile_name == "reference-minigpt4-gpt-style-vlm"
@@ -1261,7 +1261,7 @@ fn context_workflow_exposes_reference_open_source_vlm_profiles() {
 fn context_reference_blocks_and_provider_model_switches_are_reported() {
     let engine = test_engine();
     let open_source_text_provider = ContextModelProviderConfig {
-        provider_name: "matrixark-cpp-oss-context".to_string(),
+        provider_name: "matrixark-native-oss-context".to_string(),
         provider_kind: ContextProviderKind::OpenAiCompatible,
         base_url: "http://127.0.0.1:8000/v1".to_string(),
         model: "google/flan-t5-small".to_string(),
@@ -1321,7 +1321,7 @@ fn context_reference_blocks_and_provider_model_switches_are_reported() {
         ingest
             .summary
             .provider_counts
-            .get("matrixark-cpp-oss-context"),
+            .get("matrixark-native-oss-context"),
         Some(&1)
     );
     assert_eq!(

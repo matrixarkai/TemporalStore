@@ -15,10 +15,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CORPUS = ROOT / "compat" / "unified_temporalstore_cases.json"
 PARITY_SUITES = {
-    "cpp_client_control_plane_parity",
-    "cpp_proxy_control_plane_parity",
-    "cpp_metaserver_control_plane_parity",
-    "cpp_data_node_lifecycle_parity",
+    "native_client_control_plane_parity",
+    "native_proxy_control_plane_parity",
+    "native_metaserver_control_plane_parity",
+    "native_data_node_lifecycle_parity",
 }
 
 
@@ -39,8 +39,8 @@ class ParityArea:
 AREAS: tuple[ParityArea, ...] = (
     ParityArea(
         name="client_meta_sync_route_retry",
-        corpus_case="cpp_client_meta_sync_route_parity_surfaces",
-        suite="cpp_client_control_plane_parity",
+        corpus_case="native_client_meta_sync_route_parity_surfaces",
+        suite="native_client_control_plane_parity",
         rust_evidence=(
             RustEvidence(
                 "crates/temporalstore-rust/src/client.rs",
@@ -71,8 +71,8 @@ AREAS: tuple[ParityArea, ...] = (
     ),
     ParityArea(
         name="proxy_serving_admission_topology",
-        corpus_case="cpp_proxy_serving_admission_parity_surfaces",
-        suite="cpp_proxy_control_plane_parity",
+        corpus_case="native_proxy_serving_admission_parity_surfaces",
+        suite="native_proxy_control_plane_parity",
         rust_evidence=(
             RustEvidence(
                 "crates/temporalstore-rust/src/proxy.rs",
@@ -87,7 +87,7 @@ AREAS: tuple[ParityArea, ...] = (
             ),
             RustEvidence(
                 "crates/temporalstore-rust/src/proxy.rs",
-                ("proxy_exposes_cpp_parity_readiness_report",),
+                ("proxy_exposes_parity_readiness_report",),
             ),
             RustEvidence(
                 "crates/temporalstore-rust/src/readiness.rs",
@@ -101,8 +101,8 @@ AREAS: tuple[ParityArea, ...] = (
     ),
     ParityArea(
         name="metaserver_scheduler_repair_snapshot",
-        corpus_case="cpp_metaserver_scheduler_repair_parity_surfaces",
-        suite="cpp_metaserver_control_plane_parity",
+        corpus_case="native_metaserver_scheduler_repair_parity_surfaces",
+        suite="native_metaserver_control_plane_parity",
         rust_evidence=(
             RustEvidence(
                 "crates/temporalstore-rust/src/rebalance.rs",
@@ -134,7 +134,7 @@ AREAS: tuple[ParityArea, ...] = (
             RustEvidence(
                 "crates/temporalstore-rust/src/rebalance.rs",
                 (
-                    "CppPartitionSetTopology",
+                    "PartitionSetTopology",
                     "RaftPersistedSchedulerState",
                     "raft_persisted_scheduler_state_validates_task_retry_state_against_partition_set",
                 ),
@@ -148,15 +148,15 @@ AREAS: tuple[ParityArea, ...] = (
             RustEvidence(
                 "crates/temporalstore-rust/src/raft/tests.rs",
                 (
-                    "metaserver_raft_replays_scheduler_state_and_cpp_partition_set_topology",
+                    "metaserver_raft_replays_scheduler_state_and_partition_set_topology",
                 ),
             ),
         ),
     ),
     ParityArea(
         name="data_node_lifecycle_server_surface",
-        corpus_case="cpp_data_node_lifecycle_server_parity_surfaces",
-        suite="cpp_data_node_lifecycle_parity",
+        corpus_case="native_data_node_lifecycle_server_parity_surfaces",
+        suite="native_data_node_lifecycle_parity",
         rust_evidence=(
             RustEvidence(
                 "crates/temporalstore-rust/src/data_node.rs",
@@ -179,8 +179,8 @@ AREAS: tuple[ParityArea, ...] = (
                 (
                     "/ServerService/GetLifecycle",
                     "/ServerService/RequireLifecycleToken",
-                    "cpp_server_service_lifecycle_snapshot_routes_restore_scheduler_state",
-                    "cpp_server_service_lifecycle_snapshot_survives_http_restart_boundary",
+                    "native_server_service_lifecycle_snapshot_routes_restore_scheduler_state",
+                    "native_server_service_lifecycle_snapshot_survives_http_restart_boundary",
                 ),
             ),
             RustEvidence(
@@ -196,7 +196,7 @@ AREAS: tuple[ParityArea, ...] = (
     ParityArea(
         name="control_topology_version_change_shared",
         corpus_case="control_topology_version_change",
-        suite="cpp_client_control_plane_parity",
+        suite="native_client_control_plane_parity",
         rust_evidence=(
             RustEvidence(
                 "crates/temporalstore-rust/src/client.rs",
@@ -227,7 +227,7 @@ AREAS: tuple[ParityArea, ...] = (
     ParityArea(
         name="control_stale_route_invalidation_shared",
         corpus_case="control_stale_route_invalidation",
-        suite="cpp_client_control_plane_parity",
+        suite="native_client_control_plane_parity",
         rust_evidence=(
             RustEvidence(
                 "crates/temporalstore-rust/src/client.rs",
@@ -251,7 +251,7 @@ AREAS: tuple[ParityArea, ...] = (
     ParityArea(
         name="control_proxy_admission_policy_shared",
         corpus_case="control_proxy_admission_policy",
-        suite="cpp_proxy_control_plane_parity",
+        suite="native_proxy_control_plane_parity",
         rust_evidence=(
             RustEvidence(
                 "crates/temporalstore-rust/src/proxy.rs",
@@ -270,7 +270,7 @@ AREAS: tuple[ParityArea, ...] = (
     ParityArea(
         name="control_readonly_write_disabled_tables_shared",
         corpus_case="control_readonly_write_disabled_tables",
-        suite="cpp_proxy_control_plane_parity",
+        suite="native_proxy_control_plane_parity",
         rust_evidence=(
             RustEvidence(
                 "crates/temporalstore-rust/src/proxy.rs",
@@ -289,7 +289,7 @@ AREAS: tuple[ParityArea, ...] = (
     ParityArea(
         name="control_route_quarantine_recovery_shared",
         corpus_case="control_route_quarantine_recovery",
-        suite="cpp_proxy_control_plane_parity",
+        suite="native_proxy_control_plane_parity",
         rust_evidence=(
             RustEvidence(
                 "crates/temporalstore-rust/src/client.rs",
@@ -326,7 +326,7 @@ AREAS: tuple[ParityArea, ...] = (
     ParityArea(
         name="control_data_node_load_reload_unload_lifecycle_shared",
         corpus_case="control_data_node_load_reload_unload_lifecycle",
-        suite="cpp_data_node_lifecycle_parity",
+        suite="native_data_node_lifecycle_parity",
         rust_evidence=(
             RustEvidence(
                 "crates/temporalstore-rust/src/data_node/tests.rs",
@@ -351,7 +351,7 @@ AREAS: tuple[ParityArea, ...] = (
     ParityArea(
         name="control_metaserver_scheduler_lifecycle_workflow_shared",
         corpus_case="control_metaserver_scheduler_lifecycle_workflow",
-        suite="cpp_metaserver_control_plane_parity",
+        suite="native_metaserver_control_plane_parity",
         rust_evidence=(
             RustEvidence(
                 "crates/temporalstore-rust/src/rebalance.rs",
@@ -378,7 +378,7 @@ AREAS: tuple[ParityArea, ...] = (
     ParityArea(
         name="cross_storage_control_agent_parity_shared",
         corpus_case="cross_storage_control_agent_parity",
-        suite="cpp_cross_subsystem_parity",
+        suite="native_cross_subsystem_parity",
         rust_evidence=(
             RustEvidence(
                 "crates/temporalstore-rust/src/engine.rs",
@@ -401,7 +401,7 @@ AREAS: tuple[ParityArea, ...] = (
                 (
                     "check_admission_for_commands",
                     "refresh_topology_from_meta",
-                    "ProxyCppMigrationContract",
+                    "ProxyMigrationContract",
                 ),
             ),
             RustEvidence(
@@ -493,10 +493,10 @@ def validate_rust_evidence(area: ParityArea) -> int:
     return count
 
 
-def validate_cpp_paths(area: ParityArea, paths: set[str], cpp_repo: Path) -> set[str]:
+def validate_paths(area: ParityArea, paths: set[str], native_repo: Path) -> set[str]:
     checked: set[str] = set()
     for required_path in paths:
-        if not (cpp_repo / required_path).exists():
+        if not (native_repo / required_path).exists():
             raise SystemExit(f"{area.name}: required path missing: {required_path}")
         checked.add(required_path)
     return checked
@@ -504,29 +504,29 @@ def validate_cpp_paths(area: ParityArea, paths: set[str], cpp_repo: Path) -> set
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cpp-repo", type=Path, help="optional checkout for required path checks")
+    parser.add_argument("--native-repo", type=Path, help="optional checkout for required path checks")
     args = parser.parse_args()
 
     corpus = load_corpus()
     cases = case_map(corpus)
     required = set(corpus.get("coverage", {}).get("required_case_names", []))
-    total_cpp_paths: set[str] = set()
+    total_paths: set[str] = set()
     total_rust_snippets = 0
-    checked_cpp_paths: set[str] = set()
+    checked_paths: set[str] = set()
 
     for area in AREAS:
         paths = validate_corpus_area(area, cases, required)
-        total_cpp_paths.update(paths)
+        total_paths.update(paths)
         total_rust_snippets += validate_rust_evidence(area)
-        if args.cpp_repo is not None:
-            checked_cpp_paths.update(validate_cpp_paths(area, paths, args.cpp_repo))
+        if args.native_repo is not None:
+            checked_paths.update(validate_paths(area, paths, args.native_repo))
         print(f"validated control-plane parity area: {area.name}")
 
     print(f"control_plane_parity_areas={len(AREAS)}")
-    print(f"corpus_required_cpp_paths={len(total_cpp_paths)}")
+    print(f"corpus_required_paths={len(total_paths)}")
     print(f"rust_evidence_snippets={total_rust_snippets}")
-    if args.cpp_repo is not None:
-        print(f"checked_cpp_required_paths={len(checked_cpp_paths)}")
+    if args.native_repo is not None:
+        print(f"checked_required_paths={len(checked_paths)}")
     return 0
 
 

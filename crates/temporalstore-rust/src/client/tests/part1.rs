@@ -34,15 +34,15 @@ fn client_preflight_reports_cache_stats_and_backend_failures() {
     assert_eq!(report.topology_cache.unknown_topology_version_routes, 1);
     assert_eq!(report.topology_cache.last_refresh_reason, "test_insert");
     assert_eq!(report.topology_cache.routes[0].shard_id, 7);
-    assert_eq!(report.cpp_partition_sets.len(), 1);
-    assert_eq!(report.cpp_partition_sets[0].namespace, "ns");
-    assert_eq!(report.cpp_partition_sets[0].table_name, "tbl");
-    assert_eq!(report.cpp_partition_sets[0].first_shard_id, 7);
-    assert_eq!(report.cpp_partition_sets[0].partition_count, 1);
-    assert_eq!(report.cpp_partition_sets[0].missing_route_count, 0);
-    assert_eq!(report.cpp_partition_sets[0].members[0].partition_id, 7);
+    assert_eq!(report.native_partition_sets.len(), 1);
+    assert_eq!(report.native_partition_sets[0].namespace, "ns");
+    assert_eq!(report.native_partition_sets[0].table_name, "tbl");
+    assert_eq!(report.native_partition_sets[0].first_shard_id, 7);
+    assert_eq!(report.native_partition_sets[0].partition_count, 1);
+    assert_eq!(report.native_partition_sets[0].missing_route_count, 0);
+    assert_eq!(report.native_partition_sets[0].members[0].partition_id, 7);
     assert_eq!(
-        report.cpp_partition_sets[0].members[0]
+        report.native_partition_sets[0].members[0]
             .primary_addr
             .as_deref(),
         Some("127.0.0.1:17002")
@@ -88,12 +88,12 @@ fn client_exposes_neptune_placement_hooks_and_migration_scope() {
     let migration = client.migration_compatibility_report();
     assert_eq!(
         migration.compatibility_mode,
-        ClientCompatibilityMode::CppWireMigrationOutOfScope
+        ClientCompatibilityMode::WireMigrationOutOfScope
     );
     assert!(migration.rust_native_http_ready);
     assert!(migration.rust_native_tonic_ready);
     assert!(!migration.legacy_cplusplus_wire_in_scope);
-    assert!(!migration.cpp_wire_compatible_ready);
+    assert!(!migration.native_wire_compatible_ready);
     assert!(!migration.migration_layer_ready);
     assert!(migration.typed_table_client_ready);
     assert!(migration.topology_sync_ready);
@@ -194,7 +194,7 @@ fn client_exposes_neptune_placement_hooks_and_migration_scope() {
 }
 
 #[test]
-fn cpp_partition_set_report_marks_missing_routes() {
+fn native_partition_set_report_marks_missing_routes() {
     let client = TemporalStoreClient::new("127.0.0.1:17000");
     let _table = client.open_table(
         "ns",
@@ -207,7 +207,7 @@ fn cpp_partition_set_report_marks_missing_routes() {
     );
     client.insert_cached_route_for_test(11, "127.0.0.1:17111");
 
-    let reports = client.cpp_partition_set_report();
+    let reports = client.native_partition_set_report();
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0].combine_name, "ns/wide");
     assert_eq!(reports[0].partition_count, 3);
@@ -227,7 +227,7 @@ fn cpp_partition_set_report_marks_missing_routes() {
 }
 
 #[test]
-fn table_typed_methods_and_pipeline_match_cpp_client_shape() {
+fn table_typed_methods_and_pipeline_match_client_shape() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -382,29 +382,29 @@ fn table_typed_methods_and_pipeline_match_cpp_client_shape() {
         ]
     );
     table
-        .control_state_family_set(ControlStateFamily::Counter, "control_state-cpp", 10, 5)
+        .control_state_family_set(ControlStateFamily::Counter, "control_state-native", 10, 5)
         .unwrap();
     assert_eq!(
         table
-            .control_state_family_set_and_get(ControlStateFamily::Counter, "control_state-cpp", 20, 7, 0, 30, "sum")
+            .control_state_family_set_and_get(ControlStateFamily::Counter, "control_state-native", 20, 7, 0, 30, "sum")
             .unwrap(),
         12
     );
     table
-        .control_state_family_set(ControlStateFamily::Distinct, "control_state-cpp", 10, 3)
+        .control_state_family_set(ControlStateFamily::Distinct, "control_state-native", 10, 3)
         .unwrap();
     assert_eq!(
         table
-            .control_state_family_set_and_get(ControlStateFamily::Distinct, "control_state-cpp", 20, 4, 0, 30, "sum")
+            .control_state_family_set_and_get(ControlStateFamily::Distinct, "control_state-native", 20, 4, 0, 30, "sum")
             .unwrap(),
         7
     );
     table
-        .control_state_family_set(ControlStateFamily::Selection, "control_state-cpp", 10, 11)
+        .control_state_family_set(ControlStateFamily::Selection, "control_state-native", 10, 11)
         .unwrap();
     assert_eq!(
         table
-            .control_state_family_query(ControlStateFamily::Selection, "control_state-cpp", 0, 30, "sum")
+            .control_state_family_query(ControlStateFamily::Selection, "control_state-native", 0, 30, "sum")
             .unwrap(),
         11
     );
@@ -471,7 +471,7 @@ fn table_typed_methods_and_pipeline_match_cpp_client_shape() {
         Some(b"last".to_vec())
     );
     assert_eq!(
-        table.control_state_manager("control_state-cpp").unwrap(),
+        table.control_state_manager("control_state-native").unwrap(),
         vec![
             ("h_events".to_string(), b"2".to_vec()),
             ("h_sum".to_string(), b"12".to_vec()),
@@ -481,8 +481,8 @@ fn table_typed_methods_and_pipeline_match_cpp_client_shape() {
             ("fol_sum".to_string(), b"11".to_vec()),
         ]
     );
-    let debug = table.control_state_debug("control_state-cpp", 0, 15).unwrap();
-    assert!(debug.contains(&("key".to_string(), b"control_state-cpp".to_vec())));
+    let debug = table.control_state_debug("control_state-native", 0, 15).unwrap();
+    assert!(debug.contains(&("key".to_string(), b"control_state-native".to_vec())));
     assert!(debug.contains(&("h_window_events".to_string(), b"1".to_vec())));
     assert!(debug.contains(&("cpc_window_sum".to_string(), b"3".to_vec())));
     assert!(debug.contains(&("fol_window_last_timestamp_ms".to_string(), b"10".to_vec())));

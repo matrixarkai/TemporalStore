@@ -133,7 +133,7 @@ The shared parity runner validates both backends from ingestion through retrieva
 ```bash
 cd <TemporalStoreTestCorpus>
 TEMPORALSTORE_CONSUMER_REPO=/tmp/temporalstore-mcp-scale-failover \
-  python3 tools/run_matrixark_resource_skill_backend_parity.py --backends cpp rust
+  python3 tools/run_matrixark_resource_skill_backend_parity.py --backends native rust
 ```
 
 It verifies:

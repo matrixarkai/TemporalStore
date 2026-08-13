@@ -46,8 +46,8 @@ def load_shared_case() -> dict[str, Any]:
 
 
 def build_report() -> dict[str, Any]:
-    cpp_impl = read(ROOT / "src" / "extension" / "context" / "implement.cc")
-    cpp_tests = read(ROOT / "src" / "extension" / "context" / "test.cc")
+    native_impl = read(ROOT / "src" / "extension" / "context" / "implement.cc")
+    native_tests = read(ROOT / "src" / "extension" / "context" / "test.cc")
     rust_workflow = read(ROOT / "crates" / "temporalstore-rust" / "src" / "context_workflow.rs")
     rust_query = read(ROOT / "crates" / "temporalstore-rust" / "src" / "context_workflow" / "query.rs")
     rust_tests = read(ROOT / "crates" / "temporalstore-rust" / "src" / "context_workflow" / "tests.rs")
@@ -55,8 +55,8 @@ def build_report() -> dict[str, Any]:
 
     checks = [
         check_contains(
-            "cpp_layer_traversal_native",
-            cpp_impl,
+            "native_layer_traversal_native",
+            native_impl,
             [
                 "REGISTER_FUNCTION(CONTEXT, TRAVERSE_CONTEXT_TREE",
                 "QueryChildrenInternal",
@@ -66,8 +66,8 @@ def build_report() -> dict[str, Any]:
             ],
         ),
         check_contains(
-            "cpp_temporal_decay_event_query",
-            cpp_impl,
+            "native_temporal_decay_event_query",
+            native_impl,
             [
                 "DecayedEventScore",
                 "rank_by_decayed_score",
@@ -76,8 +76,8 @@ def build_report() -> dict[str, Any]:
             ],
         ),
         check_contains(
-            "cpp_unit_coverage_for_layer_and_decay",
-            cpp_tests,
+            "native_unit_coverage_for_layer_and_decay",
+            native_tests,
             [
                 "ctx-traverse-global-topk",
                 "set_rank_by_decayed_score(true)",

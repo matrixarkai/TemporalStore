@@ -948,7 +948,7 @@ fn durable_index_survives_restart_and_points_to_page_file() {
 }
 
 #[test]
-fn async_write_survives_restart_via_wal_replay_like_cpp() {
+fn async_write_survives_restart_via_wal_replay_like_native() {
     // parity: an async_storage write records a WAL entry but defers page/
     // index materialization to the background dump. If the crash beats the dump,
     // ObjectManager::Load() replays the wal and recovers the write. Rust must replay
@@ -1126,7 +1126,7 @@ fn async_storage_batch_write_records_wal_without_sync_or_index() {
 }
 
 #[test]
-fn eviction_ranks_victims_least_recently_used_first_like_cpp() {
+fn eviction_ranks_victims_least_recently_used_first_like_native() {
     // PolicyLru: eviction victims are ordered least-recently-used first, so a
     // repeatedly-read hot bucket is evicted last. Rust stamps per-bucket recency on
     // every read/write and sorts victims oldest-first.
@@ -1177,7 +1177,7 @@ fn eviction_ranks_victims_least_recently_used_first_like_cpp() {
 }
 
 #[test]
-fn wal_replay_gap_refuses_load_like_cpp_dataloss() {
+fn wal_replay_gap_refuses_load_like_dataloss() {
     // ObjectManager::ReplayWal returns DataLoss and aborts Load on a hole in the
     // retained wal. Rust must likewise refuse the load (not-loaded) rather than
     // silently serve a truncated prefix.
@@ -1232,7 +1232,7 @@ fn wal_replay_gap_refuses_load_like_cpp_dataloss() {
 }
 
 #[test]
-fn expiry_sweep_emits_wal_tombstone_like_cpp() {
+fn expiry_sweep_emits_wal_tombstone_like_native() {
     // parity (object_manager DoExpireObject -> op_logger_->DeleteObject; expirer.cc
     // Commit): active expiry is a logged, replicated delete. Rust's sweep must append a
     // WAL tombstone per expired key so followers / WAL replay observe the deletion,
@@ -1272,7 +1272,7 @@ fn expiry_sweep_emits_wal_tombstone_like_cpp() {
 }
 
 #[test]
-fn wal_replay_uses_leader_timestamp_for_ttl_deadline_like_cpp() {
+fn wal_replay_uses_leader_timestamp_for_ttl_deadline_like_native() {
     // resolves a TTL to an ABSOLUTE deadline on the leader before logging it
     // (common_module.h ttl = request.ttl_ms + GetCurrentTimeInMs()); replay uses that
     // value. Rust must resolve replayed TTLs against the leader's logged timestamp, not
@@ -1334,7 +1334,7 @@ fn wal_replay_uses_leader_timestamp_for_ttl_deadline_like_cpp() {
 }
 
 #[test]
-fn wal_replay_conditional_write_uses_leader_clock_for_lazy_expiry_like_cpp() {
+fn wal_replay_conditional_write_uses_leader_clock_for_lazy_expiry_like_native() {
     // A logged conditional write (SET XX) that fired on the leader because the key was
     // live must fire identically on replay. The implicit lazy-expiry gate
     // (remove_if_expired) runs first inside the handler; if it consults the real restart
@@ -1422,7 +1422,7 @@ fn wal_replay_conditional_write_uses_leader_clock_for_lazy_expiry_like_cpp() {
 }
 
 #[test]
-fn wal_replay_rearmed_expire_does_not_abort_recovery_like_cpp() {
+fn wal_replay_rearmed_expire_does_not_abort_recovery_like_native() {
     // A committed EXPIRE that re-arms a key's TTL must replay cleanly even if the key's
     // ORIGINAL (pre-re-arm) deadline has lapsed by restart time. Command preconditions are
     // a LEADER-time gate; re-running them during replay against the restart clock made a
@@ -1506,7 +1506,7 @@ fn wal_replay_rearmed_expire_does_not_abort_recovery_like_cpp() {
 }
 
 #[test]
-fn hdel_last_field_removes_key_like_cpp() {
+fn hdel_last_field_removes_key_like_native() {
     // hash2::Del removes the whole object once the last field is deleted; Rust left an
     // empty field map behind, so the key still reported as existing (EXISTS=1, TYPE=hash).
     let engine = TemporalEngine::default();
@@ -1741,7 +1741,7 @@ fn reconcile_does_not_resurrect_evicted_feature_points_on_reload() {
 }
 
 #[test]
-fn hash_incrby_rejects_non_integer_and_overflow_like_cpp() {
+fn hash_incrby_rejects_non_integer_and_overflow_like_native() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     engine.execute(ExecuteRequest {
@@ -1791,7 +1791,7 @@ fn hash_incrby_rejects_non_integer_and_overflow_like_cpp() {
 }
 
 #[test]
-fn hash_incrby_skips_leading_whitespace_in_stored_value_like_cpp() {
+fn hash_incrby_skips_leading_whitespace_in_stored_value_like_native() {
     // hash IncrBy parses the stored field via strtoll (extension/hash/implement.cc:138), which
     // skips leading whitespace, so a field stored as " 5" is the valid integer 5. Rust parse_i64
     // previously used str::parse (rejects leading whitespace) and wrongly failed it as
@@ -1869,11 +1869,11 @@ fn feature_append_packs_many_timestamp_values_into_one_page() {
             points: vec![
                 FeaturePoint {
                     timestamp_ms: second.timestamp_ms,
-                    value: second.encode_cpp_feature_value(),
+                    value: second.encode_feature_proto_value(),
                 },
                 FeaturePoint {
                     timestamp_ms: first.timestamp_ms,
-                    value: first.encode_cpp_feature_value(),
+                    value: first.encode_feature_proto_value(),
                 },
             ],
         },
@@ -1917,11 +1917,11 @@ fn feature_append_packs_many_timestamp_values_into_one_page() {
             points: vec![
                 FeaturePoint {
                     timestamp_ms: 10,
-                    value: first.encode_cpp_feature_value(),
+                    value: first.encode_feature_proto_value(),
                 },
                 FeaturePoint {
                     timestamp_ms: 20,
-                    value: second.encode_cpp_feature_value(),
+                    value: second.encode_feature_proto_value(),
                 },
             ]
         }
@@ -1946,7 +1946,7 @@ fn feature_append_packs_many_timestamp_values_into_one_page() {
         CommandResponse::FeaturePoints {
             points: vec![FeaturePoint {
                 timestamp_ms: 20,
-                value: second.encode_cpp_feature_value(),
+                value: second.encode_feature_proto_value(),
             }]
         }
     );
@@ -1964,16 +1964,16 @@ fn feature_append_packs_many_timestamp_values_into_one_page() {
     assert_eq!(agg.response, CommandResponse::Aggregate { value: 2 });
 }
 
-// shared-corpus: feature_cpp_boundary_count_duplicate_semantics
+// shared-corpus: feature_boundary_count_duplicate_semantics
 #[test]
-fn feature_cpp_policy_aliases_first_update_and_block() {
+fn feature_policy_aliases_first_update_and_block() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
 
     let base = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::FeatureAppend {
-            key: "cpp-policy-feature".to_string(),
+            key: "native-policy-feature".to_string(),
             points: vec![FeaturePoint {
                 timestamp_ms: 10,
                 value: vec![b'a'],
@@ -1984,7 +1984,7 @@ fn feature_cpp_policy_aliases_first_update_and_block() {
 
     let first_existing: Command = serde_json::from_value(serde_json::json!({
         "kind": "feature_append_with_policy",
-        "key": "cpp-policy-feature",
+        "key": "native-policy-feature",
         "policy": "FIRST",
         "points": [{"timestamp_ms": 10, "value": [120]}]
     }))
@@ -2000,7 +2000,7 @@ fn feature_cpp_policy_aliases_first_update_and_block() {
 
     let first_new: Command = serde_json::from_value(serde_json::json!({
         "kind": "feature_append_with_policy",
-        "key": "cpp-policy-feature",
+        "key": "native-policy-feature",
         "policy": "FIRST",
         "points": [{"timestamp_ms": 20, "value": [98]}]
     }))
@@ -2013,7 +2013,7 @@ fn feature_cpp_policy_aliases_first_update_and_block() {
 
     let update_missing: Command = serde_json::from_value(serde_json::json!({
         "kind": "feature_append_with_policy",
-        "key": "cpp-policy-feature",
+        "key": "native-policy-feature",
         "policy": "UPDATE",
         "points": [{"timestamp_ms": 30, "value": [99]}]
     }))
@@ -2029,7 +2029,7 @@ fn feature_cpp_policy_aliases_first_update_and_block() {
 
     let update_existing: Command = serde_json::from_value(serde_json::json!({
         "kind": "feature_append_with_policy",
-        "key": "cpp-policy-feature",
+        "key": "native-policy-feature",
         "policy": "UPDATE",
         "points": [{"timestamp_ms": 10, "value": [65]}]
     }))
@@ -2045,7 +2045,7 @@ fn feature_cpp_policy_aliases_first_update_and_block() {
 
     let block: Command = serde_json::from_value(serde_json::json!({
         "kind": "feature_append_with_policy",
-        "key": "cpp-policy-feature",
+        "key": "native-policy-feature",
         "policy": "BLOCK",
         "points": [{"timestamp_ms": 40, "value": [100]}]
     }))
@@ -2060,7 +2060,7 @@ fn feature_cpp_policy_aliases_first_update_and_block() {
     let query = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::FeatureQuery {
-            key: "cpp-policy-feature".to_string(),
+            key: "native-policy-feature".to_string(),
             start_ms: 0,
             end_ms: 50,
             count: None,
@@ -2566,7 +2566,7 @@ fn feature_compaction_rewrites_shared_packed_page_once() {
 }
 
 #[test]
-fn feature_append_rejects_cpp_hard_size_limit_before_mutation() {
+fn feature_append_rejects_hard_size_limit_before_mutation() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     engine.execute(ExecuteRequest {
@@ -2621,9 +2621,9 @@ fn feature_append_rejects_cpp_hard_size_limit_before_mutation() {
 }
 
 #[test]
-fn cpp_feature_sequence_golden_corpus_passes() {
-    let report = cpp_feature_sequence_golden_corpus_report();
-    assert_eq!(report.corpus, "feature_sequence_cpp_proto_v1");
+fn native_feature_sequence_golden_corpus_passes() {
+    let report = native_feature_sequence_golden_corpus_report();
+    assert_eq!(report.corpus, "feature_sequence_proto_v1");
     assert_eq!(report.total_cases, 8);
     assert_eq!(report.passed_cases, report.total_cases);
     assert_eq!(report.failed_cases, 0);
@@ -2631,9 +2631,9 @@ fn cpp_feature_sequence_golden_corpus_passes() {
 }
 
 #[test]
-fn cpp_api_golden_corpus_passes() {
-    let report = cpp_api_golden_corpus_report();
-    assert_eq!(report.corpus, "cpp_api_golden_corpus_v1");
+fn native_api_golden_corpus_passes() {
+    let report = native_api_golden_corpus_report();
+    assert_eq!(report.corpus, "native_api_golden_corpus_v1");
     assert_eq!(report.total_cases, 14);
     assert!(report.passed(), "{report:#?}");
     assert_eq!(report.passed_cases, report.total_cases);
@@ -2819,7 +2819,7 @@ fn common_delete_removes_all_data_types_for_key() {
 }
 
 #[test]
-fn common_delete_removes_cpp_control_state_family_records_for_logical_key() {
+fn common_delete_removes_control_state_family_records_for_logical_key() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     for (family, amount) in [
@@ -2831,7 +2831,7 @@ fn common_delete_removes_cpp_control_state_family_records_for_logical_key() {
             shard_id: 1,
             command: Command::ControlStateSet {
                 family,
-                key: "control_state-cpp".to_string(),
+                key: "control_state-native".to_string(),
                 timestamp_ms: 10,
                 amount,
             },
@@ -2844,7 +2844,7 @@ fn common_delete_removes_cpp_control_state_family_records_for_logical_key() {
             .execute(ExecuteRequest {
                 shard_id: 1,
                 command: Command::CommonExists {
-                    key: "control_state-cpp".to_string(),
+                    key: "control_state-native".to_string(),
                 },
             })
             .response,
@@ -2855,7 +2855,7 @@ fn common_delete_removes_cpp_control_state_family_records_for_logical_key() {
             .execute(ExecuteRequest {
                 shard_id: 1,
                 command: Command::CommonDelete {
-                    key: "control_state-cpp".to_string(),
+                    key: "control_state-native".to_string(),
                 },
             })
             .response,
@@ -2868,7 +2868,7 @@ fn common_delete_removes_cpp_control_state_family_records_for_logical_key() {
                     shard_id: 1,
                     command: Command::ControlStateFamilyQuery {
                         family,
-                        key: "control_state-cpp".to_string(),
+                        key: "control_state-native".to_string(),
                         start_ms: 0,
                         end_ms: 20,
                         aggregator: "sum".to_string(),
@@ -2912,7 +2912,7 @@ fn common_expire_and_ttl_work() {
 }
 
 #[test]
-fn common_expire_missing_key_matches_cpp_not_found() {
+fn common_expire_missing_key_matches_not_found() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     let response = engine.execute(ExecuteRequest {
@@ -2926,7 +2926,7 @@ fn common_expire_missing_key_matches_cpp_not_found() {
 }
 
 #[test]
-fn common_expire_and_ttl_cover_cpp_control_state_family_records_for_logical_key() {
+fn common_expire_and_ttl_cover_control_state_family_records_for_logical_key() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     let response = engine.execute(ExecuteRequest {
@@ -3404,7 +3404,7 @@ fn control_state_rollup_matches_raw_scan_through_engine() {
 // MANAGER op-code parity: QUERY(2) / FIELD_LIST(5) / FIELD_COUNT(6) / ALL_DATA_VALUE(7)
 // over the H family series, plus the default summary path.
 #[test]
-fn control_state_manager_op_codes_match_cpp_hash_manager() {
+fn control_state_manager_op_codes_match_hash_manager() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     for (timestamp_ms, amount) in [(10u64, 1i64), (20, 2), (30, 4)] {

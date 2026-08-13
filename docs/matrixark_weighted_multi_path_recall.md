@@ -282,5 +282,5 @@ python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_weighted_recall_
   --namespace deploy_ns \
   --table deploy_table \
   --temporalstore-lib $PWD/output-ubuntu22/release/sdk/lib/libtemporalstore.so \
-  --report-json /tmp/matrixark_weighted_recall_cpp_direct.json
+  --report-json /tmp/matrixark_weighted_recall_direct.json
 ```

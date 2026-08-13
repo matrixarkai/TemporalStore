@@ -641,7 +641,7 @@ pub(crate) fn execute_on_shard(
                                 &mut page_cache,
                             )
                             .and_then(|point| {
-                                let row = SequenceFeatureRow::decode_cpp_feature_value(
+                                let row = SequenceFeatureRow::decode_feature_proto_value(
                                     point.timestamp_ms,
                                     &point.value,
                                 )?;
@@ -1496,7 +1496,7 @@ pub(crate) fn execute_on_shard(
             // CONTEXT_TIMELINE_FANOUT is applied inside context_timeline_key so
             // multiple ContextEvent writes at the same millisecond map to stable,
             // timestamp-keyed pages instead of overwriting one another.
-            // context_models_match_cpp_keys_timeline_pages_and_filters keeps this
+            // context_models_match_keys_timeline_pages_and_filters keeps this
             // key shape aligned with the context event timeline contract.
             let timeline_key = context_timeline_key(event.primary_time_ms(), event.event_id_hash);
             let series = shard.context_events.entry(object_key.clone()).or_default();

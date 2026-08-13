@@ -558,13 +558,13 @@ impl TemporalStoreClient {
             stats,
             options,
             topology_cache,
-            cpp_partition_sets: self.cpp_partition_set_report(),
+            native_partition_sets: self.native_partition_set_report(),
             meta_sync,
             degraded_reasons,
         }
     }
 
-    pub fn cpp_partition_set_report(&self) -> Vec<ClientCppPartitionSetReport> {
+    pub fn native_partition_set_report(&self) -> Vec<ClientPartitionSetReport> {
         let tables = self
             .inner
             .tables
@@ -586,7 +586,7 @@ impl TemporalStoreClient {
                         let partition_id = client_partition_id_for_offset(&options, offset);
                         let shard_id = partition_id;
                         let route = routes.get(&shard_id);
-                        ClientCppPartitionMemberReport {
+                        ClientPartitionMemberReport {
                             partition_id,
                             shard_id,
                             start_bucket: route.map(|route| route.start_bucket).unwrap_or_else(|| {
@@ -622,7 +622,7 @@ impl TemporalStoreClient {
                     .unwrap_or_default();
                 let missing_route_count =
                     members.iter().filter(|member| !member.route_ready).count();
-                Some(ClientCppPartitionSetReport {
+                Some(ClientPartitionSetReport {
                     table_id: options.table_id,
                     namespace: namespace.to_string(),
                     table_name: table_name.to_string(),

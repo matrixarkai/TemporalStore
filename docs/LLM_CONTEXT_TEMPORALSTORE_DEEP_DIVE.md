@@ -507,7 +507,7 @@ context_batch_extraction_query_ingestion_x8
 context_stream_batch_api_ingestion_compression
 context_eight_parity_gates
 context_nine_ingestion_compression_parity_gates
-context_module_cpp_surfaces
+context_module_surfaces
 ```
 
 `context_eight_parity_gates` asserts:
@@ -589,7 +589,7 @@ python3 tools/run_temporalstore_unified_tests.py --validate-only
 unified contract:
 
 ```bash
-bash tools/run_cpp_unified_context_contract.sh third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json
+bash tools/run_unified_context_contract.sh third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json
 ```
 
 Monitoring UI:

@@ -98,8 +98,8 @@ def write_reports(report: dict[str, Any], result_dir: Path) -> None:
         f"- cases: `{report['input']['case_count']}`",
         f"- command kinds: `{report['input']['command_kind_count']}`",
         f"- context steps: `{report['input']['context_step_count']}`",
-        f"- contract cases: `{report['input'].get('cpp_contract_case_count', 0)}`",
-        f"- contract steps: `{report['input'].get('cpp_contract_step_count', 0)}`",
+        f"- contract cases: `{report['input'].get('native_contract_case_count', 0)}`",
+        f"- contract steps: `{report['input'].get('native_contract_step_count', 0)}`",
         "",
         "## Stages",
         "",
@@ -130,7 +130,7 @@ def main() -> int:
     parser.add_argument("--corpus", type=Path, default=DEFAULT_CORPUS)
     parser.add_argument("--result-dir", type=Path, default=DEFAULT_RESULT_DIR)
     parser.add_argument("--validate-only", action="store_true", help="Run schema validation only.")
-    parser.add_argument("--skip-cpp", action="store_true", help="Skip behavior contract stage.")
+    parser.add_argument("--skip-native", action="store_true", help="Skip behavior contract stage.")
     parser.add_argument("--run-rust", action="store_true", help="Also run the legacy Rust SDK stage from this checkout.")
     args = parser.parse_args()
 
@@ -153,9 +153,9 @@ def main() -> int:
     )
     stages.append(
         run_stage(
-            "cpp_context_contract",
-            ["bash", "tools/run_cpp_unified_context_contract.sh", str(corpus)],
-            skipped=args.validate_only or args.skip_cpp,
+            "native_context_contract",
+            ["bash", "tools/run_unified_context_contract.sh", str(corpus)],
+            skipped=args.validate_only or args.skip_native,
         )
     )
     rust_env = os.environ.copy()
@@ -172,15 +172,15 @@ def main() -> int:
 
     failed = [stage for stage in stages if stage["status"] == "failed"]
     status = "failed" if failed else "passed"
-    cpp_contract_case_count = 0
-    cpp_contract_step_count = 0
+    native_contract_case_count = 0
+    native_contract_step_count = 0
     for stage in stages:
-        if stage["name"] != "cpp_context_contract":
+        if stage["name"] != "native_context_contract":
             continue
         match = re.search(r"cases=(\d+)\s+contract_steps=(\d+)", stage.get("stdout_tail", ""))
         if match:
-            cpp_contract_case_count = int(match.group(1))
-            cpp_contract_step_count = int(match.group(2))
+            native_contract_case_count = int(match.group(1))
+            native_contract_step_count = int(match.group(2))
     report: dict[str, Any] = {
         "status": status,
         "input": {
@@ -190,8 +190,8 @@ def main() -> int:
             "case_count": len(corpus_data.get("cases", [])),
             "command_kind_count": len(kinds),
             "context_step_count": context_step_count,
-            "cpp_contract_case_count": cpp_contract_case_count,
-            "cpp_contract_step_count": cpp_contract_step_count,
+            "native_contract_case_count": native_contract_case_count,
+            "native_contract_step_count": native_contract_step_count,
             "command_kinds": kinds,
         },
         "stages": stages,

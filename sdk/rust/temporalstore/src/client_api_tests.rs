@@ -8,7 +8,7 @@ use crate::ProxyClient;
 
 #[cfg(feature = "direct")]
 #[test]
-fn direct_client_exposes_cpp_c_abi_parity_methods() {
+fn direct_client_exposes_c_abi_parity_methods() {
     let _: fn(&Client, &str, &str) -> crate::Result<()> = Client::put_string;
     let _: fn(&Client, &str, &str, u64) -> crate::Result<()> = Client::put_string_with_ttl;
     let _: fn(&Client, &str) -> crate::Result<String> = Client::get_string;
@@ -58,7 +58,7 @@ fn direct_client_exposes_cpp_c_abi_parity_methods() {
 
 #[cfg(feature = "proxy")]
 #[test]
-fn proxy_client_exposes_cpp_proxy_parity_methods() {
+fn proxy_client_exposes_proxy_parity_methods() {
     let _: fn(&ProxyClient, &str, &[crate::FeaturePoint]) -> crate::Result<()> =
         ProxyClient::feature_add;
     let _: fn(

@@ -1006,7 +1006,7 @@ class _BackendPolicyPart4:
         self.assertIn("--rust-direct-lib", server)
         self.assertIn("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB", server)
 
-    def test_cpp_python_sdk_exposes_native_hash_scan(self) -> None:
+    def test_python_sdk_exposes_native_hash_scan(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         source = (repo / "sdk/python/temporalstore/client.py").read_text()
 
@@ -1027,8 +1027,8 @@ class _BackendPolicyPart4:
         self.assertIn("MatrixArkRetrieveContextPackRequest", openapi)
         self.assertIn("def matrixark_scan_candidates", proxy_client)
         self.assertIn("def matrixark_retrieve_context_pack", proxy_client)
-        self.assertIn("MATRIXARK_TEMPORALSTORE_CPP_PROXY_ENDPOINT", adapter)
-        self.assertIn("cpp_proxy_matrixark_batch_append_records", adapter)
+        self.assertIn("MATRIXARK_TEMPORALSTORE_NATIVE_PROXY_ENDPOINT", adapter)
+        self.assertIn("native_proxy_matrixark_batch_append_records", adapter)
 
     def test_direct_readiness_reports_metaserver_failure(self) -> None:
         adapter = _direct_adapter_for_readiness(metaserver="127.0.0.1:1")

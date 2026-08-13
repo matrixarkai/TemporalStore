@@ -184,9 +184,9 @@ pub struct ProxyNotifyStopReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyOperationalSurfaceEntry {
-    pub cpp_surface: String,
+    pub native_surface: String,
     pub rust_native_route: String,
-    pub rust_cpp_alias: String,
+    pub rust_alias: String,
     pub covered: bool,
     pub notes: String,
 }
@@ -196,13 +196,13 @@ pub struct ProxyOperationalSurfaceReport {
     pub status: Status,
     pub legacy_brpc_thrift_in_scope: bool,
     pub rust_native_aliases_ready: bool,
-    pub compared_cpp_files: Vec<String>,
+    pub compared_files: Vec<String>,
     pub entries: Vec<ProxyOperationalSurfaceEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyMetricFamilyMapping {
-    pub cpp_surface: String,
+    pub native_surface: String,
     pub rust_prometheus_family: String,
     pub rust_labels: Vec<String>,
     pub grafana_panel: String,
@@ -212,7 +212,7 @@ pub struct ProxyMetricFamilyMapping {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyMetricsParityReport {
     pub status: Status,
-    pub compared_cpp_files: Vec<String>,
+    pub compared_files: Vec<String>,
     pub rust_prometheus_families: Vec<String>,
     pub mappings: Vec<ProxyMetricFamilyMapping>,
     pub grafana_panels_ready: bool,
@@ -347,10 +347,10 @@ impl Default for ProxyTonicStreamingContract {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyCppMigrationContract {
+pub struct ProxyMigrationContract {
     pub compatibility_decision: String,
     pub legacy_cplusplus_wire_in_scope: bool,
-    pub cpp_wire_proxy_transport_ready: bool,
+    pub native_wire_proxy_transport_ready: bool,
     pub production_protocols: Vec<String>,
     pub http_json_aliases_ready: bool,
     #[serde(default)]
@@ -373,14 +373,14 @@ pub struct ProxyCppMigrationContract {
     pub migration_contract_version: u32,
 }
 
-impl Default for ProxyCppMigrationContract {
+impl Default for ProxyMigrationContract {
     fn default() -> Self {
         Self {
             compatibility_decision:
                 "legacy command transport is out of scope; use Rust-native HTTP/JSON, RESP, and tonic"
                     .to_string(),
             legacy_cplusplus_wire_in_scope: false,
-            cpp_wire_proxy_transport_ready: false,
+            native_wire_proxy_transport_ready: false,
             production_protocols: vec![
                 "HTTP/JSON".to_string(),
                 "RESP".to_string(),
@@ -1008,15 +1008,15 @@ impl ProxyService {
 }
 
 fn proxy_operational_surface_entry(
-    cpp_surface: &str,
+    native_surface: &str,
     rust_native_route: &str,
-    rust_cpp_alias: &str,
+    rust_alias: &str,
     notes: &str,
 ) -> ProxyOperationalSurfaceEntry {
     ProxyOperationalSurfaceEntry {
-        cpp_surface: cpp_surface.to_string(),
+        native_surface: native_surface.to_string(),
         rust_native_route: rust_native_route.to_string(),
-        rust_cpp_alias: rust_cpp_alias.to_string(),
+        rust_alias: rust_alias.to_string(),
         covered: true,
         notes: notes.to_string(),
     }
@@ -1090,13 +1090,13 @@ fn proxy_metrics_parity_mappings() -> Vec<ProxyMetricFamilyMapping> {
 }
 
 fn proxy_metric_mapping(
-    cpp_surface: &str,
+    native_surface: &str,
     rust_prometheus_family: &str,
     rust_labels: Vec<&str>,
     grafana_panel: &str,
 ) -> ProxyMetricFamilyMapping {
     ProxyMetricFamilyMapping {
-        cpp_surface: cpp_surface.to_string(),
+        native_surface: native_surface.to_string(),
         rust_prometheus_family: rust_prometheus_family.to_string(),
         rust_labels: rust_labels.into_iter().map(str::to_string).collect(),
         grafana_panel: grafana_panel.to_string(),
@@ -1176,13 +1176,13 @@ mod tests {
             contract
         );
 
-        let migration = proxy.cpp_migration_contract();
+        let migration = proxy.native_migration_contract();
         assert_eq!(
             migration.compatibility_decision,
             "legacy command transport is out of scope; use Rust-native HTTP/JSON, RESP, and tonic"
         );
         assert!(!migration.legacy_cplusplus_wire_in_scope);
-        assert!(!migration.cpp_wire_proxy_transport_ready);
+        assert!(!migration.native_wire_proxy_transport_ready);
         assert!(migration.http_json_aliases_ready);
         assert!(migration.resp_migration_ready);
         assert!(migration.tonic_streaming_ready);
@@ -1205,12 +1205,12 @@ mod tests {
 
         let (code, body) = proxy.handle(HttpRequest {
             method: "GET".to_string(),
-            path: "/proxy/cpp_migration_contract".to_string(),
+            path: "/proxy/native_migration_contract".to_string(),
             body: Vec::new(),
         });
         assert_eq!(code, 200);
         assert_eq!(
-            parse_json::<ProxyCppMigrationContract>(&body).unwrap(),
+            parse_json::<ProxyMigrationContract>(&body).unwrap(),
             migration
         );
     }
@@ -1324,11 +1324,11 @@ mod tests {
             .rust_prometheus_families
             .contains(&"temporalstore_proxy_metric_family_parity".to_string()));
         assert!(report
-            .compared_cpp_files
+            .compared_files
             .iter()
             .any(|path| path.ends_with("/src/proxy/service.cc")));
         assert!(report.mappings.iter().any(|mapping| {
-            mapping.cpp_surface.contains("command/admission")
+            mapping.native_surface.contains("command/admission")
                 && mapping.rust_prometheus_family == "temporalstore_proxy_requests_total"
                 && mapping.grafana_panel == "Proxy Requests And Admission"
                 && mapping.covered
@@ -1805,7 +1805,7 @@ mod tests {
     }
 
     #[test]
-    fn proxy_cpp_admin_aliases_expose_info_config_and_client_preflight() {
+    fn proxy_admin_aliases_expose_info_config_and_client_preflight() {
         let proxy = ProxyService::new(ProxyOptions {
             meta_addr: "127.0.0.1:1".to_string(),
             proxy_addr: "127.0.0.1:17000".to_string(),
@@ -1844,7 +1844,7 @@ mod tests {
 
     // shared-corpus: control_proxy_operational_surface_aliases
     #[test]
-    fn proxy_operational_surface_aliases_cover_cpp_admin_config_heartbeat_status() {
+    fn proxy_operational_surface_aliases_cover_admin_config_heartbeat_status() {
         let proxy = ProxyService::new(ProxyOptions {
             meta_addr: "127.0.0.1:1".to_string(),
             proxy_addr: "127.0.0.1:17123".to_string(),
@@ -1916,14 +1916,14 @@ mod tests {
                 report
                     .entries
                     .iter()
-                    .any(|entry| entry.cpp_surface == expected && entry.covered),
+                    .any(|entry| entry.native_surface == expected && entry.covered),
                 "missing operational surface entry for {expected}: {report:?}"
             );
         }
     }
 
     #[test]
-    fn proxy_cpp_service_aliases_delegate_to_client_execution_path() {
+    fn proxy_service_aliases_delegate_to_client_execution_path() {
         let dir = tempfile::tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
             1024,
@@ -1970,7 +1970,7 @@ mod tests {
             body: serde_json::to_vec(&ExecuteRequest {
                 shard_id: 1,
                 command: Command::StringSet {
-                    key: "cpp-proxy-alias".to_string(),
+                    key: "native-proxy-alias".to_string(),
                     value: b"via-proxy-service".to_vec(),
                 },
             })
@@ -1987,15 +1987,15 @@ mod tests {
                 shard_id: 1,
                 commands: vec![
                     Command::StringGet {
-                        key: "cpp-proxy-alias".to_string(),
+                        key: "native-proxy-alias".to_string(),
                     },
                     Command::HashSet {
-                        key: "cpp-proxy-hash".to_string(),
+                        key: "native-proxy-hash".to_string(),
                         field: "field".to_string(),
                         value: b"value".to_vec(),
                     },
                     Command::HashGet {
-                        key: "cpp-proxy-hash".to_string(),
+                        key: "native-proxy-hash".to_string(),
                         field: "field".to_string(),
                     },
                 ],
@@ -2038,7 +2038,7 @@ mod tests {
                 serde_json::to_vec(&ProxySetCommandRequest {
                     namespace: "ns".to_string(),
                     table_name: "tbl".to_string(),
-                    key: "cpp-proxy-command".to_string(),
+                    key: "native-proxy-command".to_string(),
                     value: b"command-value".to_vec(),
                 })
                 .unwrap(),
@@ -2052,7 +2052,7 @@ mod tests {
                 serde_json::to_vec(&ProxyKeyCommandRequest {
                     namespace: "ns".to_string(),
                     table_name: "tbl".to_string(),
-                    key: "cpp-proxy-command".to_string(),
+                    key: "native-proxy-command".to_string(),
                 })
                 .unwrap(),
             )
@@ -2067,7 +2067,7 @@ mod tests {
                 serde_json::to_vec(&ProxyHashSetCommandRequest {
                     namespace: "ns".to_string(),
                     table_name: "tbl".to_string(),
-                    key: "cpp-proxy-h".to_string(),
+                    key: "native-proxy-h".to_string(),
                     field: "single".to_string(),
                     value: b"single-value".to_vec(),
                 })
@@ -2082,7 +2082,7 @@ mod tests {
                 serde_json::to_vec(&ProxyHashCommandRequest {
                     namespace: "ns".to_string(),
                     table_name: "tbl".to_string(),
-                    key: "cpp-proxy-h".to_string(),
+                    key: "native-proxy-h".to_string(),
                     field: "single".to_string(),
                 })
                 .unwrap(),
@@ -2098,7 +2098,7 @@ mod tests {
                 serde_json::to_vec(&ProxyHashCommandRequest {
                     namespace: "ns".to_string(),
                     table_name: "tbl".to_string(),
-                    key: "cpp-proxy-h".to_string(),
+                    key: "native-proxy-h".to_string(),
                     field: "single".to_string(),
                 })
                 .unwrap(),
@@ -2112,7 +2112,7 @@ mod tests {
                 serde_json::to_vec(&ProxyHashCommandRequest {
                     namespace: "ns".to_string(),
                     table_name: "tbl".to_string(),
-                    key: "cpp-proxy-h".to_string(),
+                    key: "native-proxy-h".to_string(),
                     field: "single".to_string(),
                 })
                 .unwrap(),
@@ -2126,7 +2126,7 @@ mod tests {
                 serde_json::to_vec(&ProxyHashMultiSetCommandRequest {
                     namespace: "ns".to_string(),
                     table_name: "tbl".to_string(),
-                    key: "cpp-proxy-hm".to_string(),
+                    key: "native-proxy-hm".to_string(),
                     entries: vec![
                         ("a".to_string(), b"1".to_vec()),
                         ("b".to_string(), b"2".to_vec()),
@@ -2143,7 +2143,7 @@ mod tests {
                 serde_json::to_vec(&ProxyHashMultiGetCommandRequest {
                     namespace: "ns".to_string(),
                     table_name: "tbl".to_string(),
-                    key: "cpp-proxy-hm".to_string(),
+                    key: "native-proxy-hm".to_string(),
                     fields: vec!["a".to_string(), "missing".to_string()],
                 })
                 .unwrap(),
@@ -2159,7 +2159,7 @@ mod tests {
                 serde_json::to_vec(&ProxyKeyCommandRequest {
                     namespace: "ns".to_string(),
                     table_name: "tbl".to_string(),
-                    key: "cpp-proxy-hm".to_string(),
+                    key: "native-proxy-hm".to_string(),
                 })
                 .unwrap(),
             )
@@ -2177,7 +2177,7 @@ mod tests {
                 serde_json::to_vec(&ProxyKeyCommandRequest {
                     namespace: "ns".to_string(),
                     table_name: "tbl".to_string(),
-                    key: "cpp-proxy-hm".to_string(),
+                    key: "native-proxy-hm".to_string(),
                 })
                 .unwrap(),
             )
@@ -2190,7 +2190,7 @@ mod tests {
                 serde_json::to_vec(&ProxySetMemberCommandRequest {
                     namespace: "ns".to_string(),
                     table_name: "tbl".to_string(),
-                    key: "cpp-proxy-set".to_string(),
+                    key: "native-proxy-set".to_string(),
                     member: b"member-a".to_vec(),
                 })
                 .unwrap(),
@@ -2204,7 +2204,7 @@ mod tests {
                 serde_json::to_vec(&ProxyKeyCommandRequest {
                     namespace: "ns".to_string(),
                     table_name: "tbl".to_string(),
-                    key: "cpp-proxy-set".to_string(),
+                    key: "native-proxy-set".to_string(),
                 })
                 .unwrap(),
             )
@@ -2219,7 +2219,7 @@ mod tests {
                 serde_json::to_vec(&ProxyExpireCommandRequest {
                     namespace: "ns".to_string(),
                     table_name: "tbl".to_string(),
-                    key: "cpp-proxy-command".to_string(),
+                    key: "native-proxy-command".to_string(),
                     ttl_ms: 60_000,
                 })
                 .unwrap(),
@@ -2232,7 +2232,7 @@ mod tests {
             serde_json::to_vec(&ProxyKeyCommandRequest {
                 namespace: "ns".to_string(),
                 table_name: "tbl".to_string(),
-                key: "cpp-proxy-command".to_string(),
+                key: "native-proxy-command".to_string(),
             })
             .unwrap(),
         )
@@ -2250,7 +2250,7 @@ mod tests {
                 serde_json::to_vec(&ProxyKeyCommandRequest {
                     namespace: "ns".to_string(),
                     table_name: "tbl".to_string(),
-                    key: "cpp-proxy-command".to_string(),
+                    key: "native-proxy-command".to_string(),
                 })
                 .unwrap(),
             )
@@ -2263,7 +2263,7 @@ mod tests {
                 serde_json::to_vec(&ProxyKeyCommandRequest {
                     namespace: "ns".to_string(),
                     table_name: "tbl".to_string(),
-                    key: "cpp-proxy-command".to_string(),
+                    key: "native-proxy-command".to_string(),
                 })
                 .unwrap(),
             )
@@ -2276,7 +2276,7 @@ mod tests {
                 serde_json::to_vec(&ProxyFeatureAddCommandRequest {
                     namespace: "ns".to_string(),
                     table_name: "tbl".to_string(),
-                    key: "cpp-proxy-feature".to_string(),
+                    key: "native-proxy-feature".to_string(),
                     policy: None,
                     points: vec![crate::types::FeaturePoint {
                         timestamp_ms: 10,
@@ -2294,7 +2294,7 @@ mod tests {
                 serde_json::to_vec(&ProxyControlStateHsetCommandRequest {
                     namespace: "ns".to_string(),
                     table_name: "tbl".to_string(),
-                    key: "cpp-proxy-control_state".to_string(),
+                    key: "native-proxy-control_state".to_string(),
                     timestamp_ms: 10,
                     amount: 5,
                 })
@@ -2310,7 +2310,7 @@ mod tests {
     }
 
     #[test]
-    fn proxy_config_update_noops_on_same_namespace_and_version_like_cpp() {
+    fn proxy_config_update_noops_on_same_namespace_and_version_like_native() {
         let options = ProxyOptions {
             namespace: "ns-a".to_string(),
             meta_addr: "127.0.0.1:1".to_string(),
@@ -2697,7 +2697,7 @@ mod tests {
     }
 
     #[test]
-    fn proxy_heartbeat_applies_metaserver_config_version_like_cpp() {
+    fn proxy_heartbeat_applies_metaserver_config_version_like_native() {
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_proxy(RegisterProxyRequest {
             proxy_addr: "proxy-config".to_string(),

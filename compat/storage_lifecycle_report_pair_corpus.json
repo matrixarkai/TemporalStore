@@ -2,7 +2,7 @@
   "schema_version": 1,
   "name": "temporalstore-storage-lifecycle-report-pair-corpus",
   "description": "Synthetic conformance report pair proving canonical public storage shape normalization and lifecycle metric parity.",
-  "cpp": {
+  "native": {
     "effective_storage_tuning": {
       "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
       "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
@@ -248,7 +248,7 @@
     },
     "storage_manager_contract": {
       "manager_identity": "StorageManager/StoreManager",
-      "cpp_public_name": "StorageManager",
+      "native_public_name": "StorageManager",
       "rust_public_name": "StoreManager",
       "phase_order": [
         "prepare",
@@ -445,9 +445,9 @@
       "block_index_entry_samples": [
         {
           "page_address": {"shard_id": 1, "zone_id": 2, "segment_id": 3, "page_id": 4, "offset": 128, "length": 512, "generation": 7},
-          "block_address": {"shard_id": 1, "zone_id": 2, "block_id": 3, "offset": 128, "length": 512, "checksum": "sha256:cpp-sample"},
+          "block_address": {"shard_id": 1, "zone_id": 2, "block_id": 3, "offset": 128, "length": 512, "checksum": "sha256:native-sample"},
           "extent": 2,
-          "checksum": "sha256:cpp-sample",
+          "checksum": "sha256:native-sample",
           "generation": 7
         }
       ],
@@ -481,7 +481,7 @@
         {"zone_id": 2, "total_bytes": 4096, "used_bytes": 3072, "stale_bytes": 1024, "segments": [3, 4]}
       ],
       "stream_samples": [
-        {"stream_id": "cpp:page_stream", "segments": [3, 4], "rollover_count": 1, "sealed_segment_count": 1}
+        {"stream_id": "native:page_stream", "segments": [3, 4], "rollover_count": 1, "sealed_segment_count": 1}
       ],
       "segment_samples": [
         {"segment_id": 3, "extent": 2, "start_offset": 128, "sealed": false, "generation": 7}
@@ -497,7 +497,7 @@
           "page_refs": [
             {"shard_id": 1, "zone_id": 2, "segment_id": 3, "page_id": 4, "offset": 128, "length": 512, "generation": 7}
           ],
-          "tombstones": ["cpp:model:object-7"],
+          "tombstones": ["native:model:object-7"],
           "owner_mismatch_count": 0
         }
       ]
@@ -516,7 +516,7 @@
       "follower_cursor_safe_to_reclaim": false,
       "tombstone_samples": [
         {
-          "ref": "cpp:model:object-7",
+          "ref": "native:model:object-7",
           "generation": 7,
           "deleted_at_ms": 1782600000000,
           "reason": "object_tombstone"
@@ -524,7 +524,7 @@
       ],
       "gc_eligibility_samples": [
         {
-          "ref": "cpp:model:object-7",
+          "ref": "native:model:object-7",
           "eligible_after_ms": 1782600000000,
           "has_tombstone": true,
           "follower_safe": false,
@@ -785,7 +785,7 @@
     },
     "storage_manager_contract": {
       "manager_identity": "StorageManager/StoreManager",
-      "cpp_public_name": "StorageManager",
+      "native_public_name": "StorageManager",
       "rust_public_name": "StoreManager",
       "phase_order": [
         "prepare",

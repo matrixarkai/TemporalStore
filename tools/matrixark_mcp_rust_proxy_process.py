@@ -77,8 +77,8 @@ def ensure_lane_process(target: Any, lane: Json) -> subprocess.Popen[str]:
         close_proxy_process(proc)
     env = os.environ.copy()
     env["LD_LIBRARY_PATH"] = rust_proxy_library_search_path(target.cli_path, env)
-    if env.get("MATRIXARK_RUST_PROXY_CPP_MATRIXARK_C_API_COMPAT", "0").strip().lower() in {"1", "true", "yes", "on"}:
-        env.setdefault("TEMPORALSTORE_RUST_ALLOW_CPP_MATRIXARK_C_API", "1")
+    if env.get("MATRIXARK_RUST_PROXY_NATIVE_MATRIXARK_C_API_COMPAT", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        env.setdefault("TEMPORALSTORE_RUST_ALLOW_NATIVE_MATRIXARK_C_API", "1")
     lane["proc"] = subprocess.Popen(
         [target.cli_path, "--serve"],
         stdin=subprocess.PIPE,

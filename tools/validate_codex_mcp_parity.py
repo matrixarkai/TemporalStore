@@ -20,13 +20,13 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CPP_REPO_ENV = os.environ.get("MATRIXARK_CPP_TEMPORALSTORE_REPO")
-CPP_SERVER_ENV = os.environ.get("MATRIXARK_MCP_SERVER")
-CPP_REPO = Path(CPP_REPO_ENV) if CPP_REPO_ENV else None
-CPP_SERVER = (
-    Path(CPP_SERVER_ENV)
-    if CPP_SERVER_ENV
-    else (CPP_REPO / "tools" / "matrixark_mcp_server.py" if CPP_REPO else None)
+NATIVE_REPO_ENV = os.environ.get("MATRIXARK_NATIVE_TEMPORALSTORE_REPO")
+NATIVE_SERVER_ENV = os.environ.get("MATRIXARK_MCP_SERVER")
+NATIVE_REPO = Path(NATIVE_REPO_ENV) if NATIVE_REPO_ENV else None
+NATIVE_SERVER = (
+    Path(NATIVE_SERVER_ENV)
+    if NATIVE_SERVER_ENV
+    else (NATIVE_REPO / "tools" / "matrixark_mcp_server.py" if NATIVE_REPO else None)
 )
 
 REQUIRED_RUST_FILES = [
@@ -34,7 +34,7 @@ REQUIRED_RUST_FILES = [
     ROOT / "sdk" / "rust" / "temporalstore" / "src" / "bin" / "matrixark_rust_proxy_impl.rs",
     ROOT / "sdk" / "rust" / "temporalstore" / "src" / "lib.rs",
     ROOT / "tools" / "run_matrixark_mcp_server.sh",
-    ROOT / "docs" / "rust_cpp_codex_mcp_integration.md",
+    ROOT / "docs" / "rust_codex_mcp_integration.md",
 ]
 
 REQUIRED_C_ABI_TOKENS = [
@@ -43,7 +43,7 @@ REQUIRED_C_ABI_TOKENS = [
     "temporalstore_matrixark_batch_append_records",
 ]
 
-REQUIRED_CPP_DIRECT_TOKENS = [
+REQUIRED_NATIVE_DIRECT_TOKENS = [
     "HGetAll",
     "MatrixArkBatchAppendRecords",
 ]
@@ -80,14 +80,14 @@ def require_contains(path: Path, tokens: list[str]) -> None:
         raise SystemExit(f"{path} missing tokens: {', '.join(missing)}")
 
 
-def validate_cpp_server_when_available() -> dict[str, object]:
-    if CPP_SERVER is None or not CPP_SERVER.exists():
+def validate_server_when_available() -> dict[str, object]:
+    if NATIVE_SERVER is None or not NATIVE_SERVER.exists():
         return {
-            "cpp_server_checked": False,
-            "cpp_server_path": str(CPP_SERVER) if CPP_SERVER else "",
+            "native_server_checked": False,
+            "native_server_path": str(NATIVE_SERVER) if NATIVE_SERVER else "",
             "reason": "MatrixArk MCP server checkout not present",
         }
-    text = read(CPP_SERVER)
+    text = read(NATIVE_SERVER)
     missing = [
         token
         for token in [
@@ -101,10 +101,10 @@ def validate_cpp_server_when_available() -> dict[str, object]:
         if token not in text
     ]
     if missing:
-        raise SystemExit(f"{CPP_SERVER} missing MCP parity tokens: {', '.join(missing)}")
+        raise SystemExit(f"{NATIVE_SERVER} missing MCP parity tokens: {', '.join(missing)}")
     return {
-        "cpp_server_checked": True,
-        "cpp_server_path": str(CPP_SERVER),
+        "native_server_checked": True,
+        "native_server_path": str(NATIVE_SERVER),
         "backends": ["temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"],
     }
 
@@ -211,7 +211,7 @@ def main() -> int:
             raise SystemExit(f"missing required file: {path}")
 
     require_contains(ROOT / "tools" / "run_matrixark_mcp_server.sh", REQUIRED_BACKEND_TOKENS)
-    require_contains(ROOT / "docs" / "rust_cpp_codex_mcp_integration.md", REQUIRED_BACKEND_TOKENS + REQUIRED_TOOL_NAMES)
+    require_contains(ROOT / "docs" / "rust_codex_mcp_integration.md", REQUIRED_BACKEND_TOKENS + REQUIRED_TOOL_NAMES)
     rust_engine_tokens = [
         "health",
         "put_string",
@@ -252,9 +252,9 @@ def main() -> int:
         "status": "ok",
         "same_mcp_server_contract": True,
         "rust_backend": "temporalstore-rust",
-        "cpp_backend": "temporalstore-direct",
+        "native_backend": "temporalstore-direct",
         "rust_files": [str(path.relative_to(ROOT)) for path in REQUIRED_RUST_FILES],
-        **validate_cpp_server_when_available(),
+        **validate_server_when_available(),
         **validate_rust_cli_smoke(),
     }
     print(json.dumps(report, indent=2, sort_keys=True))

@@ -67,7 +67,7 @@ AREAS: tuple[ApiModelArea, ...] = (
         name="feature_sequence_timestamped_pages",
         corpus_cases=(
             "feature_packed_timestamped_pages",
-            "sequence_cpp_feature_rows",
+            "sequence_feature_rows",
             "timestamped_query_bounds",
             "feature_policy_filter_aggregate_lifecycle",
             "feature_nested_proto_aggregate_semantics",
@@ -184,7 +184,7 @@ AREAS: tuple[ApiModelArea, ...] = (
                     "context_model_descriptors",
                     "CONTEXT_EVENT_MODEL_ID",
                     "ContextWire",
-                    "context_models_round_trip_cpp_wire_payloads_and_type_alias",
+                    "context_models_round_trip_wire_payloads_and_type_alias",
                 ),
             ),
             RustEvidence(
@@ -192,7 +192,7 @@ AREAS: tuple[ApiModelArea, ...] = (
                 (
                     "CONTEXT_TIMELINE_FANOUT",
                     "CONTEXT_MAX_FILTER_VALUES",
-                    "context_models_match_cpp_keys_timeline_pages_and_filters",
+                    "context_models_match_keys_timeline_pages_and_filters",
                 ),
             ),
             RustEvidence(

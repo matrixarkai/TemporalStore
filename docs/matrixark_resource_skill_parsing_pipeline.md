@@ -353,7 +353,7 @@ Run live parity after topology readiness:
 
 ```bash
 cd <repo>
-python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_resource_skill_backend_parity.py --backends cpp
+python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_resource_skill_backend_parity.py --backends native
 ```
 
 Run Rust live parity:
@@ -367,7 +367,7 @@ Run combined comparison:
 
 ```bash
 cd <repo>
-python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_resource_skill_backend_parity.py --backends cpp rust
+python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_resource_skill_backend_parity.py --backends native rust
 ```
 
 ## Debug Checklist

@@ -5,8 +5,8 @@
 
 The JSON corpus is the test contract. Rust executes it through an integration
 test. should expose a runner command that accepts the same corpus path via
-TS_CPP_UNIFIED_TEST_CMD, using "{corpus}" as an optional path placeholder.
-When TS_CPP_REPO or --cpp-repo is provided, the command also gets "{cpp_repo}"
+TS_NATIVE_UNIFIED_TEST_CMD, using "{corpus}" as an optional path placeholder.
+When TS_NATIVE_REPO or --native-repo is provided, the command also gets "{native_repo}"
 rendered and otherwise runs from that repository root.
 """
 
@@ -41,8 +41,8 @@ def default_corpus_path() -> Path:
 
 
 DEFAULT_CORPUS = default_corpus_path()
-DEFAULT_CPP_RUNNER_RELATIVE = Path("tools") / "run_temporalstore_unified_tests.sh"
-CPP_RAFT_PARITY_SUITE = "cpp_data_raft_parity"
+DEFAULT_NATIVE_RUNNER_RELATIVE = Path("tools") / "run_temporalstore_unified_tests.sh"
+NATIVE_RAFT_PARITY_SUITE = "native_data_raft_parity"
 COMBINED_RAFT_GATE_CASES = {
     "raft_data_node_scale_failover_snapshot",
     "raft_data_node_mixed_rw_and_membership",
@@ -119,24 +119,24 @@ BENCHMARK_THRESHOLD_PROFILES = {
     "longmemeval_full",
     "oss_reader_full",
 }
-CPP_ADAPTER_STATUSES = {
+NATIVE_ADAPTER_STATUSES = {
     "mixed_native_and_static_surface_gate",
     "native_adapter_contract",
     "native_runner_mapped",
     "temporary_static_surface_gate",
 }
-STATIC_CPP_MODES = {
+STATIC_NATIVE_MODES = {
     "static",
     "rust_executable_cxx_static",
 }
 COMPARISON_OUTPUT_FIELDS = {
     "rust_only_misses",
-    "cpp_only_misses",
+    "native_only_misses",
     "shared_hard_failures",
     "output_diffs",
     "latency_deltas",
 }
-STORAGE_CPP_REPORT_ADAPTER = ROOT / "compat" / "cpp_unified_case_report_adapter.h"
+STORAGE_NATIVE_REPORT_ADAPTER = ROOT / "compat" / "native_unified_case_report_adapter.h"
 STORAGE_REPORT_FIELDS = {
     "StorageUnifiedEvidence",
     "StoragePassedStep",
@@ -219,7 +219,7 @@ STORAGE_REPORT_FIELDS = {
     "compaction_watermark",
 }
 
-CPP_RUNNER_TEMPLATE = r"""#!/usr/bin/env bash
+NATIVE_RUNNER_TEMPLATE = r"""#!/usr/bin/env bash
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -249,23 +249,23 @@ if [[ ! -f "${CORPUS}" ]]; then
   echo "unified TemporalStore corpus not found: ${CORPUS}" >&2
   exit 2
 fi
-if [[ -z "${TS_CPP_UNIFIED_NATIVE_CMD:-}" ]]; then
+if [[ -z "${TS_NATIVE_UNIFIED_NATIVE_CMD:-}" ]]; then
   cat >&2 <<'MSG'
-TS_CPP_UNIFIED_NATIVE_CMD is not set.
+TS_NATIVE_UNIFIED_NATIVE_CMD is not set.
 
 Set it to the TemporalStore corpus executor. The command may use a
 {corpus} placeholder. Example:
 
-  TS_CPP_UNIFIED_NATIVE_CMD='bazel run //temporalstore:corpus_runner -- {corpus}' \
+  TS_NATIVE_UNIFIED_NATIVE_CMD='bazel run //temporalstore:corpus_runner -- {corpus}' \
     tools/run_temporalstore_unified_tests.sh --corpus /path/to/compat/unified_temporalstore_cases.json
 MSG
   exit 2
 fi
 
-if [[ "${TS_CPP_UNIFIED_NATIVE_CMD}" == *"{corpus}"* ]]; then
-  CMD="${TS_CPP_UNIFIED_NATIVE_CMD//\{corpus\}/${CORPUS}}"
+if [[ "${TS_NATIVE_UNIFIED_NATIVE_CMD}" == *"{corpus}"* ]]; then
+  CMD="${TS_NATIVE_UNIFIED_NATIVE_CMD//\{corpus\}/${CORPUS}}"
 else
-  CMD="${TS_CPP_UNIFIED_NATIVE_CMD} ${CORPUS}"
+  CMD="${TS_NATIVE_UNIFIED_NATIVE_CMD} ${CORPUS}"
 fi
 
 cd "${ROOT}"
@@ -304,8 +304,8 @@ def validate_corpus(path: Path) -> dict:
     seen_case_names = set()
     seen_command_kinds = set()
     seen_response_kinds = set()
-    seen_cpp_suites = set()
-    seen_static_cpp_suites = set()
+    seen_suites = set()
+    seen_static_suites = set()
     for case in cases:
         if not case.get("name"):
             raise SystemExit(f"{path}: every case must have a name")
@@ -343,19 +343,19 @@ def validate_corpus(path: Path) -> dict:
                         f"{path}: step {case['name']}/{step['name']} expect needs kind"
                 )
                 seen_response_kinds.add(step["expect"]["kind"])
-            if step["command"].get("suite") == CPP_RAFT_PARITY_SUITE:
-                validate_cpp_raft_step(path, case, step)
+            if step["command"].get("suite") == NATIVE_RAFT_PARITY_SUITE:
+                validate_raft_step(path, case, step)
                 validate_rustraft_fault_acceptance(path, case, step)
                 validate_matrixraft_report_contract(path, case, step)
-            if step["command"].get("suite") == "cpp_context_benchmark_parity":
+            if step["command"].get("suite") == "native_context_benchmark_parity":
                 validate_context_benchmark_step(path, case, step)
             if step["command"].get("kind") == "existing_test":
                 suite = step["command"].get("suite")
                 mode = step["command"].get("mode")
                 if isinstance(suite, str) and suite:
-                    seen_cpp_suites.add(suite)
-                    if mode in STATIC_CPP_MODES:
-                        seen_static_cpp_suites.add(suite)
+                    seen_suites.add(suite)
+                    if mode in STATIC_NATIVE_MODES:
+                        seen_static_suites.add(suite)
         if case["name"] in COMBINED_RAFT_GATE_CASES:
             validate_combined_raft_case(path, case)
     missing_cases = sorted(set(required_case_names) - seen_case_names)
@@ -370,17 +370,17 @@ def validate_corpus(path: Path) -> dict:
         raise SystemExit(f"{path}: missing required command kinds: {', '.join(missing_commands)}")
     if missing_responses:
         raise SystemExit(f"{path}: missing required response kinds: {', '.join(missing_responses)}")
-    validate_cpp_adapter_coverage(path, coverage, seen_cpp_suites, seen_static_cpp_suites)
-    validate_storage_cpp_report_adapter(path)
+    validate_adapter_coverage(path, coverage, seen_suites, seen_static_suites)
+    validate_storage_report_adapter(path)
     return corpus
 
 
-def validate_storage_cpp_report_adapter(path: Path) -> None:
-    if not STORAGE_CPP_REPORT_ADAPTER.exists():
+def validate_storage_report_adapter(path: Path) -> None:
+    if not STORAGE_NATIVE_REPORT_ADAPTER.exists():
         raise SystemExit(
-            f"{path}: missing storage report adapter {STORAGE_CPP_REPORT_ADAPTER}"
+            f"{path}: missing storage report adapter {STORAGE_NATIVE_REPORT_ADAPTER}"
         )
-    adapter = STORAGE_CPP_REPORT_ADAPTER.read_text(encoding="utf-8")
+    adapter = STORAGE_NATIVE_REPORT_ADAPTER.read_text(encoding="utf-8")
     missing = sorted(field for field in STORAGE_REPORT_FIELDS if field not in adapter)
     if missing:
         raise SystemExit(
@@ -404,7 +404,7 @@ def case_matches_family(case: dict, family: str, family_suites: set[str]) -> boo
 def filtered_corpus_for_family(corpus: dict, source_path: Path, family: str) -> Path:
     coverage = corpus.get("coverage") if isinstance(corpus.get("coverage"), dict) else {}
     family_suites: set[str] = set()
-    for entry in coverage.get("cpp_adapter_coverage") or []:
+    for entry in coverage.get("native_adapter_coverage") or []:
         if isinstance(entry, dict) and entry.get("family") == family:
             family_suites.update(str(suite) for suite in entry.get("suites") or [])
     cases = [
@@ -432,19 +432,19 @@ def filtered_corpus_for_family(corpus: dict, source_path: Path, family: str) -> 
     return Path(handle.name)
 
 
-def validate_cpp_adapter_coverage(
+def validate_adapter_coverage(
     path: Path,
     coverage: dict,
-    seen_cpp_suites: set[str],
-    seen_static_cpp_suites: set[str],
+    seen_suites: set[str],
+    seen_static_suites: set[str],
 ) -> None:
-    adapter_coverage = coverage.get("cpp_adapter_coverage")
+    adapter_coverage = coverage.get("native_adapter_coverage")
     if not isinstance(adapter_coverage, list) or not adapter_coverage:
-        raise SystemExit(f"{path}: coverage.cpp_adapter_coverage must be a non-empty list")
+        raise SystemExit(f"{path}: coverage.native_adapter_coverage must be a non-empty list")
     mapped_suites: set[str] = set()
     static_gate_suites: set[str] = set()
     for index, entry in enumerate(adapter_coverage):
-        location = f"{path}: coverage.cpp_adapter_coverage[{index}]"
+        location = f"{path}: coverage.native_adapter_coverage[{index}]"
         family = entry.get("family")
         if not isinstance(family, str) or not family:
             raise SystemExit(f"{location}: family must be a non-empty string")
@@ -454,9 +454,9 @@ def validate_cpp_adapter_coverage(
         ):
             raise SystemExit(f"{location}: suites must be a non-empty string list")
         status = entry.get("status")
-        if status not in CPP_ADAPTER_STATUSES:
+        if status not in NATIVE_ADAPTER_STATUSES:
             raise SystemExit(
-                f"{location}: status must be one of {', '.join(sorted(CPP_ADAPTER_STATUSES))}"
+                f"{location}: status must be one of {', '.join(sorted(NATIVE_ADAPTER_STATUSES))}"
             )
         if status in {"temporary_static_surface_gate", "mixed_native_and_static_surface_gate"}:
             blocker = entry.get("blocker")
@@ -478,13 +478,13 @@ def validate_cpp_adapter_coverage(
             raise SystemExit(f"{location}: comparison_command must be a string when present")
         mapped_suites.update(suites)
 
-    unmapped = sorted(seen_cpp_suites - mapped_suites)
+    unmapped = sorted(seen_suites - mapped_suites)
     if unmapped:
         raise SystemExit(
-            f"{path}: suites missing coverage.cpp_adapter_coverage entries: "
+            f"{path}: suites missing coverage.native_adapter_coverage entries: "
             + ", ".join(unmapped)
         )
-    missing_static_blockers = sorted(seen_static_cpp_suites - static_gate_suites)
+    missing_static_blockers = sorted(seen_static_suites - static_gate_suites)
     if missing_static_blockers:
         raise SystemExit(
             f"{path}: static suites must have temporary_static_surface_gate blockers: "
@@ -530,7 +530,7 @@ def validate_context_benchmark_step(path: Path, case: dict, step: dict) -> None:
     unknown_profiles = sorted(set(threshold_profiles) - BENCHMARK_THRESHOLD_PROFILES)
     if unknown_profiles:
         raise SystemExit(f"{location}: unknown threshold profiles {', '.join(unknown_profiles)}")
-    for field_name in ("rust_runner", "cpp_runner_contract", "archive_contract"):
+    for field_name in ("rust_runner", "native_runner_contract", "archive_contract"):
         if not isinstance(command.get(field_name), str) or not command[field_name]:
             raise SystemExit(f"{location}: benchmark contract must declare {field_name}")
     required_paths = command.get("required_paths")
@@ -560,13 +560,13 @@ def validate_context_benchmark_step(path: Path, case: dict, step: dict) -> None:
             )
 
 
-def validate_cpp_raft_step(path: Path, case: dict, step: dict) -> None:
+def validate_raft_step(path: Path, case: dict, step: dict) -> None:
     location = f"{path}: case {case['name']} step {step['name']}"
     if step["command"].get("mode") == "static":
         return
     rust_runner = step["command"].get("rust_runner")
     if not isinstance(rust_runner, str) or not rust_runner:
-        raise SystemExit(f"{location}: cpp_data_raft_parity step must declare rust_runner")
+        raise SystemExit(f"{location}: native_data_raft_parity step must declare rust_runner")
     if "metaserver" in step["name"] or "metaserver" in case["name"]:
         expected_validator = "temporalstore-metaserver-raft-validation"
     elif "production_gate" in step["name"] or case["name"] == "raft_production_gate":
@@ -607,20 +607,20 @@ def validate_matrixraft_report_contract(path: Path, case: dict, step: dict) -> N
         raise SystemExit(
             f"{location}: report_contract.step_fields must include name, status, output, latency_ms"
         )
-    if command.get("cpp_report_adapter") != "compat/cpp_unified_case_report_adapter.h":
+    if command.get("native_report_adapter") != "compat/native_unified_case_report_adapter.h":
         raise SystemExit(
             f"{location}: MatrixRaft shared case must declare "
-            "cpp_report_adapter=compat/cpp_unified_case_report_adapter.h"
+            "native_report_adapter=compat/native_unified_case_report_adapter.h"
         )
-    for field_name in ("rust_report_contract", "cpp_runner_contract", "comparator"):
+    for field_name in ("rust_report_contract", "native_runner_contract", "comparator"):
         if not isinstance(command.get(field_name), str) or not command[field_name]:
             raise SystemExit(f"{location}: MatrixRaft shared case must declare {field_name}")
     for required in ("temporalstore_unified_case_report_v1", "latency_ms"):
-        if required not in command["cpp_runner_contract"]:
-            raise SystemExit(f"{location}: cpp_runner_contract must include {required!r}")
+        if required not in command["native_runner_contract"]:
+            raise SystemExit(f"{location}: native_runner_contract must include {required!r}")
     comparator = command["comparator"]
     for required in (
-        "tools/compare_unified_cpp_rust_case_reports.py",
+        "tools/compare_unified_rust_case_reports.py",
         "--require-schema temporalstore_unified_case_report_v1",
         "--require-field cases",
         "--require-field producer",
@@ -699,54 +699,54 @@ def run_rust(corpus: Path) -> None:
     )
 
 
-def render_cpp_command(command: str, corpus: Path, cpp_repo: Path | None) -> str:
+def render_command(command: str, corpus: Path, native_repo: Path | None) -> str:
     values = {"corpus": str(corpus)}
-    if cpp_repo is not None:
-        values["cpp_repo"] = str(cpp_repo)
-    if "{corpus}" in command or "{cpp_repo}" in command:
+    if native_repo is not None:
+        values["native_repo"] = str(native_repo)
+    if "{corpus}" in command or "{native_repo}" in command:
         return command.format(**values)
     return f"{command} {shlex.quote(str(corpus))}"
 
 
-def discover_cpp_command(cpp_repo: Path | None) -> str | None:
-    command = os.environ.get("TS_CPP_UNIFIED_TEST_CMD")
+def discover_command(native_repo: Path | None) -> str | None:
+    command = os.environ.get("TS_NATIVE_UNIFIED_TEST_CMD")
     if command:
         return command
-    if cpp_repo is None:
+    if native_repo is None:
         return None
-    candidate = cpp_repo / DEFAULT_CPP_RUNNER_RELATIVE
+    candidate = native_repo / DEFAULT_NATIVE_RUNNER_RELATIVE
     if candidate.exists():
         return f"{shlex.quote(str(candidate))} --corpus {{corpus}}"
     return None
 
 
-def install_cpp_runner(cpp_repo: Path, overwrite: bool) -> Path:
-    target = cpp_repo / DEFAULT_CPP_RUNNER_RELATIVE
+def install_runner(native_repo: Path, overwrite: bool) -> Path:
+    target = native_repo / DEFAULT_NATIVE_RUNNER_RELATIVE
     if target.exists() and not overwrite:
         raise SystemExit(
-            f"unified runner already exists: {target}; pass --overwrite-cpp-runner to replace it"
+            f"unified runner already exists: {target}; pass --overwrite-native-runner to replace it"
         )
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(CPP_RUNNER_TEMPLATE, encoding="utf-8")
+    target.write_text(NATIVE_RUNNER_TEMPLATE, encoding="utf-8")
     target.chmod(0o755)
     return target
 
 
-def run_cpp(corpus: Path, required: bool, native_required: bool, cpp_repo: Path | None) -> None:
-    direct_command = os.environ.get("TS_CPP_UNIFIED_TEST_CMD")
-    native_command = os.environ.get("TS_CPP_UNIFIED_NATIVE_CMD")
+def run_native(corpus: Path, required: bool, native_required: bool, native_repo: Path | None) -> None:
+    direct_command = os.environ.get("TS_NATIVE_UNIFIED_TEST_CMD")
+    native_command = os.environ.get("TS_NATIVE_UNIFIED_NATIVE_CMD")
     if native_required and not direct_command and not native_command:
         raise SystemExit(
-            "--require-cpp-native needs TS_CPP_UNIFIED_TEST_CMD or "
-            "TS_CPP_UNIFIED_NATIVE_CMD so the side executes the corpus, "
+            "--require-native-native needs TS_NATIVE_UNIFIED_TEST_CMD or "
+            "TS_NATIVE_UNIFIED_NATIVE_CMD so the side executes the corpus, "
             "not only the discovery/surface hook"
         )
-    command = discover_cpp_command(cpp_repo)
+    command = discover_command(native_repo)
     if not command:
         message = (
-            "no unified corpus runner configured; set TS_CPP_UNIFIED_TEST_CMD "
+            "no unified corpus runner configured; set TS_NATIVE_UNIFIED_TEST_CMD "
             "to the corpus runner command, optionally using {corpus} and "
-            "{cpp_repo} placeholders, or set TS_CPP_REPO/--cpp-repo to a checkout "
+            "{native_repo} placeholders, or set TS_NATIVE_REPO/--native-repo to a checkout "
             "containing tools/run_temporalstore_unified_tests.sh"
         )
         if required:
@@ -754,8 +754,8 @@ def run_cpp(corpus: Path, required: bool, native_required: bool, cpp_repo: Path 
         print(f"warning: {message}", file=sys.stderr)
         return
 
-    rendered = render_cpp_command(command, corpus, cpp_repo)
-    cwd = cpp_repo if cpp_repo is not None else ROOT
+    rendered = render_command(command, corpus, native_repo)
+    cwd = native_repo if native_repo is not None else ROOT
     print(f"+ {rendered}", flush=True)
     subprocess.run(rendered, cwd=cwd, shell=True, check=True)
 
@@ -764,52 +764,52 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", type=Path, default=DEFAULT_CORPUS)
     parser.add_argument("--rust", action="store_true", help="run the Rust corpus executor")
-    parser.add_argument("--cpp", action="store_true", help="run the corpus executor")
+    parser.add_argument("--native", action="store_true", help="run the corpus executor")
     parser.add_argument(
         "--both",
         action="store_true",
         help="run both Rust and corpus executors",
     )
     parser.add_argument(
-        "--cpp-repo",
+        "--native-repo",
         type=Path,
-        default=Path(os.environ["TS_CPP_REPO"]) if os.environ.get("TS_CPP_REPO") else None,
+        default=Path(os.environ["TS_NATIVE_REPO"]) if os.environ.get("TS_NATIVE_REPO") else None,
         help="TemporalStore checkout root; also used as cwd for the runner",
     )
     parser.add_argument(
-        "--require-cpp",
+        "--require-native",
         action="store_true",
-        help="fail if --cpp is requested but TS_CPP_UNIFIED_TEST_CMD is unset",
+        help="fail if --native is requested but TS_NATIVE_UNIFIED_TEST_CMD is unset",
     )
     parser.add_argument(
-        "--require-cpp-native",
+        "--require-native-native",
         action="store_true",
-        help="fail unless a native corpus executor is configured with TS_CPP_UNIFIED_TEST_CMD or TS_CPP_UNIFIED_NATIVE_CMD",
+        help="fail unless a native corpus executor is configured with TS_NATIVE_UNIFIED_TEST_CMD or TS_NATIVE_UNIFIED_NATIVE_CMD",
     )
     parser.add_argument(
         "--family",
-        help="run only shared corpus cases for one coverage.cpp_adapter_coverage family",
+        help="run only shared corpus cases for one coverage.native_adapter_coverage family",
     )
     parser.add_argument("--validate-only", action="store_true", help="only validate corpus JSON")
     parser.add_argument(
-        "--install-cpp-runner",
+        "--install-native-runner",
         action="store_true",
-        help="write tools/run_temporalstore_unified_tests.sh into --cpp-repo using the shared wrapper contract",
+        help="write tools/run_temporalstore_unified_tests.sh into --native-repo using the shared wrapper contract",
     )
     parser.add_argument(
-        "--overwrite-cpp-runner",
+        "--overwrite-native-runner",
         action="store_true",
-        help="allow --install-cpp-runner to replace an existing wrapper",
+        help="allow --install-native-runner to replace an existing wrapper",
     )
     parser.add_argument(
-        "--print-cpp-runner-template",
+        "--print-native-runner-template",
         action="store_true",
         help="print the installable wrapper template and exit",
     )
     args = parser.parse_args()
 
-    if args.print_cpp_runner_template:
-        print(CPP_RUNNER_TEMPLATE, end="")
+    if args.print_runner_template:
+        print(NATIVE_RUNNER_TEMPLATE, end="")
         return 0
 
     corpus = args.corpus.resolve()
@@ -830,26 +830,26 @@ def main() -> int:
 
     if args.validate_only:
         return 0
-    install_only = args.install_cpp_runner and not args.rust and not args.cpp and not args.both
+    install_only = args.install_runner and not args.rust and not args.native and not args.both
     if args.both:
         args.rust = True
-        args.cpp = True
-    if not args.rust and not args.cpp and not install_only:
+        args.native = True
+    if not args.rust and not args.native and not install_only:
         args.rust = True
-    cpp_repo = args.cpp_repo.resolve() if args.cpp_repo is not None else None
-    if cpp_repo is not None and not cpp_repo.exists():
-        raise SystemExit(f"repo does not exist: {cpp_repo}")
-    if args.install_cpp_runner:
-        if cpp_repo is None:
-            raise SystemExit("--install-cpp-runner requires --cpp-repo or TS_CPP_REPO")
-        target = install_cpp_runner(cpp_repo, args.overwrite_cpp_runner)
+    native_repo = args.native_repo.resolve() if args.native_repo is not None else None
+    if native_repo is not None and not native_repo.exists():
+        raise SystemExit(f"repo does not exist: {native_repo}")
+    if args.install_runner:
+        if native_repo is None:
+            raise SystemExit("--install-native-runner requires --native-repo or TS_NATIVE_REPO")
+        target = install_runner(native_repo, args.overwrite_runner)
         print(f"installed unified runner: {target}")
         if install_only:
             return 0
     if args.rust:
         run_rust(run_corpus)
-    if args.cpp:
-        run_cpp(run_corpus, args.require_cpp or args.require_cpp_native, args.require_cpp_native, cpp_repo)
+    if args.native:
+        run_native(run_corpus, args.require_native or args.require_native, args.require_native, native_repo)
     return 0
 
 

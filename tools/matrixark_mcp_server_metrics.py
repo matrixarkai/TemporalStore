@@ -69,8 +69,8 @@ class MatrixArkServerMetricsMixin:
         self._refresh_service_metric_gauges()
         raw_backend = str(result.get("backend") or getattr(self.adapter, "_backend_label", lambda: "local")())
         backend = {
-            "temporalstore-cpp": "cpp",
-            "temporalstore-direct": "cpp",
+            "temporalstore-native": "native",
+            "temporalstore-direct": "native",
             "temporalstore-rust": "rust",
         }.get(raw_backend, raw_backend)
         storage_mode = self._backend_storage_mode_from_metrics(result)

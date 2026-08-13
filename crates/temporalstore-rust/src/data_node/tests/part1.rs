@@ -7,7 +7,7 @@ use super::*;
 use super::helpers::*;
 
 #[test]
-fn runtime_reports_cpp_style_shard_worker_ownership() {
+fn runtime_reports_style_shard_worker_ownership() {
     let runtime = DataNodeRuntime::new(
         TemporalEngine::default(),
         DataNodeRuntimeOptions {

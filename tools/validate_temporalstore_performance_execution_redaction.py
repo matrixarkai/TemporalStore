@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from validate_temporalstore_cpp_rust_performance_parity import (
+from validate_temporalstore_rust_performance_parity import (
     REQUIRED_SAME_CONFIG_COMMAND_ARGS,
     SAME_CONFIG_KEYS,
 )
@@ -24,7 +24,7 @@ from validate_temporalstore_cpp_rust_performance_parity import (
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ARTIFACT_ROOT = ROOT / "docs" / "benchmarks"
-EXECUTION_SCHEMA = "temporalstore_cpp_rust_next_performance_execution_v1"
+EXECUTION_SCHEMA = "temporalstore_rust_next_performance_execution_v1"
 
 PRIVATE_PATH_MARKERS = (
     "C:\\Users\\",
@@ -35,7 +35,7 @@ PRIVATE_PATH_MARKERS = (
 )
 
 REQUIRED_PLACEHOLDERS = {
-    "--cpp-lib": "<MATRIXARK_PARITY_CPP_LIB>",
+    "--native-lib": "<MATRIXARK_PARITY_NATIVE_LIB>",
     "--rust-cli": "<MATRIXARK_PARITY_RUST_CLI>",
     "--cd": "<WORKSPACE_ROOT_WSL>",
 }
@@ -44,7 +44,7 @@ REQUIRED_RUN_WORKLOAD_FLAGS = (
     "--require-phase-scale-matrix",
 )
 REQUIRED_POST_IMPORT_VALIDATORS = (
-    ("python", "tools/validate_temporalstore_cpp_rust_goal_parity.py"),
+    ("python", "tools/validate_temporalstore_rust_goal_parity.py"),
     ("python", "tools/validate_storage_engine_9_phase_parity.py", "--loops", "9"),
 )
 REQUIRED_PHASE_SCALE_COVERAGE = {

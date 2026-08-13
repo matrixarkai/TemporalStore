@@ -7,7 +7,7 @@ The control-plane cases currently use ``existing_test`` corpus commands because
 their workflows are service/harness oriented instead of direct engine
 command/response steps. This runner makes the Rust side executable by running
 the ``rust_runner`` commands embedded in those shared cases. The side can
-be made native by supplying ``TS_CPP_CONTROL_PLANE_NATIVE_CMD``; otherwise
+be made native by supplying ``TS_NATIVE_CONTROL_PLANE_NATIVE_CMD``; otherwise
 remains a required-path surface/evidence gate.
 """
 
@@ -26,10 +26,10 @@ ROOT = Path(__file__).resolve().parents[1]
 CORPUS = ROOT / "compat" / "unified_temporalstore_cases.json"
 CONTROL_PREFIX = "control_"
 CONTROL_SUITES = {
-    "cpp_client_control_plane_parity",
-    "cpp_proxy_control_plane_parity",
-    "cpp_metaserver_control_plane_parity",
-    "cpp_data_node_lifecycle_parity",
+    "native_client_control_plane_parity",
+    "native_proxy_control_plane_parity",
+    "native_metaserver_control_plane_parity",
+    "native_data_node_lifecycle_parity",
 }
 RUST_EXECUTABLE_MODE = "rust_executable_cxx_static"
 
@@ -47,7 +47,7 @@ def load_control_cases(corpus_path: Path) -> list[dict]:
     return cases
 
 
-def validate_case(case: dict, cpp_repo: Path | None) -> list[tuple[str, str]]:
+def validate_case(case: dict, native_repo: Path | None) -> list[tuple[str, str]]:
     commands: list[tuple[str, str]] = []
     steps = case.get("steps")
     if not isinstance(steps, list) or not steps:
@@ -75,9 +75,9 @@ def validate_case(case: dict, cpp_repo: Path | None) -> list[tuple[str, str]]:
         required_paths = command.get("required_paths")
         if not isinstance(required_paths, list) or not required_paths:
             raise SystemExit(f"{location}: missing required_paths")
-        if cpp_repo is not None:
+        if native_repo is not None:
             for required_path in required_paths:
-                if not (cpp_repo / required_path).exists():
+                if not (native_repo / required_path).exists():
                     raise SystemExit(f"{location}: required path missing: {required_path}")
         commands.append((location, rust_runner))
     return commands
@@ -152,13 +152,13 @@ def run_command(command: str, cwd: Path) -> None:
         subprocess.run(command, cwd=cwd, shell=True, check=True)
 
 
-def render_cpp_native_command(template: str, corpus: Path, case: str, cpp_repo: Path | None) -> str:
+def render_native_command(template: str, corpus: Path, case: str, native_repo: Path | None) -> str:
     values = {
         "corpus": shlex.quote(str(corpus)),
         "case": shlex.quote(case),
     }
-    if cpp_repo is not None:
-        values["cpp_repo"] = shlex.quote(str(cpp_repo))
+    if native_repo is not None:
+        values["native_repo"] = shlex.quote(str(native_repo))
     if any(f"{{{key}}}" in template for key in values):
         return template.format(**values)
     return f"{template} --corpus {shlex.quote(str(corpus))} --case {shlex.quote(case)}"
@@ -167,26 +167,26 @@ def render_cpp_native_command(template: str, corpus: Path, case: str, cpp_repo: 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", type=Path, default=CORPUS)
-    parser.add_argument("--cpp-repo", type=Path)
+    parser.add_argument("--native-repo", type=Path)
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--rust", action="store_true", help="run Rust control-plane case commands")
     parser.add_argument(
-        "--cpp-native",
+        "--native-native",
         action="store_true",
-        help="run TS_CPP_CONTROL_PLANE_NATIVE_CMD for every control-plane case",
+        help="run TS_NATIVE_CONTROL_PLANE_NATIVE_CMD for every control-plane case",
     )
     parser.add_argument(
-        "--require-cpp-native",
+        "--require-native-native",
         action="store_true",
-        help="fail unless TS_CPP_CONTROL_PLANE_NATIVE_CMD is configured",
+        help="fail unless TS_NATIVE_CONTROL_PLANE_NATIVE_CMD is configured",
     )
     args = parser.parse_args()
 
-    cpp_repo = args.cpp_repo.resolve() if args.cpp_repo else None
+    native_repo = args.native_repo.resolve() if args.native_repo else None
     corpus = args.corpus.resolve()
     case_commands: list[tuple[str, str, str]] = []
     for case in load_control_cases(corpus):
-        for location, command in validate_case(case, cpp_repo):
+        for location, command in validate_case(case, native_repo):
             case_commands.append((case["name"], location, command))
 
     print(f"control_plane_shared_cases={len({case for case, _, _ in case_commands})}")
@@ -201,18 +201,18 @@ def main() -> int:
             print(f"== rust control-plane case: {location} ==")
             run_command(command, ROOT)
 
-    native_template = os.environ.get("TS_CPP_CONTROL_PLANE_NATIVE_CMD")
-    if args.require_cpp_native and not native_template:
+    native_template = os.environ.get("TS_NATIVE_CONTROL_PLANE_NATIVE_CMD")
+    if args.require_native and not native_template:
         raise SystemExit(
-            "TS_CPP_CONTROL_PLANE_NATIVE_CMD is required for native control-plane execution"
+            "TS_NATIVE_CONTROL_PLANE_NATIVE_CMD is required for native control-plane execution"
         )
-    if args.cpp_native:
+    if args.native_native:
         if not native_template:
-            raise SystemExit("set TS_CPP_CONTROL_PLANE_NATIVE_CMD to run control-plane cases")
-        cwd = cpp_repo or ROOT
+            raise SystemExit("set TS_NATIVE_CONTROL_PLANE_NATIVE_CMD to run control-plane cases")
+        cwd = native_repo or ROOT
         for case, location, _ in case_commands:
-            print(f"== c++ control-plane case: {location} ==")
-            run_command(render_cpp_native_command(native_template, corpus, case, cpp_repo), cwd)
+            print(f"== native control-plane case: {location} ==")
+            run_command(render_native_command(native_template, corpus, case, native_repo), cwd)
 
     return 0
 

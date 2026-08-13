@@ -52,14 +52,14 @@ require() {
 
 cd "${ROOT}"
 export CARGO_TARGET_DIR="${TARGET_DIR}"
-RAFT_CPP_EVIDENCE_ARGS=()
-if [[ -n "${TS_CPP_REPO:-}" ]]; then
-  RAFT_CPP_EVIDENCE_ARGS+=(--cpp-repo "${TS_CPP_REPO}")
+RAFT_NATIVE_EVIDENCE_ARGS=()
+if [[ -n "${TS_NATIVE_REPO:-}" ]]; then
+  RAFT_NATIVE_EVIDENCE_ARGS+=(--native-repo "${TS_NATIVE_REPO}")
 fi
 
 echo "== local: SDK contract validation =="
 python3 tools/validate_sdk_contract.py
-python3 tools/validate_raft_storage_parity_evidence.py "${RAFT_CPP_EVIDENCE_ARGS[@]}"
+python3 tools/validate_raft_storage_parity_evidence.py "${RAFT_NATIVE_EVIDENCE_ARGS[@]}"
 
 echo "== local: cargo test all targets =="
 cargo test -p temporalstore-rust --all-targets -- --test-threads=1
@@ -79,7 +79,7 @@ python3 - <<'PY'
 import json
 report = json.load(open("/tmp/temporalstore-production-readiness.json"))
 print(f"production_ready={report['production_ready']}")
-print(f"cpp_parity_ready={report['cpp_parity_ready']}")
+print(f"native_parity_ready={report['native_parity_ready']}")
 print(f"blocker_count={report['blocker_count']}")
 for service in report["service_summaries"]:
     print(

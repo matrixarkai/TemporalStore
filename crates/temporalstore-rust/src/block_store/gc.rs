@@ -267,7 +267,7 @@ impl LocalBlockStore {
             // Reclaim the highest-garbage band first: a lower band live-fraction
             // (utility_basis_points) means more garbage, so ascending live-fraction ==
             // descending garbage ratio. This is the GC victim order (zone_manager.
-            // cpp gc_list_ sorted by GetGarbageRate() descending), which the previous
+            // native gc_list_ sorted by GetGarbageRate() descending), which the previous
             // key (a categorical utility_score, uniformly 0 for all candidates) never
             // actually applied.
             left.utility_basis_points

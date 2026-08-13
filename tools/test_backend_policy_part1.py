@@ -563,7 +563,7 @@ class _BackendPolicyPart1:
     def test_context_pack_serving_top_level_omits_operational_cache_fields(self) -> None:
         compact = mcp.compact_context_pack_for_serving({
             "context_pack_id": "pack-123",
-            "context_pack_assembly": "native_cpp_direct",
+            "context_pack_assembly": "native_direct",
             "context_pack_cache_hit": False,
             "cache_hit": False,
             "cache_hit_used": False,
@@ -627,8 +627,8 @@ class _BackendPolicyPart1:
             "context_pack_cache_hit": True,
             "cache_hit": True,
             "cache_hit_used": True,
-            "context_pack_assembly": "native_cpp_direct",
-            "assembly": "native_cpp_direct",
+            "context_pack_assembly": "native_direct",
+            "assembly": "native_direct",
             "native_pack_assembly": True,
             "raw_records_returned": False,
             "python_hot_path_records": 0,

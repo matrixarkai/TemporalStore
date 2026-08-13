@@ -160,7 +160,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn partition_id_matches_cpp_bit_layout_and_display() {
+    fn partition_id_matches_bit_layout_and_display() {
         let id = PartitionId::new(42, 7, 3, 11).unwrap();
         let expected = (((42_u64 << 16) | 7) << 8 | 3) << 16 | 11;
         assert_eq!(id.id(), expected);
@@ -173,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn partition_id_setters_match_cpp_masks() {
+    fn partition_id_setters_match_masks() {
         let id = PartitionId::new(1, 2, 3, 4)
             .unwrap()
             .with_partition_set_id(0x000A_000B)
@@ -189,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn partition_id_validates_cpp_ranges() {
+    fn partition_id_validates_ranges() {
         assert_eq!(
             PartitionId::new(0x1_0000, 0, 0, 0).unwrap_err(),
             PartitionIdError::TableIdOutOfRange(0x1_0000)

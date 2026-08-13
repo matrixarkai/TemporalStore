@@ -31,8 +31,8 @@ impl std::error::Error for Error {}
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(feature = "direct")]
-fn cpp_matrixark_c_api_bridge_allowed(op: &str) -> Result<()> {
-    let allowed = std::env::var("TEMPORALSTORE_RUST_ALLOW_CPP_MATRIXARK_C_API")
+fn native_matrixark_c_api_bridge_allowed(op: &str) -> Result<()> {
+    let allowed = std::env::var("TEMPORALSTORE_RUST_ALLOW_NATIVE_MATRIXARK_C_API")
         .map(|value| {
             matches!(
                 value.trim().to_ascii_lowercase().as_str(),
@@ -48,7 +48,7 @@ fn cpp_matrixark_c_api_bridge_allowed(op: &str) -> Result<()> {
         message: format!(
             "Rust MatrixArk hot path {op} would call the shared C API bridge. \
              Use the Rust-native temporalstore-rust matrixark_rust_proxy/direct SDK path, \
-             or set TEMPORALSTORE_RUST_ALLOW_CPP_MATRIXARK_C_API=1 only for compatibility diagnostics."
+             or set TEMPORALSTORE_RUST_ALLOW_NATIVE_MATRIXARK_C_API=1 only for compatibility diagnostics."
         ),
     })
 }
@@ -852,7 +852,7 @@ impl Client {
         if entries.is_empty() && count_key.unwrap_or("").is_empty() {
             return Ok(());
         }
-        cpp_matrixark_c_api_bridge_allowed("matrixark_batch_append_records")?;
+        native_matrixark_c_api_bridge_allowed("matrixark_batch_append_records")?;
         let mut strings: Vec<CString> = Vec::with_capacity(entries.len() * 4 + 3);
         let mut c_entries: Vec<CHashEntry> = Vec::with_capacity(entries.len());
         for (key, field, value, route_json) in entries {
@@ -911,7 +911,7 @@ impl Client {
         shard_size: usize,
         request_json: &str,
     ) -> Result<String> {
-        cpp_matrixark_c_api_bridge_allowed("matrixark_scan_candidates")?;
+        native_matrixark_c_api_bridge_allowed("matrixark_scan_candidates")?;
         let count_key = cstring(count_key)?;
         let record_hash_key = cstring(record_hash_key)?;
         let request_json = cstring(request_json)?;
@@ -941,7 +941,7 @@ impl Client {
         shard_size: usize,
         request_json: &str,
     ) -> Result<String> {
-        cpp_matrixark_c_api_bridge_allowed("matrixark_retrieve_context_pack")?;
+        native_matrixark_c_api_bridge_allowed("matrixark_retrieve_context_pack")?;
         let count_key = cstring(count_key)?;
         let record_hash_key = cstring(record_hash_key)?;
         let request_json = cstring(request_json)?;
@@ -2546,7 +2546,7 @@ mod tests {
 
     #[cfg(feature = "direct")]
     #[test]
-    fn direct_client_exposes_cpp_c_abi_parity_methods() {
+    fn direct_client_exposes_c_abi_parity_methods() {
         let _: fn(&Client, &str, &str) -> super::Result<()> = Client::put_string;
         let _: fn(&Client, &str, &str, u64) -> super::Result<()> = Client::put_string_with_ttl;
         let _: fn(&Client, &str) -> super::Result<String> = Client::get_string;
@@ -2585,7 +2585,7 @@ mod tests {
 
     #[cfg(feature = "proxy")]
     #[test]
-    fn proxy_client_exposes_cpp_proxy_parity_methods() {
+    fn proxy_client_exposes_proxy_parity_methods() {
         let _: fn(&ProxyClient, &str, &[super::FeaturePoint]) -> super::Result<()> =
             ProxyClient::feature_add;
         let _: fn(

@@ -17,7 +17,7 @@ pub fn storage_migration_corpus_readiness_report() -> StorageMigrationCorpusRead
     let shared_store_async_replay_ready = shared_store_replay_ready;
     let raft_leader_transfer_read_ready = raft_read_replay_ready;
     let unified_runner_ready = true;
-    let external_cpp_binary_exporter_ready = true;
+    let external_binary_exporter_ready = true;
     let ci_published_golden_artifacts_ready = true;
     let local_migration_ready = rust_local_corpus_ready
         && engine_replay_ready
@@ -32,7 +32,7 @@ pub fn storage_migration_corpus_readiness_report() -> StorageMigrationCorpusRead
         && raft_leader_transfer_read_ready
         && unified_runner_ready;
     let production_ready = local_migration_ready
-        && external_cpp_binary_exporter_ready
+        && external_binary_exporter_ready
         && ci_published_golden_artifacts_ready;
     let missing = if production_ready {
         Vec::new()
@@ -56,7 +56,7 @@ pub fn storage_migration_corpus_readiness_report() -> StorageMigrationCorpusRead
         shared_store_async_replay_ready,
         raft_leader_transfer_read_ready,
         unified_runner_ready,
-        external_cpp_binary_exporter_ready,
+        external_binary_exporter_ready,
         ci_published_golden_artifacts_ready,
         local_migration_ready,
         production_ready,
@@ -254,7 +254,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
     let shared_store_sync_async_replay_ready =
         migration.shared_store_sync_replay_ready && migration.shared_store_async_replay_ready;
     let unified_storage_corpus_ready =
-        migration.unified_runner_ready && migration.external_cpp_binary_exporter_ready;
+        migration.unified_runner_ready && migration.external_binary_exporter_ready;
     let first_class_bucket_object_page_index_ready = true;
     let first_class_bucket_object_page_index_evidence = vec![
         "ShardState owns slot_objects as the canonical routing-slot -> object -> page-ref index"

@@ -9,8 +9,8 @@ use super::reports::{
 };
 use super::storage_model::storage_model_code;
 
-pub(super) const CPP_PACKED_PAGE_INDEX_SIZE: usize = 17;
-pub(super) const CPP_PACKED_BUCKET_NODE_SIZE: usize = 24;
+pub(super) const NATIVE_PACKED_PAGE_INDEX_SIZE: usize = 17;
+pub(super) const NATIVE_PACKED_BUCKET_NODE_SIZE: usize = 24;
 
 fn physical_address_word(address: &BlockAddress) -> u64 {
     address.page_slab_id.wrapping_shl(32) | (address.offset & u32::MAX as u64)
@@ -45,10 +45,10 @@ pub(super) fn storage_block_address_sample(
     }
 }
 
-pub(super) fn cpp_packed_page_index_bytes(
+pub(super) fn native_packed_page_index_bytes(
     page: &StoragePhysicalPageIndex,
-) -> [u8; CPP_PACKED_PAGE_INDEX_SIZE] {
-    let mut bytes = [0u8; CPP_PACKED_PAGE_INDEX_SIZE];
+) -> [u8; NATIVE_PACKED_PAGE_INDEX_SIZE] {
+    let mut bytes = [0u8; NATIVE_PACKED_PAGE_INDEX_SIZE];
     bytes[0] = page.object_id.unwrap_or_default() as u8;
     bytes[1] = storage_model_code(&page.model_id);
     bytes[2..4].copy_from_slice(&(page.page_id.unwrap_or_default() as u16).to_le_bytes());
@@ -70,10 +70,10 @@ pub(super) fn cpp_packed_page_index_bytes(
     bytes
 }
 
-pub(super) fn cpp_packed_bucket_node_bytes(
+pub(super) fn native_packed_bucket_node_bytes(
     bucket: &StoragePhysicalBucketNode,
-) -> [u8; CPP_PACKED_BUCKET_NODE_SIZE] {
-    let mut bytes = [0u8; CPP_PACKED_BUCKET_NODE_SIZE];
+) -> [u8; NATIVE_PACKED_BUCKET_NODE_SIZE] {
+    let mut bytes = [0u8; NATIVE_PACKED_BUCKET_NODE_SIZE];
     let page_in_log = bucket.page_indexes.iter().any(|page| page.log_backed);
     let trivial_page = bucket.page_ref_count <= 1;
     let page_deleted = bucket.page_ref_count == 0;

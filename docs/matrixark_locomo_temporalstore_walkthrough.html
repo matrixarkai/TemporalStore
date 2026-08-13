@@ -227,10 +227,10 @@ PYTHONPATH=. python3 tools/run_matrixark_dataset_benchmark.py \
   --dataset locomo \
   --input /path/to/locomo.json \
   --backend temporalstore-direct \
-  --storage-prefix locomo_cpp_full \
+  --storage-prefix locomo_full \
   --reader deterministic \
   --max-context-tokens 2000 \
-  --output-dir artifacts/matrixark_benchmarks/locomo_cpp</code></pre>
+  --output-dir artifacts/matrixark_benchmarks/locomo_native</code></pre>
 
   <div class="callout">
     <strong>Takeaway:</strong> Python memory proves the MatrixArk logic quickly. TemporalStore proves the same logical context records survive the production storage boundary. The target is identical benchmark behavior while TemporalStore remains the single serving store for events, entities, summaries, indexes, embeddings, compression, and context-pack audits.

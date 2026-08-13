@@ -50,7 +50,7 @@ EVAL_QUERIES: tuple[EvalQuery, ...] = (
     EvalQuery("q_hooks", "What did the user decide about Rust TemporalStore hooks and real-time Codex prompt ingestion?",
               ("hook", "userpromptsubmit", "real", "ingest", "rust", "session")),
     EvalQuery("q_parity", "What did the user want regarding vs Rust TemporalStore parity and fair performance comparison?",
-              ("c++", "rust", "parity", "async", "oplog", "wal", "sdk", "latency")),
+              ("native", "rust", "parity", "async", "oplog", "wal", "sdk", "latency")),
     EvalQuery("q_windows", "How should Windows users install TemporalStore, and what about WSL and Docker?",
               ("windows", "docker", "wsl", "installer", "image", "powershell")),
     EvalQuery("q_context", "What did the user ask about context management data fields, compaction, and backfill?",
@@ -310,8 +310,8 @@ def build_segments(events: list[ContextEvent], chunk_size: int) -> list[ContextS
 
 
 TOPIC_TERMS = {
-    "rust": "rust_temporalstore", "c++": "cpp_temporalstore", "cpp": "cpp_temporalstore",
-    "parity": "cpp_rust_parity", "temporalstore": "temporalstore", "hook": "codex_hook",
+    "rust": "rust_temporalstore", "native": "native_temporalstore", "native": "native_temporalstore",
+    "parity": "native_rust_parity", "temporalstore": "temporalstore", "hook": "codex_hook",
     "userpromptsubmit": "codex_hook", "codex": "codex_agent", "claude": "claude_agent",
     # OSS-reader / memory benchmarking consolidated into one strong entity so it ranks for q_bench
     "qwen": "oss_reader_benchmark", "ollama": "oss_reader_benchmark", "vllm": "oss_reader_benchmark",

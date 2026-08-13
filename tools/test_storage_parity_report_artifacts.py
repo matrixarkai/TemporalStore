@@ -50,7 +50,7 @@ def _contract_with_fields(fields: list[str]) -> dict[str, object]:
 def _manager_contract() -> dict[str, object]:
     return {
         "manager_identity": "StorageManager/StoreManager",
-        "cpp_public_name": "StorageManager",
+        "native_public_name": "StorageManager",
         "rust_public_name": "StoreManager",
         "phase_order": list(REQUIRED_STORAGE_LIFECYCLE_PHASES),
         "phase_metrics": dict(REQUIRED_STORAGE_MANAGER_PHASE_METRICS),
@@ -172,13 +172,13 @@ def _valid_report(backend: str) -> dict[str, object]:
 
 
 class StorageParityReportArtifactTest(unittest.TestCase):
-    def test_accepts_canonical_cpp_rust_reports(self) -> None:
+    def test_accepts_canonical_rust_reports(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             report_dir = root / "parity_smoke"
             report_dir.mkdir()
-            (report_dir / "cpp.json").write_text(
-                json.dumps(_valid_report("cpp")), encoding="utf-8"
+            (report_dir / "native.json").write_text(
+                json.dumps(_valid_report("native")), encoding="utf-8"
             )
             (report_dir / "rust.json").write_text(
                 json.dumps(_valid_report("rust")), encoding="utf-8"
@@ -194,10 +194,10 @@ class StorageParityReportArtifactTest(unittest.TestCase):
             root = Path(tmpdir)
             report_dir = root / "parity_smoke"
             report_dir.mkdir()
-            report = _valid_report("cpp")
+            report = _valid_report("native")
             del report["storage_lifecycle_metrics"]["storage_manager_prepare_count"]  # type: ignore[index]
             report["page_store"] = {"leaked": True}
-            (report_dir / "cpp.json").write_text(json.dumps(report), encoding="utf-8")
+            (report_dir / "native.json").write_text(json.dumps(report), encoding="utf-8")
 
             scanned, failures = validate_artifacts(root)
 
@@ -230,11 +230,11 @@ class StorageParityReportArtifactTest(unittest.TestCase):
             root = Path(tmpdir)
             report_dir = root / "parity_smoke"
             report_dir.mkdir()
-            cpp = _valid_report("cpp")
+            native = _valid_report("native")
             rust = copy.deepcopy(_valid_report("rust"))
             rust["storage_cache_layers"] = ["memory_object_cache"]
             (report_dir / "comparison.json").write_text(
-                json.dumps({"backends": {"cpp": cpp, "rust": rust}}),
+                json.dumps({"backends": {"native": native, "rust": rust}}),
                 encoding="utf-8",
             )
 
@@ -284,16 +284,16 @@ class StorageParityReportArtifactTest(unittest.TestCase):
         self.assertTrue(any("storage_reclaim_contract.physical_reclaim_errors must be zero" in item for item in failures))
 
     def test_pair_validator_rejects_missing_public_storage_contract(self) -> None:
-        cpp = _valid_report("cpp")
+        native = _valid_report("native")
         rust = _valid_report("rust")
-        del cpp["public_storage_contract"]
+        del native["public_storage_contract"]
 
-        failures = validate_report_pair(cpp, rust)
+        failures = validate_report_pair(native, rust)
 
         self.assertTrue(
-            any("cpp report missing required top-level `public_storage_contract`" in item for item in failures)
+            any("native report missing required top-level `public_storage_contract`" in item for item in failures)
         )
-        self.assertTrue(any("cpp public storage shape missing canonical `page_address`" in item for item in failures))
+        self.assertTrue(any("native public storage shape missing canonical `page_address`" in item for item in failures))
 
     def test_rejects_effective_storage_tuning_value_drift(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

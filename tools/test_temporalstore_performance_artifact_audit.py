@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from audit_temporalstore_cpp_rust_performance_artifacts import audit_artifacts
+from audit_temporalstore_rust_performance_artifacts import audit_artifacts
 from test_temporalstore_performance_evidence_import import _matrix, _report_with_bad_qps_ratio
 
 
@@ -31,11 +31,11 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
                 "recommended_execution_output": "docs/benchmarks/parity_10K_event_ingestion/execution.json",
                 "command": [
                     "python",
-                    "tools/run_matrixark_cpp_rust_scale_report.py",
+                    "tools/run_matrixark_rust_scale_report.py",
                     "--events",
                     "10000",
                     "--backends",
-                    "cpp",
+                    "native",
                     "rust",
                     "--artifact-dir",
                     "docs/benchmarks/parity_10K_event_ingestion",
@@ -44,7 +44,7 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
                 ],
                 "import_command": [
                     "python",
-                    "tools/import_temporalstore_cpp_rust_performance_evidence.py",
+                    "tools/import_temporalstore_rust_performance_evidence.py",
                     "--report",
                     "docs/benchmarks/parity_10K_event_ingestion/comparison.json",
                     "--validate",
@@ -58,7 +58,7 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
             execution.write_text(
                 json.dumps(
                     {
-                        "schema": "temporalstore_cpp_rust_next_performance_execution_v1",
+                        "schema": "temporalstore_rust_next_performance_execution_v1",
                         "continue_on_error": True,
                         "status": "failed",
                         "failed_count": 1,
@@ -67,11 +67,11 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
                                 "step": "run_workload",
                                 "workload": "1K_event_ingestion",
                                 "reason": "blocked_no_importable",
-                                "argv": ["python", "tools/run_matrixark_cpp_rust_scale_report.py"],
+                                "argv": ["python", "tools/run_matrixark_rust_scale_report.py"],
                                 "returncode": 124,
                                 "status": "timeout",
                                 "timeout_sec": 90,
-                                "preflight_blockers": ["missing_cpp_lib", "missing_rust_cli"],
+                                "preflight_blockers": ["missing_lib", "missing_rust_cli"],
                                 "skip_reason": "workflow_command_timeout",
                                 "artifact_dir": "docs/benchmarks/parity_1K_event_ingestion",
                                 "comparison_path": "docs/benchmarks/parity_1K_event_ingestion/comparison.json",
@@ -129,7 +129,7 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
         failed_step = statuses["1K_event_ingestion"]["last_execution_attempt"]["failed_steps"][0]
         self.assertEqual(failed_step["status"], "timeout")
         self.assertEqual(failed_step["timeout_sec"], 90)
-        self.assertEqual(failed_step["preflight_blockers"], ["missing_cpp_lib", "missing_rust_cli"])
+        self.assertEqual(failed_step["preflight_blockers"], ["missing_lib", "missing_rust_cli"])
         self.assertEqual(failed_step["skip_reason"], "workflow_command_timeout")
         self.assertEqual(failed_step["artifact_dir"], "docs/benchmarks/parity_1K_event_ingestion")
         self.assertEqual(failed_step["comparison_path"], "docs/benchmarks/parity_1K_event_ingestion/comparison.json")
@@ -168,7 +168,7 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
             next_runs[0]["import_command"],
             [
                 "python",
-                "tools/import_temporalstore_cpp_rust_performance_evidence.py",
+                "tools/import_temporalstore_rust_performance_evidence.py",
                 "--report",
                 "docs/benchmarks/parity_10K_event_ingestion/comparison.json",
                 "--validate",
@@ -188,7 +188,7 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
         self.assertEqual(workflow["commands"][1]["step"], "import_evidence")
         self.assertEqual(workflow["commands"][1]["workload"], "10K_event_ingestion")
         self.assertIn(
-            ["python", "tools/validate_temporalstore_cpp_rust_goal_parity.py"],
+            ["python", "tools/validate_temporalstore_rust_goal_parity.py"],
             workflow["post_import_validation"],
         )
         self.assertIn(

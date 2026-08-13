@@ -4,7 +4,7 @@
 """Validate conformance storage lifecycle parity contract and optional reports.
 
 The lightweight default mode checks that the shared docs and scale runner agree
-on the canonical StorageManager lifecycle metrics. When --cpp-report and
+on the canonical StorageManager lifecycle metrics. When --native-report and
 --rust-report are provided, the tool also normalizes backend reports and fails
 closed on missing canonical metrics/config or obvious semantic drift.
 """
@@ -21,7 +21,7 @@ from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "docs" / "temporalstore_page_block_address_contract.md"
-SCALE_REPORT = ROOT / "tools" / "run_matrixark_cpp_rust_scale_report.py"
+SCALE_REPORT = ROOT / "tools" / "run_matrixark_rust_scale_report.py"
 REPORT_PAIR_CORPUS = ROOT / "compat" / "storage_lifecycle_report_pair_corpus.json"
 
 REQUIRED_STORAGE_CACHE_LAYERS = [
@@ -184,7 +184,7 @@ REQUIRED_STORAGE_RECLAIM_CONTRACT_FIELDS = [
 
 REQUIRED_STORAGE_MANAGER_CONTRACT_FIELDS = [
     "manager_identity",
-    "cpp_public_name",
+    "native_public_name",
     "rust_public_name",
     "phase_order",
     "phase_metrics",
@@ -706,125 +706,125 @@ def validate_contract_and_runner() -> list[str]:
     return failures
 
 
-def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]) -> list[str]:
+def validate_report_pair(native_report: dict[str, Any], rust_report: dict[str, Any]) -> list[str]:
     failures: list[str] = []
-    cpp_metrics = _dig_metrics(cpp_report)
+    native_metrics = _dig_metrics(native_report)
     rust_metrics = _dig_metrics(rust_report)
-    cpp_config = _dig_config(cpp_report)
+    native_config = _dig_config(native_report)
     rust_config = _dig_config(rust_report)
-    cpp_public_shape = _normalize_public_storage_shape(cpp_report)
+    native_public_shape = _normalize_public_storage_shape(native_report)
     rust_public_shape = _normalize_public_storage_shape(rust_report)
-    cpp_feature_shapes = _dig_public_storage_feature_shapes(cpp_report)
+    native_feature_shapes = _dig_public_storage_feature_shapes(native_report)
     rust_feature_shapes = _dig_public_storage_feature_shapes(rust_report)
-    cpp_write_contract = _dig_write_contract(cpp_report)
+    native_write_contract = _dig_write_contract(native_report)
     rust_write_contract = _dig_write_contract(rust_report)
-    cpp_read_contract = _dig_read_contract(cpp_report)
+    native_read_contract = _dig_read_contract(native_report)
     rust_read_contract = _dig_read_contract(rust_report)
-    cpp_cold_scan_contract = _dig_cold_scan_contract(cpp_report)
+    native_cold_scan_contract = _dig_cold_scan_contract(native_report)
     rust_cold_scan_contract = _dig_cold_scan_contract(rust_report)
-    cpp_manager_contract = _dig_manager_contract(cpp_report)
+    native_manager_contract = _dig_manager_contract(native_report)
     rust_manager_contract = _dig_manager_contract(rust_report)
-    cpp_index_contract = _dig_index_contract(cpp_report)
+    native_index_contract = _dig_index_contract(native_report)
     rust_index_contract = _dig_index_contract(rust_report)
-    cpp_cache_contract = _dig_cache_contract(cpp_report)
+    native_cache_contract = _dig_cache_contract(native_report)
     rust_cache_contract = _dig_cache_contract(rust_report)
-    cpp_write_sequence = _dig_sequence(cpp_report, "storage_write_sequence")
+    native_write_sequence = _dig_sequence(native_report, "storage_write_sequence")
     rust_write_sequence = _dig_sequence(rust_report, "storage_write_sequence")
-    cpp_read_sequence = _dig_sequence(cpp_report, "storage_read_sequence")
+    native_read_sequence = _dig_sequence(native_report, "storage_read_sequence")
     rust_read_sequence = _dig_sequence(rust_report, "storage_read_sequence")
-    cpp_cold_scan_sequence = _dig_sequence(cpp_report, "storage_cold_scan_sequence")
+    native_cold_scan_sequence = _dig_sequence(native_report, "storage_cold_scan_sequence")
     rust_cold_scan_sequence = _dig_sequence(rust_report, "storage_cold_scan_sequence")
-    cpp_lifecycle_phases = _dig_lifecycle_phases(cpp_report)
+    native_lifecycle_phases = _dig_lifecycle_phases(native_report)
     rust_lifecycle_phases = _dig_lifecycle_phases(rust_report)
-    cpp_reclaim_semantics = _dig_reclaim_semantics(cpp_report)
+    native_reclaim_semantics = _dig_reclaim_semantics(native_report)
     rust_reclaim_semantics = _dig_reclaim_semantics(rust_report)
-    cpp_reclaim_scope = _dig_reclaim_scope(cpp_report)
+    native_reclaim_scope = _dig_reclaim_scope(native_report)
     rust_reclaim_scope = _dig_reclaim_scope(rust_report)
-    cpp_reclaim_contract = _dig_reclaim_contract(cpp_report)
+    native_reclaim_contract = _dig_reclaim_contract(native_report)
     rust_reclaim_contract = _dig_reclaim_contract(rust_report)
-    cpp_safety_snapshot = _dig_safety_snapshot(cpp_report)
+    native_safety_snapshot = _dig_safety_snapshot(native_report)
     rust_safety_snapshot = _dig_safety_snapshot(rust_report)
-    cpp_watermark_snapshot = _dig_watermark_snapshot(cpp_report)
+    native_watermark_snapshot = _dig_watermark_snapshot(native_report)
     rust_watermark_snapshot = _dig_watermark_snapshot(rust_report)
-    cpp_gc_snapshot = _dig_gc_snapshot(cpp_report)
+    native_gc_snapshot = _dig_gc_snapshot(native_report)
     rust_gc_snapshot = _dig_gc_snapshot(rust_report)
-    cpp_index_snapshot = _dig_index_snapshot(cpp_report)
+    native_index_snapshot = _dig_index_snapshot(native_report)
     rust_index_snapshot = _dig_index_snapshot(rust_report)
-    cpp_topology_snapshot = _dig_topology_snapshot(cpp_report)
+    native_topology_snapshot = _dig_topology_snapshot(native_report)
     rust_topology_snapshot = _dig_topology_snapshot(rust_report)
-    cpp_cache_layers = _dig_cache_layers(cpp_report)
+    native_cache_layers = _dig_cache_layers(native_report)
     rust_cache_layers = _dig_cache_layers(rust_report)
-    cpp_cache_semantics = _dig_cache_semantics(cpp_report)
+    native_cache_semantics = _dig_cache_semantics(native_report)
     rust_cache_semantics = _dig_cache_semantics(rust_report)
 
-    for backend, report in [("cpp", cpp_report), ("rust", rust_report)]:
+    for backend, report in [("native", native_report), ("rust", rust_report)]:
         for key in REQUIRED_LIFECYCLE_TOP_LEVEL_KEYS:
             if key not in report:
                 failures.append(f"{backend} report missing required top-level `{key}`")
 
     for field in REQUIRED_CONFIG_FIELDS:
-        if field not in cpp_config:
-            failures.append(f"cpp config missing `{field}`")
+        if field not in native_config:
+            failures.append(f"native config missing `{field}`")
         if field not in rust_config:
             failures.append(f"rust config missing `{field}`")
-        if field in cpp_config and field in rust_config and cpp_config[field] != rust_config[field]:
-            failures.append(f"config drift `{field}`: cpp={cpp_config[field]!r} rust={rust_config[field]!r}")
+        if field in native_config and field in rust_config and native_config[field] != rust_config[field]:
+            failures.append(f"config drift `{field}`: native={native_config[field]!r} rust={rust_config[field]!r}")
 
     for metric in REQUIRED_STORAGE_LIFECYCLE_METRICS:
-        if metric not in cpp_metrics:
-            failures.append(f"cpp metrics missing `{metric}`")
+        if metric not in native_metrics:
+            failures.append(f"native metrics missing `{metric}`")
         if metric not in rust_metrics:
             failures.append(f"rust metrics missing `{metric}`")
     for field in REQUIRED_STORAGE_WRITE_RESULT_FIELDS:
-        if field not in cpp_write_contract:
-            failures.append(f"cpp write contract missing result field `{field}`")
+        if field not in native_write_contract:
+            failures.append(f"native write contract missing result field `{field}`")
         if field not in rust_write_contract:
             failures.append(f"rust write contract missing result field `{field}`")
     for metric in REQUIRED_STORAGE_WRITE_METRICS:
-        if metric not in cpp_write_contract:
-            failures.append(f"cpp write contract missing metric `{metric}`")
+        if metric not in native_write_contract:
+            failures.append(f"native write contract missing metric `{metric}`")
         if metric not in rust_write_contract:
             failures.append(f"rust write contract missing metric `{metric}`")
     for field in ["durability", "storage_family", "write_mode"]:
-        if field in cpp_write_contract and field in rust_write_contract and cpp_write_contract[field] != rust_write_contract[field]:
+        if field in native_write_contract and field in rust_write_contract and native_write_contract[field] != rust_write_contract[field]:
             failures.append(
-                f"write contract drift `{field}`: cpp={cpp_write_contract[field]!r} rust={rust_write_contract[field]!r}"
+                f"write contract drift `{field}`: native={native_write_contract[field]!r} rust={rust_write_contract[field]!r}"
             )
     for field in ["records_appended", "append_durability_failures"]:
-        cpp_value = _as_number(cpp_write_contract.get(field))
+        native_value = _as_number(native_write_contract.get(field))
         rust_value = _as_number(rust_write_contract.get(field))
-        if cpp_value is not None and rust_value is not None and cpp_value != rust_value:
-            failures.append(f"write contract drift `{field}`: cpp={cpp_value} rust={rust_value}")
+        if native_value is not None and rust_value is not None and native_value != rust_value:
+            failures.append(f"write contract drift `{field}`: native={native_value} rust={rust_value}")
     for field in ["append_watermark", "batch_watermark", "index_generation"]:
-        cpp_value = _as_number(cpp_write_contract.get(field))
+        native_value = _as_number(native_write_contract.get(field))
         rust_value = _as_number(rust_write_contract.get(field))
-        if cpp_value is not None and cpp_value < 0:
-            failures.append(f"cpp write contract `{field}` must be non-negative")
+        if native_value is not None and native_value < 0:
+            failures.append(f"native write contract `{field}` must be non-negative")
         if rust_value is not None and rust_value < 0:
             failures.append(f"rust write contract `{field}` must be non-negative")
-    for backend, write_contract in [("cpp", cpp_write_contract), ("rust", rust_write_contract)]:
+    for backend, write_contract in [("native", native_write_contract), ("rust", rust_write_contract)]:
         if _as_number(write_contract.get("append_durability_failures")) not in (0.0, None):
             failures.append(f"{backend} write contract append_durability_failures must be zero")
         if _as_number(write_contract.get("records_appended")) == 0:
             failures.append(f"{backend} write contract records_appended must be positive")
     for field in REQUIRED_STORAGE_READ_RESULT_FIELDS:
-        if field not in cpp_read_contract:
-            failures.append(f"cpp read contract missing result field `{field}`")
+        if field not in native_read_contract:
+            failures.append(f"native read contract missing result field `{field}`")
         if field not in rust_read_contract:
             failures.append(f"rust read contract missing result field `{field}`")
     for metric in REQUIRED_STORAGE_READ_METRICS:
-        if metric not in cpp_read_contract:
-            failures.append(f"cpp read contract missing metric `{metric}`")
+        if metric not in native_read_contract:
+            failures.append(f"native read contract missing metric `{metric}`")
         if metric not in rust_read_contract:
             failures.append(f"rust read contract missing metric `{metric}`")
     for field in ["records_decoded", "records_returned", "tombstones_filtered", "stale_generations_filtered"]:
-        cpp_value = _as_number(cpp_read_contract.get(field))
+        native_value = _as_number(native_read_contract.get(field))
         rust_value = _as_number(rust_read_contract.get(field))
-        if cpp_value is not None and cpp_value < 0:
-            failures.append(f"cpp read contract `{field}` must be non-negative")
+        if native_value is not None and native_value < 0:
+            failures.append(f"native read contract `{field}` must be non-negative")
         if rust_value is not None and rust_value < 0:
             failures.append(f"rust read contract `{field}` must be non-negative")
-    for backend, read_contract in [("cpp", cpp_read_contract), ("rust", rust_read_contract)]:
+    for backend, read_contract in [("native", native_read_contract), ("rust", rust_read_contract)]:
         decoded = _as_number(read_contract.get("records_decoded"))
         returned = _as_number(read_contract.get("records_returned"))
         if decoded is not None and returned is not None and returned > decoded:
@@ -832,16 +832,16 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
         if read_contract.get("filter_policy") not in {"normal", "debug_replay", "cold_scan"}:
             failures.append(f"{backend} read contract filter_policy must be normal/debug_replay/cold_scan")
     for field in REQUIRED_STORAGE_COLD_SCAN_RESULT_FIELDS:
-        if field not in cpp_cold_scan_contract:
-            failures.append(f"cpp cold scan contract missing result field `{field}`")
+        if field not in native_cold_scan_contract:
+            failures.append(f"native cold scan contract missing result field `{field}`")
         if field not in rust_cold_scan_contract:
             failures.append(f"rust cold scan contract missing result field `{field}`")
     for metric in REQUIRED_STORAGE_COLD_SCAN_METRICS:
-        if metric not in cpp_cold_scan_contract:
-            failures.append(f"cpp cold scan contract missing metric `{metric}`")
+        if metric not in native_cold_scan_contract:
+            failures.append(f"native cold scan contract missing metric `{metric}`")
         if metric not in rust_cold_scan_contract:
             failures.append(f"rust cold scan contract missing metric `{metric}`")
-    for backend, cold_scan_contract in [("cpp", cpp_cold_scan_contract), ("rust", rust_cold_scan_contract)]:
+    for backend, cold_scan_contract in [("native", native_cold_scan_contract), ("rust", rust_cold_scan_contract)]:
         decoded = _as_number(cold_scan_contract.get("records_decoded"))
         returned = _as_number(cold_scan_contract.get("records_returned"))
         if decoded is not None and returned is not None and returned > decoded:
@@ -859,15 +859,15 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
         if _as_number(cold_scan_contract.get("cold_scan_no_cache_reads")) is not None and _as_number(cold_scan_contract.get("cold_scan_no_cache_reads")) < 0:
             failures.append(f"{backend} cold scan contract cold_scan_no_cache_reads must be non-negative")
     for field in REQUIRED_STORAGE_MANAGER_CONTRACT_FIELDS:
-        if field not in cpp_manager_contract:
-            failures.append(f"cpp manager contract missing field `{field}`")
+        if field not in native_manager_contract:
+            failures.append(f"native manager contract missing field `{field}`")
         if field not in rust_manager_contract:
             failures.append(f"rust manager contract missing field `{field}`")
-    for backend, manager_contract in [("cpp", cpp_manager_contract), ("rust", rust_manager_contract)]:
+    for backend, manager_contract in [("native", native_manager_contract), ("rust", rust_manager_contract)]:
         if manager_contract.get("manager_identity") != "StorageManager/StoreManager":
             failures.append(f"{backend} manager_identity must be StorageManager/StoreManager")
-        if manager_contract.get("cpp_public_name") != "StorageManager":
-            failures.append(f"{backend} cpp_public_name must be StorageManager")
+        if manager_contract.get("native_public_name") != "StorageManager":
+            failures.append(f"{backend} native_public_name must be StorageManager")
         if manager_contract.get("rust_public_name") != "StoreManager":
             failures.append(f"{backend} rust_public_name must be StoreManager")
         if manager_contract.get("phase_order") != REQUIRED_STORAGE_LIFECYCLE_PHASES:
@@ -892,11 +892,11 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
         if _as_number(manager_contract.get("loop_ms")) is not None and _as_number(manager_contract.get("loop_ms")) < 0:
             failures.append(f"{backend} manager loop_ms must be non-negative")
     for field in REQUIRED_STORAGE_INDEX_CONTRACT_FIELDS:
-        if field not in cpp_index_contract:
-            failures.append(f"cpp index contract missing field `{field}`")
+        if field not in native_index_contract:
+            failures.append(f"native index contract missing field `{field}`")
         if field not in rust_index_contract:
             failures.append(f"rust index contract missing field `{field}`")
-    for backend, index_contract in [("cpp", cpp_index_contract), ("rust", rust_index_contract)]:
+    for backend, index_contract in [("native", native_index_contract), ("rust", rust_index_contract)]:
         if index_contract.get("page_address_codec") != "PageAddress":
             failures.append(f"{backend} index contract page_address_codec must be PageAddress")
         if index_contract.get("block_address_codec") != "BlockAddress":
@@ -937,11 +937,11 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
             if _as_number(index_contract.get(field)) not in (0.0, None):
                 failures.append(f"{backend} index contract `{field}` must be zero")
     for field in REQUIRED_STORAGE_CACHE_CONTRACT_FIELDS:
-        if field not in cpp_cache_contract:
-            failures.append(f"cpp cache contract missing field `{field}`")
+        if field not in native_cache_contract:
+            failures.append(f"native cache contract missing field `{field}`")
         if field not in rust_cache_contract:
             failures.append(f"rust cache contract missing field `{field}`")
-    for backend, cache_contract in [("cpp", cpp_cache_contract), ("rust", rust_cache_contract)]:
+    for backend, cache_contract in [("native", native_cache_contract), ("rust", rust_cache_contract)]:
         if cache_contract.get("layers") != REQUIRED_STORAGE_CACHE_LAYERS:
             failures.append(f"{backend} cache contract layers drift: {cache_contract.get('layers')!r}")
         if cache_contract.get("semantics") != REQUIRED_STORAGE_CACHE_SEMANTICS:
@@ -971,16 +971,16 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
         if _as_number(cache_contract.get("hot_cache_promotions")) not in (0.0, None):
             failures.append(f"{backend} cache contract hot_cache_promotions must be zero for cold scan no-promote parity")
     for field in REQUIRED_STORAGE_RECLAIM_CONTRACT_FIELDS:
-        if field not in cpp_reclaim_contract:
-            failures.append(f"cpp reclaim contract missing field `{field}`")
+        if field not in native_reclaim_contract:
+            failures.append(f"native reclaim contract missing field `{field}`")
         if field not in rust_reclaim_contract:
             failures.append(f"rust reclaim contract missing field `{field}`")
     for field in REQUIRED_STORAGE_SAFETY_FIELDS:
-        if field not in cpp_safety_snapshot:
-            failures.append(f"cpp safety snapshot missing field `{field}`")
+        if field not in native_safety_snapshot:
+            failures.append(f"native safety snapshot missing field `{field}`")
         if field not in rust_safety_snapshot:
             failures.append(f"rust safety snapshot missing field `{field}`")
-    for backend, safety_snapshot in [("cpp", cpp_safety_snapshot), ("rust", rust_safety_snapshot)]:
+    for backend, safety_snapshot in [("native", native_safety_snapshot), ("rust", rust_safety_snapshot)]:
         for field in REQUIRED_STORAGE_SAFETY_FIELDS:
             if field == "follower_cursor_safe_to_reclaim":
                 if not isinstance(safety_snapshot.get(field), bool):
@@ -992,12 +992,12 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
         if _as_number(safety_snapshot.get("physical_reclaim_errors")) not in (0.0, None):
             failures.append(f"{backend} safety snapshot physical_reclaim_errors must be zero")
     for field in REQUIRED_STORAGE_WATERMARK_SNAPSHOT_FIELDS:
-        if field not in cpp_watermark_snapshot:
-            failures.append(f"cpp watermark snapshot missing field `{field}`")
+        if field not in native_watermark_snapshot:
+            failures.append(f"native watermark snapshot missing field `{field}`")
         if field not in rust_watermark_snapshot:
             failures.append(f"rust watermark snapshot missing field `{field}`")
     for backend, watermark_snapshot in [
-        ("cpp", cpp_watermark_snapshot),
+        ("native", native_watermark_snapshot),
         ("rust", rust_watermark_snapshot),
     ]:
         for field in REQUIRED_STORAGE_WATERMARK_SNAPSHOT_FIELDS:
@@ -1032,11 +1032,11 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
         if safe is not None and follower_floor is not None and follower_floor > 0 and safe > follower_floor:
             failures.append(f"{backend} watermark snapshot safe watermark must not exceed follower cursor floor")
     for field in REQUIRED_STORAGE_GC_SNAPSHOT_FIELDS:
-        if field not in cpp_gc_snapshot:
-            failures.append(f"cpp gc snapshot missing field `{field}`")
+        if field not in native_gc_snapshot:
+            failures.append(f"native gc snapshot missing field `{field}`")
         if field not in rust_gc_snapshot:
             failures.append(f"rust gc snapshot missing field `{field}`")
-    for backend, gc_snapshot in [("cpp", cpp_gc_snapshot), ("rust", rust_gc_snapshot)]:
+    for backend, gc_snapshot in [("native", native_gc_snapshot), ("rust", rust_gc_snapshot)]:
         for field in REQUIRED_STORAGE_GC_SNAPSHOT_FIELDS:
             if field == "follower_cursor_safe_to_reclaim":
                 if not isinstance(gc_snapshot.get(field), bool):
@@ -1054,11 +1054,11 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
         if blocked is not None and blocked > 0 and gc_snapshot.get("follower_cursor_safe_to_reclaim") is True:
             failures.append(f"{backend} gc snapshot cannot be safe to reclaim while follower cursor blocks exist")
     for field in REQUIRED_STORAGE_INDEX_SNAPSHOT_FIELDS:
-        if field not in cpp_index_snapshot:
-            failures.append(f"cpp index snapshot missing field `{field}`")
+        if field not in native_index_snapshot:
+            failures.append(f"native index snapshot missing field `{field}`")
         if field not in rust_index_snapshot:
             failures.append(f"rust index snapshot missing field `{field}`")
-    for backend, index_snapshot in [("cpp", cpp_index_snapshot), ("rust", rust_index_snapshot)]:
+    for backend, index_snapshot in [("native", native_index_snapshot), ("rust", rust_index_snapshot)]:
         for field in REQUIRED_STORAGE_INDEX_SNAPSHOT_FIELDS:
             if field == "restart_rebuild_verified":
                 if not isinstance(index_snapshot.get(field), bool):
@@ -1074,12 +1074,12 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
             if _as_number(index_snapshot.get(field)) not in (0.0, None):
                 failures.append(f"{backend} index snapshot `{field}` must be zero")
     for field in REQUIRED_STORAGE_TOPOLOGY_SNAPSHOT_FIELDS:
-        if field not in cpp_topology_snapshot:
-            failures.append(f"cpp topology snapshot missing field `{field}`")
+        if field not in native_topology_snapshot:
+            failures.append(f"native topology snapshot missing field `{field}`")
         if field not in rust_topology_snapshot:
             failures.append(f"rust topology snapshot missing field `{field}`")
     for backend, topology_snapshot in [
-        ("cpp", cpp_topology_snapshot),
+        ("native", native_topology_snapshot),
         ("rust", rust_topology_snapshot),
     ]:
         for field in REQUIRED_STORAGE_TOPOLOGY_SNAPSHOT_FIELDS:
@@ -1090,7 +1090,7 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
             value = _as_number(topology_snapshot.get(field))
             if value is None or value < 0:
                 failures.append(f"{backend} topology snapshot `{field}` must be non-negative")
-    for backend, reclaim_contract in [("cpp", cpp_reclaim_contract), ("rust", rust_reclaim_contract)]:
+    for backend, reclaim_contract in [("native", native_reclaim_contract), ("rust", rust_reclaim_contract)]:
         for flag in [
             "cache_eviction_frees_memory_only",
             "logical_gc_marks_expired_deletable",
@@ -1137,63 +1137,63 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
             if _metric_number(reclaim_contract, "compaction_reclaimed_bytes") <= 0:
                 failures.append(f"{backend} physical reclaim requires compaction_reclaimed_bytes")
 
-    if cpp_write_sequence != REQUIRED_STORAGE_WRITE_SEQUENCE:
-        failures.append(f"cpp storage_write_sequence drift: {cpp_write_sequence!r}")
+    if native_write_sequence != REQUIRED_STORAGE_WRITE_SEQUENCE:
+        failures.append(f"native storage_write_sequence drift: {native_write_sequence!r}")
     if rust_write_sequence != REQUIRED_STORAGE_WRITE_SEQUENCE:
         failures.append(f"rust storage_write_sequence drift: {rust_write_sequence!r}")
-    if cpp_read_sequence != REQUIRED_STORAGE_READ_SEQUENCE:
-        failures.append(f"cpp storage_read_sequence drift: {cpp_read_sequence!r}")
+    if native_read_sequence != REQUIRED_STORAGE_READ_SEQUENCE:
+        failures.append(f"native storage_read_sequence drift: {native_read_sequence!r}")
     if rust_read_sequence != REQUIRED_STORAGE_READ_SEQUENCE:
         failures.append(f"rust storage_read_sequence drift: {rust_read_sequence!r}")
-    if cpp_cold_scan_sequence != REQUIRED_STORAGE_COLD_SCAN_SEQUENCE:
-        failures.append(f"cpp storage_cold_scan_sequence drift: {cpp_cold_scan_sequence!r}")
+    if native_cold_scan_sequence != REQUIRED_STORAGE_COLD_SCAN_SEQUENCE:
+        failures.append(f"native storage_cold_scan_sequence drift: {native_cold_scan_sequence!r}")
     if rust_cold_scan_sequence != REQUIRED_STORAGE_COLD_SCAN_SEQUENCE:
         failures.append(f"rust storage_cold_scan_sequence drift: {rust_cold_scan_sequence!r}")
-    if cpp_lifecycle_phases != REQUIRED_STORAGE_LIFECYCLE_PHASES:
-        failures.append(f"cpp storage_lifecycle_phases drift: {cpp_lifecycle_phases!r}")
+    if native_lifecycle_phases != REQUIRED_STORAGE_LIFECYCLE_PHASES:
+        failures.append(f"native storage_lifecycle_phases drift: {native_lifecycle_phases!r}")
     if rust_lifecycle_phases != REQUIRED_STORAGE_LIFECYCLE_PHASES:
         failures.append(f"rust storage_lifecycle_phases drift: {rust_lifecycle_phases!r}")
-    if cpp_reclaim_semantics != REQUIRED_STORAGE_RECLAIM_SEMANTICS:
-        failures.append(f"cpp storage_reclaim_semantics drift: {cpp_reclaim_semantics!r}")
+    if native_reclaim_semantics != REQUIRED_STORAGE_RECLAIM_SEMANTICS:
+        failures.append(f"native storage_reclaim_semantics drift: {native_reclaim_semantics!r}")
     if rust_reclaim_semantics != REQUIRED_STORAGE_RECLAIM_SEMANTICS:
         failures.append(f"rust storage_reclaim_semantics drift: {rust_reclaim_semantics!r}")
-    if cpp_reclaim_scope != REQUIRED_STORAGE_RECLAIM_SCOPE:
-        failures.append(f"cpp storage_reclaim_scope drift: {cpp_reclaim_scope!r}")
+    if native_reclaim_scope != REQUIRED_STORAGE_RECLAIM_SCOPE:
+        failures.append(f"native storage_reclaim_scope drift: {native_reclaim_scope!r}")
     if rust_reclaim_scope != REQUIRED_STORAGE_RECLAIM_SCOPE:
         failures.append(f"rust storage_reclaim_scope drift: {rust_reclaim_scope!r}")
-    if cpp_cache_layers != REQUIRED_STORAGE_CACHE_LAYERS:
-        failures.append(f"cpp storage_cache_layers drift: {cpp_cache_layers!r}")
+    if native_cache_layers != REQUIRED_STORAGE_CACHE_LAYERS:
+        failures.append(f"native storage_cache_layers drift: {native_cache_layers!r}")
     if rust_cache_layers != REQUIRED_STORAGE_CACHE_LAYERS:
         failures.append(f"rust storage_cache_layers drift: {rust_cache_layers!r}")
-    if cpp_cache_semantics != REQUIRED_STORAGE_CACHE_SEMANTICS:
-        failures.append(f"cpp storage_cache_semantics drift: {cpp_cache_semantics!r}")
+    if native_cache_semantics != REQUIRED_STORAGE_CACHE_SEMANTICS:
+        failures.append(f"native storage_cache_semantics drift: {native_cache_semantics!r}")
     if rust_cache_semantics != REQUIRED_STORAGE_CACHE_SEMANTICS:
         failures.append(f"rust storage_cache_semantics drift: {rust_cache_semantics!r}")
 
-    for backend, report in [("cpp", cpp_report), ("rust", rust_report)]:
+    for backend, report in [("native", native_report), ("rust", rust_report)]:
         for path, key in _walk_public_keys(report):
             failures.append(
                 f"{backend} public report exposes legacy alias `{key}` outside compatibility_aliases at {'.'.join(path)}"
             )
 
     for field in CANONICAL_JSON_FIELDS:
-        if field not in cpp_public_shape:
-            failures.append(f"cpp public storage shape missing canonical `{field}`")
+        if field not in native_public_shape:
+            failures.append(f"native public storage shape missing canonical `{field}`")
         if field not in rust_public_shape:
             failures.append(f"rust public storage shape missing canonical `{field}`")
-    comparable_fields = [field for field in CANONICAL_JSON_FIELDS if field in cpp_public_shape and field in rust_public_shape]
+    comparable_fields = [field for field in CANONICAL_JSON_FIELDS if field in native_public_shape and field in rust_public_shape]
     for field in comparable_fields:
-        if type(cpp_public_shape[field]).__name__ != type(rust_public_shape[field]).__name__:
+        if type(native_public_shape[field]).__name__ != type(rust_public_shape[field]).__name__:
             failures.append(
-                f"public storage shape type drift `{field}`: cpp={type(cpp_public_shape[field]).__name__} "
+                f"public storage shape type drift `{field}`: native={type(native_public_shape[field]).__name__} "
                 f"rust={type(rust_public_shape[field]).__name__}"
             )
 
     for shape_name, expected_fields in REQUIRED_PUBLIC_STORAGE_FEATURE_SHAPES.items():
-        cpp_fields = cpp_feature_shapes.get(shape_name)
+        native_fields = native_feature_shapes.get(shape_name)
         rust_fields = rust_feature_shapes.get(shape_name)
-        if cpp_fields != expected_fields:
-            failures.append(f"cpp public_storage_feature_shapes.{shape_name} drift: {cpp_fields!r}")
+        if native_fields != expected_fields:
+            failures.append(f"native public_storage_feature_shapes.{shape_name} drift: {native_fields!r}")
         if rust_fields != expected_fields:
             failures.append(f"rust public_storage_feature_shapes.{shape_name} drift: {rust_fields!r}")
 
@@ -1206,24 +1206,24 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
         "append_watermark",
         "compaction_watermark",
     ]:
-        cpp_value = _as_number(cpp_metrics.get(metric))
+        native_value = _as_number(native_metrics.get(metric))
         rust_value = _as_number(rust_metrics.get(metric))
-        if cpp_value is None or rust_value is None:
+        if native_value is None or rust_value is None:
             continue
-        if metric == "physical_reclaim_errors" and (cpp_value != 0 or rust_value != 0):
-            failures.append(f"physical reclaim errors must be zero: cpp={cpp_value} rust={rust_value}")
-        if metric.endswith("_watermark") and (cpp_value < 0 or rust_value < 0):
+        if metric == "physical_reclaim_errors" and (native_value != 0 or rust_value != 0):
+            failures.append(f"physical reclaim errors must be zero: native={native_value} rust={rust_value}")
+        if metric.endswith("_watermark") and (native_value < 0 or rust_value < 0):
             failures.append(f"watermark must be non-negative for `{metric}`")
-    failures.extend(_validate_physical_reclaim_evidence("cpp", cpp_metrics))
+    failures.extend(_validate_physical_reclaim_evidence("native", native_metrics))
     failures.extend(_validate_physical_reclaim_evidence("rust", rust_metrics))
-    failures.extend(_validate_stream_slot_index_evidence("cpp", cpp_metrics))
+    failures.extend(_validate_stream_slot_index_evidence("native", native_metrics))
     failures.extend(_validate_stream_slot_index_evidence("rust", rust_metrics))
     return failures
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cpp-report", type=pathlib.Path)
+    parser.add_argument("--native-report", type=pathlib.Path)
     parser.add_argument("--rust-report", type=pathlib.Path)
     parser.add_argument(
         "--skip-report-pair-corpus",
@@ -1234,14 +1234,14 @@ def main() -> int:
 
     failures = validate_contract_and_runner()
     validated_pair = False
-    if not args.skip_report_pair_corpus and not (args.cpp_report or args.rust_report):
+    if not args.skip_report_pair_corpus and not (args.native_report or args.rust_report):
         corpus = _load_json(REPORT_PAIR_CORPUS)
-        failures.extend(validate_report_pair(corpus["cpp"], corpus["rust"]))
+        failures.extend(validate_report_pair(corpus["native"], corpus["rust"]))
         validated_pair = True
-    if bool(args.cpp_report) != bool(args.rust_report):
-        failures.append("--cpp-report and --rust-report must be provided together")
-    if args.cpp_report and args.rust_report:
-        failures.extend(validate_report_pair(_load_json(args.cpp_report), _load_json(args.rust_report)))
+    if bool(args.native_report) != bool(args.rust_report):
+        failures.append("--native-report and --rust-report must be provided together")
+    if args.native_report and args.rust_report:
+        failures.extend(validate_report_pair(_load_json(args.native_report), _load_json(args.rust_report)))
         validated_pair = True
 
     if failures:

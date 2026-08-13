@@ -4362,7 +4362,7 @@ SYNTHETIC_HOOK_TEXT_MARKERS = (
     "matrixark synthetic",
     "synthetic probe",
     "codex-live-probe",
-    "codex-cpp-live-probe",
+    "codex-native-live-probe",
     "manual validation",
     "hook verification",
     "reply ok only",

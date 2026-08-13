@@ -66,37 +66,37 @@ def _latency_ms(case: dict[str, Any]) -> float | None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--rust", required=True)
-    parser.add_argument("--cpp", required=True)
+    parser.add_argument("--native", required=True)
     parser.add_argument("--emit-misses", default="")
     parser.add_argument("--latency-delta-ms", type=float, default=50.0)
     args = parser.parse_args()
 
     rust_cases = _cases(_load(args.rust))
-    cpp_cases = _cases(_load(args.cpp))
+    native_cases = _cases(_load(args.native))
     rust_ids = set(rust_cases)
-    cpp_ids = set(cpp_cases)
-    shared = sorted(rust_ids & cpp_ids)
+    native_ids = set(native_cases)
+    shared = sorted(rust_ids & native_ids)
 
-    rust_only = sorted(rust_ids - cpp_ids)
-    cpp_only = sorted(cpp_ids - rust_ids)
+    rust_only = sorted(rust_ids - native_ids)
+    native_only = sorted(native_ids - rust_ids)
     shared_failures = [
         case_id
         for case_id in shared
-        if _passed(rust_cases[case_id]) != _passed(cpp_cases[case_id])
+        if _passed(rust_cases[case_id]) != _passed(native_cases[case_id])
     ]
     latency_deltas = []
     for case_id in shared:
         rust_latency = _latency_ms(rust_cases[case_id])
-        cpp_latency = _latency_ms(cpp_cases[case_id])
-        if rust_latency is None or cpp_latency is None:
+        native_latency = _latency_ms(native_cases[case_id])
+        if rust_latency is None or native_latency is None:
             continue
-        delta = rust_latency - cpp_latency
+        delta = rust_latency - native_latency
         if abs(delta) > args.latency_delta_ms:
             latency_deltas.append(
                 {
                     "case_id": case_id,
                     "rust_latency_ms": rust_latency,
-                    "cpp_latency_ms": cpp_latency,
+                    "native_latency_ms": native_latency,
                     "delta_ms": delta,
                 }
             )
@@ -104,15 +104,15 @@ def main() -> int:
     report = {
         "schema": "temporalstore_unified_report_comparison_v1",
         "rust_case_count": len(rust_cases),
-        "cpp_case_count": len(cpp_cases),
+        "native_case_count": len(native_cases),
         "shared_case_count": len(shared),
         "rust_only_misses": rust_only,
-        "cpp_only_misses": cpp_only,
+        "native_only_misses": native_only,
         "shared_failures": shared_failures,
         "latency_deltas": latency_deltas,
     }
     print(json.dumps(report, indent=2, sort_keys=True))
-    return 1 if rust_only or cpp_only or shared_failures else 0
+    return 1 if rust_only or native_only or shared_failures else 0
 
 
 if __name__ == "__main__":

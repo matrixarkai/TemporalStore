@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-use super::reports::{CppGoldenCaseReport, CppGoldenCorpusReport};
+use super::reports::{GoldenCaseReport, GoldenCorpusReport};
 use crate::engine::TemporalEngine;
 use crate::types::{
-    parse_cpp_feature_filters, Command, CommandResponse, ExecuteRequest, FeatureFilterOp,
+    parse_feature_filters, Command, CommandResponse, ExecuteRequest, FeatureFilterOp,
     FeaturePoint, ControlStateFamily, ControlStateSelectionType, SequenceFeatureRow,
 };
 
-pub fn cpp_feature_sequence_golden_corpus_report() -> CppGoldenCorpusReport {
+pub fn native_feature_sequence_golden_corpus_report() -> GoldenCorpusReport {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     let mut cases = Vec::new();
@@ -37,18 +37,18 @@ pub fn cpp_feature_sequence_golden_corpus_report() -> CppGoldenCorpusReport {
 
     record_golden_case(
         &mut cases,
-        "cpp_feature_proto_roundtrip",
-        SequenceFeatureRow::decode_cpp_feature_value(
+        "native_feature_proto_roundtrip",
+        SequenceFeatureRow::decode_feature_proto_value(
             matching.timestamp_ms,
-            &matching.encode_cpp_feature_value(),
+            &matching.encode_feature_proto_value(),
         ) == Some(matching.clone()),
         "feature protobuf fields gid/action_type/duration/author_id round-trip",
     );
 
-    let duplicate_filters = parse_cpp_feature_filters(["gid = 42", "duration > 30", "gid != 42"]);
+    let duplicate_filters = parse_feature_filters(["gid = 42", "duration > 30", "gid != 42"]);
     record_golden_case(
         &mut cases,
-        "cpp_feature_filter_last_field_wins",
+        "native_feature_filter_last_field_wins",
         matches!(duplicate_filters, Ok(ref filters) if filters.len() == 2
             && filters[0].field == "gid"
             && filters[0].op == FeatureFilterOp::NotEqual
@@ -60,26 +60,26 @@ pub fn cpp_feature_sequence_golden_corpus_report() -> CppGoldenCorpusReport {
     let append = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::FeatureAppend {
-            key: "cpp-golden-feature".to_string(),
+            key: "native-golden-feature".to_string(),
             points: vec![
                 FeaturePoint {
                     timestamp_ms: matching.timestamp_ms,
-                    value: matching.encode_cpp_feature_value(),
+                    value: matching.encode_feature_proto_value(),
                 },
                 FeaturePoint {
                     timestamp_ms: replacement.timestamp_ms,
-                    value: replacement.encode_cpp_feature_value(),
+                    value: replacement.encode_feature_proto_value(),
                 },
                 FeaturePoint {
                     timestamp_ms: non_matching.timestamp_ms,
-                    value: non_matching.encode_cpp_feature_value(),
+                    value: non_matching.encode_feature_proto_value(),
                 },
             ],
         },
     });
     record_golden_case(
         &mut cases,
-        "cpp_feature_append_status",
+        "native_feature_append_status",
         append.status.ok,
         "feature points append through the Rust engine",
     );
@@ -87,17 +87,17 @@ pub fn cpp_feature_sequence_golden_corpus_report() -> CppGoldenCorpusReport {
     let filtered = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::FeatureQueryFiltered {
-            key: "cpp-golden-feature".to_string(),
+            key: "native-golden-feature".to_string(),
             start_ms: 0,
             end_ms: 2_000,
             count: Some(10),
-            filters: parse_cpp_feature_filters(["action_type = 7", "duration <= 34"])
+            filters: parse_feature_filters(["action_type = 7", "duration <= 34"])
                 .unwrap_or_default(),
         },
     });
     record_golden_case(
         &mut cases,
-        "cpp_feature_filtered_query",
+        "native_feature_filtered_query",
         matches!(
             filtered.response,
             CommandResponse::FeaturePoints { ref points }
@@ -110,7 +110,7 @@ pub fn cpp_feature_sequence_golden_corpus_report() -> CppGoldenCorpusReport {
     let aggregate = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::FeatureAggQuery {
-            key: "cpp-golden-aggregate".to_string(),
+            key: "native-golden-aggregate".to_string(),
             start_ms: 0,
             end_ms: 10,
             aggregator: "sum".to_string(),
@@ -119,7 +119,7 @@ pub fn cpp_feature_sequence_golden_corpus_report() -> CppGoldenCorpusReport {
     });
     record_golden_case(
         &mut cases,
-        "cpp_feature_empty_sum_aggregate",
+        "native_feature_empty_sum_aggregate",
         aggregate.response == CommandResponse::Aggregate { value: 0 },
         "Empty feature aggregate returns neutral zero",
     );
@@ -128,13 +128,13 @@ pub fn cpp_feature_sequence_golden_corpus_report() -> CppGoldenCorpusReport {
     let add_rows = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::SequenceAdd {
-            key: "cpp-golden-sequence".to_string(),
+            key: "native-golden-sequence".to_string(),
             rows: rows.clone(),
         },
     });
     record_golden_case(
         &mut cases,
-        "cpp_sequence_add_status",
+        "native_sequence_add_status",
         add_rows.status.ok,
         "sequence rows append through timestamped KV pages",
     );
@@ -142,17 +142,17 @@ pub fn cpp_feature_sequence_golden_corpus_report() -> CppGoldenCorpusReport {
     let sequence_query = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::SequenceQuery {
-            key: "cpp-golden-sequence".to_string(),
+            key: "native-golden-sequence".to_string(),
             start_ms: 0,
             end_ms: 2_000,
             count: 10,
-            filters: parse_cpp_feature_filters(["gid >= 42", "action_type = 7"])
+            filters: parse_feature_filters(["gid >= 42", "action_type = 7"])
                 .unwrap_or_default(),
         },
     });
     record_golden_case(
         &mut cases,
-        "cpp_sequence_filtered_query",
+        "native_sequence_filtered_query",
         sequence_query.response
             == CommandResponse::SequenceRows {
                 rows: vec![matching, replacement],
@@ -163,7 +163,7 @@ pub fn cpp_feature_sequence_golden_corpus_report() -> CppGoldenCorpusReport {
     let page_layout = engine.storage_recovery_report(1).feature_page_layout;
     record_golden_case(
         &mut cases,
-        "cpp_timestamped_kv_shared_page_layout",
+        "native_timestamped_kv_shared_page_layout",
         page_layout.packed_feature_pages >= 1
             && page_layout.unique_feature_page_refs < page_layout.indexed_feature_points
             && !page_layout.has_errors(),
@@ -172,8 +172,8 @@ pub fn cpp_feature_sequence_golden_corpus_report() -> CppGoldenCorpusReport {
 
     let total_cases = cases.len();
     let passed_cases = cases.iter().filter(|case| case.passed).count();
-    CppGoldenCorpusReport {
-        corpus: "feature_sequence_cpp_proto_v1".to_string(),
+    GoldenCorpusReport {
+        corpus: "feature_sequence_proto_v1".to_string(),
         total_cases,
         passed_cases,
         failed_cases: total_cases.saturating_sub(passed_cases),
@@ -181,8 +181,8 @@ pub fn cpp_feature_sequence_golden_corpus_report() -> CppGoldenCorpusReport {
     }
 }
 
-pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
-    let feature_report = cpp_feature_sequence_golden_corpus_report();
+pub fn native_api_golden_corpus_report() -> GoldenCorpusReport {
+    let feature_report = native_feature_sequence_golden_corpus_report();
     let mut cases = feature_report.cases;
     let engine = TemporalEngine::default();
     engine.load_shard(1);
@@ -230,7 +230,7 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
     });
     record_golden_case(
         &mut cases,
-        "cpp_redis_string_hash_set_core",
+        "native_redis_string_hash_set_core",
         string_set.status.ok
             && string_get.response
                 == CommandResponse::Bytes {
@@ -270,7 +270,7 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
     });
     record_golden_case(
         &mut cases,
-        "cpp_common_exists_expire_ttl",
+        "native_common_exists_expire_ttl",
         common_exists.response == CommandResponse::Integer { value: 1 }
             && common_expire.status.ok
             && matches!(common_ttl.response, CommandResponse::Integer { value } if value > 0),
@@ -316,7 +316,7 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
     });
     record_golden_case(
         &mut cases,
-        "cpp_control_state_family_aggregates",
+        "native_control_state_family_aggregates",
         control_state_sum.response == CommandResponse::Integer { value: 12 }
             && control_state_cpc.response == CommandResponse::Integer { value: 7 },
         "ControlState H/CPC/FOL family aggregate command shapes preserve local semantics",
@@ -366,7 +366,7 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
     });
     record_golden_case(
         &mut cases,
-        "cpp_control_state_selection_first_last",
+        "native_control_state_selection_first_last",
         first.response
             == CommandResponse::Bytes {
                 value: Some(b"early-first".to_vec()),
@@ -391,7 +391,7 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
     });
     record_golden_case(
         &mut cases,
-        "cpp_control_state_manager_summary",
+        "native_control_state_manager_summary",
         matches!(manager.response, CommandResponse::HashEntries { ref entries }
             if entries.iter().any(|(field, value)| field == "h_sum" && value.as_slice() == b"12")
                 && entries.iter().any(|(field, value)| field == "cpc_sum" && value.as_slice() == b"7")
@@ -418,7 +418,7 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
     let storage_readiness = engine.storage_production_readiness_report(1);
     record_golden_case(
         &mut cases,
-        "cpp_admin_storage_readiness_report",
+        "native_admin_storage_readiness_report",
         storage_readiness.production_ready
             && storage_readiness.page_store_bytes_written > 0
             && storage_readiness.feature_page_layout.packed_feature_pages >= 1,
@@ -427,8 +427,8 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
 
     let total_cases = cases.len();
     let passed_cases = cases.iter().filter(|case| case.passed).count();
-    CppGoldenCorpusReport {
-        corpus: "cpp_api_golden_corpus_v1".to_string(),
+    GoldenCorpusReport {
+        corpus: "native_api_golden_corpus_v1".to_string(),
         total_cases,
         passed_cases,
         failed_cases: total_cases.saturating_sub(passed_cases),
@@ -437,12 +437,12 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
 }
 
 fn record_golden_case(
-    cases: &mut Vec<CppGoldenCaseReport>,
+    cases: &mut Vec<GoldenCaseReport>,
     name: &str,
     passed: bool,
     detail: &str,
 ) {
-    cases.push(CppGoldenCaseReport {
+    cases.push(GoldenCaseReport {
         name: name.to_string(),
         passed,
         detail: detail.to_string(),

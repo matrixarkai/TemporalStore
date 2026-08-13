@@ -882,7 +882,7 @@ class _CodexHookOutputPart3:
             account_id="acct_local",
             tenant_id="tenant_codex",
             user_id="local_user",
-            session_id="codex-cpp-session-1",
+            session_id="codex-native-session-1",
             team="codex",
             project="temporalstore",
             session_commit_threshold=20,
@@ -938,7 +938,7 @@ class _CodexHookOutputPart3:
             account_id="acct_local",
             tenant_id="tenant_codex",
             user_id="local_user",
-            session_id="codex-cpp-session-1",
+            session_id="codex-native-session-1",
             team="codex",
             project="temporalstore",
             session_commit_threshold=20,
@@ -997,7 +997,7 @@ class _CodexHookOutputPart3:
             account_id="acct_local",
             tenant_id="tenant_codex",
             user_id="local_user",
-            session_id="codex-cpp-session-1",
+            session_id="codex-native-session-1",
             team="codex",
             project="temporalstore",
             session_commit_threshold=20,
@@ -1126,7 +1126,7 @@ class _CodexHookOutputPart3:
         rows = matrixark_http._hook_dedupe_rows(
             [
                 {
-                    "backend": "c++",
+                    "backend": "native",
                     "session_id": "codex:session",
                     "text": "user: same prompt",
                     "timestamp_ms": 100,
@@ -1134,7 +1134,7 @@ class _CodexHookOutputPart3:
                     "projection": "records",
                 },
                 {
-                    "backend": "c++",
+                    "backend": "native",
                     "session_id": "codex:session",
                     "text": "same prompt",
                     "timestamp_ms": 100,
@@ -1150,16 +1150,16 @@ class _CodexHookOutputPart3:
     def test_dual_hook_has_no_persistent_hook_logs(self) -> None:
         script = (Path(__file__).resolve().parents[1] / "tools" / "matrixark_codex_dual_hook.sh").read_text()
 
-        self.assertIn('CPP_HOOK_STDOUT="/dev/null"', script)
+        self.assertIn('NATIVE_HOOK_STDOUT="/dev/null"', script)
         self.assertIn('RUST_PUBLISH_STDERR="/dev/null"', script)
-        self.assertIn('CPP_PUBLISH_STDERR="/dev/null"', script)
+        self.assertIn('NATIVE_PUBLISH_STDERR="/dev/null"', script)
         self.assertIn('export MATRIXARK_CODEX_HOOK_DIAG_LOG=""', script)
         self.assertNotIn('MATRIXARK_CODEX_HOOK_LOG_DIR', script)
         self.assertNotIn('dispatch-diagnostics.jsonl', script)
         self.assertNotIn('with open(os.environ.get("MATRIXARK_CODEX_HOOK_DIAG_LOG"', script)
-        self.assertNotIn('cpp-$EVENT.out', script)
+        self.assertNotIn('native-$EVENT.out', script)
         self.assertNotIn('rust-service-publish.err', script)
-        self.assertNotIn('cpp-direct-publish.err', script)
+        self.assertNotIn('native-direct-publish.err', script)
 
     def test_python_hook_live_fast_path_defaults_on_with_explicit_opt_out(self) -> None:
         original_env = os.environ.pop("MATRIXARK_HOOK_AUTO_BATCH_EXTRACT", None)
@@ -1284,8 +1284,8 @@ class _CodexHookOutputPart3:
 
         self.assertIn('f"{prefix}:raw_ingestion:records", raw_record', script)
         self.assertIn("for record in rust_live_extraction_records():", script)
-        self.assertIn("for record in cpp_live_extraction_records():", script)
-        self.assertIn('MATRIXARK_CPP_FULL_HOOK_PREFIX:-matrixark:mcp:codex', script)
+        self.assertIn("for record in native_live_extraction_records():", script)
+        self.assertIn('MATRIXARK_NATIVE_FULL_HOOK_PREFIX:-matrixark:mcp:codex', script)
         self.assertIn('MATRIXARK_RUST_FULL_HOOK_PREFIX:-matrixark:mcp:codex', script)
 
     def test_dual_hook_live_projection_emits_profile_embeddings_without_trivial_segments(self) -> None:
@@ -1322,7 +1322,7 @@ class _CodexHookOutputPart3:
 
 
     def test_codex_hook_messages_both_skips_local_proxy_debug_reader(self) -> None:
-        original_cpp = matrixark_http._CppHookStoreReader
+        original_native = matrixark_http._HookStoreReader
         original_service = matrixark_http._RustServiceHookStoreReader
         original_local = matrixark_http._RustLocalHookStoreReader
         calls = []
@@ -1337,7 +1337,7 @@ class _CodexHookOutputPart3:
                 return None
 
         try:
-            matrixark_http._CppHookStoreReader = lambda args: calls.append("c++") or EmptyReader()
+            matrixark_http._HookStoreReader = lambda args: calls.append("native") or EmptyReader()
             matrixark_http._RustServiceHookStoreReader = lambda args: calls.append("rust-service") or EmptyReader()
 
             def fail_local(args):
@@ -1346,11 +1346,11 @@ class _CodexHookOutputPart3:
             matrixark_http._RustLocalHookStoreReader = fail_local
             matrixark_http.query_codex_hook_messages({"backend": "both", "top_k": 1})
         finally:
-            matrixark_http._CppHookStoreReader = original_cpp
+            matrixark_http._HookStoreReader = original_native
             matrixark_http._RustServiceHookStoreReader = original_service
             matrixark_http._RustLocalHookStoreReader = original_local
 
-        self.assertEqual(["c++", "rust-service"], calls)
+        self.assertEqual(["native", "rust-service"], calls)
 
     def test_query_effective_synthetic_status_uses_text_classifier(self) -> None:
         self.assertTrue(matrixark_http._hook_text_is_synthetic("matrixark plain string prompt hook proof 1784770203"))

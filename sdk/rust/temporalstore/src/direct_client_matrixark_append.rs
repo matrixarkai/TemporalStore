@@ -8,7 +8,7 @@ use std::ptr;
 use crate::direct_client::Client;
 use crate::direct_ffi::*;
 use crate::direct_helpers::{check, cstring};
-use crate::direct_matrixark_guard::cpp_matrixark_c_api_bridge_allowed;
+use crate::direct_matrixark_guard::native_matrixark_c_api_bridge_allowed;
 use crate::Result;
 
 impl Client {
@@ -31,7 +31,7 @@ impl Client {
         if entries.is_empty() && count_key.unwrap_or("").is_empty() {
             return Ok(());
         }
-        cpp_matrixark_c_api_bridge_allowed("matrixark_batch_append_records")?;
+        native_matrixark_c_api_bridge_allowed("matrixark_batch_append_records")?;
         let mut strings: Vec<CString> = Vec::with_capacity(entries.len() * 4 + 3);
         let mut c_entries: Vec<CHashEntry> = Vec::with_capacity(entries.len());
         for (key, field, value) in entries {

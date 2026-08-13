@@ -36,7 +36,7 @@ unbounded product-visible ContextIndex rows for every term
 
 The pre-existing TemporalStore feature API has this shape:
 
-```cpp
+```native
 struct TemporalFeaturePoint {
     uint64_t timestamp;
     std::string value;

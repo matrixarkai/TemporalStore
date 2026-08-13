@@ -107,19 +107,19 @@ PHASES: tuple[Phase, ...] = (
             "test_temporalstore_performance_execution_redaction.py",
             "validate_temporalstore_performance_execution_redaction.py",
             "test_temporalstore_performance_evidence_import.py",
-            "validate_temporalstore_cpp_rust_performance_parity.py",
+            "validate_temporalstore_rust_performance_parity.py",
         ),
     ),
     Phase(
         9,
         "shared storage/proxy/Raft evidence",
         (
-            "validate_temporalstore_cpp_rust_feature_execution.py",
+            "validate_temporalstore_rust_feature_execution.py",
             "validate_storage_proxy_client_parity_coverage.py",
             "validate_storage_unified_case_report_pair.py",
             "validate_raft_storage_parity_evidence.py",
             "validate_page_address_compatibility_corpus.py",
-            "validate_temporalstore_cpp_rust_goal_parity.py",
+            "validate_temporalstore_rust_goal_parity.py",
         ),
     ),
 )

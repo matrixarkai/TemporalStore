@@ -25,7 +25,7 @@ class FamilyConfig:
     case_ids: tuple[str, ...]
     rust_tests: tuple[str, ...]
     rust_command: str
-    cpp_suites: tuple[str, ...]
+    native_suites: tuple[str, ...]
 
 
 FAMILIES: dict[str, FamilyConfig] = {
@@ -82,10 +82,10 @@ FAMILIES: dict[str, FamilyConfig] = {
             "crates/temporalstore-rust/src/engine.rs::storage_manager_active_eviction_supports_weighted_dump_drop_batch_and_cooldown",
             "crates/temporalstore-rust/src/engine.rs::storage_manager_page_gc_refuses_reclaim_with_retained_dependencies",
             "crates/temporalstore-rust/src/engine.rs::storage_manager_index_gc_thresholds_budget_dirty_commit_and_restart_recovery",
-            "crates/temporalstore-rust/src/engine.rs::storage_manager_cycle_reports_cpp_order_without_mutating_on_dry_run",
+            "crates/temporalstore-rust/src/engine.rs::storage_manager_cycle_reports_order_without_mutating_on_dry_run",
         ),
         "cargo test -p temporalstore-rust shared_store_ -- --test-threads=1",
-        ("cpp_storage_parity",),
+        ("native_storage_parity",),
     ),
     "Raft": FamilyConfig(
         "Raft",
@@ -102,14 +102,14 @@ FAMILIES: dict[str, FamilyConfig] = {
             "crates/temporalstore-rust/src/e2e.rs::e2e_uses_raft_replication_by_default",
         ),
         "cargo test -p temporalstore-rust e2e_uses_raft_replication_by_default -- --test-threads=1",
-        ("cpp_data_raft_parity",),
+        ("native_data_raft_parity",),
     ),
     "Redis/admin": FamilyConfig(
         "Redis/admin",
-        ("cpp_redis_live_storage_smoke_parity_surfaces", "redis_compatible_set_core"),
-        ("crates/temporalstore-rust/src/bin/server.rs::server_ping_routes_match_cpp_ping_rpc",),
-        "cargo test -p temporalstore-rust server_ping_routes_match_cpp_ping_rpc -- --test-threads=1",
-        ("cpp_storage_parity",),
+        ("native_redis_live_storage_smoke_parity_surfaces", "redis_compatible_set_core"),
+        ("crates/temporalstore-rust/src/bin/server.rs::server_ping_routes_match_ping_rpc",),
+        "cargo test -p temporalstore-rust server_ping_routes_match_ping_rpc -- --test-threads=1",
+        ("native_storage_parity",),
     ),
     "Feature": FamilyConfig(
         "Feature",
@@ -118,13 +118,13 @@ FAMILIES: dict[str, FamilyConfig] = {
             "feature_policy_filter_aggregate_lifecycle",
             "feature_nested_proto_aggregate_semantics",
         ),
-        ("crates/temporalstore-rust/src/engine.rs::feature_query_filtered_matches_cpp_protobuf_feature_point",),
-        "cargo test -p temporalstore-rust feature_query_filtered_matches_cpp_protobuf_feature_point -- --test-threads=1",
+        ("crates/temporalstore-rust/src/engine.rs::feature_query_filtered_matches_protobuf_feature_point",),
+        "cargo test -p temporalstore-rust feature_query_filtered_matches_protobuf_feature_point -- --test-threads=1",
         (),
     ),
     "Sequence": FamilyConfig(
         "Sequence",
-        ("sequence_cpp_feature_rows", "sequence_batch_filter_groups"),
+        ("sequence_feature_rows", "sequence_batch_filter_groups"),
         ("crates/temporalstore-rust/src/engine.rs::sequence_query_filters_typed_rows",),
         "cargo test -p temporalstore-rust sequence_query_filters_typed_rows -- --test-threads=1",
         (),
@@ -132,8 +132,8 @@ FAMILIES: dict[str, FamilyConfig] = {
     "IPS": FamilyConfig(
         "IPS",
         ("ips_options_range", "ips_snapshot_stat_filter_batch"),
-        ("crates/temporalstore-rust/src/engine.rs::ips_range_and_batch_queries_match_cpp_style_read_shapes",),
-        "cargo test -p temporalstore-rust ips_range_and_batch_queries_match_cpp_style_read_shapes -- --test-threads=1",
+        ("crates/temporalstore-rust/src/engine.rs::ips_range_and_batch_queries_match_style_read_shapes",),
+        "cargo test -p temporalstore-rust ips_range_and_batch_queries_match_style_read_shapes -- --test-threads=1",
         (),
     ),
     "Risk": FamilyConfig(
@@ -147,17 +147,17 @@ FAMILIES: dict[str, FamilyConfig] = {
         "context",
         (
             "context_events_segments_entities_child_refs",
-            "context_cpp_wire_model_descriptor_roundtrip",
+            "context_wire_model_descriptor_roundtrip",
             "context_embeddings_summaries_l0_l1_pipeline",
             "context_compression_secondary_index_query_debug_flow",
             "context_event_index_audit_dirty_models",
         ),
         (
-            "crates/temporalstore-rust/src/engine.rs::context_models_match_cpp_keys_timeline_pages_and_filters",
-            "crates/temporalstore-rust/src/types.rs::context_models_round_trip_cpp_wire_payloads_and_type_alias",
+            "crates/temporalstore-rust/src/engine.rs::context_models_match_keys_timeline_pages_and_filters",
+            "crates/temporalstore-rust/src/types.rs::context_models_round_trip_wire_payloads_and_type_alias",
         ),
-        "cargo test -p temporalstore-rust context_models_match_cpp_keys_timeline_pages_and_filters -- --test-threads=1",
-        ("cpp_context_pipeline_parity",),
+        "cargo test -p temporalstore-rust context_models_match_keys_timeline_pages_and_filters -- --test-threads=1",
+        ("native_context_pipeline_parity",),
     ),
     "control plane": FamilyConfig(
         "control plane",
@@ -165,18 +165,18 @@ FAMILIES: dict[str, FamilyConfig] = {
             "control_metaserver_scheduler_lifecycle_workflow",
             "control_scheduler_token_stale_rejection",
             "control_data_node_load_reload_unload_lifecycle",
-            "control_cpp_server_service_alias_surface",
+            "control_server_service_alias_surface",
         ),
         (
             "crates/temporalstore-rust/src/bin/metaserver.rs::metaserver_scheduler_execute_next_installs_token_then_loads_node",
-            "crates/temporalstore-rust/src/bin/server.rs::cpp_server_service_aliases_cover_partition_manager_surface",
+            "crates/temporalstore-rust/src/bin/server.rs::native_server_service_aliases_cover_partition_manager_surface",
         ),
         "cargo test -p temporalstore-rust metaserver_scheduler_execute_next_installs_token_then_loads_node -- --test-threads=1",
         (
-            "cpp_client_control_plane_parity",
-            "cpp_proxy_control_plane_parity",
-            "cpp_data_node_lifecycle_parity",
-            "cpp_metaserver_control_plane_parity",
+            "native_client_control_plane_parity",
+            "native_proxy_control_plane_parity",
+            "native_data_node_lifecycle_parity",
+            "native_metaserver_control_plane_parity",
         ),
     ),
     "ingestion": FamilyConfig(
@@ -190,14 +190,14 @@ FAMILIES: dict[str, FamilyConfig] = {
             "crates/temporalstore-rust/src/bin/server.rs::server_ingest_batch_routes_execute_api_kafka_and_flink_records",
         ),
         "cargo test -p temporalstore-rust server_ingest_batch_routes_execute_api_kafka_and_flink_records -- --test-threads=1",
-        ("cpp_ingestion_parity",),
+        ("native_ingestion_parity",),
     ),
     "ops/scale": FamilyConfig(
         "ops/scale",
         ("ops_scale_readiness_slo_gate", "raft_production_gate"),
         ("crates/temporalstore-rust/src/bin/readiness_gate.rs::readiness_gate_can_filter_one_service",),
         "cargo test -p temporalstore-rust readiness_gate_can_filter_one_service -- --test-threads=1",
-        ("cpp_ops_scale_parity",),
+        ("native_ops_scale_parity",),
     ),
 }
 
@@ -212,30 +212,30 @@ def corpus_case_names(corpus: dict[str, Any]) -> set[str]:
 
 def adapter_suites(corpus: dict[str, Any]) -> set[str]:
     suites: set[str] = set()
-    for entry in corpus.get("coverage", {}).get("cpp_adapter_coverage", []):
+    for entry in corpus.get("coverage", {}).get("native_adapter_coverage", []):
         suites.update(entry.get("suites", []))
     return suites
 
 
-def cpp_surface_report(corpus: dict[str, Any], config: FamilyConfig, cpp_repo: Path) -> dict[str, Any]:
+def native_surface_report(corpus: dict[str, Any], config: FamilyConfig, native_repo: Path) -> dict[str, Any]:
     required_paths: set[str] = set()
     blockers: list[str] = []
-    for entry in corpus.get("coverage", {}).get("cpp_adapter_coverage", []):
+    for entry in corpus.get("coverage", {}).get("native_adapter_coverage", []):
         suites = set(entry.get("suites", []))
-        if suites & set(config.cpp_suites) and entry.get("blocker"):
+        if suites & set(config.native_suites) and entry.get("blocker"):
             blockers.append(str(entry["blocker"]))
     for case in corpus.get("cases", []):
         for step in case.get("steps", []):
             command = step.get("command", {})
             if command.get("kind") != "existing_test":
                 continue
-            if command.get("suite") not in config.cpp_suites:
+            if command.get("suite") not in config.native_suites:
                 continue
             required_paths.update(command.get("required_paths", []))
-    missing = sorted(path for path in required_paths if not (cpp_repo / path).exists())
+    missing = sorted(path for path in required_paths if not (native_repo / path).exists())
     return {
         "family": config.name,
-        "cpp_repo": str(cpp_repo),
+        "native_repo": str(native_repo),
         "required_path_count": len(required_paths),
         "missing_required_paths": missing,
         "temporary_static_blockers": sorted(set(blockers)),
@@ -271,7 +271,7 @@ def validate_family(config: FamilyConfig, corpus: dict[str, Any]) -> dict[str, A
     cases = corpus_case_names(corpus)
     suites = adapter_suites(corpus)
     missing_cases = sorted(set(config.case_ids) - cases)
-    missing_suites = sorted(set(config.cpp_suites) - suites)
+    missing_suites = sorted(set(config.native_suites) - suites)
     missing_markers = [
         test_id
         for test_id in config.rust_tests
@@ -284,9 +284,9 @@ def validate_family(config: FamilyConfig, corpus: dict[str, Any]) -> dict[str, A
         "case_ids": list(config.case_ids),
         "rust_tests": list(config.rust_tests),
         "rust_command": config.rust_command,
-        "cpp_suites": list(config.cpp_suites),
+        "native_suites": list(config.native_suites),
         "missing_case_ids": missing_cases,
-        "missing_cpp_adapter_suites": missing_suites,
+        "missing_adapter_suites": missing_suites,
         "rust_tests_missing_shared_corpus_marker": missing_markers,
     }
 
@@ -295,14 +295,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--family", choices=sorted(FAMILIES) + ["all"], default="all")
     parser.add_argument("--run-rust", action="store_true")
-    parser.add_argument("--cpp-repo", type=Path)
+    parser.add_argument("--native-repo", type=Path)
     parser.add_argument(
-        "--run-cpp-runner",
+        "--run-native-runner",
         action="store_true",
         help="run the unified runner instead of only checking static surfaces",
     )
     parser.add_argument("--rust-report", type=Path)
-    parser.add_argument("--cpp-report", type=Path)
+    parser.add_argument("--native-report", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
@@ -315,26 +315,26 @@ def main() -> int:
     if args.run_rust:
         for config in selected:
             run_shell(config.rust_command)
-    if args.cpp_repo and args.run_cpp_runner:
+    if args.native_repo and args.run_runner:
         run_shell(
             "python3 tools/run_temporalstore_unified_tests.py "
-            f"--corpus {CORPUS} --cpp --require-cpp --cpp-repo {args.cpp_repo}"
+            f"--corpus {CORPUS} --native --require-native --native-repo {args.native_repo}"
         )
-    elif args.cpp_repo:
-        cpp_reports = [
-            cpp_surface_report(corpus, config, args.cpp_repo)
+    elif args.native_repo:
+        native_reports = [
+            native_surface_report(corpus, config, args.native_repo)
             for config in selected
-            if config.cpp_suites
+            if config.native_suites
         ]
-        result["cpp_static_surface_reports"] = cpp_reports
-        if any(not report["ready"] for report in cpp_reports):
+        result["native_static_surface_reports"] = native_reports
+        if any(not report["ready"] for report in native_reports):
             result["ready"] = False
-    if args.rust_report or args.cpp_report:
-        if not args.rust_report or not args.cpp_report:
-            raise SystemExit("--rust-report and --cpp-report must be passed together")
+    if args.rust_report or args.native_report:
+        if not args.rust_report or not args.native_report:
+            raise SystemExit("--rust-report and --native-report must be passed together")
         run_shell(
-            "python3 tools/compare_unified_cpp_rust_case_reports.py "
-            f"--rust-report {args.rust_report} --cpp-report {args.cpp_report}"
+            "python3 tools/compare_unified_rust_case_reports.py "
+            f"--rust-report {args.rust_report} --native-report {args.native_report}"
         )
 
     text = json.dumps(result, indent=2, sort_keys=True)

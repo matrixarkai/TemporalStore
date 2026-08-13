@@ -40,7 +40,7 @@ agent_name = codex
 user_id = local_user
 
 [temporalstore]
-backend = cpp        # cpp | rust
+backend = native        # native | rust
 mode = local-single-node
 storage = async
 raft = false
@@ -116,7 +116,7 @@ grafana                 optional dashboards
 
 The current repo already includes:
 
-- `tools/run_matrixark_cpp_docker_oss_scale.sh`
+- `tools/run_matrixark_docker_oss_scale.sh`
 - `tools/temporalstore-monitoring-ui/`
 - `tools/temporalstore-prometheus/docker-compose.yml`
 - `tools/temporalstore-prometheus/vars-exporter/`
@@ -126,7 +126,7 @@ The installation target is to wrap those into one command:
 ```bash
 matrixark-server init --home ~/.matrixark
 matrixark-server doctor
-matrixark-server start --backend cpp --local
+matrixark-server start --backend native --local
 matrixark-server start --backend rust --local
 matrixark-server apply-key --agent codex
 ```
@@ -137,7 +137,7 @@ MatrixArk should operate against either TemporalStore implementation through the
 
 | Area | TemporalStore | Rust TemporalStore | Required parity |
 | --- | --- | --- | --- |
-| Local developer mode | Native process, direct SDK, or proxy/gateway. | Long-lived Rust proxy or binding; CLI-per-operation is debug only. | Same `backend=cpp|rust` switch in config and Docker. |
+| Local developer mode | Native process, direct SDK, or proxy/gateway. | Long-lived Rust proxy or binding; CLI-per-operation is debug only. | Same `backend=native|rust` switch in config and Docker. |
 | Serving data | ContextNode, ContextSummary, ContextEmbedding, ContextEvent, ContextEntity, ContextIndex, ResourceChunk, SkillManifest, ContextPackAudit. | Same logical records and wire shape. | Same record keys, timestamps, ids, and replay output. |
 | Ingestion | API, MCP, hook, batch/session commit, streaming, resource, skill, feedback. | Same ingestion APIs. | Same idempotency behavior and audit refs. |
 | Retrieval | Tree-first traversal, secondary-index filtering, event/entity/resource/skill selection, token-budget packing. | Same retrieval semantics. | Same selected refs and dropped-ref reasons for parity tests. |
@@ -147,7 +147,7 @@ MatrixArk should operate against either TemporalStore implementation through the
 Backend selection should be explicit:
 
 ```bash
-export MATRIXARK_TEMPORALSTORE_BACKEND=cpp
+export MATRIXARK_TEMPORALSTORE_BACKEND=native
 python3 tools/matrixark_mcp_server.py --event-log "$MATRIXARK_MCP_EVENT_LOG"
 
 export MATRIXARK_TEMPORALSTORE_BACKEND=rust
@@ -199,7 +199,7 @@ Minimum health payload:
   "status": "ready",
   "server": {"uptime_s": 120, "version": "dev"},
   "temporalstore": {
-    "backend": "cpp",
+    "backend": "native",
     "mode": "local-single-node",
     "status": "ready",
     "storage": "async",
@@ -221,7 +221,7 @@ Diagnostic commands:
 
 ```bash
 matrixark-server doctor
-matrixark-server doctor --backend cpp
+matrixark-server doctor --backend native
 matrixark-server doctor --backend rust
 matrixark-server list-keys
 matrixark-server inspect-node tenant:tenant_codex/user:local_user/session:thread-1
@@ -280,7 +280,7 @@ Common fixes:
 - Slow retrieval: check model encode latency, TemporalStore write/audit backlog, and tree traversal fallback.
 - Resource miss: inspect parser output, chunk hashes, L0 summary, chunk embeddings, and resource access scope.
 - Skill miss: inspect skill triggers, owner scope, status, precedence, and selected-skill audit.
-- Backend mismatch: run the same parity fixture with `backend=cpp` and `backend=rust`; compare ContextPack JSONL, selected refs, dropped refs, and audit rows.
+- Backend mismatch: run the same parity fixture with `backend=native` and `backend=rust`; compare ContextPack JSONL, selected refs, dropped refs, and audit rows.
 - Rust slow path: verify the Rust backend is a Rust proxy/binding, not CLI-per-operation.
 - slow path: verify async oplog, batch append, audit buffering, and data-node count before raising retrieval worker concurrency.
 

@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import validate_temporalstore_cpp_rust_feature_execution as validator
+import validate_temporalstore_rust_feature_execution as validator
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -18,20 +18,20 @@ def _write_json(path: Path, payload: dict) -> None:
 def _static_corpus() -> dict:
     return {
         "coverage": {
-            "cpp_adapter_coverage": [
+            "native_adapter_coverage": [
                 {
                     "family": "storage/cache",
                     "status": "temporary_static_surface_gate",
-                    "suites": ["cpp_storage_parity"],
+                    "suites": ["native_storage_parity"],
                     "blocker": "native runner missing",
                     "expected_runner_command": (
-                        "TS_CPP_UNIFIED_NATIVE_CMD=cpp-storage-corpus-runner "
+                        "TS_NATIVE_UNIFIED_NATIVE_CMD=native-storage-corpus-runner "
                         "python3 tools/run_temporalstore_unified_tests.py "
-                        "--family storage/cache --cpp --corpus {corpus} --require-cpp-native"
+                        "--family storage/cache --native --corpus {corpus} --require-native-native"
                     ),
                     "comparison_command": (
-                        "python3 tools/compare_unified_cpp_rust_case_reports.py "
-                        "--rust-report rust.json --cpp-report cpp.json "
+                        "python3 tools/compare_unified_rust_case_reports.py "
+                        "--rust-report rust.json --native-report native.json "
                         "--require-schema temporalstore_unified_case_report_v1"
                     ),
                     "exit_criteria": [
@@ -46,7 +46,7 @@ def _static_corpus() -> dict:
             {
                 "case": "cache_refill",
                 "family": "storage/cache",
-                "steps": [{"command": {"suite": "cpp_storage_parity"}}],
+                "steps": [{"command": {"suite": "native_storage_parity"}}],
             }
         ],
     }
@@ -54,7 +54,7 @@ def _static_corpus() -> dict:
 
 def _static_matrix(blockers: list[str]) -> dict:
     return {
-        "schema": "temporalstore_cpp_rust_feature_execution_matrix_v1",
+        "schema": "temporalstore_rust_feature_execution_matrix_v1",
         "status": {"feature_correct": False, "open_blockers": blockers},
         "allowed_statuses": sorted(validator.ALLOWED_STATUSES),
         "completion_statuses": sorted(validator.COMPLETION_STATUSES),
@@ -62,18 +62,18 @@ def _static_matrix(blockers: list[str]) -> dict:
             {
                 "family": "storage/cache",
                 "status": "temporary_static_surface_gate",
-                "native_cpp_executable": False,
+                "native_executable": False,
                 "selected_case_count": 1,
                 "blocker": "native runner missing",
                 "expected_runner_command": (
-                    "TS_CPP_UNIFIED_NATIVE_CMD=cpp-storage-corpus-runner "
+                    "TS_NATIVE_UNIFIED_NATIVE_CMD=native-storage-corpus-runner "
                     "python3 tools/run_temporalstore_unified_tests.py "
-                    "--family storage/cache --cpp --corpus {corpus} --require-cpp-native"
+                    "--family storage/cache --native --corpus {corpus} --require-native-native"
                 ),
-                "suites": ["cpp_storage_parity"],
+                "suites": ["native_storage_parity"],
                 "comparison_command": (
-                    "python3 tools/compare_unified_cpp_rust_case_reports.py "
-                    "--rust-report rust.json --cpp-report cpp.json "
+                    "python3 tools/compare_unified_rust_case_reports.py "
+                    "--rust-report rust.json --native-report native.json "
                     "--require-schema temporalstore_unified_case_report_v1"
                 ),
                 "exit_criteria": [
@@ -125,7 +125,7 @@ class FeatureExecutionValidatorTest(unittest.TestCase):
             corpus = root / "corpus.json"
             payload = _static_matrix(["storage/cache native runner is still pending"])
             payload["rows"][0]["blocker"] = "short blocker"
-            payload["rows"][0]["expected_runner_command"] = "python3 tools/run_temporalstore_unified_tests.py --family storage/cache --cpp --corpus {corpus} --require-cpp-native"
+            payload["rows"][0]["expected_runner_command"] = "python3 tools/run_temporalstore_unified_tests.py --family storage/cache --native --corpus {corpus} --require-native-native"
             _write_json(matrix, payload)
             _write_json(corpus, _static_corpus())
             old_matrix, old_corpus = validator.MATRIX, validator.CORPUS

@@ -67,7 +67,7 @@ fn replicated_execute_selects_sync_async_or_raft_without_restart() {
 
 // shared-corpus: context_events_slabs_entities_child_refs context_event_index_audit_dirty_models
 #[test]
-fn context_models_match_cpp_keys_timeline_pages_and_filters() {
+fn context_models_match_keys_timeline_pages_and_filters() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024,
@@ -89,7 +89,7 @@ fn context_models_match_cpp_keys_timeline_pages_and_filters() {
         l1_ref: "l1://summary".to_string(),
         raw_metadata_ref: "raw://node".to_string(),
     };
-    let cpp_node = ContextNode {
+    let native_node = ContextNode {
         status: 0,
         summary_dirty: false,
         l1_ref: String::new(),
@@ -119,7 +119,7 @@ fn context_models_match_cpp_keys_timeline_pages_and_filters() {
     });
     assert!(matches!(
         get.response,
-        CommandResponse::ContextNode { node: Some(ref stored), .. } if stored == &cpp_node
+        CommandResponse::ContextNode { node: Some(ref stored), .. } if stored == &native_node
     ));
     let meta = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -131,7 +131,7 @@ fn context_models_match_cpp_keys_timeline_pages_and_filters() {
     assert!(matches!(
         meta.response,
         CommandResponse::Bytes { value: Some(ref bytes) }
-            if ContextNode::decode_context_value(bytes).as_ref() == Some(&cpp_node)
+            if ContextNode::decode_context_value(bytes).as_ref() == Some(&native_node)
     ));
 
     let entity = ContextEntity {
@@ -524,7 +524,7 @@ fn context_models_match_cpp_keys_timeline_pages_and_filters() {
 }
 
 #[test]
-fn context_query_events_applies_limit_after_filter_like_cpp() {
+fn context_query_events_applies_limit_after_filter_like_native() {
     // QueryEvents filters within the (bounded) scan and applies `limit` AFTER filtering.
     // Rust previously took `limit` off the raw timeline first, so matching events beyond the
     // first `limit` timeline entries were silently dropped -- e.g. many earlier
@@ -613,7 +613,7 @@ fn context_query_events_applies_limit_after_filter_like_cpp() {
 
 // shared-corpus: context_tree_embedding_summary_compression
 #[test]
-fn context_tree_embedding_summary_and_compression_match_cpp_round_trip() {
+fn context_tree_embedding_summary_and_compression_match_round_trip() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024,

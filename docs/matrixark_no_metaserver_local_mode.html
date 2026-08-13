@@ -27,8 +27,8 @@
 <pre>cd <repo>
 
 MATRIXARK_LOCAL_MODE=no-metaserver \
-MATRIXARK_TEMPORALSTORE_LOCAL_STORE=/tmp/matrixark-local-cpp.jsonl \
-bash tools/matrixark_mcp_cpp_server.sh --line-json</pre>
+MATRIXARK_TEMPORALSTORE_LOCAL_STORE=/tmp/matrixark-local-native.jsonl \
+bash tools/matrixark_mcp_server.sh --line-json</pre>
 <pre>python3 tools/matrixark_mcp_server.py \
   --backend temporalstore-local \
   --local-store /tmp/matrixark-local.jsonl \

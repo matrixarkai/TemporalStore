@@ -12,7 +12,7 @@ export MATRIXARK_TEMPORALSTORE_TABLE="${MATRIXARK_TEMPORALSTORE_TABLE:-deploy_ta
 export MATRIXARK_TEMPORALSTORE_PREFIX="${MATRIXARK_TEMPORALSTORE_PREFIX:-matrixark:codex-hook:rust-live-v2}"
 export MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS="${MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS:-60000}"
 export MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS="${MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS:-60000}"
-export MATRIXARK_MCP_AUTOSTART_CPP="${MATRIXARK_MCP_AUTOSTART_CPP:-0}"
+export MATRIXARK_MCP_AUTOSTART_NATIVE="${MATRIXARK_MCP_AUTOSTART_NATIVE:-0}"
 export MATRIXARK_LOCAL_MODE="${MATRIXARK_LOCAL_MODE:-cluster}"
 export MATRIXARK_TEMPORALSTORE_LOCAL_STORE="${MATRIXARK_TEMPORALSTORE_LOCAL_STORE:-$ROOT/.local/runtime/matrixark-rust-disk-fallback.jsonl}"
 fallback_default=1
@@ -72,7 +72,7 @@ if [[ "$MATRIXARK_LOCAL_MODE" == "no-metaserver" || "$MATRIXARK_LOCAL_MODE" == "
   start_disk_fallback "$@"
 fi
 
-if [[ ( "$MATRIXARK_MCP_BACKEND" == "temporalstore-rust" || "$MATRIXARK_MCP_BACKEND" == "temporalstore-rust-direct" ) && "$MATRIXARK_MCP_AUTOSTART_CPP" == "1" ]]; then
+if [[ ( "$MATRIXARK_MCP_BACKEND" == "temporalstore-rust" || "$MATRIXARK_MCP_BACKEND" == "temporalstore-rust-direct" ) && "$MATRIXARK_MCP_AUTOSTART_NATIVE" == "1" ]]; then
   host="${MATRIXARK_TEMPORALSTORE_METASERVER%%:*}"
   port="${MATRIXARK_TEMPORALSTORE_METASERVER##*:}"
   if ! timeout 2 bash -c "</dev/tcp/$host/$port" >/dev/null 2>&1; then
@@ -81,7 +81,7 @@ if [[ ( "$MATRIXARK_MCP_BACKEND" == "temporalstore-rust" || "$MATRIXARK_MCP_BACK
   fi
 fi
 
-if [[ ( "$MATRIXARK_MCP_BACKEND" == "temporalstore-rust" || "$MATRIXARK_MCP_BACKEND" == "temporalstore-rust-direct" ) && "$MATRIXARK_MCP_AUTOSTART_CPP" != "1" ]]; then
+if [[ ( "$MATRIXARK_MCP_BACKEND" == "temporalstore-rust" || "$MATRIXARK_MCP_BACKEND" == "temporalstore-rust-direct" ) && "$MATRIXARK_MCP_AUTOSTART_NATIVE" != "1" ]]; then
   host="${MATRIXARK_TEMPORALSTORE_METASERVER%%:*}"
   port="${MATRIXARK_TEMPORALSTORE_METASERVER##*:}"
   if ! timeout 1 bash -c "</dev/tcp/$host/$port" >/dev/null 2>&1; then

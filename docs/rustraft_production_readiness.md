@@ -68,7 +68,7 @@ TemporalStore consumes the separate RustRaft library and validates:
   data-node rollout, and metaserver rollout evidence.
 - Current data-node/metaserver readiness reports `production_ready`.
 - RustRaft/DataRaft-style semantics execute in Rust through the shared
-  corpus case `raft_cpp_rustraft_data_raft_semantics_in_rust`.
+  corpus case `raft_rustraft_data_raft_semantics_in_rust`.
 
 The intended production rule is:
 

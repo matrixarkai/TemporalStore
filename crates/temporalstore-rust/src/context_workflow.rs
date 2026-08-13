@@ -1274,10 +1274,10 @@ pub struct ContextPipelineStageReport {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextPipelineParityEvidence {
-    pub cpp_context_models_ready: bool,
-    pub cpp_context_model_ids_ready: bool,
-    pub cpp_context_timeline_semantics_ready: bool,
-    pub cpp_context_validation_limits_ready: bool,
+    pub native_context_models_ready: bool,
+    pub native_context_model_ids_ready: bool,
+    pub native_context_timeline_semantics_ready: bool,
+    pub native_context_validation_limits_ready: bool,
     pub reference_tiers_ready: bool,
     pub extraction_stage_ready: bool,
     pub retrieval_stage_ready: bool,
@@ -1316,10 +1316,10 @@ pub fn context_pipeline_parity_evidence() -> ContextPipelineParityEvidence {
             .to_string(),
     ];
     ContextPipelineParityEvidence {
-        cpp_context_models_ready: true,
-        cpp_context_model_ids_ready: true,
-        cpp_context_timeline_semantics_ready: true,
-        cpp_context_validation_limits_ready: true,
+        native_context_models_ready: true,
+        native_context_model_ids_ready: true,
+        native_context_timeline_semantics_ready: true,
+        native_context_validation_limits_ready: true,
         reference_tiers_ready: true,
         extraction_stage_ready: true,
         retrieval_stage_ready: true,

@@ -592,7 +592,7 @@ fn recovery_validates_all_timestamped_kv_page_families() {
 }
 
 #[test]
-fn control_state_change_matches_cpp_distinct_field_semantics() {
+fn control_state_change_matches_distinct_field_semantics() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     for (timestamp_ms, value) in [(10, "device-a"), (20, "device-a"), (30, "device-b")] {
@@ -711,7 +711,7 @@ fn control_state_query_supports_first_last_and_detail_list() {
 }
 
 #[test]
-fn control_state_selection_matches_cpp_first_last_string_semantics() {
+fn control_state_selection_matches_first_last_string_semantics() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
 
@@ -777,7 +777,7 @@ fn control_state_selection_matches_cpp_first_last_string_semantics() {
 }
 
 #[test]
-fn control_state_selection_omitted_occur_time_resolves_to_now_like_cpp() {
+fn control_state_selection_omitted_occur_time_resolves_to_now_like_native() {
     // FirstOrLastSet substitutes occur_time==0 with the current time before the FIRST/LAST
     // comparison; an omitted-occur-time FIRST set must NOT beat an earlier explicit record.
     let engine = TemporalEngine::default();
@@ -1299,7 +1299,7 @@ fn write_qps_config_rejects_writes_after_admission_limit() {
 }
 
 #[test]
-fn write_qps_zero_means_unlimited_not_deny_all_like_cpp() {
+fn write_qps_zero_means_unlimited_not_deny_all_like_native() {
     // QuotaManager treats a configured qps of 0 as UNLIMITED (it installs no limiter
     // and ConsumeQuota always succeeds), NOT deny-all. The live admission path must not
     // push a limit==0 (which the downstream gate rejects as "is zero"). Regression for the
@@ -1507,7 +1507,7 @@ fn tenant_read_qps_config_is_shared_across_tables() {
 }
 
 #[test]
-fn stats_include_cpp_style_partition_and_object_manager_accounting() {
+fn stats_include_style_partition_and_object_manager_accounting() {
     let engine = TemporalEngine::default();
     assert!(
         engine

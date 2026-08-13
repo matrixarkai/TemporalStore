@@ -8,7 +8,7 @@ use std::ptr;
 use crate::direct_client::Client;
 use crate::direct_ffi::*;
 use crate::direct_helpers::{check, cstring};
-use crate::direct_matrixark_guard::cpp_matrixark_c_api_bridge_allowed;
+use crate::direct_matrixark_guard::native_matrixark_c_api_bridge_allowed;
 use crate::Result;
 
 impl Client {
@@ -19,7 +19,7 @@ impl Client {
         shard_size: usize,
         request_json: &str,
     ) -> Result<String> {
-        cpp_matrixark_c_api_bridge_allowed("matrixark_scan_candidates")?;
+        native_matrixark_c_api_bridge_allowed("matrixark_scan_candidates")?;
         let count_key = cstring(count_key)?;
         let record_hash_key = cstring(record_hash_key)?;
         let request_json = cstring(request_json)?;
@@ -49,7 +49,7 @@ impl Client {
         shard_size: usize,
         request_json: &str,
     ) -> Result<String> {
-        cpp_matrixark_c_api_bridge_allowed("matrixark_retrieve_context_pack")?;
+        native_matrixark_c_api_bridge_allowed("matrixark_retrieve_context_pack")?;
         let count_key = cstring(count_key)?;
         let record_hash_key = cstring(record_hash_key)?;
         let request_json = cstring(request_json)?;

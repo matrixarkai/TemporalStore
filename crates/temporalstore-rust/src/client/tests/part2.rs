@@ -465,7 +465,7 @@ fn table_read_policy_can_select_secondary_from_metaserver_topology() {
 }
 
 #[test]
-fn client_router_matches_cpp_crc64_bucket_formula() {
+fn client_router_matches_crc64_bucket_formula() {
     assert_eq!(crc64_jones(b"123456789"), 0xe9c6d914c4b8d9ca);
     assert_eq!(bucket_id_for_key("123456789"), 0x3a71_b645);
     assert_eq!(
@@ -476,7 +476,7 @@ fn client_router_matches_cpp_crc64_bucket_formula() {
 }
 
 #[test]
-fn client_router_round_robins_secondary_reads_like_cpp_router() {
+fn client_router_round_robins_secondary_reads_like_router() {
     let mut route = CachedRoute {
         table_key: String::new(),
         partition_id: 1,

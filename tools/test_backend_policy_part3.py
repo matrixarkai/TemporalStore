@@ -502,7 +502,7 @@ class _BackendPolicyPart3:
 
         self.assertEqual(result["context_pack_id"], "native-pack-1")
         self.assertTrue(result["native_context_pack"])
-        self.assertEqual(result["context_pack_assembly"], "native_cpp_direct")
+        self.assertEqual(result["context_pack_assembly"], "native_direct")
         self.assertEqual(client.batch_hget_calls, 0)
         self.assertEqual(len(client.requests), 1)
         request = client.requests[0]

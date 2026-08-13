@@ -948,7 +948,7 @@ Canonical StorageManager/StoreManager lifecycle phases:
 Required StorageManager/StoreManager contract fields:
 
 - `manager_identity`
-- `cpp_public_name`
+- `native_public_name`
 - `rust_public_name`
 - `phase_order`
 - `phase_metrics`
@@ -961,7 +961,7 @@ Required StorageManager/StoreManager contract fields:
 Required manager identity values:
 
 - `manager_identity`: `StorageManager/StoreManager`
-- `cpp_public_name`: `StorageManager`
+- `native_public_name`: `StorageManager`
 - `rust_public_name`: `StoreManager`
 - `loop_metric`: `storage_manager_loop_ms`
 - `phase_order_enforced`: `true`
@@ -1044,7 +1044,7 @@ Required phase-to-metric mapping:
 
 `tools/validate_storage_lifecycle_parity.py` validates that this canonical
 lifecycle metric set is present in the shared contract and scale report runner.
-When given `--cpp-report` and `--rust-report`, it also verifies that both reports
+When given `--native-report` and `--rust-report`, it also verifies that both reports
 carry the same public storage tuning fields and lifecycle metric names.
 
 Canonical lifecycle reports must expose the same top-level shape for and

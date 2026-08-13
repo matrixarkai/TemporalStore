@@ -14,11 +14,11 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
-from validate_temporalstore_cpp_rust_goal_parity import (  # noqa: E402
+from validate_temporalstore_rust_goal_parity import (  # noqa: E402
     STATUS,
     validate_status,
 )
-from validate_temporalstore_cpp_rust_performance_parity import (  # noqa: E402
+from validate_temporalstore_rust_performance_parity import (  # noqa: E402
     MATRIX,
     _validate_missing_evidence_hint,
 )

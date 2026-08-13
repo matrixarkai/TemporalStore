@@ -7,7 +7,7 @@ The Raft corpus cases are harness-oriented ``existing_test`` entries. This
 runner verifies that each shared Raft case has required paths plus Rust
 process/harness evidence, and it can run the combined Rust distributed Raft
 parity gate once. Native execution remains optional through
-``TS_CPP_RAFT_NATIVE_CMD``.
+``TS_NATIVE_RAFT_NATIVE_CMD``.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CORPUS = ROOT / "compat" / "unified_temporalstore_cases.json"
-RAFT_SUITE = "cpp_data_raft_parity"
+RAFT_SUITE = "native_data_raft_parity"
 RAFT_CASES = {
     "storage_data_raft_replication_gtest",
     "raft_metaserver_membership_failover_snapshot",
@@ -95,12 +95,12 @@ def load_raft_cases(corpus_path: Path) -> list[dict]:
     return [cases_by_name[name] for name in sorted(RAFT_CASES)]
 
 
-def validate_case(case: dict, cpp_repo: Path | None) -> tuple[int, int]:
+def validate_case(case: dict, native_repo: Path | None) -> tuple[int, int]:
     steps = case.get("steps")
     if not isinstance(steps, list) or not steps:
         raise SystemExit(f"{case.get('name')}: Raft case has no steps")
     rust_runners = 0
-    cpp_paths = 0
+    native_paths = 0
     for step in steps:
         command = step.get("command", {})
         location = f"{case.get('name')}/{step.get('name')}"
@@ -143,13 +143,13 @@ def validate_case(case: dict, cpp_repo: Path | None) -> tuple[int, int]:
         required_paths = command.get("required_paths")
         if not isinstance(required_paths, list) or not required_paths:
             raise SystemExit(f"{location}: missing required_paths")
-        cpp_paths += len(required_paths)
-        if cpp_repo is not None:
+        native_paths += len(required_paths)
+        if native_repo is not None:
             for required_path in required_paths:
-                if not (cpp_repo / required_path).exists():
+                if not (native_repo / required_path).exists():
                     raise SystemExit(f"{location}: required path missing: {required_path}")
         rust_runners += 1
-    return rust_runners, cpp_paths
+    return rust_runners, native_paths
 
 
 def validate_rustraft_fault_acceptance(case: dict, step: dict) -> None:
@@ -174,13 +174,13 @@ def run_command(command: str, cwd: Path) -> None:
     subprocess.run(command, cwd=cwd, shell=True, check=True)
 
 
-def render_cpp_native_command(template: str, corpus: Path, case: str, cpp_repo: Path | None) -> str:
+def render_native_command(template: str, corpus: Path, case: str, native_repo: Path | None) -> str:
     values = {
         "corpus": shlex.quote(str(corpus)),
         "case": shlex.quote(case),
     }
-    if cpp_repo is not None:
-        values["cpp_repo"] = shlex.quote(str(cpp_repo))
+    if native_repo is not None:
+        values["native_repo"] = shlex.quote(str(native_repo))
     if any(f"{{{key}}}" in template for key in values):
         return template.format(**values)
     return f"{template} --corpus {shlex.quote(str(corpus))} --case {shlex.quote(case)}"
@@ -189,7 +189,7 @@ def render_cpp_native_command(template: str, corpus: Path, case: str, cpp_repo: 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", type=Path, default=CORPUS)
-    parser.add_argument("--cpp-repo", type=Path)
+    parser.add_argument("--native-repo", type=Path)
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument(
         "--rust-combined",
@@ -197,30 +197,30 @@ def main() -> int:
         help="run the combined Rust data-node plus metaserver Raft parity gate once",
     )
     parser.add_argument(
-        "--cpp-native",
+        "--native-native",
         action="store_true",
-        help="run TS_CPP_RAFT_NATIVE_CMD for every Raft case",
+        help="run TS_NATIVE_RAFT_NATIVE_CMD for every Raft case",
     )
     parser.add_argument(
-        "--require-cpp-native",
+        "--require-native-native",
         action="store_true",
-        help="fail unless TS_CPP_RAFT_NATIVE_CMD is configured",
+        help="fail unless TS_NATIVE_RAFT_NATIVE_CMD is configured",
     )
     args = parser.parse_args()
 
-    cpp_repo = args.cpp_repo.resolve() if args.cpp_repo else None
+    native_repo = args.native_repo.resolve() if args.native_repo else None
     corpus = args.corpus.resolve()
     cases = load_raft_cases(corpus)
     total_rust_runners = 0
-    total_cpp_paths = 0
+    total_paths = 0
     for case in cases:
-        rust_runners, cpp_paths = validate_case(case, cpp_repo)
+        rust_runners, native_paths = validate_case(case, native_repo)
         total_rust_runners += rust_runners
-        total_cpp_paths += cpp_paths
+        total_paths += native_paths
 
     print(f"raft_shared_cases={len(cases)}")
     print(f"raft_rust_runners={total_rust_runners}")
-    print(f"raft_cpp_required_path_refs={total_cpp_paths}")
+    print(f"raft_required_path_refs={total_paths}")
     print(f"raft_combined_rust_gate={COMBINED_GATE}")
 
     if args.validate_only:
@@ -229,16 +229,16 @@ def main() -> int:
     if args.rust_combined:
         run_command(COMBINED_GATE, ROOT)
 
-    native_template = os.environ.get("TS_CPP_RAFT_NATIVE_CMD")
-    if args.require_cpp_native and not native_template:
-        raise SystemExit("TS_CPP_RAFT_NATIVE_CMD is required for native Raft execution")
-    if args.cpp_native:
+    native_template = os.environ.get("TS_NATIVE_RAFT_NATIVE_CMD")
+    if args.require_native and not native_template:
+        raise SystemExit("TS_NATIVE_RAFT_NATIVE_CMD is required for native Raft execution")
+    if args.native_native:
         if not native_template:
-            raise SystemExit("set TS_CPP_RAFT_NATIVE_CMD to run Raft cases")
-        cwd = cpp_repo or ROOT
+            raise SystemExit("set TS_NATIVE_RAFT_NATIVE_CMD to run Raft cases")
+        cwd = native_repo or ROOT
         for case in cases:
-            print(f"== c++ Raft case: {case['name']} ==")
-            run_command(render_cpp_native_command(native_template, corpus, case["name"], cpp_repo), cwd)
+            print(f"== native Raft case: {case['name']} ==")
+            run_command(render_native_command(native_template, corpus, case["name"], native_repo), cwd)
 
     return 0
 

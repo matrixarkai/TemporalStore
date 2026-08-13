@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CPP_REPO="${MATRIXARK_CPP_TEMPORALSTORE_REPO:-}"
-SERVER="${MATRIXARK_MCP_SERVER:-${CPP_REPO:+$CPP_REPO/tools/matrixark_mcp_server.py}}"
+NATIVE_REPO="${MATRIXARK_NATIVE_TEMPORALSTORE_REPO:-}"
+SERVER="${MATRIXARK_MCP_SERVER:-${NATIVE_REPO:+$NATIVE_REPO/tools/matrixark_mcp_server.py}}"
 BACKEND="${MATRIXARK_MCP_BACKEND:-temporalstore-rust}"
 TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/temporalstore-matrixark-mcp-target}"
 RUST_PROXY="${MATRIXARK_TEMPORALSTORE_RUST_PROXY:-$TARGET_DIR/debug/matrixark_rust_proxy}"
@@ -14,7 +14,7 @@ RUST_DIRECT_SDK="${MATRIXARK_TEMPORALSTORE_RUST_DIRECT_SDK:-$TARGET_DIR/debug/ma
 
 if [[ -z "$SERVER" || ! -f "$SERVER" ]]; then
   echo "MatrixArk MCP server not found: $SERVER" >&2
-  echo "Set MATRIXARK_MCP_SERVER or MATRIXARK_CPP_TEMPORALSTORE_REPO to the TemporalStore checkout." >&2
+  echo "Set MATRIXARK_MCP_SERVER or MATRIXARK_NATIVE_TEMPORALSTORE_REPO to the TemporalStore checkout." >&2
   exit 2
 fi
 

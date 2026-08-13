@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CORPUS = ROOT / "compat" / "unified_temporalstore_cases.json"
-INGESTION_SUITE = "cpp_ingestion_parity"
+INGESTION_SUITE = "native_ingestion_parity"
 RUST_EXECUTABLE_MODE = "rust_executable_cxx_static"
 
 
@@ -325,10 +325,10 @@ def validate_area(area: IngestionOpsArea) -> int:
     return snippet_count
 
 
-def validate_cpp_paths(area: IngestionOpsArea, paths: set[str], cpp_repo: Path) -> set[str]:
+def validate_paths(area: IngestionOpsArea, paths: set[str], native_repo: Path) -> set[str]:
     checked: set[str] = set()
     for required_path in paths:
-        if not (cpp_repo / required_path).exists():
+        if not (native_repo / required_path).exists():
             raise SystemExit(f"{area.name}: required path missing: {required_path}")
         checked.add(required_path)
     return checked
@@ -336,27 +336,27 @@ def validate_cpp_paths(area: IngestionOpsArea, paths: set[str], cpp_repo: Path) 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cpp-repo", type=Path, help="optional checkout for required path checks")
+    parser.add_argument("--native-repo", type=Path, help="optional checkout for required path checks")
     args = parser.parse_args()
 
     corpus = load_corpus()
     cases = case_map(corpus)
     required = set(corpus.get("coverage", {}).get("required_case_names", []))
-    total_cpp_paths: set[str] = set()
-    checked_cpp_paths: set[str] = set()
+    total_paths: set[str] = set()
+    checked_paths: set[str] = set()
     total_snippets = 0
     for area in AREAS:
         paths = validate_corpus_area(area, cases, required)
-        total_cpp_paths.update(paths)
+        total_paths.update(paths)
         total_snippets += validate_area(area)
-        if args.cpp_repo is not None:
-            checked_cpp_paths.update(validate_cpp_paths(area, paths, args.cpp_repo))
+        if args.native_repo is not None:
+            checked_paths.update(validate_paths(area, paths, args.native_repo))
         print(f"validated ingestion/ops parity area: {area.name}")
     print(f"ingestion_ops_parity_areas: {len(AREAS)}")
-    print(f"corpus_required_cpp_paths: {len(total_cpp_paths)}")
+    print(f"corpus_required_paths: {len(total_paths)}")
     print(f"rust_evidence_snippets: {total_snippets}")
-    if args.cpp_repo is not None:
-        print(f"checked_cpp_required_paths: {len(checked_cpp_paths)}")
+    if args.native_repo is not None:
+        print(f"checked_required_paths: {len(checked_paths)}")
 
 
 if __name__ == "__main__":

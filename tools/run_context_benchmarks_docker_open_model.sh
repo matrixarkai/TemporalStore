@@ -84,7 +84,7 @@ if run_runner test -f "${LOC_INPUT}"; then
       --input "${LOC_INPUT}" \
       --reader-mode open-source \
       --reader-base-url "${READER_BASE_URL}" \
-      --reader-provider-name matrixark-cpp-oss-context \
+      --reader-provider-name matrixark-native-oss-context \
       --reader-model "${MODEL}" \
       --reader-no-fallback \
       --rust-temporalstore-batch-size "${RUST_TEMPORALSTORE_BATCH_SIZE}" \
@@ -110,7 +110,7 @@ if run_runner test -f "${LONGMEM_INPUT}"; then
       --input "${LONGMEM_INPUT}" \
       --reader-mode open-source \
       --reader-base-url "${READER_BASE_URL}" \
-      --reader-provider-name matrixark-cpp-oss-context \
+      --reader-provider-name matrixark-native-oss-context \
       --reader-model "${MODEL}" \
       --reader-no-fallback \
       --require-open-source-reader \

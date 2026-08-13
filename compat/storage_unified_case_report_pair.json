@@ -165,7 +165,7 @@
         ]
       },
       {
-        "name": "storage_config_cpp_like_public_knobs",
+        "name": "storage_config_like_public_knobs",
         "status": "passed",
         "steps": [
           {
@@ -560,12 +560,12 @@
         ]
       },
       {
-        "name": "cpp_storage_object_page_slot_parity_surfaces",
+        "name": "native_storage_object_page_slot_parity_surfaces",
         "status": "passed",
         "steps": [
           {
             "latency_ms": 1.0,
-            "name": "cpp_storage_object_page_slot_parity_surfaces_coverage",
+            "name": "native_storage_object_page_slot_parity_surfaces_coverage",
             "output": {
               "object_index_entry_count": 2,
               "page_index_entry_count": 2,
@@ -579,12 +579,12 @@
         ]
       },
       {
-        "name": "cpp_storage_manager_compaction_gc_parity_surfaces",
+        "name": "native_storage_manager_compaction_gc_parity_surfaces",
         "status": "passed",
         "steps": [
           {
             "latency_ms": 1.0,
-            "name": "cpp_storage_manager_compaction_gc_parity_surfaces_coverage",
+            "name": "native_storage_manager_compaction_gc_parity_surfaces_coverage",
             "output": {
               "cache_writeback_queue_depth": 2,
               "storage_manager_compaction_count": 1,
@@ -598,12 +598,12 @@
         ]
       },
       {
-        "name": "cpp_storage_oplog_index_replay_parity_surfaces",
+        "name": "native_storage_oplog_index_replay_parity_surfaces",
         "status": "passed",
         "steps": [
           {
             "latency_ms": 1.0,
-            "name": "cpp_storage_oplog_index_replay_parity_surfaces_coverage",
+            "name": "native_storage_oplog_index_replay_parity_surfaces_coverage",
             "output": {
               "append_log_reclaimed_records": 3,
               "append_log_replay_records": 6,
@@ -617,12 +617,12 @@
         ]
       },
       {
-        "name": "cpp_storage_slot_context_test_parity_surfaces",
+        "name": "native_storage_slot_context_test_parity_surfaces",
         "status": "passed",
         "steps": [
           {
             "latency_ms": 1.0,
-            "name": "cpp_storage_slot_context_test_parity_surfaces_coverage",
+            "name": "native_storage_slot_context_test_parity_surfaces_coverage",
             "output": {
               "object_index_entry_count": 2,
               "page_index_entry_count": 2,
@@ -636,12 +636,12 @@
         ]
       },
       {
-        "name": "cpp_storage_object_zone_evicter_expirer_parity_surfaces",
+        "name": "native_storage_object_zone_evicter_expirer_parity_surfaces",
         "status": "passed",
         "steps": [
           {
             "latency_ms": 1.0,
-            "name": "cpp_storage_object_zone_evicter_expirer_parity_surfaces_coverage",
+            "name": "native_storage_object_zone_evicter_expirer_parity_surfaces_coverage",
             "output": {
               "delayed_destroy_backlog": 0,
               "segment_open_count": 1,
@@ -656,12 +656,12 @@
         ]
       },
       {
-        "name": "cpp_storage_replicator_guardrail_parity_surfaces",
+        "name": "native_storage_replicator_guardrail_parity_surfaces",
         "status": "passed",
         "steps": [
           {
             "latency_ms": 1.0,
-            "name": "cpp_storage_replicator_guardrail_parity_surfaces_coverage",
+            "name": "native_storage_replicator_guardrail_parity_surfaces_coverage",
             "output": {
               "follower_cursor_retention_floor": 30,
               "physical_reclaim_errors": 0,
@@ -674,12 +674,12 @@
         ]
       },
       {
-        "name": "cpp_redis_live_storage_smoke_parity_surfaces",
+        "name": "native_redis_live_storage_smoke_parity_surfaces",
         "status": "passed",
         "steps": [
           {
             "latency_ms": 1.0,
-            "name": "cpp_redis_live_storage_smoke_parity_surfaces_coverage",
+            "name": "native_redis_live_storage_smoke_parity_surfaces_coverage",
             "output": {
               "append_watermark": 40,
               "block_index_entry_count": 2,
@@ -699,12 +699,12 @@
         ]
       },
       {
-        "name": "cpp_local_docker_replication_matrix_parity_surfaces",
+        "name": "native_local_docker_replication_matrix_parity_surfaces",
         "status": "passed",
         "steps": [
           {
             "latency_ms": 1.0,
-            "name": "cpp_local_docker_replication_matrix_parity_surfaces_coverage",
+            "name": "native_local_docker_replication_matrix_parity_surfaces_coverage",
             "output": {
               "follower_cursor_retention_floor": 30,
               "physical_reclaim_errors": 0,
@@ -1166,7 +1166,7 @@
     "producer": "temporalstore-rust-storage-fixture",
     "schema": "temporalstore_unified_case_report_v1"
   },
-  "cpp_report": {
+  "native_report": {
     "cases": [
       {
         "name": "storage_slot_object_block_index_authority_shared",
@@ -1330,7 +1330,7 @@
         ]
       },
       {
-        "name": "storage_config_cpp_like_public_knobs",
+        "name": "storage_config_like_public_knobs",
         "status": "passed",
         "steps": [
           {
@@ -1725,12 +1725,12 @@
         ]
       },
       {
-        "name": "cpp_storage_object_page_slot_parity_surfaces",
+        "name": "native_storage_object_page_slot_parity_surfaces",
         "status": "passed",
         "steps": [
           {
             "latency_ms": 1.0,
-            "name": "cpp_storage_object_page_slot_parity_surfaces_coverage",
+            "name": "native_storage_object_page_slot_parity_surfaces_coverage",
             "output": {
               "object_index_entry_count": 2,
               "page_index_entry_count": 2,
@@ -1744,12 +1744,12 @@
         ]
       },
       {
-        "name": "cpp_storage_manager_compaction_gc_parity_surfaces",
+        "name": "native_storage_manager_compaction_gc_parity_surfaces",
         "status": "passed",
         "steps": [
           {
             "latency_ms": 1.0,
-            "name": "cpp_storage_manager_compaction_gc_parity_surfaces_coverage",
+            "name": "native_storage_manager_compaction_gc_parity_surfaces_coverage",
             "output": {
               "cache_writeback_queue_depth": 2,
               "storage_manager_compaction_count": 1,
@@ -1763,12 +1763,12 @@
         ]
       },
       {
-        "name": "cpp_storage_oplog_index_replay_parity_surfaces",
+        "name": "native_storage_oplog_index_replay_parity_surfaces",
         "status": "passed",
         "steps": [
           {
             "latency_ms": 1.0,
-            "name": "cpp_storage_oplog_index_replay_parity_surfaces_coverage",
+            "name": "native_storage_oplog_index_replay_parity_surfaces_coverage",
             "output": {
               "append_log_reclaimed_records": 3,
               "append_log_replay_records": 6,
@@ -1782,12 +1782,12 @@
         ]
       },
       {
-        "name": "cpp_storage_slot_context_test_parity_surfaces",
+        "name": "native_storage_slot_context_test_parity_surfaces",
         "status": "passed",
         "steps": [
           {
             "latency_ms": 1.0,
-            "name": "cpp_storage_slot_context_test_parity_surfaces_coverage",
+            "name": "native_storage_slot_context_test_parity_surfaces_coverage",
             "output": {
               "object_index_entry_count": 2,
               "page_index_entry_count": 2,
@@ -1801,12 +1801,12 @@
         ]
       },
       {
-        "name": "cpp_storage_object_zone_evicter_expirer_parity_surfaces",
+        "name": "native_storage_object_zone_evicter_expirer_parity_surfaces",
         "status": "passed",
         "steps": [
           {
             "latency_ms": 1.0,
-            "name": "cpp_storage_object_zone_evicter_expirer_parity_surfaces_coverage",
+            "name": "native_storage_object_zone_evicter_expirer_parity_surfaces_coverage",
             "output": {
               "delayed_destroy_backlog": 0,
               "segment_open_count": 1,
@@ -1821,12 +1821,12 @@
         ]
       },
       {
-        "name": "cpp_storage_replicator_guardrail_parity_surfaces",
+        "name": "native_storage_replicator_guardrail_parity_surfaces",
         "status": "passed",
         "steps": [
           {
             "latency_ms": 1.0,
-            "name": "cpp_storage_replicator_guardrail_parity_surfaces_coverage",
+            "name": "native_storage_replicator_guardrail_parity_surfaces_coverage",
             "output": {
               "follower_cursor_retention_floor": 30,
               "physical_reclaim_errors": 0,
@@ -1839,12 +1839,12 @@
         ]
       },
       {
-        "name": "cpp_redis_live_storage_smoke_parity_surfaces",
+        "name": "native_redis_live_storage_smoke_parity_surfaces",
         "status": "passed",
         "steps": [
           {
             "latency_ms": 1.0,
-            "name": "cpp_redis_live_storage_smoke_parity_surfaces_coverage",
+            "name": "native_redis_live_storage_smoke_parity_surfaces_coverage",
             "output": {
               "append_watermark": 40,
               "block_index_entry_count": 2,
@@ -1864,12 +1864,12 @@
         ]
       },
       {
-        "name": "cpp_local_docker_replication_matrix_parity_surfaces",
+        "name": "native_local_docker_replication_matrix_parity_surfaces",
         "status": "passed",
         "steps": [
           {
             "latency_ms": 1.0,
-            "name": "cpp_local_docker_replication_matrix_parity_surfaces_coverage",
+            "name": "native_local_docker_replication_matrix_parity_surfaces_coverage",
             "output": {
               "follower_cursor_retention_floor": 30,
               "physical_reclaim_errors": 0,
@@ -2328,7 +2328,7 @@
       }
     ],
     "generated_at_ms": 1783379000000,
-    "producer": "temporalstore-cpp-storage-fixture",
+    "producer": "temporalstore-native-storage-fixture",
     "schema": "temporalstore_unified_case_report_v1"
   }
 }

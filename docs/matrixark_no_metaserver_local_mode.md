@@ -36,8 +36,8 @@ wrapper in no-metaserver mode:
 cd <repo>
 
 MATRIXARK_LOCAL_MODE=no-metaserver \
-MATRIXARK_TEMPORALSTORE_LOCAL_STORE=/tmp/matrixark-local-cpp.jsonl \
-bash tools/matrixark_mcp_cpp_server.sh --line-json
+MATRIXARK_TEMPORALSTORE_LOCAL_STORE=/tmp/matrixark-local-native.jsonl \
+bash tools/matrixark_mcp_server.sh --line-json
 ```
 
 Rust wrapper in no-metaserver mode:

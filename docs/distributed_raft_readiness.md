@@ -256,7 +256,7 @@ The current unified corpus includes these Raft/replication cases:
 | `raft_data_node_leader_election_failover` | `tools/run_data_raft_failover_ubuntu22.sh` | `raft_secondary_replication_harness` names leader election and failover as a separate shared scenario and keeps the evidence on the process harness path |
 | `raft_data_node_snapshot_restart_follower_lag` | `tools/run_data_raft_snapshot_restore_ubuntu22.sh`, `tools/build_secondary_visibility_lag_benchmark.sh` | `distributed_raft_harness` plus `raft_secondary_replication_harness` cover snapshot install, restart recovery, lagging follower observation, and catch-up |
 | `raft_data_node_membership_secondary_reads` | `tools/run_data_raft_scale_up_down_ubuntu22.sh`, `tools/run_data_raft_mixed_rw_ubuntu22.sh` | `raft_secondary_replication_harness` covers membership add/promote/remove and secondary-read visibility as an explicit shared case |
-| `raft_metaserver_membership_failover_snapshot` | `tools/run_metaserver_raft_membership_ubuntu22.sh`, `tools/run_metaserver_raft_failover_ubuntu22.sh`, `tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh` | `metaserver_raft_harness` plus `production_meta_raft_runtime_matches_cpp_multinode_control_and_fault_contract` cover membership list/add/remove, read-index wait, snapshot trigger/restore, lagging voter tail catch-up after stale snapshot install, leader transfer, failover, unsupported-role rejection, and no-majority rejection; strict production readiness still blocks on networked metaserver scheduler orchestration across real data-node Raft groups |
+| `raft_metaserver_membership_failover_snapshot` | `tools/run_metaserver_raft_membership_ubuntu22.sh`, `tools/run_metaserver_raft_failover_ubuntu22.sh`, `tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh` | `metaserver_raft_harness` plus `production_meta_raft_runtime_matches_multinode_control_and_fault_contract` cover membership list/add/remove, read-index wait, snapshot trigger/restore, lagging voter tail catch-up after stale snapshot install, leader transfer, failover, unsupported-role rejection, and no-majority rejection; strict production readiness still blocks on networked metaserver scheduler orchestration across real data-node Raft groups |
 | `raft_metaserver_leader_snapshot_restart` | `tools/run_metaserver_raft_failover_ubuntu22.sh`, `tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh` | `metaserver_raft_harness` names leader/failover, snapshot install, and restart recovery as a separate shared scenario |
 | `raft_metaserver_membership_add_promote_remove` | `tools/run_metaserver_raft_membership_ubuntu22.sh` | `metaserver_raft_harness` names learner add, catch-up, promote, leader transfer, voter remove, stale generation rejection, and scheduler generation/token coupling as a separate shared scenario |
 | `raft_temporal_raft_process_rollout_evidence` | `tools/run_raft_production_gate_ubuntu22.sh`, `tools/run_raft_stress_suite_ubuntu22.sh` | Rust unit/readiness evidence verifies local mode is rejected for deployment and production readiness depends on TemporalRaft data-node and metaserver process rollout plus log-store validation fields; `distributed_raft_harness` now emits `membership_role_process_evidence` and requires `rustraft_runtime_semantics.membership_role_process_validated=true` for witness quorum/no-data behavior, learner auto-promote, and pending joint-consensus WAL restore before final commit; local-status Prometheus now exports RustRaft-style peer progress, snapshot state, transfer target, pre-vote/election counters, and WAL first/last log index; the membership matrix also requires metaserver generation/token replay evidence |
@@ -265,9 +265,9 @@ The current unified corpus includes these Raft/replication cases:
 Focused Raft-case-driven Rust validation:
 
 ```bash
-python3 tools/run_cpp_raft_cases_on_rust.py \
-  --cpp-repo /path/to/cpp/TemporalStore \
-  --artifact-dir /tmp/temporalstore-cpp-raft-cases-on-rust
+python3 tools/run_raft_cases_on_rust.py \
+  --native-repo /path/to/native/TemporalStore \
+  --artifact-dir /tmp/temporalstore-native-raft-cases-on-rust
 ```
 
 This command uses the unified Raft case names above to verify required paths, write a

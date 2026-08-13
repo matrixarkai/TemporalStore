@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from validate_temporalstore_cpp_rust_performance_parity import (
+from validate_temporalstore_rust_performance_parity import (
     REQUIRED_SAME_CONFIG_COMMAND_ARGS,
     SAME_CONFIG_KEYS,
 )
@@ -33,7 +33,7 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
             path.write_text(
                 json.dumps(
                     {
-                        "schema": "temporalstore_cpp_rust_next_performance_execution_v1",
+                        "schema": "temporalstore_rust_next_performance_execution_v1",
                         "results": [
                             {
                                 "step": "run_workload",
@@ -47,8 +47,8 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
                                     "--",
                                     "python3",
                                     "tool.py",
-                                    "--cpp-lib",
-                                    "<MATRIXARK_PARITY_CPP_LIB>",
+                                    "--native-lib",
+                                    "<MATRIXARK_PARITY_NATIVE_LIB>",
                                     "--rust-cli=<MATRIXARK_PARITY_RUST_CLI>",
                                     "--require-perf-parity",
                                     "--require-phase-scale-matrix",
@@ -60,12 +60,12 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
                             {
                                 "step": "import_evidence",
                                 "phase_scale_coverage_required": REQUIRED_PHASE_SCALE_COVERAGE,
-                                "argv": ["python", "tools/import_temporalstore_cpp_rust_performance_evidence.py"],
+                                "argv": ["python", "tools/import_temporalstore_rust_performance_evidence.py"],
                                 "status": "passed",
                             },
                             {
                                 "step": "post_import_validation",
-                                "argv": ["python", "tools/validate_temporalstore_cpp_rust_goal_parity.py"],
+                                "argv": ["python", "tools/validate_temporalstore_rust_goal_parity.py"],
                                 "status": "passed",
                             },
                             {
@@ -87,7 +87,7 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
             path.write_text(
                 json.dumps(
                     {
-                        "schema": "temporalstore_cpp_rust_next_performance_execution_v1",
+                        "schema": "temporalstore_rust_next_performance_execution_v1",
                         "results": [
                             {
                                 "step": "run_workload",
@@ -100,7 +100,7 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
                                     "--",
                                     "python3",
                                     "tool.py",
-                                    "--cpp-lib",
+                                    "--native-lib",
                                     "/mnt/c/Users/Deeproute/libtemporalstore.so",
                                     "--require-perf-parity",
                                     *SAME_CONFIG_ARGV,
@@ -108,7 +108,7 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
                             },
                             {
                                 "step": "import_evidence",
-                                "argv": ["python", "tools/import_temporalstore_cpp_rust_performance_evidence.py"],
+                                "argv": ["python", "tools/import_temporalstore_rust_performance_evidence.py"],
                             }
                         ],
                     }
@@ -119,7 +119,7 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
             failures = validate_artifact(path)
 
         self.assertTrue(any("unredacted local path marker" in failure for failure in failures))
-        self.assertTrue(any("--cpp-lib value is not redacted" in failure for failure in failures))
+        self.assertTrue(any("--native-lib value is not redacted" in failure for failure in failures))
         self.assertTrue(any("missing --require-phase-scale-matrix" in failure for failure in failures))
         self.assertTrue(any("missing phase_scale_coverage_required" in failure for failure in failures))
 
@@ -129,14 +129,14 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
             path.write_text(
                 json.dumps(
                     {
-                        "schema": "temporalstore_cpp_rust_next_performance_execution_v1",
+                        "schema": "temporalstore_rust_next_performance_execution_v1",
                         "results": [
                             {
                                 "step": "run_workload",
                                 "phase_scale_coverage_required": REQUIRED_PHASE_SCALE_COVERAGE,
                                 "argv": [
                                     "python",
-                                    "tools/run_matrixark_cpp_rust_scale_report.py",
+                                    "tools/run_matrixark_rust_scale_report.py",
                                     "--require-perf-parity",
                                     "--require-phase-scale-matrix",
                                 ],
@@ -160,14 +160,14 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
             path.write_text(
                 json.dumps(
                     {
-                        "schema": "temporalstore_cpp_rust_next_performance_execution_v1",
+                        "schema": "temporalstore_rust_next_performance_execution_v1",
                         "results": [
                             {
                                 "step": "run_workload",
                                 "phase_scale_coverage_required": REQUIRED_PHASE_SCALE_COVERAGE,
                                 "argv": [
                                     "python",
-                                    "tools/run_matrixark_cpp_rust_scale_report.py",
+                                    "tools/run_matrixark_rust_scale_report.py",
                                     "--require-perf-parity",
                                     "--require-phase-scale-matrix",
                                     *SAME_CONFIG_ARGV,
@@ -178,7 +178,7 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
                             {
                                 "step": "import_evidence",
                                 "phase_scale_coverage_required": REQUIRED_PHASE_SCALE_COVERAGE,
-                                "argv": ["python", "tools/import_temporalstore_cpp_rust_performance_evidence.py"],
+                                "argv": ["python", "tools/import_temporalstore_rust_performance_evidence.py"],
                                 "status": "passed",
                             },
                         ],
@@ -189,7 +189,7 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
 
             failures = validate_artifact(path)
 
-        self.assertTrue(any("validate_temporalstore_cpp_rust_goal_parity.py" in failure for failure in failures))
+        self.assertTrue(any("validate_temporalstore_rust_goal_parity.py" in failure for failure in failures))
         self.assertTrue(any("validate_storage_engine_9_phase_parity.py" in failure for failure in failures))
 
 

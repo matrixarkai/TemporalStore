@@ -28,7 +28,7 @@ def main() -> int:
         raise SystemExit("missing context_benchmark_full_dataset_gates")
     command = full_case["steps"][0]["command"]
     require_path(command, "tools/compare_context_benchmark_archives.py")
-    require_path(command, "compat/cpp_context_benchmark_report_adapter.h")
+    require_path(command, "compat/native_context_benchmark_report_adapter.h")
     if command.get("mode") != "shared_benchmark_contract":
         raise SystemExit("context_benchmark_full_dataset_gates must stay a shared benchmark contract")
     if "Production evidence requires real mounted artifacts" not in command.get("description", ""):
@@ -62,7 +62,7 @@ def main() -> int:
         ROOT / "tools" / "validate_context_benchmark_comparator.py",
         (
             "context benchmark comparator self-test passed",
-            "cpp_only_miss_count",
+            "native_only_miss_count",
             "field_mismatches_by_query",
         ),
     )
@@ -78,7 +78,7 @@ def main() -> int:
         ),
     )
     require_snippets(
-        ROOT / "compat" / "cpp_context_benchmark_report_adapter.h",
+        ROOT / "compat" / "native_context_benchmark_report_adapter.h",
         (
             "matrixark_vikingmem_context_benchmark_report_v1",
             "FinalizeReport",
@@ -89,7 +89,7 @@ def main() -> int:
         ),
     )
     require_snippets(
-        ROOT / "docs" / "cpp_context_benchmark_report_adapter.md",
+        ROOT / "docs" / "native_context_benchmark_report_adapter.md",
         (
             "--truth-mode production",
             "benchmark_truth_ready",
@@ -108,7 +108,7 @@ def main() -> int:
         ),
     )
     print("context_benchmark_truth_contract=true")
-    print("order=benchmark_truth,unified_report_contract,deeper_cpp_parity_execution")
+    print("order=benchmark_truth,unified_report_contract,deeper_parity_execution")
     return 0
 
 

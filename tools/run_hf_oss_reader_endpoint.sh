@@ -25,7 +25,7 @@ write_manifest() {
   "archive_dir": "${ARCHIVE_DIR}",
   "reader_base_url": "${BASE_URL}",
   "reader_model": "${MODEL}",
-  "reader_provider_name": "matrixark-cpp-oss-context",
+  "reader_provider_name": "matrixark-native-oss-context",
   "phase": "${phase}",
   "smoke_status": "${smoke_status}",
   "smoke_input": "${SMOKE_INPUT}",
@@ -101,7 +101,7 @@ python3 "${ROOT}/tools/run_longmemeval_s_full_path.py" \
   --input "${SMOKE_INPUT}" \
   --reader-mode open-source \
   --reader-base-url "${BASE_URL}" \
-  --reader-provider-name matrixark-cpp-oss-context \
+  --reader-provider-name matrixark-native-oss-context \
   --reader-model "${MODEL}" \
   --reader-no-fallback \
   --require-open-source-reader \

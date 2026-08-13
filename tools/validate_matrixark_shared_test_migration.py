@@ -21,12 +21,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 MIGRATED_TOOL_NAMES = {
-    "run_matrixark_codex_cpp_hook_e2e.py",
+    "run_matrixark_codex_hook_e2e.py",
     "run_matrixark_context_storage_benchmark.py",
-    "run_matrixark_cpp_direct_scale_benchmark.py",
+    "run_matrixark_direct_scale_benchmark.py",
     "run_matrixark_dataset_benchmark.py",
     "run_matrixark_entity_update_algorithm_test.py",
-    "run_matrixark_full_dataset_cpp_benchmark.py",
+    "run_matrixark_full_dataset_benchmark.py",
     "run_matrixark_locomo_debug_flow.py",
     "run_matrixark_mcp_backend_parity.py",
     "run_matrixark_mcp_feature_parity.py",
@@ -40,7 +40,7 @@ MIGRATED_TOOL_NAMES = {
     "test_matrixark_codex_hook.py",
     "test_matrixark_dataset_benchmark_loader.py",
     "test_matrixark_direct_adapter_compact_log.py",
-    "test_matrixark_full_dataset_cpp_guard.py",
+    "test_matrixark_full_dataset_guard.py",
     "test_matrixark_mcp_server.py",
     "test_matrixark_resource_parser.py",
 }

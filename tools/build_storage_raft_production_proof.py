@@ -38,7 +38,7 @@ def build_report(artifact_dir: Path) -> dict[str, Any]:
     storage_modes = load_json(artifact_dir / "storage-modes.json")
     migration_manifest = load_json(artifact_dir / "storage-migration-artifacts-manifest.json")
     raft_summary = load_json(artifact_dir / "raft-distributed-parity.json")
-    cpp_raft_cases = load_json(artifact_dir / "cpp-raft-cases-on-rust.json")
+    native_raft_cases = load_json(artifact_dir / "native-raft-cases-on-rust.json")
     external_chaos = load_json(artifact_dir / "external-chaos.json")
     raft_readiness = load_json(artifact_dir / "raft-readiness.json")
 
@@ -60,7 +60,7 @@ def build_report(artifact_dir: Path) -> dict[str, Any]:
         and storage_modes.get("raft_local_file", {}).get("read_value_after_restore") == "wal-value"
     )
     migration_ready = (
-        migration_manifest.get("name") == "temporalstore-cpp-storage-migration-artifacts"
+        migration_manifest.get("name") == "temporalstore-native-storage-migration-artifacts"
         and bool(migration_manifest.get("cases"))
         and migration_manifest.get("compatibility_decision") == "migration_only_rust_native_pages"
     )
@@ -76,8 +76,8 @@ def build_report(artifact_dir: Path) -> dict[str, Any]:
             .get("ready"),
         ]
     )
-    cpp_raft_comparison = build_cpp_raft_comparison(cpp_raft_cases, raft_summary)
-    cpp_raft_ready = bool(cpp_raft_comparison["ready"])
+    native_raft_comparison = build_raft_comparison(native_raft_cases, raft_summary)
+    native_raft_ready = bool(native_raft_comparison["ready"])
     external_chaos_ready = bool(external_chaos.get("production_ready_slice"))
     unified_storage_ready = all(
         [
@@ -111,7 +111,7 @@ def build_report(artifact_dir: Path) -> dict[str, Any]:
                 "secondary reads",
             ],
         },
-        "cpp_raft_scenario_comparison": cpp_raft_comparison,
+        "native_raft_scenario_comparison": native_raft_comparison,
         "local_raft_fixture_policy": {
             "ready": True,
             "local_raft_fixture_test_only": True,
@@ -121,7 +121,7 @@ def build_report(artifact_dir: Path) -> dict[str, Any]:
         "storage_format_compatibility": {
             "ready": storage_production_ready and migration_ready,
             "decision": "migration_only_rust_native_page_log_format",
-            "byte_for_byte_cpp_layout": False,
+            "byte_for_byte_layout": False,
             "source": "storage-production.json plus storage-migration-artifacts-manifest.json",
         },
         "unified_storage_recovery_dump_load_cache_gc": {
@@ -136,21 +136,21 @@ def build_report(artifact_dir: Path) -> dict[str, Any]:
             "dump_load_manifest_ready": storage_production_ready,
             "cache_pressure_and_refill_ready": storage_modes_ready,
             "follower_safe_gc_and_shared_store_ready": storage_modes_ready,
-            "cpp_migration_corpus_ready": migration_ready,
+            "native_migration_corpus_ready": migration_ready,
         },
         "combined_storage_raft_cache_shared_store": {
             "ready": storage_fault_ready
             and storage_production_ready
             and storage_modes_ready
             and raft_ready
-            and cpp_raft_ready
+            and native_raft_ready
             and external_chaos_ready,
             "sources": [
                 "storage-fault-matrix.json",
                 "storage-production.json",
                 "storage-modes.json",
                 "raft-distributed-parity.json",
-                "cpp-raft-cases-on-rust.json",
+                "native-raft-cases-on-rust.json",
                 "external-chaos.json",
             ],
         },
@@ -187,7 +187,7 @@ def build_report(artifact_dir: Path) -> dict[str, Any]:
             "ready": raft_ready,
             "data_node": raft_summary.get("data_node"),
             "metaserver": raft_summary.get("metaserver"),
-            "cpp_scenario_comparison": cpp_raft_comparison,
+            "native_scenario_comparison": native_raft_comparison,
         },
         "external_chaos": {
             "ready": external_chaos_ready,
@@ -198,7 +198,7 @@ def build_report(artifact_dir: Path) -> dict[str, Any]:
     }
 
 
-def build_cpp_raft_comparison(cpp_cases: dict[str, Any], raft_summary: dict[str, Any]) -> dict[str, Any]:
+def build_raft_comparison(native_cases: dict[str, Any], raft_summary: dict[str, Any]) -> dict[str, Any]:
     scenario_specs = {
         "leader_election": {
             "case_terms": ["leader_election", "leader_failover"],
@@ -274,7 +274,7 @@ def build_cpp_raft_comparison(cpp_cases: dict[str, Any], raft_summary: dict[str,
             ],
         },
     }
-    cases = cpp_cases.get("cases") or []
+    cases = native_cases.get("cases") or []
     scenario_results = {}
     for scenario, spec in scenario_specs.items():
         matched_cases = [
@@ -288,19 +288,19 @@ def build_cpp_raft_comparison(cpp_cases: dict[str, Any], raft_summary: dict[str,
         ]
         scenario_results[scenario] = {
             "ready": bool(matched_cases) and all(spec["checks"]),
-            "cpp_cases": sorted(set(name for name in matched_cases if name)),
+            "native_cases": sorted(set(name for name in matched_cases if name)),
             "rust_evidence": spec["rust_evidence"],
         }
     return {
-        "ready": bool(cpp_cases.get("case_count")) and all(
+        "ready": bool(native_cases.get("case_count")) and all(
             result["ready"] for result in scenario_results.values()
         ),
-        "schema": cpp_cases.get("schema"),
-        "source": "cpp-raft-cases-on-rust.json",
-        "cpp_case_count": cpp_cases.get("case_count"),
-        "cpp_step_count": cpp_cases.get("step_count"),
-        "cpp_required_paths_checked": cpp_cases.get("cpp_required_paths_checked"),
-        "missing_cpp_required_paths": cpp_cases.get("missing_cpp_required_paths", []),
+        "schema": native_cases.get("schema"),
+        "source": "native-raft-cases-on-rust.json",
+        "native_case_count": native_cases.get("case_count"),
+        "native_step_count": native_cases.get("step_count"),
+        "native_required_paths_checked": native_cases.get("native_required_paths_checked"),
+        "missing_required_paths": native_cases.get("missing_required_paths", []),
         "required_scenarios": sorted(scenario_specs),
         "scenario_results": scenario_results,
     }
@@ -342,7 +342,7 @@ def global_production_blockers(raft_readiness: dict[str, Any]) -> list[str]:
         blockers.extend(str(item) for item in raft_readiness.get("missing", []))
     blockers.extend(
         [
-            "byte_for_byte_cpp_storage_layout_not_targeted",
+            "byte_for_byte_storage_layout_not_targeted",
             "live_bytestore_s3_object_store_integration_not_in_scope",
             "docker_or_aws_multi_service_slo_evidence_required_for_global_release",
         ]

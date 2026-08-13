@@ -228,8 +228,8 @@ pub(super) fn bucket_storage_summaries(
     buckets.into_values().collect()
 }
 
-const CPP_PACKED_PAGE_INDEX_SIZE: usize = 17;
-const CPP_PACKED_BUCKET_NODE_SIZE: usize = 24;
+const NATIVE_PACKED_PAGE_INDEX_SIZE: usize = 17;
+const NATIVE_PACKED_BUCKET_NODE_SIZE: usize = 24;
 
 pub(super) fn storage_model_code(kind: &str) -> u8 {
     match kind {
@@ -256,10 +256,10 @@ pub(super) fn physical_address_word(address: &BlockAddress) -> u64 {
     address.page_slab_id.wrapping_shl(32) | (address.offset & u32::MAX as u64)
 }
 
-pub(super) fn cpp_packed_page_index_bytes(
+pub(super) fn native_packed_page_index_bytes(
     page: &StoragePhysicalPageIndex,
-) -> [u8; CPP_PACKED_PAGE_INDEX_SIZE] {
-    let mut bytes = [0u8; CPP_PACKED_PAGE_INDEX_SIZE];
+) -> [u8; NATIVE_PACKED_PAGE_INDEX_SIZE] {
+    let mut bytes = [0u8; NATIVE_PACKED_PAGE_INDEX_SIZE];
     bytes[0] = page.object_id.unwrap_or_default() as u8;
     bytes[1] = storage_model_code(&page.model_id);
     bytes[2..4].copy_from_slice(&(page.page_id.unwrap_or_default() as u16).to_le_bytes());
@@ -281,8 +281,8 @@ pub(super) fn cpp_packed_page_index_bytes(
     bytes
 }
 
-pub(super) fn cpp_packed_bucket_node_bytes(bucket: &StoragePhysicalBucketNode) -> [u8; CPP_PACKED_BUCKET_NODE_SIZE] {
-    let mut bytes = [0u8; CPP_PACKED_BUCKET_NODE_SIZE];
+pub(super) fn native_packed_bucket_node_bytes(bucket: &StoragePhysicalBucketNode) -> [u8; NATIVE_PACKED_BUCKET_NODE_SIZE] {
+    let mut bytes = [0u8; NATIVE_PACKED_BUCKET_NODE_SIZE];
     let page_in_log = bucket.page_indexes.iter().any(|page| page.log_backed);
     let trivial_page = bucket.page_ref_count <= 1;
     let page_deleted = bucket.page_ref_count == 0;
@@ -342,8 +342,8 @@ pub(super) fn storage_physical_index_report(
                     physical_bytes: summary.physical_bytes,
                     dirty_generation: summary.dirty_generation,
                     last_dump_sequence: summary.last_dump_sequence,
-                    cpp_packed_bucket_node_len: CPP_PACKED_BUCKET_NODE_SIZE,
-                    cpp_packed_bucket_node_hex: String::new(),
+                    native_packed_bucket_node_len: NATIVE_PACKED_BUCKET_NODE_SIZE,
+                    native_packed_bucket_node_hex: String::new(),
                     page_indexes: Vec::new(),
                 },
             )
@@ -366,7 +366,7 @@ pub(super) fn storage_physical_index_report(
                 layout: "empty".to_string(),
                 meta_loaded: true,
                 in_memory: true,
-                cpp_packed_bucket_node_len: CPP_PACKED_BUCKET_NODE_SIZE,
+                native_packed_bucket_node_len: NATIVE_PACKED_BUCKET_NODE_SIZE,
                 ..StoragePhysicalBucketNode::default()
             });
         let mut page_index = StoragePhysicalPageIndex {
@@ -384,11 +384,11 @@ pub(super) fn storage_physical_index_report(
             dirty: entry.dirty,
             deleted: entry.deleted,
             log_backed: entry.log_backed,
-            cpp_packed_page_index_len: CPP_PACKED_PAGE_INDEX_SIZE,
-            cpp_packed_page_index_hex: String::new(),
+            native_packed_page_index_len: NATIVE_PACKED_PAGE_INDEX_SIZE,
+            native_packed_page_index_hex: String::new(),
         };
-        page_index.cpp_packed_page_index_hex =
-            hex::encode(cpp_packed_page_index_bytes(&page_index));
+        page_index.native_packed_page_index_hex =
+            hex::encode(native_packed_page_index_bytes(&page_index));
         bucket.page_indexes.push(page_index);
     }
     for (routing_bucket, runtime_bucket) in &shard.bucket_index.bucket_map {
@@ -396,7 +396,7 @@ pub(super) fn storage_physical_index_report(
             .entry(*routing_bucket)
             .or_insert(StoragePhysicalBucketNode {
                 routing_bucket: *routing_bucket,
-                cpp_packed_bucket_node_len: CPP_PACKED_BUCKET_NODE_SIZE,
+                native_packed_bucket_node_len: NATIVE_PACKED_BUCKET_NODE_SIZE,
                 ..StoragePhysicalBucketNode::default()
             });
         bucket.layout = bucket_layout_name(runtime_bucket.layout).to_string();
@@ -435,11 +435,11 @@ pub(super) fn storage_physical_index_report(
                 dirty: page.dirty,
                 deleted: page.deleted,
                 log_backed: page.log_backed,
-                cpp_packed_page_index_len: CPP_PACKED_PAGE_INDEX_SIZE,
-                cpp_packed_page_index_hex: String::new(),
+                native_packed_page_index_len: NATIVE_PACKED_PAGE_INDEX_SIZE,
+                native_packed_page_index_hex: String::new(),
             };
-            page_index.cpp_packed_page_index_hex =
-                hex::encode(cpp_packed_page_index_bytes(&page_index));
+            page_index.native_packed_page_index_hex =
+                hex::encode(native_packed_page_index_bytes(&page_index));
             bucket.page_indexes.push(page_index);
         }
     }
@@ -463,8 +463,8 @@ pub(super) fn storage_physical_index_report(
                 bucket_layout_name(classify_bucket_layout(object_count, bucket.page_indexes.len()))
                     .to_string();
         }
-        bucket.cpp_packed_bucket_node_len = CPP_PACKED_BUCKET_NODE_SIZE;
-        bucket.cpp_packed_bucket_node_hex = hex::encode(cpp_packed_bucket_node_bytes(bucket));
+        bucket.native_packed_bucket_node_len = NATIVE_PACKED_BUCKET_NODE_SIZE;
+        bucket.native_packed_bucket_node_hex = hex::encode(native_packed_bucket_node_bytes(bucket));
     }
     let page_index_count = buckets
         .values()
@@ -498,9 +498,9 @@ pub(super) fn storage_physical_index_report(
         missing_routing_bucket_count,
         missing_page_id_count,
         missing_checksum_count,
-        cpp_packed_page_index_size: CPP_PACKED_PAGE_INDEX_SIZE,
-        cpp_packed_bucket_node_size: CPP_PACKED_BUCKET_NODE_SIZE,
-        cpp_packed_layout_compatible: true,
+        native_packed_page_index_size: NATIVE_PACKED_PAGE_INDEX_SIZE,
+        native_packed_bucket_node_size: NATIVE_PACKED_BUCKET_NODE_SIZE,
+        native_packed_layout_compatible: true,
         bucket_nodes: buckets.into_values().collect(),
     }
 }

@@ -219,7 +219,7 @@ pub struct TaskSchedulerSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CppPartitionSetMember {
+pub struct PartitionSetMember {
     pub replica_id: u64,
     pub node_id: RaftNodeId,
     pub role: ShardRole,
@@ -230,7 +230,7 @@ pub struct CppPartitionSetMember {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CppPartitionSetTopology {
+pub struct PartitionSetTopology {
     pub namespace: String,
     pub table_name: String,
     pub table_id: u64,
@@ -242,7 +242,7 @@ pub struct CppPartitionSetTopology {
     pub primary_replica_id: u64,
     pub active_replica_ids: Vec<u64>,
     pub frozen_replica_ids: Vec<u64>,
-    pub members: Vec<CppPartitionSetMember>,
+    pub members: Vec<PartitionSetMember>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -261,7 +261,7 @@ pub struct NetworkSchedulerTaskExecution {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RaftPersistedSchedulerState {
     pub scheduler: TaskSchedulerSnapshot,
-    pub topology: CppPartitionSetTopology,
+    pub topology: PartitionSetTopology,
     pub executions: Vec<NetworkSchedulerTaskExecution>,
     pub raft_generation: u64,
 }
@@ -495,7 +495,7 @@ impl SchedulerTask {
     }
 }
 
-impl CppPartitionSetTopology {
+impl PartitionSetTopology {
     pub fn from_replicas(
         namespace: impl Into<String>,
         table_name: impl Into<String>,
@@ -511,7 +511,7 @@ impl CppPartitionSetTopology {
         let mut members = replicas
             .into_iter()
             .filter(|replica| replica.shard_id == shard_id)
-            .map(|replica| CppPartitionSetMember {
+            .map(|replica| PartitionSetMember {
                 replica_id: replica.replica_id,
                 node_id: replica.node_id,
                 role: replica.role,
@@ -1206,7 +1206,7 @@ mod tests {
     }
 
     #[test]
-    fn rebalance_round_report_exposes_cpp_balance_metrics() {
+    fn rebalance_round_report_exposes_balance_metrics() {
         let controller = RebalanceController::with_replicas([
             replica(1, 10, 1, ShardRole::Primary),
             replica(2, 10, 2, ShardRole::Secondary),
@@ -1551,7 +1551,7 @@ mod tests {
     }
 
     #[test]
-    fn membership_update_task_matches_cpp_threshold_and_not_found_rules() {
+    fn membership_update_task_matches_threshold_and_not_found_rules() {
         let mut frozen = replica(4, 10, 4, ShardRole::Secondary);
         frozen.state = ShardReplicaState::Frozen;
         let controller = RebalanceController::with_replicas([
@@ -1650,13 +1650,13 @@ mod tests {
     }
 
     #[test]
-    fn cpp_partition_set_topology_tracks_members_versions_and_addresses() {
+    fn native_partition_set_topology_tracks_members_versions_and_addresses() {
         let mut addrs = BTreeMap::new();
         addrs.insert(1, "127.0.0.1:18001".to_string());
         addrs.insert(2, "127.0.0.1:18002".to_string());
         let mut frozen = replica(3, 10, 3, ShardRole::Secondary);
         frozen.state = ShardReplicaState::Frozen;
-        let topology = CppPartitionSetTopology::from_replicas(
+        let topology = PartitionSetTopology::from_replicas(
             "ns",
             "tbl",
             9,
@@ -1703,7 +1703,7 @@ mod tests {
                 TaskSchedulerOptions::default(),
             )
             .unwrap();
-        let topology = CppPartitionSetTopology::from_replicas(
+        let topology = PartitionSetTopology::from_replicas(
             "ns",
             "tbl",
             9,

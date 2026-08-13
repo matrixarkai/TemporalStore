@@ -3,7 +3,7 @@
 The Claude Code hook gives Claude the **same MatrixArk context management as the
 Codex hook** — ingestion, extraction, and retrieval — scoped to its own agent
 identity. It is the Claude Code counterpart to the Codex hook family
-(`tools/matrixark_codex_cpp_hook.sh`, `tools/matrixark_codex_rust_hook.sh`).
+(`tools/matrixark_codex_hook.sh`, `tools/matrixark_codex_rust_hook.sh`).
 
 Entry point: [`tools/matrixark_claude_hook.sh`](../tools/matrixark_claude_hook.sh).
 

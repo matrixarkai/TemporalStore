@@ -8,7 +8,7 @@ cloud-scale validation remain separate production readiness gates.
 ## Common Inputs
 
 - Proxy metrics: `GET /metrics`
-- Proxy readiness: `GET /readiness` or `GET /cpp_parity`
+- Proxy readiness: `GET /readiness` or `GET /native_parity`
 - Raft metrics from data or meta runtimes:
   - `temporalstore_raft_cluster_has_majority`
   - `temporalstore_raft_cluster_commit_index`

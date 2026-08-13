@@ -2,7 +2,7 @@
   "schema_version": 1,
   "name": "raft_metaserver_parity_report_pair",
   "description": "Synthetic conformance report pair for validate_raft_metaserver_parity.",
-  "cpp": {
+  "native": {
     "schema_version": 1,
     "raft_public_contract": {
       "raft_node_id": "RaftNodeId",
@@ -20,8 +20,8 @@
       "raft_failover_event": "RaftFailoverEvent"
     },
     "raft_backend_identity": {
-      "backend": "cpp",
-      "engine": "temporalstore-cpp",
+      "backend": "native",
+      "engine": "temporalstore-native",
       "raft_library": "temporalstore-raft"
     },
     "metaserver_raft": {
@@ -364,7 +364,7 @@
     },
     "report_summary": {
       "command": "validate_raft_metaserver_parity",
-      "backend": "cpp",
+      "backend": "native",
       "storage_mode": "raft sync",
       "metaserver_status": "ready",
       "data_node_status": "ready",

@@ -50,7 +50,7 @@ from validate_storage_tuning_parity import EXPECTED_DEFAULTS
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ARTIFACT_ROOT = ROOT / "docs" / "benchmarks"
 
-REPORT_NAMES = {"cpp.json", "rust.json", "comparison.json"}
+REPORT_NAMES = {"native.json", "rust.json", "comparison.json"}
 REQUIRED_TOP_LEVEL_SECTIONS = (
     "effective_storage_tuning",
     "public_storage_contract",
@@ -165,8 +165,8 @@ def _validate_manager_contract(prefix: str, contract: Any) -> list[str]:
         return [f"{prefix} storage_manager_contract must be an object"]
     if contract.get("manager_identity") != "StorageManager/StoreManager":
         failures.append(f"{prefix} storage_manager_contract.manager_identity drift")
-    if contract.get("cpp_public_name") != "StorageManager":
-        failures.append(f"{prefix} storage_manager_contract.cpp_public_name drift")
+    if contract.get("native_public_name") != "StorageManager":
+        failures.append(f"{prefix} storage_manager_contract.native_public_name drift")
     if contract.get("rust_public_name") != "StoreManager":
         failures.append(f"{prefix} storage_manager_contract.rust_public_name drift")
     if contract.get("phase_order") != REQUIRED_STORAGE_LIFECYCLE_PHASES:

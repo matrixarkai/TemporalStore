@@ -946,7 +946,7 @@ fn monotonic_record_count_enabled() -> bool {
         .unwrap_or(true)
 }
 
-// TemporalStore parity (bjmeetsfo/TemporalStore-cpp): the storage engine's
+// TemporalStore parity (bjmeetsfo/TemporalStore-native): the storage engine's
 // record/serving SEQUENCE is an engine-owned MONOTONIC log id -- src/partition/index/
 // index.cc:845 `log_id_ = iter_->Id();` with `GetLogId() { return log_id_; }` (index.h
 // :236). It is advanced only by the append log / commit and is never a client

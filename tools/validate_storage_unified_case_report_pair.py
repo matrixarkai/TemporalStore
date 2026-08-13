@@ -23,8 +23,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 PAIR = ROOT / "compat" / "storage_unified_case_report_pair.json"
 CORPUS = ROOT / "compat" / "unified_temporalstore_cases.json"
-COMPARATOR = ROOT / "tools" / "compare_unified_cpp_rust_case_reports.py"
-CPP_RUNNER = ROOT / "tools" / "cpp_storage_unified_case_report_runner.cc"
+COMPARATOR = ROOT / "tools" / "compare_unified_rust_case_reports.py"
+NATIVE_RUNNER = ROOT / "tools" / "native_storage_unified_case_report_runner.cc"
 EXPECTED_SCHEMA = "temporalstore_storage_unified_case_report_pair_v1"
 EXPECTED_REPORT_SCHEMA = "temporalstore_unified_case_report_v1"
 REQUIRED_OUTPUT_FIELDS = {
@@ -44,7 +44,7 @@ REQUIRED_OUTPUT_FIELDS = {
         "memory_cache_hits",
         "memory_cache_misses",
     },
-    "storage_config_cpp_like_public_knobs": {
+    "storage_config_like_public_knobs": {
         "TS_BLOCK_INDEX_CACHE_BYTES",
         "TS_BLOCK_SEGMENT_TARGET_BYTES",
         "TS_COLD_SCAN_NO_CACHE_FILL",
@@ -227,9 +227,9 @@ def _required_cases() -> set[str]:
     except OSError as exc:
         raise SystemExit(f"cannot read {CORPUS}: {exc}") from exc
     coverage = corpus.get("coverage") if isinstance(corpus.get("coverage"), dict) else {}
-    rows = coverage.get("cpp_adapter_coverage")
+    rows = coverage.get("native_adapter_coverage")
     if not isinstance(rows, list):
-        raise SystemExit(f"{CORPUS}: coverage.cpp_adapter_coverage must be a list")
+        raise SystemExit(f"{CORPUS}: coverage.native_adapter_coverage must be a list")
     for row in rows:
         if isinstance(row, dict) and row.get("family") == "storage/cache":
             cases = row.get("adapter_contract_case_names")
@@ -298,22 +298,22 @@ def _validate_outputs(cases: dict[str, dict[str, Any]], label: str) -> None:
             raise SystemExit(f"{label}.{case_name}.steps[0] missing latency_ms")
 
 
-def _run_comparator(rust_report: dict[str, Any], cpp_report: dict[str, Any]) -> dict[str, Any]:
+def _run_comparator(rust_report: dict[str, Any], native_report: dict[str, Any]) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="storage-unified-case-report-") as tmpdir:
         root = Path(tmpdir)
         rust_path = root / "rust.json"
-        cpp_path = root / "cpp.json"
+        native_path = root / "native.json"
         out_path = root / "comparison.json"
         rust_path.write_text(json.dumps(rust_report), encoding="utf-8")
-        cpp_path.write_text(json.dumps(cpp_report), encoding="utf-8")
+        native_path.write_text(json.dumps(native_report), encoding="utf-8")
         completed = subprocess.run(
             [
                 sys.executable,
                 str(COMPARATOR),
                 "--rust-report",
                 str(rust_path),
-                "--cpp-report",
-                str(cpp_path),
+                "--native-report",
+                str(native_path),
                 "--output",
                 str(out_path),
                 "--require-schema",
@@ -336,19 +336,19 @@ def _run_comparator(rust_report: dict[str, Any], cpp_report: dict[str, Any]) -> 
         return json.loads(out_path.read_text(encoding="utf-8"))
 
 
-def _run_cpp_adapter() -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="cpp-storage-unified-runner-") as tmpdir:
+def _run_adapter() -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="native-storage-unified-runner-") as tmpdir:
         root = Path(tmpdir)
-        binary_path = root / "cpp_storage_unified_case_report_runner"
-        cpp_report_path = root / "cpp-report.json"
+        binary_path = root / "native_storage_unified_case_report_runner"
+        native_report_path = root / "native-report.json"
         compile_result = subprocess.run(
             [
                 "g++",
-                "-std=c++17",
+                "-std=native17",
                 "-O2",
                 "-I",
                 str(ROOT),
-                str(CPP_RUNNER),
+                str(NATIVE_RUNNER),
                 "-o",
                 str(binary_path),
             ],
@@ -361,7 +361,7 @@ def _run_cpp_adapter() -> dict[str, Any]:
         if compile_result.returncode != 0:
             raise SystemExit(compile_result.stdout.rstrip())
         run_result = subprocess.run(
-            [str(binary_path), "--output", str(cpp_report_path)],
+            [str(binary_path), "--output", str(native_report_path)],
             cwd=ROOT,
             text=True,
             stdout=subprocess.PIPE,
@@ -370,7 +370,7 @@ def _run_cpp_adapter() -> dict[str, Any]:
         )
         if run_result.returncode != 0:
             raise SystemExit(run_result.stdout.rstrip())
-        return json.loads(cpp_report_path.read_text(encoding="utf-8"))
+        return json.loads(native_report_path.read_text(encoding="utf-8"))
 
 
 def main() -> int:
@@ -379,23 +379,23 @@ def main() -> int:
     if pair.get("schema") != EXPECTED_SCHEMA:
         raise SystemExit(f"{PAIR}: schema must be {EXPECTED_SCHEMA}")
     rust_report = pair.get("rust_report")
-    cpp_report = pair.get("cpp_report")
-    if not isinstance(rust_report, dict) or not isinstance(cpp_report, dict):
-        raise SystemExit(f"{PAIR}: rust_report and cpp_report must be objects")
+    native_report = pair.get("native_report")
+    if not isinstance(rust_report, dict) or not isinstance(native_report, dict):
+        raise SystemExit(f"{PAIR}: rust_report and native_report must be objects")
     _validate_outputs(_case_map(rust_report, "rust_report", required_cases), "rust_report")
-    _validate_outputs(_case_map(cpp_report, "cpp_report", required_cases), "cpp_report")
-    cpp_runtime_report = _run_cpp_adapter()
+    _validate_outputs(_case_map(native_report, "native_report", required_cases), "native_report")
+    native_runtime_report = _run_adapter()
     _validate_outputs(
-        _case_map(cpp_runtime_report, "cpp_runtime_report", required_cases),
-        "cpp_runtime_report",
+        _case_map(native_runtime_report, "native_runtime_report", required_cases),
+        "native_runtime_report",
     )
-    comparison = _run_comparator(rust_report, cpp_runtime_report)
+    comparison = _run_comparator(rust_report, native_runtime_report)
     if comparison.get("ready") is not True:
         raise SystemExit(f"storage unified case report comparison is not ready: {comparison}")
     print(
         "storage unified case report pair passed: "
         f"cases={len(required_cases)} rows={comparison.get('row_count')} "
-        "cpp_adapter=compiled"
+        "native_adapter=compiled"
     )
     return 0
 

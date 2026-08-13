@@ -1345,7 +1345,7 @@ class _CodexHookOutputPart2:
             account_id="acct_local",
             tenant_id="tenant_codex",
             user_id="local_user",
-            session_id="codex-cpp-session-1",
+            session_id="codex-native-session-1",
             team="codex",
             project="temporalstore",
         )
@@ -1406,7 +1406,7 @@ class _CodexHookOutputPart2:
         self.assertEqual(["selected_user_prompt"], raw["source_memory_selection_policies"])
         self.assertEqual({"selected_user_prompt": 1}, raw["source_memory_selection_policy_counts"])
         self.assertEqual("selected_user_prompt", raw["codex_memory_selection"]["policy"])
-        self.assertEqual("codex-cpp-session-1", raw["scope"]["session_id"])
+        self.assertEqual("codex-native-session-1", raw["scope"]["session_id"])
         self.assertNotIn("thread_id", raw)
         self.assertNotIn("turn_id", raw)
         self.assertEqual("context_event", serving["record_type"])
@@ -1414,8 +1414,8 @@ class _CodexHookOutputPart2:
         self.assertEqual("UserPromptSubmit", serving["codex_api_event"])
         self.assertNotIn("hook_type", serving)
         self.assertEqual(["before_llm"], serving["source_hook_types"])
-        self.assertEqual("codex-cpp-session-1", serving["session_id"])
-        self.assertEqual("codex-cpp-session-1", serving["scope"]["session_id"])
+        self.assertEqual("codex-native-session-1", serving["session_id"])
+        self.assertEqual("codex-native-session-1", serving["scope"]["session_id"])
         self.assertNotIn("thread_id", serving)
         self.assertNotIn("turn_id", serving)
         self.assertNotIn("conversation_id", serving["metadata"])
@@ -1540,7 +1540,7 @@ class _CodexHookOutputPart2:
                 account_id="acct_local",
                 tenant_id="tenant_codex",
                 user_id="local_user",
-                session_id="codex-cpp-session-1",
+                session_id="codex-native-session-1",
                 team="codex",
                 project="temporalstore",
                 session_commit_threshold=20,

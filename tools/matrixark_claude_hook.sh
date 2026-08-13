@@ -3,7 +3,7 @@
 # MatrixArk Claude Code context hook: ingestion / extraction / retrieval.
 #
 # This is the Claude Code counterpart to the Codex hook family
-# (tools/matrixark_codex_cpp_hook.sh, tools/matrixark_codex_rust_hook.sh). Claude
+# (tools/matrixark_codex_hook.sh, tools/matrixark_codex_rust_hook.sh). Claude
 # Code invokes it as a `command` hook, one invocation per lifecycle event, e.g.:
 #
 #   "command": "/abs/path/tools/matrixark_claude_hook.sh --event UserPromptSubmit"

@@ -129,7 +129,7 @@ fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {
     );
 }
 
-// shared-corpus: cpp_storage_object_page_bucket_parity_surfaces;
+// shared-corpus: native_storage_object_page_bucket_parity_surfaces;
 #[test]
 fn object_manager_runtime_report_tracks_residency_layout_and_tombstones_parity() {
     let dir = tempfile::tempdir().unwrap();
@@ -2852,7 +2852,7 @@ fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
 }
 
 #[test]
-fn storage_lifecycle_plan_matches_cpp_delayed_and_limited_dirty_bucket_dump_policy() {
+fn storage_lifecycle_plan_matches_delayed_and_limited_dirty_bucket_dump_policy() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,

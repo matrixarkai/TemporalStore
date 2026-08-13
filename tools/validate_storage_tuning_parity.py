@@ -47,7 +47,7 @@ def _eval_numeric_expr(expr: str) -> int:
     return int(eval(expr, {"__builtins__": {}}, {}))
 
 
-def extract_cpp_runtime_defaults(path: pathlib.Path) -> dict[str, object]:
+def extract_runtime_defaults(path: pathlib.Path) -> dict[str, object]:
     text = path.read_text(encoding="utf-8")
     values: dict[str, object] = {}
     for name in EXPECTED_KNOBS:
@@ -100,7 +100,7 @@ def main() -> int:
             missing.append(f"{label} ({path}) missing: {', '.join(absent)}")
 
     default_sources = {
-        "cpp_runtime": extract_cpp_runtime_defaults(files["cpp_runtime"]),
+        "native_runtime": extract_runtime_defaults(files["native_runtime"]),
         "rust_config": extract_rust_defaults(files["rust_config"]),
     }
     for label, defaults in default_sources.items():

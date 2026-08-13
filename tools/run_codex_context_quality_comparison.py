@@ -54,7 +54,7 @@ CORPUS: tuple[MemoryRecord, ...] = (
     MemoryRecord("ent:control-state", "user:local_user", "global", "long_term_entity", "Control State stores fast-changing serving signals: counters, caps, quotas, pacing, eligibility, suppression, and risk-control state.", ("control_state", "counters", "caps", "quotas", "pacing", "eligibility", "suppression", "risk_control")),
     MemoryRecord("ent:feature-aggregate", "user:local_user", "global", "long_term_entity", "FeatureAggregate lives inside Feature. Feature stores time-keyed observations; FeatureAggregate computes serving-time aggregates over those observations, with immature high-cardinality sketches gated.", ("feature_aggregate", "inside_feature", "time_keyed_observations", "serving_time_aggregates", "gate_high_cardinality_sketches")),
     MemoryRecord("msg:codex-hook:001", "user:local_user", "codex-hook-realtime", "short_term_event", "Codex hooks must fire from real UserPromptSubmit events across all old and new conversations. Do not use watcher/log fallback as the serving source.", ("user_prompt_submit", "all_conversations", "no_watcher_serving_source", "realtime_hook")),
-    MemoryRecord("sum:codex-hook:l1", "user:local_user", "codex-hook-realtime", "long_term_summary", "Hook invariant: global hook registration should ingest real user prompts to both Rust and TemporalStore, preserving session/thread identity and enabling query by all sessions.", ("global_hook_registration", "rust_and_cpp", "preserve_session_identity", "query_all_sessions")),
+    MemoryRecord("sum:codex-hook:l1", "user:local_user", "codex-hook-realtime", "long_term_summary", "Hook invariant: global hook registration should ingest real user prompts to both Rust and TemporalStore, preserving session/thread identity and enabling query by all sessions.", ("global_hook_registration", "rust_and_native", "preserve_session_identity", "query_all_sessions")),
     MemoryRecord("msg:perf-parity:001", "user:local_user", "performance-parity", "short_term_event", "For vs Rust performance claims, do not use retired matrixark_record_log bridge artifacts. Use direct SDK or mature proxy paths and require selected refs to be non-empty before latency claims.", ("no_matrixark_record_log", "direct_sdk_or_proxy", "selected_refs_non_empty", "fair_perf_claims")),
 )
 
@@ -62,7 +62,7 @@ QUERIES: tuple[QueryCase, ...] = (
     QueryCase("q1", "windows-docker-install", "How should Windows users install TemporalStore without WSL?", ("windows_no_wsl_runtime", "docker_desktop", "prepared_image", "powershell_installer", "codex_hook_setup"), ("msg:windows-docker:001", "sum:windows-docker:l1")),
     QueryCase("q2", "linux-macos-install", "Which Ubuntu versions do we recommend for TemporalStore builds?", ("ubuntu_2204", "ubuntu_2604", "linux_script"), ("msg:linux-macos:001",)),
     QueryCase("q3", "open-source-surface", "What should be included in the first open-source TemporalStore surface?", ("context_capability", "feature_capability", "feature_aggregate", "control_state", "no_audit_replay_debug", "minimal_redis"), ("msg:opensource-surface:001", "ent:control-state", "ent:feature-aggregate")),
-    QueryCase("q4", "codex-hook-realtime", "How should Codex hooks ingest real prompts across conversations?", ("user_prompt_submit", "all_conversations", "global_hook_registration", "rust_and_cpp", "preserve_session_identity", "no_watcher_serving_source"), ("msg:codex-hook:001", "sum:codex-hook:l1")),
+    QueryCase("q4", "codex-hook-realtime", "How should Codex hooks ingest real prompts across conversations?", ("user_prompt_submit", "all_conversations", "global_hook_registration", "rust_and_native", "preserve_session_identity", "no_watcher_serving_source"), ("msg:codex-hook:001", "sum:codex-hook:l1")),
     QueryCase("q5", "open-source-surface", "How do FeatureAggregate and Control State differ?", ("feature_aggregate", "inside_feature", "time_keyed_observations", "serving_time_aggregates", "control_state", "counters", "quotas"), ("ent:feature-aggregate", "ent:control-state")),
     QueryCase("q6", "linux-macos-install", "How should OSS models be installed for local context benchmarking?", ("install_context_oss_models", "ollama", "qwen", "vllm", "transformers", "embedding_fallback"), ("ent:oss-model-setup", "msg:linux-macos:001")),
     QueryCase("q7", "performance-parity", "What rule should we follow before comparing Rust and retrieval latency?", ("no_matrixark_record_log", "direct_sdk_or_proxy", "selected_refs_non_empty", "fair_perf_claims"), ("msg:perf-parity:001",)),
@@ -122,7 +122,7 @@ def answer_from_facts(covered: Iterable[str], refs: Iterable[str]) -> str:
         bits.append("Audit/replay/debug-only models and broad Redis APIs should stay out of the first public release.")
     if "user_prompt_submit" in facts or "global_hook_registration" in facts:
         bits.append("Codex prompt capture should use global UserPromptSubmit hook registration for old and new conversations.")
-    if "rust_and_cpp" in facts:
+    if "rust_and_native" in facts:
         bits.append("The hook should write to both Rust and TemporalStore while preserving session/thread identity.")
     if "no_watcher_serving_source" in facts:
         bits.append("Watcher/log backfill can reconcile, but it should not be the serving source for realtime prompt capture.")

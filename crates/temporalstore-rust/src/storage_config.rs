@@ -160,8 +160,8 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
-    // shared-corpus: storage_config_cpp_like_public_knobs
-    fn defaults_match_cpp_like_public_surface() {
+    // shared-corpus: storage_config_like_public_knobs
+    fn defaults_match_like_public_surface() {
         let config = StorageTuningConfig::default();
         assert_eq!(
             config.context_page_target_bytes,
@@ -189,8 +189,8 @@ mod tests {
     }
 
     #[test]
-    // shared-corpus: storage_config_cpp_like_public_knobs
-    fn env_names_are_stable_for_cpp_rust_parity() {
+    // shared-corpus: storage_config_like_public_knobs
+    fn env_names_are_stable_for_rust_parity() {
         assert_eq!(
             StorageTuningConfig::env_names(),
             [
@@ -207,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    // shared-corpus: storage_config_cpp_like_public_knobs
+    // shared-corpus: storage_config_like_public_knobs
     fn parses_public_knobs_from_getter() {
         let env = HashMap::from([
             (TS_CONTEXT_PAGE_TARGET_BYTES, "32768"),

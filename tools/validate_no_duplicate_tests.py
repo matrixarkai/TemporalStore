@@ -193,7 +193,7 @@ def main() -> None:
     print(f"rust_test_guard_internal_marked_tests={guard['rust_internal_marked_tests']}")
     print(f"shared_corpus_cases={case_count}")
     print(f"shared_corpus_steps={step_count}")
-    print(f"cpp_existing_test_surfaces={existing_test_count}")
+    print(f"native_existing_test_surfaces={existing_test_count}")
 
 
 if __name__ == "__main__":

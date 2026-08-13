@@ -242,7 +242,7 @@ fn load_corpus() -> UnifiedCorpus {
         serde_json::from_slice(&corpus_bytes).expect("shared corpus should deserialize");
 
     assert_eq!(corpus.schema_version, 1);
-    assert_eq!(corpus.name, "temporalstore-unified-cpp-rust-corpus");
+    assert_eq!(corpus.name, "temporalstore-unified-native-rust-corpus");
     assert!(!corpus.cases.is_empty(), "shared corpus must contain cases");
     assert_required_coverage(&corpus);
     corpus
@@ -988,7 +988,7 @@ fn maybe_run_shared_harness_command(case: &UnifiedCase, step: &UnifiedStep) -> b
             verify_redis_operational_admin_commands();
             true
         }
-        "redis_slot_hash_cpp_crc64" => {
+        "redis_slot_hash_crc64" => {
             let command: SharedHarnessCommand = serde_json::from_value(step.command.clone())
                 .unwrap_or_else(|error| {
                     panic!(
@@ -1003,7 +1003,7 @@ fn maybe_run_shared_harness_command(case: &UnifiedCase, step: &UnifiedStep) -> b
                 case.name,
                 step.name
             );
-            verify_redis_bucket_hash_cpp_crc64();
+            verify_redis_bucket_hash_crc64();
             true
         }
         "proxy_topology_churn_convergence" => {
@@ -1133,7 +1133,7 @@ fn maybe_run_shared_harness_command(case: &UnifiedCase, step: &UnifiedStep) -> b
             verify_proxy_grafana_prometheus_metric_parity();
             true
         }
-        "client_cpp_partition_set_route_cache" => {
+        "client_partition_set_route_cache" => {
             let command: SharedHarnessCommand = serde_json::from_value(step.command.clone())
                 .unwrap_or_else(|error| {
                     panic!(
@@ -1148,7 +1148,7 @@ fn maybe_run_shared_harness_command(case: &UnifiedCase, step: &UnifiedStep) -> b
                 case.name,
                 step.name
             );
-            verify_client_cpp_partition_set_route_cache();
+            verify_client_partition_set_route_cache();
             true
         }
         "client_retry_budget_topology_refresh" => {
@@ -1456,7 +1456,7 @@ fn verify_redis_feature_module_flow() {
         duration: 90,
         author_id: 7,
     }
-    .encode_cpp_feature_value();
+    .encode_feature_proto_value();
     assert_eq!(
         run(vec![s("FAPPEND"), s("rf"), s("300"), encoded.clone()]),
         RespValue::SimpleString("OK".to_string())
@@ -1608,7 +1608,7 @@ fn verify_redis_operational_admin_commands() {
     );
 }
 
-fn verify_redis_bucket_hash_cpp_crc64() {
+fn verify_redis_bucket_hash_crc64() {
     let mut state = RedisCommandState::default();
     let mut run = |args: Vec<&str>| {
         execute_redis_command_with_state(
@@ -1755,7 +1755,7 @@ fn verify_proxy_operational_surface_aliases() {
         "/ProxyService/Preflight",
         "/ProxyService/GetConsulNames",
         "/ProxyService/NotifyStop",
-        "/ProxyService/GetCppMigrationContract",
+        "/ProxyService/GetMigrationContract",
         "/ProxyService/GetPolicy",
         "/ProxyService/Metrics",
     ] {
@@ -1763,12 +1763,12 @@ fn verify_proxy_operational_surface_aliases() {
             surface
                 .entries
                 .iter()
-                .any(|entry| entry.rust_cpp_alias == alias),
+                .any(|entry| entry.rust_alias == alias),
             "missing proxy alias {alias}"
         );
     }
 
-    let migration = proxy.cpp_migration_contract();
+    let migration = proxy.native_migration_contract();
     assert!(!migration.legacy_cplusplus_wire_in_scope);
     assert!(migration.http_json_aliases_ready);
     assert!(migration.resp_migration_ready);
@@ -1947,7 +1947,7 @@ fn verify_proxy_grafana_prometheus_metric_parity() {
         .rust_prometheus_families
         .contains(&"temporalstore_proxy_metric_family_parity".to_string()));
     assert!(report.mappings.iter().any(|mapping| {
-        mapping.cpp_surface.contains("command/admission")
+        mapping.native_surface.contains("command/admission")
             && mapping.rust_prometheus_family == "temporalstore_proxy_requests_total"
             && mapping.grafana_panel == "Proxy Requests And Admission"
             && mapping.covered
@@ -2120,7 +2120,7 @@ fn verify_proxy_topology_churn_convergence() {
     }
 }
 
-fn verify_client_cpp_partition_set_route_cache() {
+fn verify_client_partition_set_route_cache() {
     let meta_addr = free_local_addr();
     let primary_addr = "127.0.0.1:27101".to_string();
     let replica_addr = "127.0.0.1:27102".to_string();
@@ -2137,7 +2137,7 @@ fn verify_client_cpp_partition_set_route_cache() {
                         table: Some(TableMetaInfo {
                             table_id: 42,
                             namespace: "ns".to_string(),
-                            table_name: "cpp_parts".to_string(),
+                            table_name: "native_parts".to_string(),
                             state: MetaEntityState::Normal,
                             topology_version: 12,
                             first_shard_id: PartitionId::new(42, 0, 0, 17).unwrap().id(),
@@ -2216,15 +2216,15 @@ fn verify_client_cpp_partition_set_route_cache() {
         route_cache_ttl_ms: 60_000,
         ..ClientOptions::default()
     });
-    let options = client.sync_table_topology("ns", "cpp_parts").unwrap();
+    let options = client.sync_table_topology("ns", "native_parts").unwrap();
     assert_eq!(options.table_id, 42);
     assert_eq!(options.partition_version, 17);
 
     let report = client.preflight_report();
-    assert_eq!(report.cpp_partition_sets.len(), 1);
-    let partition_set = &report.cpp_partition_sets[0];
+    assert_eq!(report.native_partition_sets.len(), 1);
+    let partition_set = &report.native_partition_sets[0];
     assert_eq!(partition_set.table_id, 42);
-    assert_eq!(partition_set.combine_name, "ns/cpp_parts");
+    assert_eq!(partition_set.combine_name, "ns/native_parts");
     assert_eq!(partition_set.partition_version, 17);
     assert_eq!(partition_set.topology_version, 12);
     assert_eq!(partition_set.partition_count, 2);
@@ -2247,7 +2247,7 @@ fn verify_client_cpp_partition_set_route_cache() {
     assert!(topology_report
         .routes
         .iter()
-        .all(|route| route.table == "ns/cpp_parts"
+        .all(|route| route.table == "ns/native_parts"
             && route.partition_version == 17));
     assert_eq!(
         topology_report.routes[0].partition_id,
@@ -3370,7 +3370,7 @@ impl StorageUnifiedCommand {
     fn migration_case_or_default(&self) -> String {
         self.migration_case
             .clone()
-            .unwrap_or_else(|| "cpp_logical_storage_models_packed_timestamped_pages".to_string())
+            .unwrap_or_else(|| "native_logical_storage_models_packed_timestamped_pages".to_string())
     }
 
     fn shared_store_mode(&self) -> Option<SharedStoreStorageMode> {
@@ -3392,7 +3392,7 @@ fn load_storage_migration_case(case_name: &str) -> StorageMigrationCase {
 
     assert_eq!(corpus.schema_version, 1);
     assert_eq!(corpus.name, "temporalstore-storage-migration-corpus");
-    assert_eq!(corpus.source_format, "cpp_exported_logical_artifacts_v1");
+    assert_eq!(corpus.source_format, "native_exported_logical_artifacts_v1");
     assert_eq!(
         corpus.format_compatibility,
         "migration_only_rust_native_pages"

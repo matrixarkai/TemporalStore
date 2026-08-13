@@ -107,7 +107,7 @@ impl ProxyService {
                 &mut out,
                 "temporalstore_proxy_metric_family_parity",
                 &[
-                    ("cpp_surface", mapping.cpp_surface.as_str()),
+                    ("native_surface", mapping.native_surface.as_str()),
                     ("rust_family", mapping.rust_prometheus_family.as_str()),
                     ("grafana_panel", mapping.grafana_panel.as_str()),
                 ],

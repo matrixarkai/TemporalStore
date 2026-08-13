@@ -47,7 +47,7 @@ pub fn default_context_model_providers() -> Vec<ContextModelProviderConfig> {
             mock_mode: false,
         },
         ContextModelProviderConfig {
-            provider_name: "matrixark-cpp-oss-context".to_string(),
+            provider_name: "matrixark-native-oss-context".to_string(),
             provider_kind: ContextProviderKind::OpenAiCompatible,
             base_url: "http://127.0.0.1:8000/v1".to_string(),
             api_key_env: "MATRIXARK_MODEL_API_KEY".to_string(),
@@ -147,15 +147,15 @@ pub fn reference_open_source_model_profiles() -> Vec<ContextReferenceModelProfil
                 .to_string(),
         },
         ContextReferenceModelProfile {
-            profile_name: "matrixark-cpp-oss-context".to_string(),
-            provider_name: "matrixark-cpp-oss-context".to_string(),
+            profile_name: "matrixark-native-oss-context".to_string(),
+            provider_name: "matrixark-native-oss-context".to_string(),
             provider_kind: ContextProviderKind::OpenAiCompatible,
             base_url: "http://127.0.0.1:8000/v1".to_string(),
             chat_model: "google/flan-t5-small".to_string(),
             vlm_model: "none".to_string(),
             embedding_model: "sentence-transformers/all-MiniLM-L6-v2".to_string(),
             capabilities: vec![
-                "cpp_path_oss_model_parity".to_string(),
+                "native_path_oss_model_parity".to_string(),
                 "chat_context_extraction".to_string(),
                 "embedding_vectorization".to_string(),
                 "semantic_retrieval".to_string(),

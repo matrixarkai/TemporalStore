@@ -333,10 +333,10 @@ def validate_context_workflow(job, summary):
     parity = summary["parity"]
     require(parity["pipeline_ready"], f"{job}: context parity report is not ready")
     for field in [
-        "cpp_context_models_ready",
-        "cpp_context_model_ids_ready",
-        "cpp_context_timeline_semantics_ready",
-        "cpp_context_validation_limits_ready",
+        "native_context_models_ready",
+        "native_context_model_ids_ready",
+        "native_context_timeline_semantics_ready",
+        "native_context_validation_limits_ready",
         "reference_tiers_ready",
         "extraction_stage_ready",
         "retrieval_stage_ready",

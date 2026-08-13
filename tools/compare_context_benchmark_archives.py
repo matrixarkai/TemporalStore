@@ -36,7 +36,7 @@ PASSED_STATUSES = {"passed", "ready"}
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rust-archive", type=Path, required=True)
-    parser.add_argument("--cpp-archive", type=Path, required=True)
+    parser.add_argument("--native-archive", type=Path, required=True)
     parser.add_argument("--case-name", default="context_benchmark_full_dataset_gates")
     parser.add_argument("--datasets", nargs="*", default=list(DEFAULT_DATASETS))
     parser.add_argument("--numeric-tolerance", type=float, default=1e-9)
@@ -55,16 +55,16 @@ def main() -> int:
     args = parser.parse_args()
 
     rust_manifest = load_manifest(args.rust_archive)
-    cpp_manifest = load_manifest(args.cpp_archive)
+    native_manifest = load_manifest(args.native_archive)
     failures: list[str] = []
     truth_blockers: list[str] = []
     dataset_results = []
     miss_totals = {
         "rust_only": 0,
-        "cpp_only": 0,
+        "native_only": 0,
         "shared_hard": 0,
         "reader_rust_only": 0,
-        "reader_cpp_only": 0,
+        "reader_only": 0,
         "reader_shared_hard": 0,
     }
     summary_compare: dict[str, Any] = {}
@@ -73,32 +73,32 @@ def main() -> int:
     latency_deltas: dict[str, Any] = {}
     require_executed = args.require_executed or args.truth_mode == "production"
 
-    compare_manifest_field("reader_model", rust_manifest, cpp_manifest, failures)
-    compare_manifest_field("reader_base_url", rust_manifest, cpp_manifest, failures, required=False)
+    compare_manifest_field("reader_model", rust_manifest, native_manifest, failures)
+    compare_manifest_field("reader_base_url", rust_manifest, native_manifest, failures, required=False)
 
     for dataset in args.datasets:
         rust_status = dataset_status(rust_manifest, dataset)
-        cpp_status = dataset_status(cpp_manifest, dataset)
+        native_status = dataset_status(native_manifest, dataset)
         result: dict[str, Any] = {
             "dataset": dataset,
             "rust_status": rust_status,
-            "cpp_status": cpp_status,
+            "native_status": native_status,
         }
-        if rust_status in PASSED_STATUSES and cpp_status in PASSED_STATUSES:
+        if rust_status in PASSED_STATUSES and native_status in PASSED_STATUSES:
             rust_report = find_report(args.rust_archive, dataset)
-            cpp_report = find_report(args.cpp_archive, dataset)
+            native_report = find_report(args.native_archive, dataset)
             result["rust_report"] = str(rust_report)
-            result["cpp_report"] = str(cpp_report)
-            if rust_report is None or cpp_report is None:
+            result["native_report"] = str(native_report)
+            if rust_report is None or native_report is None:
                 failures.append(
                     f"{dataset}: passed status requires both report files "
-                    f"(rust={rust_report}, cpp={cpp_report})"
+                    f"(rust={rust_report}, native={native_report})"
                 )
                 result["ready"] = False
             else:
                 compare_result = run_report_compare(
                     rust_report,
-                    cpp_report,
+                    native_report,
                     args.case_name,
                     dataset,
                     args.numeric_tolerance,
@@ -107,10 +107,10 @@ def main() -> int:
                 result["ready"] = compare_result["ready"]
                 result["report_compare"] = compare_result
                 miss_totals["rust_only"] += int(compare_result.get("rust_only_miss_count") or 0)
-                miss_totals["cpp_only"] += int(compare_result.get("cpp_only_miss_count") or 0)
+                miss_totals["native_only"] += int(compare_result.get("native_only_miss_count") or 0)
                 miss_totals["shared_hard"] += int(compare_result.get("shared_hard_miss_count") or 0)
                 miss_totals["reader_rust_only"] += int(compare_result.get("reader_rust_only_miss_count") or 0)
-                miss_totals["reader_cpp_only"] += int(compare_result.get("reader_cpp_only_miss_count") or 0)
+                miss_totals["reader_only"] += int(compare_result.get("reader_only_miss_count") or 0)
                 miss_totals["reader_shared_hard"] += int(compare_result.get("reader_shared_hard_miss_count") or 0)
                 failures.extend(f"{dataset}: {item}" for item in compare_result["failures"])
                 summary_compare[dataset] = compare_result.get("summary_compare") or {}
@@ -119,21 +119,21 @@ def main() -> int:
                 latency_deltas[dataset] = compare_result.get("latency_deltas") or {}
                 if not compare_result["ready"]:
                     truth_blockers.append(f"{dataset}: report comparison failed")
-        elif rust_status in SKIPPED_STATUSES and cpp_status in SKIPPED_STATUSES:
+        elif rust_status in SKIPPED_STATUSES and native_status in SKIPPED_STATUSES:
             result["ready"] = not require_executed
             if require_executed:
                 failures.append(f"{dataset}: execution required but both archives skipped")
                 truth_blockers.append(f"{dataset}: skipped on both sides")
         else:
             result["ready"] = False
-            failures.append(f"{dataset}: status mismatch rust={rust_status!r} cpp={cpp_status!r}")
+            failures.append(f"{dataset}: status mismatch rust={rust_status!r} native={native_status!r}")
             truth_blockers.append(f"{dataset}: status mismatch")
         dataset_results.append(result)
 
     executed_dataset_count = sum(
         1
         for result in dataset_results
-        if result["rust_status"] in PASSED_STATUSES and result["cpp_status"] in PASSED_STATUSES
+        if result["rust_status"] in PASSED_STATUSES and result["native_status"] in PASSED_STATUSES
     )
     benchmark_truth_ready = not failures and (
         args.truth_mode == "contract" or executed_dataset_count == len(dataset_results)
@@ -148,7 +148,7 @@ def main() -> int:
         "truth_mode": args.truth_mode,
         "truth_blockers": sorted(set(truth_blockers)),
         "rust_archive": str(args.rust_archive),
-        "cpp_archive": str(args.cpp_archive),
+        "native_archive": str(args.native_archive),
         "case_name": args.case_name,
         "dataset_count": len(dataset_results),
         "executed_dataset_count": executed_dataset_count,
@@ -184,19 +184,19 @@ def load_manifest(archive: Path) -> dict[str, Any]:
 def compare_manifest_field(
     field: str,
     rust_manifest: dict[str, Any],
-    cpp_manifest: dict[str, Any],
+    native_manifest: dict[str, Any],
     failures: list[str],
     *,
     required: bool = True,
 ) -> None:
     rust_value = rust_manifest.get(field)
-    cpp_value = cpp_manifest.get(field)
-    if rust_value is None or cpp_value is None:
+    native_value = native_manifest.get(field)
+    if rust_value is None or native_value is None:
         if required:
             failures.append(f"manifest.{field}: both manifests must include this field")
         return
-    if rust_value != cpp_value:
-        failures.append(f"manifest.{field}: rust={rust_value!r} cpp={cpp_value!r}")
+    if rust_value != native_value:
+        failures.append(f"manifest.{field}: rust={rust_value!r} native={native_value!r}")
 
 
 def dataset_status(manifest: dict[str, Any], dataset: str) -> str:
@@ -237,7 +237,7 @@ def find_report(archive: Path, dataset: str) -> Path | None:
 
 def run_report_compare(
     rust_report: Path,
-    cpp_report: Path,
+    native_report: Path,
     case_name: str,
     dataset: str,
     numeric_tolerance: float,
@@ -248,8 +248,8 @@ def run_report_compare(
         str(REPORT_COMPARATOR),
         "--rust-report",
         str(rust_report),
-        "--cpp-report",
-        str(cpp_report),
+        "--native-report",
+        str(native_report),
         "--case-name",
         case_name,
         "--dataset",

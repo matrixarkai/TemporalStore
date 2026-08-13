@@ -472,8 +472,8 @@ pub struct StoragePhysicalPageIndex {
     pub dirty: bool,
     pub deleted: bool,
     pub log_backed: bool,
-    pub cpp_packed_page_index_len: usize,
-    pub cpp_packed_page_index_hex: String,
+    pub native_packed_page_index_len: usize,
+    pub native_packed_page_index_hex: String,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -492,10 +492,10 @@ pub struct StoragePhysicalBucketNode {
     pub physical_bytes: u64,
     pub dirty_generation: u64,
     pub last_dump_sequence: u64,
-    #[serde(rename = "cpp_packed_slot_node_len")]
-    pub cpp_packed_bucket_node_len: usize,
-    #[serde(rename = "cpp_packed_slot_node_hex")]
-    pub cpp_packed_bucket_node_hex: String,
+    #[serde(rename = "native_packed_slot_node_len")]
+    pub native_packed_bucket_node_len: usize,
+    #[serde(rename = "native_packed_slot_node_hex")]
+    pub native_packed_bucket_node_hex: String,
     #[serde(default)]
     pub page_indexes: Vec<StoragePhysicalPageIndex>,
 }
@@ -520,10 +520,10 @@ pub struct StoragePhysicalIndexReport {
     pub missing_routing_bucket_count: usize,
     pub missing_page_id_count: usize,
     pub missing_checksum_count: usize,
-    pub cpp_packed_page_index_size: usize,
-    #[serde(rename = "cpp_packed_slot_node_size")]
-    pub cpp_packed_bucket_node_size: usize,
-    pub cpp_packed_layout_compatible: bool,
+    pub native_packed_page_index_size: usize,
+    #[serde(rename = "native_packed_slot_node_size")]
+    pub native_packed_bucket_node_size: usize,
+    pub native_packed_layout_compatible: bool,
     #[serde(default)]
     #[serde(rename = "slot_nodes")]
     pub bucket_nodes: Vec<StoragePhysicalBucketNode>,
@@ -2399,7 +2399,7 @@ pub fn default_storage_manager_contract(
         contract_text("StorageManager/StoreManager"),
     );
     contract.insert(
-        "cpp_public_name".to_string(),
+        "native_public_name".to_string(),
         contract_text("StorageManager"),
     );
     contract.insert(
@@ -3401,22 +3401,22 @@ pub struct StorageCacheInvalidateBucketRequest {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CppGoldenCaseReport {
+pub struct GoldenCaseReport {
     pub name: String,
     pub passed: bool,
     pub detail: String,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CppGoldenCorpusReport {
+pub struct GoldenCorpusReport {
     pub corpus: String,
     pub total_cases: usize,
     pub passed_cases: usize,
     pub failed_cases: usize,
-    pub cases: Vec<CppGoldenCaseReport>,
+    pub cases: Vec<GoldenCaseReport>,
 }
 
-impl CppGoldenCorpusReport {
+impl GoldenCorpusReport {
     pub fn passed(&self) -> bool {
         self.failed_cases == 0 && self.total_cases == self.passed_cases
     }

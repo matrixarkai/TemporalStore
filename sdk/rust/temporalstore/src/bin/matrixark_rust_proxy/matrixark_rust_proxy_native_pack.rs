@@ -49,7 +49,7 @@ pub(crate) fn retrieve_context_pack_via_sdk_native(
         .and_then(Value::as_object_mut)
     {
         pack.entry("context_pack_assembly".to_string())
-            .or_insert_with(|| Value::String("native_cpp_direct_via_rust_proxy".to_string()));
+            .or_insert_with(|| Value::String("native_direct_via_rust_proxy".to_string()));
         let selected_count = pack
             .get("selected_ref_count")
             .and_then(Value::as_u64)

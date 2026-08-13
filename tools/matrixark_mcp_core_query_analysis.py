@@ -143,7 +143,7 @@ def slug_candidates_from_query(query: str) -> list[str]:
 
 def path_candidates_from_query(query: str) -> list[str]:
     values: list[str] = []
-    for raw in re.findall(r"[a-zA-Z0-9_.-]+/[a-zA-Z0-9_./-]+|[a-zA-Z0-9_.-]+\.(?:md|txt|pdf|csv|tsv|json|jsonl|yaml|yml|html|docx|pptx|xlsx|py|js|ts|go|rs|cpp|h)", query):
+    for raw in re.findall(r"[a-zA-Z0-9_.-]+/[a-zA-Z0-9_./-]+|[a-zA-Z0-9_.-]+\.(?:md|txt|pdf|csv|tsv|json|jsonl|yaml|yml|html|docx|pptx|xlsx|py|js|ts|go|rs|native|h)", query):
         normalized = normalized_index_value(raw)
         if normalized:
             values.append(normalized)

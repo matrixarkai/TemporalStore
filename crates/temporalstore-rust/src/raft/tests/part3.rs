@@ -7,7 +7,7 @@ use super::*;
 use super::helpers::*;
 
 #[test]
-fn raft_config_matches_cpp_defaults_and_validates_required_limits() {
+fn raft_config_matches_defaults_and_validates_required_limits() {
     let config = RaftConfig::default();
     assert_eq!(config.election_cycle_tick, 3);
     assert_eq!(config.max_apply_batch_bytes, 64 * 1024);
@@ -170,7 +170,7 @@ fn raft_read_options_enforce_leader_and_follower_read_paths() {
 }
 
 #[test]
-fn data_raft_read_policy_matches_cpp_partition_manager_modes() {
+fn data_raft_read_policy_matches_partition_manager_modes() {
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
     assert_eq!("leader".parse(), Ok(DataRaftReadMode::Leader));
     assert_eq!("linearizable".parse(), Ok(DataRaftReadMode::Linearizable));
@@ -285,7 +285,7 @@ fn raft_read_index_and_transfer_reject_lagging_replica() {
 }
 
 #[test]
-fn raft_wait_for_applied_index_matches_cpp_backend_contract() {
+fn raft_wait_for_applied_index_matches_backend_contract() {
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
     cluster.set_alive(3, false).unwrap();
     cluster
@@ -434,7 +434,7 @@ fn scale_up_adds_caught_up_replica() {
 
 // shared-corpus: raft_matrixraft_membership_roles_joint_consensus_matrix
 #[test]
-fn learner_and_witness_roles_match_cpp_membership_shape() {
+fn learner_and_witness_roles_match_membership_shape() {
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
     cluster
         .add_node_with_role(4, RaftReplicaRole::Learner)

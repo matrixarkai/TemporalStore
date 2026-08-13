@@ -24,7 +24,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MATRIXOBJECT_REPO = Path("/opt/github-services/MatrixObjectStore")
-SCHEMA = "temporalstore_shared_store_blob_append_cpp_rust_parity_v2"
+SCHEMA = "temporalstore_shared_store_blob_append_rust_parity_v2"
 
 
 def _run(
@@ -114,24 +114,24 @@ def _source_contains(path: Path, patterns: list[str]) -> dict[str, bool]:
 
 
 
-def _load_cpp_runtime_report(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
-    if args.cpp_runtime_report:
-        data = json.loads(Path(args.cpp_runtime_report).read_text(encoding="utf-8"))
+def _load_runtime_report(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
+    if args.native_runtime_report:
+        data = json.loads(Path(args.native_runtime_report).read_text(encoding="utf-8"))
         return data, {
             "mode": "loaded",
-            "path": str(args.cpp_runtime_report),
+            "path": str(args.native_runtime_report),
             "returncode": 0,
             "stderr_tail": "",
         }
 
-    bin_path = Path(args.cpp_runtime_bin) if args.cpp_runtime_bin else (
+    bin_path = Path(args.native_runtime_bin) if args.native_runtime_bin else (
         Path(args.matrixobject_repo)
         / "build-mvp/matrixobjectstore/objectstore/objectstore_append_blob_parity_report"
     )
     if not bin_path.exists():
         return {
             "status": "missing",
-            "reason": "cpp runtime emitter binary not found",
+            "reason": "native runtime emitter binary not found",
             "expected_binary": str(bin_path),
         }, {
             "mode": "missing",
@@ -143,7 +143,7 @@ def _load_cpp_runtime_report(args: argparse.Namespace) -> tuple[dict[str, Any], 
     root = Path(args.output_dir)
     if not root.is_absolute():
         root = ROOT / root
-    runtime_root = root / "cpp_matrixobjectstore_runtime_root"
+    runtime_root = root / "native_matrixobjectstore_runtime_root"
     command = [str(bin_path), str(runtime_root), str(args.entries), str(args.value_bytes)]
     started = time.time()
     result = _run(command, cwd=Path(args.matrixobject_repo), timeout=args.timeout_seconds)
@@ -164,7 +164,7 @@ def _load_cpp_runtime_report(args: argparse.Namespace) -> tuple[dict[str, Any], 
             "stdout_tail": result.stdout[-4000:],
         }, command_report
 
-def _cpp_contract(matrixobject_repo: Path) -> dict[str, Any]:
+def _contract(matrixobject_repo: Path) -> dict[str, Any]:
     object_cc = matrixobject_repo / "matrixobjectstore/objectstore/objectstore.cc"
     rpc_cc = matrixobject_repo / "matrixobjectstore/objectstore/objectstore_rpc.cc"
     object_h = matrixobject_repo / "matrixobjectstore/objectstore/objectstore.h"
@@ -215,7 +215,7 @@ def _cpp_contract(matrixobject_repo: Path) -> dict[str, Any]:
         **{f"rust_api:{key}": value for key, value in rust_api_checks.items()},
     }
     return {
-        "backend": "cpp",
+        "backend": "native",
         "matrixobject_repo": str(matrixobject_repo),
         "matrixobject_commit": _git_rev(matrixobject_repo),
         "evidence_type": "source_contract",
@@ -250,39 +250,39 @@ def _rust_replay_latency_total_us(rust_report: dict[str, Any], field: str) -> in
             found = True
     return total if found else None
 
-def _cpp_runtime_summary(cpp_report: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(cpp_report, dict):
+def _runtime_summary(native_report: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(native_report, dict):
         return {"runtime_valid": False, "reason": "missing runtime report"}
-    append_latency_avg_us = _avg_latency_us(cpp_report.get("appends"))
-    indexed_append_latency_avg_us = _avg_latency_us(cpp_report.get("appends"), "indexed_latency_us")
-    read_full_latency_us = cpp_report.get("read_full_latency_us")
-    read_tail_latency_us = cpp_report.get("read_tail_latency_us")
+    append_latency_avg_us = _avg_latency_us(native_report.get("appends"))
+    indexed_append_latency_avg_us = _avg_latency_us(native_report.get("appends"), "indexed_latency_us")
+    read_full_latency_us = native_report.get("read_full_latency_us")
+    read_tail_latency_us = native_report.get("read_tail_latency_us")
     return {
-        "runtime_valid": cpp_report.get("status") == "passed"
-        and cpp_report.get("engine") == "cpp_matrixobjectstore",
-        "offsets_monotonic": bool(cpp_report.get("offsets_monotonic")),
-        "offsets_contiguous": bool(cpp_report.get("offsets_contiguous")),
-        "reopened_recovered_all_bytes": bool(cpp_report.get("reopened_recovered_all_bytes")),
-        "full_read_matches": bool(cpp_report.get("full_read_matches")),
-        "tail_read_matches": bool(cpp_report.get("tail_read_matches")),
-        "offset_index_matches": bool(cpp_report.get("offset_index_matches")),
-        "offset_index_object_size": cpp_report.get("offset_index_object_size"),
-        "offset_index_extent_count": cpp_report.get("offset_index_extent_count"),
+        "runtime_valid": native_report.get("status") == "passed"
+        and native_report.get("engine") == "native_matrixobjectstore",
+        "offsets_monotonic": bool(native_report.get("offsets_monotonic")),
+        "offsets_contiguous": bool(native_report.get("offsets_contiguous")),
+        "reopened_recovered_all_bytes": bool(native_report.get("reopened_recovered_all_bytes")),
+        "full_read_matches": bool(native_report.get("full_read_matches")),
+        "tail_read_matches": bool(native_report.get("tail_read_matches")),
+        "offset_index_matches": bool(native_report.get("offset_index_matches")),
+        "offset_index_object_size": native_report.get("offset_index_object_size"),
+        "offset_index_extent_count": native_report.get("offset_index_extent_count"),
         "append_latency_avg_us": append_latency_avg_us,
         "indexed_append_latency_avg_us": indexed_append_latency_avg_us,
         "append_throughput_ops_per_sec": _throughput_ops_per_sec(append_latency_avg_us),
         "indexed_append_throughput_ops_per_sec": _throughput_ops_per_sec(indexed_append_latency_avg_us),
-        "reopen_latency_us": cpp_report.get("reopen_latency_us"),
+        "reopen_latency_us": native_report.get("reopen_latency_us"),
         "read_full_latency_us": read_full_latency_us,
         "read_tail_latency_us": read_tail_latency_us,
         "read_full_throughput_ops_per_sec": _throughput_ops_per_sec(read_full_latency_us),
         "read_tail_throughput_ops_per_sec": _throughput_ops_per_sec(read_tail_latency_us),
-        "reopened_extent_count": cpp_report.get("reopened_extent_count"),
-        "read_cache_bytes": cpp_report.get("read_cache_bytes"),
-        "read_cache_pages": cpp_report.get("read_cache_pages"),
-        "read_cache_hits": cpp_report.get("read_cache_hits"),
-        "read_cache_misses": cpp_report.get("read_cache_misses"),
-        "read_cache_max_bytes": cpp_report.get("read_cache_max_bytes"),
+        "reopened_extent_count": native_report.get("reopened_extent_count"),
+        "read_cache_bytes": native_report.get("read_cache_bytes"),
+        "read_cache_pages": native_report.get("read_cache_pages"),
+        "read_cache_hits": native_report.get("read_cache_hits"),
+        "read_cache_misses": native_report.get("read_cache_misses"),
+        "read_cache_max_bytes": native_report.get("read_cache_max_bytes"),
     }
 
 
@@ -431,29 +431,29 @@ def _throughput_ratio(numerator: Any, denominator: Any) -> float | None:
 
 def _parity_status(
     rust: dict[str, Any],
-    cpp_contract: dict[str, Any],
-    cpp_runtime: dict[str, Any],
+    native_contract: dict[str, Any],
+    native_runtime: dict[str, Any],
     *,
     rust_profile: str = "release",
 ) -> dict[str, Any]:
     rust_summary = _rust_summary(rust)
-    cpp_summary = _cpp_runtime_summary(cpp_runtime)
+    native_summary = _runtime_summary(native_runtime)
     release_latency_gate = rust_profile == "release"
     append_latency_ratio = _latency_ratio(
         rust_summary.get("direct_publish_latency_avg_us"),
-        cpp_summary.get("indexed_append_latency_avg_us") or cpp_summary.get("append_latency_avg_us"),
+        native_summary.get("indexed_append_latency_avg_us") or native_summary.get("append_latency_avg_us"),
     )
     full_read_latency_ratio = _latency_ratio(
         rust_summary.get("retrieval_latency_avg_us"),
-        cpp_summary.get("read_full_latency_us"),
+        native_summary.get("read_full_latency_us"),
     )
     append_throughput_ratio = _throughput_ratio(
         rust_summary.get("direct_publish_throughput_ops_per_sec"),
-        cpp_summary.get("indexed_append_throughput_ops_per_sec"),
+        native_summary.get("indexed_append_throughput_ops_per_sec"),
     )
     retrieval_throughput_ratio = _throughput_ratio(
         rust_summary.get("retrieval_throughput_ops_per_sec"),
-        cpp_summary.get("read_full_throughput_ops_per_sec"),
+        native_summary.get("read_full_throughput_ops_per_sec"),
     )
     feature_mismatches = []
     if not rust_summary.get("durable_reopen_equivalent"):
@@ -502,7 +502,7 @@ def _parity_status(
         "rust_snapshot_reopen_cache_metrics_available": bool(
             rust_summary.get("snapshot_reopen_cache_metrics_available")
         ),
-        "rust_durable_reopen_equivalent_to_cpp": bool(
+        "rust_durable_reopen_equivalent_to_native": bool(
             rust_summary.get("durable_reopen_equivalent")
         ),
         "rust_secondary_replay_recovered_all_records": bool(
@@ -528,18 +528,18 @@ def _parity_status(
         "rust_retrieval_recovered_all_records": bool(
             rust_summary.get("retrieval_recovered_all_records")
         ),
-        "cpp_runtime_valid": bool(cpp_summary.get("runtime_valid")),
-        "cpp_offsets_monotonic": bool(cpp_summary.get("offsets_monotonic")),
-        "cpp_offsets_contiguous": bool(cpp_summary.get("offsets_contiguous")),
-        "cpp_reopen_recovered_all_bytes": bool(cpp_summary.get("reopened_recovered_all_bytes")),
-        "cpp_full_read_matches": bool(cpp_summary.get("full_read_matches")),
-        "cpp_tail_read_matches": bool(cpp_summary.get("tail_read_matches")),
-        "cpp_offset_index_matches": bool(cpp_summary.get("offset_index_matches")),
-        "cpp_runtime_cache_metrics_available": isinstance(cpp_summary.get("read_cache_max_bytes"), (int, float)),
-        "cpp_append_object_returns_object_info": bool(cpp_contract.get("append_object_returns_object_info")),
-        "cpp_rpc_exposes_offset_and_extents": bool(cpp_contract.get("rpc_exposes_offset_and_extents")),
+        "native_runtime_valid": bool(native_summary.get("runtime_valid")),
+        "native_offsets_monotonic": bool(native_summary.get("offsets_monotonic")),
+        "native_offsets_contiguous": bool(native_summary.get("offsets_contiguous")),
+        "native_reopen_recovered_all_bytes": bool(native_summary.get("reopened_recovered_all_bytes")),
+        "native_full_read_matches": bool(native_summary.get("full_read_matches")),
+        "native_tail_read_matches": bool(native_summary.get("tail_read_matches")),
+        "native_offset_index_matches": bool(native_summary.get("offset_index_matches")),
+        "native_runtime_cache_metrics_available": isinstance(native_summary.get("read_cache_max_bytes"), (int, float)),
+        "native_append_object_returns_object_info": bool(native_contract.get("append_object_returns_object_info")),
+        "native_rpc_exposes_offset_and_extents": bool(native_contract.get("rpc_exposes_offset_and_extents")),
         "matrixobject_rust_api_exposes_metadata": bool(
-            cpp_contract.get("rust_matrixobject_api_exposes_metadata")
+            native_contract.get("rust_matrixobject_api_exposes_metadata")
         ),
         "append_latency_ratio_within_2x_when_comparable": (
             not release_latency_gate
@@ -549,7 +549,7 @@ def _parity_status(
                 and append_latency_ratio <= 2.0
             )
         ),
-        "retrieval_vs_cpp_full_read_latency_ratio_within_2x_when_comparable": (
+        "retrieval_vs_full_read_latency_ratio_within_2x_when_comparable": (
             not release_latency_gate
             or (
                 bool(rust_summary.get("durable_reopen_equivalent"))
@@ -565,7 +565,7 @@ def _parity_status(
                 and append_throughput_ratio >= 0.5
             )
         ),
-        "retrieval_vs_cpp_full_read_throughput_ratio_at_least_0_5x_when_comparable": (
+        "retrieval_vs_full_read_throughput_ratio_at_least_0_5x_when_comparable": (
             not release_latency_gate
             or (
                 bool(rust_summary.get("durable_reopen_equivalent"))
@@ -576,10 +576,10 @@ def _parity_status(
     }
     blockers = [name for name, passed in checks.items() if not passed]
     performance_ratios = {
-        "rust_direct_publish_avg_us_to_cpp_indexed_append_avg_us": append_latency_ratio,
-        "rust_retrieval_avg_us_to_cpp_full_read_us": full_read_latency_ratio,
-        "rust_direct_publish_ops_per_sec_to_cpp_indexed_append_ops_per_sec": append_throughput_ratio,
-        "rust_retrieval_ops_per_sec_to_cpp_full_read_ops_per_sec": retrieval_throughput_ratio,
+        "rust_direct_publish_avg_us_to_indexed_append_avg_us": append_latency_ratio,
+        "rust_retrieval_avg_us_to_full_read_us": full_read_latency_ratio,
+        "rust_direct_publish_ops_per_sec_to_indexed_append_ops_per_sec": append_throughput_ratio,
+        "rust_retrieval_ops_per_sec_to_full_read_ops_per_sec": retrieval_throughput_ratio,
         "threshold": "<=2.0x for Rust direct publish vs indexed append when durable offset semantics are comparable",
         "throughput_threshold": ">=0.5x for Rust direct publish vs indexed append when durable offset semantics are comparable",
         "comparable": bool(rust_summary.get("durable_reopen_equivalent")),
@@ -615,13 +615,13 @@ def _parity_status(
 def _render_html(report: dict[str, Any]) -> str:
     status = report["parity"]["status"]
     rust_summary = report["rust_summary"]
-    cpp = report["cpp_contract"]
-    cpp_runtime_summary = report["cpp_runtime_summary"]
+    native = report["native_contract"]
+    native_runtime_summary = report["native_runtime_summary"]
     performance_ratios = report["parity"].get("performance_ratios") or report["parity"].get("latency_ratios", {})
     rows = [
         ("Status", status),
         ("TemporalStore commit", report["temporalstore_commit"]),
-        ("MatrixObject commit", cpp["matrixobject_commit"]),
+        ("MatrixObject commit", native["matrixobject_commit"]),
         ("Rust mixed avg append latency us", rust_summary.get("append_latency_avg_us")),
         ("Rust direct publish avg latency us", rust_summary.get("direct_publish_latency_avg_us")),
         ("Rust sync writer avg latency us", rust_summary.get("sync_writer_latency_avg_us")),
@@ -655,39 +655,39 @@ def _render_html(report: dict[str, Any]) -> str:
         ("Rust total replay latency us", rust_summary.get("replay_latency_total_us")),
         ("Rust avg retrieval latency us", rust_summary.get("retrieval_latency_avg_us")),
         ("Rust retrieval throughput ops/sec", rust_summary.get("retrieval_throughput_ops_per_sec")),
-        ("raw append avg latency us", cpp_runtime_summary.get("append_latency_avg_us")),
-        ("indexed append avg latency us", cpp_runtime_summary.get("indexed_append_latency_avg_us")),
-        ("raw append throughput ops/sec", cpp_runtime_summary.get("append_throughput_ops_per_sec")),
-        ("indexed append throughput ops/sec", cpp_runtime_summary.get("indexed_append_throughput_ops_per_sec")),
-        ("offset index matches", cpp_runtime_summary.get("offset_index_matches")),
-        ("offset index object size", cpp_runtime_summary.get("offset_index_object_size")),
+        ("raw append avg latency us", native_runtime_summary.get("append_latency_avg_us")),
+        ("indexed append avg latency us", native_runtime_summary.get("indexed_append_latency_avg_us")),
+        ("raw append throughput ops/sec", native_runtime_summary.get("append_throughput_ops_per_sec")),
+        ("indexed append throughput ops/sec", native_runtime_summary.get("indexed_append_throughput_ops_per_sec")),
+        ("offset index matches", native_runtime_summary.get("offset_index_matches")),
+        ("offset index object size", native_runtime_summary.get("offset_index_object_size")),
         (
             "Rust direct/indexed append latency ratio",
-            performance_ratios.get("rust_direct_publish_avg_us_to_cpp_indexed_append_avg_us"),
+            performance_ratios.get("rust_direct_publish_avg_us_to_indexed_append_avg_us"),
         ),
         (
             "Rust retrieval/full read latency ratio",
-            performance_ratios.get("rust_retrieval_avg_us_to_cpp_full_read_us"),
+            performance_ratios.get("rust_retrieval_avg_us_to_full_read_us"),
         ),
         (
             "Rust direct/indexed append throughput ratio",
-            performance_ratios.get("rust_direct_publish_ops_per_sec_to_cpp_indexed_append_ops_per_sec"),
+            performance_ratios.get("rust_direct_publish_ops_per_sec_to_indexed_append_ops_per_sec"),
         ),
         (
             "Rust retrieval/full read throughput ratio",
-            performance_ratios.get("rust_retrieval_ops_per_sec_to_cpp_full_read_ops_per_sec"),
+            performance_ratios.get("rust_retrieval_ops_per_sec_to_full_read_ops_per_sec"),
         ),
-        ("reopen latency us", cpp_runtime_summary.get("reopen_latency_us")),
-        ("full read latency us", cpp_runtime_summary.get("read_full_latency_us")),
-        ("tail read latency us", cpp_runtime_summary.get("read_tail_latency_us")),
-        ("full read throughput ops/sec", cpp_runtime_summary.get("read_full_throughput_ops_per_sec")),
-        ("tail read throughput ops/sec", cpp_runtime_summary.get("read_tail_throughput_ops_per_sec")),
-        ("reopened extent count", cpp_runtime_summary.get("reopened_extent_count")),
+        ("reopen latency us", native_runtime_summary.get("reopen_latency_us")),
+        ("full read latency us", native_runtime_summary.get("read_full_latency_us")),
+        ("tail read latency us", native_runtime_summary.get("read_tail_latency_us")),
+        ("full read throughput ops/sec", native_runtime_summary.get("read_full_throughput_ops_per_sec")),
+        ("tail read throughput ops/sec", native_runtime_summary.get("read_tail_throughput_ops_per_sec")),
+        ("reopened extent count", native_runtime_summary.get("reopened_extent_count")),
         ("Rust cache after retrieval", rust_summary.get("cache_after_retrieval")),
-        ("read cache bytes", cpp_runtime_summary.get("read_cache_bytes")),
-        ("read cache pages", cpp_runtime_summary.get("read_cache_pages")),
-        ("read cache hits", cpp_runtime_summary.get("read_cache_hits")),
-        ("read cache misses", cpp_runtime_summary.get("read_cache_misses")),
+        ("read cache bytes", native_runtime_summary.get("read_cache_bytes")),
+        ("read cache pages", native_runtime_summary.get("read_cache_pages")),
+        ("read cache hits", native_runtime_summary.get("read_cache_hits")),
+        ("read cache misses", native_runtime_summary.get("read_cache_misses")),
     ]
     check_rows = "\n".join(
         f"<tr><td>{html.escape(key)}</td><td>{'pass' if value else 'fail'}</td></tr>"
@@ -737,8 +737,8 @@ def main() -> int:
     parser.add_argument("--timeout-seconds", type=int, default=180)
     parser.add_argument("--rust-profile", choices=["release", "dev"], default="release")
     parser.add_argument("--rust-report")
-    parser.add_argument("--cpp-runtime-report")
-    parser.add_argument("--cpp-runtime-bin")
+    parser.add_argument("--native-runtime-report")
+    parser.add_argument("--native-runtime-bin")
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -747,8 +747,8 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rust_runtime, command_report = _load_rust_runtime_report(args)
-    cpp_runtime, cpp_command_report = _load_cpp_runtime_report(args)
-    cpp_contract = _cpp_contract(Path(args.matrixobject_repo))
+    native_runtime, native_command_report = _load_runtime_report(args)
+    native_contract = _contract(Path(args.matrixobject_repo))
     report = {
         "schema": SCHEMA,
         "generated_at_unix": int(time.time()),
@@ -757,15 +757,15 @@ def main() -> int:
         "rust_command": command_report,
         "rust_summary": _rust_summary(rust_runtime),
         "rust_runtime": rust_runtime,
-        "cpp_runtime_command": cpp_command_report,
-        "cpp_runtime_summary": _cpp_runtime_summary(cpp_runtime),
-        "cpp_runtime": cpp_runtime,
-        "cpp_contract": cpp_contract,
+        "native_runtime_command": native_command_report,
+        "native_runtime_summary": _runtime_summary(native_runtime),
+        "native_runtime": native_runtime,
+        "native_contract": native_contract,
     }
     report["parity"] = _parity_status(
         rust_runtime,
-        cpp_contract,
-        cpp_runtime,
+        native_contract,
+        native_runtime,
         rust_profile=args.rust_profile,
     )
 

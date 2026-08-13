@@ -88,9 +88,9 @@ pub use e2e::{
     ReplicaReadPolicy, ReplicationMode, RoutingClient, TemporalStoreClientOptions, WorkflowError,
     WorkflowProxy,
 };
-pub use engine::golden::{cpp_api_golden_corpus_report, cpp_feature_sequence_golden_corpus_report};
+pub use engine::golden::{native_api_golden_corpus_report, native_feature_sequence_golden_corpus_report};
 pub use engine::reports::{
-    CppGoldenCaseReport, CppGoldenCorpusReport, RustStorageObservation, ShardCompactionReport,
+    GoldenCaseReport, GoldenCorpusReport, RustStorageObservation, ShardCompactionReport,
     ShardCompactionUtilityReport, ShardExpirySweepReport, BucketDumpFaultMatrixReport,
     BucketDumpFaultScenarioReport, BucketDumpFollowerReplayCursor, BucketDumpFollowerRetentionBlock,
     BucketDumpInstallMarker, BucketDumpInstallPreflightReport, BucketDumpInstallRollForwardReport,
@@ -137,7 +137,7 @@ pub use partition_id::{
     PARTITION_VERSION_MASK, BUCKET_COUNT, BUCKET_MASK,
 };
 pub use proxy::{
-    ProxyClientPreflightReport, ProxyConfigUpdateReport, ProxyCppMigrationContract, ProxyInfo,
+    ProxyClientPreflightReport, ProxyConfigUpdateReport, ProxyMigrationContract, ProxyInfo,
     ProxyOpenTableRequest, ProxyOpenTableResponse, ProxyOptions, ProxyPolicyReport,
     ProxyPreflightReport, ProxyReplicaReadPolicy, ProxyService, ProxyServingMode, ProxyStats,
     ProxyTableBatchExecuteRequest, ProxyTableExecuteRequest, ProxyTableOptionsView,
@@ -185,7 +185,7 @@ pub use readiness::{
     ReadinessCapabilityBlocker, ServiceReadinessGateReport, ServiceReadinessSummary,
 };
 pub use rebalance::{
-    CppPartitionSetMember, CppPartitionSetTopology, MembershipUpdatePeerRequest,
+    PartitionSetMember, PartitionSetTopology, MembershipUpdatePeerRequest,
     MembershipUpdatePeerStatus, MembershipUpdateTaskOptions, MembershipUpdateTaskPlan,
     MembershipUpdateTaskReport, NetworkSchedulerTaskExecution, RaftPersistedSchedulerState,
     RebalanceController, RebalanceError, RebalanceOptions, RebalanceRoundReport, RebalanceStep,

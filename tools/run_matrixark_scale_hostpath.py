@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Split out of run_matrixark_cpp_rust_scale_report.py; re-exported at that module's end via the dual
+"""Split out of run_matrixark_rust_scale_report.py; re-exported at that module's end via the dual
 relative/absolute import pattern so the same module object is reused under both
 the package path (tools.<mod>) and the top-level path. No import-time cycle.
 __all__ lists every moved name for total re-export."""
@@ -9,16 +9,16 @@ import os
 import subprocess
 import time
 
-try:  # package path (tools.run_matrixark_cpp_rust_scale_report)
-    from .run_matrixark_cpp_rust_scale_report import (
+try:  # package path (tools.run_matrixark_rust_scale_report)
+    from .run_matrixark_rust_scale_report import (
         CANONICAL_UBUNTU_REPO,
         Json,
         Path,
         ROOT,
         metaserver_reachable,
     )
-except ImportError:  # top-level path (run_matrixark_cpp_rust_scale_report)
-    from run_matrixark_cpp_rust_scale_report import (
+except ImportError:  # top-level path (run_matrixark_rust_scale_report)
+    from run_matrixark_rust_scale_report import (
         CANONICAL_UBUNTU_REPO,
         Json,
         Path,
@@ -26,7 +26,7 @@ except ImportError:  # top-level path (run_matrixark_cpp_rust_scale_report)
         metaserver_reachable,
     )
 
-__all__ = ['_is_windows_host', '_wsl_path', '_linux_so_on_windows_error', 'validate_cpp_runtime_host', 'default_cpp_lib_path', 'default_rust_cli_path', '_metaserver_host', '_is_loopback_metaserver', 'default_canonical_release_out_dir', 'ensure_local_topology', 'validate_rust_runtime_path']
+__all__ = ['_is_windows_host', '_wsl_path', '_linux_so_on_windows_error', 'validate_runtime_host', 'default_lib_path', 'default_rust_cli_path', '_metaserver_host', '_is_loopback_metaserver', 'default_canonical_release_out_dir', 'ensure_local_topology', 'validate_rust_runtime_path']
 
 
 def _is_windows_host() -> bool:
@@ -50,13 +50,13 @@ def _linux_so_on_windows_error(path: str) -> str:
     )
 
 
-def validate_cpp_runtime_host(cpp_lib: str) -> None:
-    suffix = Path(cpp_lib).suffix.lower()
+def validate_runtime_host(native_lib: str) -> None:
+    suffix = Path(native_lib).suffix.lower()
     if _is_windows_host() and suffix == ".so":
-        raise RuntimeError(_linux_so_on_windows_error(cpp_lib))
+        raise RuntimeError(_linux_so_on_windows_error(native_lib))
 
 
-def default_cpp_lib_path() -> str:
+def default_lib_path() -> str:
     candidates = [
         ROOT / "output-ubuntu22/release/sdk/lib/libtemporalstore.so",
         CANONICAL_UBUNTU_REPO / "output-ubuntu22/release/sdk/lib/libtemporalstore.so",

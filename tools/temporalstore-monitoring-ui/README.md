@@ -63,16 +63,16 @@ Recommended first-run commands once packaged:
 ```bash
 matrixark-server init --home ~/.matrixark
 matrixark-server doctor
-matrixark-server doctor --backend cpp
+matrixark-server doctor --backend native
 matrixark-server doctor --backend rust
-matrixark-server start --backend cpp --local
+matrixark-server start --backend native --local
 matrixark-server start --backend rust --local
 matrixark-server apply-key --agent codex
 ```
 
 Backend parity expectations:
 
-- The same monitoring UI must work for `backend=cpp` and `backend=rust`.
+- The same monitoring UI must work for `backend=native` and `backend=rust`.
 - Health payloads should expose `temporalstore.backend`, `mode`, `storage`, `raft`, and `gateway`.
 - and Rust runs should render the same ContextNode topology, summaries, embeddings, events, entities, resource chunks, skills, ContextPacks, and audit rows.
 - Rust CLI-per-operation is acceptable for debug parity only; production Rust should use the Rust proxy or Rust direct SDK.

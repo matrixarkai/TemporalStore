@@ -5,7 +5,7 @@
   "policy": {
     "move_to_shared": "Product behavior that must migrate to compat/unified_temporalstore_cases.json or a sibling shared corpus consumed by Rust and.",
     "rust_internal": "Rust implementation/helper/corpus-loader mechanics that may remain local with an explicit rust-internal marker.",
-    "cpp_out_of_scope": "-only transport/build/internal behavior with no Rust product equivalent; none in the current Rust grandfathered baseline.",
+    "native_out_of_scope": "-only transport/build/internal behavior with no Rust product equivalent; none in the current Rust grandfathered baseline.",
     "duplicate/remove": "Redundant tests that should be deleted or folded into a shared case; none explicitly identified in this first ledger."
   },
   "summary": {
@@ -97,9 +97,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/metaserver.rs::metaserver_exposes_cpp_parity_readiness_report",
+      "test_id": "crates/temporalstore-rust/src/bin/metaserver.rs::metaserver_exposes_parity_readiness_report",
       "file": "crates/temporalstore-rust/src/bin/metaserver.rs",
-      "test_name": "metaserver_exposes_cpp_parity_readiness_report",
+      "test_name": "metaserver_exposes_parity_readiness_report",
       "family": "control plane",
       "classification": "move_to_shared",
       "next_migration_target": "control-plane shared cases for topology, admission, route invalidation, lifecycle, and scheduler tokens",
@@ -133,9 +133,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/metaserver.rs::master_service_aliases_cover_cpp_master_surface",
+      "test_id": "crates/temporalstore-rust/src/bin/metaserver.rs::master_service_aliases_cover_master_surface",
       "file": "crates/temporalstore-rust/src/bin/metaserver.rs",
-      "test_name": "master_service_aliases_cover_cpp_master_surface",
+      "test_name": "master_service_aliases_cover_master_surface",
       "family": "Redis/admin",
       "classification": "move_to_shared",
       "next_migration_target": "Redis/admin/API shared command-response corpus",
@@ -322,9 +322,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_exposes_cpp_parity_readiness_report",
+      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_exposes_parity_readiness_report",
       "file": "crates/temporalstore-rust/src/bin/server.rs",
-      "test_name": "server_exposes_cpp_parity_readiness_report",
+      "test_name": "server_exposes_parity_readiness_report",
       "family": "control plane",
       "classification": "move_to_shared",
       "next_migration_target": "control-plane shared cases for topology, admission, route invalidation, lifecycle, and scheduler tokens",
@@ -376,27 +376,27 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::cpp_server_service_lifecycle_snapshot_routes_restore_scheduler_state",
+      "test_id": "crates/temporalstore-rust/src/bin/server.rs::native_server_service_lifecycle_snapshot_routes_restore_scheduler_state",
       "file": "crates/temporalstore-rust/src/bin/server.rs",
-      "test_name": "cpp_server_service_lifecycle_snapshot_routes_restore_scheduler_state",
+      "test_name": "native_server_service_lifecycle_snapshot_routes_restore_scheduler_state",
       "family": "storage/cache",
       "classification": "move_to_shared",
       "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::cpp_server_service_lifecycle_snapshot_survives_http_restart_boundary",
+      "test_id": "crates/temporalstore-rust/src/bin/server.rs::native_server_service_lifecycle_snapshot_survives_http_restart_boundary",
       "file": "crates/temporalstore-rust/src/bin/server.rs",
-      "test_name": "cpp_server_service_lifecycle_snapshot_survives_http_restart_boundary",
+      "test_name": "native_server_service_lifecycle_snapshot_survives_http_restart_boundary",
       "family": "storage/cache",
       "classification": "move_to_shared",
       "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_cpp_async_lifecycle_alias_submits_load_job",
+      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_async_lifecycle_alias_submits_load_job",
       "file": "crates/temporalstore-rust/src/bin/server.rs",
-      "test_name": "server_cpp_async_lifecycle_alias_submits_load_job",
+      "test_name": "server_async_lifecycle_alias_submits_load_job",
       "family": "storage/cache",
       "classification": "move_to_shared",
       "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
@@ -412,9 +412,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_cpp_admin_aliases_expose_runtime_preflight_dirty_and_queue_state",
+      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_admin_aliases_expose_runtime_preflight_dirty_and_queue_state",
       "file": "crates/temporalstore-rust/src/bin/server.rs",
-      "test_name": "server_cpp_admin_aliases_expose_runtime_preflight_dirty_and_queue_state",
+      "test_name": "server_admin_aliases_expose_runtime_preflight_dirty_and_queue_state",
       "family": "storage/cache",
       "classification": "move_to_shared",
       "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
@@ -556,18 +556,18 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client/tests.rs::cpp_partition_set_report_marks_missing_routes",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::native_partition_set_report_marks_missing_routes",
       "file": "crates/temporalstore-rust/src/client/tests.rs",
-      "test_name": "cpp_partition_set_report_marks_missing_routes",
+      "test_name": "native_partition_set_report_marks_missing_routes",
       "family": "Redis/admin",
       "classification": "move_to_shared",
       "next_migration_target": "Redis/admin/API shared command-response corpus",
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client/tests.rs::table_typed_methods_and_pipeline_match_cpp_client_shape",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::table_typed_methods_and_pipeline_match_client_shape",
       "file": "crates/temporalstore-rust/src/client/tests.rs",
-      "test_name": "table_typed_methods_and_pipeline_match_cpp_client_shape",
+      "test_name": "table_typed_methods_and_pipeline_match_client_shape",
       "family": "Redis/admin",
       "classification": "move_to_shared",
       "next_migration_target": "Redis/admin/API shared command-response corpus",
@@ -637,18 +637,18 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client/tests.rs::client_router_matches_cpp_crc64_slot_formula",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::client_router_matches_crc64_slot_formula",
       "file": "crates/temporalstore-rust/src/client/tests.rs",
-      "test_name": "client_router_matches_cpp_crc64_slot_formula",
+      "test_name": "client_router_matches_crc64_slot_formula",
       "family": "storage/cache",
       "classification": "move_to_shared",
       "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client/tests.rs::client_router_round_robins_secondary_reads_like_cpp_router",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::client_router_round_robins_secondary_reads_like_router",
       "file": "crates/temporalstore-rust/src/client/tests.rs",
-      "test_name": "client_router_round_robins_secondary_reads_like_cpp_router",
+      "test_name": "client_router_round_robins_secondary_reads_like_router",
       "family": "control plane",
       "classification": "move_to_shared",
       "next_migration_target": "control-plane shared cases for topology, admission, route invalidation, lifecycle, and scheduler tokens",
@@ -691,9 +691,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client/tests.rs::client_retries_cpp_retryable_read_status_before_returning",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::client_retries_retryable_read_status_before_returning",
       "file": "crates/temporalstore-rust/src/client/tests.rs",
-      "test_name": "client_retries_cpp_retryable_read_status_before_returning",
+      "test_name": "client_retries_retryable_read_status_before_returning",
       "family": "control plane",
       "classification": "move_to_shared",
       "next_migration_target": "control-plane shared cases for topology, admission, route invalidation, lifecycle, and scheduler tokens",
@@ -772,9 +772,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_reports_cpp_style_shard_worker_ownership",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_reports_style_shard_worker_ownership",
       "file": "crates/temporalstore-rust/src/data_node/tests.rs",
-      "test_name": "runtime_reports_cpp_style_shard_worker_ownership",
+      "test_name": "runtime_reports_style_shard_worker_ownership",
       "family": "control plane",
       "classification": "move_to_shared",
       "next_migration_target": "control-plane shared cases for topology, admission, route invalidation, lifecycle, and scheduler tokens",
@@ -952,9 +952,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_builds_cpp_style_server_load_report",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_builds_style_server_load_report",
       "file": "crates/temporalstore-rust/src/data_node/tests.rs",
-      "test_name": "runtime_builds_cpp_style_server_load_report",
+      "test_name": "runtime_builds_style_server_load_report",
       "family": "control plane",
       "classification": "move_to_shared",
       "next_migration_target": "control-plane shared cases for topology, admission, route invalidation, lifecycle, and scheduler tokens",
@@ -1366,9 +1366,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::hash_incrby_rejects_non_integer_and_overflow_like_cpp",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::hash_incrby_rejects_non_integer_and_overflow_like_native",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "hash_incrby_rejects_non_integer_and_overflow_like_cpp",
+      "test_name": "hash_incrby_rejects_non_integer_and_overflow_like_native",
       "family": "Redis/admin",
       "classification": "move_to_shared",
       "next_migration_target": "Redis/admin/API shared command-response corpus",
@@ -1465,27 +1465,27 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::feature_append_rejects_cpp_hard_size_limit_before_mutation",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::feature_append_rejects_hard_size_limit_before_mutation",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "feature_append_rejects_cpp_hard_size_limit_before_mutation",
+      "test_name": "feature_append_rejects_hard_size_limit_before_mutation",
       "family": "Feature",
       "classification": "move_to_shared",
       "next_migration_target": "Feature shared cases for packed timestamped pages and nested point/proto semantics",
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::cpp_feature_sequence_golden_corpus_passes",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::native_feature_sequence_golden_corpus_passes",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "cpp_feature_sequence_golden_corpus_passes",
+      "test_name": "native_feature_sequence_golden_corpus_passes",
       "family": "Sequence",
       "classification": "move_to_shared",
       "next_migration_target": "Sequence shared cases for ordering, bounds, and batch/filter semantics",
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::cpp_api_golden_corpus_passes",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::native_api_golden_corpus_passes",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "cpp_api_golden_corpus_passes",
+      "test_name": "native_api_golden_corpus_passes",
       "family": "Redis/admin",
       "classification": "move_to_shared",
       "next_migration_target": "Redis/admin/API shared command-response corpus",
@@ -1510,9 +1510,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::common_delete_removes_cpp_risk_family_records_for_logical_key",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::common_delete_removes_risk_family_records_for_logical_key",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "common_delete_removes_cpp_risk_family_records_for_logical_key",
+      "test_name": "common_delete_removes_risk_family_records_for_logical_key",
       "family": "Risk",
       "classification": "move_to_shared",
       "next_migration_target": "Risk shared cases for CPC/list/manager/debug/window semantics",
@@ -1528,18 +1528,18 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::common_expire_missing_key_matches_cpp_not_found",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::common_expire_missing_key_matches_not_found",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "common_expire_missing_key_matches_cpp_not_found",
+      "test_name": "common_expire_missing_key_matches_not_found",
       "family": "storage/cache",
       "classification": "move_to_shared",
       "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::common_expire_and_ttl_cover_cpp_risk_family_records_for_logical_key",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::common_expire_and_ttl_cover_risk_family_records_for_logical_key",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "common_expire_and_ttl_cover_cpp_risk_family_records_for_logical_key",
+      "test_name": "common_expire_and_ttl_cover_risk_family_records_for_logical_key",
       "family": "Risk",
       "classification": "move_to_shared",
       "next_migration_target": "Risk shared cases for CPC/list/manager/debug/window semantics",
@@ -1672,9 +1672,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::risk_change_matches_cpp_distinct_field_semantics",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::risk_change_matches_distinct_field_semantics",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "risk_change_matches_cpp_distinct_field_semantics",
+      "test_name": "risk_change_matches_distinct_field_semantics",
       "family": "Risk",
       "classification": "move_to_shared",
       "next_migration_target": "Risk shared cases for CPC/list/manager/debug/window semantics",
@@ -1690,9 +1690,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::risk_fol_matches_cpp_first_last_string_semantics",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::risk_fol_matches_first_last_string_semantics",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "risk_fol_matches_cpp_first_last_string_semantics",
+      "test_name": "risk_fol_matches_first_last_string_semantics",
       "family": "Risk",
       "classification": "move_to_shared",
       "next_migration_target": "Risk shared cases for CPC/list/manager/debug/window semantics",
@@ -1753,9 +1753,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::stats_include_cpp_style_partition_and_object_manager_accounting",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::stats_include_style_partition_and_object_manager_accounting",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "stats_include_cpp_style_partition_and_object_manager_accounting",
+      "test_name": "stats_include_style_partition_and_object_manager_accounting",
       "family": "Redis/admin",
       "classification": "move_to_shared",
       "next_migration_target": "Redis/admin/API shared command-response corpus",
@@ -2005,9 +2005,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::storage_lifecycle_plan_matches_cpp_delayed_and_limited_dirty_slot_dump_policy",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::storage_lifecycle_plan_matches_delayed_and_limited_dirty_slot_dump_policy",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "storage_lifecycle_plan_matches_cpp_delayed_and_limited_dirty_slot_dump_policy",
+      "test_name": "storage_lifecycle_plan_matches_delayed_and_limited_dirty_slot_dump_policy",
       "family": "storage/cache",
       "classification": "move_to_shared",
       "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
@@ -2203,9 +2203,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/meta.rs::metaserver_can_generate_cpp_compatible_partition_ids_for_table_topology",
+      "test_id": "crates/temporalstore-rust/src/meta.rs::metaserver_can_generate_compatible_partition_ids_for_table_topology",
       "file": "crates/temporalstore-rust/src/meta.rs",
-      "test_name": "metaserver_can_generate_cpp_compatible_partition_ids_for_table_topology",
+      "test_name": "metaserver_can_generate_compatible_partition_ids_for_table_topology",
       "family": "control plane",
       "classification": "move_to_shared",
       "next_migration_target": "control-plane shared cases for topology, admission, route invalidation, lifecycle, and scheduler tokens",
@@ -2581,36 +2581,36 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/partition_id.rs::partition_id_matches_cpp_bit_layout_and_display",
+      "test_id": "crates/temporalstore-rust/src/partition_id.rs::partition_id_matches_bit_layout_and_display",
       "file": "crates/temporalstore-rust/src/partition_id.rs",
-      "test_name": "partition_id_matches_cpp_bit_layout_and_display",
+      "test_name": "partition_id_matches_bit_layout_and_display",
       "family": "rust internals",
       "classification": "rust_internal",
       "next_migration_target": "remain Rust-local with rust-internal markers when touched",
       "notes": "Rust helper/corpus-loader mechanics; keep local and add rust-internal marker when touched."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/partition_id.rs::partition_id_setters_match_cpp_masks",
+      "test_id": "crates/temporalstore-rust/src/partition_id.rs::partition_id_setters_match_masks",
       "file": "crates/temporalstore-rust/src/partition_id.rs",
-      "test_name": "partition_id_setters_match_cpp_masks",
+      "test_name": "partition_id_setters_match_masks",
       "family": "rust internals",
       "classification": "rust_internal",
       "next_migration_target": "remain Rust-local with rust-internal markers when touched",
       "notes": "Rust helper/corpus-loader mechanics; keep local and add rust-internal marker when touched."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/partition_id.rs::partition_id_validates_cpp_ranges",
+      "test_id": "crates/temporalstore-rust/src/partition_id.rs::partition_id_validates_ranges",
       "file": "crates/temporalstore-rust/src/partition_id.rs",
-      "test_name": "partition_id_validates_cpp_ranges",
+      "test_name": "partition_id_validates_ranges",
       "family": "rust internals",
       "classification": "rust_internal",
       "next_migration_target": "remain Rust-local with rust-internal markers when touched",
       "notes": "Rust helper/corpus-loader mechanics; keep local and add rust-internal marker when touched."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/proxy.rs::proxy_exposes_cpp_parity_readiness_report",
+      "test_id": "crates/temporalstore-rust/src/proxy.rs::proxy_exposes_parity_readiness_report",
       "file": "crates/temporalstore-rust/src/proxy.rs",
-      "test_name": "proxy_exposes_cpp_parity_readiness_report",
+      "test_name": "proxy_exposes_parity_readiness_report",
       "family": "control plane",
       "classification": "move_to_shared",
       "next_migration_target": "control-plane shared cases for topology, admission, route invalidation, lifecycle, and scheduler tokens",
@@ -2671,27 +2671,27 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/proxy.rs::proxy_cpp_admin_aliases_expose_info_config_and_client_preflight",
+      "test_id": "crates/temporalstore-rust/src/proxy.rs::proxy_admin_aliases_expose_info_config_and_client_preflight",
       "file": "crates/temporalstore-rust/src/proxy.rs",
-      "test_name": "proxy_cpp_admin_aliases_expose_info_config_and_client_preflight",
+      "test_name": "proxy_admin_aliases_expose_info_config_and_client_preflight",
       "family": "Redis/admin",
       "classification": "move_to_shared",
       "next_migration_target": "Redis/admin/API shared command-response corpus",
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/proxy.rs::proxy_cpp_service_aliases_delegate_to_client_execution_path",
+      "test_id": "crates/temporalstore-rust/src/proxy.rs::proxy_service_aliases_delegate_to_client_execution_path",
       "file": "crates/temporalstore-rust/src/proxy.rs",
-      "test_name": "proxy_cpp_service_aliases_delegate_to_client_execution_path",
+      "test_name": "proxy_service_aliases_delegate_to_client_execution_path",
       "family": "Redis/admin",
       "classification": "move_to_shared",
       "next_migration_target": "Redis/admin/API shared command-response corpus",
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/proxy.rs::proxy_config_update_noops_on_same_namespace_and_version_like_cpp",
+      "test_id": "crates/temporalstore-rust/src/proxy.rs::proxy_config_update_noops_on_same_namespace_and_version_like_native",
       "file": "crates/temporalstore-rust/src/proxy.rs",
-      "test_name": "proxy_config_update_noops_on_same_namespace_and_version_like_cpp",
+      "test_name": "proxy_config_update_noops_on_same_namespace_and_version_like_native",
       "family": "control plane",
       "classification": "move_to_shared",
       "next_migration_target": "control-plane shared cases for topology, admission, route invalidation, lifecycle, and scheduler tokens",
@@ -2743,9 +2743,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/proxy.rs::proxy_heartbeat_applies_metaserver_config_version_like_cpp",
+      "test_id": "crates/temporalstore-rust/src/proxy.rs::proxy_heartbeat_applies_metaserver_config_version_like_native",
       "file": "crates/temporalstore-rust/src/proxy.rs",
-      "test_name": "proxy_heartbeat_applies_metaserver_config_version_like_cpp",
+      "test_name": "proxy_heartbeat_applies_metaserver_config_version_like_native",
       "family": "control plane",
       "classification": "move_to_shared",
       "next_migration_target": "control-plane shared cases for topology, admission, route invalidation, lifecycle, and scheduler tokens",
@@ -2788,9 +2788,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::cpp_data_raft_replication_rejects_corrupt_log_payload",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::native_data_raft_replication_rejects_corrupt_log_payload",
       "file": "crates/temporalstore-rust/src/raft/tests.rs",
-      "test_name": "cpp_data_raft_replication_rejects_corrupt_log_payload",
+      "test_name": "native_data_raft_replication_rejects_corrupt_log_payload",
       "family": "Raft",
       "classification": "move_to_shared",
       "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
@@ -2815,18 +2815,18 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::cpp_data_raft_replication_rejects_invalid_command_payload",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::native_data_raft_replication_rejects_invalid_command_payload",
       "file": "crates/temporalstore-rust/src/raft/tests.rs",
-      "test_name": "cpp_data_raft_replication_rejects_invalid_command_payload",
+      "test_name": "native_data_raft_replication_rejects_invalid_command_payload",
       "family": "Raft",
       "classification": "move_to_shared",
       "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::cpp_data_raft_unavailable_consensus_fails_closed_for_safety_operations",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::native_data_raft_unavailable_consensus_fails_closed_for_safety_operations",
       "file": "crates/temporalstore-rust/src/raft/tests.rs",
-      "test_name": "cpp_data_raft_unavailable_consensus_fails_closed_for_safety_operations",
+      "test_name": "native_data_raft_unavailable_consensus_fails_closed_for_safety_operations",
       "family": "Raft",
       "classification": "move_to_shared",
       "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
@@ -3310,9 +3310,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_config_matches_cpp_defaults_and_validates_required_limits",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_config_matches_defaults_and_validates_required_limits",
       "file": "crates/temporalstore-rust/src/raft/tests.rs",
-      "test_name": "raft_config_matches_cpp_defaults_and_validates_required_limits",
+      "test_name": "raft_config_matches_defaults_and_validates_required_limits",
       "family": "Raft",
       "classification": "move_to_shared",
       "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
@@ -3355,9 +3355,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::data_raft_read_policy_matches_cpp_partition_manager_modes",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::data_raft_read_policy_matches_partition_manager_modes",
       "file": "crates/temporalstore-rust/src/raft/tests.rs",
-      "test_name": "data_raft_read_policy_matches_cpp_partition_manager_modes",
+      "test_name": "data_raft_read_policy_matches_partition_manager_modes",
       "family": "Raft",
       "classification": "move_to_shared",
       "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
@@ -3373,9 +3373,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_wait_for_applied_index_matches_cpp_backend_contract",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_wait_for_applied_index_matches_backend_contract",
       "file": "crates/temporalstore-rust/src/raft/tests.rs",
-      "test_name": "raft_wait_for_applied_index_matches_cpp_backend_contract",
+      "test_name": "raft_wait_for_applied_index_matches_backend_contract",
       "family": "Raft",
       "classification": "move_to_shared",
       "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
@@ -3418,9 +3418,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::learner_and_witness_roles_match_cpp_membership_shape",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::learner_and_witness_roles_match_membership_shape",
       "file": "crates/temporalstore-rust/src/raft/tests.rs",
-      "test_name": "learner_and_witness_roles_match_cpp_membership_shape",
+      "test_name": "learner_and_witness_roles_match_membership_shape",
       "family": "Raft",
       "classification": "move_to_shared",
       "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
@@ -3661,9 +3661,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::metaserver_raft_replays_scheduler_state_and_cpp_partition_set_topology",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::metaserver_raft_replays_scheduler_state_and_partition_set_topology",
       "file": "crates/temporalstore-rust/src/raft/tests.rs",
-      "test_name": "metaserver_raft_replays_scheduler_state_and_cpp_partition_set_topology",
+      "test_name": "metaserver_raft_replays_scheduler_state_and_partition_set_topology",
       "family": "Raft",
       "classification": "move_to_shared",
       "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
@@ -3697,9 +3697,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::production_meta_raft_runtime_matches_cpp_multinode_control_and_fault_contract",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::production_meta_raft_runtime_matches_multinode_control_and_fault_contract",
       "file": "crates/temporalstore-rust/src/raft/tests.rs",
-      "test_name": "production_meta_raft_runtime_matches_cpp_multinode_control_and_fault_contract",
+      "test_name": "production_meta_raft_runtime_matches_multinode_control_and_fault_contract",
       "family": "Raft",
       "classification": "move_to_shared",
       "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
@@ -4066,9 +4066,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/readiness.rs::storage_migration_corpus_report_covers_external_cpp_export_and_ci_artifacts",
+      "test_id": "crates/temporalstore-rust/src/readiness.rs::storage_migration_corpus_report_covers_external_export_and_ci_artifacts",
       "file": "crates/temporalstore-rust/src/readiness.rs",
-      "test_name": "storage_migration_corpus_report_covers_external_cpp_export_and_ci_artifacts",
+      "test_name": "storage_migration_corpus_report_covers_external_export_and_ci_artifacts",
       "family": "ops/scale",
       "classification": "move_to_shared",
       "next_migration_target": "ops/scale shared cases for readiness, fault/chaos, rolling restart, and SLO evidence",
@@ -4111,9 +4111,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/rebalance.rs::rebalance_round_report_exposes_cpp_balance_metrics",
+      "test_id": "crates/temporalstore-rust/src/rebalance.rs::rebalance_round_report_exposes_balance_metrics",
       "file": "crates/temporalstore-rust/src/rebalance.rs",
-      "test_name": "rebalance_round_report_exposes_cpp_balance_metrics",
+      "test_name": "rebalance_round_report_exposes_balance_metrics",
       "family": "control plane",
       "classification": "move_to_shared",
       "next_migration_target": "control-plane shared cases for topology, admission, route invalidation, lifecycle, and scheduler tokens",
@@ -4201,9 +4201,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/rebalance.rs::membership_update_task_matches_cpp_threshold_and_not_found_rules",
+      "test_id": "crates/temporalstore-rust/src/rebalance.rs::membership_update_task_matches_threshold_and_not_found_rules",
       "file": "crates/temporalstore-rust/src/rebalance.rs",
-      "test_name": "membership_update_task_matches_cpp_threshold_and_not_found_rules",
+      "test_name": "membership_update_task_matches_threshold_and_not_found_rules",
       "family": "control plane",
       "classification": "move_to_shared",
       "next_migration_target": "control-plane shared cases for topology, admission, route invalidation, lifecycle, and scheduler tokens",
@@ -4219,9 +4219,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/rebalance.rs::cpp_partition_set_topology_tracks_members_versions_and_addresses",
+      "test_id": "crates/temporalstore-rust/src/rebalance.rs::native_partition_set_topology_tracks_members_versions_and_addresses",
       "file": "crates/temporalstore-rust/src/rebalance.rs",
-      "test_name": "cpp_partition_set_topology_tracks_members_versions_and_addresses",
+      "test_name": "native_partition_set_topology_tracks_members_versions_and_addresses",
       "family": "Redis/admin",
       "classification": "move_to_shared",
       "next_migration_target": "Redis/admin/API shared command-response corpus",
@@ -4381,9 +4381,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/tests/storage_migration_corpus.rs::rust_storage_replays_cpp_migration_corpus_across_lifecycle_paths",
+      "test_id": "crates/temporalstore-rust/tests/storage_migration_corpus.rs::rust_storage_replays_migration_corpus_across_lifecycle_paths",
       "file": "crates/temporalstore-rust/tests/storage_migration_corpus.rs",
-      "test_name": "rust_storage_replays_cpp_migration_corpus_across_lifecycle_paths",
+      "test_name": "rust_storage_replays_migration_corpus_across_lifecycle_paths",
       "family": "storage/cache",
       "classification": "move_to_shared",
       "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",

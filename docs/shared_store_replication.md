@@ -80,7 +80,7 @@ Send that body to `/execute_replicated`. For batches, send `ReplicatedBatchExecu
 
 client usage:
 
-```cpp
+```native
 temporalstore::client::RequestOptions async_opts =
     temporalstore::client::RequestOptions::ForReplication(
         temporalstore::client::EventReplicationMode::kAsyncStorage);

@@ -1576,9 +1576,9 @@ mod tests {
         );
     }
 
-    // shared-corpus: cpp_redis_live_storage_smoke_parity_surfaces
+    // shared-corpus: native_redis_live_storage_smoke_parity_surfaces
     #[test]
-    fn server_ping_routes_match_cpp_ping_rpc() {
+    fn server_ping_routes_match_ping_rpc() {
         for (method, path) in [
             ("GET", "/ping"),
             ("POST", "/ping"),

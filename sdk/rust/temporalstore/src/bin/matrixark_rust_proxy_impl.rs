@@ -774,8 +774,8 @@ fn matrixark_rust_service_mode() -> &'static str {
     }
 }
 
-fn cpp_matrixark_c_api_bridge_enabled() -> bool {
-    std::env::var("TEMPORALSTORE_RUST_ALLOW_CPP_MATRIXARK_C_API")
+fn native_matrixark_c_api_bridge_enabled() -> bool {
+    std::env::var("TEMPORALSTORE_RUST_ALLOW_NATIVE_MATRIXARK_C_API")
         .map(|value| {
             matches!(
                 value.trim().to_ascii_lowercase().as_str(),
@@ -2309,7 +2309,7 @@ fn retrieve_context_pack_via_sdk_native(
         .and_then(Value::as_object_mut)
     {
         pack.entry("context_pack_assembly".to_string())
-            .or_insert_with(|| Value::String("native_cpp_direct_via_rust_proxy".to_string()));
+            .or_insert_with(|| Value::String("native_direct_via_rust_proxy".to_string()));
         let selected_count = pack
             .get("selected_ref_count")
             .and_then(Value::as_u64)
@@ -2912,7 +2912,7 @@ fn run_with_client(client: &Client, command: Command) -> Result<Value, String> {
                 .and_then(|options| options.get("append_path"))
                 .and_then(Value::as_str)
                 .unwrap_or("native_batch_append_records");
-            if !cpp_matrixark_c_api_bridge_enabled() {
+            if !native_matrixark_c_api_bridge_enabled() {
                 for entry in &entries {
                     client
                         .hset(entry.key, entry.field, entry.value)

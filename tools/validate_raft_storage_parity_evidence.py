@@ -21,7 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CORPUS = ROOT / "compat" / "unified_temporalstore_cases.json"
-PARITY_SUITES = {"cpp_storage_parity", "cpp_data_raft_parity"}
+PARITY_SUITES = {"native_storage_parity", "native_data_raft_parity"}
 
 
 @dataclass(frozen=True)
@@ -40,7 +40,7 @@ class ParityArea:
 AREAS: tuple[ParityArea, ...] = (
     ParityArea(
         name="storage_object_page_slot_lifecycle",
-        corpus_cases=("cpp_storage_object_page_slot_parity_surfaces",),
+        corpus_cases=("native_storage_object_page_slot_parity_surfaces",),
         rust_evidence=(
             RustEvidence(
                 "crates/temporalstore-rust/src/engine.rs",
@@ -55,8 +55,8 @@ AREAS: tuple[ParityArea, ...] = (
     ParityArea(
         name="storage_slot_dump_load_recovery",
         corpus_cases=(
-            "cpp_storage_oplog_index_replay_parity_surfaces",
-            "cpp_storage_slot_context_test_parity_surfaces",
+            "native_storage_oplog_index_replay_parity_surfaces",
+            "native_storage_slot_context_test_parity_surfaces",
         ),
         rust_evidence=(
             RustEvidence(
@@ -69,9 +69,9 @@ AREAS: tuple[ParityArea, ...] = (
                 ),
             ),
             RustEvidence(
-                "tools/export_cpp_storage_migration_artifacts.py",
+                "tools/export_storage_migration_artifacts.py",
                 (
-                    "temporalstore-cpp-storage-migration-artifacts",
+                    "temporalstore-native-storage-migration-artifacts",
                     "objects",
                     "pages",
                     "slots",
@@ -88,8 +88,8 @@ AREAS: tuple[ParityArea, ...] = (
     ParityArea(
         name="storage_compaction_gc_delayed_destroy",
         corpus_cases=(
-            "cpp_storage_manager_compaction_gc_parity_surfaces",
-            "cpp_storage_object_zone_evicter_expirer_parity_surfaces",
+            "native_storage_manager_compaction_gc_parity_surfaces",
+            "native_storage_object_zone_evicter_expirer_parity_surfaces",
         ),
         rust_evidence=(
             RustEvidence(
@@ -109,8 +109,8 @@ AREAS: tuple[ParityArea, ...] = (
     ParityArea(
         name="shared_store_sync_async_replication_gc",
         corpus_cases=(
-            "cpp_storage_replicator_guardrail_parity_surfaces",
-            "cpp_local_docker_replication_matrix_parity_surfaces",
+            "native_storage_replicator_guardrail_parity_surfaces",
+            "native_local_docker_replication_matrix_parity_surfaces",
         ),
         rust_evidence=(
             RustEvidence(
@@ -136,9 +136,9 @@ AREAS: tuple[ParityArea, ...] = (
     ParityArea(
         name="raft_command_log_wal_codec",
         corpus_cases=(
-            "cpp_data_raft_consensus_parity_surfaces",
-            "cpp_data_raft_replication_parity_surfaces",
-            "cpp_data_raft_unit_test_parity_surfaces",
+            "native_data_raft_consensus_parity_surfaces",
+            "native_data_raft_replication_parity_surfaces",
+            "native_data_raft_unit_test_parity_surfaces",
         ),
         rust_evidence=(
             RustEvidence(
@@ -179,9 +179,9 @@ AREAS: tuple[ParityArea, ...] = (
     ParityArea(
         name="raft_snapshot_membership_scale",
         corpus_cases=(
-            "cpp_data_raft_snapshot_restore_harness_parity_surfaces",
-            "cpp_data_raft_scale_transition_harness_parity_surfaces",
-            "cpp_data_raft_multinode_scale_harness_parity_surfaces",
+            "native_data_raft_snapshot_restore_harness_parity_surfaces",
+            "native_data_raft_scale_transition_harness_parity_surfaces",
+            "native_data_raft_multinode_scale_harness_parity_surfaces",
         ),
         rust_evidence=(
             RustEvidence(
@@ -197,7 +197,7 @@ AREAS: tuple[ParityArea, ...] = (
     ParityArea(
         name="data_node_raft_consensus_contract",
         corpus_cases=(
-            "cpp_data_raft_consensus_parity_surfaces",
+            "native_data_raft_consensus_parity_surfaces",
             "storage_data_raft_replication_gtest",
             "raft_data_node_scale_failover_snapshot",
             "raft_data_node_mixed_rw_and_membership",
@@ -226,7 +226,7 @@ AREAS: tuple[ParityArea, ...] = (
     ParityArea(
         name="metaserver_raft_distributed_fault_contract",
         corpus_cases=(
-            "cpp_metaserver_raft_harness_parity_surfaces",
+            "native_metaserver_raft_harness_parity_surfaces",
             "raft_metaserver_membership_failover_snapshot",
             "raft_production_gate",
         ),
@@ -244,7 +244,7 @@ AREAS: tuple[ParityArea, ...] = (
             RustEvidence(
                 "crates/temporalstore-rust/src/raft/tests.rs",
                 (
-                    "production_meta_raft_runtime_matches_cpp_multinode_control_and_fault_contract",
+                    "production_meta_raft_runtime_matches_multinode_control_and_fault_contract",
                     "temporal_raft_metaserver_backend_supports_membership_and_bounded_reads",
                     "metaserver_raft_promotes_follower_after_leader_failure_and_keeps_metadata_available",
                 ),
@@ -276,10 +276,10 @@ AREAS: tuple[ParityArea, ...] = (
     ParityArea(
         name="raft_failover_secondary_replication",
         corpus_cases=(
-            "cpp_data_raft_failover_harness_parity_surfaces",
-            "cpp_data_raft_mixed_rw_harness_parity_surfaces",
-            "cpp_raft_production_stress_gate_parity_surfaces",
-            "cpp_metaserver_raft_harness_parity_surfaces",
+            "native_data_raft_failover_harness_parity_surfaces",
+            "native_data_raft_mixed_rw_harness_parity_surfaces",
+            "native_raft_production_stress_gate_parity_surfaces",
+            "native_metaserver_raft_harness_parity_surfaces",
         ),
         rust_evidence=(
             RustEvidence(
@@ -305,7 +305,7 @@ AREAS: tuple[ParityArea, ...] = (
         ),
     ),
     ParityArea(
-        name="unified_cpp_raft_case_names",
+        name="unified_raft_case_names",
         corpus_cases=(
             "storage_data_raft_replication_gtest",
             "raft_metaserver_membership_failover_snapshot",
@@ -386,10 +386,10 @@ AREAS: tuple[ParityArea, ...] = (
                 ),
             ),
             RustEvidence(
-                "tools/run_cpp_raft_cases_on_rust.py",
+                "tools/run_raft_cases_on_rust.py",
                 (
                     '"required_raft_case_names"',
-                    "cpp_required_paths_checked",
+                    "native_required_paths_checked",
                     "run_raft_distributed_parity.sh",
                 ),
             ),
@@ -398,8 +398,8 @@ AREAS: tuple[ParityArea, ...] = (
     ParityArea(
         name="local_scale_fault_readiness_gate",
         corpus_cases=(
-            "cpp_redis_live_storage_smoke_parity_surfaces",
-            "cpp_local_docker_replication_matrix_parity_surfaces",
+            "native_redis_live_storage_smoke_parity_surfaces",
+            "native_local_docker_replication_matrix_parity_surfaces",
         ),
         rust_evidence=(
             RustEvidence(
@@ -415,9 +415,9 @@ AREAS: tuple[ParityArea, ...] = (
     ParityArea(
         name="rustraft_derived_readiness_contract",
         corpus_cases=(
-            "cpp_data_raft_consensus_parity_surfaces",
-            "cpp_data_raft_replication_parity_surfaces",
-            "cpp_metaserver_raft_harness_parity_surfaces",
+            "native_data_raft_consensus_parity_surfaces",
+            "native_data_raft_replication_parity_surfaces",
+            "native_metaserver_raft_harness_parity_surfaces",
             "raft_production_gate",
         ),
         rust_evidence=(
@@ -504,14 +504,14 @@ def validate_rust_evidence(area: ParityArea) -> int:
     return snippet_count
 
 
-def validate_cpp_paths(area: ParityArea, cases: dict[str, dict], cpp_repo: Path) -> set[str]:
+def validate_paths(area: ParityArea, cases: dict[str, dict], native_repo: Path) -> set[str]:
     checked: set[str] = set()
     for case_name in area.corpus_cases:
         for step in cases[case_name].get("steps") or []:
             if step.get("command", {}).get("kind") != "existing_test":
                 continue
             for required_path in step["command"].get("required_paths") or []:
-                if not (cpp_repo / required_path).exists():
+                if not (native_repo / required_path).exists():
                     raise SystemExit(f"{area.name}: required path missing: {required_path}")
                 checked.add(required_path)
     return checked
@@ -519,26 +519,26 @@ def validate_cpp_paths(area: ParityArea, cases: dict[str, dict], cpp_repo: Path)
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cpp-repo", type=Path, help="optional checkout for required path checks")
+    parser.add_argument("--native-repo", type=Path, help="optional checkout for required path checks")
     args = parser.parse_args()
 
     corpus = load_corpus()
     cases = case_map(corpus)
-    total_cpp_paths: set[str] = set()
+    total_paths: set[str] = set()
     total_rust_snippets = 0
-    checked_cpp_paths: set[str] = set()
+    checked_paths: set[str] = set()
     for area in AREAS:
-        total_cpp_paths.update(validate_corpus_area(area, cases))
+        total_paths.update(validate_corpus_area(area, cases))
         total_rust_snippets += validate_rust_evidence(area)
-        if args.cpp_repo is not None:
-            checked_cpp_paths.update(validate_cpp_paths(area, cases, args.cpp_repo))
+        if args.native_repo is not None:
+            checked_paths.update(validate_paths(area, cases, args.native_repo))
         print(f"validated raft/storage parity area: {area.name}")
 
     print(f"raft_storage_parity_areas={len(AREAS)}")
-    print(f"corpus_required_cpp_paths={len(total_cpp_paths)}")
+    print(f"corpus_required_paths={len(total_paths)}")
     print(f"rust_evidence_snippets={total_rust_snippets}")
-    if args.cpp_repo is not None:
-        print(f"checked_cpp_required_paths={len(checked_cpp_paths)}")
+    if args.native_repo is not None:
+        print(f"checked_required_paths={len(checked_paths)}")
     return 0
 
 

@@ -41,7 +41,7 @@ struct StorageMigrationStep {
 }
 
 #[tokio::test]
-async fn rust_storage_replays_cpp_migration_corpus_across_lifecycle_paths() {
+async fn rust_storage_replays_migration_corpus_across_lifecycle_paths() {
     let corpus = load_corpus();
 
     for case in &corpus.cases {
@@ -62,7 +62,7 @@ fn load_corpus() -> StorageMigrationCorpus {
 
     assert_eq!(corpus.schema_version, 1);
     assert_eq!(corpus.name, "temporalstore-storage-migration-corpus");
-    assert_eq!(corpus.source_format, "cpp_exported_logical_artifacts_v1");
+    assert_eq!(corpus.source_format, "native_exported_logical_artifacts_v1");
     assert_eq!(
         corpus.format_compatibility,
         "migration_only_rust_native_pages"

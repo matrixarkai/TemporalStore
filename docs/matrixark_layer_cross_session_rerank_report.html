@@ -46,9 +46,9 @@ Status: **pass**
 - `shared_resources_skills`: separate quota and eligibility before scoring; selected only when query intent matches
 
 ## / Rust Checks
-- `cpp_layer_traversal_native`: **pass**
-- `cpp_temporal_decay_event_query`: **pass**
-- `cpp_unit_coverage_for_layer_and_decay`: **pass**
+- `native_layer_traversal_native`: **pass**
+- `native_temporal_decay_event_query`: **pass**
+- `native_unit_coverage_for_layer_and_decay`: **pass**
 - `rust_native_weighted_rerank`: **pass**
 - `rust_unit_coverage_for_cross_session_and_shared_resource`: **pass**
 - `shared_corpus_case`: **pass**
@@ -105,7 +105,7 @@ cargo test -p temporalstore-rust context_retrieval_reranks_cross_session_and_sha
         &quot;max_children_scored_per_parent&quot;
       ],
       &quot;missing&quot;: [],
-      &quot;name&quot;: &quot;cpp_layer_traversal_native&quot;,
+      &quot;name&quot;: &quot;native_layer_traversal_native&quot;,
       &quot;status&quot;: &quot;pass&quot;
     },
     {
@@ -116,7 +116,7 @@ cargo test -p temporalstore-rust context_retrieval_reranks_cross_session_and_sha
         &quot;decay_half_life_ms&quot;
       ],
       &quot;missing&quot;: [],
-      &quot;name&quot;: &quot;cpp_temporal_decay_event_query&quot;,
+      &quot;name&quot;: &quot;native_temporal_decay_event_query&quot;,
       &quot;status&quot;: &quot;pass&quot;
     },
     {
@@ -127,7 +127,7 @@ cargo test -p temporalstore-rust context_retrieval_reranks_cross_session_and_sha
         &quot;TRAVERSE_CONTEXT_TREE&quot;
       ],
       &quot;missing&quot;: [],
-      &quot;name&quot;: &quot;cpp_unit_coverage_for_layer_and_decay&quot;,
+      &quot;name&quot;: &quot;native_unit_coverage_for_layer_and_decay&quot;,
       &quot;status&quot;: &quot;pass&quot;
     },
     {

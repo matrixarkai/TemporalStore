@@ -148,7 +148,7 @@ class _TemporalDirectBackendMixin:
 
     def _backend_prometheus(self) -> str:
         self._ensure_backend_metric_fields()
-        backend = "cpp" if self._backend_label() in {"temporalstore-direct", "temporalstore-cpp"} else self._backend_label()
+        backend = "native" if self._backend_label() in {"temporalstore-direct", "temporalstore-native"} else self._backend_label()
         with self._metrics_lock:
             elapsed_s = max(0.001, (now_ms() - self._metrics_started_at_ms) / 1000.0)
             lines = [
@@ -263,8 +263,8 @@ class _TemporalDirectBackendMixin:
                 "context_pack_telemetry": True,
             },
             "metrics": {
-                "mode": "cpp-proxy" if getattr(self, "_matrixark_proxy_mode", False) else "direct-sdk",
-                "cpp_proxy_endpoint": getattr(self, "_cpp_proxy_endpoint", ""),
+                "mode": "native-proxy" if getattr(self, "_matrixark_proxy_mode", False) else "direct-sdk",
+                "native_proxy_endpoint": getattr(self, "_proxy_endpoint", ""),
                 "metaserver": self._metaserver,
                 "namespace": self._namespace,
                 "table": self._table,

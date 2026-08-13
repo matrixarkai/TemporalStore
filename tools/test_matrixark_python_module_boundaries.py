@@ -462,7 +462,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase, _ModuleBoundaryPart3,
                 },
                 {
                     "backend": "TemporalStore",
-                    "prefix": "matrixark:codex-hook:cpp-live-v2",
+                    "prefix": "matrixark:codex-hook:native-live-v2",
                     "serving_visibility_gaps": [],
                 },
             ]
@@ -563,7 +563,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase, _ModuleBoundaryPart3,
                 },
                 {
                     "backend": "TemporalStore",
-                    "prefix": "matrixark:codex-hook:cpp-live-v2",
+                    "prefix": "matrixark:codex-hook:native-live-v2",
                     "extraction_input_coverage_gaps": [],
                 },
             ]

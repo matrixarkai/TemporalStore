@@ -34,15 +34,15 @@ pub(super) fn sleep_before_retry(options: &TableOptions, attempt: usize) {
     thread::sleep(Duration::from_millis(sleep_ms));
 }
 
-pub(super) fn classify_cpp_retry_decision(
+pub(super) fn classify_retry_decision(
     status: &Status,
     write: bool,
     attempt: usize,
     retry_budget_attempts: usize,
     topology_refresh_used: bool,
 ) -> ClientRetryDecision {
-    let retryable = status_is_cpp_retryable(status);
-    let topology_retry = status_is_cpp_topology_retryable(status);
+    let retryable = status_is_retryable(status);
+    let topology_retry = status_is_topology_retryable(status);
     let has_budget = attempt + 1 < retry_budget_attempts;
     let safe_budget_free_write_retry = write && topology_retry && !topology_refresh_used;
     let would_retry = retryable
@@ -57,7 +57,7 @@ pub(super) fn classify_cpp_retry_decision(
     }
 }
 
-pub(super) fn status_is_cpp_retryable(status: &Status) -> bool {
+pub(super) fn status_is_retryable(status: &Status) -> bool {
     if status.ok {
         return false;
     }
@@ -92,7 +92,7 @@ pub(super) fn status_is_cpp_retryable(status: &Status) -> bool {
     )
 }
 
-pub(super) fn status_is_cpp_topology_retryable(status: &Status) -> bool {
+pub(super) fn status_is_topology_retryable(status: &Status) -> bool {
     if status.ok {
         return false;
     }

@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import unittest
 
-from audit_temporalstore_cpp_rust_performance_artifacts import PHASE_SCALE_COVERAGE
-from run_temporalstore_cpp_rust_next_performance_workflow import build_execution_plan
-from validate_temporalstore_cpp_rust_performance_parity import (
+from audit_temporalstore_rust_performance_artifacts import PHASE_SCALE_COVERAGE
+from run_temporalstore_rust_next_performance_workflow import build_execution_plan
+from validate_temporalstore_rust_performance_parity import (
     REQUIRED_SAME_CONFIG_COMMAND_ARGS,
     SAME_CONFIG_KEYS,
 )
@@ -27,11 +27,11 @@ def _valid_audit() -> dict:
                     "reason": "blocked_no_importable",
                     "argv": [
                         "python",
-                        "tools/run_matrixark_cpp_rust_scale_report.py",
+                        "tools/run_matrixark_rust_scale_report.py",
                         "--events",
                         "10000",
                         "--backends",
-                        "cpp",
+                        "native",
                         "rust",
                         "--artifact-dir",
                         "docs/benchmarks/parity_10K_event_ingestion",
@@ -57,7 +57,7 @@ def _valid_audit() -> dict:
                     "reason": "blocked_no_importable",
                     "argv": [
                         "python",
-                        "tools/import_temporalstore_cpp_rust_performance_evidence.py",
+                        "tools/import_temporalstore_rust_performance_evidence.py",
                         "--report",
                         "docs/benchmarks/parity_10K_event_ingestion/comparison.json",
                         "--validate",
@@ -66,7 +66,7 @@ def _valid_audit() -> dict:
                 },
             ],
             "post_import_validation": [
-                ["python", "tools/validate_temporalstore_cpp_rust_goal_parity.py"],
+                ["python", "tools/validate_temporalstore_rust_goal_parity.py"],
                 ["python", "tools/validate_storage_engine_9_phase_parity.py", "--loops", "9"],
             ],
         },
@@ -98,7 +98,7 @@ class NextPerformancePlanValidatorTest(unittest.TestCase):
     def test_backend_path_leak_in_wsl_command_fails(self) -> None:
         plan = build_execution_plan(_valid_audit())
         run_command = plan["commands"][0]
-        run_command["wsl_argv"].extend(["--cpp-lib", "/mnt/c/private/libtemporalstore.so"])
+        run_command["wsl_argv"].extend(["--native-lib", "/mnt/c/private/libtemporalstore.so"])
 
         failures = validate_plan(plan)
 
@@ -107,7 +107,7 @@ class NextPerformancePlanValidatorTest(unittest.TestCase):
     def test_missing_post_validator_fails(self) -> None:
         audit = _valid_audit()
         audit["next_required_workflow"]["post_import_validation"] = [
-            ["python", "tools/validate_temporalstore_cpp_rust_goal_parity.py"]
+            ["python", "tools/validate_temporalstore_rust_goal_parity.py"]
         ]
 
         failures = validate_plan(build_execution_plan(audit))

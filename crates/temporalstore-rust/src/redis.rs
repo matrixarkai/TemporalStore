@@ -30,7 +30,7 @@ pub use dispatch::execute_redis_command_with_state;
 
 use crate::client::{bucket_id_for_key, stable_key_hash};
 use crate::types::{
-    parse_cpp_feature_filters, Command, CommandResponse, FeatureFilter,
+    parse_feature_filters, Command, CommandResponse, FeatureFilter,
     FeaturePoint, ControlStateFamily, ControlStateSelectionType, ShardId, StringSetCondition,
 };
 
@@ -376,7 +376,7 @@ mod tests {
     use crate::types::{ExecuteRequest, SequenceFeatureRow};
 
     #[test]
-    fn decrby_and_srandmember_guard_i64_min_like_cpp() {
+    fn decrby_and_srandmember_guard_i64_min_like_native() {
         let engine = TemporalEngine::default();
         engine.load_shard(1);
         let mut state = RedisCommandState::default();
@@ -425,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn ttl_expire_match_cpp() {
+    fn ttl_expire_match_native() {
         let engine = TemporalEngine::default();
         engine.load_shard(1);
         let mut state = RedisCommandState::default();
@@ -469,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    fn set_zero_expiry_match_cpp() {
+    fn set_zero_expiry_match_native() {
         let engine = TemporalEngine::default();
         engine.load_shard(1);
         let mut state = RedisCommandState::default();
@@ -1247,37 +1247,37 @@ mod tests {
             RespValue::Integer(2)
         );
         assert_eq!(
-            run(vec!["CONTROLSTATEHSET", "control_state-cpp", "10", "5"]),
+            run(vec!["CONTROLSTATEHSET", "control_state-native", "10", "5"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["HCHANGE", "control_state-cpp", "10", "buyer-a"]),
+            run(vec!["HCHANGE", "control_state-native", "10", "buyer-a"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["HCHANGE", "control_state-cpp", "20", "buyer-a"]),
+            run(vec!["HCHANGE", "control_state-native", "20", "buyer-a"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["HCHANGE", "control_state-cpp", "30", "buyer-b"]),
+            run(vec!["HCHANGE", "control_state-native", "30", "buyer-b"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["HQUERY", "control_state-cpp", "0", "40", "change"]),
+            run(vec!["HQUERY", "control_state-native", "0", "40", "change"]),
             RespValue::Integer(2)
         );
         assert_eq!(
-            run(vec!["HSETANDGET", "control_state-cpp", "20", "7", "0", "30", "sum"]),
+            run(vec!["HSETANDGET", "control_state-native", "20", "7", "0", "30", "sum"]),
             RespValue::Integer(12)
         );
         assert_eq!(
-            run(vec!["CPCSET", "control_state-cpp", "10", "3"]),
+            run(vec!["CPCSET", "control_state-native", "10", "3"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
             run(vec![
                 "CPCSETANDGET",
-                "control_state-cpp",
+                "control_state-native",
                 "20",
                 "4",
                 "0",
@@ -1287,15 +1287,15 @@ mod tests {
             RespValue::Integer(7)
         );
         assert_eq!(
-            run(vec!["FOLSET", "control_state-cpp", "10", "11"]),
+            run(vec!["FOLSET", "control_state-native", "10", "11"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["FOLQUERY", "control_state-cpp", "0", "30", "sum"]),
+            run(vec!["FOLQUERY", "control_state-native", "0", "30", "sum"]),
             RespValue::Integer(11)
         );
         assert_eq!(
-            run(vec!["CONTROLSTATEMANAGER", "control_state-cpp"]),
+            run(vec!["CONTROLSTATEMANAGER", "control_state-native"]),
             RespValue::Array(vec![
                 RespValue::Bulk(Some(b"h_events".to_vec())),
                 RespValue::Bulk(Some(b"2".to_vec())),
@@ -1311,14 +1311,14 @@ mod tests {
                 RespValue::Bulk(Some(b"11".to_vec())),
             ])
         );
-        let debug = run(vec!["CONTROLSTATEDEBUG", "control_state-cpp", "0", "15"]);
+        let debug = run(vec!["CONTROLSTATEDEBUG", "control_state-native", "0", "15"]);
         let RespValue::Array(debug_entries) = debug else {
             panic!("CONTROLSTATEDEBUG should return array");
         };
         assert!(debug_entries.windows(2).any(|pair| pair
             == [
                 RespValue::Bulk(Some(b"key".to_vec())),
-                RespValue::Bulk(Some(b"control_state-cpp".to_vec()))
+                RespValue::Bulk(Some(b"control_state-native".to_vec()))
             ]));
         assert!(debug_entries.windows(2).any(|pair| pair
             == [
@@ -1469,7 +1469,7 @@ mod tests {
 
     // shared-corpus: redis_engine_product_command_flow;
     #[test]
-    fn redis_feature_query_filterstr_uses_cpp_filter_syntax() {
+    fn redis_feature_query_filterstr_uses_filter_syntax() {
         let engine = TemporalEngine::default();
         engine.load_shard(1);
         let matching = SequenceFeatureRow {
@@ -1493,11 +1493,11 @@ mod tests {
                 points: vec![
                     FeaturePoint {
                         timestamp_ms: matching.timestamp_ms,
-                        value: matching.encode_cpp_feature_value(),
+                        value: matching.encode_feature_proto_value(),
                     },
                     FeaturePoint {
                         timestamp_ms: other.timestamp_ms,
-                        value: other.encode_cpp_feature_value(),
+                        value: other.encode_feature_proto_value(),
                     },
                 ],
             },
@@ -1534,7 +1534,7 @@ mod tests {
             ]),
             RespValue::Array(vec![RespValue::Array(vec![
                 RespValue::Integer(10),
-                RespValue::Bulk(Some(matching.encode_cpp_feature_value())),
+                RespValue::Bulk(Some(matching.encode_feature_proto_value())),
             ])])
         );
         assert_eq!(
@@ -1549,11 +1549,11 @@ mod tests {
             RespValue::Array(vec![
                 RespValue::Array(vec![
                     RespValue::Integer(10),
-                    RespValue::Bulk(Some(matching.encode_cpp_feature_value())),
+                    RespValue::Bulk(Some(matching.encode_feature_proto_value())),
                 ]),
                 RespValue::Array(vec![
                     RespValue::Integer(20),
-                    RespValue::Bulk(Some(other.encode_cpp_feature_value())),
+                    RespValue::Bulk(Some(other.encode_feature_proto_value())),
                 ]),
             ])
         );
@@ -1568,7 +1568,7 @@ mod tests {
             ]),
             RespValue::Array(vec![RespValue::Array(vec![
                 RespValue::Integer(10),
-                RespValue::Bulk(Some(matching.encode_cpp_feature_value())),
+                RespValue::Bulk(Some(matching.encode_feature_proto_value())),
             ])])
         );
     }

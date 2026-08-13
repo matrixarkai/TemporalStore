@@ -1027,7 +1027,7 @@ mod tests {
 
     // shared-corpus: storage_wal_structure_api_flush_parity
     #[test]
-    fn wal_record_metadata_tracks_cpp_style_log_item_shape() {
+    fn wal_record_metadata_tracks_style_log_item_shape() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
         let record = store

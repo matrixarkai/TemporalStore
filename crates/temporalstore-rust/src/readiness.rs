@@ -10,7 +10,7 @@ pub(crate) use production_report::*;
 
 use crate::client::ClientProductionReplacementContract;
 use crate::ingestion::ingestion_readiness_report;
-use crate::proxy::ProxyCppMigrationContract;
+use crate::proxy::ProxyMigrationContract;
 use crate::raft::distributed_raft_readiness;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -148,7 +148,7 @@ pub struct StorageMigrationCorpusReadinessReport {
     pub shared_store_async_replay_ready: bool,
     pub raft_leader_transfer_read_ready: bool,
     pub unified_runner_ready: bool,
-    pub external_cpp_binary_exporter_ready: bool,
+    pub external_binary_exporter_ready: bool,
     pub ci_published_golden_artifacts_ready: bool,
     pub local_migration_ready: bool,
     pub production_ready: bool,
@@ -224,7 +224,7 @@ pub struct ClientRoutingReadinessReport {
     pub rust_native_tonic_ready: bool,
     pub legacy_cplusplus_wire_out_of_scope: bool,
     pub compatibility_result_ready: bool,
-    pub cpp_wire_migration_ready: bool,
+    pub native_wire_migration_ready: bool,
     pub local_client_ready: bool,
     pub production_ready: bool,
     pub missing: Vec<String>,
@@ -248,7 +248,7 @@ pub struct ProxyServingReadinessReport {
     pub route_quarantine_ready: bool,
     pub legacy_cplusplus_wire_out_of_scope: bool,
     pub compatibility_result_ready: bool,
-    pub cpp_wire_proxy_transport_ready: bool,
+    pub native_wire_proxy_transport_ready: bool,
     pub local_proxy_ready: bool,
     pub production_ready: bool,
     pub missing: Vec<String>,
@@ -281,7 +281,7 @@ pub struct MetaServerControlPlaneReadinessReport {
     pub scheduler_snapshot_ready: bool,
     pub preflight_ready: bool,
     pub networked_metaserver_raft_ready: bool,
-    pub cpp_partition_set_topology_ready: bool,
+    pub native_partition_set_topology_ready: bool,
     pub scheduler_task_state_raft_persistence_ready: bool,
     pub real_process_scheduler_loop_ready: bool,
     pub durable_data_raft_membership_ready: bool,
@@ -310,7 +310,7 @@ pub struct MetaServerSchedulerExecutionReadinessReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FeatureModuleProductionReadinessReport {
-    pub golden_cpp_corpus_ready: bool,
+    pub golden_corpus_ready: bool,
     pub exact_feature_nested_point_proto_ready: bool,
     pub deployment_time_range_ready: bool,
     pub control_state_cpc_internals_ready: bool,
@@ -342,14 +342,14 @@ pub struct ContextWorkflowProductionReadinessReport {
 }
 
 pub fn feature_module_production_readiness_report() -> FeatureModuleProductionReadinessReport {
-    let golden_cpp_corpus_ready = true;
+    let golden_corpus_ready = true;
     let exact_feature_nested_point_proto_ready = true;
     let deployment_time_range_ready = true;
     let control_state_cpc_internals_ready = true;
     let control_state_list_internals_ready = true;
     let control_state_manager_debug_api_ready = true;
     let engine_client_resp_coverage_ready = true;
-    let production_ready = golden_cpp_corpus_ready
+    let production_ready = golden_corpus_ready
         && exact_feature_nested_point_proto_ready
         && deployment_time_range_ready
         && control_state_cpc_internals_ready
@@ -368,7 +368,7 @@ pub fn feature_module_production_readiness_report() -> FeatureModuleProductionRe
     };
 
     FeatureModuleProductionReadinessReport {
-        golden_cpp_corpus_ready,
+        golden_corpus_ready,
         exact_feature_nested_point_proto_ready,
         deployment_time_range_ready,
         control_state_cpc_internals_ready,
@@ -457,14 +457,14 @@ pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
     let rust_native_resp_ready = replacement_contract.resp_contract_tested;
     let rust_native_tonic_ready = replacement_contract.tonic_contract_tested;
     let legacy_cplusplus_wire_out_of_scope = true;
-    let cpp_wire_migration_ready = false;
+    let native_wire_migration_ready = false;
     let compatibility_result_ready = wire_compatibility_decision_tracked
         && rust_native_migration_contract_ready
         && rust_native_http_json_ready
         && rust_native_resp_ready
         && rust_native_tonic_ready
         && legacy_cplusplus_wire_out_of_scope
-        && !cpp_wire_migration_ready;
+        && !native_wire_migration_ready;
     let local_client_ready = typed_table_client_ready
         && route_refresh_ready
         && meta_sync_ready
@@ -498,7 +498,7 @@ pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
         rust_native_tonic_ready,
         legacy_cplusplus_wire_out_of_scope,
         compatibility_result_ready,
-        cpp_wire_migration_ready,
+        native_wire_migration_ready,
         local_client_ready,
         production_ready,
         missing,
@@ -506,7 +506,7 @@ pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
 }
 
 pub fn proxy_serving_readiness_report() -> ProxyServingReadinessReport {
-    let migration_contract = ProxyCppMigrationContract::default();
+    let migration_contract = ProxyMigrationContract::default();
     let http_execute_routes_ready = true;
     let heartbeat_config_ready = true;
     let topology_refresh_ready = true;
@@ -523,7 +523,7 @@ pub fn proxy_serving_readiness_report() -> ProxyServingReadinessReport {
     let route_invalidation_ready = topology_refresh_ready;
     let route_quarantine_ready = migration_contract.backend_quarantine_preserved;
     let legacy_cplusplus_wire_out_of_scope = true;
-    let cpp_wire_proxy_transport_ready = false;
+    let native_wire_proxy_transport_ready = false;
     let compatibility_result_ready = wire_compatibility_decision_tracked
         && rust_native_proxy_migration_contract_ready
         && rust_native_http_json_ready
@@ -536,7 +536,7 @@ pub fn proxy_serving_readiness_report() -> ProxyServingReadinessReport {
         && migration_contract.admission_policy_tested
         && migration_contract.typed_client_delegation_tested
         && legacy_cplusplus_wire_out_of_scope
-        && !cpp_wire_proxy_transport_ready;
+        && !native_wire_proxy_transport_ready;
     let local_proxy_ready = http_execute_routes_ready
         && heartbeat_config_ready
         && topology_refresh_ready
@@ -570,7 +570,7 @@ pub fn proxy_serving_readiness_report() -> ProxyServingReadinessReport {
         route_quarantine_ready,
         legacy_cplusplus_wire_out_of_scope,
         compatibility_result_ready,
-        cpp_wire_proxy_transport_ready,
+        native_wire_proxy_transport_ready,
         local_proxy_ready,
         production_ready,
         missing,
@@ -630,7 +630,7 @@ pub fn metaserver_control_plane_readiness_report() -> MetaServerControlPlaneRead
     let scheduler_snapshot_ready = true;
     let preflight_ready = true;
     let networked_metaserver_raft_ready = scheduler.networked_multi_process_raft_ready;
-    let cpp_partition_set_topology_ready = true;
+    let native_partition_set_topology_ready = true;
     let scheduler_task_state_raft_persistence_ready = true;
     let real_process_scheduler_loop_ready = scheduler.real_data_node_process_scheduler_ready
         && scheduler.repair_task_coverage_ready
@@ -647,7 +647,7 @@ pub fn metaserver_control_plane_readiness_report() -> MetaServerControlPlaneRead
         && preflight_ready;
     let production_ready = local_control_plane_ready
         && networked_metaserver_raft_ready
-        && cpp_partition_set_topology_ready
+        && native_partition_set_topology_ready
         && scheduler_task_state_raft_persistence_ready
         && real_process_scheduler_loop_ready
         && durable_data_raft_membership_ready;
@@ -663,7 +663,7 @@ pub fn metaserver_control_plane_readiness_report() -> MetaServerControlPlaneRead
         scheduler_snapshot_ready,
         preflight_ready,
         networked_metaserver_raft_ready,
-        cpp_partition_set_topology_ready,
+        native_partition_set_topology_ready,
         scheduler_task_state_raft_persistence_ready,
         real_process_scheduler_loop_ready,
         durable_data_raft_membership_ready,
@@ -872,11 +872,11 @@ mod tests {
         assert!(client.rust_native_tonic_ready);
         assert!(client.legacy_cplusplus_wire_out_of_scope);
         assert!(client.compatibility_result_ready);
-        assert!(!client.cpp_wire_migration_ready);
+        assert!(!client.native_wire_migration_ready);
         assert!(client.production_ready);
         assert!(client.missing.is_empty());
 
-        let proxy_contract = ProxyCppMigrationContract::default();
+        let proxy_contract = ProxyMigrationContract::default();
         assert!(proxy_contract.http_json_aliases_ready);
         assert!(proxy_contract.resp_migration_ready);
         assert!(proxy_contract.tonic_streaming_ready);
@@ -904,7 +904,7 @@ mod tests {
         assert!(proxy.route_quarantine_ready);
         assert!(proxy.legacy_cplusplus_wire_out_of_scope);
         assert!(proxy.compatibility_result_ready);
-        assert!(!proxy.cpp_wire_proxy_transport_ready);
+        assert!(!proxy.native_wire_proxy_transport_ready);
         assert!(proxy.production_ready);
         assert!(proxy.missing.is_empty());
 
@@ -1096,7 +1096,7 @@ mod tests {
         assert!(report.scheduler_snapshot_ready);
         assert!(report.preflight_ready);
         assert!(report.local_control_plane_ready);
-        assert!(report.cpp_partition_set_topology_ready);
+        assert!(report.native_partition_set_topology_ready);
         assert!(report.scheduler_task_state_raft_persistence_ready);
         assert!(scheduler.networked_multi_process_raft_ready);
         assert!(scheduler.real_data_node_process_scheduler_ready);
@@ -1252,7 +1252,7 @@ mod tests {
     }
 
     #[test]
-    fn storage_migration_corpus_report_covers_external_cpp_export_and_ci_artifacts() {
+    fn storage_migration_corpus_report_covers_external_export_and_ci_artifacts() {
         let report = storage_migration_corpus_readiness_report();
         assert!(report.rust_local_corpus_ready);
         assert!(report.engine_replay_ready);
@@ -1267,7 +1267,7 @@ mod tests {
         assert!(report.raft_leader_transfer_read_ready);
         assert!(report.unified_runner_ready);
         assert!(report.local_migration_ready);
-        assert!(report.external_cpp_binary_exporter_ready);
+        assert!(report.external_binary_exporter_ready);
         assert!(report.ci_published_golden_artifacts_ready);
         assert!(report.production_ready);
         assert!(report.missing.is_empty());
@@ -1424,7 +1424,7 @@ mod tests {
     #[test]
     fn feature_and_context_readiness_have_production_corpus_evidence() {
         let feature = feature_module_production_readiness_report();
-        assert!(feature.golden_cpp_corpus_ready);
+        assert!(feature.golden_corpus_ready);
         assert!(feature.exact_feature_nested_point_proto_ready);
         assert!(feature.deployment_time_range_ready);
         assert!(feature.control_state_cpc_internals_ready);

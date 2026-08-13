@@ -240,8 +240,8 @@ def keywords(text: str) -> list[str]:
 def build_entities(events: list[ContextEvent], max_entities: int) -> list[ContextEntity]:
     topic_terms = {
         "rust": "rust_temporalstore",
-        "c++": "cpp_temporalstore",
-        "cpp": "cpp_temporalstore",
+        "native": "native_temporalstore",
+        "native": "native_temporalstore",
         "temporalstore": "temporalstore",
         "hook": "codex_hook",
         "codex": "codex_hook",

@@ -96,7 +96,7 @@ def observe_backend_command(
 
 def backend_prometheus(target: Any) -> str:
     ensure_temporal_backend_metric_fields(target)
-    backend = "cpp" if target._backend_label() in {"temporalstore-direct", "temporalstore-cpp"} else target._backend_label()
+    backend = "native" if target._backend_label() in {"temporalstore-direct", "temporalstore-native"} else target._backend_label()
     with target._metrics_lock:
         elapsed_s = max(0.001, (now_ms() - target._metrics_started_at_ms) / 1000.0)
         lines = [
@@ -218,8 +218,8 @@ def backend_metrics(target: Any) -> Json:
             "context_pack_telemetry": True,
         },
         "metrics": {
-            "mode": "cpp-proxy" if getattr(target, "_matrixark_proxy_mode", False) else "direct-sdk",
-            "cpp_proxy_endpoint": getattr(target, "_cpp_proxy_endpoint", ""),
+            "mode": "native-proxy" if getattr(target, "_matrixark_proxy_mode", False) else "direct-sdk",
+            "native_proxy_endpoint": getattr(target, "_proxy_endpoint", ""),
             "metaserver": target._metaserver,
             "namespace": target._namespace,
             "table": target._table,

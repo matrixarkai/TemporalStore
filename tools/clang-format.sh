@@ -41,7 +41,7 @@ do
   if [ -f $dest ];then
       files="$files $dest"
   elif [ -d $dest ];then
-      files="$files `ls $dest/*.cpp $dest/*.h $dest/*.cc 2>/dev/null`"
+      files="$files `ls $dest/*.native $dest/*.h $dest/*.cc 2>/dev/null`"
   else
       echo -e "\033[32m $dest sorry current $0 only support regular file or dir \033[0m"
   fi

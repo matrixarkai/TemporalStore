@@ -4,7 +4,7 @@
 use super::*;
 use crate::block_store::BlockStoreBandState;
 use crate::engine::golden::{
-    cpp_api_golden_corpus_report, cpp_feature_sequence_golden_corpus_report,
+    native_api_golden_corpus_report, native_feature_sequence_golden_corpus_report,
 };
 use crate::types::{
     ContextAuditRef, ContextChildRef, ContextCompressionEvent, ContextEmbedding,
