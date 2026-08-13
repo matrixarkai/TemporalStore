@@ -14,7 +14,7 @@ Hook adapter:
   agents that expose lifecycle hooks or external command runners
 ```
 
-This follows the OpenViking-style integration lesson: the context system should
+This follows the baseline memory system-style integration lesson: the context system should
 be agent-facing, not app-specific. Agents get a stable interface for memory,
 resources, and skills; products can add automatic recall/capture through hooks
 when their runtime exposes lifecycle events.
@@ -205,7 +205,7 @@ Commit events / one-pass batch extraction:
 | Windsurf | MCP first, external runner if available | Use the same MatrixArk MCP server; hook adapter works if the client can run external commands. |
 | Cline / Roo-style agents | MCP first | These agent loops are tool-heavy; MatrixArk should be a durable memory/tool provider. |
 | Continue | MCP or HTTP | Good fit for local IDE context plus MatrixArk durable memory. |
-| OpenCode / OpenClaw-style agents | MCP plus hook adapter | Same model as OpenViking integrations: explicit context tools plus automatic lifecycle capture where available. |
+| OpenCode / OpenClaw-style agents | MCP plus hook adapter | Same model as the baseline memory system integrations: explicit context tools plus automatic lifecycle capture where available. |
 | Aider | CLI wrapper or MCP bridge | Wrap the CLI invocation or use a supervising script to call MatrixArk before/after prompts. |
 | Gemini CLI / Qwen Code | MCP or CLI wrapper | Use MatrixArk as a durable context tool; hook adapter works when wrapping command execution. |
 | AutoGen / LangGraph / CrewAI | HTTP or Python-side hook calls | Integrate at graph node boundaries: before model call, after model call, after tool call, and workflow end. |
@@ -476,7 +476,7 @@ dropped_ref_reasons
 
 ## Resource And Feedback Hooks
 
-OpenViking-style context systems do not only capture chat turns. MatrixArk now
+baseline-style context systems do not only capture chat turns. MatrixArk now
 normalizes resource and feedback lifecycle events through the same universal hook
 adapter:
 

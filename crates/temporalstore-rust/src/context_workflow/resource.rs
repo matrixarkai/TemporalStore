@@ -349,10 +349,10 @@ fn context_resource_uri_scheme(raw_uri: &str) -> String {
 }
 
 fn context_resource_target_uri(raw_uri: &str) -> String {
-    if raw_uri.starts_with("viking://resources/") {
+    if raw_uri.starts_with("baseline://resources/") {
         raw_uri.to_string()
     } else {
-        format!("viking://resources/{}", stable_hash64(raw_uri))
+        format!("baseline://resources/{}", stable_hash64(raw_uri))
     }
 }
 

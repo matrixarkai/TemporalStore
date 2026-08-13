@@ -233,7 +233,7 @@ IndexRef             pointer back to the primary event only
 ContextPackAudit     query/session/time/token budget + selected refs only
 ```
 
-`ContextEntity` is the VikingMem-style evolving state record in this MVP. It is
+`ContextEntity` is the baseline memory system-style evolving state record in this MVP. It is
 not a directory and it is not a replacement for `ContextEvent`. Events remain the
 immutable replayable timeline; entity state is the compact current view that
 retrieval can use before spending tokens on raw evidence. MatrixArk updates it

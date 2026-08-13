@@ -265,7 +265,7 @@ For OSS model support:
 source .local/context-oss-models/context_oss_models.env
 ```
 
-That path supports OpenViking/VikingMem-style local readers and embeddings such
+That path supports baseline-style local readers and embeddings such
 as Qwen through Ollama/vLLM and `sentence-transformers/all-MiniLM-L6-v2`.
 
 ## Design Rule

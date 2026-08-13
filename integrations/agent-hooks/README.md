@@ -14,7 +14,7 @@ standalone `temporalstore-agent-hooks` repository once stable.
 ## What This Installs
 
 - A portable Node.js hook launcher for Codex, Claude, and other agent runtimes.
-- Codex plugin templates modeled after the OpenViking plugin layout.
+- Codex plugin templates modeled after the baseline memory system plugin layout.
 - Claude settings templates.
 - Shared event normalization and session resolution.
 - Windows PowerShell and Unix shell installers.

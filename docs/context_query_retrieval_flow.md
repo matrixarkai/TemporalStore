@@ -12,9 +12,9 @@ All code references are to `crates/temporalstore-rust/src/`.
 
 ---
 
-## Tier model (OpenViking / VikingMem)
+## Tier model (baseline memory system)
 
-Three tiers, matching the OpenViking/VikingMem hierarchy. L0 and L1 are **derived
+Three tiers, matching the baseline memory system hierarchy. L0 and L1 are **derived
 summaries** of the source; L2 is the **raw event** itself.
 
 | Tier | Source | Contents | Role |

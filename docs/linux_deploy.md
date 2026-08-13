@@ -118,7 +118,7 @@ From the repo:
 ./tools/install_linux_temporalstore.sh --build
 ```
 
-For OpenViking/VikingMem-style OSS model support, install the model runtime
+For baseline-style OSS model support, install the model runtime
 before running extraction, summarization, or benchmark jobs:
 
 ```bash
@@ -340,7 +340,7 @@ Codex hook ingestion, and OSS model extraction are later layers.
 
 ## OSS Model Setup
 
-The OpenViking-style path uses OpenAI-compatible local readers and local
+The baseline memory system-style path uses OpenAI-compatible local readers and local
 embedding models. The repo provides one installer entrypoint:
 
 ```bash
@@ -369,15 +369,15 @@ vLLM setup, for stronger local OpenAI-compatible readers:
 ./tools/install_context_oss_models.sh --install-vllm
 ```
 
-Common OpenViking-style profiles:
+Common baseline-style profiles:
 
 | Profile | Reader/VLM | Embedding |
 | --- | --- | --- |
 | `matrixark-native-oss-context` | `google/flan-t5-small` | `sentence-transformers/all-MiniLM-L6-v2` |
-| `openviking-qwen2_5_vl-local` | `qwen2.5vl:7b` | `nomic-embed-text` |
-| `openviking-llava-local` | `llava:7b` | `nomic-embed-text` |
-| `openviking-internvl-vllm` | `OpenGVLab/InternVL2_5-8B` | `BAAI/bge-m3` |
-| `openviking-minigpt4-gpt-style-vlm` | `Vision-CAIR/MiniGPT-4` | `BAAI/bge-m3` |
+| `baseline-qwen2_5_vl-local` | `qwen2.5vl:7b` | `nomic-embed-text` |
+| `baseline-llava-local` | `llava:7b` | `nomic-embed-text` |
+| `baseline-internvl-vllm` | `OpenGVLab/InternVL2_5-8B` | `BAAI/bge-m3` |
+| `baseline-minigpt4-gpt-style-vlm` | `Vision-CAIR/MiniGPT-4` | `BAAI/bge-m3` |
 
 The env file sets:
 
@@ -390,7 +390,7 @@ MATRIXARK_SUMMARY_MODEL=qwen2.5:0.5b
 TEMPORALSTORE_READER_BASE_URL=http://127.0.0.1:11434/v1
 ```
 
-For paper-comparable VikingMem/OpenViking benchmark claims, use a live
+For paper-comparable the baseline memory system benchmark claims, use a live
 OpenAI-compatible reader endpoint and disable deterministic fallback in the
 benchmark runner. The deterministic/hash fallback path is only for local
 pipeline validation.

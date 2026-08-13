@@ -340,13 +340,13 @@ export CONTEXT_API_KEY='replace-with-real-key'
 The provider is request-scoped for extraction/injection. Do not put raw credentials in request JSON;
 only set `api_key_env`.
 
-For an OpenViking-style open-source VLM deployment, point the same OpenAI-compatible shape at a
+For a baseline-style open-source VLM deployment, point the same OpenAI-compatible shape at a
 local gateway such as Ollama or vLLM:
 
 ```json
 {
   "provider": {
-    "provider_name": "openviking-open-source-vlm",
+    "provider_name": "baseline-open-source-vlm",
     "provider_kind": "open_ai_compatible",
     "base_url": "http://127.0.0.1:11434/v1",
     "api_key_env": "MATRIXARK_MODEL_API_KEY",
@@ -365,7 +365,7 @@ local gateway such as Ollama or vLLM:
 `Vision-CAIR/MiniGPT-4` profile. Use `mock_mode=true` with the same profile names for deterministic
 Docker validation when a live VLM server is not running.
 
-For VikingMem benchmark parity, use the GPT-4o-mini reader profile:
+For the baseline memory system benchmark parity, use the GPT-4o-mini reader profile:
 
 ```json
 {
@@ -409,7 +409,7 @@ For an open-source GPT-4-style VLM profile:
 ```json
 {
   "provider": {
-    "provider_name": "openviking-open-source-gpt-vlm",
+    "provider_name": "baseline-open-source-gpt-vlm",
     "provider_kind": "open_ai_compatible",
     "base_url": "http://127.0.0.1:8000/v1",
     "api_key_env": "MATRIXARK_MODEL_API_KEY",
@@ -444,7 +444,7 @@ and zero zero-hit queries. MRR remains reported as a quality metric, not a readi
 All `answer_terms` / `expected_terms` are treated as required evidence terms; the run also fails
 unless `external_benchmark_answer_term_coverage` is 1.0 and
 `external_benchmark_missing_expected_terms` is 0.
-For the built-in VikingMem-style sweep, `benchmark_evidence_retention_at_k` and
+For the built-in baseline-style sweep, `benchmark_evidence_retention_at_k` and
 `benchmark_sweep_min_evidence_retention_at_k` must also stay at 1.0, which means each expected
 answer/topic remains in the selected injected context within the configured prompt-token budget.
 

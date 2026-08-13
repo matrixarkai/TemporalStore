@@ -21,7 +21,7 @@ serving path: context, features, and control-state capabilities.
 - Embeddings and secondary-index postings for fast candidate selection.
 - Compact ContextPack retrieval for LLM prompt assembly.
 - Rust TemporalStore deployment on Linux, macOS, and Windows Docker.
-- OpenViking/VikingMem-style OSS model setup for local readers and embeddings.
+- baseline-style OSS model setup for local readers and embeddings.
 
 ## Mental Model
 
@@ -169,7 +169,7 @@ Access control decides visibility before scoring.
 
 ## OSS Model Support
 
-For OpenViking/VikingMem-style local model support:
+For baseline-style local model support:
 
 ```bash
 ./tools/install_context_oss_models.sh
@@ -181,9 +181,9 @@ Common profiles:
 | Profile | Reader/VLM | Embedding |
 | --- | --- | --- |
 | `matrixark-native-oss-context` | `google/flan-t5-small` | `sentence-transformers/all-MiniLM-L6-v2` |
-| `openviking-qwen2_5_vl-local` | `qwen2.5vl:7b` | `nomic-embed-text` |
-| `openviking-llava-local` | `llava:7b` | `nomic-embed-text` |
-| `openviking-internvl-vllm` | `OpenGVLab/InternVL2_5-8B` | `BAAI/bge-m3` |
+| `baseline-qwen2_5_vl-local` | `qwen2.5vl:7b` | `nomic-embed-text` |
+| `baseline-llava-local` | `llava:7b` | `nomic-embed-text` |
+| `baseline-internvl-vllm` | `OpenGVLab/InternVL2_5-8B` | `BAAI/bge-m3` |
 
 Ollama/Qwen setup:
 

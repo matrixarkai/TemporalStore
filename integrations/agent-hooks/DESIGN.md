@@ -2,7 +2,7 @@
 
 ## Goals
 
-- Provide an OpenViking-style installable integration for Codex first, then
+- Provide a baseline-style installable integration for Codex first, then
   Claude and other agents.
 - Keep agent-specific hook configuration thin.
 - Normalize all agent events into one MatrixArk event schema.

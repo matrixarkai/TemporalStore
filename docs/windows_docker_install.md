@@ -407,7 +407,7 @@ for how it is resumable and dedup-safe.
 ## OSS Model Setup
 
 The Windows Docker install keeps TemporalStore in Docker, but the Codex hook and
-benchmark orchestration can still use the same OpenViking/VikingMem-style OSS
+benchmark orchestration can still use the same baseline-style OSS
 model setup from the Linux manual.
 
 Recommended path:

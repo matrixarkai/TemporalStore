@@ -30,7 +30,7 @@ MatrixArk keeps four lanes separate:
 | Skills | separate `SkillManifest`, `SkillRegistry`, and `SkillSection` records, plus skill summaries, embeddings, and skill indexes | Operational instructions. Retrieval returns only relevant skill sections, not the whole skill bundle by default. |
 | Audit/replay | `ContextPackAudit`, debug records, selected/dropped refs, token costs, access decisions, stale/superseded reasons | Observability and governance. Audit explains why retrieval/extraction behaved a certain way; it is not a primary serving memory lane. |
 
-This gives MatrixArk OpenViking-like resource handling, VikingMem-like event/entity memory, and stronger MatrixArk-specific replay/debug governance in one TemporalStore-native model.
+This gives MatrixArk baseline-like resource handling, baseline-like event/entity memory, and stronger MatrixArk-specific replay/debug governance in one TemporalStore-native model.
 
 ```mermaid
 flowchart TD

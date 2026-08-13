@@ -1,6 +1,6 @@
 # MatrixArk Weighted Multi-Path Recall
 
-MatrixArk recall now follows a VikingMem-style two-path policy while keeping
+MatrixArk recall now follows a baseline-style two-path policy while keeping
 TemporalStore as the serving store.
 
 ## Structured Query Plan Before Scoring
@@ -83,7 +83,7 @@ Those are normalized into `Sorigin`. This is intentionally different from a flat
 
 ## Time-Weighted Recall Versus Temporal Compression
 
-VikingMem-style time-weighted recall is a retrieval-time ranking prior. It does
+baseline-style time-weighted recall is a retrieval-time ranking prior. It does
 not rewrite memory. It takes the candidates that survived tree traversal,
 secondary-index filtering, and hybrid recall, then boosts or decays them based
 on age.

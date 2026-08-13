@@ -139,7 +139,7 @@ That suggests several future AI-specific data models:
 |---|---|---|
 | `SessionMemory` | timestamped conversation, tool, and observation events | build prompt context for an agent session |
 | `KVCacheIndex` | prefix hashes, token ranges, cache object refs, TTL, reuse stats | find whether an LLM prefix can reuse remote cache |
-| `EmbeddingMetadata` | chunk ids, embedding version, source pointer, freshness | pair with Milvus/Viking/vector DB |
+| `EmbeddingMetadata` | chunk ids, embedding version, source pointer, freshness | pair with Milvus or a vector DB |
 | `GPUServingAggregate` | model/tenant/route counters and latency windows | autoscaling, throttling, cost control |
 | `TensorBlockRef` | tensor-block metadata and storage locations | later cache coordination, not raw GPU ownership |
 

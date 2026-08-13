@@ -163,7 +163,7 @@ Possible AI-oriented data models:
 |---|---|---|
 | `SessionMemory` | timestamped user/agent/tool events | prompt-context assembly and audit |
 | `KVCacheIndex` | prefix hashes, token ranges, cache-object refs, TTL, reuse stats | LMCache/vLLM/SGLang cache lookup metadata |
-| `EmbeddingMetadata` | chunk ids, embedding version, source pointer, freshness | pair with Milvus/Viking/vector DB |
+| `EmbeddingMetadata` | chunk ids, embedding version, source pointer, freshness | pair with Milvus or a vector DB |
 | `GPUServingAggregate` | per-model/tenant/window counters and latencies | autoscaling, throttling, cost controls |
 | `TensorBlockRef` | tensor/block metadata and storage location | later-stage cache coordination |
 

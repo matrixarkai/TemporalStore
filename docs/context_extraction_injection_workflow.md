@@ -1,7 +1,7 @@
 # Context Extraction And Injection Workflow
 
 This document describes the Rust-native Context workflow used for local validation and model
-provider switching. The implementation is inspired by OpenViking's hierarchical context idea, but
+provider switching. The implementation is inspired by the baseline memory system's hierarchical context idea, but
 TemporalStore keeps Context data in its existing `ContextNode`, `ContextEvent`, `ContextIndexRef`,
 `ContextPackAudit`, and `ContextSummaryDirtyMarker` models.
 
@@ -9,7 +9,7 @@ TemporalStore keeps Context data in its existing `ContextNode`, `ContextEvent`, 
 
 The workflow is:
 
-1. `manage`: report supported routes, provider count, pipeline stages, and/OpenViking parity
+1. `manage`: report supported routes, provider count, pipeline stages, and/the baseline memory system parity
    evidence before admitting a deployment as context-ready. The management report now includes
    per-stage readiness, provider names, and policy controls so operators can see which part of the
    pipeline owns a failure.
@@ -19,7 +19,7 @@ The workflow is:
 3. `extract`: deterministic mock extraction creates a node, event, source index ref, and dirty
    marker from mocked data such as incidents, tickets, documents, chats, code snippets, or user
    events.
-4. `normalize`: extracted context is split into OpenViking-style tiers:
+4. `normalize`: extracted context is split into baseline-style tiers:
    - `L0`: short routing summary
    - `L1`: structured key-fact summary
    - `L2`: full source payload reference
@@ -30,7 +30,7 @@ The workflow is:
 
 ## Benchmark Data Flow
 
-LOCOMO, LongMemEval_s, and OpenViking-style benchmark ingestion use the same Rust
+LOCOMO, LongMemEval_s, and baseline-style benchmark ingestion use the same Rust
 TemporalStore context models as normal production traffic:
 
 1. Benchmark entity blocks are backed by the node-level record stored as `ContextNodeModel`. The
@@ -90,27 +90,27 @@ local path calls `/chat/completions` with bounded deadlines/retries, loads the b
 from `api_key_env`, parses `choices[0].message.content`, and can fall back to a configured mock or
 secondary provider if the live endpoint is unavailable.
 
-For OpenViking-style local deployments, TemporalStore now reports explicit open-source model
+For baseline-style local deployments, TemporalStore now reports explicit open-source model
 profiles through `GET /context/workflow/state`:
 
-- `openviking-qwen2_5_vl-local`: `qwen2.5vl:7b` VLM, `qwen2.5:7b-instruct` chat model,
+- `baseline-qwen2_5_vl-local`: `qwen2.5vl:7b` VLM, `qwen2.5:7b-instruct` chat model,
   `nomic-embed-text` embedding model, OpenAI-compatible local gateway at `127.0.0.1:11434/v1`
-- `openviking-llava-local`: `llava:7b` VLM, `llama3.1:8b-instruct` chat model,
+- `baseline-llava-local`: `llava:7b` VLM, `llama3.1:8b-instruct` chat model,
   `nomic-embed-text` embedding model
-- `openviking-internvl-vllm`: `OpenGVLab/InternVL2_5-8B` VLM,
+- `baseline-internvl-vllm`: `OpenGVLab/InternVL2_5-8B` VLM,
   `Qwen/Qwen2.5-7B-Instruct` chat model, `BAAI/bge-m3` embedding model, OpenAI-compatible
   gateway at `127.0.0.1:8000/v1`
-- `vikingmem-gpt-4o-mini-reader`: `gpt-4o-mini` reader/chat model for VikingMem benchmark parity,
+- `vikingmem-gpt-4o-mini-reader`: `gpt-4o-mini` reader/chat model for the baseline memory system benchmark parity,
   `sentence-transformers/all-MiniLM-L6-v2` embedding model, OpenAI-compatible gateway at
   `https://api.openai.com/v1`
 - `matrixark-native-oss-context`: `google/flan-t5-small` extraction model and
   `sentence-transformers/all-MiniLM-L6-v2` embedding model, retained for legacy open-source
   MatrixArk comparison runs
-- `openviking-minigpt4-gpt-style-vlm`: `Vision-CAIR/MiniGPT-4` as the open-source GPT-4-style VLM,
+- `baseline-minigpt4-gpt-style-vlm`: `Vision-CAIR/MiniGPT-4` as the open-source GPT-4-style VLM,
   `lmsys/vicuna-7b-v1.5` chat model, `BAAI/bge-m3` embedding model, OpenAI-compatible gateway at
   `127.0.0.1:8000/v1`
 
-These profiles mirror OpenViking's two required model capabilities: a VLM for image/content
+These profiles mirror the baseline memory system's two required model capabilities: a VLM for image/content
 understanding and an embedding model for vectorization and semantic retrieval. TemporalStore still
 uses deterministic `mock_mode=true` for local CI unless a live Ollama, vLLM, or compatible gateway
 is intentionally started.
@@ -119,7 +119,7 @@ The state and harness reports expose `open_model_provider_packaged`,
 configured fields can be true from checked-in provider profiles; proven fields stay false until a
 real local model endpoint or VLM benchmark run passes and archives its report.
 
-## OpenViking Comparison
+## the baseline memory system Comparison
 
 Adopted:
 
@@ -131,7 +131,7 @@ Adopted:
 
 Different:
 
-- TemporalStore stores data in Context models rather than a separate `viking://` filesystem
+- TemporalStore stores data in Context models rather than a separate `baseline://` filesystem
 - refs use `tsctx://tenant/<id>/node/<id>/...`
 - local validation is deterministic and does not require external model credentials
 
@@ -161,7 +161,7 @@ The harness verifies:
 - the management report exposes per-stage readiness, provider names, and policy controls
 - batch ingest/extract accepts multiple sources, reports source-kind/provider accounting, and emits
   a retrieval request
-- a VikingMem-style local benchmark runs mixed synthetic Context sources through extraction,
+- a baseline-style local benchmark runs mixed synthetic Context sources through extraction,
   hierarchical retrieval, injection, recall proxy, token-reduction accounting, and retrieval p50/p95
   latency reporting
 - Context blocks are retrieved
@@ -172,7 +172,7 @@ The harness verifies:
 - shared-store sync and async replay preserve the same Context pipeline writes
 - Raft replica reads can serve the same Context event after the write path is replicated
 - `context_pipeline_ready` is true only when the parity report covers Context models,
-  OpenViking L0/L1/L2 tiers, extraction, retrieval, injection, index refs, pack audit, dirty
+  the baseline memory system L0/L1/L2 tiers, extraction, retrieval, injection, index refs, pack audit, dirty
   summary, restart replay, shared-store sync/async replay, Raft reads, and unified corpus evidence
 
 ## Context Model Parity
@@ -209,15 +209,15 @@ Covered:
 - Data-node HTTP routes expose management and batch ingest/extract pipeline handoff.
 - The local harness and Docker-packaged harness validate management, ingest/extract, retrieval,
   injection, and audit refs.
--/OpenViking parity evidence covers engine-local restart, shared-store sync/async replay,
+-/the baseline memory system parity evidence covers engine-local restart, shared-store sync/async replay,
   Raft reads, and the shared conformance Context corpus.
 
-## VikingMem-Style Benchmark
+## the baseline memory system-Style Benchmark
 
-`context_workflow_harness` runs a deterministic local benchmark inspired by the VikingMem paper's
+`context_workflow_harness` runs a deterministic local benchmark inspired by the baseline memory system paper's
 long-term memory evaluation themes: retrieval effectiveness, low interactive latency, hierarchical
-context loading, and reduced context tokens. The benchmark does not claim byte-for-byte VikingMem
-workload parity, published VikingMem scores, or a licensed copy of LOCOMO/LongMemEval_s. It
+context loading, and reduced context tokens. The benchmark does not claim byte-for-byte the baseline memory system
+workload parity, published the baseline memory system scores, or a licensed copy of LOCOMO/LongMemEval_s. It
 includes LOCOMO-style conversational-memory and LongMemEval_s-style long-context synthetic profiles
 so local validation can exercise similar source/query scaling and hit-ranking behavior. It produces
 local TemporalStore evidence:

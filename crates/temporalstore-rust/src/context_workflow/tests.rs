@@ -1776,7 +1776,7 @@ fn context_resource_parser_matches_reference_stable_refs() {
     let report = parse_context_resource(ContextResourceParseRequest {
         raw_uri: "runbook.md".to_string(),
         resource_type: Some("md".to_string()),
-        text: "# Rollback\n\nUse canary rollback. See [runbook](viking://resources/runbook-extra.md).\n\n## Checks\n\nConfirm p95 latency.\n\n```bash\ncurl /health\n```".to_string(),
+        text: "# Rollback\n\nUse canary rollback. See [runbook](baseline://resources/runbook-extra.md).\n\n## Checks\n\nConfirm p95 latency.\n\n```bash\ncurl /health\n```".to_string(),
         max_chunk_chars: 1_400,
         overlap_chars: 120,
         chunk_hash_base: Some(900),
@@ -1835,7 +1835,7 @@ fn context_resource_parser_matches_reference_stable_refs() {
             .metadata
             .get("linked_refs")
             .map(String::as_str),
-        Some("viking://resources/runbook-extra.md")
+        Some("baseline://resources/runbook-extra.md")
     );
     assert_eq!(
         report.chunks[1]
@@ -1967,7 +1967,7 @@ fn context_resource_lifecycle_models_import_paths_refresh_and_delete() {
 fn context_skill_parser_extracts_frontmatter_and_capability_sections() {
     let skill = parse_context_skill_markdown(
             "skills/context-debug/SKILL.md",
-            "---\nname: context-debug\ndescription: Trace context ingestion and retrieval.\nversion: 1.2.0\nowner_scope: team:context\nprecedence: high\nenabled: true\ntags: [context, debug, reference]\nallowed_tools:\n  - context_workflow_harness\n  - codex_context_hook\ntriggers: [context-debug, retrieval-trace]\nmodels: [nomic-embed-text, qwen2.5vl]\n---\n\n# Context Debug\n\n## When To Use\n\n- Use for context trace debugging.\n\n## Tools\n\n- context_workflow_harness\n- `codex_context_hook` captures prompt context.\n\n## Resources\n\n- [Debug Resource](viking://resources/context-debug.md)\n\n## Examples\n\n- Query the context debug flow for stale entity filters.\n",
+            "---\nname: context-debug\ndescription: Trace context ingestion and retrieval.\nversion: 1.2.0\nowner_scope: team:context\nprecedence: high\nenabled: true\ntags: [context, debug, reference]\nallowed_tools:\n  - context_workflow_harness\n  - codex_context_hook\ntriggers: [context-debug, retrieval-trace]\nmodels: [nomic-embed-text, qwen2.5vl]\n---\n\n# Context Debug\n\n## When To Use\n\n- Use for context trace debugging.\n\n## Tools\n\n- context_workflow_harness\n- `codex_context_hook` captures prompt context.\n\n## Resources\n\n- [Debug Resource](baseline://resources/context-debug.md)\n\n## Examples\n\n- Query the context debug flow for stale entity filters.\n",
         );
     assert!(skill.status.ok);
     assert_eq!(skill.skill_name, "context-debug");
@@ -2004,7 +2004,7 @@ fn context_skill_parser_extracts_frontmatter_and_capability_sections() {
     assert!(skill.model_refs.contains(&"qwen2.5vl".to_string()));
     assert!(skill
         .resource_refs
-        .contains(&"viking://resources/context-debug.md".to_string()));
+        .contains(&"baseline://resources/context-debug.md".to_string()));
     assert!(skill
         .example_refs
         .contains(&"Query the context debug flow for stale entity filters".to_string()));
@@ -2103,7 +2103,7 @@ fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
             shard_id: 1,
             tenant_hash: 42,
             resources: vec![ContextResourceParseRequest {
-            raw_uri: "viking://resources/runbook.md".to_string(),
+            raw_uri: "baseline://resources/runbook.md".to_string(),
             resource_type: Some("md".to_string()),
             text: "# Incident\n\nCheckout latency increased because the payment dependency timed out.\n\n## Fix\n\nRollback the payment gateway canary and verify p95 latency."
                 .to_string(),
@@ -2336,7 +2336,7 @@ fn resource_ingest_uses_live_embeddings_and_summary_retrieval() {
             shard_id: 1,
             tenant_hash: 77,
             resources: vec![ContextResourceParseRequest {
-                raw_uri: "viking://resources/payment-runbook.md".to_string(),
+                raw_uri: "baseline://resources/payment-runbook.md".to_string(),
                 resource_type: Some("md".to_string()),
                 text: "# Payment Runbook\n\nPayment dependency timeout requires rollback and p95 latency validation."
                     .to_string(),

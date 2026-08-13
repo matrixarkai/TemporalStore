@@ -7,7 +7,7 @@ Each archive must contain a ``manifest.json`` plus report JSON files for every
 executed dataset. Skipped datasets are allowed only when both sides explicitly
 record a skipped/not-run status. Executed report pairs are delegated to
 ``compare_context_benchmark_reports.py`` so archive-level validation stays tied
-to the shared MatrixArk/VikingMem benchmark contract.
+to the shared MatrixArk/baseline benchmark contract.
 """
 
 from __future__ import annotations

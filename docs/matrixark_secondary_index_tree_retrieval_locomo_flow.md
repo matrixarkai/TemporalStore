@@ -54,7 +54,7 @@ Recommended split:
 
 ## 2.1 One-Message Hooks And Session Commit
 
-Codex, Claude, Cursor, and similar agents usually emit one message or tool result at a time. MatrixArk now supports the VikingMem-style compromise:
+Codex, Claude, Cursor, and similar agents usually emit one message or tool result at a time. MatrixArk now supports the baseline memory system-style compromise:
 
 ```text
 single incoming hook message
@@ -607,4 +607,4 @@ ContextSegment = coherent topic memory, optionally promoted to node
 ContextPack = selected context returned to the agent/reader
 ```
 
-This gives MatrixArk a clean position versus filesystem-only context and flat RAG: it is filesystem-like for navigation, VikingMem-like for event/entity evolution, and TemporalStore-native for time, replay, compression, and cheap serving-time filtering.
+This gives MatrixArk a clean position versus filesystem-only context and flat RAG: it is filesystem-like for navigation, baseline-like for event/entity evolution, and TemporalStore-native for time, replay, compression, and cheap serving-time filtering.

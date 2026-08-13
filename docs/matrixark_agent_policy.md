@@ -222,5 +222,5 @@ not available, strict mode fails instead of silently falling back to determinist
 text.
 
 Local/offline CI may still use deterministic fallback for smoke tests, but those
-runs must be labeled as fallback and must not be used as OSS/VikingMem-style
+runs must be labeled as fallback and must not be used as OSS/baseline-style
 quality evidence.

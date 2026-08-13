@@ -298,15 +298,15 @@ Enterprise apps can keep sending their own user ids first. SSO mapping lets
 larger deployments later connect Okta, Google Workspace, or Azure AD without
 changing TemporalStore data models.
 
-## OpenViking And VikingMem Alignment
+## Baseline Memory System Alignment
 
 The registration and access model follows the practical integration lessons from
 agent-context systems:
 
-- OpenViking-style context organization needs separate keys for memories,
+- baseline-style context organization needs separate keys for memories,
   resources, skills, MCP tools, and agent hooks, while account/tenant/user/session
   boundaries keep those trees isolated.
-- VikingMem-style memory extraction benefits from session or rolling batch keys
+- baseline-style memory extraction benefits from session or rolling batch keys
   that can ingest logical windows, run one-pass event/entity extraction, and write
   operator output without sharing admin privileges.
 - Online retrieval hooks should use narrow keys with `context:retrieve`,

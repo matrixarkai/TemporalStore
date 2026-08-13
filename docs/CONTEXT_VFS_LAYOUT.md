@@ -1,11 +1,11 @@
 # TemporalStore Context Virtual Filesystem Layout
 
 The context store presents a virtual filesystem — the `tsctx://` URI namespace over the
-`ContextNode` tree — as its answer to OpenViking's `viking://`. This note documents the
+`ContextNode` tree — as its answer to the baseline memory system's `baseline://`. This note documents the
 **current** layout (families, URIs, and the tree) and how physical records back it.
 
 TemporalStore keeps context in first-class Context models rather than a separate
-`viking://` filesystem; refs use `tsctx://`, and L0/L1/L2 layering mirrors OpenViking's
+`baseline://` filesystem; refs use `tsctx://`, and L0/L1/L2 layering mirrors the baseline memory system's
 abstract / overview / full-content tiers.
 
 ## 1. The tree (the "directories") — ContextNode + ContextChildRef
@@ -40,7 +40,7 @@ tsctx://tenant/{tenant}/node/{node}/source/{source_id}       # extracted-source 
 tsctx://tenant/{tenant}/model/{provider}/source/{source_id}  # model-derived ref
 ```
 
-L0/L1/L2 correspond to OpenViking's abstract / overview / full-content layering.
+L0/L1/L2 correspond to the baseline memory system's abstract / overview / full-content layering.
 
 ## 3. Physical backing — the `ctx:*` object-key families ("inodes")
 

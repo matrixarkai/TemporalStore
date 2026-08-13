@@ -1,6 +1,6 @@
 # MatrixArk Installation, Operations, And Monitoring
 
-MatrixArk should be as easy to run and inspect as an OpenViking-style context database, while using TemporalStore as the serving engine. The product surface should include:
+MatrixArk should be as easy to run and inspect as a baseline-style context database, while using TemporalStore as the serving engine. The product surface should include:
 
 - one local workspace directory
 - Docker or native service startup
@@ -171,7 +171,7 @@ The monitoring UI should be served at:
 ```text
 /monitoring/
 /observation/
-/studio/        optional alias for OpenViking-style expectations
+/studio/        optional alias for baseline-style expectations
 ```
 
 Operator views should cover:
@@ -286,4 +286,4 @@ Common fixes:
 
 ## Product Parity Target
 
-OpenViking-style operation teaches the right expectation: context systems need an install path, a control surface, and diagnostics. MatrixArk should match that operator experience while keeping the serving architecture TemporalStore-native: local or distributed, or Rust backend, one context store first, and optional MatrixDB/MatrixKV for offline analysis or transactional metadata.
+baseline-style operation teaches the right expectation: context systems need an install path, a control surface, and diagnostics. MatrixArk should match that operator experience while keeping the serving architecture TemporalStore-native: local or distributed, or Rust backend, one context store first, and optional MatrixDB/MatrixKV for offline analysis or transactional metadata.

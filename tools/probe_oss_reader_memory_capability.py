@@ -4,7 +4,7 @@
 """Probe whether an OSS reader is strong enough for memory benchmarks.
 
 The benchmark harness can run with tiny local readers, but final MatrixArk vs
-OpenViking/VikingMem claims need a reader that handles temporal and personal
+The baseline memory system's claims need a reader that handles temporal and personal
 memory questions with compact retrieved context. This probe is intentionally
 small, deterministic, and fail-closed.
 """

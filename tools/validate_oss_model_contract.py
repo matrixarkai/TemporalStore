@@ -3,7 +3,7 @@
 # Copyright 2026 MatrixArkAI
 """Validate apples-to-apples OSS model contracts across benchmark reports.
 
-MatrixArk, OpenViking, VikingMem, and similar baselines may have different
+MatrixArk and similar baselines may have different
 storage and retrieval logic, but benchmark claims are only comparable when the
 reader model, embedding model, retrieval budget, reader evidence policy, and reader context budget are
 held constant. This validator fails closed when a report omits the contract or

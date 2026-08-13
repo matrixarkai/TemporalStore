@@ -829,7 +829,7 @@ fn run_resource_skill_conversation_scale(
     let end_time_ms = 100_000;
     let resource_requests = vec![
         ContextResourceParseRequest {
-            raw_uri: "viking://resources/payments/checkout-runbook.md".to_string(),
+            raw_uri: "baseline://resources/payments/checkout-runbook.md".to_string(),
             resource_type: Some("md".to_string()),
             text: "# Checkout Incident Runbook\n\nPayment dependency timeouts raise checkout latency and risk score. Roll back the payment gateway canary, verify p95 latency, and notify the payments owner.\n\n## Evidence\n\nUse summary embeddings to retrieve the most recent incident context before paging support.".to_string(),
             max_chunk_chars: 260,
@@ -865,7 +865,7 @@ fn run_resource_skill_conversation_scale(
             parser_name: "context-scale-harness".to_string(),
         },
         ContextResourceParseRequest {
-            raw_uri: "viking://resources/audits/locomo-scale.pdf".to_string(),
+            raw_uri: "baseline://resources/audits/locomo-scale.pdf".to_string(),
             resource_type: Some("pdf".to_string()),
             text: "LOCOMO scale audit: multi-hop and temporal questions need compact evidence diversity, anchored dates, and answer synthesis without dropping token reduction below eighty percent.".to_string(),
             max_chunk_chars: 220,

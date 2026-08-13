@@ -172,7 +172,7 @@ The context pipeline covers:
 - secondary indexes for refs, entities, resources, skills, and summaries
 - retrieval via summaries and expanded evidence
 - prompt/context injection packs
-- OpenViking-style debug traces for query flow
+- baseline-style debug traces for query flow
 
 The canonical data flow is:
 
@@ -384,7 +384,7 @@ should remain evidence based:
 - Client/proxy readiness is Rust-native: HTTP/JSON, RESP, and tonic contracts
   replace brpc/thrift.
 - Context benchmark readiness requires Rust TemporalStore backend evidence;
-  paper-comparable VikingMem claims additionally require real dataset, live
+  paper-comparable the baseline memory system claims additionally require real dataset, live
   reader, full replay, and archived report fields.
 - parity should be measured by shared executable product behavior, not by
   LOC matching or internal implementation shape.
