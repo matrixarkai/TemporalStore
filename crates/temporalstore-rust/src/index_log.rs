@@ -374,7 +374,7 @@ fn last_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, IndexLogError
         // it as end-of-log would set_len the file down to the last parseable record -- silently
         // dropping durable index-log records after the corrupt one AND rewinding the sequence
         // counter (the next append reuses a sequence that dump manifests already reference).
-        // Surface it as an error (Index::ReplayIndexLog returns DataLoss on a hole / CRC
+        // Surface it as an error (index-log replay returns DataLoss on a hole / CRC
         // mismatch, never trims). A genuine torn tail lacks the trailing '\n' (break above).
         // Mirrors the WAL fix in wal.rs::last_wal_sequence_at.
         let record = serde_json::from_slice::<IndexLogRecord>(&line)?;

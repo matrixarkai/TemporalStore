@@ -133,19 +133,19 @@ impl TemporalEngine {
         }
         // If the latest durable dump manifest is newer than the served index, install
         // it as the load base first (recovers data already dumped into a manifest and
-        // then WAL-GC'd). analog: index_->Load() restores the dumped index before
-        // Startup load replays the wal on top.
+        // then WAL-GC'd): the dumped index is restored first, then
+        // startup load replays the WAL on top.
         let installed_manifest_watermark =
             match self.install_latest_manifest_if_newer_on_load(request.shard_id) {
                 Ok(watermark) => watermark,
-                // parity: index_->Load() failure is fatal. A newer durable manifest
+                // An index-load failure is fatal. A newer durable manifest
                 // that will not install means the served snapshot + (possibly reclaimed)
                 // WAL cannot be trusted to hold the records it covers -- refuse the load.
                 Err(status) => return LoadShardResponse { status },
             };
         let loaded = self.load_index(request.shard_id, eager_cache_warm_on_load());
-        // WAL replay watermark, matching how startup load reads
-        // index_->GetDumpedLogId(): installed manifest -> its wal_sequence; no index
+        // WAL replay watermark, from the dumped-log id read on startup load:
+        // installed manifest -> its wal_sequence; no index
         // file -> 0 (fresh/async-only shard, replay whole retained WAL); anchored index
         // -> its anchor; unanchored (pre-field) index -> current last_sequence (replay
         // nothing, safe upgrade).
@@ -259,7 +259,7 @@ impl TemporalEngine {
     /// install it (validate + preflight + restore embedded index) and return its
     /// wal_sequence as the WAL replay watermark. `Ok(None)` when nothing newer exists.
     /// `Err` when a newer manifest IS present but will not install: treats
-    /// index_->Load() failure as fatal (partition.cc), because once the served snapshot
+    /// an index-load failure as fatal, because once the served snapshot
     /// lags the manifest the intervening WAL records may already be reclaimed, so a
     /// silent fall-back to the stale snapshot would drop them. The caller refuses the
     /// load instead.

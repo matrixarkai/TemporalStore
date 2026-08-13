@@ -126,8 +126,8 @@ impl TemporalEngine {
         let mut shards = self.shards.write().expect("engine lock poisoned");
         let Some(shard) = shards.get_mut(&request.shard_id) else {
             // returns a BATCH-LEVEL topology error with ZERO CmdResponse entries when the
-            // partition is missing/not-primary (partition_manager.cc: TopomError, "client should
-            // refresh table topo"), not an OK batch full of per-command errors. The Rust client
+            // partition is missing/not-primary (a topology error: the client should
+            // refresh its shard map), not an OK batch full of per-command errors. The Rust client
             // treats a batch-level shard_not_loaded status as topology-retryable
             // (client/retry.rs status_is_topology_retryable) and refreshes + retries -- but it
             // keys on the batch-level status, which the old ok+N-errors shape left ok, so the
@@ -263,7 +263,7 @@ impl TemporalEngine {
                 shard,
                 command,
             );
-            // LRU recency (SlotNode GetLastUsed): stamp the bucket(s) this command
+            // LRU recency: stamp the bucket(s) this command
             // touched, read or write, so eviction can prefer least-recently-used buckets.
             {
                 let now = now_ms();
@@ -316,10 +316,10 @@ impl TemporalEngine {
         if mutated_any {
             refresh_bucket_runtime_flags(shard);
             // Every
-            // write records a WAL entry (StringModel::SetValue -> WritePage).
+            // write records a WAL entry before any page is written.
             // async_storage only changes whether the commit BLOCKS: sync -> fsync,
-            // async (or bulk backfill) -> buffered, no fsync (op_logger_->Commit
-            // (nullptr, nullptr)). Mirrors the single-command execute path.
+            // async (or bulk backfill) -> buffered, no fsync (a fire-and-forget
+            // commit). Mirrors the single-command execute path.
             let sync = !config.async_storage && !bulk_ingest_mode();
             for command in wal_commands {
                 let _ = self

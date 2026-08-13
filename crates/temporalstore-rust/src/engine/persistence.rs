@@ -21,8 +21,8 @@ impl TemporalEngine {
         // index; WAL reclaim durably truncates the WAL based on it. It MUST be written
         // durably and atomically -- a bare fs::write left it in the page cache, so a
         // crash after the (durable) WAL reclaim but before the manifest reached disk
-        // lost the records in between (commits the dumped index before advancing
-        // the dumped-log-id; slot_store.cc OnCommitDone waits both). Atomic temp+rename
+        // lost the records in between (the dumped index must be committed before
+        // advancing the dumped-log id; both are waited on together). Atomic temp+rename
         // also prevents a torn manifest from hiding the whole listing on load.
         atomic_write_bytes(&path, &bytes)
     }
@@ -129,8 +129,8 @@ impl TemporalEngine {
         // Reloaded data is durable, hence clean: clear the transient per-page/bucket
         // dirty flags that were persisted before unload (the durable dirty_generation
         // identity is preserved). refresh_bucket_runtime_flags below then recomputes
-        // dirty purely from the live (empty on load) dirty_objects set. This mirrors
-        // the ClearSlotDirty-on-load contract and keeps `bucket.dirty |= ...` from
+        // dirty purely from the live (empty on load) dirty_objects set. This follows
+        // the clear-dirty-on-load contract and keeps `bucket.dirty |= ...` from
         // resurrecting a stale persisted dirty flag.
         for bucket in shard.bucket_index.bucket_map.values_mut() {
             bucket.dirty = false;

@@ -228,8 +228,8 @@ impl LocalWriteAheadLogStore {
     }
 
     /// Append a WAL record. `sync=true` fsyncs before returning (durable);
-    /// `sync=false` writes the record but defers the fsync. Mirrors the WAL
-    /// writer: StringModel::SetValue ALWAYS records the entry; EVENT_REPLICATION_SYNC
+    /// `sync=false` writes the record but defers the fsync. The WAL
+    /// writer ALWAYS records the entry; EVENT_REPLICATION_SYNC
     /// vs ASYNC_STORAGE only changes whether the commit blocks
     /// The WAL commit runs synchronously vs deferred.
     pub fn append_with_sync(

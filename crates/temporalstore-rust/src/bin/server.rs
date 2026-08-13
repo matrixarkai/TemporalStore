@@ -1151,8 +1151,8 @@ mod tests {
         // served locally via read_via_server_raft (execute_via_server_raft), which skips the raft
         // log; only non-reads are proposed + replicated. ControlStateSetAndGet MUTATES (adds
         // `amount` to the series and persists a control-state page) and the engine's
-        // is_write_command treats it as a write -- Matching registering HSETANDGET as Write
-        // (extension/control_state/implement.cc). Classifying it as a read applied the mutation
+        // is_write_command treats it as a write -- matching how the
+        // control-state SETANDGET family is registered as a write. Classifying it as a read applied the mutation
         // only on the leader and dropped it from the raft log, so followers diverged and the
         // write was lost on failover. It must fall through to `propose`.
         let mutating = Command::ControlStateSetAndGet {

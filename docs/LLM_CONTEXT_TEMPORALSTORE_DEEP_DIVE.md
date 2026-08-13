@@ -618,7 +618,7 @@ context_module_test: 7 tests passed
 
 ## Production Readiness Notes
 
-- Register every context model in `src/model/model_manager.cc`. Missing
+- Register every context model with the model manager. Missing
   registrations break storage object creation at runtime.
 - Child refs must stay idempotent. Duplicate child refs should not create duplicate
   timeline writes.

@@ -4,11 +4,11 @@ This benchmark exercises the real Feature module path for long sequence features
 
 ## Code Path
 
-- Benchmark client: `src/client/example/feature_sequence_benchmark.cc`
+- Benchmark client: native feature sequence benchmark
 - Runner script: `tools/run_feature_sequence_benchmark_ubuntu22.sh`
 - Feature API: `src/extension/feature/interface.proto`
-- Feature implementation: `src/extension/feature/implement.cc`
-- Sequence object model: `src/model/feature_model.h`
+- Feature implementation: temporal feature model
+- Sequence object model: feature sequence model
 
 The stored value is a serialized protobuf-compatible sequence row with these default fields:
 

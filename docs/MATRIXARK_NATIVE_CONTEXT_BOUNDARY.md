@@ -81,7 +81,7 @@ Backend status:
 
 ## Current Shared Gate
 
-`TemporalStoreTestCorpus/runners/native/native_unified_context_contract.cc` is the contract runner. It now validates resource manifests, skill manifests, skill sections, token-budgeted skill retrieval, context summaries/embeddings, events, entities, indexes, compression, and ContextPack audit behavior against shared JSON cases.
+The native unified context contract runner validates resource manifests, skill manifests, skill sections, token-budgeted skill retrieval, context summaries/embeddings, events, entities, indexes, compression, and ContextPack audit behavior against shared JSON cases.
 
 ## Native Retrieve-Pack Surface
 

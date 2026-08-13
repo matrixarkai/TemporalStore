@@ -319,7 +319,7 @@ fn bucket_dump_manifest_watermark_tracks_embedded_index_not_wal_tail() {
     // no-op in bulk mode). It used to stamp the manifest's wal_sequence from the LIVE WAL tail,
     // so on reload install set replay_watermark past records the embedded index never captured
     // and WAL replay skipped them -> gone. couples the two: Load replays from the DumpedLogId
-    // stored inside the dumped index (object_manager.cc). We reproduce the same tail-ahead-of-index
+    // stored inside the dumped index. We reproduce the same tail-ahead-of-index
     // divergence deterministically (no bulk env) by appending straight to the WAL.
     let dir = tempfile::tempdir().unwrap();
     let pages = dir.path().join("pages");
@@ -445,7 +445,7 @@ fn reversed_range_bounds_return_empty_not_a_lock_poisoning_panic() {
 #[test]
 fn batch_execute_on_unloaded_shard_returns_a_batch_level_topology_error() {
     // returns a batch-level topology error with ZERO response entries when the partition is
-    // not loaded (partition_manager.cc), so the topology-retryable client refreshes + retries.
+    // not loaded, so the topology-retryable client refreshes + retries.
     // Rust previously returned an OK batch full of per-command shard_not_loaded errors, leaving the
     // batch-level status ok, so the client (which keys retry on the batch status) never refreshed.
     let dir = tempfile::tempdir().unwrap();
@@ -483,8 +483,8 @@ fn batch_execute_on_unloaded_shard_returns_a_batch_level_topology_error() {
 
 #[test]
 fn dump_selection_prioritizes_the_least_recently_dumped_bucket_not_the_lowest_id() {
-    // The WAL-reclaim routine dumps dirty slots oldest-first (by first-dirty-log-id,
-    // storage_manager.cc). Rust selected dirty buckets by ascending routing_bucket id then
+    // The WAL-reclaim routine dumps dirty buckets oldest-first (by first-dirty-log-id).
+    // Rust selected dirty buckets by ascending routing_bucket id then
     // truncated to the per-round cap, so a high-id bucket dirtied once was starved forever by
     // low-id buckets re-dirtied every round. The fix orders by last_dump_sequence (0 = never
     // dumped) ascending. Here we dump the LOW-id bucket (raising its last_dump_sequence) then
@@ -608,7 +608,7 @@ fn partial_compaction_failure_durably_persists_the_consistent_partial_index() {
     // the on-disk index -- and the independent reclaim path could then physically purge a
     // fully-vacated old slab the durable index still referenced -> silent data loss on reload. The
     // fix durably commits the consistent partial state before propagating the error. avoids the
-    // desync structurally (page_compactor.cc: update_index=false on failure + one atomic Commit).
+    // desync structurally (the compactor leaves the index unchanged on failure + one atomic commit).
     //
     // Setup: k1 (string, relocated FIRST by compact_shard_pages) lives in an earlier slab; k2 (hash,
     // relocated after) lives in a later slab. We corrupt ONLY the latest slab (k2's), so compaction
@@ -1363,8 +1363,7 @@ fn torn_manifest_does_not_hide_valid_manifests() {
 
 #[test]
 fn dump_clears_dumped_buckets_so_they_are_not_redumped() {
-    // Parity with SlotStore::DumpSlotInMemory -> Index::ClearSlotDirty: once a
-    // dirty bucket is dumped it is no longer dirty, so the storage cycle does not
+    // Once a dirty bucket is dumped its dirty flag is cleared, so the storage cycle does not
     // re-select and re-dump the same buckets (and re-export the whole index) forever.
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(

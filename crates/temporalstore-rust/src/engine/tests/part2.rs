@@ -840,7 +840,7 @@ fn async_storage_string_write_stays_on_hot_memory_path() {
         },
     });
     assert!(write.status.ok);
-    // parity (StringModel::SetValue via the WAL writer): the write records
+    // The write records
     // a WAL entry even in async mode; async only means the commit does not
     // block (no fsync -> syncs == 0), and page/index materialization is deferred.
     assert_eq!(engine.block_store().stats().writes, 0);
@@ -1127,7 +1127,7 @@ fn async_storage_batch_write_records_wal_without_sync_or_index() {
 
 #[test]
 fn eviction_ranks_victims_least_recently_used_first_like_native() {
-    // PolicyLru: eviction victims are ordered least-recently-used first, so a
+    // Eviction victims are ordered least-recently-used first, so a
     // repeatedly-read hot bucket is evicted last. Rust stamps per-bucket recency on
     // every read/write and sorts victims oldest-first.
     let dir = tempfile::tempdir().unwrap();
@@ -1233,8 +1233,7 @@ fn wal_replay_gap_refuses_load_like_dataloss() {
 
 #[test]
 fn expiry_sweep_emits_wal_tombstone_like_native() {
-    // parity (object_manager DoExpireObject -> op_logger_->DeleteObject; expirer.cc
-    // Commit): active expiry is a logged, replicated delete. Rust's sweep must append a
+    // Active expiry is a logged, replicated delete. Rust's sweep must append a
     // WAL tombstone per expired key so followers / WAL replay observe the deletion,
     // instead of removing only in-memory + index.
     let dir = tempfile::tempdir().unwrap();
@@ -1274,7 +1273,7 @@ fn expiry_sweep_emits_wal_tombstone_like_native() {
 #[test]
 fn wal_replay_uses_leader_timestamp_for_ttl_deadline_like_native() {
     // resolves a TTL to an ABSOLUTE deadline on the leader before logging it
-    // (common_module.h ttl = request.ttl_ms + GetCurrentTimeInMs()); replay uses that
+    // (deadline = request.ttl_ms + current time at log time); replay uses that
     // value. Rust must resolve replayed TTLs against the leader's logged timestamp, not
     // the (later) restart clock -- otherwise crash recovery resurrects a key past its
     // deadline with a fresh restart-time+ttl lifetime.
@@ -1792,7 +1791,7 @@ fn hash_incrby_rejects_non_integer_and_overflow_like_native() {
 
 #[test]
 fn hash_incrby_skips_leading_whitespace_in_stored_value_like_native() {
-    // hash IncrBy parses the stored field via strtoll (extension/hash/implement.cc:138), which
+    // hash IncrBy parses the stored field with strtoll semantics, which
     // skips leading whitespace, so a field stored as " 5" is the valid integer 5. Rust parse_i64
     // previously used str::parse (rejects leading whitespace) and wrongly failed it as
     // "not an integer". A leading-space integer must now increment like.

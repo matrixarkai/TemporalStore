@@ -991,8 +991,8 @@ impl TemporalEngine {
             .map(|manifest| {
                 // The replay base is the dumped checkpoint (which covers up to its own
                 // sequence) plus the retained WAL tail above it. Once the WAL is
-                // legitimately reclaimed past a dump (the SetDumpedLogId + wal
-                // Truncate step), latest_safe_* -- and thus selected_replay_* -- can sit
+                // legitimately reclaimed past a dump (the dumped-log-id anchor + WAL
+                // truncate step), latest_safe_* -- and thus selected_replay_* -- can sit
                 // below the manifest; the manifest checkpoint still covers it, so gate on
                 // the dump frontier rather than the possibly-reclaimed WAL tail.
                 boundary.latest_dump_wal_sequence >= manifest.wal_sequence

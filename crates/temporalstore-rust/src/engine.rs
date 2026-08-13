@@ -312,7 +312,7 @@ impl TemporalEngine {
             shard,
             command.clone(),
         );
-        // LRU recency (SlotNode GetLastUsed): record that this command touched its
+        // LRU recency: record that this command touched its
         // bucket(s), read or write, so eviction can prefer least-recently-used buckets.
         {
             let now = now_ms();
@@ -386,10 +386,10 @@ impl TemporalEngine {
                 refresh_bucket_runtime_flags(shard);
             }
             // Every
-            // write records a WAL entry (StringModel::SetValue -> WritePage).
+            // write records a WAL entry before any page is written.
             // async_storage only changes whether the commit BLOCKS: sync -> fsync,
-            // async (or bulk backfill) -> buffered, no fsync (op_logger_->Commit
-            // (nullptr, nullptr)). Page/index materialization stays deferred to dump.
+            // async (or bulk backfill) -> buffered, no fsync (a fire-and-forget
+            // commit). Page/index materialization stays deferred to dump.
             if write_command && !replaying_wal() {
                 let sync = !config.async_storage && !bulk_ingest_mode();
                 if let Err(err) =
@@ -403,8 +403,8 @@ impl TemporalEngine {
                         // surfaces the wal Commit failure to the client
                         // The failed commit status is copied into the response.
                         // rather than acking a non-durable write. Match that instead of swallowing
-                        // the error. (async/bulk mode is fire-and-forget --
-                        // op_logger_->Commit(nullptr,nullptr) -- so its append errors stay
+                        // the error. (async/bulk mode is a fire-and-forget commit, so
+                        // its append errors stay
                         // best-effort and do not fail the command.) We also skip the index anchor
                         // + persist below, so durable state never advances past a write the WAL
                         // did not accept.
@@ -420,8 +420,8 @@ impl TemporalEngine {
             }
             if !config.async_storage && !bulk_ingest_mode() && !replaying_wal() {
                 // Anchor the served index to the WAL sequence it now reflects, so a
-                // later load replays only records written after this point (the analog
-                // of index_->SetDumpedLogId / GetDumpedLogId).
+                // later load replays only records written after this point (the
+                // dumped-log-id anchor read back on load).
                 shard.applied_wal_sequence =
                     Some(self.wal_store.stats(request.shard_id).last_sequence);
                 let index_bytes = serialize_index(shard);
@@ -1799,7 +1799,7 @@ fn cache_entry_routing_bucket(entry: &CacheEntryInfo) -> Option<u32> {
 }
 
 fn parse_i64(bytes: &Vec<u8>) -> Option<i64> {
-    // Match ParseInt64Value / strtoll (extension/string/implement.cc:22, hash/implement.cc:138):
+    // Parse the integer with strtoll semantics (leading-whitespace tolerant):
     // strtoll skips leading whitespace, so a stored counter like " 5" is the valid integer 5.
     // Rust's str::parse rejects leading whitespace; trim it (ASCII only, so we do not accept
     // Unicode whitespace strtoll's isspace would reject). Trailing/embedded garbage still fails on

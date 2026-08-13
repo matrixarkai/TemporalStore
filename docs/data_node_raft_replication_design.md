@@ -128,30 +128,29 @@ For feature/risk serving, `replica_stale` is often acceptable. For strict read-a
 
 ### Existing useful pieces
 
-- `src/partition/partition.h`
+- Partition surface
   - `Partition::ExecuteCmd()`
   - `Partition::OnExecuteCmdDone()`
   - `Partition::GetInfo()`
 
-- `src/partition/storage/op_logger.*`
+- Op-logger
   - builds and commits `storage::OpLog`
 
-- `src/partition/storage/object_manager.*`
+- Object manager
   - `ObjectManager::ReplayOplog()`
 
-- `src/partition/storage/replicator.*`
+- Replicator
   - existing non-Raft replay loop
 
-- `src/metaserver_v2/raft_server.*`
+- Metaserver Raft server
    - metaserver-only Raft wrapper pattern
 
-- `src/metaserver_v2/fsm.*`
+- Metaserver FSM
    - example Raft FSM implementation
 
 ### Added standalone core
 
-- `src/partition/storage/data_raft_replication.h`
-- `src/partition/storage/data_raft_replication.cc`
+- Data-node Raft replication module (header + implementation)
 
 These files provide:
 
@@ -181,16 +180,16 @@ read/write batches remain rejected until read-index semantics are implemented.
 Add or keep the isolated module namespace:
 
 ```text
-src/partition/raft/
-  data_raft_log.proto
-  data_raft_connector.h/cc
-  data_raft_fsm.h/cc
-  data_raft_group.h/cc
-  data_raft_snapshot.h/cc
+Raft adapter module:
+  data_raft_log (wire proto)
+  data_raft_connector
+  data_raft_fsm
+  data_raft_group
+  data_raft_snapshot
 ```
 
-The codec/applier currently lives under `src/partition/storage/` because it directly bridges
-committed Raft payloads to storage replay. The Raft adapter can live under `src/partition/raft/`
+The codec/applier currently lives with the storage layer because it directly bridges
+committed Raft payloads to storage replay. The Raft adapter can live in its own module
 and call this storage applier.
 
 Do not modify the existing `Replicator` semantics. Raft mode should be selected by a flag/config:

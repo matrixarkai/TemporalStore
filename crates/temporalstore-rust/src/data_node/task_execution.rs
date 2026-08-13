@@ -72,9 +72,9 @@ pub(super) fn run_compaction_inner(
 }
 
 pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> GcResponse {
-    // GC must NOT touch the dirty-scheduling tracker. GC (ReclaimPage/ReclaimIndex,
-    // storage_manager.cc) never clears dirty slots -- a slot leaves the dirty set only via a
-    // completed dump/replay (Index::ClearSlotDirty). Clearing it here (at task start, before
+    // GC must NOT touch the dirty-scheduling tracker. GC (block/index reclaim) never
+    // clears dirty buckets -- a bucket leaves the dirty set only via a completed
+    // dump/replay that clears its dirty flag. Clearing it here (at task start, before
     // any GC work and regardless of whether GC then fails) dropped the re-dump scheduling
     // state, so schedule_dirty_shard_dumps would stop scheduling those still-undumped objects.
     let collected_objects = 0;

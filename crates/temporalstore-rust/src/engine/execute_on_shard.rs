@@ -525,7 +525,7 @@ pub(crate) fn execute_on_shard(
             let mut accepted_points = Vec::new();
             let mut accepted_timestamps = BTreeSet::new();
             // Process points in REQUEST order, NOT pre-collapsed by timestamp. feature ADD
-            // FIRST policy (extension/feature/implement.cc:122-131) walks point_list in order and
+            // FIRST policy walks the point list in order and
             // skips any ts already present, so for an in-batch duplicate timestamp the FIRST
             // value wins. Pre-collapsing here via sorted_feature_points (last-wins) would silently
             // keep the LAST duplicate under InsertIfAbsent. accepted_points is sorted+collapsed
@@ -1260,7 +1260,7 @@ pub(crate) fn execute_on_shard(
         } => {
             remove_if_expired(shard, &key);
             // FirstOrLastSet substitutes occur_time==0 with the current time BEFORE the
-            // FIRST/LAST comparison (implement.cc: `if (occur_time == 0) time(&occur_time)`).
+            // FIRST/LAST comparison (an occur_time of 0 is replaced with the current time).
             // occur_time defaults to 0 on the proto, so a caller that omits it must compare as
             // "now" -- taking 0 literally made an omitted-time FIRST set always win (0 < any)
             // and an omitted-time LAST set always lose.

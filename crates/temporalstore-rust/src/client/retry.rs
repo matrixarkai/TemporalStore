@@ -81,8 +81,8 @@ pub(super) fn status_is_retryable(status: &Status) -> bool {
             | "staleloadversion"
             | "stale_load_version"
             // A request that lands on a node that no longer owns the shard (post-
-            // migration) must re-resolve the route, Mirroring treating the not-owner
-            // TopomError as "force topology re-sync".
+            // migration) must re-resolve the route -- the not-owner topology error
+            // forces a topology re-sync.
             | "shardnotloaded"
             | "shard_not_loaded"
             | "shardnotfound"
@@ -109,7 +109,7 @@ pub(super) fn status_is_topology_retryable(status: &Status) -> bool {
             | "not_serving"
             | "staleloadversion"
             | "stale_load_version"
-            // Not-owner after a shard move -> re-resolve route (TopomError re-sync).
+            // Not-owner after a shard move -> re-resolve route (topology re-sync).
             | "shardnotloaded"
             | "shard_not_loaded"
             | "shardnotfound"

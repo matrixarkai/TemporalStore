@@ -2,8 +2,8 @@
 
 `feature_aggregate_scale_harness` is a runnable, in-process demonstration that
 TemporalStore serves **aggregated features** correctly and quickly over a
-**high-cardinality** keyspace. It is the Rust counterpart of the
-`src/client/example/temporal_aggregate_scale_benchmark.cc` reference, but runs
+**high-cardinality** keyspace. It is the Rust counterpart of the native
+aggregate scale benchmark, but runs
 entirely against `TemporalEngine` (no cluster, no external services), so it is a
 deterministic local correctness + performance smoke.
 

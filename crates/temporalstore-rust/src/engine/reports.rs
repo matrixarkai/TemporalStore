@@ -2706,7 +2706,7 @@ pub struct StorageEvictionVictim {
     pub dirty_object_count: u64,
     pub weight: u64,
     /// Wall-clock ms this bucket was last read or written (0 == never touched).
-    /// Eviction victims are ranked least-recently-used first, Matching PolicyLru.
+    /// Eviction victims are ranked least-recently-used first.
     #[serde(default)]
     pub last_touched_ms: u64,
 }

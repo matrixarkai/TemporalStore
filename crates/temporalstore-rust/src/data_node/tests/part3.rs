@@ -632,8 +632,8 @@ fn previously_misclassified_writes_mark_shard_dirty() {
 
 #[test]
 fn gc_does_not_clear_the_dirty_scheduling_tracker() {
-    // GC (ReclaimPage/ReclaimIndex) never touches the dirty-slot set -- a slot leaves it
-    // only via a completed dump/replay (Index::ClearSlotDirty). GC must not drop the re-dump
+    // GC (block/index reclaim) never touches the dirty-bucket set -- a bucket leaves it
+    // only via a completed dump/replay that clears its dirty flag. GC must not drop the re-dump
     // scheduling state, or schedule_dirty_shard_dumps would stop scheduling those objects.
     let engine = TemporalEngine::default();
     engine.load_shard(1);
@@ -1341,7 +1341,7 @@ fn runtime_storage_manager_scale_repeats_style_pressure_stages() {
 }
 
 #[test]
-// rust-internal: validates periodic runtime scheduling for the StorageManager loop
+// rust-internal: validates periodic runtime scheduling for the storage-manager loop
 fn runtime_storage_manager_scheduler_runs_continuous_loop() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);

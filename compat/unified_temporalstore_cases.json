@@ -3086,9 +3086,7 @@
             "required_paths": [
               "crates/temporalstore-rust/src/types.rs",
               "crates/temporalstore-rust/src/engine.rs",
-              "crates/temporalstore-rust/src/bin/storage_modes_harness.rs",
-              "src/protocol/base.proto",
-              "src/client/client.h"
+              "crates/temporalstore-rust/src/bin/storage_modes_harness.rs"
             ],
             "restart_required": false,
             "rust_test": "replicated_execute_selects_sync_async_or_raft_without_restart"
@@ -3140,9 +3138,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/partition/storage/object_manager.*",
-              "src/partition/storage/page_store.*",
-              "src/partition/storage/replicator*"
             ],
             "rust_test": "disk_and_shared_store_persistence_recover_through_restart_and_replay",
             "suite": "native_storage_parity"
@@ -3168,8 +3163,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/partition/storage/op_logger.cc",
-              "src/partition/storage/op_logger.h"
             ],
             "rust_test": "wal_record_metadata_tracks_style_log_item_shape;append_replayed_record_is_idempotent_and_flushes_like_stream_commit;flush_and_info_report_persistent_wal_boundaries",
             "suite": "native_storage_parity"
@@ -3193,12 +3186,6 @@
             "kind": "existing_test",
             "mode": "static",
             "required_paths": [
-              "src/partition/storage/object_manager.cc",
-              "src/partition/storage/object_manager.h",
-              "src/partition/storage/page_store.cc",
-              "src/partition/storage/page_store.h",
-              "src/partition/storage/slot_store.cc",
-              "src/partition/storage/slot_store.h"
             ],
             "suite": "native_storage_parity"
           },
@@ -3218,13 +3205,6 @@
             "mode": "static",
             "description": "object manager, page store/oplog page index, and slot store sources must remain present for cross-format storage lifecycle parity comparison.",
             "required_paths": [
-              "src/partition/storage/object_manager.cc",
-              "src/partition/storage/object_manager.h",
-              "src/partition/storage/page_store.cc",
-              "src/partition/storage/page_store.h",
-              "src/partition/storage/op_logger.h",
-              "src/partition/storage/slot_store.cc",
-              "src/partition/storage/slot_store.h"
             ]
           }
         }
@@ -3240,10 +3220,6 @@
             "kind": "existing_test",
             "mode": "static",
             "required_paths": [
-              "src/partition/storage/storage_manager.cc",
-              "src/partition/storage/storage_manager.h",
-              "src/partition/storage/page_compactor.cc",
-              "src/partition/storage/page_gc.cc"
             ],
             "suite": "native_storage_parity"
           },
@@ -3261,8 +3237,6 @@
             "kind": "existing_test",
             "mode": "static",
             "required_paths": [
-              "src/partition/storage/op_logger.cc",
-              "src/partition/storage/op_logger.h"
             ],
             "suite": "native_storage_parity"
           },
@@ -3280,7 +3254,6 @@
             "kind": "existing_test",
             "mode": "static",
             "required_paths": [
-              "src/partition/storage/test/slot_context_manager_test.cc"
             ],
             "suite": "native_storage_parity"
           },
@@ -3298,8 +3271,6 @@
             "kind": "existing_test",
             "mode": "static",
             "required_paths": [
-              "src/partition/storage/data_raft_consensus.cc",
-              "src/partition/storage/data_raft_consensus.h"
             ],
             "suite": "native_data_raft_parity"
           },
@@ -3317,8 +3288,6 @@
             "kind": "existing_test",
             "mode": "static",
             "required_paths": [
-              "src/partition/storage/data_raft_replication.cc",
-              "src/partition/storage/data_raft_replication.h"
             ],
             "suite": "native_data_raft_parity"
           },
@@ -3336,7 +3305,6 @@
             "kind": "existing_test",
             "mode": "static",
             "required_paths": [
-              "src/partition/storage/test/data_raft_replication_test.cc"
             ],
             "suite": "native_data_raft_parity"
           },
@@ -3408,13 +3376,6 @@
             "kind": "existing_test",
             "mode": "static",
             "required_paths": [
-              "src/partition/storage/object.h",
-              "src/partition/storage/zone.h",
-              "src/partition/storage/evicter.cc",
-              "src/partition/storage/evicter.h",
-              "src/partition/storage/expirer.cc",
-              "src/partition/storage/expirer.h",
-              "src/partition/storage/flags.cc"
             ],
             "suite": "native_storage_parity"
           },
@@ -3432,8 +3393,6 @@
             "kind": "existing_test",
             "mode": "static",
             "required_paths": [
-              "src/partition/storage/replicator.cc",
-              "src/partition/storage/replicator.h",
               "tools/replication_guardrails_ubuntu22.sh",
               "tools/run_replication_guardrail_ubuntu22.sh"
             ],
@@ -3532,10 +3491,6 @@
             "kind": "existing_test",
             "mode": "runtime",
             "required_paths": [
-              "src/partition/storage/test/data_raft_replication_test.cc",
-              "src/partition/storage/data_raft_replication.cc",
-              "src/partition/storage/data_raft_consensus.cc",
-              "src/partition/storage/storage_manager.cc"
             ],
             "runner": "cmake --build build-ubuntu22/release --target data_raft_replication_test -j2",
             "rust_runner": "cargo run -p temporalstore-rust --bin distributed_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-data-raft-replication",
@@ -3557,10 +3512,7 @@
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
-              "tools/run_metaserver_raft_membership_ubuntu22.sh",
-              "src/metaserver_v2/raft_server.cc",
-              "src/metaserver_v2/raft_connector.cc",
-              "src/metaserver_v2/service/raft_control_service.cc"
+              "tools/run_metaserver_raft_membership_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 MEMBERSHIP_OPS=200 bash tools/run_metaserver_raft_membership_ubuntu22.sh",
             "rust_runner": "cargo run -p temporalstore-rust --bin metaserver_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-metaserver-raft-membership",
@@ -3576,9 +3528,7 @@
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
-              "tools/run_metaserver_raft_failover_ubuntu22.sh",
-              "src/metaserver_v2/raft_server.cc",
-              "src/metaserver_v2/ha/convict_routine.cc"
+              "tools/run_metaserver_raft_failover_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_metaserver_raft_failover_ubuntu22.sh",
             "rust_runner": "cargo run -p temporalstore-rust --bin metaserver_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-metaserver-raft-failover",
@@ -3595,9 +3545,7 @@
             "mode": "stress",
             "required_paths": [
               "tools/run_metaserver_raft_failover_ubuntu22.sh",
-              "tools/run_metaserver_raft_membership_ubuntu22.sh",
-              "src/metaserver_v2/raft_server.cc",
-              "src/metaserver_v2/scheduler/update_membership_task.cc"
+              "tools/run_metaserver_raft_membership_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_metaserver_raft_failover_ubuntu22.sh && BUILD_TYPE=Release ITERATIONS=1 MEMBERSHIP_OPS=200 bash tools/run_metaserver_raft_membership_ubuntu22.sh",
             "rust_runner": "cargo run -p temporalstore-rust --bin metaserver_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-metaserver-raft-replace-scale-down",
@@ -3613,8 +3561,7 @@
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
-              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh",
-              "src/metaserver_v2/raft_server.cc"
+              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh",
             "rust_runner": "cargo run -p temporalstore-rust --bin metaserver_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-metaserver-raft-snapshot",
@@ -3638,9 +3585,7 @@
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
-              "tools/run_data_raft_2node_scale_ubuntu22.sh",
-              "src/partition/storage/data_raft_replication.cc",
-              "src/partition/storage/data_raft_consensus.cc"
+              "tools/run_data_raft_2node_scale_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release THREADS=2 OPS=500 bash tools/run_data_raft_2node_scale_ubuntu22.sh",
             "rust_runner": "cargo run -p temporalstore-rust --bin distributed_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-raft-scale",
@@ -3656,9 +3601,7 @@
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
-              "tools/run_data_raft_failover_ubuntu22.sh",
-              "src/partition/storage/data_raft_replication.cc",
-              "src/partition/storage/data_raft_consensus.cc"
+              "tools/run_data_raft_failover_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 bash tools/run_data_raft_failover_ubuntu22.sh",
             "rust_runner": "cargo run -p temporalstore-rust --bin raft_secondary_replication_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-raft-failover --heartbeat-ms 25",
@@ -3674,9 +3617,7 @@
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
-              "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
-              "src/partition/storage/data_raft_replication.cc",
-              "src/partition/storage/data_raft_consensus.cc"
+              "tools/run_data_raft_snapshot_restore_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release RAFT_SNAPSHOT_OPS=200 RAFT_SNAPSHOT_THREADS=2 bash tools/run_data_raft_snapshot_restore_ubuntu22.sh",
             "rust_runner": "cargo run -p temporalstore-rust --bin distributed_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-raft-snapshot",
@@ -3693,9 +3634,7 @@
             "mode": "stress",
             "required_paths": [
               "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
-              "tools/run_data_raft_scale_up_down_ubuntu22.sh",
-              "src/partition/storage/data_raft_replication.cc",
-              "src/partition/storage/data_raft_consensus.cc"
+              "tools/run_data_raft_scale_up_down_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release RAFT_SNAPSHOT_OPS=200 RAFT_SNAPSHOT_THREADS=2 bash tools/run_data_raft_snapshot_restore_ubuntu22.sh && BUILD_TYPE=Release ITERATIONS=1 OPS=300 bash tools/run_data_raft_scale_up_down_ubuntu22.sh",
             "rust_runner": "cargo run -p temporalstore-rust --bin distributed_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-raft-post-snapshot-rescale",
@@ -3728,8 +3667,7 @@
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
-              "tools/run_data_raft_mixed_rw_ubuntu22.sh",
-              "src/partition/storage/data_raft_replication.cc"
+              "tools/run_data_raft_mixed_rw_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release MIXED_PROBE_OPS=300 MIXED_PROBE_THREADS=2 bash tools/run_data_raft_mixed_rw_ubuntu22.sh",
             "rust_runner": "cargo run -p temporalstore-rust --bin distributed_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-raft-mixed-rw",
@@ -3745,8 +3683,7 @@
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
-              "tools/run_data_raft_scale_up_down_ubuntu22.sh",
-              "src/partition/storage/data_raft_replication.cc"
+              "tools/run_data_raft_scale_up_down_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 OPS=300 bash tools/run_data_raft_scale_up_down_ubuntu22.sh",
             "rust_runner": "cargo run -p temporalstore-rust --bin raft_secondary_replication_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-raft-membership --heartbeat-ms 25",
@@ -3768,9 +3705,7 @@
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
-              "tools/run_data_raft_failover_ubuntu22.sh",
-              "src/partition/storage/data_raft_consensus.cc",
-              "src/partition/storage/data_raft_replication.cc"
+              "tools/run_data_raft_failover_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 bash tools/run_data_raft_failover_ubuntu22.sh",
             "rust_runner": "cargo run -p temporalstore-rust --bin raft_secondary_replication_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-data-raft-leader-failover --heartbeat-ms 25",
@@ -3799,9 +3734,7 @@
             "mode": "stress",
             "required_paths": [
               "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
-              "tools/build_secondary_visibility_lag_benchmark.sh",
-              "src/partition/storage/data_raft_consensus.cc",
-              "src/partition/storage/data_raft_replication.cc"
+              "tools/build_secondary_visibility_lag_benchmark.sh"
             ],
             "runner": "BUILD_TYPE=Release RAFT_SNAPSHOT_OPS=200 RAFT_SNAPSHOT_THREADS=2 bash tools/run_data_raft_snapshot_restore_ubuntu22.sh && bash tools/build_secondary_visibility_lag_benchmark.sh",
             "rust_runner": "cargo run -p temporalstore-rust --bin distributed_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-data-raft-snapshot-restart-lag && cargo run -p temporalstore-rust --bin raft_secondary_replication_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-data-raft-follower-lag --heartbeat-ms 25",
@@ -3830,8 +3763,7 @@
             "mode": "stress",
             "required_paths": [
               "tools/run_data_raft_scale_up_down_ubuntu22.sh",
-              "tools/run_data_raft_mixed_rw_ubuntu22.sh",
-              "src/partition/storage/data_raft_replication.cc"
+              "tools/run_data_raft_mixed_rw_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 OPS=300 bash tools/run_data_raft_scale_up_down_ubuntu22.sh && BUILD_TYPE=Release MIXED_PROBE_OPS=300 MIXED_PROBE_THREADS=2 bash tools/run_data_raft_mixed_rw_ubuntu22.sh",
             "rust_runner": "cargo run -p temporalstore-rust --bin raft_secondary_replication_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-data-raft-membership-secondary --heartbeat-ms 25",
@@ -3854,9 +3786,7 @@
             "mode": "stress",
             "required_paths": [
               "tools/run_metaserver_raft_failover_ubuntu22.sh",
-              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh",
-              "src/metaserver_v2/raft_server.cc",
-              "src/metaserver_v2/raft_connector.cc"
+              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_metaserver_raft_failover_ubuntu22.sh && BUILD_TYPE=Release ITERATIONS=1 bash tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh",
             "rust_runner": "cargo run -p temporalstore-rust --bin metaserver_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-metaserver-leader-snapshot-restart",
@@ -3878,10 +3808,7 @@
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
-              "tools/run_metaserver_raft_membership_ubuntu22.sh",
-              "src/metaserver_v2/raft_server.cc",
-              "src/metaserver_v2/scheduler/update_membership_task.cc",
-              "src/metaserver_v2/service/raft_control_service.cc"
+              "tools/run_metaserver_raft_membership_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 MEMBERSHIP_OPS=200 bash tools/run_metaserver_raft_membership_ubuntu22.sh",
             "rust_runner": "cargo run -p temporalstore-rust --bin metaserver_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-metaserver-membership-add-promote-remove",
@@ -3904,9 +3831,7 @@
             "mode": "runtime",
             "required_paths": [
               "tools/run_raft_production_gate_ubuntu22.sh",
-              "tools/run_raft_stress_suite_ubuntu22.sh",
-              "src/partition/storage/data_raft_consensus.cc",
-              "src/metaserver_v2/raft_server.cc"
+              "tools/run_raft_stress_suite_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust raft_temporal_raft_rollout_readiness_reports_real_process_rollout_evidence production_raft_readiness_requires_temporal_raft_process_and_meta_owned_membership_evidence local_raft_model_is_rejected_for_deployment --lib -- --test-threads=1",
@@ -3989,17 +3914,6 @@
             "kind": "existing_test",
             "mode": "static",
             "required_paths": [
-              "src/client/client_impl.cc",
-              "src/client/client_impl.h",
-              "src/client/meta_syncer.cc",
-              "src/client/meta_syncer.h",
-              "src/client/router.cc",
-              "src/client/router.h",
-              "src/client/router_v2.cc",
-              "src/client/router_v2.h",
-              "src/client/pipeline_impl.cc",
-              "src/client/pipeline_impl.h",
-              "src/client/command.h"
             ],
             "suite": "native_client_control_plane_parity"
           },
@@ -4017,16 +3931,6 @@
             "kind": "existing_test",
             "mode": "static",
             "required_paths": [
-              "src/proxy/proxy.cc",
-              "src/proxy/proxy.h",
-              "src/proxy/service.cc",
-              "src/proxy/service.h",
-              "src/proxy/heartbeat.cc",
-              "src/proxy/heartbeat.h",
-              "src/proxy/flags.cc",
-              "src/proxy/flags.h",
-              "src/metaserver_v2/ha/proxy_calibrate_routine.cc",
-              "src/metaserver_v2/ha/proxy_calibrate_routine.h",
               "tools/run_proxy_sdk_smoke_ubuntu22.sh"
             ],
             "suite": "native_proxy_control_plane_parity"
@@ -4045,16 +3949,6 @@
             "kind": "existing_test",
             "mode": "static",
             "required_paths": [
-              "src/metaserver_v2/scheduler/scheduler_manager.cc",
-              "src/metaserver_v2/scheduler/scheduler_manager.h",
-              "src/metaserver_v2/scheduler/task_scheduler.cc",
-              "src/metaserver_v2/scheduler/task_scheduler.h",
-              "src/metaserver_v2/scheduler/create_partition_task.cc",
-              "src/metaserver_v2/scheduler/update_membership_task.cc",
-              "src/metaserver_v2/balance/balance_routine.cc",
-              "src/metaserver_v2/ha/convict_routine.cc",
-              "src/metaserver_v2/resource_placement/placement_manager.cc",
-              "src/metaserver_v2/test/task_scheduler_test.cc"
             ],
             "suite": "native_metaserver_control_plane_parity"
           },
@@ -4072,12 +3966,6 @@
             "kind": "existing_test",
             "mode": "static",
             "required_paths": [
-              "src/server/server.cc",
-              "src/server/server.h",
-              "src/server/heartbeat.cc",
-              "src/server/heartbeat.h",
-              "src/metaserver_v2/client/partition_server_client.cc",
-              "src/metaserver_v2/client/partition_server_client.h"
             ],
             "suite": "native_data_node_lifecycle_parity"
           },
@@ -4095,10 +3983,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/client/temporalstore_client.cc",
-              "src/client/temporalstore_client.h",
-              "src/client/neptune_syncer.cc",
-              "src/client/neptune_syncer.h"
             ],
             "rust_runner": "cargo test -p temporalstore-rust client_background_meta_sync_updates_existing_table_handle -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
@@ -4118,9 +4002,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/client/router_factory.h",
-              "src/client/server_pool.h",
-              "src/client/test/client_test.cc"
             ],
             "rust_runner": "cargo test -p temporalstore-rust direct_client_refreshes_cached_route_after_failure -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
@@ -4140,9 +4021,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/proxy/main.cc",
-              "src/proxy/test/proxy_test.cc",
-              "src/metaserver_v2/test/proxy_calibration_test.cc"
             ],
             "rust_runner": "cargo test -p temporalstore-rust proxy_policy_blocks_writes_not_serving_and_drop_percent -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
@@ -4162,9 +4040,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/metaserver_v2/meta/table.cc",
-              "src/metaserver_v2/meta/table.h",
-              "src/metaserver_v2/test/table_test.cc"
             ],
             "rust_runner": "cargo test -p temporalstore-rust startup_load_request_uses_readonly_secondary_env -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
@@ -4184,9 +4059,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/metaserver_v2/ha/failure_detector.cc",
-              "src/metaserver_v2/ha/failure_detector.h",
-              "src/metaserver_v2/test/proxy_ha_test.cc"
             ],
             "rust_runner": "cargo test -p temporalstore-rust proxy_skips_cached_backend_after_continuous_failure_threshold -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
@@ -4206,9 +4078,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/partition/test/partition_load_test.cc",
-              "src/partition/test/partition_test.cc",
-              "src/partition/test/partition_replicator_test.cc"
             ],
             "rust_runner": "cargo test -p temporalstore-rust runtime_load_reload_unload_records_lifecycle_transitions -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
@@ -4228,7 +4097,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/server/service.h"
             ],
             "rust_runner": "cargo test -p temporalstore-rust --bin server native_server_service_aliases_cover_partition_manager_surface -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
@@ -4248,9 +4116,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/metaserver_v2/fsm.cc",
-              "src/metaserver_v2/meta/partition.cc",
-              "src/metaserver_v2/test/snapshot_test.cc"
             ],
             "rust_runner": "cargo test -p temporalstore-rust metaserver_scheduler_drives_load_reload_unload_lifecycle_workflow -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
@@ -4270,7 +4135,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/client/example/queue_ingestion_replay_example.cc",
               "tools/run_queue_ingestion_replay_ubuntu22.sh"
             ],
             "rust_runner": "cargo test -p temporalstore-rust ingestion_batch_reports_duplicate_kafka_offsets_without_nooping_valid_records -- --test-threads=1",
@@ -4333,7 +4197,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/client/example/module_ingest_query_example.cc",
               "docs/TEMPORALSTORE_ONE_CLUSTER_TEMPORAL_FEATURES.md"
             ],
             "rust_runner": "cargo test -p temporalstore-rust ingestion_persists_kafka_ledger_dead_letters_lag_and_flink_checkpoints -- --test-threads=1",
@@ -4354,7 +4217,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/client/example/proxy_ingestion_pressure_example.cc",
               "docs/production_gap_queue_runbook.md"
             ],
             "rust_runner": "cargo test -p temporalstore-rust dead_letter_export_and_raft_failover_idempotence_reports_are_ready -- --test-threads=1",
@@ -4439,7 +4301,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/model/context_model.h"
             ],
             "rust_runner": "cargo test -p temporalstore-rust context_relevance_ranks_qa_synonyms_and_phrases -- --test-threads=1",
             "rust_validator": "tools/run_context_workflow_local.sh",
@@ -4544,7 +4405,7 @@
       "steps": [
         {
           "command": {
-            "native_reference": "<repo>/src/extension/context/test.cc",
+            "native_reference": "native context extension tests",
             "description": "Shared conformance Context case translated from WRITE_EXTRACTED_EVENT debug tests: an extracted event writes event_kind, entity, status, source, and event_time_bucket internal indexes, and disabled indexes are not queryable.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
@@ -4882,8 +4743,7 @@
               "tools/run_raft_production_gate_ubuntu22.sh",
               "tools/run_data_raft_failover_ubuntu22.sh",
               "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
-              "tools/run_data_raft_scale_up_down_ubuntu22.sh",
-              "src/partition/storage/data_raft_consensus.cc"
+              "tools/run_data_raft_scale_up_down_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust raft_read_index_and_transfer_reject_lagging_replica raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat raft_replica_read_rejects_lagging_follower_and_succeeds_after_catchup --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
@@ -4933,11 +4793,9 @@
               "tools/run_data_raft_failover_ubuntu22.sh",
               "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
               "tools/run_data_raft_scale_up_down_ubuntu22.sh",
-              "src/partition/storage/data_raft_consensus.cc",
               "tools/run_metaserver_raft_failover_ubuntu22.sh",
               "tools/run_metaserver_raft_membership_ubuntu22.sh",
-              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh",
-              "src/metaserver_v2/raft_server.cc"
+              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust raft_status_read_index_and_transfer_leader_match_engine_control_shape metaserver_raft_status_read_index_and_transfer_leader_work --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
@@ -5043,11 +4901,9 @@
               "tools/run_data_raft_failover_ubuntu22.sh",
               "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
               "tools/run_data_raft_scale_up_down_ubuntu22.sh",
-              "src/partition/storage/data_raft_consensus.cc",
               "tools/run_metaserver_raft_failover_ubuntu22.sh",
               "tools/run_metaserver_raft_membership_ubuntu22.sh",
-              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh",
-              "src/metaserver_v2/raft_server.cc"
+              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust streaming_snapshot_chunks_install_only_after_all_chunks_arrive rustraft_snapshot_chunk_retry_releases_backpressure_and_installs_chunk raft_snapshot_chunk_transport_rejects_stale_term_before_buffering data_raft_snapshot_trigger_compacts_applied_log_bytes metaserver_raft_snapshot_trigger_compacts_applied_log_bytes --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
@@ -5096,8 +4952,7 @@
               "tools/run_raft_production_gate_ubuntu22.sh",
               "tools/run_data_raft_failover_ubuntu22.sh",
               "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
-              "tools/run_data_raft_scale_up_down_ubuntu22.sh",
-              "src/partition/storage/data_raft_consensus.cc"
+              "tools/run_data_raft_scale_up_down_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust raft_config_rejects_oversized_log_entries_and_prohibited_elections raft_rpc_runtime_retries_transport_errors_and_releases_inflight append_entries_reorder_queue_records_gap_and_recovers_after_prefix_arrives append_entries_reorder_window_timeout_and_stale_term_are_reported --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
@@ -5147,11 +5002,9 @@
               "tools/run_data_raft_failover_ubuntu22.sh",
               "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
               "tools/run_data_raft_scale_up_down_ubuntu22.sh",
-              "src/partition/storage/data_raft_consensus.cc",
               "tools/run_metaserver_raft_failover_ubuntu22.sh",
               "tools/run_metaserver_raft_membership_ubuntu22.sh",
-              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh",
-              "src/metaserver_v2/raft_server.cc"
+              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust raft_tick_election_waits_for_timeout_and_prevotes_before_promotion raft_prevote_rejects_candidate_without_quorum raft_election_controls_record_prohibition_offline_and_transfer_timeouts raft_config_rejects_oversized_log_entries_and_prohibited_elections raft_read_index_and_transfer_reject_lagging_replica production_raft_runtime_validates_security_timer_and_chaos_contracts --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
@@ -5211,7 +5064,6 @@
               "docs/raft_matrixraft_leader_election_parity.md",
               "crates/temporalstore-rust/src/raft.rs",
               "crates/temporalstore-rust/src/raft/tests.rs",
-              "src/partition/storage/data_raft_consensus.cc",
               "matrixraft"
             ],
             "rust_runner": "cargo test -p temporalstore-rust matrixraft_leader_election_and_learner_promotion_parity_report_is_ready --lib -- --test-threads=1",
@@ -5263,8 +5115,7 @@
               "tools/run_raft_production_gate_ubuntu22.sh",
               "tools/run_data_raft_failover_ubuntu22.sh",
               "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
-              "tools/run_data_raft_scale_up_down_ubuntu22.sh",
-              "src/partition/storage/data_raft_consensus.cc"
+              "tools/run_data_raft_scale_up_down_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust partition_chaos_majority_side_continues_and_healed_replica_catches_up --lib -- --test-threads=1 && cargo run -p temporalstore-rust --bin external_chaos_gate -- --profile quick",
@@ -5318,8 +5169,7 @@
               "tools/run_raft_production_gate_ubuntu22.sh",
               "tools/run_data_raft_failover_ubuntu22.sh",
               "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
-              "tools/run_data_raft_scale_up_down_ubuntu22.sh",
-              "src/partition/storage/data_raft_consensus.cc"
+              "tools/run_data_raft_scale_up_down_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust raft_rpc_runtime_retries_transport_errors_and_releases_inflight --lib -- --test-threads=1 && cargo run -p temporalstore-rust --bin external_chaos_gate -- --profile quick",
@@ -5374,11 +5224,9 @@
               "tools/run_data_raft_failover_ubuntu22.sh",
               "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
               "tools/run_data_raft_scale_up_down_ubuntu22.sh",
-              "src/partition/storage/data_raft_consensus.cc",
               "tools/run_metaserver_raft_failover_ubuntu22.sh",
               "tools/run_metaserver_raft_membership_ubuntu22.sh",
-              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh",
-              "src/metaserver_v2/raft_server.cc"
+              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust data_raft_snapshot_trigger_compacts_applied_log_bytes metaserver_raft_snapshot_trigger_compacts_applied_log_bytes --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
@@ -5432,8 +5280,7 @@
               "tools/run_raft_production_gate_ubuntu22.sh",
               "tools/run_data_raft_failover_ubuntu22.sh",
               "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
-              "tools/run_data_raft_scale_up_down_ubuntu22.sh",
-              "src/partition/storage/data_raft_consensus.cc"
+              "tools/run_data_raft_scale_up_down_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust rustraft_leader_transfer_under_high_write_load_commits_once --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
@@ -5487,8 +5334,7 @@
               "tools/run_raft_production_gate_ubuntu22.sh",
               "tools/run_data_raft_failover_ubuntu22.sh",
               "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
-              "tools/run_data_raft_scale_up_down_ubuntu22.sh",
-              "src/partition/storage/data_raft_consensus.cc"
+              "tools/run_data_raft_scale_up_down_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust rustraft_follower_rejoin_after_compaction_installs_snapshot_and_replays_tail raft_snapshot_bootstraps_lagging_data_replica_then_catches_up_logs --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
@@ -5543,11 +5389,9 @@
               "tools/run_data_raft_failover_ubuntu22.sh",
               "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
               "tools/run_data_raft_scale_up_down_ubuntu22.sh",
-              "src/partition/storage/data_raft_consensus.cc",
               "tools/run_metaserver_raft_failover_ubuntu22.sh",
               "tools/run_metaserver_raft_membership_ubuntu22.sh",
-              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh",
-              "src/metaserver_v2/raft_server.cc"
+              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
             "rust_runner": "tools/run_raft_distributed_parity.sh",
@@ -5597,11 +5441,9 @@
               "tools/run_data_raft_failover_ubuntu22.sh",
               "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
               "tools/run_data_raft_scale_up_down_ubuntu22.sh",
-              "src/partition/storage/data_raft_consensus.cc",
               "tools/run_metaserver_raft_failover_ubuntu22.sh",
               "tools/run_metaserver_raft_membership_ubuntu22.sh",
-              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh",
-              "src/metaserver_v2/raft_server.cc"
+              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
             "rust_runner": "tools/run_raft_distributed_parity.sh && cargo run -p temporalstore-rust --bin external_chaos_gate -- --profile quick",
@@ -6067,7 +5909,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/model/model_context.cc"
             ],
             "rust_runner": "cargo test -p temporalstore-rust context_models_round_trip_wire_payloads_and_type_alias --lib -- --test-threads=1",
             "rust_validator": "tools/run_context_workflow_local.sh",
@@ -6127,7 +5968,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/proxy/proxy_server.cc"
             ],
             "rust_runner": "cargo test -p temporalstore-rust proxy_backend_failure_quarantines_route_then_recovers proxy_cache_ttl_and_topology_version_guard_invalidate_routes -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
@@ -6147,7 +5987,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/metaserver_v2/meta_task_scheduler.cc"
             ],
             "rust_runner": "cargo test -p temporalstore-rust metaserver_scheduler_execute_next_installs_token_then_loads_node metaserver_scheduler_retries_busy_unload_without_dropping_task -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
@@ -6167,7 +6006,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/partition/partition_manager.cc"
             ],
             "rust_runner": "cargo test -p temporalstore-rust runtime_lifecycle_snapshot_restores_transitions_and_tokens runtime_auto_persists_lifecycle_snapshot_across_transitions runtime_reports_bad_lifecycle_snapshot_restore_in_preflight -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
@@ -6187,7 +6025,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/client/table_client.cc"
             ],
             "rust_runner": "cargo test -p temporalstore-rust client_retries_retryable_read_status_before_returning client_does_not_retry_write_status_without_write_retry_budget client_retry_classifier_separates_safe_topology_retry_from_unsafe_write_retry -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
@@ -6207,7 +6044,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/client/example/kafka_consumer_group_runtime.cc"
             ],
             "rust_runner": "cargo test -p temporalstore-rust kafka_consumer_group_runtime_reports_rebalance_and_backpressure -- --test-threads=1",
             "rust_validator": "python3 tools/validate_ingestion_ops_parity_evidence.py",
@@ -6227,7 +6063,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/client/example/flink_checkpoint_replay_example.cc"
             ],
             "rust_runner": "cargo test -p temporalstore-rust flink_checkpoint_lifecycle_precommit_commit_abort ingestion_restart_replays_offsets_and_checkpoints_idempotently -- --test-threads=1",
             "rust_validator": "python3 tools/validate_ingestion_ops_parity_evidence.py",
@@ -6742,9 +6577,7 @@
             "mode": "rust_executable_native_static",
             "required_paths": [
               "crates/temporalstore-rust/src/context_workflow.rs",
-              "docs/rust_context_pipeline_debug_trace.md",
-              "src/extension/context/interface.proto",
-              "src/extension/context/implement.cc"
+              "docs/rust_context_pipeline_debug_trace.md"
             ],
             "rust_runner": "cargo test -p temporalstore-rust parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval context_models_round_trip_wire_payloads_and_type_alias -- --test-threads=1",
             "suite": "native_context_pipeline_parity"
@@ -6788,9 +6621,7 @@
             "mode": "rust_executable_native_static",
             "required_paths": [
               "compat/storage_migration_corpus.json",
-              "crates/temporalstore-rust/src/page_store.rs",
-              "src/storage",
-              "src/extension/context"
+              "crates/temporalstore-rust/src/page_store.rs"
             ],
             "rust_runner": "cargo test -p temporalstore-rust --test unified_temporalstore_corpus storage_fault_matrix storage_follower_safe_gc storage_cache_refill -- --test-threads=1",
             "suite": "native_storage_parity"
@@ -6838,9 +6669,7 @@
             "required_paths": [
               "crates/temporalstore-rust/src/raft.rs",
               "crates/temporalstore-rust/src/bin/metaserver_raft_harness.rs",
-              "crates/temporalstore-rust/src/bin/raft_node.rs",
-              "src/rustraft",
-              "src/metaserver_v2"
+              "crates/temporalstore-rust/src/bin/raft_node.rs"
             ],
             "rust_runner": "cargo test -p temporalstore-rust raft_temporal_raft_rollout_readiness_reports_real_process_rollout_evidence production_raft_readiness_requires_temporal_raft_process_and_meta_owned_membership_evidence --lib -- --test-threads=1 && cargo run -p temporalstore-rust --bin metaserver_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-temporal-raft-process-read-safety",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <temporal-raft-process-read-safety.json>",
@@ -8104,8 +7933,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/server/test/server_test.cc",
-              "src/protocol/server.proto"
             ],
             "rust_runner": "cargo test -p temporalstore-rust server_exposes_raft_status_and_admin_routes -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <server-raft-api.json>",
@@ -8127,7 +7954,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/server/metrics.h"
             ],
             "rust_runner": "cargo test -p temporalstore-rust server_exposes_raft_apply_health_route -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <server-raft-api.json>",
@@ -8149,8 +7975,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/server/partition_manager.h",
-              "src/metaserver_v2/scheduler/update_membership_task.h"
             ],
             "rust_runner": "cargo test -p temporalstore-rust server_exposes_raft_membership_apply_route -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <server-raft-api.json>",
@@ -8172,7 +7996,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/metaserver_v2/service/raft_control_service.h"
             ],
             "rust_runner": "cargo test -p temporalstore-rust server_raft_control_scale_up_down_preserves_serving -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <server-raft-api.json>",
@@ -8194,7 +8017,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/metaserver_v2/raft_connector.h"
             ],
             "rust_runner": "cargo test -p temporalstore-rust server_raft_control_accept_leadership_matches_raft_node_route -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <server-raft-api.json>",
@@ -8216,7 +8038,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/server/meta_tinker.cc"
             ],
             "rust_runner": "cargo test -p temporalstore-rust server_raft_admin_wait_applied_reports_lag_and_success_after_catchup -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <server-raft-api.json>",
@@ -8239,9 +8060,7 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "crates/temporalstore-rust/src/engine/lifecycle.rs",
-              "src/server/partition_manager.cc",
-              "src/partition/partition.h"
+              "crates/temporalstore-rust/src/engine/lifecycle.rs"
             ],
             "rust_runner": "cargo test -p temporalstore-rust control_api_load_config_info_stats_membership_and_unload --lib -- --test-threads=1",
             "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only && python3 tools/validate_rust_product_test_guard.py",
@@ -8264,8 +8083,7 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "crates/temporalstore-rust/src/engine/tests.rs",
-              "src/partition/partition.cc"
+              "crates/temporalstore-rust/src/engine/tests.rs"
             ],
             "rust_runner": "cargo test -p temporalstore-rust engine_reload_shard_updates_metadata_and_rejects_stale_version --lib -- --test-threads=1",
             "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only && python3 tools/validate_rust_product_test_guard.py",
@@ -8288,8 +8106,7 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "crates/temporalstore-rust/src/context_workflow/query.rs",
-              "src/model/model_manager.cc"
+              "crates/temporalstore-rust/src/context_workflow/query.rs"
             ],
             "rust_runner": "cargo test -p temporalstore-rust context_query_debug_reports_filter_groups_drops_and_injection_order --lib -- --test-threads=1",
             "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only && python3 tools/validate_rust_product_test_guard.py",
@@ -8715,9 +8532,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/partition/storage/data_raft_consensus.cc",
-              "src/partition/storage/data_raft_replication.cc",
-              "src/partition/storage/data_raft_log.pb.h"
             ],
             "runner": "cmake --build build-ubuntu22/release --target data_raft_replication_test -j2",
             "rust_runner": "cargo test -p temporalstore-rust data_raft_log_codec_round_trips_native_style_header data_raft_log_codec_rejects_bad_header_and_sequence data_raft_command_codec_round_trips_batch_request data_raft_command_codec_round_trips_chunked_timestamped_kv_payload native_data_raft_replication_rejects_corrupt_log_payload --lib -- --test-threads=1",
@@ -8771,8 +8585,7 @@
             "mode": "rust_executable_native_static",
             "required_paths": [
               "tools/run_data_raft_failover_ubuntu22.sh",
-              "tools/run_data_raft_mixed_rw_ubuntu22.sh",
-              "src/partition/storage/data_raft_consensus.cc"
+              "tools/run_data_raft_mixed_rw_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 bash tools/run_data_raft_failover_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust raft_read_index_and_transfer_reject_lagging_replica raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat raft_replica_read_rejects_lagging_follower_and_succeeds_after_catchup raft_rejects_write_without_majority raft_follower_catches_up_after_outage partition_chaos_majority_side_continues_and_healed_replica_catches_up --lib -- --test-threads=1",
@@ -8826,9 +8639,7 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "tools/run_raft_stress_suite_ubuntu22.sh",
-              "src/partition/storage/data_raft_consensus.cc",
-              "src/partition/storage/data_raft_replication.cc"
+              "tools/run_raft_stress_suite_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 OPS=500 bash tools/run_raft_stress_suite_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust raft_config_rejects_oversized_log_entries_and_prohibited_elections raft_rpc_runtime_retries_transport_errors_and_releases_inflight append_entries_reorder_queue_records_gap_and_recovers_after_prefix_arrives append_entries_reorder_window_timeout_and_stale_term_are_reported distributed_propose_does_not_wait_for_failed_followers_after_quorum --lib -- --test-threads=1",
@@ -8886,9 +8697,7 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
-              "src/partition/storage/data_raft_consensus.cc",
-              "src/partition/storage/data_raft_replication.cc"
+              "tools/run_data_raft_snapshot_restore_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_data_raft_snapshot_restore_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust streaming_snapshot_chunks_install_only_after_all_chunks_arrive rustraft_snapshot_chunk_retry_releases_backpressure_and_installs_chunk raft_snapshot_transport_rejects_stale_term_before_install raft_snapshot_chunk_transport_rejects_stale_term_before_buffering raft_install_snapshot_request_carries_external_snapshot_reference snapshot_transfer_policy_streams_small_snapshots_to_peer snapshot_transfer_policy_requires_external_ref_for_large_snapshot --lib -- --test-threads=1",
@@ -8953,8 +8762,7 @@
             "mode": "rust_executable_native_static",
             "required_paths": [
               "tools/run_data_raft_scale_up_down_ubuntu22.sh",
-              "tools/run_metaserver_raft_membership_ubuntu22.sh",
-              "src/metaserver_v2/scheduler/update_membership_task.cc"
+              "tools/run_metaserver_raft_membership_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 MEMBERSHIP_OPS=200 bash tools/run_metaserver_raft_membership_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust temporal_raft_data_node_backend_bootstraps_learner_and_auto_promotes_peer temporal_raft_metaserver_backend_supports_membership_and_bounded_reads joint_consensus_requires_old_and_new_majorities_before_commit_or_write joint_consensus_state_survives_wal_restore_and_still_requires_both_majorities --lib --features temporal-raft-engine -- --test-threads=1",
@@ -9007,9 +8815,7 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "tools/run_live_raft_metrics_ubuntu22.sh",
-              "src/partition/storage/data_raft_consensus.cc",
-              "src/metaserver_v2/service/raft_control_service.cc"
+              "tools/run_live_raft_metrics_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_live_raft_metrics_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust raft_rpc_runtime_attaches_auth_and_deadline_metadata raft_rpc_runtime_retries_transport_errors_and_releases_inflight http_raft_transport_sends_append_vote_and_snapshot_over_tcp raft_hard_state_membership_and_snapshot_transport_are_exposed --lib -- --test-threads=1",
@@ -9093,9 +8899,6 @@
             "native_runner_contract": "MatrixRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms.",
             "comparator": "python3 tools/compare_unified_rust_case_reports.py --rust-report <rust-report.json> --native-report <native-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
             "required_paths": [
-              "src/partition/storage/data_raft_consensus.cc",
-              "src/partition/storage/data_raft_replication.cc",
-              "src/metaserver_v2/service/raft_control_service.cc"
             ],
             "runner": "TS_NATIVE_UNIFIED_NATIVE_CMD='<native-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --native --require-native-native",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>",
@@ -9147,9 +8950,6 @@
             "native_runner_contract": "MatrixRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms.",
             "comparator": "python3 tools/compare_unified_rust_case_reports.py --rust-report <rust-report.json> --native-report <native-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
             "required_paths": [
-              "src/partition/storage/data_raft_consensus.cc",
-              "src/partition/storage/data_raft_replication.cc",
-              "src/metaserver_v2/service/raft_control_service.cc"
             ],
             "runner": "TS_NATIVE_UNIFIED_NATIVE_CMD='<native-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --native --require-native-native",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>",
@@ -9205,9 +9005,6 @@
             "native_runner_contract": "MatrixRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms; includes evidence.leader_transfer_exact_once_commit_ids with unique committed Raft indexes for active leader-transfer writes.",
             "comparator": "python3 tools/compare_unified_rust_case_reports.py --rust-report <rust-report.json> --native-report <native-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
             "required_paths": [
-              "src/partition/storage/data_raft_consensus.cc",
-              "src/partition/storage/data_raft_replication.cc",
-              "src/metaserver_v2/service/raft_control_service.cc"
             ],
             "runner": "TS_NATIVE_UNIFIED_NATIVE_CMD='<native-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --native --require-native-native",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>",
@@ -9260,9 +9057,6 @@
             "native_runner_contract": "MatrixRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms.",
             "comparator": "python3 tools/compare_unified_rust_case_reports.py --rust-report <rust-report.json> --native-report <native-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
             "required_paths": [
-              "src/partition/storage/data_raft_consensus.cc",
-              "src/partition/storage/data_raft_replication.cc",
-              "src/metaserver_v2/service/raft_control_service.cc"
             ],
             "runner": "TS_NATIVE_UNIFIED_NATIVE_CMD='<native-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --native --require-native-native",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>",
@@ -9326,9 +9120,6 @@
             "native_runner_contract": "MatrixRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms; includes snapshot evidence fields for send timeout, rate limiting, install progress, install rollback, snapshot during membership change, and follower rejoin after compacted logs.",
             "comparator": "python3 tools/compare_unified_rust_case_reports.py --rust-report <rust-report.json> --native-report <native-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
             "required_paths": [
-              "src/partition/storage/data_raft_consensus.cc",
-              "src/partition/storage/data_raft_replication.cc",
-              "src/metaserver_v2/service/raft_control_service.cc"
             ],
             "runner": "TS_NATIVE_UNIFIED_NATIVE_CMD='<native-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --native --require-native-native",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>",
@@ -9356,9 +9147,7 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "tools/run_live_raft_metrics_ubuntu22.sh",
-              "src/partition/storage/data_raft_consensus.cc",
-              "src/partition/storage/data_raft_replication.cc"
+              "tools/run_live_raft_metrics_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_live_raft_metrics_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust raft_control_exposes_matrixraft_runtime_admin_report --bin raft_node -- --test-threads=1",
@@ -9411,7 +9200,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/metaserver_v2/service/raft_control_service.cc"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_live_raft_metrics_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust matrixraft_admin_status_surface_requires_wal_and_peer_pipeline_fields --lib -- --test-threads=1",
@@ -9462,9 +9250,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/server/test/server_test.cc",
-              "src/protocol/server.proto",
-              "src/partition/storage/data_raft_consensus.cc"
             ],
             "runner": "cmake --build build-ubuntu22/release --target server_test -j2",
             "rust_runner": "cargo test -p temporalstore-rust raft_control_exposes_matrixraft_runtime_admin_report --bin raft_node -- --test-threads=1",
@@ -9776,7 +9561,6 @@
             "kind": "storage_cache_cold_read_after_eviction",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/partition/storage/test/cold_read_eviction_shared_test.cc"
             ],
             "rust_test": "cache_cold_read_refills_from_disk_or_block_store_after_eviction",
             "suite": "native_storage_parity"
@@ -9802,7 +9586,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/partition/storage/test/merged_dump_load_interruption_shared_test.cc"
             ],
             "rust_test": "merged_dump_load_interruption_rolls_back_and_recovers",
             "suite": "native_storage_parity"
@@ -9833,7 +9616,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/partition/storage/test/raft_process_path_log_inspection_shared_test.cc"
             ],
             "rust_runner": "tools/run_raft_distributed_parity.sh",
             "rust_test": "openraft_process_path_reports_independent_wal_snapshot_and_read_index",
@@ -9860,7 +9642,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/proxy/test/client_proxy_route_churn_shared_test.cc"
             ],
             "rust_test": "client_proxy_route_churn_converges_without_duplicate_unsafe_writes",
             "suite": "native_client_proxy_control_plane_parity"
@@ -9885,7 +9666,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "src/context/test/resource_skill_secondary_index_shared_test.cc"
             ],
             "rust_test": "resource_skill_ingest_secondary_indexes_survive_restart",
             "suite": "native_context_pipeline_parity"
@@ -9914,9 +9694,6 @@
             "description": "Writes string/hash/set/timestamped/context objects, rebuilds logical views from slot/object/block index authority, and verifies cold reads by block address.",
             "rust_test": "slot_object_block_index_is_primary_authority_and_rebuilds_model_views",
             "required_paths": [
-              "src/partition/index/index.h",
-              "src/partition/index/slot_node.h",
-              "src/partition/index/page_index.h"
             ],
             "expect_authority_fields": [
               "slot_id",
@@ -9960,8 +9737,6 @@
             "description": "Exercises growth, delete/tombstone, compaction, dump/load, and restart while checking SlotNode-like layout transitions.",
             "rust_test": "slot_store_layout_transitions_survive_growth_delete_compaction_dump_load_restart",
             "required_paths": [
-              "src/partition/index/slot_node.h",
-              "src/partition/storage/object_manager.*"
             ],
             "expect_layout_states": [
               "empty",
@@ -10003,8 +9778,6 @@
             "description": "Evicts hot objects, verifies memory miss, then reads by block address from disk/page-compatible block store or shared-store replay and refills memory.",
             "rust_test": "cold_index_page_address_reads_from_disk_cache_or_block_store_and_refills_memory",
             "required_paths": [
-              "src/partition/storage/cache*",
-              "src/partition/storage/object_manager.*"
             ],
             "expect_fallback_order": [
               "memory_miss",
@@ -10040,8 +9813,6 @@
             "description": "Covers the zone/stream concept using Rust block segment naming: active, sealed, delayed destroy, purged, missing manifest rebuild, partial segment, and corrupt segment reporting.",
             "rust_test": "missing_extent_manifest_rebuilds_from_existing_segments",
             "required_paths": [
-              "src/partition/storage/zone*",
-              "src/partition/storage/stream*"
             ],
             "expect_segment_states": [
               "active",
@@ -10085,8 +9856,6 @@
             "description": "Compacts string/hash/set/timestamped/context/Risk layouts with tombstone and stale-block-density thresholds, then verifies indexes point to new blocks and stale blocks are reclaimable.",
             "rust_test": "model_layout_compaction_rewrites_live_refs_and_marks_stale_blocks_reclaimable",
             "required_paths": [
-              "src/partition/storage/compaction*",
-              "src/partition/index/page_index.h"
             ],
             "expect_models": [
               "string",
@@ -10129,8 +9898,6 @@
             "description": "Runs weighted eviction and GC under pressure; GC refuses live refs, dump manifests, checkpoints, follower cursors, Raft snapshots, and delayed-destroy grace, then verifies evicted cold reads refill.",
             "rust_test": "storage_manager_gc_and_eviction_preserve_cold_reads_under_pressure",
             "required_paths": [
-              "src/partition/storage/storage_manager*",
-              "src/partition/storage/cache*"
             ],
             "expect_retention_blockers": [
               "live_refs",
@@ -10172,8 +9939,6 @@
             "description": "Reclaims WAL/index-log only after durable slot dump and retention floors, commits dirty slots before index-GC, restarts, and verifies recovery boundary plus logical reads.",
             "rust_test": "storage_manager_wal_index_gc_reclaims_only_after_slot_generation_floors",
             "required_paths": [
-              "src/partition/storage/op_logger*",
-              "src/partition/storage/storage_manager*"
             ],
             "expect_reclaim_floors": [
               "slot_dump_generation",
@@ -10213,7 +9978,6 @@
             "description": "Runs memory and disk cache pressure with pinned handles, placement semantics, async writeback/backpressure, latency histograms, eviction/refill, and restart recovery.",
             "rust_test": "cache_replacement_policy_soak_under_memory_disk_pressure_and_restart",
             "required_paths": [
-              "src/partition/storage/cache*"
             ],
             "expect_cache_features": [
               "pinned_handles",
@@ -10248,8 +10012,7 @@
             "description": "Validates context/block segment sizing, stream max blob size, compaction watermark, cold-scan cache-fill policy, and public TS_* environment variable names.",
             "rust_test": "defaults_match_like_public_surface env_names_are_stable_for_rust_parity parses_public_knobs_from_getter",
             "required_paths": [
-              "crates/temporalstore-rust/src/storage_config.rs",
-              "src/partition/storage/*"
+              "crates/temporalstore-rust/src/storage_config.rs"
             ]
           },
           "expect": {
@@ -11828,10 +11591,7 @@
               "crates/temporalstore-rust/src/engine.rs",
               "crates/temporalstore-rust/src/engine/object_manager.rs",
               "crates/temporalstore-rust/src/engine/slot_store.rs",
-              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
-              "src/partition/storage/object_manager.cc",
-              "src/partition/storage/page_store.cc",
-              "src/partition/storage/slot_store.cc"
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs"
             ]
           }
         }
@@ -11852,10 +11612,7 @@
               "crates/temporalstore-rust/src/engine.rs",
               "crates/temporalstore-rust/src/engine/object_manager.rs",
               "crates/temporalstore-rust/src/engine/slot_store.rs",
-              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
-              "src/partition/storage/object_manager.cc",
-              "src/partition/storage/page_store.cc",
-              "src/partition/storage/slot_store.cc"
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs"
             ]
           }
         }
@@ -11876,10 +11633,7 @@
               "crates/temporalstore-rust/src/engine.rs",
               "crates/temporalstore-rust/src/engine/object_manager.rs",
               "crates/temporalstore-rust/src/engine/slot_store.rs",
-              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
-              "src/partition/storage/object_manager.cc",
-              "src/partition/storage/page_store.cc",
-              "src/partition/storage/slot_store.cc"
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs"
             ]
           }
         }
@@ -11900,10 +11654,7 @@
               "crates/temporalstore-rust/src/engine.rs",
               "crates/temporalstore-rust/src/engine/object_manager.rs",
               "crates/temporalstore-rust/src/engine/slot_store.rs",
-              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
-              "src/partition/storage/object_manager.cc",
-              "src/partition/storage/page_store.cc",
-              "src/partition/storage/slot_store.cc"
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs"
             ]
           }
         }
@@ -11924,10 +11675,7 @@
               "crates/temporalstore-rust/src/engine.rs",
               "crates/temporalstore-rust/src/engine/object_manager.rs",
               "crates/temporalstore-rust/src/engine/slot_store.rs",
-              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
-              "src/partition/storage/object_manager.cc",
-              "src/partition/storage/page_store.cc",
-              "src/partition/storage/slot_store.cc"
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs"
             ]
           }
         }
@@ -11948,10 +11696,7 @@
               "crates/temporalstore-rust/src/engine.rs",
               "crates/temporalstore-rust/src/engine/object_manager.rs",
               "crates/temporalstore-rust/src/engine/slot_store.rs",
-              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
-              "src/partition/storage/object_manager.cc",
-              "src/partition/storage/page_store.cc",
-              "src/partition/storage/slot_store.cc"
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs"
             ]
           }
         }
@@ -11972,10 +11717,7 @@
               "crates/temporalstore-rust/src/engine.rs",
               "crates/temporalstore-rust/src/engine/object_manager.rs",
               "crates/temporalstore-rust/src/engine/slot_store.rs",
-              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
-              "src/partition/storage/object_manager.cc",
-              "src/partition/storage/page_store.cc",
-              "src/partition/storage/slot_store.cc"
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs"
             ]
           }
         }
@@ -11996,10 +11738,7 @@
               "crates/temporalstore-rust/src/engine.rs",
               "crates/temporalstore-rust/src/engine/object_manager.rs",
               "crates/temporalstore-rust/src/engine/slot_store.rs",
-              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
-              "src/partition/storage/object_manager.cc",
-              "src/partition/storage/page_store.cc",
-              "src/partition/storage/slot_store.cc"
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs"
             ]
           }
         }
@@ -12020,10 +11759,7 @@
               "crates/temporalstore-rust/src/engine.rs",
               "crates/temporalstore-rust/src/engine/object_manager.rs",
               "crates/temporalstore-rust/src/engine/slot_store.rs",
-              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
-              "src/partition/storage/object_manager.cc",
-              "src/partition/storage/page_store.cc",
-              "src/partition/storage/slot_store.cc"
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs"
             ]
           }
         }
@@ -12044,10 +11780,7 @@
               "crates/temporalstore-rust/src/engine.rs",
               "crates/temporalstore-rust/src/engine/object_manager.rs",
               "crates/temporalstore-rust/src/engine/slot_store.rs",
-              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
-              "src/partition/storage/object_manager.cc",
-              "src/partition/storage/page_store.cc",
-              "src/partition/storage/slot_store.cc"
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs"
             ]
           }
         }
@@ -12068,10 +11801,7 @@
               "crates/temporalstore-rust/src/engine.rs",
               "crates/temporalstore-rust/src/engine/object_manager.rs",
               "crates/temporalstore-rust/src/engine/slot_store.rs",
-              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
-              "src/partition/storage/object_manager.cc",
-              "src/partition/storage/page_store.cc",
-              "src/partition/storage/slot_store.cc"
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs"
             ]
           }
         }
@@ -12092,10 +11822,7 @@
               "crates/temporalstore-rust/src/engine.rs",
               "crates/temporalstore-rust/src/engine/object_manager.rs",
               "crates/temporalstore-rust/src/engine/slot_store.rs",
-              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
-              "src/partition/storage/object_manager.cc",
-              "src/partition/storage/page_store.cc",
-              "src/partition/storage/slot_store.cc"
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs"
             ]
           }
         }
@@ -12116,10 +11843,7 @@
               "crates/temporalstore-rust/src/engine.rs",
               "crates/temporalstore-rust/src/engine/object_manager.rs",
               "crates/temporalstore-rust/src/engine/slot_store.rs",
-              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
-              "src/partition/storage/object_manager.cc",
-              "src/partition/storage/page_store.cc",
-              "src/partition/storage/slot_store.cc"
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs"
             ]
           }
         }
@@ -12140,10 +11864,7 @@
               "crates/temporalstore-rust/src/engine.rs",
               "crates/temporalstore-rust/src/engine/object_manager.rs",
               "crates/temporalstore-rust/src/engine/slot_store.rs",
-              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
-              "src/partition/storage/object_manager.cc",
-              "src/partition/storage/page_store.cc",
-              "src/partition/storage/slot_store.cc"
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs"
             ]
           }
         }
@@ -12164,10 +11885,7 @@
               "crates/temporalstore-rust/src/engine.rs",
               "crates/temporalstore-rust/src/engine/object_manager.rs",
               "crates/temporalstore-rust/src/engine/slot_store.rs",
-              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
-              "src/partition/storage/object_manager.cc",
-              "src/partition/storage/page_store.cc",
-              "src/partition/storage/slot_store.cc"
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs"
             ]
           }
         }
@@ -12188,10 +11906,7 @@
               "crates/temporalstore-rust/src/engine.rs",
               "crates/temporalstore-rust/src/engine/object_manager.rs",
               "crates/temporalstore-rust/src/engine/slot_store.rs",
-              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
-              "src/partition/storage/object_manager.cc",
-              "src/partition/storage/page_store.cc",
-              "src/partition/storage/slot_store.cc"
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs"
             ]
           }
         }

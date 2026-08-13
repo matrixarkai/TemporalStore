@@ -1004,7 +1004,7 @@ fn sequence_rows_fold_into_shared_feature_storage_and_survive_reload() {
 
 #[test]
 fn insert_if_absent_keeps_the_first_in_batch_duplicate_timestamp() {
-    // feature ADD FIRST policy (extension/feature/implement.cc:122-131) walks point_list in
+    // feature ADD FIRST policy walks the point list in
     // request order and skips a timestamp already present, so for an in-batch duplicate the FIRST
     // value wins. Rust previously pre-collapsed the batch by timestamp (last-wins) before the
     // policy loop, silently keeping the LAST duplicate. Same batch, same timestamp, InsertIfAbsent

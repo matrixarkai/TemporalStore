@@ -13,10 +13,10 @@ impl TemporalEngine {
         // Make the pages + WAL the manifest is about to reference durable before we
         // capture their slab ids / wal_sequence. In live mode each append already
         // fsyncs, but under MATRIXARK_BULK_INGEST appends defer fsync, so a dump firing
-        // mid-bulk would otherwise name slabs whose bytes are not yet on disk (
-        // DumpSlots always page_store_->Commit before UpdateIndex; slot_store.cc).
+        // mid-bulk would otherwise name slabs whose bytes are not yet on disk
+        // (the dump path always commits blocks durably before updating the index).
         // The durability barrier MUST succeed before we capture slab ids / wal_sequence and
-        // advance the dumped-log frontier -- OnCommitDone (slot_store.cc) refuses to touch
+        // advance the dumped-log frontier -- the commit step refuses to touch
         // the index if the page/wal commit failed. Swallowing these errors let a dump whose
         // pages never reached disk (e.g. a sync_data EIO/ENOSPC under bulk mode) still clear
         // the bucket dirty and let WAL reclaim truncate the records backing those pages ->
@@ -74,7 +74,7 @@ impl TemporalEngine {
         // mode). Taking the live tail here made install set replay_watermark PAST records the
         // embedded index never captured, so on reload WAL replay skipped them and reclaim
         // truncated them -> silent data loss. couples the two by construction: Load replays
-        // from the DumpedLogId stored INSIDE the dumped index (object_manager.cc:41), so the
+        // from the dumped-log id stored INSIDE the dumped index, so the
         // replay cursor always equals the state the index captured. Derive the watermark from the
         // embedded index's own anchor so reload replays exactly the WAL suffix it lacks. (None
         // only for a shard never written/flushed -> empty index -> fall back to the tail, 0.)

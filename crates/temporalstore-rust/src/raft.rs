@@ -3154,8 +3154,7 @@ struct RaftNode {
     installed_snapshot: Option<RaftSnapshot>,
     applied_index: u64,
     applied: BTreeSet<u64>,
-    // Monotonic exactly-once floor, mirroring the applier's `applied_raft_index_`
-    // (data_raft_replication.cc): the highest raft index ever applied. It is NEVER
+    // Monotonic exactly-once floor: the highest raft index ever applied. It is NEVER
     // lowered by a log truncation, so an entry at or below it is never re-executed even
     // if `applied`/`applied_index` were rewound.
     max_applied_index: u64,

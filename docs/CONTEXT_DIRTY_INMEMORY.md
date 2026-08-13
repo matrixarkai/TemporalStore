@@ -76,7 +76,7 @@ $ cargo run -p temporalstore-rust --example inmemory_dirty_check
 inmemory_dirty_check: OK (coalescing, latest-ts, max-depth, window-filter, bounded 500->1)
 ```
 
-### (`src/extension/context/implement.cc`)
+### Native context extension (in-memory dirty coalescing)
 
 `MarkSummaryDirty` / `QuerySummaryDirty` use a process-local, mutex-guarded
 coalescing map (`InMemoryDirtyEntry`) instead of the `ContextDirtyModel` `OrSet`

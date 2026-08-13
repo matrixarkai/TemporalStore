@@ -260,8 +260,7 @@ impl TemporalEngine {
             }
         }
         if expired_records_removed > 0 {
-            // parity (object_manager.h DoExpireObject -> op_logger_->DeleteObject +
-            // expirer.cc TryExpire -> Commit(nullptr,nullptr)): expiry IS a logged,
+            // Expiry IS a logged,
             // replicated delete. Emit a WAL tombstone per expired key -- buffered and
             // unfsynced, mirroring the fire-and-forget commit -- so followers and WAL
             // replay observe the deletion instead of relying on each node running its own
@@ -505,8 +504,8 @@ impl TemporalEngine {
             // behavior) let the independent next-cycle reclaim trust this volatile index, see a
             // fully-vacated old slab as stale, quarantine+purge it, and a later reload of the STALE
             // on-disk index would then dangle at the deleted slab -> silent durable data loss.
-            // avoids the desync structurally (page_compactor.cc leaves the index unchanged on
-            // failure -- update_index=false -- and commits the rewrite atomically). We instead
+            // avoids the desync structurally (the compactor leaves the index unchanged on
+            // failure and commits the rewrite atomically). We instead
             // durably commit the consistent partial: rebuild the secondary views so the serialized
             // index is internally consistent, fsync the relocated bytes so the index never names a
             // non-durable page, then persist -- leaving volatile == durable so reclaim is safe --
