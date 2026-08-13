@@ -53,6 +53,10 @@ pub fn serve(
     let handler = Arc::new(handler);
     for stream in listener.incoming() {
         let stream = stream?;
+        // Disable Nagle's algorithm: request/response bodies are small and are
+        // written in a couple of segments, so Nagle + delayed-ACK otherwise adds
+        // a ~40ms stall per round-trip on loopback/LAN.
+        let _ = stream.set_nodelay(true);
         let handler = Arc::clone(&handler);
         thread::spawn(move || {
             let _ = handle_stream(stream, &*handler);
@@ -128,12 +132,16 @@ fn handle_stream(
     } else {
         "application/json"
     };
-    write!(
-        stream,
+    let header = format!(
         "HTTP/1.1 {status} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
-    )?;
-    stream.write_all(&body)?;
+    );
+    // Coalesce header + body into a single write so the response leaves in one
+    // TCP segment where possible (avoids a small-segment Nagle stall).
+    let mut response = Vec::with_capacity(header.len() + body.len());
+    response.extend_from_slice(header.as_bytes());
+    response.extend_from_slice(&body);
+    stream.write_all(&response)?;
     stream.flush()?;
     Ok(())
 }
@@ -255,6 +263,10 @@ fn request_raw_once(
         .next()
         .ok_or_else(|| HttpError::BadResponse(format!("cannot resolve address {addr}")))?;
     let mut stream = TcpStream::connect_timeout(&socket_addr, connect_timeout)?;
+    // Disable Nagle: the request is header+small body written back-to-back; with
+    // Nagle on, the body waits for an ACK of the header, colliding with the peer's
+    // delayed-ACK timer for a ~40ms per-request stall.
+    let _ = stream.set_nodelay(true);
     let io_timeout = Some(Duration::from_millis(options.io_timeout_ms));
     stream.set_read_timeout(io_timeout)?;
     stream.set_write_timeout(io_timeout)?;
@@ -262,8 +274,12 @@ fn request_raw_once(
         "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\n{extra_headers}Connection: close\r\n\r\n",
         body.len()
     );
-    write_all_with_would_block_retry(&mut stream, header.as_bytes(), options.io_timeout_ms)?;
-    write_all_with_would_block_retry(&mut stream, body, options.io_timeout_ms)?;
+    // Coalesce header + body into a single buffer so the request leaves in one
+    // TCP segment where possible.
+    let mut framed = Vec::with_capacity(header.len() + body.len());
+    framed.extend_from_slice(header.as_bytes());
+    framed.extend_from_slice(body);
+    write_all_with_would_block_retry(&mut stream, &framed, options.io_timeout_ms)?;
     flush_with_would_block_retry(&mut stream, options.io_timeout_ms)?;
 
     let response = read_http_response(&mut stream, options.io_timeout_ms)?;
