@@ -10,6 +10,11 @@
 //! retrieval -- retrieval is what we are warming the store *for*). It shares the
 //! exact `extract_context` path, body format, source-id scheme, and session
 //! index file as the live hook, so records are identical to live ingestion.
+//! By default it also enables the live hook's L1 gate, so thin prompt/tool rows
+//! store raw evidence plus L0 without paying the richer L1 fanout cost.
+//! Set MATRIXARK_BACKFILL_RAW_FIRST=1 for a faster first pass that stores every
+//! row as a raw ContextNode/ContextEvent/source index and defers summaries and
+//! embeddings to a later extraction pass.
 //!
 //! Input: one JSON object per stdin line:
 //!   {"session_id":"<sid>","event":"UserPromptSubmit","ts_ms":1780000000000,"text":"..."}
@@ -36,8 +41,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use temporalstore_rust::{
-    ingest_extract_context, ContextExtractRequest, ContextIngestExtractRequest,
-    ContextModelProviderConfig, ContextSourceKind, TemporalEngine,
+    ingest_extract_context, BatchExecuteRequest, Command, ContextEvent, ContextExtractRequest,
+    ContextIndexRef, ContextIngestExtractRequest, ContextModelProviderConfig, ContextNode,
+    ContextSourceKind, TemporalEngine,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -49,6 +55,10 @@ fn main() {
     // Bulk backfill: defer per-record index persistence to flush_shard_index()
     // (see MATRIXARK_BULK_INGEST gate in the engine). Turns O(n^2) into O(n).
     std::env::set_var("MATRIXARK_BULK_INGEST", "1");
+    if std::env::var("MATRIXARK_CONTEXT_INGEST_GATE_L1").is_err() {
+        std::env::set_var("MATRIXARK_CONTEXT_INGEST_GATE_L1", "1");
+    }
+    let raw_first = env_bool("MATRIXARK_BACKFILL_RAW_FIRST");
     let max_body: usize = std::env::var("MATRIXARK_BACKFILL_MAX_BODY")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -218,27 +228,36 @@ fn main() {
             "{}:{}:{}:{}",
             account_id, tenant_id, user_id, session_id
         ));
-        let report = ingest_extract_context(
-            &engine,
-            ContextIngestExtractRequest {
-                shard_id: 1,
-                tenant_hash,
-                sources,
-                query: String::new(), // ingest-only: skip retrieval work during backfill
-                start_time_ms: 0,
-                end_time_ms,
-                max_events: 1,
-                provider: ContextModelProviderConfig::default(),
-            },
-        );
-        accepted += report.accepted as u64;
-        failed += report.failed as u64;
-        if !report.node_hashes.is_empty() {
+        let (session_accepted, session_failed, node_hashes) = if raw_first {
+            write_raw_sources(&engine, tenant_hash, &sources)
+        } else {
+            let report = ingest_extract_context(
+                &engine,
+                ContextIngestExtractRequest {
+                    shard_id: 1,
+                    tenant_hash,
+                    sources,
+                    query: String::new(), // ingest-only: skip retrieval work during backfill
+                    start_time_ms: 0,
+                    end_time_ms,
+                    max_events: 1,
+                    provider: ContextModelProviderConfig::default(),
+                },
+            );
+            (
+                report.accepted as u64,
+                report.failed as u64,
+                report.node_hashes,
+            )
+        };
+        accepted += session_accepted;
+        failed += session_failed;
+        if !node_hashes.is_empty() {
             index
                 .sessions
                 .entry(session_id.clone())
                 .or_default()
-                .extend(report.node_hashes.iter().copied());
+                .extend(node_hashes.iter().copied());
         }
         // Bulk persistence normally flushes once after all session groups below.
         // Keep an escape hatch for diagnosis, but do not rewrite the growing
@@ -249,8 +268,8 @@ fn main() {
         eprintln!(
             "  session {} -> accepted {} failed {} ({:.0} rec/s cumulative)",
             session_id,
-            report.accepted,
-            report.failed,
+            session_accepted,
+            session_failed,
             accepted as f64 / started.elapsed().as_secs_f64().max(0.001)
         );
     }
@@ -284,12 +303,102 @@ fn main() {
         "session_count": index.sessions.len(),
         "total_nodes": index.sessions.values().map(Vec::len).sum::<usize>(),
         "replay_from_sequence": replay_from_sequence,
+        "gate_l1": env_bool("MATRIXARK_CONTEXT_INGEST_GATE_L1"),
+        "raw_first": raw_first,
     });
     println!(
         "{}",
         serde_json::to_string_pretty(&report).expect("report should serialize")
     );
     let _ = io::stdout().flush();
+}
+
+fn write_raw_sources(
+    engine: &TemporalEngine,
+    tenant_hash: u64,
+    sources: &[ContextExtractRequest],
+) -> (u64, u64, Vec<u64>) {
+    if sources.is_empty() {
+        return (0, 0, Vec::new());
+    }
+    let shard_id = sources[0].shard_id;
+    let mut commands = Vec::with_capacity(sources.len().saturating_mul(3));
+    let mut node_hashes = Vec::new();
+    for source in sources {
+        let node_hash = stable_hash64(&format!(
+            "{}:{}:{}",
+            tenant_hash, source.source_kind as u8, source.source_id
+        ));
+        let event_id_hash = stable_hash64(&format!("event:{}:{}", source.source_id, source.body));
+        let timestamp_ms = source.timestamp_ms.max(1);
+        let node = ContextNode {
+            node_hash,
+            parent_hash: 0,
+            kind: source_kind_code(source.source_kind),
+            canonical_name: source.title.clone(),
+            l0: truncate_words(&source.body, 18),
+            status: 1,
+            last_event_time_ms: timestamp_ms,
+            summary_dirty: true,
+            l1_ref: String::new(),
+            raw_metadata_ref: source.source_id.clone(),
+        };
+        let event = ContextEvent {
+            event_id_hash,
+            event_time_ms: timestamp_ms,
+            ingestion_time_ms: timestamp_ms,
+            kind: source_kind_code(source.source_kind),
+            event_type: 1,
+            actor_hash: stable_hash64(&source.source_id),
+            status: 1,
+            valid_until_ms: 0,
+            confidence: 1.0,
+            importance: 1.0,
+            text: source.body.clone(),
+            source_ref: source.source_id.clone(),
+            related_node_hashes: Vec::new(),
+            compact_attrs: Vec::new(),
+        };
+        let index_ref = ContextIndexRef {
+            primary_node_hash: node_hash,
+            primary_event_time_ms: timestamp_ms,
+            event_id_hash,
+        };
+        commands.push(Command::ContextUpsertNode { tenant_hash, node });
+        commands.push(Command::ContextWriteEvent {
+            tenant_hash,
+            node_hash,
+            event,
+            first_write_only: true,
+            cold_storage: false,
+        });
+        commands.push(Command::ContextWriteIndexRef {
+            tenant_hash,
+            index_name: "source".to_string(),
+            index_value_hash: stable_hash64(&source.source_id),
+            scope_hash: 0,
+            event_time_ms: timestamp_ms,
+            index_ref,
+        });
+        node_hashes.push(node_hash);
+    }
+    let response = engine.batch_execute(BatchExecuteRequest { shard_id, commands });
+    if !response.status.ok {
+        return (0, sources.len() as u64, Vec::new());
+    }
+    let failed_commands = response
+        .responses
+        .iter()
+        .filter(|entry| !entry.status.ok)
+        .count();
+    if failed_commands > 0 {
+        let failed_rows = failed_commands.div_ceil(3);
+        let accepted = sources.len().saturating_sub(failed_rows) as u64;
+        return (accepted, failed_rows as u64, node_hashes);
+    }
+    node_hashes.sort_unstable();
+    node_hashes.dedup();
+    (sources.len() as u64, 0, node_hashes)
 }
 
 fn session_index_path(root: &PathBuf, agent_name: &str) -> PathBuf {
@@ -336,6 +445,26 @@ fn role_for_event(event: &str) -> &'static str {
         | "cursor.stop" | "claude.stop" => "assistant",
         _ => "user",
     }
+}
+
+fn source_kind_code(kind: ContextSourceKind) -> u32 {
+    match kind {
+        ContextSourceKind::Document => 1,
+        ContextSourceKind::Chat => 2,
+        ContextSourceKind::Ticket => 3,
+        ContextSourceKind::Code => 4,
+        ContextSourceKind::Incident => 5,
+        ContextSourceKind::UserEvent => 6,
+    }
+}
+
+fn truncate_words(text: &str, max_words: usize) -> String {
+    let mut words = text.split_whitespace();
+    let mut out = words.by_ref().take(max_words).collect::<Vec<_>>().join(" ");
+    if words.next().is_some() {
+        out.push_str("...");
+    }
+    out
 }
 
 fn now_ms() -> u64 {

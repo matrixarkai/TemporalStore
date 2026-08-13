@@ -18,6 +18,7 @@ pub fn ingest_extract_context(
     let source_count = request.sources.len();
     let start_time_ms = request.start_time_ms;
     let end_time_ms = request.end_time_ms;
+    let gate_l1 = context_ingest_gate_l1();
 
     for mut source in request.sources {
         source.shard_id = request.shard_id;
@@ -40,11 +41,10 @@ pub fn ingest_extract_context(
             continue;
         }
         let source_id = source.source_id.clone();
-        // Batch/bulk ingest keeps L1 unconditionally: resource/skill docs are
-        // substantial (L1 rollup is valuable) and this path carries a fixed
-        // fanout contract (2 summaries + 3 embeddings per extract). L1 gating
-        // applies only to the single-source `extract_context` (codex-hook) path.
-        let extract = extract_context_gated(engine, source, false);
+        // Keep the public API's historical full-fanout default, while allowing
+        // local-context backfill to opt into the same frugal L1 gate as live
+        // hook ingestion.
+        let extract = extract_context_gated(engine, source, gate_l1);
         if extract.status.ok {
             node_hashes.push(extract.node.node_hash);
             extracts.push(extract);
@@ -121,6 +121,17 @@ pub fn ingest_extract_context(
         retrieve_request,
         parity: context_pipeline_parity_evidence(),
     }
+}
+
+fn context_ingest_gate_l1() -> bool {
+    std::env::var("MATRIXARK_CONTEXT_INGEST_GATE_L1")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 pub fn ingest_resource_skill_context(
@@ -783,4 +794,3 @@ pub(crate) fn query_missing_secondary_index_refs(
         })
         .collect()
 }
-

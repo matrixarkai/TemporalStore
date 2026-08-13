@@ -51,7 +51,7 @@ command -v ionice >/dev/null 2>&1 && NICE_PREFIX="ionice -c3 $NICE_PREFIX"
 YIELD_MS="${MATRIXARK_BACKFILL_YIELD_MS:-200}"
 INGESTER="$REPO_ROOT/tools/matrixark_local_backfill_ingester.py"
 WORK="${MATRIXARK_BACKFILL_WORK:-/root/.matrixark/temporalstore-backfill}"
-CHUNK="${MATRIXARK_BACKFILL_CHUNK:-400}"
+CHUNK="${MATRIXARK_BACKFILL_CHUNK:-4000}"
 AGENTS="${MATRIXARK_BACKFILL_AGENTS:-claude codex}"
 SOURCES="${MATRIXARK_BACKFILL_SOURCES:-transcripts,rollouts,dual_hooks,openviking,resources}"
 LOCK="$WORK/.lock"
@@ -215,6 +215,7 @@ backfill_agent() {
     if sed -n "$((off+1)),${end}p" "$SRC" | \
         MATRIXARK_AGENT_NAME="$AG" MATRIXARK_ACCOUNT_ID="$(agent_account "$AG")" \
         MATRIXARK_TENANT_ID="$(agent_tenant "$AG")" MATRIXARK_USER_ID="${USER:-root}" \
+        MATRIXARK_BACKFILL_RAW_FIRST="${MATRIXARK_BACKFILL_RAW_FIRST:-1}" \
         TEMPORALSTORE_RUST_CODEX_HOOK_ROOT="$ROOT" \
         $NICE_PREFIX "$BATCH" --agent-name "$AG" >>"$LOG" 2>&1; then
       off=$end
