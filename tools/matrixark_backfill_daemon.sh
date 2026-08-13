@@ -27,7 +27,7 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 PYTHON="${TEMPORALSTORE_PYTHON:-python3}"
-TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/temporalstore-context-workflow-target}"
+TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 BATCH="$TARGET_DIR/debug/context_batch_ingest"
 # Low-priority execution so real-time (live-hook) ingestion is never starved by
 # the backfill: nice lowers CPU priority, ionice (if present) lowers IO priority,
@@ -36,7 +36,7 @@ NICE_PREFIX="nice -n ${MATRIXARK_BACKFILL_NICE:-19}"
 command -v ionice >/dev/null 2>&1 && NICE_PREFIX="ionice -c3 $NICE_PREFIX"
 YIELD_MS="${MATRIXARK_BACKFILL_YIELD_MS:-200}"
 INGESTER="$REPO_ROOT/tools/matrixark_local_backfill_ingester.py"
-WORK="${MATRIXARK_BACKFILL_WORK:-/tmp/matrixark-backfill}"
+WORK="${MATRIXARK_BACKFILL_WORK:-/root/.matrixark/temporalstore-backfill}"
 CHUNK="${MATRIXARK_BACKFILL_CHUNK:-400}"
 AGENTS="${MATRIXARK_BACKFILL_AGENTS:-claude codex}"
 LOCK="$WORK/.lock"
@@ -60,8 +60,27 @@ log "daemon start (chunk=$CHUNK agents='$AGENTS')"
 # local context on a *first start* or when the on-disk store is *empty* (e.g. a
 # fresh or wiped data dir). If every agent's store already holds records, there
 # is nothing to backfill.
-agent_root() { echo "/tmp/temporalstore-rust-$1-hook"; }
-store_has_memory() { [[ -d "$1" ]] && [[ -n "$(find "$1" -type f -print -quit 2>/dev/null)" ]]; }
+agent_root() {
+  case "$1" in
+    claude)
+      if [[ -n "${MATRIXARK_CLAUDE_RUST_HOOK_ROOT:-}" ]]; then echo "$MATRIXARK_CLAUDE_RUST_HOOK_ROOT"; return; fi
+      if [[ -n "${TEMPORALSTORE_RUST_CLAUDE_HOOK_ROOT:-}" ]]; then echo "$TEMPORALSTORE_RUST_CLAUDE_HOOK_ROOT"; return; fi
+      echo "${MATRIXARK_CLAUDE_HOOK_STORE_BASE:-/root/.matrixark/temporalstore-hooks/claude}/rust"
+      ;;
+    codex)
+      if [[ -n "${MATRIXARK_CODEX_RUST_HOOK_ROOT:-}" ]]; then echo "$MATRIXARK_CODEX_RUST_HOOK_ROOT"; return; fi
+      echo "${MATRIXARK_CODEX_HOOK_STORE_BASE:-/root/.matrixark/temporalstore-hooks/codex}/rust"
+      ;;
+    *)
+      echo "/root/.matrixark/temporalstore-hooks/$1/rust"
+      ;;
+  esac
+}
+store_has_memory() {
+  local root="$1"
+  [[ -d "$root" ]] || return 1
+  [[ -n "$(find "$root/indexes" "$root/cache" -type f -size +0c -print -quit 2>/dev/null)" ]]
+}
 if [[ "$FORCE" == "1" ]]; then
   # User forced a re-ingest from the AGENTS' own logs (Claude/Codex transcripts,
   # rollouts, resources — not TemporalStore's own logs). Bypass the
@@ -96,8 +115,6 @@ fi
 # 3) Ingest each agent in resumable chunks.
 agent_account() { case "$1" in claude) echo acct_claude;; codex) echo acct_codex;; *) echo "acct_$1";; esac; }
 agent_tenant()  { case "$1" in claude) echo tenant_claude;; codex) echo tenant_codex;; *) echo "tenant_$1";; esac; }
-agent_root()    { echo "/tmp/temporalstore-rust-$1-hook"; }
-
 # Bounded parallel pool. Each agent has its own store root, so agents are
 # independent and run concurrently; chunks WITHIN an agent stay sequential (one
 # per-store write lock + a resumable offset that must advance in order). Parallel

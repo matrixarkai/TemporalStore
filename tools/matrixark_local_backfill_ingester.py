@@ -24,9 +24,9 @@ Design notes
   PostToolUse->tool), exactly as the engine's ``role_for_event`` does, so we set
   ``--event`` per item rather than trusting the source's own role label.
 * Per-agent identity/scope/store-root mirror the live hooks so backfilled nodes
-  land in the same store the live hook retrieves from:
-      claude -> acct_claude/tenant_claude, root /tmp/temporalstore-rust-claude-hook
-      codex  -> acct_codex /tenant_codex , root /tmp/temporalstore-rust-codex-hook
+  land in the same durable store the live hook retrieves from:
+      claude -> acct_claude/tenant_claude, root /root/.matrixark/temporalstore-hooks/claude/rust
+      codex  -> acct_codex /tenant_codex , root /root/.matrixark/temporalstore-hooks/codex/rust
 * Idempotent: the engine keys each node on hash(text), so re-runs converge.
 * Resources are ingested under a shared ``_resources`` session into *both* agent
   stores (opt out with --no-shared-resources). Surfacing shared/global nodes in
@@ -47,16 +47,50 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Iterator
 
-DEFAULT_BIN = "/tmp/temporalstore-context-workflow-target/debug/codex_context_hook"
+DEFAULT_BIN = str(Path(__file__).resolve().parents[1] / "target" / "debug" / "codex_context_hook")
 
 # Per-agent identity mirrors the live hooks (see matrixark_claude_hook.sh and
 # codex_context_hook.rs defaults). user_id defaults to the process user like live.
 AGENTS = {
-    "claude": dict(account="acct_claude", tenant="tenant_claude",
-                   root="/tmp/temporalstore-rust-claude-hook"),
-    "codex": dict(account="acct_codex", tenant="tenant_codex",
-                  root="/tmp/temporalstore-rust-codex-hook"),
+    "claude": dict(account="acct_claude", tenant="tenant_claude"),
+    "codex": dict(account="acct_codex", tenant="tenant_codex"),
 }
+
+
+def agent_root(agent: str) -> str:
+    """Resolve the durable Rust hook root for a backfilled agent.
+
+    ``TEMPORALSTORE_RUST_CODEX_HOOK_ROOT`` is intentionally not used as the
+    multi-agent Codex default because Claude's live hook historically exports it
+    to the Claude root for compatibility with shared Rust code. Dedicated
+    MATRIXARK_* roots and per-agent store bases avoid cross-agent misrouting.
+    """
+    if agent == "claude":
+        explicit = (
+            os.environ.get("MATRIXARK_CLAUDE_RUST_HOOK_ROOT")
+            or os.environ.get("TEMPORALSTORE_RUST_CLAUDE_HOOK_ROOT")
+        )
+        if explicit:
+            return explicit
+        return os.path.join(
+            os.environ.get("MATRIXARK_CLAUDE_HOOK_STORE_BASE", "/root/.matrixark/temporalstore-hooks/claude"),
+            "rust",
+        )
+    if agent == "codex":
+        explicit = os.environ.get("MATRIXARK_CODEX_RUST_HOOK_ROOT")
+        if explicit:
+            return explicit
+        return os.path.join(
+            os.environ.get("MATRIXARK_CODEX_HOOK_STORE_BASE", "/root/.matrixark/temporalstore-hooks/codex"),
+            "rust",
+        )
+    return f"/root/.matrixark/temporalstore-hooks/{agent}/rust"
+
+
+def agent_config(agent: str) -> dict:
+    cfg = dict(AGENTS[agent])
+    cfg["root"] = agent_root(agent)
+    return cfg
 
 # Map a normalized role to the hook event that yields that role in the engine.
 EVENT_FOR_ROLE = {"user": "UserPromptSubmit", "assistant": "Stop", "tool": "PostToolUse"}
@@ -514,7 +548,7 @@ def _loads(s: str):
 # ------------------------------- feeding ------------------------------------
 
 def feed(item: Item, binp: str, users: dict, max_ctx: int, timeout: int) -> str:
-    cfg = AGENTS[item.agent]
+    cfg = agent_config(item.agent)
     env = dict(os.environ)
     env.update(
         MATRIXARK_AGENT_NAME=item.agent,
@@ -549,18 +583,17 @@ def classify(stdout: str) -> str:
 
 # --------------------------------- main -------------------------------------
 
-def build_items(args, home, tmp) -> list[Item]:
-    items: list[Item] = []
+def iter_items(args, home, tmp) -> Iterator[Item]:
     per = args.limit_per_source
     if "transcripts" in args.sources and "claude" in args.agents:
-        items += list(iter_claude_transcripts(home, per))
+        yield from iter_claude_transcripts(home, per)
     if "rollouts" in args.sources and "codex" in args.agents:
-        items += list(iter_codex_rollouts(home, per, args.rollout_min_assistant_chars,
-                                            args.rollout_user_only, coalesce=not args.rollout_no_coalesce))
+        yield from iter_codex_rollouts(home, per, args.rollout_min_assistant_chars,
+                                       args.rollout_user_only, coalesce=not args.rollout_no_coalesce)
     if "dual_hooks" in args.sources and "codex" in args.agents:
-        items += list(iter_codex_dual_hooks(tmp, per))
+        yield from iter_codex_dual_hooks(tmp, per)
     if "openviking" in args.sources:
-        items += list(iter_openviking(home, per))
+        yield from iter_openviking(home, per)
     if "resources" in args.sources:
         res_agents = list(args.agents) if args.shared_resources else args.agents[:1]
         for relpath, chunk, idx in iter_resources(args.resource_globs, args.max_chars, per):
@@ -569,9 +602,14 @@ def build_items(args, home, tmp) -> list[Item]:
             mt = int(os.path.getmtime(relpath) * 1000) if os.path.exists(relpath) else 0
             for ag in res_agents:
                 # durable knowledge -> stable "_global" scope so it surfaces cross-session
-                items.append(Item(ag, GLOBAL_SESSION, "PostToolUse",
-                                  {"hook_event_name": "PostToolUse", "session_id": GLOBAL_SESSION, "prompt": body},
-                                  "resource_md", text=body, ts_ms=mt))
+                yield Item(ag, GLOBAL_SESSION, "PostToolUse",
+                           {"hook_event_name": "PostToolUse", "session_id": GLOBAL_SESSION, "prompt": body},
+                           "resource_md", text=body, ts_ms=mt)
+
+
+def build_items(args, home, tmp) -> list[Item]:
+    items: list[Item] = []
+    items.extend(iter_items(args, home, tmp))
     return items
 
 
@@ -650,6 +688,62 @@ def main() -> int:
         print(f"ERROR: batch bin not found: {args.run_batch}", file=sys.stderr)
         return 2
 
+    # --- fast enumerator mode: emit per-agent JSONL for the load-once batch bin ---
+    if args.emit_jsonl:
+        from collections import Counter
+        outdir = Path(args.emit_jsonl)
+        outdir.mkdir(parents=True, exist_ok=True)
+        counts: dict[str, int] = {}
+        by_src = Counter()
+        by_agent = Counter()
+        scanned = 0
+        dropped = 0
+        handles = {}
+        t_emit = time.time()
+        print(f"home={home}  bin={args.bin}")
+        try:
+            for it in iter_items(args, home, tmp):
+                scanned += 1
+                by_src[it.source] += 1
+                by_agent[it.agent] += 1
+                drop, text = _is_low_value(it.text or "")
+                if drop or not text.strip():
+                    dropped += 1
+                    continue
+                fh = handles.get(it.agent)
+                if fh is None:
+                    fh = open(outdir / f"backfill.{it.agent}.jsonl", "w", encoding="utf-8")
+                    handles[it.agent] = fh
+                fh.write(json.dumps({"session_id": it.session_id, "event": it.event,
+                                     "ts_ms": it.ts_ms, "text": text}, ensure_ascii=False) + "\n")
+                counts[it.agent] = counts.get(it.agent, 0) + 1
+        finally:
+            for fh in handles.values():
+                fh.close()
+        print(
+            f"streamed {scanned} items by_source={dict(by_src)} by_agent={dict(by_agent)}; "
+            f"emitted {sum(counts.values())} records -> {dict(counts)} "
+            f"(dropped {dropped} low-value) in {outdir} after {time.time() - t_emit:.1f}s"
+        )
+        if args.run_batch:
+            for agent, n in counts.items():
+                cfg = agent_config(agent)
+                env = dict(os.environ)
+                env.update(MATRIXARK_AGENT_NAME=agent, TEMPORALSTORE_AGENT_NAME=agent,
+                           MATRIXARK_ACCOUNT_ID=cfg["account"], MATRIXARK_TENANT_ID=cfg["tenant"],
+                           MATRIXARK_USER_ID=users[agent], TEMPORALSTORE_RUST_CODEX_HOOK_ROOT=cfg["root"])
+                infile = outdir / f"backfill.{agent}.jsonl"
+                print(f"\n=== batch-ingest {agent}: {n} records -> {cfg['root']} ===", flush=True)
+                with open(infile, encoding="utf-8") as fh:
+                    proc = subprocess.run([args.run_batch, "--agent-name", agent],
+                                          stdin=fh, text=True, capture_output=True, env=env)
+                print(proc.stdout.strip())
+                if proc.returncode != 0:
+                    print(f"  batch bin rc={proc.returncode} stderr(tail)={proc.stderr.strip()[-400:]}")
+        if args.report:
+            Path(args.report).write_text(json.dumps({"emit": True, "scanned": scanned, "counts": counts, "by_source": dict(by_src), "by_agent": dict(by_agent), "dropped": dropped}, indent=2))
+        return 0
+
     t0 = time.time()
     items = build_items(args, home, tmp)
     m = Metrics(scanned=len(items))
@@ -668,49 +762,6 @@ def main() -> int:
         if args.report:
             Path(args.report).write_text(json.dumps({"dry_run": True, "scanned": len(items),
                                                      "by_source": dict(by_src), "by_agent": dict(by_agent)}, indent=2))
-        return 0
-
-    # --- fast enumerator mode: emit per-agent JSONL for the load-once batch bin ---
-    if args.emit_jsonl:
-        outdir = Path(args.emit_jsonl)
-        outdir.mkdir(parents=True, exist_ok=True)
-        counts: dict[str, int] = {}
-        dropped = 0
-        handles = {}
-        try:
-            for it in items:
-                drop, text = _is_low_value(it.text or "")
-                if drop or not text.strip():
-                    dropped += 1
-                    continue
-                fh = handles.get(it.agent)
-                if fh is None:
-                    fh = open(outdir / f"backfill.{it.agent}.jsonl", "w", encoding="utf-8")
-                    handles[it.agent] = fh
-                fh.write(json.dumps({"session_id": it.session_id, "event": it.event,
-                                     "ts_ms": it.ts_ms, "text": text}, ensure_ascii=False) + "\n")
-                counts[it.agent] = counts.get(it.agent, 0) + 1
-        finally:
-            for fh in handles.values():
-                fh.close()
-        print(f"emitted {sum(counts.values())} records -> {dict(counts)} (dropped {dropped} low-value) in {outdir}")
-        if args.run_batch:
-            for agent, n in counts.items():
-                cfg = AGENTS[agent]
-                env = dict(os.environ)
-                env.update(MATRIXARK_AGENT_NAME=agent, TEMPORALSTORE_AGENT_NAME=agent,
-                           MATRIXARK_ACCOUNT_ID=cfg["account"], MATRIXARK_TENANT_ID=cfg["tenant"],
-                           MATRIXARK_USER_ID=users[agent], TEMPORALSTORE_RUST_CODEX_HOOK_ROOT=cfg["root"])
-                infile = outdir / f"backfill.{agent}.jsonl"
-                print(f"\n=== batch-ingest {agent}: {n} records -> {cfg['root']} ===", flush=True)
-                with open(infile, encoding="utf-8") as fh:
-                    proc = subprocess.run([args.run_batch, "--agent-name", agent],
-                                          stdin=fh, text=True, capture_output=True, env=env)
-                print(proc.stdout.strip())
-                if proc.returncode != 0:
-                    print(f"  batch bin rc={proc.returncode} stderr(tail)={proc.stderr.strip()[-400:]}")
-        if args.report:
-            Path(args.report).write_text(json.dumps({"emit": True, "counts": counts}, indent=2))
         return 0
 
     for i, it in enumerate(items, 1):

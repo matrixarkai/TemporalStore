@@ -94,6 +94,7 @@ CLAUDE_STORE_BASE="${MATRIXARK_CLAUDE_HOOK_STORE_BASE:-/root/.matrixark/temporal
 mkdir -p "$CLAUDE_STORE_BASE" 2>/dev/null || true
 export TEMPORALSTORE_RUST_CODEX_HOOK_ROOT="${TEMPORALSTORE_RUST_CLAUDE_HOOK_ROOT:-${TEMPORALSTORE_RUST_CODEX_HOOK_ROOT:-$CLAUDE_STORE_BASE/rust}}"
 export TEMPORALSTORE_RUST_CODEX_EVENT_LOG="${TEMPORALSTORE_RUST_CLAUDE_EVENT_LOG:-${TEMPORALSTORE_RUST_CODEX_EVENT_LOG:-$CLAUDE_STORE_BASE/rust.jsonl}}"
+export MATRIXARK_CLAUDE_RUST_HOOK_ROOT="${MATRIXARK_CLAUDE_RUST_HOOK_ROOT:-$TEMPORALSTORE_RUST_CODEX_HOOK_ROOT}"
 
 # Resolve the event + session from the payload when not passed as an argument.
 # Data arrives on stdin; the program is passed via -c (no stdin conflict).
@@ -240,11 +241,11 @@ elif [[ ! -x "$BIN" ]]; then
   fail_open "hook binary not built yet; run the SessionStart hook or set MATRIXARK_CLAUDE_HOOK_ALLOW_BUILD=1"
 fi
 
-# Optional async first-start backfill (opt-in via MATRIXARK_BACKFILL_ON_START=1).
+# Async first-start backfill (default auto; disable with MATRIXARK_BACKFILL_ON_START=0).
 # Detached so it never blocks the turn; the daemon self-locks and resumes from
 # per-agent offsets, warming the store with local Claude/Codex context + durable
 # global memory. Fail-open: any error here must not affect the hook output.
-if [[ "$EVENT" == "SessionStart" && "${MATRIXARK_BACKFILL_ON_START:-0}" == "1" ]]; then
+if [[ "$EVENT" == "SessionStart" && "${MATRIXARK_BACKFILL_ON_START:-auto}" != "0" && "${MATRIXARK_BACKFILL_ON_START:-auto}" != "false" && "${MATRIXARK_BACKFILL_ON_START:-auto}" != "no" ]]; then
   setsid bash "$REPO_ROOT/tools/matrixark_backfill_daemon.sh" >/dev/null 2>&1 </dev/null &
   disown 2>/dev/null || true
 fi

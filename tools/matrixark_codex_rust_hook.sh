@@ -12,6 +12,7 @@ CODEX_STORE_BASE="${MATRIXARK_CODEX_HOOK_STORE_BASE:-/root/.matrixark/temporalst
 mkdir -p "$CODEX_STORE_BASE" 2>/dev/null || true
 export MATRIXARK_TEMPORALSTORE_RUST_ROOT="${MATRIXARK_TEMPORALSTORE_RUST_ROOT:-$CODEX_STORE_BASE/store}"
 export TEMPORALSTORE_RUST_CODEX_HOOK_ROOT="${TEMPORALSTORE_RUST_CODEX_HOOK_ROOT:-$CODEX_STORE_BASE/rust}"
+export MATRIXARK_CODEX_RUST_HOOK_ROOT="${MATRIXARK_CODEX_RUST_HOOK_ROOT:-$TEMPORALSTORE_RUST_CODEX_HOOK_ROOT}"
 
 export MATRIXARK_MCP_BACKEND="${MATRIXARK_MCP_BACKEND:-temporalstore-rust}"
 export MATRIXARK_RUST_TEMPORALSTORE_MODE="${MATRIXARK_RUST_TEMPORALSTORE_MODE:-local}"
@@ -150,6 +151,11 @@ _matrixark_start_rust_proxy_daemon() {
 }
 
 _matrixark_start_rust_proxy_daemon
+
+if [[ "${MATRIXARK_BACKFILL_ON_START:-auto}" != "0" && "${MATRIXARK_BACKFILL_ON_START:-auto}" != "false" && "${MATRIXARK_BACKFILL_ON_START:-auto}" != "no" ]]; then
+  setsid bash "$ROOT/tools/matrixark_backfill_daemon.sh" >/dev/null 2>&1 </dev/null &
+  disown 2>/dev/null || true
+fi
 
 status=0
 python3 "$ROOT/tools/matrixark_codex_hook.py" "$@" || status=$?
