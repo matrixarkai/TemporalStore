@@ -93,6 +93,11 @@ fn main() {
         root.join("indexes"),
     );
     engine.load_shard(1);
+    let replay_from_sequence = engine.write_ahead_log_store().stats(1).last_sequence;
+    std::env::set_var(
+        "MATRIXARK_BULK_INGEST_REPLAY_FROM_SEQUENCE",
+        replay_from_sequence.to_string(),
+    );
 
     // Load existing session index once; accumulate in memory; write once at the end.
     let index_path = session_index_path(&root, &agent_name);
@@ -191,7 +196,10 @@ fn main() {
             timestamp_ms: ts_ms,
             provider: ContextModelProviderConfig::default(),
         };
-        groups.entry(session_id.clone()).or_default().push(mk(&session_id));
+        groups
+            .entry(session_id.clone())
+            .or_default()
+            .push(mk(&session_id));
         // Cross-session/global mirror: resources + explicitly-global sessions.
         if let Some(gs) = &global_session {
             let is_global = session_id == "_resources" || session_id.starts_with("_global");
@@ -201,6 +209,7 @@ fn main() {
         }
     }
 
+    let flush_every_session = env_bool("MATRIXARK_BACKFILL_FLUSH_EVERY_SESSION");
     for (session_id, sources) in groups.into_iter() {
         if sources.is_empty() {
             continue;
@@ -231,9 +240,12 @@ fn main() {
                 .or_default()
                 .extend(report.node_hashes.iter().copied());
         }
-        // Deferred persistence: flush the in-memory index to disk once per session
-        // batch (instead of per record). One bounded write, not O(n^2).
-        engine.flush_shard_index(1);
+        // Bulk persistence normally flushes once after all session groups below.
+        // Keep an escape hatch for diagnosis, but do not rewrite the growing
+        // shard index after every session in the normal fresh-start backfill.
+        if flush_every_session {
+            engine.flush_shard_index(1);
+        }
         eprintln!(
             "  session {} -> accepted {} failed {} ({:.0} rec/s cumulative)",
             session_id,
@@ -242,6 +254,12 @@ fn main() {
             accepted as f64 / started.elapsed().as_secs_f64().max(0.001)
         );
     }
+
+    // Persist the TemporalStore shard index once per process/chunk. This is the
+    // main latency win for fresh-start backfill: the daemon already chunks and
+    // resumes, so we keep durability at each chunk boundary without rewriting
+    // the full index once per session.
+    engine.flush_shard_index(1);
 
     // Dedup and persist the session index once.
     for nodes in index.sessions.values_mut() {
@@ -265,6 +283,7 @@ fn main() {
         "seconds": started.elapsed().as_secs_f64(),
         "session_count": index.sessions.len(),
         "total_nodes": index.sessions.values().map(Vec::len).sum::<usize>(),
+        "replay_from_sequence": replay_from_sequence,
     });
     println!(
         "{}",
@@ -274,7 +293,10 @@ fn main() {
 }
 
 fn session_index_path(root: &PathBuf, agent_name: &str) -> PathBuf {
-    root.join(format!("{}-session-index.json", sanitize_agent_name(agent_name)))
+    root.join(format!(
+        "{}-session-index.json",
+        sanitize_agent_name(agent_name)
+    ))
 }
 
 fn sanitize_agent_name(agent_name: &str) -> String {
@@ -321,6 +343,17 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(1)
+}
+
+fn env_bool(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 fn stable_hash64(value: &str) -> u64 {

@@ -4,6 +4,8 @@
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -238,14 +240,15 @@ impl LocalWriteAheadLogStore {
     ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         fs::create_dir_all(&inner.root)?;
-        let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
-            Some(sequence) => sequence,
-            None => {
-                let sequence = last_wal_sequence_at(&inner.root, shard_id)?;
-                inner.last_sequence_by_shard.insert(shard_id, sequence);
-                sequence
-            }
-        };
+        let _append_lock = WalAppendLock::acquire(&inner.root, shard_id)?;
+        let disk_last_sequence = last_wal_sequence_at(&inner.root, shard_id)?;
+        let cached_last_sequence = inner
+            .last_sequence_by_shard
+            .get(&shard_id)
+            .copied()
+            .unwrap_or_default();
+        let last_sequence = cached_last_sequence.max(disk_last_sequence);
+        inner.last_sequence_by_shard.insert(shard_id, last_sequence);
         let next_sequence = last_sequence.saturating_add(1);
         let record = WriteAheadLogRecord {
             shard_id,
@@ -514,6 +517,72 @@ fn write_ahead_log_path(root: &Path, shard_id: ShardId) -> PathBuf {
     root.join(format!("shard-{shard_id}.wal.jsonl"))
 }
 
+struct WalAppendLock {
+    #[allow(dead_code)]
+    file: File,
+}
+
+impl WalAppendLock {
+    fn acquire(root: &Path, shard_id: ShardId) -> Result<Self, WriteAheadLogError> {
+        fs::create_dir_all(root)?;
+        let path = root.join(format!("shard-{shard_id}.wal.lock"));
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        lock_file_exclusive(&file)?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for WalAppendLock {
+    fn drop(&mut self) {
+        let _ = unlock_file(&self.file);
+    }
+}
+
+#[cfg(unix)]
+fn lock_file_exclusive(file: &File) -> Result<(), std::io::Error> {
+    const LOCK_EX: i32 = 2;
+    loop {
+        let rc = unsafe { flock(file.as_raw_fd(), LOCK_EX) };
+        if rc == 0 {
+            return Ok(());
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() != std::io::ErrorKind::Interrupted {
+            return Err(err);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn unlock_file(file: &File) -> Result<(), std::io::Error> {
+    const LOCK_UN: i32 = 8;
+    let rc = unsafe { flock(file.as_raw_fd(), LOCK_UN) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn flock(fd: i32, operation: i32) -> i32;
+}
+
+#[cfg(not(unix))]
+fn lock_file_exclusive(_file: &File) -> Result<(), std::io::Error> {
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn unlock_file(_file: &File) -> Result<(), std::io::Error> {
+    Ok(())
+}
+
 fn wal_bulk_relaxed_durability() -> bool {
     matches!(
         std::env::var("MATRIXARK_BULK_INGEST")
@@ -735,6 +804,46 @@ fn unique_temp_path(kind: &str) -> PathBuf {
 mod tests {
     use super::*;
     use crate::types::Command;
+
+    #[test]
+    fn wal_interleaved_processes_refresh_sequence_from_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = LocalWriteAheadLogStore::new(dir.path());
+        let second = LocalWriteAheadLogStore::new(dir.path());
+
+        let one = first
+            .append(
+                1,
+                Command::StringSet {
+                    key: "first".to_string(),
+                    value: b"v".to_vec(),
+                },
+            )
+            .unwrap();
+        let two = second
+            .append(
+                1,
+                Command::StringSet {
+                    key: "second".to_string(),
+                    value: b"v".to_vec(),
+                },
+            )
+            .unwrap();
+        let three = first
+            .append(
+                1,
+                Command::StringSet {
+                    key: "third".to_string(),
+                    value: b"v".to_vec(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(one.sequence, 1);
+        assert_eq!(two.sequence, 2);
+        assert_eq!(three.sequence, 3);
+        assert_eq!(last_wal_sequence_at(dir.path(), 1).unwrap(), 3);
+    }
 
     #[test]
     fn wal_full_reclaim_retains_tail_so_sequence_does_not_regress_after_restart() {

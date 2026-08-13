@@ -107,6 +107,29 @@ _SYSTEM_PREFIXES = ("<environment_context", "<permissions", "<user_instructions"
                     "<permissions instructions", "<system", "<available_tools")
 
 
+def _windows_home_from_path(path: str, mount_root: str = "/mnt") -> str:
+    norm = os.path.normpath(path)
+    mount = os.path.normpath(mount_root)
+    for drive in ("c", "d", "e"):
+        prefix = os.path.join(mount, drive, "Users") + os.sep
+        if not norm.startswith(prefix):
+            continue
+        remainder = norm[len(prefix) :]
+        name = remainder.split(os.sep, 1)[0]
+        if not name:
+            return ""
+        home = os.path.join(mount, drive, "Users", name)
+        if os.path.isdir(home):
+            return home
+    return ""
+
+
+def _profile_score(home: str) -> tuple[int, int, str]:
+    has_claude = os.path.isdir(os.path.join(home, ".claude"))
+    has_codex = os.path.isdir(os.path.join(home, ".codex"))
+    return (1 if has_claude else 0, 1 if has_codex else 0, home)
+
+
 def _homes() -> tuple[str, str]:
     """Return (windows_user_home_on_wsl, tmp_dir), auto-detecting the WSL mount.
 
@@ -119,6 +142,12 @@ def _homes() -> tuple[str, str]:
     if env_home:
         candidates.append(env_home)
     mount_root = os.environ.get("MATRIXARK_WSL_MOUNT", "/mnt")
+    for active_path in (os.environ.get("PWD"), os.getcwd()):
+        if active_path:
+            active_home = _windows_home_from_path(active_path, mount_root)
+            if active_home:
+                candidates.append(active_home)
+    discovered: list[str] = []
     for drive in ("c", "d", "e"):
         users_dir = os.path.join(mount_root, drive, "Users")
         if os.path.isdir(users_dir):
@@ -127,10 +156,18 @@ def _homes() -> tuple[str, str]:
                     continue
                 home = os.path.join(users_dir, name)
                 if os.path.isdir(os.path.join(home, ".codex")) or os.path.isdir(os.path.join(home, ".claude")):
-                    candidates.append(home)
+                    discovered.append(home)
+    candidates.extend(sorted(discovered, key=_profile_score, reverse=True))
     candidates.append(os.path.expanduser("~"))
+    seen: set[str] = set()
     for cand in candidates:
-        if cand and os.path.isdir(cand):
+        if not cand:
+            continue
+        norm = os.path.normpath(cand)
+        if norm in seen:
+            continue
+        seen.add(norm)
+        if os.path.isdir(cand):
             return cand, "/tmp"
     return os.path.expanduser("~"), "/tmp"
 

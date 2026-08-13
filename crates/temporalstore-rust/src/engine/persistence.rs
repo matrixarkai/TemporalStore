@@ -162,16 +162,25 @@ impl TemporalEngine {
             let mut shards = self.shards.write().expect("engine lock poisoned");
             match shards.get_mut(&shard_id) {
                 Some(shard) => {
-                    if promote_model_maps_to_bucket_index_authority(shard_id, shard, 0, u32::MAX)
-                    {
+                    if promote_model_maps_to_bucket_index_authority(shard_id, shard, 0, u32::MAX) {
                         reconcile_secondary_views_from_bucket_index(&self.page_store, shard, None);
                     }
                     rebuild_bucket_first_index(shard_id, shard, 0, u32::MAX);
                     refresh_bucket_runtime_flags(shard);
                     // Anchor the flushed index to the WAL sequence it reflects so a
-                    // later load replays only records written after this flush.
-                    shard.applied_wal_sequence =
-                        Some(self.wal_store.stats(shard_id).last_sequence);
+                    // later load replays only records written after this flush. A
+                    // local-context backfill can run beside live hook/proxy writers;
+                    // in that mode the batch process may not have applied records
+                    // written by the live process, so it pins the anchor to the WAL
+                    // sequence observed before the batch began and lets restart
+                    // replay the interleaved tail.
+                    let default_anchor = self.wal_store.stats(shard_id).last_sequence;
+                    let anchor = std::env::var("MATRIXARK_BULK_INGEST_REPLAY_FROM_SEQUENCE")
+                        .ok()
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .unwrap_or(default_anchor)
+                        .min(default_anchor);
+                    shard.applied_wal_sequence = Some(anchor);
                     serialize_index(shard)
                 }
                 None => return,

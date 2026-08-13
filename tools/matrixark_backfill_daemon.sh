@@ -30,8 +30,19 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 PYTHON="${TEMPORALSTORE_PYTHON:-python3}"
+CARGO_BIN="${CARGO:-cargo}"
+if ! command -v "$CARGO_BIN" >/dev/null 2>&1 && [[ -x /root/.cargo/bin/cargo ]]; then
+  CARGO_BIN="/root/.cargo/bin/cargo"
+fi
 TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
-BATCH="$TARGET_DIR/debug/context_batch_ingest"
+BATCH="${MATRIXARK_BACKFILL_BATCH_BIN:-}"
+if [[ -z "$BATCH" ]]; then
+  if [[ -x "$TARGET_DIR/release/context_batch_ingest" ]]; then
+    BATCH="$TARGET_DIR/release/context_batch_ingest"
+  else
+    BATCH="$TARGET_DIR/debug/context_batch_ingest"
+  fi
+fi
 # Low-priority execution so real-time (live-hook) ingestion is never starved by
 # the backfill: nice lowers CPU priority, ionice (if present) lowers IO priority,
 # and a short yield between chunks releases the store lock for any live write.
@@ -153,8 +164,9 @@ fi
 # 1) Ensure the load-once batch bin exists (offline build; deps are cached).
 if [[ ! -x "$BATCH" ]]; then
   log "building context_batch_ingest"
-  CARGO_TARGET_DIR="$TARGET_DIR" cargo build --offline -q -p temporalstore-rust \
+  CARGO_TARGET_DIR="$TARGET_DIR" "$CARGO_BIN" build --offline --release -q -p temporalstore-rust \
     --bin context_batch_ingest >>"$LOG" 2>&1 || { log "build failed"; exit 0; }
+  BATCH="$TARGET_DIR/release/context_batch_ingest"
 fi
 
 # 2) Emit per-agent JSONL once (fast enumerator; durable memory -> _global scope).
