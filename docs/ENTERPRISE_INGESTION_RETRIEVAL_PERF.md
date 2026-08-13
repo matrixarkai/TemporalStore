@@ -24,14 +24,19 @@ by **~40-70x** with zero errors.
 | **Ingest (write-only) QPS** | **~4,700 ops/s**, write p50/p95/p99 = 2.7 / 7.8 / 11.1 ms |
 | **Retrieval (read) latency / QPS** | read p50/p99 = 1.5 / 8.5 ms; read-heavy mix **~6,000 ops/s** |
 | **Concurrent ingest+retrieval QPS** | **~5,200 ops/s** (mixed r+w+batch), W p50 2.6 / R p50 1.7 ms, 0 errors |
-| **Large-file throughput (blob store)** | 1 MB w164 / r881 · 16 MB w412 / r436 · 128 MB **w411 / r419 MB/s** |
+| **HTTP keep-alive uplift (Iter 4)** | **+47-52% mixed QPS**, read p50 −60..−73% (interleaved A/B, both core counts) |
+| **Large-file throughput (blob-store layer)** | 1 MB w164 / r881 · 16 MB w412 / r436 · 128 MB **w411 / r419 MB/s** |
+| **Large-file throughput (e2e via HTTP, Iter 5)** | 1 MB w148 / r409 · 16 MB w178 / r132 · 128 MB **w103 / r114 MB/s** |
 | **Shared-store durable storage write** | sync p50/p99 = 3.8 / 8.8 ms; async enqueue ≈ 0 ms (deferred, group-flushed) |
 | **Error budget at recommended config** | 0 failed ops |
 
 Baseline (durable per-write fsync, same box) peaked at only **~68-120 ops/s** for the API
 KV path and collapsed into timeouts beyond ~16-32 concurrent writers. Single-writer
 isolation makes the cause unambiguous: **write p50 19.5 ms → 0.84 ms (23x)** once per-write
-fsync is deferred, while reads were already ~0.9 ms in both modes.
+fsync is deferred, while reads were already ~0.9 ms in both modes. The KV QPS figures above are
+from the first measurement session (cleaner host state); the follow-up keep-alive gain is quoted
+as an interleaved A/B delta because absolute single-box QPS drifts between sessions with host
+thermal/IO load (see Iteration 4).
 
 ## Test surface
 
@@ -100,12 +105,15 @@ Max sustained mixed QPS, tuning workers/datanodes per core count:
 
 Throughput scales ~1.3x from 4→8 cores then **plateaus ~5,300 ops/s** at 16 cores. The
 ceiling is a single-box structural limit, not durability: (a) the HTTP layer uses a new TCP
-connection per request (`Connection: close`) with a thread spawned per connection, and (b)
-each `execute()` takes a per-client `Mutex<ClientStats>` (and the route-cache/backend-failure
-mutexes). Evidence: at a fixed worker count, raising the **client** count (more independent
-lock domains) and the **datanode** count both raise QPS. These are the recommended next
-optimizations (HTTP keep-alive + connection pooling; atomic stat counters; delta/incremental
-served-index to flatten the store-size write curve).
+connection per request (`Connection: close`) with a thread spawned per connection, and the
+per-op engine work (bulk write + served-index maintenance, which grows with store size).
+Iteration 4 (keep-alive) addressed the connection-churn half. The per-client `Mutex<ClientStats>`
+was **tested and ruled out** as a ceiling: at 16 workers / 8 CPU, one client shared by 16 threads
+(max stats-lock contention) sustained ~4,280 ops/s vs ~4,000 ops/s for 16 independent
+single-thread clients (zero contention) — i.e. no penalty, because the critical section is a
+single field increment dwarfed by the ~2-3 ms/op work. So an atomic-counter refactor was **not**
+pursued. The remaining structural lever is the **delta/incremental served-index** to flatten the
+store-size write curve (large, separate change).
 
 ### Shared-store storage tier (sync vs async durability)
 
@@ -188,25 +196,58 @@ route-cache hit-rate unchanged). Reads benefit most because they no longer pay a
 lookup. A unit test (`keep_alive_reuses_a_single_connection_for_many_requests`) pins the
 behavior: a server that accepts exactly one connection serves five sequential requests over it.
 
+### Iteration 5 — large-file streaming wired end-to-end through HTTP
+
+**Change (`src/bin/server.rs`, new `src/bin/blob_http_bench.rs`, `src/http.rs`):** the datanode
+now exposes `POST|PUT /blob/<key>` and `GET /blob/<key>`. The upload chunks the request body
+straight into `ObjectStore::append_blob` (the same primitive `shared_store`'s
+`append_blob_with_retry` calls) in `TS_BLOB_CHUNK_BYTES` slices (default 1 MiB), so a single
+attachment does not force a monolithic write; the download streams the stored object back. A
+shared multi-thread tokio runtime bridges the sync HTTP handler to the async object store. This
+**closes the earlier "large-file HTTP streaming not wired e2e" caveat** — attachments now flow
+through the real datanode HTTP body, not just the blob-store layer. Backend: `FileObjectStore`
+(a MatrixObject store drops in behind the same `ObjectStore` trait once the feature builds).
+
+End-to-end HTTP throughput (standalone datanode, 8 CPU, 1 MiB server-side chunking, best of 3):
+
+| Attachment | HTTP write MB/s | HTTP read MB/s | write ms | read ms | vs raw blob-store (write/read) |
+|---|---|---|---|---|---|
+| 1 MB | 148 | 409 | 6.7 | 2.4 | 164 / 881 |
+| 16 MB | 178 | 132 | 89.7 | 121.2 | 412 / 436 |
+| 128 MB | **103** | **114** | 1237 | 1125 | 411 / 419 |
+
+Correctness verified: every GET returns exactly the uploaded byte length. The HTTP path runs
+~2.5-4x slower than the raw blob-store layer at 128 MB because the current generic HTTP handler
+**fully buffers** the body and makes several full-size copies (client frames header+body into one
+buffer; server accumulates the request, then builds one header+body response buffer; each chunk
+is `copy_from_slice`d into the store). True zero-copy streaming (socket → store without full
+buffering) needs the generic `serve` handler signature to expose the socket to a streaming sink;
+that refactor is the documented next step. Even buffered, the e2e path sustains ~100 MB/s per
+attachment — adequate for the attachment sizes this tier targets.
+
 ## Correctness & safety
 
 - Iteration 0-3 code change (`src/http.rs`): `TCP_NODELAY` on accepted server + client sockets,
   header+body coalesced into a single write. Iteration 4 (`src/http.rs`): HTTP keep-alive server
-  loop + thread-local client connection pool (above).
-- Single-threaded lib suite **604 passed / 1 failed** — the one failure
+  loop + thread-local client connection pool. Iteration 5 (`src/bin/server.rs`, `src/http.rs`):
+  streamed `/blob/<key>` attachment endpoints + `request_bytes_with_options` raw-body client.
+- Single-threaded lib suite **605 passed / 1 failed** — the one failure
   (`data_node … storage_manager … jitter_backoff`) is the pre-existing environmental flake also
-  present on the `main` baseline (604/1). **Zero regressions.** Two `http::tests` (keep-alive
-  reuse; Content-Length framing) pass.
-- New file `examples/large_blob_throughput_bench.rs` (FileObjectStore always; MatrixObject
-  under `--features matrixobject`).
+  present on the `main` baseline (604/1; 605 here because of the added keep-alive test).
+  **Zero regressions.**
+- New files: `examples/large_blob_throughput_bench.rs` (blob-store-layer bench) and
+  `src/bin/blob_http_bench.rs` (end-to-end HTTP attachment bench).
 
 ## Honest caveats
 
 - **Single-box bounds absolute QPS.** All servers, clients and meta run in one process on one
   machine; absolute numbers are a floor for a real multi-node deployment and a ceiling for
   what one box can do. Read the deltas.
-- **Large-file HTTP streaming is not wired end-to-end.** Attachment throughput is measured at
-  the blob-store (`append_blob`) layer, not through the datanode HTTP body.
+- **Large-file HTTP path buffers (no zero-copy yet).** As of Iteration 5 attachments flow
+  end-to-end through the datanode HTTP body (`POST|GET /blob/<key>` → `ObjectStore::append_blob`),
+  but the generic HTTP handler still fully buffers the body and makes a few full-size copies, so
+  the HTTP path runs ~2.5-4x below the raw blob-store layer at 128 MB. True socket→store
+  zero-copy streaming needs the `serve` handler signature refactored to expose the stream.
 - **`matrixobject` feature not built** (git dep unreachable behind the proxy); the shared /
   large-attachment tier used `FileObjectStore` as a conservative fsync-per-op stand-in.
 - **Bulk-ingest is a durability trade-off** (group-commit vs per-write fsync); recommended

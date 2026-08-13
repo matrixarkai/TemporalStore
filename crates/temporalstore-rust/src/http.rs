@@ -115,6 +115,20 @@ pub fn post_json_with_options_and_headers<Req: Serialize, Res: DeserializeOwned>
     Ok(serde_json::from_slice(&raw)?)
 }
 
+/// Send a raw request body (e.g. a large binary attachment) and return the raw
+/// response body. Used by the blob/attachment path where bodies are not JSON.
+pub fn request_bytes_with_options(
+    addr: &str,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    content_type: &str,
+    options: HttpRequestOptions,
+) -> Result<Vec<u8>, HttpError> {
+    let headers = format!("Content-Type: {content_type}\r\n");
+    request_raw_with_options(addr, method, path, body, &headers, options)
+}
+
 pub fn get_json<Res: DeserializeOwned>(addr: &str, path: &str) -> Result<Res, HttpError> {
     get_json_with_options(addr, path, HttpRequestOptions::default())
 }

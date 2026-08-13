@@ -43,7 +43,9 @@ use temporalstore_rust::{
     BucketDumpManifest, StorageCacheInvalidateBucketRequest, StorageLifecycleRequest,
     StorageProductionReadinessRequest, StreamReadRequest, UnloadShardRequest,
 };
+use temporalstore_snapshot::object_store::ObjectStore;
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
+use bytes::Bytes;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct ServerTopologyValidationRequest {
@@ -61,6 +63,16 @@ struct ServerTopologyValidationResponse {
     report: DataNodeTopologyValidationReport,
     fetched_tables: Vec<String>,
     fetch_errors: Vec<String>,
+}
+
+/// Receipt returned by the streamed attachment upload endpoint (`POST /blob/<key>`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct BlobReceipt {
+    status: Status,
+    key: String,
+    bytes_written: u64,
+    object_length: u64,
+    chunks: u64,
 }
 
 fn main() {
@@ -82,6 +94,10 @@ fn main() {
         std::env::var("TS_CACHE_DIR").unwrap_or_else(|_| "target/temporalstore-cache".to_string());
     let block_store_dir = std::env::var("TS_PAGE_STORE_DIR")
         .unwrap_or_else(|_| "target/temporalstore-pages".to_string());
+    // Directory for the streamed attachment/blob tier (POST/GET /blob/<key>);
+    // computed here so it does not outlive the move of `block_store_dir`.
+    let blob_store_dir =
+        std::env::var("TS_BLOB_STORE_DIR").unwrap_or_else(|_| format!("{block_store_dir}/blobs"));
     let index_dir = std::env::var("TS_INDEX_DIR")
         .unwrap_or_else(|_| "target/temporalstore-indexes".to_string());
     let cache_memory_bytes = std::env::var("TS_CACHE_MEMORY_BYTES")
@@ -233,12 +249,35 @@ fn main() {
             heartbeat_interval_ms,
         );
     }
+    // Streamed large-file / attachment tier: POST /blob/<key> writes the request
+    // body to the blob store in chunks via the ObjectStore::append_blob path (the
+    // same primitive shared_store's append_blob_with_retry uses); GET /blob/<key>
+    // streams it back. Wired to a FileObjectStore here because the matrixobject
+    // feature is optional; a MatrixObject store drops in behind the same trait.
+    let blob_store = Arc::new(FileObjectStore::new(PathBuf::from(&blob_store_dir)));
+    let blob_chunk_bytes = env_usize("TS_BLOB_CHUNK_BYTES", 1024 * 1024).max(1);
+    let blob_runtime = Arc::new(
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(env_usize("TS_BLOB_RUNTIME_THREADS", 4))
+            .enable_all()
+            .build()
+            .expect("blob tokio runtime should start"),
+    );
+
     println!("temporalstore server listening on {addr}");
     serve(&addr, move |request| {
         if let Some(response) = handle_ping_route(&request) {
             return response;
         }
         if let Some(response) = handle_readiness_route(&request) {
+            return response;
+        }
+        if let Some(response) = handle_blob_route(
+            &request,
+            &blob_store,
+            &blob_runtime,
+            blob_chunk_bytes,
+        ) {
             return response;
         }
         if let Some(raft_state) = &raft_state {
@@ -674,6 +713,72 @@ fn handle_readiness_route(request: &HttpRequest) -> Option<(u16, Vec<u8>)> {
             Some(json_response(200, &production_readiness_report()))
         }
         _ => None,
+    }
+}
+
+/// Streamed attachment endpoint. `POST /blob/<key>` writes the request body to
+/// the blob store in `chunk_bytes` slices through `ObjectStore::append_blob`
+/// (chunked, so memory does not scale with a single giant write); returns a
+/// JSON receipt. `GET /blob/<key>` returns the stored object bytes.
+fn handle_blob_route(
+    request: &HttpRequest,
+    blob_store: &Arc<FileObjectStore>,
+    runtime: &Arc<tokio::runtime::Runtime>,
+    chunk_bytes: usize,
+) -> Option<(u16, Vec<u8>)> {
+    let key = request.path.strip_prefix("/blob/")?;
+    if key.is_empty() {
+        return Some(json_response(
+            400,
+            &Status::error("bad_request", "missing blob key"),
+        ));
+    }
+    match request.method.as_str() {
+        "POST" | "PUT" => {
+            let result: Result<(u64, u64, u64), String> = runtime.block_on(async {
+                // Replace any prior object so an upload is idempotent.
+                let _ = blob_store.delete(key).await;
+                let mut bytes_written = 0u64;
+                let mut object_length = 0u64;
+                let mut chunks = 0u64;
+                for slice in request.body.chunks(chunk_bytes) {
+                    let receipt = blob_store
+                        .append_blob(key, Bytes::copy_from_slice(slice))
+                        .await
+                        .map_err(|err| err.to_string())?;
+                    bytes_written += receipt.bytes_written;
+                    object_length = receipt.object_length;
+                    chunks += 1;
+                }
+                Ok((bytes_written, object_length, chunks))
+            });
+            Some(match result {
+                Ok((bytes_written, object_length, chunks)) => json_response(
+                    200,
+                    &BlobReceipt {
+                        status: Status::ok(),
+                        key: key.to_string(),
+                        bytes_written,
+                        object_length,
+                        chunks,
+                    },
+                ),
+                Err(err) => json_response(500, &Status::error("blob_write_failed", err)),
+            })
+        }
+        "GET" => {
+            let result = runtime.block_on(async { blob_store.get(key).await });
+            Some(match result {
+                Ok(bytes) => (200, bytes.to_vec()),
+                Err(err) => {
+                    json_response(404, &Status::error("blob_not_found", err.to_string()))
+                }
+            })
+        }
+        _ => Some(json_response(
+            405,
+            &Status::error("method_not_allowed", "use POST or GET on /blob/<key>"),
+        )),
     }
 }
 
