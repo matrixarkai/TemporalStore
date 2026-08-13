@@ -603,8 +603,7 @@ python3 -m unittest tools.test_monitoring_ui_context_ops tools.test_render_healt
 context module:
 
 ```bash
-cmake --build build-ubuntu22/test-release --target context_module_test -j2
-./build-ubuntu22/test-release/src/extension/context/context_module_test --gtest_brief=1
+cargo test -p temporalstore-rust context
 ```
 
 Expected current results:

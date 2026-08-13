@@ -96,7 +96,7 @@ FAMILIES: dict[str, FamilyConfig] = {
             "raft_rustraft_replication_backpressure",
             "raft_rustraft_election_controls",
             "raft_rustraft_shared_fault_gate",
-            "storage_data_raft_replication_gtest",
+            "storage_data_raft_replication_reference",
         ),
         (
             "crates/temporalstore-rust/src/e2e.rs::e2e_uses_raft_replication_by_default",

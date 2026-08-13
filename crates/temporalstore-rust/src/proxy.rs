@@ -1326,7 +1326,7 @@ mod tests {
         assert!(report
             .compared_files
             .iter()
-            .any(|path| path.ends_with("/src/proxy/service.cc")));
+            .any(|path| path.ends_with("/src/proxy/handle.rs")));
         assert!(report.mappings.iter().any(|mapping| {
             mapping.native_surface.contains("command/admission")
                 && mapping.rust_prometheus_family == "temporalstore_proxy_requests_total"

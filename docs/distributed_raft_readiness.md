@@ -250,7 +250,7 @@ The current unified corpus includes these Raft/replication cases:
 
 | corpus case | runner | Rust validation path |
 | --- | --- | --- |
-| `storage_data_raft_replication_gtest` | `cmake --build build-ubuntu22/release --target data_raft_replication_test -j2` | `cargo run -p temporalstore-rust --bin distributed_raft_harness` plus `tools/validate_aws_validation_log.py --job temporalstore-raft-validation` |
+| `storage_data_raft_replication_reference` | `cmake --build build-ubuntu22/release --target data_raft_replication_test -j2` | `cargo run -p temporalstore-rust --bin distributed_raft_harness` plus `tools/validate_aws_validation_log.py --job temporalstore-raft-validation` |
 | `raft_data_node_scale_failover_snapshot` | `tools/run_data_raft_2node_scale_ubuntu22.sh`, `tools/run_data_raft_failover_ubuntu22.sh`, `tools/run_data_raft_snapshot_restore_ubuntu22.sh` | `distributed_raft_harness`, `raft_secondary_replication_harness`, and `external_chaos_gate --profile quick` cover scale down/up, leader transfer, snapshot bootstrap, secondary restart catch-up, and leader-crash failover |
 | `raft_data_node_mixed_rw_and_membership` | `tools/run_data_raft_mixed_rw_ubuntu22.sh`, `tools/run_data_raft_scale_up_down_ubuntu22.sh` | `distributed_raft_harness` validates post-transfer writes, scale-down writes/reads, scale-up writes/reads, and replica reads; `raft_secondary_replication_harness` validates partition/heal and lagging-follower catch-up |
 | `raft_data_node_leader_election_failover` | `tools/run_data_raft_failover_ubuntu22.sh` | `raft_secondary_replication_harness` names leader election and failover as a separate shared scenario and keeps the evidence on the process harness path |

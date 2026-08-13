@@ -319,7 +319,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "local/shared-store object manifest dependency matrix covers local file objects, checkpoint manifests, wal cursor retention, page segment manifests, follower-cursor retention, and Raft snapshot manifest retention"
                     .to_string(),
-                "storage cache dependency matrix keeps live external ByteStore/S3 object-store integration explicitly out of scope while local/shared-store is the production target"
+                "storage cache dependency matrix keeps live external object-store/S3 integration explicitly out of scope while local/shared-store is the production target"
                     .to_string(),
                 "storage cache readiness is strong for Rust-native local/shared-store paths; broad Docker/AWS deployment evidence and live external object-store evidence are scoped as separate readiness gates"
                     .to_string(),
@@ -607,7 +607,7 @@ pub(crate) fn evidence_field_for(area: &str, capability: &str) -> &'static str {
             "storage_cplusplus_corpus_report.external_corpus_publication_ready"
         }
         "storage_cache"
-            if capability.contains("object-store") || capability.contains("ByteStore/S3") =>
+            if capability.contains("object-store") =>
         {
             "storage_object_store_dependency_matrix.live_backend_dependency_matrix_ready"
         }

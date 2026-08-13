@@ -3482,7 +3482,7 @@
       ]
     },
     {
-      "name": "storage_data_raft_replication_gtest",
+      "name": "storage_data_raft_replication_reference",
       "shard_id": 21,
       "steps": [
         {
@@ -7837,7 +7837,7 @@
             "uri": "blob://pool/stream/"
           },
           "expect": {
-            "backend": "bytestore",
+            "backend": "objectstore",
             "kind": "object_store_backend"
           },
           "name": "detect_object_store_backend_0"
@@ -7848,7 +7848,7 @@
             "uri": "local://pool/stream/"
           },
           "expect": {
-            "backend": "bytestore",
+            "backend": "objectstore",
             "kind": "object_store_backend"
           },
           "name": "detect_object_store_backend_1"
@@ -12267,7 +12267,7 @@
       "native_data_raft_multinode_scale_harness_parity_surfaces",
       "native_raft_production_stress_gate_parity_surfaces",
       "native_metaserver_raft_harness_parity_surfaces",
-      "storage_data_raft_replication_gtest",
+      "storage_data_raft_replication_reference",
       "raft_metaserver_membership_failover_snapshot",
       "raft_data_node_scale_failover_snapshot",
       "raft_data_node_mixed_rw_and_membership",
@@ -12517,7 +12517,7 @@
       "object_store_backend_detect"
     ],
     "required_raft_case_names": [
-      "storage_data_raft_replication_gtest",
+      "storage_data_raft_replication_reference",
       "raft_metaserver_membership_failover_snapshot",
       "raft_data_node_scale_failover_snapshot",
       "raft_data_node_mixed_rw_and_membership",

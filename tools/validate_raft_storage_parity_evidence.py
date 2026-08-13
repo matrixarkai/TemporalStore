@@ -198,7 +198,7 @@ AREAS: tuple[ParityArea, ...] = (
         name="data_node_raft_consensus_contract",
         corpus_cases=(
             "native_data_raft_consensus_parity_surfaces",
-            "storage_data_raft_replication_gtest",
+            "storage_data_raft_replication_reference",
             "raft_data_node_scale_failover_snapshot",
             "raft_data_node_mixed_rw_and_membership",
         ),
@@ -307,7 +307,7 @@ AREAS: tuple[ParityArea, ...] = (
     ParityArea(
         name="unified_raft_case_names",
         corpus_cases=(
-            "storage_data_raft_replication_gtest",
+            "storage_data_raft_replication_reference",
             "raft_metaserver_membership_failover_snapshot",
             "raft_data_node_scale_failover_snapshot",
             "raft_data_node_mixed_rw_and_membership",
@@ -365,7 +365,7 @@ AREAS: tuple[ParityArea, ...] = (
             RustEvidence(
                 "docs/distributed_raft_readiness.md",
                 (
-                    "storage_data_raft_replication_gtest",
+                    "storage_data_raft_replication_reference",
                     "raft_data_node_scale_failover_snapshot",
                     "raft_production_gate",
                 ),
@@ -374,7 +374,7 @@ AREAS: tuple[ParityArea, ...] = (
                 "compat/unified_temporalstore_cases.json",
                 (
                     '"required_raft_case_names"',
-                    '"storage_data_raft_replication_gtest"',
+                    '"storage_data_raft_replication_reference"',
                     '"raft_metaserver_membership_failover_snapshot"',
                     '"raft_data_node_scale_failover_snapshot"',
                     '"raft_data_node_mixed_rw_and_membership"',

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! MatrixObject is the Rust object/segment store foundation that mirrors the
-//! ByteStore-style blockserver/chunkserver split without binding the public API
+//! MatrixObject is the Rust object/segment store foundation that provides a
+//! blockserver/chunkserver split without binding the public API
 //! to brpc or thrift.
 
 pub mod client;

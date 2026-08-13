@@ -439,7 +439,7 @@ fn is_write(command: &Command) -> bool {
 mod tests {
     use super::*;
 
-    // shared-corpus: storage_data_raft_replication_gtest
+    // shared-corpus: storage_data_raft_replication_reference
     #[test]
     fn e2e_uses_raft_replication_by_default() {
         let workflow = EndToEndWorkflow::new(1, [1, 2, 3]);
@@ -450,7 +450,7 @@ mod tests {
         assert!(RaftWriteMode::default().is_async());
     }
 
-    // shared-corpus: storage_data_raft_replication_gtest
+    // shared-corpus: storage_data_raft_replication_reference
     #[test]
     fn e2e_allows_explicit_sync_storage_and_raft_modes() {
         let workflow = EndToEndWorkflow::with_options(

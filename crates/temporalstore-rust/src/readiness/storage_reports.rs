@@ -201,7 +201,7 @@ pub fn storage_cache_dependency_matrix_report() -> StorageCacheDependencyMatrixR
     let external_object_store_evidence_scoped_separately = true;
     let broad_deployment_evidence_scoped_separately = true;
     let rust_native_storage_format_ready = true;
-    let bytestore_live_backend_ready = false;
+    let object_store_live_backend_ready = false;
     let s3_live_backend_ready = false;
     let local_shared_store_ready = local_shared_store_production_ready;
     let production_ready = local_shared_store_production_ready
@@ -230,7 +230,7 @@ pub fn storage_cache_dependency_matrix_report() -> StorageCacheDependencyMatrixR
         external_object_store_evidence_scoped_separately,
         broad_deployment_evidence_scoped_separately,
         rust_native_storage_format_ready,
-        bytestore_live_backend_ready,
+        object_store_live_backend_ready,
         s3_live_backend_ready,
         local_shared_store_ready,
         production_ready,

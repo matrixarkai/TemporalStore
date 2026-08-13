@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CORPUS = ROOT / "compat" / "unified_temporalstore_cases.json"
 RAFT_SUITE = "native_data_raft_parity"
 RAFT_CASES = {
-    "storage_data_raft_replication_gtest",
+    "storage_data_raft_replication_reference",
     "raft_metaserver_membership_failover_snapshot",
     "raft_data_node_scale_failover_snapshot",
     "raft_data_node_mixed_rw_and_membership",

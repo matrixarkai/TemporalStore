@@ -8,9 +8,9 @@ build-ubuntu22
 output
 target-rust-bench
 benchmark_reports
-bytestorelab-master
+objectstorelab-master
 matrixdb2_images
-bytestore_images
+objectstore_images
 *.log
 **/CMakeFiles
 **/CMakeCache.txt

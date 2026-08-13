@@ -145,11 +145,11 @@ impl ProxyService {
         ProxyMetricsParityReport {
             status: Status::ok(),
             compared_files: vec![
-                "<repo>/src/common/metrics.h".to_string(),
-                "<repo>/src/common/metrics.cc".to_string(),
-                "<repo>/src/proxy/heartbeat.cc".to_string(),
-                "<repo>/src/proxy/service.cc".to_string(),
-                "<repo>/src/proxy/flags.cc".to_string(),
+                "<repo>/crates/temporalstore-rust/src/proxy/metrics.rs".to_string(),
+                "<repo>/crates/temporalstore-rust/src/proxy/prometheus.rs".to_string(),
+                "<repo>/crates/temporalstore-rust/src/proxy/meta_sync.rs".to_string(),
+                "<repo>/crates/temporalstore-rust/src/proxy/handle.rs".to_string(),
+                "<repo>/crates/temporalstore-rust/src/proxy/config.rs".to_string(),
             ],
             rust_prometheus_families: proxy_metrics_families()
                 .into_iter()
@@ -216,12 +216,12 @@ impl ProxyService {
             legacy_brpc_thrift_in_scope: false,
             rust_native_aliases_ready: true,
             compared_files: vec![
-                "<repo>/src/proxy/proxy.h".to_string(),
-                "<repo>/src/proxy/proxy.cc".to_string(),
-                "<repo>/src/proxy/heartbeat.h".to_string(),
-                "<repo>/src/proxy/heartbeat.cc".to_string(),
-                "<repo>/src/proxy/service.h".to_string(),
-                "<repo>/src/proxy/service.cc".to_string(),
+                "<repo>/crates/temporalstore-rust/src/proxy.rs".to_string(),
+                "<repo>/crates/temporalstore-rust/src/proxy/handle.rs".to_string(),
+                "<repo>/crates/temporalstore-rust/src/proxy/meta_sync.rs".to_string(),
+                "<repo>/crates/temporalstore-rust/src/proxy/commands.rs".to_string(),
+                "<repo>/crates/temporalstore-rust/src/proxy/config.rs".to_string(),
+                "<repo>/crates/temporalstore-rust/src/proxy/response.rs".to_string(),
             ],
             entries: vec![
                 proxy_operational_surface_entry(

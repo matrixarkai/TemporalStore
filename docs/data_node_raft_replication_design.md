@@ -22,10 +22,10 @@ This mode must be separate from the existing paths:
 
 Current readonly replicas already use replay:
 
-- `Partition::SetupReplicator()` starts `Replicator` only on readonly partitions.
-- `Replicator::ReplayOpLog()` replays primary oplog records through `ObjectManager::ReplayOplog()`.
-- `Replicator::ReplayIndexLog()` replays index-log records.
-- `RemotePartitionStream` can read primary stream bytes when `secondary_pull_stream_from_primary=true`.
+- The partition starts a replicator only on readonly partitions.
+- The replicator replays primary oplog records through the object manager's oplog replay path.
+- The replicator replays index-log records.
+- A remote partition stream can read primary stream bytes when `secondary_pull_stream_from_primary=true`.
 
 That is catch-up replication. It does not create a quorum commit point before write acknowledgment.
 
@@ -66,18 +66,18 @@ experimental flag is set.
 
 ### Apply path
 
-Followers should apply the exact committed `storage::OpLog`:
+Followers should apply the exact committed oplog record:
 
 ```text
-DataRaftFSM::Apply(index, bytes)
-  parse DataRaftLog
-  locate local Partition
+data-raft FSM apply(index, bytes)
+  parse the data-raft log entry
+  locate the local partition
   append committed oplog to local stream
-  ObjectManager::ReplayOplog(local_log_id, local_log_size, oplog)
+  replay the oplog into local object state (local_log_id, local_log_size, oplog)
   update applied index
 ```
 
-`ObjectManager::ReplayOplog()` already exists and handles:
+The object-manager oplog replay path already exists and handles:
 
 - sequence checks
 - slot dirty marking
@@ -129,15 +129,15 @@ For feature/risk serving, `replica_stale` is often acceptable. For strict read-a
 ### Existing useful pieces
 
 - Partition surface
-  - `Partition::ExecuteCmd()`
-  - `Partition::OnExecuteCmdDone()`
-  - `Partition::GetInfo()`
+  - partition command execution
+  - partition command-completion callback
+  - partition info lookup
 
 - Op-logger
-  - builds and commits `storage::OpLog`
+  - builds and commits the oplog record
 
 - Object manager
-  - `ObjectManager::ReplayOplog()`
+  - object-manager oplog replay
 
 - Replicator
   - existing non-Raft replay loop
@@ -150,26 +150,26 @@ For feature/risk serving, `replica_stale` is often acceptable. For strict read-a
 
 ### Added standalone core
 
-- Data-node Raft replication module (header + implementation)
+- Data-node Raft replication module (interface + implementation)
 
 These files provide:
 
-- `DataRaftLogEntry`: partition id, Raft index, local oplog id/size, and `storage::OpLog`
-- `DataRaftCommandEntry`: partition id, Raft index, request id, and `BatchExecuteCmdRequest`
-- `SerializeDataRaftLog()`
-- `ParseDataRaftLog()`
-- `SerializeDataRaftCommand()`
-- `ParseDataRaftCommand()`
-- `DataRaftCommittedLogApplier::Apply()`
+- `DataRaftLogEntry`: partition id, Raft index, local oplog id/size, and the committed oplog record
+- `DataRaftCommandEntry`: partition id, Raft index, request id, and the batched execute-command request
+- data-raft log serialize
+- data-raft log parse
+- data-raft command serialize
+- data-raft command parse
+- the data-raft committed-log applier (apply entry point)
 
-The applier parses a committed Raft payload and applies it through `ObjectManager::ReplayOplog()`.
+The applier parses a committed Raft payload and applies it through the object-manager oplog replay path.
 It is intentionally independent from a concrete Raft library, so the same path can be tested
 without starting a concrete Raft library and then reused by the future Raft FSM.
 
 The command envelope is the production write payload. It lets the leader propose the original
-write batch before local mutation. `Partition::ApplyDataRaftCommand` now executes a committed
-`BatchExecuteCmdRequest` from the FSM side. The leader write-only path now captures the original
-client batch, proposes it with `DataRaftConsensusBackend::Propose`, waits until the local applied
+write batch before local mutation. The partition's data-raft command apply now executes a committed
+batched execute-command request from the FSM side. The leader write-only path now captures the original
+client batch, proposes it through the data-raft consensus backend, waits until the local applied
 index reaches the committed index, and returns the response/status produced by that committed FSM
 apply. Leader proposal waiting is dispatched onto the server background async pool; committed FSM
 apply is handed back to the partition's owning worker thread before mutating object state. Mixed
@@ -192,7 +192,7 @@ The codec/applier currently lives with the storage layer because it directly bri
 committed Raft payloads to storage replay. The Raft adapter can live in its own module
 and call this storage applier.
 
-Do not modify the existing `Replicator` semantics. Raft mode should be selected by a flag/config:
+Do not modify the existing replicator semantics. Raft mode should be selected by a flag/config:
 
 ```text
 --data_replication_mode=shared_store|primary_pull|raft_consensus
@@ -213,8 +213,8 @@ else:
 ### Milestone 1: single-process component test
 
 - Create a fake in-memory partition Raft group.
-- Propose serialized `storage::OpLog`.
-- Apply through `ObjectManager::ReplayOplog()`.
+- Propose a serialized oplog record.
+- Apply through the object-manager oplog replay path.
 - Verify STRING/HASH/FEATURE/TEMPORAL_AGGREGATE state matches leader.
 
 Exit criteria:
