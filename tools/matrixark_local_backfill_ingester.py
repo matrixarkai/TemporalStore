@@ -60,10 +60,10 @@ AGENTS = {
 def agent_root(agent: str) -> str:
     """Resolve the durable Rust hook root for a backfilled agent.
 
-    ``TEMPORALSTORE_RUST_CODEX_HOOK_ROOT`` is intentionally not used as the
-    multi-agent Codex default because Claude's live hook historically exports it
-    to the Claude root for compatibility with shared Rust code. Dedicated
-    MATRIXARK_* roots and per-agent store bases avoid cross-agent misrouting.
+    Dedicated ``MATRIXARK_*`` roots take precedence. The live Codex hook also
+    exports ``TEMPORALSTORE_RUST_CODEX_HOOK_ROOT``; use it after the dedicated
+    Codex root so daemon/batch backfill lands in the same store as realtime
+    streaming ingestion.
     """
     if agent == "claude":
         explicit = (
@@ -77,7 +77,10 @@ def agent_root(agent: str) -> str:
             "rust",
         )
     if agent == "codex":
-        explicit = os.environ.get("MATRIXARK_CODEX_RUST_HOOK_ROOT")
+        explicit = (
+            os.environ.get("MATRIXARK_CODEX_RUST_HOOK_ROOT")
+            or os.environ.get("TEMPORALSTORE_RUST_CODEX_HOOK_ROOT")
+        )
         if explicit:
             return explicit
         return os.path.join(

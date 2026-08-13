@@ -47,6 +47,21 @@ class ToolLeaningTest(unittest.TestCase):
             self.assertEqual("/root/.matrixark/temporalstore-hooks/claude/rust", B.agent_root("claude"))
             self.assertEqual("/root/.matrixark/temporalstore-hooks/codex/rust", B.agent_root("codex"))
 
+    def test_codex_agent_root_honors_live_hook_root_override(self):
+        with patch.dict(os.environ, {"TEMPORALSTORE_RUST_CODEX_HOOK_ROOT": "/tmp/live-codex-root"}, clear=True):
+            self.assertEqual("/tmp/live-codex-root", B.agent_root("codex"))
+
+    def test_dedicated_codex_agent_root_wins_over_shared_override(self):
+        with patch.dict(
+            os.environ,
+            {
+                "MATRIXARK_CODEX_RUST_HOOK_ROOT": "/tmp/dedicated-codex-root",
+                "TEMPORALSTORE_RUST_CODEX_HOOK_ROOT": "/tmp/live-codex-root",
+            },
+            clear=True,
+        ):
+            self.assertEqual("/tmp/dedicated-codex-root", B.agent_root("codex"))
+
     def test_emit_jsonl_streams_local_codex_and_claude_context(self):
         with tempfile.TemporaryDirectory() as td:
             home = Path(td) / "home"
