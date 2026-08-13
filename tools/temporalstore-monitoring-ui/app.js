@@ -466,7 +466,7 @@ const fallbackHealth = {
       {
         run: "module parity",
         covers: "registered context models, child refs, embeddings, summaries",
-        evidence: "context_module_test --gtest_brief=1",
+        evidence: "cargo test -p temporalstore-rust context",
         output: "7 context module tests passed",
         status: "passed",
       },

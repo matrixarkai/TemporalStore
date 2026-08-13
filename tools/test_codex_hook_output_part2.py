@@ -358,7 +358,7 @@ class _CodexHookOutputPart2:
             status="ok",
             event="UserPromptSubmit",
             session_id_source="payload_field",
-            agent_context={"local_context": [{"ref": "src/main.cc", "text": "local code"}], "workspace_root": "/repo"},
+            agent_context={"local_context": [{"ref": "src/main.rs", "text": "local code"}], "workspace_root": "/repo"},
             ingest={"status": "accepted", "event_id_hash": 123},
             retrieve={
                 "context_pack_id": "pack-1",
