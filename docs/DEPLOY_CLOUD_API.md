@@ -129,10 +129,12 @@ Route53  api.temporalstore.ai ──► ALB (:443, ACM TLS) ──► Target Gro
 
 ## Production backend & ingestion architecture (read this)
 
-**Backend: use `temporalstore-rust` (Rust) — not `temporalstore-direct`.**
-`temporalstore-direct` loads `libtemporalstore.so`, the C++ native SDK over BRPC; it is **not** part of the
-Rust-only OSS deployment. The `local` backend is the single-user hook/dev path (in-process Python with
-**synchronous embedding**) and must never front the multi-tenant API. Configure the Rust backend:
+**Backend: use a Rust backend — `temporalstore-rust` or `temporalstore-direct`.** Both are Rust:
+`temporalstore-rust` talks to the `matrixark_rust_proxy` binary + metaserver (the standard **cluster** path);
+`temporalstore-direct` is **in-process Rust FFI** via the `libtemporalstore.so` cdylib built from
+`sdk/rust/temporalstore` (fastest for a **single-node embedded** deploy — no proxy subprocess — but it needs
+that cdylib built). The `local` backend is the single-user hook/dev path (in-process Python with
+**synchronous embedding**) and must never front the multi-tenant API. For a cluster deployment, configure:
 
 ```bash
 MATRIXARK_MCP_BACKEND=temporalstore-rust
