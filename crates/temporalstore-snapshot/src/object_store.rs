@@ -532,6 +532,14 @@ impl FileObjectStore {
             .root
             .join(key.replace('/', std::path::MAIN_SEPARATOR_STR)))
     }
+
+    /// Filesystem path where `key` is stored. Exposed so a streaming reader (e.g.
+    /// a streamed HTTP `GET /blob/<key>`) can `stat` + read the object in chunks
+    /// straight to the socket instead of loading the whole object into memory via
+    /// [`ObjectStore::get`]. Applies the same key-safety guard as `resolve`.
+    pub fn object_path(&self, key: &str) -> Result<PathBuf, ObjectStoreError> {
+        self.resolve(key)
+    }
 }
 
 #[async_trait]

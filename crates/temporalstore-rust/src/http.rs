@@ -54,11 +54,191 @@ pub struct HttpRequest {
     pub body: Vec<u8>,
 }
 
+/// Parsed HTTP request head (request line + headers), read off the socket
+/// *before* the body. A streaming handler inspects this to decide whether to
+/// take a request without the body ever being buffered.
+#[derive(Debug, Clone)]
+pub struct RequestHead {
+    pub method: String,
+    pub path: String,
+    pub content_length: usize,
+    pub keep_alive: bool,
+}
+
+/// What a streaming handler did with a request.
+pub enum StreamAction {
+    /// Fully handled: the streaming handler consumed the entire request body and
+    /// wrote the complete response itself. The connection then stays alive (or
+    /// closes) per `RequestHead::keep_alive`.
+    Handled,
+    /// Declined WITHOUT reading any body byte or writing any response; the serve
+    /// loop buffers the body and dispatches to the ordinary buffered handler.
+    Declined,
+}
+
+/// Handle passed to a streaming handler. Reads the request body straight off the
+/// socket in caller-sized chunks (no full-body `Vec` buffering) and writes the
+/// response straight back to the socket. Body bytes that arrived in the same
+/// read as the head are served first, transparently.
+pub struct StreamTransfer<'a> {
+    stream: &'a mut TcpStream,
+    prebuffered: Vec<u8>,
+    prebuffered_pos: usize,
+    content_length: usize,
+    consumed: usize,
+    keep_alive: bool,
+}
+
+impl<'a> StreamTransfer<'a> {
+    fn new(
+        stream: &'a mut TcpStream,
+        mut prebuffered: Vec<u8>,
+        content_length: usize,
+        keep_alive: bool,
+    ) -> Self {
+        // Never treat more than content_length bytes as this request's body
+        // (matches the buffered path, which ignores any pipelined trailer).
+        if prebuffered.len() > content_length {
+            prebuffered.truncate(content_length);
+        }
+        Self {
+            stream,
+            prebuffered,
+            prebuffered_pos: 0,
+            content_length,
+            consumed: 0,
+            keep_alive,
+        }
+    }
+
+    /// Declared request-body length in bytes.
+    pub fn body_len(&self) -> usize {
+        self.content_length
+    }
+
+    /// Whether the connection is to be kept alive after this request.
+    pub fn keep_alive(&self) -> bool {
+        self.keep_alive
+    }
+
+    /// Read the next slice of request body into `buf`. Returns 0 at end of body.
+    /// Serves any bytes already read while parsing the head, then reads from the
+    /// socket, so a giant upload never lands in a single buffer.
+    pub fn read_body(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        if self.prebuffered_pos < self.prebuffered.len() {
+            let n = buf.len().min(self.prebuffered.len() - self.prebuffered_pos);
+            buf[..n]
+                .copy_from_slice(&self.prebuffered[self.prebuffered_pos..self.prebuffered_pos + n]);
+            self.prebuffered_pos += n;
+            self.consumed += n;
+            return Ok(n);
+        }
+        if self.consumed >= self.content_length {
+            return Ok(0);
+        }
+        let want = buf.len().min(self.content_length - self.consumed);
+        loop {
+            match self.stream.read(&mut buf[..want]) {
+                Ok(n) => {
+                    self.consumed += n;
+                    return Ok(n);
+                }
+                Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
+    /// Drain and discard any unread request body so a kept-alive connection stays
+    /// framed after an early (pre-body) error response.
+    pub fn drain_body(&mut self) -> std::io::Result<()> {
+        let mut scratch = [0u8; 8192];
+        loop {
+            if self.read_body(&mut scratch)? == 0 {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Write the response status line + headers. Call once, before the body.
+    pub fn send_head(
+        &mut self,
+        status: u16,
+        content_type: &str,
+        content_length: usize,
+    ) -> std::io::Result<()> {
+        let status_text = if status == 200 { "OK" } else { "ERROR" };
+        let connection = if self.keep_alive { "keep-alive" } else { "close" };
+        let header = format!(
+            "HTTP/1.1 {status} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {content_length}\r\nConnection: {connection}\r\n\r\n"
+        );
+        self.stream.write_all(header.as_bytes())
+    }
+
+    /// Write a slice of the response body straight to the socket.
+    pub fn write_chunk(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        self.stream.write_all(buf)
+    }
+
+    /// Flush the socket after the response has been written.
+    pub fn flush(&mut self) -> std::io::Result<()> {
+        self.stream.flush()
+    }
+
+    /// Consume the transfer, returning the full request body (any prebuffered
+    /// bytes + the rest read from the socket). Used by the buffered fallback when
+    /// the streaming handler declines; taking `self` by value releases the socket
+    /// borrow so the caller can write the buffered response.
+    fn into_buffered_body(self) -> Result<Vec<u8>, HttpError> {
+        let mut body = Vec::with_capacity(self.content_length);
+        body.extend_from_slice(&self.prebuffered[self.prebuffered_pos..]);
+        let mut chunk = [0u8; 8192];
+        while body.len() < self.content_length {
+            let want = chunk.len().min(self.content_length - body.len());
+            match self.stream.read(&mut chunk[..want]) {
+                Ok(0) => {
+                    return Err(HttpError::BadResponse(
+                        "incomplete request body".to_string(),
+                    ))
+                }
+                Ok(n) => body.extend_from_slice(&chunk[..n]),
+                Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+                Err(err) => return Err(HttpError::Io(err)),
+            }
+        }
+        Ok(body)
+    }
+}
+
 pub fn serve(
     addr: &str,
     handler: impl Fn(HttpRequest) -> (u16, Vec<u8>) + Send + Sync + 'static,
 ) -> Result<(), HttpError> {
+    // Plain serve: every request goes through the buffered handler (the streaming
+    // pre-handler declines everything).
+    serve_with_stream_handler(addr, |_head, _transfer| StreamAction::Declined, handler)
+}
+
+/// Like [`serve`], but a `stream_handler` gets first refusal on each request with
+/// the socket exposed (via [`StreamTransfer`]) so it can read the body and write
+/// the response incrementally — no full-body buffering. It returns
+/// [`StreamAction::Declined`] (without touching the body) to fall through to the
+/// buffered `handler`. Used by the datanode to stream `/blob/<key>` bodies
+/// straight between the socket and the object store.
+pub fn serve_with_stream_handler<S, H>(
+    addr: &str,
+    stream_handler: S,
+    handler: H,
+) -> Result<(), HttpError>
+where
+    S: Fn(&RequestHead, &mut StreamTransfer) -> StreamAction + Send + Sync + 'static,
+    H: Fn(HttpRequest) -> (u16, Vec<u8>) + Send + Sync + 'static,
+{
     let listener = TcpListener::bind(addr)?;
+    let stream_handler = Arc::new(stream_handler);
     let handler = Arc::new(handler);
     for stream in listener.incoming() {
         let stream = stream?;
@@ -66,9 +246,10 @@ pub fn serve(
         // written in a couple of segments, so Nagle + delayed-ACK otherwise adds
         // a ~40ms stall per round-trip on loopback/LAN.
         let _ = stream.set_nodelay(true);
+        let stream_handler = Arc::clone(&stream_handler);
         let handler = Arc::clone(&handler);
         thread::spawn(move || {
-            let _ = handle_stream(stream, &*handler);
+            let _ = handle_stream(stream, &*stream_handler, &*handler);
         });
     }
     Ok(())
@@ -144,6 +325,7 @@ pub fn get_json_with_options<Res: DeserializeOwned>(
 
 fn handle_stream(
     mut stream: TcpStream,
+    stream_handler: &dyn Fn(&RequestHead, &mut StreamTransfer) -> StreamAction,
     handler: &dyn Fn(HttpRequest) -> (u16, Vec<u8>),
 ) -> Result<(), HttpError> {
     // HTTP/1.1 keep-alive: serve every request on this connection until the peer
@@ -151,91 +333,94 @@ fn handle_stream(
     // spawn that otherwise caps throughput under concurrency.
     let _ = stream.set_read_timeout(Some(Duration::from_millis(SERVER_KEEPALIVE_IDLE_MS)));
     loop {
-        let buffer = match read_http_request_framed(&mut stream)? {
-            Some(buffer) => buffer,
+        // Read only through the end of the headers, keeping any body bytes that
+        // arrived in the same read. This lets a streaming handler start writing
+        // the body straight to its sink without the whole request being buffered.
+        let (head_bytes, body_prefix) = match read_request_head(&mut stream)? {
+            Some(parts) => parts,
             None => return Ok(()), // clean EOF / idle reap at a request boundary
         };
-        let request = parse_request(&buffer)?;
-        let keep_alive = request_wants_keep_alive(&buffer);
-        let (status, body) = handler(request);
-        let status_text = if status == 200 { "OK" } else { "ERROR" };
-        let content_type = if body.starts_with(b"# HELP ") || body.starts_with(b"# TYPE ") {
-            "text/plain; version=0.0.4"
-        } else {
-            "application/json"
-        };
-        let connection = if keep_alive { "keep-alive" } else { "close" };
-        let header = format!(
-            "HTTP/1.1 {status} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: {connection}\r\n\r\n",
-            body.len()
-        );
-        // Coalesce header + body into a single write so the response leaves in one
-        // TCP segment where possible (avoids a small-segment Nagle stall).
-        let mut response = Vec::with_capacity(header.len() + body.len());
-        response.extend_from_slice(header.as_bytes());
-        response.extend_from_slice(&body);
-        stream.write_all(&response)?;
-        stream.flush()?;
-        if !keep_alive {
-            return Ok(());
-        }
-    }
-}
-
-/// True unless the request explicitly asks to close (HTTP/1.1 default is
-/// keep-alive). Cheap header scan over the raw request bytes.
-fn request_wants_keep_alive(buffer: &[u8]) -> bool {
-    let marker = b"\r\n\r\n";
-    let header_end = buffer
-        .windows(marker.len())
-        .position(|w| w == marker)
-        .unwrap_or(buffer.len());
-    let headers = String::from_utf8_lossy(&buffer[..header_end]);
-    for line in headers.lines() {
-        if let Some((name, value)) = line.split_once(':') {
-            if name.eq_ignore_ascii_case("connection") {
-                return !value.trim().eq_ignore_ascii_case("close");
+        let head = parse_request_head(&head_bytes)?;
+        let mut transfer =
+            StreamTransfer::new(&mut stream, body_prefix, head.content_length, head.keep_alive);
+        match stream_handler(&head, &mut transfer) {
+            StreamAction::Handled => {
+                // The streaming handler already consumed the body and wrote the
+                // full response; release the socket borrow and loop (or close).
+                drop(transfer);
+                if !head.keep_alive {
+                    return Ok(());
+                }
+            }
+            StreamAction::Declined => {
+                // Fall back to the buffered handler: assemble the full body, run
+                // the handler, write the coalesced header+body response.
+                let body = transfer.into_buffered_body()?;
+                let request = HttpRequest {
+                    method: head.method,
+                    path: head.path,
+                    body,
+                };
+                let (status, body) = handler(request);
+                write_buffered_response(&mut stream, status, &body, head.keep_alive)?;
+                if !head.keep_alive {
+                    return Ok(());
+                }
             }
         }
     }
-    true
 }
 
-/// Read one full HTTP request from a kept-alive connection. Returns `Ok(None)`
-/// when the peer cleanly closes (or goes idle) at a request boundary, so the
-/// caller can retire the connection without treating it as an error.
-fn read_http_request_framed(stream: &mut TcpStream) -> Result<Option<Vec<u8>>, HttpError> {
+/// Write a fully-buffered response (coalesced header + body in a single write so
+/// it leaves in one TCP segment where possible).
+fn write_buffered_response(
+    stream: &mut TcpStream,
+    status: u16,
+    body: &[u8],
+    keep_alive: bool,
+) -> Result<(), HttpError> {
+    let status_text = if status == 200 { "OK" } else { "ERROR" };
+    let content_type = if body.starts_with(b"# HELP ") || body.starts_with(b"# TYPE ") {
+        "text/plain; version=0.0.4"
+    } else {
+        "application/json"
+    };
+    let connection = if keep_alive { "keep-alive" } else { "close" };
+    let header = format!(
+        "HTTP/1.1 {status} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: {connection}\r\n\r\n",
+        body.len()
+    );
+    let mut response = Vec::with_capacity(header.len() + body.len());
+    response.extend_from_slice(header.as_bytes());
+    response.extend_from_slice(body);
+    stream.write_all(&response)?;
+    stream.flush()?;
+    Ok(())
+}
+
+/// Read one HTTP request's head (up to and including the `\r\n\r\n` terminator)
+/// from a kept-alive connection. Returns the head bytes plus any body bytes that
+/// arrived in the same read ("body prefix"). Returns `Ok(None)` when the peer
+/// cleanly closes (or goes idle) at a request boundary.
+fn read_request_head(stream: &mut TcpStream) -> Result<Option<(Vec<u8>, Vec<u8>)>, HttpError> {
     let marker = b"\r\n\r\n";
     let mut buffer = Vec::new();
     let mut chunk = [0; 4096];
-    let mut expected_len = None;
     loop {
         match stream.read(&mut chunk) {
             Ok(0) => {
                 if buffer.is_empty() {
                     return Ok(None); // clean close at boundary
                 }
-                // EOF mid-request: surface as a (retryable) bad response.
                 return Err(HttpError::BadResponse("incomplete request".to_string()));
             }
             Ok(size) => {
                 buffer.extend_from_slice(&chunk[..size]);
-                if expected_len.is_none() {
-                    if let Some(header_end) =
-                        buffer.windows(marker.len()).position(|w| w == marker)
-                    {
-                        let headers = String::from_utf8_lossy(&buffer[..header_end]);
-                        let content_length = headers
-                            .lines()
-                            .filter_map(|line| line.split_once(':'))
-                            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-                            .and_then(|(_, value)| value.trim().parse::<usize>().ok())
-                            .unwrap_or_default();
-                        expected_len = Some(header_end + marker.len() + content_length);
-                    }
-                }
-                if expected_len.is_some_and(|len| buffer.len() >= len) {
-                    return Ok(Some(buffer));
+                if let Some(pos) = buffer.windows(marker.len()).position(|w| w == marker) {
+                    let header_end = pos + marker.len();
+                    let body_prefix = buffer[header_end..].to_vec();
+                    buffer.truncate(header_end);
+                    return Ok(Some((buffer, body_prefix)));
                 }
             }
             Err(err) if buffer.is_empty() && is_idle_timeout(&err) => {
@@ -246,6 +431,36 @@ fn read_http_request_framed(stream: &mut TcpStream) -> Result<Option<Vec<u8>>, H
             Err(err) => return Err(HttpError::Io(err)),
         }
     }
+}
+
+/// Parse method, path, content-length, and keep-alive intent from request-head
+/// bytes (the request line + headers, including the trailing terminator).
+fn parse_request_head(bytes: &[u8]) -> Result<RequestHead, HttpError> {
+    let headers = String::from_utf8_lossy(bytes);
+    let mut lines = headers.lines();
+    let Some(request_line) = lines.next() else {
+        return Err(HttpError::BadResponse("missing request line".to_string()));
+    };
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or_default().to_string();
+    let path = parts.next().unwrap_or_default().to_string();
+    let mut content_length = 0usize;
+    let mut keep_alive = true;
+    for line in lines {
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("content-length") {
+                content_length = value.trim().parse::<usize>().unwrap_or(0);
+            } else if name.eq_ignore_ascii_case("connection") {
+                keep_alive = !value.trim().eq_ignore_ascii_case("close");
+            }
+        }
+    }
+    Ok(RequestHead {
+        method,
+        path,
+        content_length,
+        keep_alive,
+    })
 }
 
 fn is_idle_timeout(err: &std::io::Error) -> bool {
@@ -282,35 +497,6 @@ fn read_http_request(stream: &mut TcpStream) -> Result<Vec<u8>, HttpError> {
         }
     }
     Ok(buffer)
-}
-
-fn parse_request(bytes: &[u8]) -> Result<HttpRequest, HttpError> {
-    let marker = b"\r\n\r\n";
-    let Some(header_end) = bytes.windows(marker.len()).position(|w| w == marker) else {
-        return Err(HttpError::BadResponse(
-            "missing header terminator".to_string(),
-        ));
-    };
-    let headers = String::from_utf8_lossy(&bytes[..header_end]);
-    let mut lines = headers.lines();
-    let Some(request_line) = lines.next() else {
-        return Err(HttpError::BadResponse("missing request line".to_string()));
-    };
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or_default().to_string();
-    let path = parts.next().unwrap_or_default().to_string();
-    let content_length = lines
-        .filter_map(|line| line.split_once(':'))
-        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-        .and_then(|(_, value)| value.trim().parse::<usize>().ok())
-        .unwrap_or_default();
-    let body_start = header_end + marker.len();
-    let body_end = body_start.saturating_add(content_length).min(bytes.len());
-    Ok(HttpRequest {
-        method,
-        path,
-        body: bytes[body_start..body_end].to_vec(),
-    })
 }
 
 fn request_raw_with_options(
@@ -613,9 +799,11 @@ mod tests {
         let server = thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             let _ = stream.set_nodelay(true);
-            let _ = handle_stream(stream, &|request| {
-                json_response(200, &serde_json::json!({ "path": request.path }))
-            });
+            let _ = handle_stream(
+                stream,
+                &|_head, _transfer| StreamAction::Declined,
+                &|request| json_response(200, &serde_json::json!({ "path": request.path })),
+            );
         });
 
         for i in 0..5 {

@@ -225,6 +225,92 @@ buffering) needs the generic `serve` handler signature to expose the socket to a
 that refactor is the documented next step. Even buffered, the e2e path sustains ~100 MB/s per
 attachment — adequate for the attachment sizes this tier targets.
 
+### Iteration 6 — blob zero-copy: streaming HTTP `/blob` (no full-body buffering)
+
+**Change (`src/http.rs`, `src/bin/server.rs`, `crates/temporalstore-snapshot/src/object_store.rs`):**
+this delivers the "documented next step" from Iteration 5. The generic HTTP server grew a
+**streaming path** alongside the buffered one:
+
+- `serve_with_stream_handler(addr, stream_handler, handler)` — the server reads only the request
+  **head** off the socket, then offers each request to a `stream_handler` with the socket exposed
+  via a new `StreamTransfer`. The handler `read_body()`s the request body in caller-sized chunks
+  straight off the socket and `send_head()` / `write_chunk()`s the response straight back — the
+  body is **never** assembled into a `Vec`. Returning `StreamAction::Declined` (without touching the
+  body) falls through to the unchanged buffered `handler`, so every non-`/blob` route and the
+  small-request fast path behave exactly as before. Plain `serve()` now delegates with a
+  declines-everything stream handler. The keep-alive loop and `Connection: close` handling are
+  intact (keep-alive is parsed from the head; the streamed response emits the matching header).
+- The datanode's `/blob/<key>` handler is now the stream handler: **POST/PUT** loops
+  `socket → append_blob` in `TS_BLOB_CHUNK_BYTES` (default 1 MiB) slices — memory bounded to one
+  chunk, never the whole upload; **GET** `stat`s the object (`FileObjectStore::object_path`, new),
+  sends `Content-Length`, then copies `file → socket` in chunks. This removes the three full-size
+  copies Iteration 5 called out (server request accumulation, `Bytes→Vec` on read, and the
+  coalesced header+body response buffer).
+
+End-to-end HTTP throughput, **release** build, standalone datanode, 1 MiB chunk, best of 3,
+**interleaved A/B in one session** (OLD = buffered `86a96726`, NEW = streaming), read the deltas:
+
+| Attachment | OLD w / r MB/s | NEW w / r MB/s | Δ write | Δ read |
+|---|---|---|---|---|
+| 16 MB  | 190 / 135 | **281 / 767** | +48% | **+5.7×** |
+| 64 MB  | 119 / 103 | **189 / 241** | +58% | +2.3× |
+| 128 MB | 113 / 104 | **188 / 343** | +66% | +3.3× |
+| 256 MB | 114 / 106 | **167 / 246** | +47% | +2.3× |
+
+(The OLD column reproduces Iteration 5's buffered figures — 128 MB w113/r104 here vs the earlier
+w103/r114 — confirming the A/B baseline.) Writes gain **+47–66%**; reads gain **2.3–5.7×** because
+the download no longer loads the whole object into memory and makes zero response-side copies. The
+write side is now bounded by `FileObjectStore`'s `append_blob` fsync-per-chunk rather than by body
+buffering; at 128 MB the streamed write (188 MB/s) closes roughly half the remaining gap to the raw
+blob-store ceiling (411 MB/s), and the streamed read (343 MB/s) reaches ~80% of it. Correctness
+verified: every GET returns exactly the uploaded byte length across all sizes.
+
+### Iteration 7 — delta / incremental served-index — **DEFERRED (design recorded)**
+
+**Goal:** flatten the steady-state ingest write curve. On the **synchronous** durability path
+(`config.async_storage == false`, non-bulk), every write re-serializes the whole shard index and
+rewrites it durably: `engine.rs` `execute` → `serialize_index(shard)` (O(store) CPU) →
+`index_log_store.append_json(whole index)` (O(store) IO) → `persist_index_bytes` →
+`atomic_write_bytes` (temp write + fsync + rename of the whole `shard-{id}.index.json`, O(store) IO).
+So per-write cost grows with store size → O(n²) over an ingest, and steady-state QPS falls below the
+cold-burst rate. (The **async** path — the validated default, used by the live hook — already skips
+this per-write persist and only appends to the WAL, so it is unaffected.)
+
+**Why deferred (not landed this pass).** A correct fix must be *genuinely incremental* — write only
+the delta and reconstruct on read — **not** a persistence-timing deferral. The served index file is
+a load-bearing **complete-`ShardState`** contract read by 8+ independent consumers that each trust
+it as current and do **not** replay the WAL to catch up: restart recovery (`load_index`,
+`persistence.rs`), dump-manifest creation (`export_index_bytes` → sha256 + `ShardState` deserialize,
+`bucket_dump_manifest_methods.rs`), shared-store index upload (`shared_store.rs`), `StreamKind::Index`
+reads (`stream_batch_methods.rs`), recovery/compaction (`recovery_sweep_compact.rs`), plus engine
+tests that read the raw file bytes and assert exact content/sha (`engine/tests/part3.rs`,
+`part4.rs`). A prior persistence-timing deferral broke **55 storage tests** for exactly this reason
+(recorded in project history). Making the write incremental therefore requires re-routing *every*
+reader through a base+delta reconstruction — a broad, durability-sensitive change touching recovery,
+dump, and shared-store paths that cannot land safely in the same pass as Iteration 6 on a highly
+concurrent `main`. Per the iteration's own risk guidance, Iteration 6 ships alone rather than risk a
+regression here.
+
+**Concrete design for the separate pass.** Split the served index into an immutable **base snapshot**
+plus an append-only **delta log**:
+
+1. `shard-{id}.index.json` stays the base snapshot but is rewritten only on compaction events
+   (flush / dump / gc / unload), not per write.
+2. Add `shard-{id}.index.delta.jsonl`: each sync publish appends **only the changed records/keys**
+   (keyed delta entries + the `applied_wal_sequence` anchor) — O(delta) fsync, not O(store).
+3. Introduce one `load_served_index_bytes(shard_id)` helper that reads the base and folds the delta
+   log on top into a complete `ShardState`, and **route all 8 readers** listed above through it
+   (`export_index_bytes` returns the reconstructed bytes so dump/shared-store/stream stay byte-exact;
+   the sha256 is computed over the reconstruction). `load_index` reconstructs on restart.
+4. Compact the delta log back into the base when it exceeds a size/entry threshold, and always at
+   flush/dump/gc (which already rewrite the whole index), so the delta never grows unbounded and the
+   existing durable-anchor / manifest-generation invariants are preserved.
+5. Update the raw-bytes tests to assert over the reconstruction helper rather than a single file.
+
+This keeps every consumer seeing a correct, current index while making the per-write publish
+O(delta). Steady-state small-store-vs-large-store curve numbers belong to that pass (this pass
+records no fabricated figures for a change it did not land).
+
 ## Correctness & safety
 
 - Iteration 0-3 code change (`src/http.rs`): `TCP_NODELAY` on accepted server + client sockets,

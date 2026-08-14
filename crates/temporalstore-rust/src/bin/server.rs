@@ -16,7 +16,11 @@ use temporalstore_rust::context_workflow::{
 use temporalstore_rust::data_node::{DataNodeLifecycleSnapshot, DataNodeTopologyValidationReport};
 use temporalstore_rust::engine::reports::{StorageManagerCycleReport, StorageManagerCycleRequest};
 use temporalstore_rust::engine::TemporalEngine;
-use temporalstore_rust::http::{json_response, parse_json, post_json, serve, HttpRequest};
+use temporalstore_rust::http::{
+    json_response, parse_json, post_json, serve_with_stream_handler, HttpRequest, StreamAction,
+    StreamTransfer,
+};
+use std::io::Read as _;
 use temporalstore_rust::ingestion::{FlinkCheckpointStatus, IngestionBatchRequest};
 use temporalstore_rust::meta::{
     AckResponse, GetTableTopologyRequest, LoadFinishRequest, ShardStatLoad, RegisterServerRequest,
@@ -265,19 +269,28 @@ fn main() {
     );
 
     println!("temporalstore server listening on {addr}");
-    serve(&addr, move |request| {
+    // Streaming pre-handler: owns `/blob/<key>` and moves bytes straight between
+    // the socket and the object store (no full-body buffering). Everything else
+    // is Declined and falls through to the buffered handler below.
+    let stream_blob_store = Arc::clone(&blob_store);
+    let stream_blob_runtime = Arc::clone(&blob_runtime);
+    let stream_chunk_bytes = blob_chunk_bytes;
+    serve_with_stream_handler(
+        &addr,
+        move |head, transfer| {
+            handle_blob_stream(
+                head,
+                transfer,
+                &stream_blob_store,
+                &stream_blob_runtime,
+                stream_chunk_bytes,
+            )
+        },
+        move |request| {
         if let Some(response) = handle_ping_route(&request) {
             return response;
         }
         if let Some(response) = handle_readiness_route(&request) {
-            return response;
-        }
-        if let Some(response) = handle_blob_route(
-            &request,
-            &blob_store,
-            &blob_runtime,
-            blob_chunk_bytes,
-        ) {
             return response;
         }
         if let Some(raft_state) = &raft_state {
@@ -694,7 +707,8 @@ fn main() {
             },
             _ => json_response(404, &Status::error("not_found", "unknown server route")),
         }
-    })
+        },
+    )
     .expect("server failed");
 }
 
@@ -716,70 +730,186 @@ fn handle_readiness_route(request: &HttpRequest) -> Option<(u16, Vec<u8>)> {
     }
 }
 
-/// Streamed attachment endpoint. `POST /blob/<key>` writes the request body to
-/// the blob store in `chunk_bytes` slices through `ObjectStore::append_blob`
-/// (chunked, so memory does not scale with a single giant write); returns a
-/// JSON receipt. `GET /blob/<key>` returns the stored object bytes.
-fn handle_blob_route(
-    request: &HttpRequest,
+/// Streamed attachment endpoint (zero-copy / no full-body buffering).
+///
+/// `POST|PUT /blob/<key>` reads the request body off the socket in `chunk_bytes`
+/// slices and appends each slice straight into `ObjectStore::append_blob`, so
+/// neither the request body nor the object is ever materialized whole in memory;
+/// returns a JSON receipt. `GET /blob/<key>` `stat`s the stored object, sends the
+/// `Content-Length`, then streams the file to the socket in `chunk_bytes` slices.
+///
+/// The handler owns every `/blob/<key>` request (always returns
+/// `StreamAction::Handled`); any other path is `Declined` so the buffered handler
+/// runs. On the error / non-blob-method paths it drains the request body first so
+/// the kept-alive connection stays framed.
+fn handle_blob_stream(
+    head: &temporalstore_rust::http::RequestHead,
+    transfer: &mut StreamTransfer,
     blob_store: &Arc<FileObjectStore>,
     runtime: &Arc<tokio::runtime::Runtime>,
     chunk_bytes: usize,
-) -> Option<(u16, Vec<u8>)> {
-    let key = request.path.strip_prefix("/blob/")?;
-    if key.is_empty() {
-        return Some(json_response(
-            400,
-            &Status::error("bad_request", "missing blob key"),
-        ));
-    }
-    match request.method.as_str() {
+) -> StreamAction {
+    let Some(key) = head.path.strip_prefix("/blob/") else {
+        return StreamAction::Declined;
+    };
+    match head.method.as_str() {
         "POST" | "PUT" => {
-            let result: Result<(u64, u64, u64), String> = runtime.block_on(async {
-                // Replace any prior object so an upload is idempotent.
-                let _ = blob_store.delete(key).await;
-                let mut bytes_written = 0u64;
-                let mut object_length = 0u64;
-                let mut chunks = 0u64;
-                for slice in request.body.chunks(chunk_bytes) {
-                    let receipt = blob_store
-                        .append_blob(key, Bytes::copy_from_slice(slice))
-                        .await
-                        .map_err(|err| err.to_string())?;
-                    bytes_written += receipt.bytes_written;
-                    object_length = receipt.object_length;
-                    chunks += 1;
-                }
-                Ok((bytes_written, object_length, chunks))
-            });
-            Some(match result {
-                Ok((bytes_written, object_length, chunks)) => json_response(
+            if key.is_empty() {
+                let _ = transfer.drain_body();
+                write_stream_json(
+                    transfer,
+                    400,
+                    &Status::error("bad_request", "missing blob key"),
+                );
+                return StreamAction::Handled;
+            }
+            let key = key.to_string();
+            match stream_blob_upload(transfer, blob_store, runtime, chunk_bytes, &key) {
+                Ok((bytes_written, object_length, chunks)) => write_stream_json(
+                    transfer,
                     200,
                     &BlobReceipt {
                         status: Status::ok(),
-                        key: key.to_string(),
+                        key,
                         bytes_written,
                         object_length,
                         chunks,
                     },
                 ),
-                Err(err) => json_response(500, &Status::error("blob_write_failed", err)),
-            })
+                Err(err) => {
+                    write_stream_json(transfer, 500, &Status::error("blob_write_failed", err))
+                }
+            }
+            StreamAction::Handled
         }
         "GET" => {
-            let result = runtime.block_on(async { blob_store.get(key).await });
-            Some(match result {
-                Ok(bytes) => (200, bytes.to_vec()),
-                Err(err) => {
-                    json_response(404, &Status::error("blob_not_found", err.to_string()))
-                }
-            })
+            if key.is_empty() {
+                write_stream_json(
+                    transfer,
+                    400,
+                    &Status::error("bad_request", "missing blob key"),
+                );
+                return StreamAction::Handled;
+            }
+            match stream_blob_download(transfer, blob_store, chunk_bytes, key) {
+                Ok(true) => {}
+                Ok(false) => write_stream_json(
+                    transfer,
+                    404,
+                    &Status::error("blob_not_found", key.to_string()),
+                ),
+                // A mid-stream socket error: the head is already sent, nothing to
+                // recover; drop the connection.
+                Err(_) => {}
+            }
+            StreamAction::Handled
         }
-        _ => Some(json_response(
-            405,
-            &Status::error("method_not_allowed", "use POST or GET on /blob/<key>"),
-        )),
+        _ => {
+            let _ = transfer.drain_body();
+            write_stream_json(
+                transfer,
+                405,
+                &Status::error("method_not_allowed", "use POST or GET on /blob/<key>"),
+            );
+            StreamAction::Handled
+        }
     }
+}
+
+/// Serialize `value` and write it as a complete streamed JSON response.
+fn write_stream_json<T: Serialize>(transfer: &mut StreamTransfer, status: u16, value: &T) {
+    let (_status, body) = json_response(status, value);
+    let _ = transfer.send_head(status, "application/json", body.len());
+    let _ = transfer.write_chunk(&body);
+    let _ = transfer.flush();
+}
+
+/// Stream a `POST|PUT /blob/<key>` body from the socket into the object store in
+/// `chunk_bytes` appends. Memory is bounded to one `chunk_bytes` buffer, never
+/// the whole upload. Returns `(bytes_written, object_length, chunks)`.
+fn stream_blob_upload(
+    transfer: &mut StreamTransfer,
+    blob_store: &Arc<FileObjectStore>,
+    runtime: &Arc<tokio::runtime::Runtime>,
+    chunk_bytes: usize,
+    key: &str,
+) -> Result<(u64, u64, u64), String> {
+    // Replace any prior object so an upload is idempotent.
+    runtime.block_on(async {
+        let _ = blob_store.delete(key).await;
+    });
+    let mut buf = vec![0u8; chunk_bytes];
+    let mut filled = 0usize;
+    let mut bytes_written = 0u64;
+    let mut object_length = 0u64;
+    let mut chunks = 0u64;
+    loop {
+        if filled == buf.len() {
+            let receipt = runtime
+                .block_on(blob_store.append_blob(key, Bytes::copy_from_slice(&buf[..filled])))
+                .map_err(|err| err.to_string())?;
+            bytes_written += receipt.bytes_written;
+            object_length = receipt.object_length;
+            chunks += 1;
+            filled = 0;
+        }
+        let n = transfer
+            .read_body(&mut buf[filled..])
+            .map_err(|err| err.to_string())?;
+        if n == 0 {
+            break;
+        }
+        filled += n;
+    }
+    if filled > 0 {
+        let receipt = runtime
+            .block_on(blob_store.append_blob(key, Bytes::copy_from_slice(&buf[..filled])))
+            .map_err(|err| err.to_string())?;
+        bytes_written += receipt.bytes_written;
+        object_length = receipt.object_length;
+        chunks += 1;
+    }
+    // An empty body still creates a zero-length object so a later GET succeeds.
+    if chunks == 0 {
+        let receipt = runtime
+            .block_on(blob_store.append_blob(key, Bytes::new()))
+            .map_err(|err| err.to_string())?;
+        object_length = receipt.object_length;
+    }
+    Ok((bytes_written, object_length, chunks))
+}
+
+/// Stream a `GET /blob/<key>` response: `stat` the object, send `Content-Length`,
+/// then copy the file to the socket in `chunk_bytes` slices. Returns `Ok(false)`
+/// (before any head is sent) when the object does not exist so the caller can
+/// send a 404.
+fn stream_blob_download(
+    transfer: &mut StreamTransfer,
+    blob_store: &Arc<FileObjectStore>,
+    chunk_bytes: usize,
+    key: &str,
+) -> std::io::Result<bool> {
+    let path = match blob_store.object_path(key) {
+        Ok(path) => path,
+        Err(_) => return Ok(false),
+    };
+    let mut file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(err),
+    };
+    let length = file.metadata()?.len() as usize;
+    transfer.send_head(200, "application/octet-stream", length)?;
+    let mut buf = vec![0u8; chunk_bytes];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        transfer.write_chunk(&buf[..n])?;
+    }
+    transfer.flush()?;
+    Ok(true)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
