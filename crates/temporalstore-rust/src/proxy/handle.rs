@@ -672,6 +672,26 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
+            ("POST", "/context/ingest")
+            | ("POST", "/context/ingest_extract")
+            | ("POST", "/ProxyService/ContextIngest") => {
+                match parse_json::<context::ProxyContextIngestRequest>(&request.body) {
+                    Ok(req) => self.context_ingest(req),
+                    Err(err) => {
+                        self.inc_bad_request();
+                        json_response(400, &Status::error("bad_request", err.to_string()))
+                    }
+                }
+            }
+            ("POST", "/context/retrieve") | ("POST", "/ProxyService/ContextRetrieve") => {
+                match parse_json::<context::ProxyContextRetrieveRequest>(&request.body) {
+                    Ok(req) => self.context_retrieve(req),
+                    Err(err) => {
+                        self.inc_bad_request();
+                        json_response(400, &Status::error("bad_request", err.to_string()))
+                    }
+                }
+            }
             _ => json_response(404, &Status::error("not_found", "unknown proxy route")),
         }
     }

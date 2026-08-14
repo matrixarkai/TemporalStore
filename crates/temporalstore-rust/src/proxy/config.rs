@@ -17,6 +17,18 @@ pub(super) fn default_service_registry_ttl_ms() -> u64 {
     30_000
 }
 
+pub(super) fn default_context_first_shard_id() -> crate::types::ShardId {
+    1
+}
+
+pub(super) fn default_context_shard_count() -> u64 {
+    1
+}
+
+pub(super) fn default_context_io_timeout_ms() -> u64 {
+    30_000
+}
+
 pub(super) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

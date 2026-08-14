@@ -62,6 +62,14 @@ _DEFAULTS = {
     "datanode_url": "http://127.0.0.1:17102",
     "blob_timeout": 30.0,
     "backend_timeout": 30.0,   # gateway-level cap on a single backend call (s)
+    # Direct network path (B): when enabled, /v1/ingest and /v1/retrieve POST a
+    # high-level {scope, messages}/{scope, query} body over a shared async
+    # connection pool to `direct_backend_url` (the Rust service proxy by default,
+    # or a datanode for one hop less), bypassing the serial stdio MCP adapter.
+    # The gateway does NO hashing -- the proxy owns tenant_hash + shard routing.
+    "direct_backend": False,
+    "direct_backend_url": "http://127.0.0.1:17000",
+    "direct_pool_size": 64,
 }
 
 # route -> (tool name, rate-limit class). "__mcp__" is dispatched through mcp_http_dispatch.
@@ -131,6 +139,11 @@ class GatewayConfig:
         self.blob_connection_factory: Callable[["GatewayConfig"], Any] = fields.get(
             "blob_connection_factory", _default_blob_connection
         )
+        # Direct-backend target (proxy or datanode) parsed for the pooled client.
+        # `direct_connection_factory` is injectable so tests stub it with no network.
+        self.direct_connection_factory: Optional[Callable[[], Any]] = fields.get(
+            "direct_connection_factory"
+        )
 
     @classmethod
     def from_env(cls, overrides: Optional[Json] = None) -> "GatewayConfig":
@@ -166,6 +179,17 @@ class GatewayConfig:
             blob_timeout=num("MATRIXARK_BLOB_TIMEOUT_S", "blob_timeout", float),
             backend_timeout=num("MATRIXARK_GATEWAY_BACKEND_TIMEOUT_MS", "backend_timeout", lambda v: float(v) / 1000.0),
             blob_connection_factory=overrides.get("blob_connection_factory", _default_blob_connection),
+            direct_backend=_env_bool(
+                overrides.get("direct_backend", env.get("MATRIXARK_GATEWAY_DIRECT_BACKEND")),
+                _DEFAULTS["direct_backend"],
+            ),
+            direct_backend_url=str(
+                overrides.get("direct_backend_url")
+                or env.get("MATRIXARK_GATEWAY_DIRECT_URL")
+                or _DEFAULTS["direct_backend_url"]
+            ),
+            direct_pool_size=num("MATRIXARK_GATEWAY_DIRECT_POOL", "direct_pool_size", int),
+            direct_connection_factory=overrides.get("direct_connection_factory"),
         )
 
 
@@ -486,6 +510,90 @@ def _safe_close(conn: Any) -> None:
         pass
 
 
+# ================================================================================================
+# Direct network path (B): pooled async JSON client to a target base URL
+# ================================================================================================
+class DirectBackendClient:
+    """Reusable, target-agnostic pooled async JSON client.
+
+    POSTs a JSON body to `{base_url}{path}` and returns `(status, dict)`. A small
+    thread-safe pool of persistent `http.client` connections is reused across
+    requests so concurrent `/v1` traffic amortizes TCP/connect cost instead of
+    spawning a subprocess per call (the serial MCP-adapter failure mode). Sync
+    I/O runs in a worker thread (`asyncio.to_thread`) to keep the event loop free.
+
+    `target` is whatever base URL you point it at -- the Rust service proxy
+    (default, so the proxy owns tenant_hash + shard routing) or a datanode
+    directly ("one hop less"). `connection_factory` is injectable so tests stub
+    the transport with no network.
+    """
+
+    def __init__(self, base_url: str, *, timeout: float = 30.0, pool_size: int = 64,
+                 connection_factory: Optional[Callable[[], Any]] = None) -> None:
+        parsed = urlparse(str(base_url))
+        self.scheme = parsed.scheme or "http"
+        self.host = parsed.hostname or "127.0.0.1"
+        self.port = parsed.port or (443 if self.scheme == "https" else 80)
+        self.base_path = (parsed.path or "").rstrip("/")
+        self.timeout = float(timeout)
+        self.pool_size = max(1, int(pool_size))
+        self._factory = connection_factory or self._default_factory
+        self._pool: list[Any] = []
+        self._lock = threading.Lock()
+
+    def _default_factory(self) -> Any:
+        import http.client
+
+        if self.scheme == "https":
+            return http.client.HTTPSConnection(self.host, self.port, timeout=self.timeout)
+        return http.client.HTTPConnection(self.host, self.port, timeout=self.timeout)
+
+    def _acquire(self) -> Any:
+        with self._lock:
+            if self._pool:
+                return self._pool.pop()
+        return self._factory()
+
+    def _release(self, conn: Any) -> None:
+        with self._lock:
+            if len(self._pool) < self.pool_size:
+                self._pool.append(conn)
+                return
+        _safe_close(conn)
+
+    def _post_sync(self, path: str, payload: Json) -> Tuple[int, Json]:
+        body = json.dumps(payload).encode("utf-8")
+        conn = self._acquire()
+        try:
+            conn.putrequest("POST", self.base_path + path)
+            conn.putheader("Content-Type", "application/json")
+            conn.putheader("Content-Length", str(len(body)))
+            conn.endheaders()
+            conn.send(body)
+            resp = conn.getresponse()
+            raw = resp.read()
+            status = int(getattr(resp, "status", 200) or 200)
+        except Exception:
+            _safe_close(conn)
+            raise
+        else:
+            self._release(conn)
+        parsed: Any = json.loads(raw) if raw else {}
+        return status, parsed if isinstance(parsed, dict) else {"result": parsed}
+
+    async def post_json(self, path: str, payload: Json) -> Tuple[int, Json]:
+        return await asyncio.to_thread(self._post_sync, path, payload)
+
+
+def _build_direct_client(cfg: GatewayConfig) -> DirectBackendClient:
+    return DirectBackendClient(
+        cfg.direct_backend_url,
+        timeout=cfg.backend_timeout,
+        pool_size=int(cfg.direct_pool_size),
+        connection_factory=cfg.direct_connection_factory,
+    )
+
+
 def _probe_datanode(cfg: GatewayConfig) -> Optional[bool]:
     """Best-effort readiness probe against the datanode. None => could not determine (never fatal)."""
     try:
@@ -532,6 +640,66 @@ def _install_sized_executor() -> Optional[int]:
     return n
 
 
+def _direct_context_body(tool: str, args: Json) -> Tuple[str, Json]:
+    """Translate the parsed `/v1` args into a proxy `/context/*` high-level body.
+
+    Returns `(proxy_path, body)`. The gateway performs NO hashing: it forwards the
+    raw `scope` identifiers and lets the proxy derive `tenant_hash` + `shard_id`.
+    """
+    scope = args.get("scope")
+    if not isinstance(scope, dict):
+        scope = {"tenant_id": scope} if scope else {}
+    if tool == "matrixark_retrieve":
+        body: Json = {"scope": scope, "query": args.get("query", "")}
+        for key in ("start_time_ms", "end_time_ms", "max_events", "node_hashes"):
+            if args.get(key) is not None:
+                body[key] = args[key]
+        return "/context/retrieve", body
+
+    body = {"scope": scope}
+    messages = args.get("messages")
+    records = args.get("records") or args.get("sources")
+    if isinstance(messages, list) and messages:
+        body["messages"] = messages
+    if isinstance(records, list) and records:
+        body["records"] = records
+    for key in ("query", "start_time_ms", "end_time_ms", "max_events", "provider"):
+        if args.get(key) is not None:
+            body[key] = args[key]
+    return "/context/ingest", body
+
+
+async def _dispatch_direct(client: "DirectBackendClient", cfg: GatewayConfig, tool: str,
+                           parsed: Json, args: Json, send: Callable,
+                           rl_headers: list[Tuple[bytes, bytes]], *,
+                           n_records: Optional[int], n_messages: Optional[int]) -> None:
+    """Serve one `/v1/ingest` or `/v1/retrieve` over the direct network path."""
+    path, body = _direct_context_body(tool, args)
+    try:
+        status, data = await asyncio.wait_for(client.post_json(path, body), cfg.backend_timeout)
+    except asyncio.TimeoutError:
+        return await _json(send, 504, {"error": "backend_timeout",
+                           "detail": f"backend did not respond within {cfg.backend_timeout}s"}, rl_headers)
+    except Exception as exc:
+        return await _json(send, _classify_backend_error(exc),
+                           {"error": "backend_error", "detail": str(exc)}, rl_headers)
+
+    if status >= 400:
+        return await _json(send, status if status in (429, 507) else 502,
+                           {"error": "backend_error", "detail": data}, rl_headers)
+
+    if tool == "matrixark_ingest":
+        accepted = n_records if n_records is not None else (n_messages or 0)
+        out: Json = {"accepted": accepted, "scope": args.get("scope"), "result": data}
+        # The datanode's /context/ingest_extract extracts inline, so a complete
+        # conversation is already finalized by the time the proxy returns.
+        if _finalize_requested(parsed, args):
+            out["finalized"] = True
+            out["extraction"] = data
+        return await _json(send, 202, out, rl_headers)
+    return await _json(send, 200, _ok_body(data), rl_headers)
+
+
 def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None]]:
     """Return the `/v1/*` gateway ASGI app fronting an already-built MatrixArk `server`.
 
@@ -543,6 +711,8 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
     limiter = _RateLimiter(cfg)
     executor_state = {"installed": False}
     executor_lock = threading.Lock()
+    # Direct network path (B): one shared pooled client per worker when enabled.
+    direct_client = _build_direct_client(cfg) if cfg.direct_backend else None
 
     async def app(scope: Json, receive: Callable, send: Callable) -> None:
         if scope.get("type") != "http":
@@ -639,6 +809,16 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         batch = n_records if n_records is not None else (n_messages or 0)
         if batch > cfg.max_batch:
             return await _json(send, 413, {"error": "payload_too_large", "detail": "batch too large"}, rl_headers)
+
+        # ---- direct network path (B): bypass the serial MCP adapter --------------------------
+        # /v1/ingest and /v1/retrieve POST a high-level {scope, messages}/{scope, query} body over
+        # the shared pool to the Rust service proxy, which owns tenant_hash + shard routing. When
+        # the flag is off, control falls through to the byte-for-byte-unchanged MCP path below.
+        if direct_client is not None and tool in ("matrixark_ingest", "matrixark_retrieve"):
+            _apply_identity(args, key, tenant)  # scope object only; proxy does the hashing
+            return await _dispatch_direct(
+                direct_client, cfg, tool, parsed, args, send, rl_headers,
+                n_records=n_records, n_messages=n_messages)
 
         apply_ingest_route_defaults("/api/ingest" if tool == "matrixark_ingest" else path, args)
         _apply_identity(args, key, tenant)

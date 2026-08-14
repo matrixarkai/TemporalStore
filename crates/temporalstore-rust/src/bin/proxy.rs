@@ -29,6 +29,9 @@ fn main() {
         service_registry_ttl_ms: env_u64("TS_PROXY_SERVICE_REGISTRY_TTL_MS", 30_000),
         serving_mode: env_serving_mode("TS_PROXY_SERVING_MODE", ProxyServingMode::Serving),
         drop_percent: env_u8("TS_PROXY_DROP_PERCENT", 0),
+        context_first_shard_id: env_u64("TS_PROXY_CONTEXT_FIRST_SHARD", 1),
+        context_shard_count: env_u64("TS_PROXY_CONTEXT_SHARD_COUNT", 1),
+        context_io_timeout_ms: env_u64("TS_PROXY_CONTEXT_IO_TIMEOUT_MS", 30_000),
     };
     let proxy = ProxyService::new(options);
     let heartbeat_interval_ms = env_u64("TS_PROXY_HEARTBEAT_INTERVAL_MS", 10_000);

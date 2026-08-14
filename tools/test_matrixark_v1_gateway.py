@@ -86,6 +86,11 @@ def _factory_for(response):
     return lambda cfg: _FakeConn(response)
 
 
+def _direct_factory_for(response):
+    """Direct-backend connection factory (no `cfg` arg, unlike the blob factory)."""
+    return lambda: _FakeConn(response)
+
+
 # ---- ASGI test harness --------------------------------------------------------------------------
 def drive(app, *, method="POST", path="/v1/ingest", body=None, raw=None,
           headers=None, chunks=None):
@@ -342,6 +347,87 @@ class GatewayTest(unittest.TestCase):
         st, _, body = drive(self.app, method="GET", path="/healthz")
         self.assertEqual(200, st)
         self.assertEqual("ok", json.loads(body)["status"])
+
+
+class DirectBackendTest(unittest.TestCase):
+    """Direct network path (B): /v1/ingest + /v1/retrieve POST high-level bodies to the proxy."""
+
+    def setUp(self):
+        self.s = _FakeServer()
+
+    def _direct_app(self, response, **over):
+        cfg = gw.GatewayConfig.from_env({
+            "api_keys": {"k-acme": "acme"},
+            "require_auth": True,
+            "direct_backend": True,
+            "direct_backend_url": over.pop("direct_backend_url", "http://127.0.0.1:17000"),
+            "direct_connection_factory": _direct_factory_for(response),
+            **over,
+        })
+        return gw.make_v1_app(self.s, cfg)
+
+    def test_direct_ingest_202_and_bypasses_mcp(self):
+        report = {"status": {"ok": True}, "accepted": 2, "node_hashes": [11, 12]}
+        app = self._direct_app(_FakeResponse(200, body=json.dumps(report).encode()))
+        st, hmap, body = drive(
+            app, path="/v1/ingest",
+            body={"messages": [{"role": "user", "content": "a"},
+                               {"role": "assistant", "content": "b"}]},
+            headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual(202, st)
+        payload = json.loads(body)
+        self.assertEqual(2, payload["accepted"])                     # fast-ack accepted count
+        self.assertEqual(report, payload["result"])                  # datanode report passed through
+        self.assertEqual([], self.s.calls)                           # MCP adapter NOT used
+        # POSTed the high-level {scope, messages} body to the proxy's /context/ingest.
+        self.assertEqual("POST", _FakeConn.last.method)
+        self.assertEqual("/context/ingest", _FakeConn.last.url)
+        sent = json.loads(_FakeConn.last.body)
+        self.assertEqual({"tenant_id": "acme"}, sent["scope"])       # gateway injects tenant, no hashing
+        self.assertEqual(2, len(sent["messages"]))
+        self.assertIn("x-ratelimit-limit", hmap)
+
+    def test_direct_ingest_finalize_flag_marks_finalized(self):
+        app = self._direct_app(_FakeResponse(200, body=json.dumps({"status": {"ok": True}}).encode()))
+        st, _, body = drive(
+            app, path="/v1/ingest",
+            body={"messages": [{"role": "user", "content": "hi"}], "finalize": True},
+            headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual(202, st)
+        self.assertTrue(json.loads(body)["finalized"])               # inline extraction on datanode
+        self.assertEqual([], self.s.calls)
+
+    def test_direct_retrieve_200_and_bypasses_mcp(self):
+        pack = {"pack": [{"text": "staging = 1.9.2"}], "tokens": 7, "status": {"ok": True}}
+        app = self._direct_app(_FakeResponse(200, body=json.dumps(pack).encode()))
+        st, _, body = drive(app, path="/v1/retrieve", body={"query": "roll staging"},
+                            headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual(200, st)
+        self.assertEqual(7, json.loads(body)["tokens"])              # ContextPack passed through
+        self.assertEqual([], self.s.calls)                           # MCP adapter NOT used
+        self.assertEqual("/context/retrieve", _FakeConn.last.url)
+        sent = json.loads(_FakeConn.last.body)
+        self.assertEqual({"tenant_id": "acme"}, sent["scope"])
+        self.assertEqual("roll staging", sent["query"])
+
+    def test_direct_posts_to_configured_url_with_path_prefix(self):
+        client = gw.DirectBackendClient("http://10.0.0.5:18080/edge",
+                                        connection_factory=_direct_factory_for(_FakeResponse(200, b"{}")))
+        self.assertEqual("10.0.0.5", client.host)
+        self.assertEqual(18080, client.port)
+        self.assertEqual("/edge", client.base_path)
+        status, data = asyncio.run(client.post_json("/context/retrieve", {"query": "x"}))
+        self.assertEqual(200, status)
+        self.assertEqual("/edge/context/retrieve", _FakeConn.last.url)  # base path honored
+
+    def test_flag_off_keeps_mcp_path(self):
+        # With the flag OFF the direct client is never built; retrieve uses the MCP adapter.
+        cfg = gw.GatewayConfig.from_env({"api_keys": {"k-acme": "acme"}, "require_auth": True})
+        app = gw.make_v1_app(self.s, cfg)
+        st, _, _ = drive(app, path="/v1/retrieve", body={"query": "x"},
+                         headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual(200, st)
+        self.assertEqual("matrixark_retrieve", self.s.calls[0][0])
 
 
 def _extract_streamed_body(conn):

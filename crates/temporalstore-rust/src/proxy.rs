@@ -8,6 +8,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 mod commands;
+mod context;
 mod meta_sync;
 mod prometheus;
 mod reports;
@@ -18,6 +19,7 @@ mod policy;
 mod response;
 
 use config::{
+    default_context_first_shard_id, default_context_io_timeout_ms, default_context_shard_count,
     default_proxy_addr, default_service_registry_ttl_ms, now_ms, proxy_client_from_options,
     proxy_config_version,
 };
@@ -65,6 +67,21 @@ pub struct ProxyOptions {
     pub serving_mode: ProxyServingMode,
     #[serde(default)]
     pub drop_percent: u8,
+    /// First shard id used when routing high-level `/context/*` requests by
+    /// tenant. Mirrors a table's `first_shard_id`; combined with
+    /// `context_shard_count` and the engine's `shard_id_for_key` it selects the
+    /// owning shard for a tenant. Defaults to 1.
+    #[serde(default = "default_context_first_shard_id")]
+    pub context_first_shard_id: ShardId,
+    /// Number of shards the context corpus is spread across. `1` keeps every
+    /// tenant on `context_first_shard_id` (single-shard deploys).
+    #[serde(default = "default_context_shard_count")]
+    pub context_shard_count: u64,
+    /// I/O timeout (ms) for forwarding a `/context/*` request to the owning
+    /// datanode. Larger than the command io_timeout because extraction /
+    /// embedding generation runs inline on the datanode.
+    #[serde(default = "default_context_io_timeout_ms")]
+    pub context_io_timeout_ms: u64,
 }
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -113,6 +130,9 @@ impl Default for ProxyOptions {
             service_registry_ttl_ms: default_service_registry_ttl_ms(),
             serving_mode: ProxyServingMode::Serving,
             drop_percent: 0,
+            context_first_shard_id: default_context_first_shard_id(),
+            context_shard_count: default_context_shard_count(),
+            context_io_timeout_ms: default_context_io_timeout_ms(),
         }
     }
 }
@@ -2939,6 +2959,128 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         panic!("server {addr} did not start");
+    }
+
+    /// Minimal datanode surface that serves the low-level context endpoints the
+    /// proxy forwards to (`/context/ingest_extract`, `/context/retrieve`).
+    fn start_context_server(addr: String, engine: TemporalEngine) {
+        use crate::context_workflow::{
+            ingest_extract_context, retrieve_context, ContextIngestExtractRequest,
+            ContextRetrieveRequest,
+        };
+        std::thread::spawn(move || {
+            serve(&addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("POST", "/context/ingest_extract") => {
+                        let req =
+                            parse_json::<ContextIngestExtractRequest>(&request.body).unwrap();
+                        json_response(200, &ingest_extract_context(&engine, req))
+                    }
+                    ("POST", "/context/retrieve") => {
+                        let req = parse_json::<ContextRetrieveRequest>(&request.body).unwrap();
+                        json_response(200, &retrieve_context(&engine, req))
+                    }
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+    }
+
+    #[test]
+    fn proxy_routes_high_level_context_ingest_and_retrieve_by_tenant() {
+        use crate::context_workflow::{ContextIngestExtractReport, ContextRetrieveReport};
+
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        start_context_server(test_addr(18_366), engine.clone());
+        start_meta(test_addr(18_367), test_addr(18_366));
+        wait_for_http(&test_addr(18_367));
+        wait_for_http(&test_addr(18_366));
+
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_367),
+            route_cache_ttl_ms: 60_000,
+            context_first_shard_id: 1,
+            context_shard_count: 1,
+            ..ProxyOptions::default()
+        });
+
+        // The proxy owns hashing: the tenant hash it derives here must match the
+        // shard it routes to, and retrieve must land on the same shard.
+        let scope = context::ProxyContextScope {
+            tenant_id: "team-alpha".to_string(),
+            account_id: "acct_42".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(proxy.context_shard_id(context::context_tenant_hash(&scope)), 1);
+
+        let ingest_body = serde_json::to_vec(&serde_json::json!({
+            "scope": {"tenant_id": "team-alpha", "account_id": "acct_42"},
+            "messages": [
+                {"role": "user", "content": "the launch checklist owner is Dana"},
+                {"role": "assistant", "content": "noted: Dana owns the launch checklist"}
+            ]
+        }))
+        .unwrap();
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/context/ingest".to_string(),
+            body: ingest_body,
+        });
+        assert_eq!(code, 200);
+        let report = parse_json::<ContextIngestExtractReport>(&body).unwrap();
+        assert!(report.status.ok, "ingest status: {:?}", report.status);
+        assert_eq!(report.accepted, 2);
+        assert!(!report.node_hashes.is_empty());
+        let node_hashes = report.node_hashes.clone();
+
+        // Retrieve by the node hashes the ingest returned (the datanode's local
+        // workflow retrieves by node hash). The proxy re-derives the same
+        // shard/tenant from the scope, so the request lands on the same data.
+        let retrieve_body = serde_json::to_vec(&serde_json::json!({
+            "scope": {"tenant_id": "team-alpha", "account_id": "acct_42"},
+            "query": "who owns the launch checklist",
+            "node_hashes": node_hashes,
+        }))
+        .unwrap();
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/context/retrieve".to_string(),
+            body: retrieve_body,
+        });
+        assert_eq!(code, 200);
+        let retrieved = parse_json::<ContextRetrieveReport>(&body).unwrap();
+        assert!(retrieved.status.ok, "retrieve status: {:?}", retrieved.status);
+        assert!(
+            retrieved.node_count >= 1,
+            "expected retrieval to see the ingested tenant nodes, got {retrieved:?}"
+        );
+
+        // A different tenant asking for the SAME node hashes must not see
+        // team-alpha's nodes (keys are tenant-scoped), proving the proxy's
+        // per-tenant hashing is wired end to end.
+        let other_body = serde_json::to_vec(&serde_json::json!({
+            "scope": {"tenant_id": "team-beta", "account_id": "acct_42"},
+            "query": "who owns the launch checklist",
+            "node_hashes": report.node_hashes,
+        }))
+        .unwrap();
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/context/retrieve".to_string(),
+            body: other_body,
+        });
+        assert_eq!(code, 200);
+        let other = parse_json::<ContextRetrieveReport>(&body).unwrap();
+        assert!(other.status.ok);
+        assert_eq!(other.node_count, 0, "cross-tenant leak: {other:?}");
     }
 
     #[test]
