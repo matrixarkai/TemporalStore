@@ -159,7 +159,8 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(202, st)
         payload = json.loads(body)
         self.assertEqual(2, payload["accepted"])
-        self.assertEqual("acme/agent-7", payload["scope"])          # tenant-prefixed
+        # scope is an OBJECT (backend contract); tenant isolation via tenant_id + namespace label.
+        self.assertEqual({"tenant_id": "acme", "namespace": "acme/agent-7"}, payload["scope"])
         name, args = self.s.calls[0]
         self.assertEqual("matrixark_ingest", name)
         self.assertTrue(args["async_processing"])                    # fast-ack default
@@ -170,11 +171,12 @@ class GatewayTest(unittest.TestCase):
     def test_scope_defaults_to_tenant_and_no_double_prefix(self):
         drive(self.app, path="/v1/ingest", body={"records": [1]},
               headers={"Authorization": "Bearer k-acme"})
-        self.assertEqual("acme", self.s.calls[0][1]["scope"])
+        self.assertEqual({"tenant_id": "acme"}, self.s.calls[0][1]["scope"])
         self.s.calls.clear()
         drive(self.app, path="/v1/ingest", body={"scope": "acme/x", "records": [1]},
               headers={"Authorization": "Bearer k-acme"})
-        self.assertEqual("acme/x", self.s.calls[0][1]["scope"])      # already-prefixed untouched
+        # already-prefixed string label preserved under the object's namespace, no double-prefix.
+        self.assertEqual({"tenant_id": "acme", "namespace": "acme/x"}, self.s.calls[0][1]["scope"])
 
     def test_retrieve_200(self):
         st, hmap, body = drive(self.app, path="/v1/retrieve", body={"query": "roll staging"},

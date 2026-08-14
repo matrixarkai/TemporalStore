@@ -268,17 +268,30 @@ def _authorize(headers: list[Tuple[bytes, bytes]], cfg: GatewayConfig) -> Tuple[
 
 
 def _apply_identity(args: Json, key: Optional[str], tenant: Optional[str]) -> Json:
-    """Inject api_key/tenant and namespace-isolate `scope` under the tenant (guarding double-prefix)."""
-    if key:
+    """Inject identity and namespace-isolate `scope` under the tenant.
+
+    The shared backend access manager validates `scope` as an OBJECT (dict) for *every* backend
+    (`optional_object(args, "scope")`), so the tenant is injected as `scope["tenant_id"]`. Injecting
+    a bare tenant *string* (the previous behavior) made the backend reject every ingest/retrieve with
+    "scope must be an object" — a 100% failure that the unit tests missed by using a fake server.
+
+    The edge bearer key is forwarded as the backend `api_key` only when
+    MATRIXARK_GATEWAY_FORWARD_API_KEY is truthy (default on). Deployments where the edge itself is the
+    trust boundary and the backend runs in `dev` access mode (so it does not expect scoped MatrixArk
+    keys) set it to 0, so the edge token is not misread as a backend credential.
+    """
+    if key and _env_bool(os.environ.get("MATRIXARK_GATEWAY_FORWARD_API_KEY"), True):
         args["api_key"] = key
     if tenant:
         args["tenant"] = tenant
         scope = args.get("scope")
-        if isinstance(scope, str) and scope:
-            if not (scope == tenant or scope.startswith(tenant + "/")):
-                args["scope"] = f"{tenant}/{scope}"
+        if isinstance(scope, dict):
+            scope.setdefault("tenant_id", tenant)
+        elif isinstance(scope, str) and scope:
+            label = scope if (scope == tenant or scope.startswith(tenant + "/")) else f"{tenant}/{scope}"
+            args["scope"] = {"tenant_id": tenant, "namespace": label}
         else:
-            args["scope"] = tenant
+            args["scope"] = {"tenant_id": tenant}
     return args
 
 
@@ -470,6 +483,31 @@ def _probe_datanode(cfg: GatewayConfig) -> Optional[bool]:
 # ================================================================================================
 # The app
 # ================================================================================================
+def _install_sized_executor() -> Optional[int]:
+    """Install a sized default `ThreadPoolExecutor` on the running loop (once per worker process).
+
+    The synchronous backend (`server.call_tool`) and blob I/O all run through `asyncio.to_thread`,
+    whose default executor caps at ~`min(32, cpu+4)` threads. Under high request concurrency that
+    cap serializes backend calls and inflates tail latency well before CPU saturates. Setting
+    `MATRIXARK_GATEWAY_THREADS=N` sizes the pool explicitly so the gateway can keep more backend
+    calls in flight. No-op (keeps asyncio's default) when the env var is unset/invalid.
+    """
+    raw = os.environ.get("MATRIXARK_GATEWAY_THREADS")
+    if not raw:
+        return None
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if n <= 0:
+        return None
+    from concurrent.futures import ThreadPoolExecutor
+
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(ThreadPoolExecutor(max_workers=n, thread_name_prefix="mtx-gw"))
+    return n
+
+
 def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None]]:
     """Return the `/v1/*` gateway ASGI app fronting an already-built MatrixArk `server`.
 
@@ -479,10 +517,19 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
     cfg = _coerce_config(config)
     legacy = make_asgi_app(server)
     limiter = _RateLimiter(cfg)
+    executor_state = {"installed": False}
+    executor_lock = threading.Lock()
 
     async def app(scope: Json, receive: Callable, send: Callable) -> None:
         if scope.get("type") != "http":
             return
+
+        # First HTTP request on this loop/worker installs the sized threadpool (if configured).
+        if not executor_state["installed"]:
+            with executor_lock:
+                if not executor_state["installed"]:
+                    _install_sized_executor()
+                    executor_state["installed"] = True
         path = scope.get("path", "")
         method = scope.get("method", "")
 
@@ -596,11 +643,32 @@ def _build_server_from_env() -> Any:
 
     try:
         from tools.matrixark_mcp_server import MatrixArkMcpServer
-        from tools.matrixark_mcp_backends import build_mcp_adapter, default_mcp_backend
+        from tools.matrixark_mcp_backends import (
+            add_backend_arguments,
+            build_mcp_adapter,
+            default_mcp_backend,
+        )
     except ImportError:
         from matrixark_mcp_server import MatrixArkMcpServer  # type: ignore
-        from matrixark_mcp_backends import build_mcp_adapter, default_mcp_backend  # type: ignore
-    ns = argparse.Namespace(backend=os.environ.get("MATRIXARK_MCP_BACKEND", default_mcp_backend()))
+        from matrixark_mcp_backends import (  # type: ignore
+            add_backend_arguments,
+            build_mcp_adapter,
+            default_mcp_backend,
+        )
+    # Build the *full* backend namespace (argparse defaults + env), then force the backend.
+    # Previously only `backend` was set on the Namespace, so build_mcp_adapter() reached for
+    # `args.event_log` / `args.local_store` / `args.metaserver` / ... and raised AttributeError
+    # for every backend -> the gateway could never build its server. parse_args([]) gives every
+    # backend arg its documented default (event_log=/tmp/matrixark-mcp-events.jsonl, etc.).
+    parser = argparse.ArgumentParser(add_help=False)
+    add_backend_arguments(parser)
+    ns = parser.parse_args([])
+    ns.backend = os.environ.get("MATRIXARK_MCP_BACKEND", default_mcp_backend())
+    event_log_override = os.environ.get("MATRIXARK_EVENT_LOG")
+    if event_log_override:
+        from pathlib import Path
+
+        ns.event_log = Path(event_log_override)
     adapter = build_mcp_adapter(ns)
     return MatrixArkMcpServer(adapter, access_mode=os.environ.get("MATRIXARK_ACCESS_MODE", "enforced"))
 
