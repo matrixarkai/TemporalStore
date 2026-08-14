@@ -111,6 +111,63 @@ MCP-capable client.
 
 ---
 
+## Enterprise Cloud API (ingest & retrieve at scale)
+
+For teams that ingest their own resources and skills programmatically — through **APIs rather than
+agent hooks** — TemporalStore Cloud exposes a managed, multi-tenant HTTPS endpoint. Every route is
+authenticated with a per-tenant API key over TLS; the ingest path is **asynchronous**, so high-QPS
+producers never block on durability.
+
+| Endpoint | Purpose | Shape |
+|---|---|---|
+| `POST /v1/ingest` | Write resources, skills, session events | async `202`; batch up to 1,000 records |
+| `POST /v1/session/commit` | Close a window; extract entities & summaries | one pass over the session |
+| `POST /v1/retrieve` | Ranked, token-budgeted **ContextPack** | read path; p50 < 2 ms |
+| `PUT`/`GET /v1/blob/<key>` | Large attachments | streamed to shared storage |
+| `POST /v1/mcp` | Model Context Protocol over HTTP | for MCP-native clients |
+| `GET /v1/healthz` · `/readyz` | Liveness / readiness | probes |
+
+```bash
+# ingest — async, fast-ack (202)
+curl -sS https://api.temporalstore.ai/v1/ingest \
+  -H 'authorization: Bearer sk_live_...' -H 'content-type: application/json' \
+  -d '{"scope":"acme/agent-7/session-42","records":[
+        {"type":"resource_chunk","uri":"repo://api/handler.rs","text":"pub async fn handle(...)"},
+        {"type":"skill_section","name":"deploy-runbook","text":"1. drain 2. roll 3. verify"}]}'
+# -> 202 {"accepted": 2}
+
+# retrieve — a ranked, token-budgeted ContextPack
+curl -sS https://api.temporalstore.ai/v1/retrieve \
+  -H 'authorization: Bearer sk_live_...' -H 'content-type: application/json' \
+  -d '{"query":"current staging build and how to roll it","scope":"acme/agent-7","token_budget":1800}'
+# -> 200 {"pack":[{"text":"staging = 1.9.2","source":"session-42#evt-8"}, ...],"tokens":214}
+
+# large attachments stream straight to shared storage
+curl -sS -X PUT --data-binary @report-q3.pdf \
+  https://api.temporalstore.ai/v1/blob/acme/report-q3.pdf
+```
+
+**Auth, rate limits & quotas.** Per-tenant bearer keys, scoped to namespaces and rotated from the
+portal; regional endpoints (`api.us.temporalstore.ai`, `api.eu.temporalstore.ai`) keep data in-region.
+Limits are enforced per key with a token bucket and reported in `X-RateLimit-*` headers (`429` +
+`Retry-After` when exceeded). Enterprise defaults, raised per contract:
+
+| Limit / quota | Default |
+|---|---|
+| `POST /v1/ingest` | 5,000 req/s sustained · 10,000 burst |
+| `POST /v1/retrieve` | 6,000 req/s sustained · 12,000 burst |
+| Mixed ingest + retrieve | ~5,000 ops/s per 8-core node · linear scale-out |
+| Max attachment (`/v1/blob`) | 5 GB, streamed |
+| Max ingest batch | 1,000 records / 16 MB body |
+| Storage per tenant | 1 TB, expandable |
+
+Large files land in **MatrixObject** shared storage via `append_blob`; tenant metadata (accounts, keys,
+scopes) is stored as KV in TemporalStore itself by default, with **MatrixKV** as an optional
+transactional metadata plane. Self-hosted clusters expose the same operations through the proxy — see
+the [Deployment guide](https://temporalstore.ai/deployment.html#cloud-api).
+
+---
+
 ## Run with open-source models (local-first, no API key)
 
 **Retrieval itself needs no model** — the ContextPack is ranked by term + temporal + entity
