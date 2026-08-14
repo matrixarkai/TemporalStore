@@ -18,9 +18,8 @@ prost = "0.13"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 sha2 = "0.10"
-matrixraft = { package = "matrixraft", git = "https://github.com/bjmeetsfo/MatrixRaft.git", rev = "b535783614e742560063a2dc136abb2e6315d899" }
-matrixcache = { git = "https://github.com/bjmeetsfo/MatrixCache.git", rev = "b351b7365b15ea840415cfceb448b7b063a5c13d", features = ["rocksdb-ssd"] }
-matrixobjectstore-rs = { git = "https://github.com/bjmeetsfo/MatrixObjectStore.git", rev = "8f03227fab58406fe254662acb730d1c9ed81825", optional = true, default-features = false }
+matrixraft = { package = "matrixraft", git = "https://github.com/matrixarkai/MatrixRaft.git", rev = "a4334b37ba6592e7c7192f3eaa2afe087746ccc9" }
+matrixcache = { git = "https://github.com/matrixarkai/MatrixCache.git", rev = "8bddbcd391592120680ce1019b004cd9b5c40935", features = ["rocksdb-ssd"] }
 temporalstore-snapshot = { path = "../temporalstore-snapshot" }
 thiserror = "1"
 tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "sync"] }
@@ -36,7 +35,12 @@ tonic-build = "0.12"
 default = ["temporal-raft-engine"]
 temporal-raft-engine = []
 open-source-surface = []
-matrixobject = ["dep:matrixobjectstore-rs"]
+# The matrixobject backend links the enterprise-only MatrixObjectStore crate,
+# which has no public source. It is intentionally left as an inert feature
+# stub in the open-source tree (off by default; the code is fully gated by
+# `#[cfg(feature = "matrixobject")]`). Enterprise builds re-add the private
+# `matrixobjectstore-rs` dependency and this feature's `dep:` entry.
+matrixobject = []
 
 # This example links the optional MatrixObjectStore crate; gate it behind the
 # `matrixobject` feature so the default `cargo build --all-targets` does not try

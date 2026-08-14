@@ -733,7 +733,7 @@ checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
 [[package]]
 name = "matrixcache"
 version = "0.1.0"
-source = "git+https://github.com/bjmeetsfo/MatrixCache.git?rev=b351b7365b15ea840415cfceb448b7b063a5c13d#b351b7365b15ea840415cfceb448b7b063a5c13d"
+source = "git+https://github.com/matrixarkai/MatrixCache.git?rev=8bddbcd391592120680ce1019b004cd9b5c40935#8bddbcd391592120680ce1019b004cd9b5c40935"
 dependencies = [
  "rocksdb",
  "serde",
@@ -759,14 +759,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "matrixobjectstore-rs"
-version = "0.1.0"
-source = "git+https://github.com/bjmeetsfo/MatrixObjectStore.git?rev=8f03227fab58406fe254662acb730d1c9ed81825#8f03227fab58406fe254662acb730d1c9ed81825"
-
-[[package]]
 name = "matrixraft"
 version = "0.1.0"
-source = "git+https://github.com/bjmeetsfo/MatrixRaft.git?rev=b535783614e742560063a2dc136abb2e6315d899#b535783614e742560063a2dc136abb2e6315d899"
+source = "git+https://github.com/matrixarkai/MatrixRaft.git?rev=a4334b37ba6592e7c7192f3eaa2afe087746ccc9#a4334b37ba6592e7c7192f3eaa2afe087746ccc9"
 dependencies = [
  "serde",
  "serde_json",
@@ -1336,7 +1331,6 @@ dependencies = [
  "bytes",
  "hex",
  "matrixcache",
- "matrixobjectstore-rs",
  "matrixraft",
  "prost",
  "protoc-bin-vendored",

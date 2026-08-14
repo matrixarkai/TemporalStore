@@ -4,7 +4,7 @@
 use matrixraft::{
     rustraft_parity_contract as library_matrixraft_parity_contract,
     rustraft_parity_report as library_matrixraft_parity_report,
-    rustraft_reference_raft_runtime_capability_prometheus as library_matrixraft_reference_raft_runtime_capability_prometheus,
+    rustraft_baseline_raft_runtime_capability_prometheus as library_matrixraft_reference_raft_runtime_capability_prometheus,
 };
 
 use super::{distributed_raft_readiness, RaftDistributedReadiness};
@@ -22,7 +22,7 @@ pub use matrixraft::{
     rustraft_pipeline_evidence as matrixraft_pipeline_evidence,
     rustraft_production_readiness_report as matrixraft_production_readiness_report,
     rustraft_read_safety_runtime_decision as matrixraft_read_safety_runtime_decision,
-    rustraft_reference_raft_runtime_capability_report as matrixraft_reference_raft_runtime_capability_report,
+    rustraft_baseline_raft_runtime_capability_report as matrixraft_reference_raft_runtime_capability_report,
     rustraft_runtime_capability_report_from_evidence as matrixraft_runtime_capability_report_from_evidence,
     rustraft_snapshot_lifecycle_evidence as matrixraft_snapshot_lifecycle_evidence,
     rustraft_validate_deployment_mode as matrixraft_validate_deployment_mode,
@@ -52,7 +52,7 @@ pub use matrixraft::{
     RustRaftReadSafetyRuntimeInput as MatrixRaftReadSafetyRuntimeInput,
     RustRaftReadinessEvidence as MatrixRaftReadinessEvidence,
     RustRaftReadinessSnapshot as MatrixRaftReadinessSnapshot,
-    RustRaftReferenceRaftRuntimeCapabilityReport as MatrixRaftReferenceRaftRuntimeCapabilityReport,
+    RustRaftBaselineRaftRuntimeCapabilityReport as MatrixRaftReferenceRaftRuntimeCapabilityReport,
     RustRaftSemanticRequirement as MatrixRaftSemanticRequirement,
     RustRaftSnapshotLifecycleEvidence as MatrixRaftSnapshotLifecycleEvidence,
     RustRaftWalLifecycleEvidence as MatrixRaftWalLifecycleEvidence,

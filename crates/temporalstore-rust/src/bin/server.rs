@@ -1368,7 +1368,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use tempfile::tempdir;
-    use temporalstore_rust::http::{get_json_with_options, HttpRequestOptions};
+    use temporalstore_rust::http::{get_json_with_options, serve, HttpRequestOptions};
     use temporalstore_rust::ingestion::{IngestionBatchReport, IngestionRecord, IngestionSource};
     use temporalstore_rust::types::{Command, CommandResponse};
     use temporalstore_rust::{
