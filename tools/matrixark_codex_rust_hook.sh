@@ -5,10 +5,10 @@ SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOT="${MATRIXARK_REPO_ROOT:-${SCRIPT_ROOT}}"
 cd "$ROOT"
 
-# Persistent, unified per-agent store base. /tmp is wiped on reboot and scattered
-# codex context across ephemeral dirs; anchor storage under the durable MatrixArk
-# dir instead. Override with MATRIXARK_CODEX_HOOK_STORE_BASE.
-CODEX_STORE_BASE="${MATRIXARK_CODEX_HOOK_STORE_BASE:-/root/.matrixark/temporalstore-hooks/codex}"
+# Persistent shared store base. /tmp is wiped on reboot and per-agent roots split
+# local memory; anchor Codex and Claude Rust hooks in one durable MatrixArk root.
+# Override with MATRIXARK_SHARED_HOOK_STORE_BASE or MATRIXARK_CODEX_HOOK_STORE_BASE.
+CODEX_STORE_BASE="${MATRIXARK_CODEX_HOOK_STORE_BASE:-${MATRIXARK_SHARED_HOOK_STORE_BASE:-/root/.matrixark/temporalstore-hooks/shared}}"
 mkdir -p "$CODEX_STORE_BASE" 2>/dev/null || true
 export MATRIXARK_TEMPORALSTORE_RUST_ROOT="${MATRIXARK_TEMPORALSTORE_RUST_ROOT:-$CODEX_STORE_BASE/store}"
 export TEMPORALSTORE_RUST_CODEX_HOOK_ROOT="${TEMPORALSTORE_RUST_CODEX_HOOK_ROOT:-$CODEX_STORE_BASE/rust}"
@@ -47,7 +47,7 @@ export MATRIXARK_RUST_PROXY_PUBLISH_VISIBILITY_ON_FLUSH="${MATRIXARK_RUST_PROXY_
 export MATRIXARK_RUST_PROXY_ASYNC_VISIBILITY_PUBLISH_AFTER_FLUSH="${MATRIXARK_RUST_PROXY_ASYNC_VISIBILITY_PUBLISH_AFTER_FLUSH:-0}"
 export MATRIXARK_HOOK_STORAGE_ROUTE="${MATRIXARK_HOOK_STORAGE_ROUTE:-shared_store_async}"
 export MATRIXARK_RUST_PROXY_DAEMON_AUTOSTART="${MATRIXARK_RUST_PROXY_DAEMON_AUTOSTART:-1}"
-export MATRIXARK_RUST_PROXY_SOCKET="${MATRIXARK_RUST_PROXY_SOCKET:-/tmp/matrixark-rust-proxy-codex-live.sock}"
+export MATRIXARK_RUST_PROXY_SOCKET="${MATRIXARK_RUST_PROXY_SOCKET:-/tmp/matrixark-rust-proxy-shared-live.sock}"
 export MATRIXARK_RUST_PROXY_DAEMON_LOG="/dev/null"
 
 if [[ -z "${MATRIXARK_TEMPORALSTORE_RUST_CLI:-}" ]]; then
@@ -133,11 +133,21 @@ _matrixark_start_rust_proxy_daemon() {
       --ping >/dev/null 2>&1; then
     return
   fi
-  nohup python3 "$ROOT/tools/matrixark_rust_proxy_daemon.py" \
-    --proxy "$MATRIXARK_TEMPORALSTORE_RUST_CLI" \
-    --socket "$MATRIXARK_RUST_PROXY_SOCKET" \
-    --log "$MATRIXARK_RUST_PROXY_DAEMON_LOG" \
-    >/dev/null 2>&1 &
+  (
+    flock -n 8 || exit 0
+    if python3 "$ROOT/tools/matrixark_rust_proxy_daemon.py" \
+        --proxy "$MATRIXARK_TEMPORALSTORE_RUST_CLI" \
+        --socket "$MATRIXARK_RUST_PROXY_SOCKET" \
+        --log "$MATRIXARK_RUST_PROXY_DAEMON_LOG" \
+        --ping >/dev/null 2>&1; then
+      exit 0
+    fi
+    nohup python3 "$ROOT/tools/matrixark_rust_proxy_daemon.py" \
+      --proxy "$MATRIXARK_TEMPORALSTORE_RUST_CLI" \
+      --socket "$MATRIXARK_RUST_PROXY_SOCKET" \
+      --log "$MATRIXARK_RUST_PROXY_DAEMON_LOG" \
+      >/dev/null 2>&1 &
+  ) 8>"$MATRIXARK_RUST_PROXY_SOCKET.start.lock"
   for _ in {1..40}; do
     if python3 "$ROOT/tools/matrixark_rust_proxy_daemon.py" \
         --proxy "$MATRIXARK_TEMPORALSTORE_RUST_CLI" \

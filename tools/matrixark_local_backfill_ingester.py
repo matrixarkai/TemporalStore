@@ -25,8 +25,8 @@ Design notes
   ``--event`` per item rather than trusting the source's own role label.
 * Per-agent identity/scope/store-root mirror the live hooks so backfilled nodes
   land in the same durable store the live hook retrieves from:
-      claude -> acct_claude/tenant_claude, root /root/.matrixark/temporalstore-hooks/claude/rust
-      codex  -> acct_codex /tenant_codex , root /root/.matrixark/temporalstore-hooks/codex/rust
+      claude -> acct_claude/tenant_claude, root /root/.matrixark/temporalstore-hooks/shared/rust
+      codex  -> acct_codex /tenant_codex , root /root/.matrixark/temporalstore-hooks/shared/rust
 * Idempotent: the engine keys each node on hash(text), so re-runs converge.
 * Resources are ingested under a shared ``_resources`` session into *both* agent
   stores (opt out with --no-shared-resources). Surfacing shared/global nodes in
@@ -73,7 +73,10 @@ def agent_root(agent: str) -> str:
         if explicit:
             return explicit
         return os.path.join(
-            os.environ.get("MATRIXARK_CLAUDE_HOOK_STORE_BASE", "/root/.matrixark/temporalstore-hooks/claude"),
+            os.environ.get(
+                "MATRIXARK_CLAUDE_HOOK_STORE_BASE",
+                os.environ.get("MATRIXARK_SHARED_HOOK_STORE_BASE", "/root/.matrixark/temporalstore-hooks/shared"),
+            ),
             "rust",
         )
     if agent == "codex":
@@ -84,10 +87,16 @@ def agent_root(agent: str) -> str:
         if explicit:
             return explicit
         return os.path.join(
-            os.environ.get("MATRIXARK_CODEX_HOOK_STORE_BASE", "/root/.matrixark/temporalstore-hooks/codex"),
+            os.environ.get(
+                "MATRIXARK_CODEX_HOOK_STORE_BASE",
+                os.environ.get("MATRIXARK_SHARED_HOOK_STORE_BASE", "/root/.matrixark/temporalstore-hooks/shared"),
+            ),
             "rust",
         )
-    return f"/root/.matrixark/temporalstore-hooks/{agent}/rust"
+    return os.path.join(
+        os.environ.get("MATRIXARK_SHARED_HOOK_STORE_BASE", "/root/.matrixark/temporalstore-hooks/shared"),
+        "rust",
+    )
 
 
 def agent_config(agent: str) -> dict:

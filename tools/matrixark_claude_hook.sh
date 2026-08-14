@@ -87,10 +87,10 @@ export TEMPORALSTORE_AGENT_NAME="claude"
 export MATRIXARK_ACCOUNT_ID="${MATRIXARK_ACCOUNT_ID:-acct_claude}"
 export MATRIXARK_TENANT_ID="${MATRIXARK_TENANT_ID:-tenant_claude}"
 export MATRIXARK_USER_ID="${MATRIXARK_USER_ID:-${USER:-claude_user}}"
-# Persistent, unified per-agent store base. /tmp is wiped on reboot and scattered
-# claude context across ephemeral dirs (one per backend); anchor storage under the
-# durable MatrixArk dir instead. Override with MATRIXARK_CLAUDE_HOOK_STORE_BASE.
-CLAUDE_STORE_BASE="${MATRIXARK_CLAUDE_HOOK_STORE_BASE:-/root/.matrixark/temporalstore-hooks/claude}"
+# Persistent shared store base. /tmp is wiped on reboot and per-agent roots split
+# local memory; anchor Claude and Codex Rust hooks in one durable MatrixArk root.
+# Override with MATRIXARK_SHARED_HOOK_STORE_BASE or MATRIXARK_CLAUDE_HOOK_STORE_BASE.
+CLAUDE_STORE_BASE="${MATRIXARK_CLAUDE_HOOK_STORE_BASE:-${MATRIXARK_SHARED_HOOK_STORE_BASE:-/root/.matrixark/temporalstore-hooks/shared}}"
 mkdir -p "$CLAUDE_STORE_BASE" 2>/dev/null || true
 export TEMPORALSTORE_RUST_CODEX_HOOK_ROOT="${TEMPORALSTORE_RUST_CLAUDE_HOOK_ROOT:-${TEMPORALSTORE_RUST_CODEX_HOOK_ROOT:-$CLAUDE_STORE_BASE/rust}}"
 export TEMPORALSTORE_RUST_CODEX_EVENT_LOG="${TEMPORALSTORE_RUST_CLAUDE_EVENT_LOG:-${TEMPORALSTORE_RUST_CODEX_EVENT_LOG:-$CLAUDE_STORE_BASE/rust.jsonl}}"
@@ -163,16 +163,10 @@ if [[ "$BACKEND" == "python" ]]; then
   # be made reachable we UNSET the socket so the adapter falls back to the prior
   # ephemeral-spawn path (default behavior fully preserved).
   if [[ "${MATRIXARK_CLAUDE_HOOK_PROXY_DAEMON:-1}" == "1" && -x "$RUST_PROXY" ]]; then
-    # Default socket is derived from the store root so each distinct
-    # MATRIXARK_TEMPORALSTORE_RUST_ROOT gets its OWN resident daemon. The daemon's
-    # proxy is env-pinned to whatever root it was started with, so a single fixed
-    # socket shared across roots would let a stale daemon serve the wrong store
-    # (e.g. a test/alternate store base). The production claude store root is stable,
-    # so this still yields a stable per-store socket. Override with an explicit
-    # MATRIXARK_RUST_PROXY_SOCKET to pin one socket by hand.
-    _MATRIXARK_CLAUDE_ROOT_HASH="$(printf '%s' "$MATRIXARK_TEMPORALSTORE_RUST_ROOT" | cksum 2>/dev/null | cut -d' ' -f1)"
-    _MATRIXARK_CLAUDE_ROOT_HASH="${_MATRIXARK_CLAUDE_ROOT_HASH:-live}"
-    export MATRIXARK_RUST_PROXY_SOCKET="${MATRIXARK_RUST_PROXY_SOCKET:-/tmp/matrixark-rust-proxy-claude-${_MATRIXARK_CLAUDE_ROOT_HASH}.sock}"
+    # Codex and Claude now share the same durable Rust hook root, so they also
+    # share the warm proxy socket. Override MATRIXARK_RUST_PROXY_SOCKET for
+    # isolated test roots.
+    export MATRIXARK_RUST_PROXY_SOCKET="${MATRIXARK_RUST_PROXY_SOCKET:-/tmp/matrixark-rust-proxy-shared-live.sock}"
     _MATRIXARK_CLAUDE_DAEMON_LOG="${MATRIXARK_RUST_PROXY_DAEMON_LOG:-/dev/null}"
     _matrixark_claude_daemon_ping() {
       "$PYTHON" "$REPO_ROOT/tools/matrixark_rust_proxy_daemon.py" \
@@ -181,10 +175,14 @@ if [[ "$BACKEND" == "python" ]]; then
     }
     if ! _matrixark_claude_daemon_ping; then
       if [[ "${MATRIXARK_CLAUDE_HOOK_PROXY_DAEMON_AUTOSTART:-1}" == "1" ]]; then
-        setsid "$PYTHON" "$REPO_ROOT/tools/matrixark_rust_proxy_daemon.py" \
-          --proxy "$RUST_PROXY" --socket "$MATRIXARK_RUST_PROXY_SOCKET" \
-          --log "$_MATRIXARK_CLAUDE_DAEMON_LOG" >/dev/null 2>&1 </dev/null &
-        disown 2>/dev/null || true
+        (
+          flock -n 8 || exit 0
+          if _matrixark_claude_daemon_ping; then exit 0; fi
+          setsid "$PYTHON" "$REPO_ROOT/tools/matrixark_rust_proxy_daemon.py" \
+            --proxy "$RUST_PROXY" --socket "$MATRIXARK_RUST_PROXY_SOCKET" \
+            --log "$_MATRIXARK_CLAUDE_DAEMON_LOG" >/dev/null 2>&1 </dev/null &
+          disown 2>/dev/null || true
+        ) 8>"$MATRIXARK_RUST_PROXY_SOCKET.start.lock"
         for _ in $(seq 1 40); do _matrixark_claude_daemon_ping && break; sleep 0.05; done
       fi
     fi

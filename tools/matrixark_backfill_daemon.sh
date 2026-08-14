@@ -80,15 +80,15 @@ agent_root() {
     claude)
       if [[ -n "${MATRIXARK_CLAUDE_RUST_HOOK_ROOT:-}" ]]; then echo "$MATRIXARK_CLAUDE_RUST_HOOK_ROOT"; return; fi
       if [[ -n "${TEMPORALSTORE_RUST_CLAUDE_HOOK_ROOT:-}" ]]; then echo "$TEMPORALSTORE_RUST_CLAUDE_HOOK_ROOT"; return; fi
-      echo "${MATRIXARK_CLAUDE_HOOK_STORE_BASE:-/root/.matrixark/temporalstore-hooks/claude}/rust"
+      echo "${MATRIXARK_CLAUDE_HOOK_STORE_BASE:-${MATRIXARK_SHARED_HOOK_STORE_BASE:-/root/.matrixark/temporalstore-hooks/shared}}/rust"
       ;;
     codex)
       if [[ -n "${MATRIXARK_CODEX_RUST_HOOK_ROOT:-}" ]]; then echo "$MATRIXARK_CODEX_RUST_HOOK_ROOT"; return; fi
       if [[ -n "${TEMPORALSTORE_RUST_CODEX_HOOK_ROOT:-}" ]]; then echo "$TEMPORALSTORE_RUST_CODEX_HOOK_ROOT"; return; fi
-      echo "${MATRIXARK_CODEX_HOOK_STORE_BASE:-/root/.matrixark/temporalstore-hooks/codex}/rust"
+      echo "${MATRIXARK_CODEX_HOOK_STORE_BASE:-${MATRIXARK_SHARED_HOOK_STORE_BASE:-/root/.matrixark/temporalstore-hooks/shared}}/rust"
       ;;
     *)
-      echo "/root/.matrixark/temporalstore-hooks/$1/rust"
+      echo "${MATRIXARK_SHARED_HOOK_STORE_BASE:-/root/.matrixark/temporalstore-hooks/shared}/rust"
       ;;
   esac
 }

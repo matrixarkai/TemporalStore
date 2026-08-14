@@ -44,8 +44,13 @@ class ToolLeaningTest(unittest.TestCase):
 
     def test_agent_roots_default_to_durable_hook_stores(self):
         with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual("/root/.matrixark/temporalstore-hooks/claude/rust", B.agent_root("claude"))
-            self.assertEqual("/root/.matrixark/temporalstore-hooks/codex/rust", B.agent_root("codex"))
+            self.assertEqual("/root/.matrixark/temporalstore-hooks/shared/rust", B.agent_root("claude"))
+            self.assertEqual("/root/.matrixark/temporalstore-hooks/shared/rust", B.agent_root("codex"))
+
+    def test_agent_roots_honor_shared_store_base(self):
+        with patch.dict(os.environ, {"MATRIXARK_SHARED_HOOK_STORE_BASE": "/tmp/shared-hooks"}, clear=True):
+            self.assertEqual("/tmp/shared-hooks/rust", B.agent_root("claude"))
+            self.assertEqual("/tmp/shared-hooks/rust", B.agent_root("codex"))
 
     def test_codex_agent_root_honors_live_hook_root_override(self):
         with patch.dict(os.environ, {"TEMPORALSTORE_RUST_CODEX_HOOK_ROOT": "/tmp/live-codex-root"}, clear=True):
