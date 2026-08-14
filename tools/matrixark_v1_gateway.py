@@ -61,6 +61,7 @@ _DEFAULTS = {
     "max_blob_bytes": 5 * _GIB,
     "datanode_url": "http://127.0.0.1:17102",
     "blob_timeout": 30.0,
+    "backend_timeout": 30.0,   # gateway-level cap on a single backend call (s)
 }
 
 # route -> (tool name, rate-limit class). "__mcp__" is dispatched through mcp_http_dispatch.
@@ -163,6 +164,7 @@ class GatewayConfig:
                 or _DEFAULTS["datanode_url"]
             ),
             blob_timeout=num("MATRIXARK_BLOB_TIMEOUT_S", "blob_timeout", float),
+            backend_timeout=num("MATRIXARK_GATEWAY_BACKEND_TIMEOUT_MS", "backend_timeout", lambda v: float(v) / 1000.0),
             blob_connection_factory=overrides.get("blob_connection_factory", _default_blob_connection),
         )
 
@@ -594,7 +596,11 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         # MCP-over-HTTP: dispatch the JSON-RPC message directly (api-key injected downstream).
         if tool == "__mcp__":
             try:
-                resp = await asyncio.to_thread(mcp_http_dispatch, server, parsed, api_key=key)
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(mcp_http_dispatch, server, parsed, api_key=key), cfg.backend_timeout)
+            except asyncio.TimeoutError:
+                return await _json(send, 504, {"error": "backend_timeout",
+                                   "detail": f"backend did not respond within {cfg.backend_timeout}s"}, rl_headers)
             except Exception as exc:
                 return await _json(send, _classify_backend_error(exc),
                                    {"error": "backend_error", "detail": str(exc)}, rl_headers)
@@ -616,7 +622,11 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         _apply_identity(args, key, tenant)
 
         try:
-            result = await asyncio.to_thread(server.call_tool, tool, args)
+            result = await asyncio.wait_for(
+                asyncio.to_thread(server.call_tool, tool, args), cfg.backend_timeout)
+        except asyncio.TimeoutError:
+            return await _json(send, 504, {"error": "backend_timeout",
+                               "detail": f"backend did not respond within {cfg.backend_timeout}s"}, rl_headers)
         except Exception as exc:
             status = _classify_backend_error(exc)
             body = {"error": "rate_limited"} if status == 429 else (

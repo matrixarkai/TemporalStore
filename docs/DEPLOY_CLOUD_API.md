@@ -125,3 +125,46 @@ Route53  api.temporalstore.ai ──► ALB (:443, ACM TLS) ──► Target Gro
 3. ACM cert + Route53 `api.temporalstore.ai` → ALB HTTPS listener → target group `:8080`.
 4. ECS service: 8 vCPU/16 GB tasks, `--workers 4`, health check `GET /v1/healthz`, CPU autoscaling.
 5. Smoke-test `POST /v1/ingest` (expect `202`) and `GET /v1/readyz` before shifting traffic.
+
+
+## Production backend & ingestion architecture (read this)
+
+**Backend: use `temporalstore-rust` (Rust) — not `temporalstore-direct`.**
+`temporalstore-direct` loads `libtemporalstore.so`, the C++ native SDK over BRPC; it is **not** part of the
+Rust-only OSS deployment. The `local` backend is the single-user hook/dev path (in-process Python with
+**synchronous embedding**) and must never front the multi-tenant API. Configure the Rust backend:
+
+```bash
+MATRIXARK_MCP_BACKEND=temporalstore-rust
+MATRIXARK_TEMPORALSTORE_RUST_CLI=/usr/local/bin/matrixark_rust_proxy   # the built Rust proxy binary
+MATRIXARK_TEMPORALSTORE_METASERVER=metaserver:17101
+```
+
+**Ingest must NOT call the model; extraction is deferred and batched.**
+`/v1/ingest` should append the raw event durably and return `202` with **zero model calls**. Extraction and
+embedding — the only model-calling step — run **batched**, triggered by `/v1/session/commit` or a
+timeout/size threshold. Enable the fast-ack path:
+
+```bash
+MATRIXARK_HOOK_FAST_ASYNC_INGEST=1      # ingest stores raw and returns, no inline model
+MATRIXARK_HOOK_AUTO_BATCH_EXTRACT=1     # extraction batched on commit/timeout
+MATRIXARK_DIRECT_RAW_INGESTION_QUEUE=1  # raw-write fast path
+MATRIXARK_RUST_PROXY_ASYNC_STORAGE=1
+MATRIXARK_BULK_INGEST=1                 # group-commit durability
+```
+
+Without these, the gateway runs **synchronous per-message extraction** (an embedding call on every ingest),
+which collapses throughput to a few QPS — a local scale test confirmed exactly this failure mode (the
+gateway saturated 4–7 CPU cores while the datanode sat idle, requests never reaching the engine). With them,
+ingest is engine-bound and models fire only on batched extraction.
+
+**Retrieve needs a scalable embedding service.** Each retrieve performs one query-embedding — a hard latency
+floor (~57 ms deterministic vs ~212 ms on a CPU sentence-transformer). Run a batched/GPU embedding service,
+not a single CPU model, for high retrieve QPS.
+
+**New gateway knobs:**
+
+```bash
+MATRIXARK_GATEWAY_THREADS=64             # lift the ~32/worker asyncio.to_thread cap
+MATRIXARK_GATEWAY_BACKEND_TIMEOUT_MS=30000   # a hung backend returns 504, never stalls the caller
+```
