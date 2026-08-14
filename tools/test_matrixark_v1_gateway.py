@@ -168,6 +168,35 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual("k-acme", args["api_key"])
         self.assertIn("x-ratelimit-limit", hmap)                     # rate-limit headers present
 
+    def test_ingest_finalize_triggers_batched_extraction(self):
+        # A complete conversation (finalize=true) ingests AND triggers batched extraction now.
+        st, _, body = drive(self.app, path="/v1/ingest",
+                            body={"scope": "agent-7",
+                                  "messages": [{"role": "user", "content": "hi"}],
+                                  "finalize": True},
+                            headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual(202, st)
+        payload = json.loads(body)
+        self.assertTrue(payload["finalized"])
+        names = [c[0] for c in self.s.calls]
+        self.assertEqual(["matrixark_ingest", "matrixark_session_commit"], names)
+        # extraction runs over the same isolated scope as the ingest.
+        self.assertEqual({"tenant_id": "acme", "namespace": "acme/agent-7"}, self.s.calls[1][1]["scope"])
+
+    def test_ingest_kind_conversation_also_finalizes(self):
+        drive(self.app, path="/v1/ingest",
+              body={"records": [1], "kind": "conversation"},
+              headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual(["matrixark_ingest", "matrixark_session_commit"], [c[0] for c in self.s.calls])
+
+    def test_ingest_message_does_not_extract(self):
+        # A plain streaming message buffers -- no extraction/session_commit.
+        st, _, body = drive(self.app, path="/v1/ingest", body={"records": [1]},
+                            headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual(202, st)
+        self.assertEqual(["matrixark_ingest"], [c[0] for c in self.s.calls])
+        self.assertNotIn("finalized", json.loads(body))
+
     def test_scope_defaults_to_tenant_and_no_double_prefix(self):
         drive(self.app, path="/v1/ingest", body={"records": [1]},
               headers={"Authorization": "Bearer k-acme"})

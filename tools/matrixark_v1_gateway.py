@@ -356,6 +356,28 @@ def _classify_backend_error(exc: Exception) -> int:
     return 500
 
 
+def _finalize_requested(parsed: Json, args: Json) -> bool:
+    """True when the caller marks this ingest as a COMPLETE conversation to extract now.
+
+    A single streaming message buffers and defers extraction; a complete conversation is a full unit,
+    so `finalize`/`commit` true (or `kind == "conversation"`) triggers the batched extraction
+    immediately -- equivalent to ingest + session/commit in one call. Extraction is still ONE batched
+    pass over the whole conversation (not per message), and the caller declares granularity; the
+    gateway never guesses.
+    """
+    def truthy(v: Any) -> bool:
+        return v is True or str(v).strip().lower() in {"1", "true", "yes", "on"}
+
+    for src in (parsed, args):
+        if not isinstance(src, dict):
+            continue
+        if truthy(src.get("finalize")) or truthy(src.get("commit")):
+            return True
+        if str(src.get("kind", "")).strip().lower() == "conversation":
+            return True
+    return False
+
+
 # ================================================================================================
 # Blob proxy (streamed, bounded memory)
 # ================================================================================================
@@ -637,9 +659,24 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
 
         if tool == "matrixark_ingest":
             accepted = n_records if n_records is not None else (n_messages or 0)
-            return await _json(send, 202,
-                               {"accepted": accepted, "scope": args.get("scope"), "result": result},
-                               rl_headers)
+            out = {"accepted": accepted, "scope": args.get("scope"), "result": result}
+            # A complete conversation (finalize/commit/kind=conversation) triggers the batched
+            # extraction NOW; a plain streaming message buffers and extracts later on commit/timeout.
+            if _finalize_requested(parsed, args):
+                commit_args = {"scope": args.get("scope")}
+                _apply_identity(commit_args, key, tenant)
+                try:
+                    out["extraction"] = await asyncio.wait_for(
+                        asyncio.to_thread(server.call_tool, "matrixark_session_commit", commit_args),
+                        cfg.backend_timeout)
+                    out["finalized"] = True
+                except asyncio.TimeoutError:
+                    out["finalized"] = False
+                    out["extraction_error"] = "backend_timeout"
+                except Exception as exc:  # extraction failure must NOT lose the durable ingest
+                    out["finalized"] = False
+                    out["extraction_error"] = str(exc)
+            return await _json(send, 202, out, rl_headers)
         return await _json(send, 200, _ok_body(result), rl_headers)
 
     return app
