@@ -1,0 +1,114 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
+#
+# TemporalStore Enterprise Cloud API — a full local stack behind the documented `/v1/*` gateway:
+#
+#     metaserver (topology) → datanode (storage + streamed /blob) → proxy (client RPC)
+#                                        ▲
+#                                  cloud-api  (this repo's tools/matrixark_v1_gateway.py, :8080)
+#
+#   docker compose -f docker-compose.cloud-api.yml up --build
+#   curl -s http://127.0.0.1:8080/v1/healthz
+#   curl -s http://127.0.0.1:8080/v1/ingest \
+#     -H 'authorization: Bearer sk_live_demo' -H 'content-type: application/json' \
+#     -d '{"scope":"agent-7","records":[{"type":"resource_chunk","text":"hello"}]}'   # -> 202
+#
+# The storage services reuse the published multi-binary image; only the gateway is built here.
+services:
+  metaserver:
+    image: ghcr.io/matrixarkai/temporalstore:latest
+    command: ["matrixark_rust_metaserver"]
+    environment:
+      TS_META_BIND_ADDR: "0.0.0.0:17101"
+      TS_META_ADDR: "metaserver:17101"
+    ports:
+      - "17101:17101"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:17101/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  datanode:
+    image: ghcr.io/matrixarkai/temporalstore:latest
+    command: ["matrixark_rust_datanode"]
+    depends_on:
+      metaserver:
+        condition: service_healthy
+    environment:
+      TS_META_ADDR: "metaserver:17101"
+      TS_SERVER_BIND_ADDR: "0.0.0.0:17102"
+      TS_SERVER_ADVERTISE_ADDR: "datanode:17102"
+      TS_SHARD_ID: "1"
+      TS_DATA_DIR: "/var/lib/temporalstore"
+      TS_CACHE_DIR: "/var/lib/temporalstore/cache"
+      TS_PAGE_STORE_DIR: "/var/lib/temporalstore/pages"
+      TS_INDEX_DIR: "/var/lib/temporalstore/indexes"
+    volumes:
+      - temporalstore-data:/var/lib/temporalstore
+    ports:
+      - "17102:17102"   # datanode HTTP: /health + streamed PUT|GET /blob/<key>
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:17102/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  proxy:
+    image: ghcr.io/matrixarkai/temporalstore:latest
+    command: ["matrixark_rust_proxy"]
+    depends_on:
+      datanode:
+        condition: service_healthy
+    environment:
+      TS_META_ADDR: "metaserver:17101"
+      MATRIXARK_RUST_SERVICE_PROXY_ADDR: "0.0.0.0:17100"
+    ports:
+      - "17100:17100"   # client RPC (ProxyService) — self-hosted SDKs connect here
+    restart: unless-stopped
+
+  cloud-api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.cloud-api
+    image: temporalstore-cloud-api:latest
+    depends_on:
+      datanode:
+        condition: service_healthy
+    environment:
+      MATRIXARK_HTTP_HOST: "0.0.0.0"
+      MATRIXARK_HTTP_PORT: "8080"
+      # ---- storage backends -----------------------------------------------------------------
+      MATRIXARK_DATANODE_BLOB_URL: "http://datanode:17102"
+      MATRIXARK_TEMPORALSTORE_METASERVER: "metaserver:17101"
+      MATRIXARK_RUST_SERVICE_PROXY_ADDR: "proxy:17100"
+      MATRIXARK_ACCESS_MODE: "enforced"
+      # ---- auth (per-tenant bearer keys: "key:tenant,key2:tenant2") --------------------------
+      MATRIXARK_REQUIRE_AUTH: "1"
+      MATRIXARK_API_KEYS: "sk_live_demo:acme,sk_live_globex:globex"
+      # ---- rate limits ----------------------------------------------------------------------
+      MATRIXARK_RL_INGEST_RPS: "5000"
+      MATRIXARK_RL_INGEST_BURST: "10000"
+      MATRIXARK_RL_RETRIEVE_RPS: "6000"
+      MATRIXARK_RL_RETRIEVE_BURST: "12000"
+      MATRIXARK_RL_BLOB_STREAMS: "500"
+      # ---- quotas ---------------------------------------------------------------------------
+      MATRIXARK_QUOTA_MAX_BODY_BYTES: "16777216"      # 16 MiB
+      MATRIXARK_QUOTA_MAX_BATCH: "1000"
+      MATRIXARK_QUOTA_MAX_BLOB_BYTES: "5368709120"    # 5 GiB
+    ports:
+      - "8080:8080"     # the public `/v1/*` gateway (front this with an ALB/TLS in production)
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/v1/healthz',timeout=2).status==200 else 1)"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  temporalstore-data:

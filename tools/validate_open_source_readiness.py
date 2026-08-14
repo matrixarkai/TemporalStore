@@ -186,6 +186,51 @@ def validate_no_private_paths() -> None:
         )
 
 
+def validate_no_enterprise_object_store() -> None:
+    """Fail if the enterprise MatrixObject object store leaks into open source.
+
+    Only the feature-gated bridge (crates/temporalstore-rust/src/matrixobject_store.rs,
+    behind the empty ``matrixobject`` feature) may reference the private
+    matrixobjectstore-rs crate. The object store implementation itself -- the
+    crates/matrixobject/ crate, or a Cargo dependency on matrixobjectstore-rs --
+    must never ship in OSS. See the matrixobject-never-open-source policy.
+    """
+    tracked = repository_files()
+    offenders: list[str] = []
+
+    if any(p == "crates/matrixobject" or p.startswith("crates/matrixobject/") for p in tracked):
+        offenders.append(
+            "crates/matrixobject/ is tracked -- the object-store crate is enterprise-only"
+        )
+
+    for relative_path in tracked:
+        if not relative_path.endswith("Cargo.toml"):
+            continue
+        path = ROOT / relative_path
+        if not path.is_file():
+            continue
+        for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "crates/matrixobject" in line:
+                offenders.append(
+                    f"{relative_path}: references crates/matrixobject (workspace member or path dep)"
+                )
+            if line.startswith(("matrixobjectstore-rs", "matrixobjectstore_rs")) and "=" in line:
+                offenders.append(
+                    f"{relative_path}: depends on the private matrixobjectstore-rs crate"
+                )
+            if "dep:matrixobjectstore" in line:
+                offenders.append(f"{relative_path}: optional dep pulls in matrixobjectstore")
+
+    if offenders:
+        raise SystemExit(
+            "enterprise MatrixObject object store must not ship in open source "
+            "(see matrixobject-never-open-source policy):\n" + "\n".join(offenders[:50])
+        )
+
+
 def repository_files() -> list[str]:
     try:
         return subprocess.run(
@@ -214,6 +259,7 @@ def main() -> int:
     validate_license()
     validate_no_tracked_local_codex_config()
     validate_no_private_paths()
+    validate_no_enterprise_object_store()
     require_tokens("README.md", README_TOKENS)
     require_tokens("SECURITY.md", SECURITY_TOKENS)
     require_tokens("CONTRIBUTING.md", CONTRIBUTING_TOKENS)

@@ -118,6 +118,10 @@ agent hooks** — TemporalStore Cloud exposes a managed, multi-tenant HTTPS endp
 authenticated with a per-tenant API key over TLS; the ingest path is **asynchronous**, so high-QPS
 producers never block on durability.
 
+> **Managed endpoint coming soon.** `api.temporalstore.ai` is being stood up; the same API runs today
+> on a self-hosted cluster (point your client at the proxy). Deploy it yourself with the
+> [Cloud API deployment guide](docs/DEPLOY_CLOUD_API.md) — Docker Compose or AWS ECS.
+
 | Endpoint | Purpose | Shape |
 |---|---|---|
 | `POST /v1/ingest` | Write resources, skills, session events | async `202`; batch up to 1,000 records |

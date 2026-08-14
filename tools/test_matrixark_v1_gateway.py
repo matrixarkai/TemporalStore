@@ -1,0 +1,332 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
+"""Cloud API `/v1/*` gateway: auth (401), ingest 202, retrieve/commit 200, rate-limit 429,
+quota 413, health probes, blob stream proxy, and `/api/*` back-compat — pure-Python unittest."""
+import asyncio
+import json
+import unittest
+
+try:
+    from tools import matrixark_v1_gateway as gw
+except ImportError:  # run from tools/ dir
+    import matrixark_v1_gateway as gw
+
+
+# ---- stub backend -------------------------------------------------------------------------------
+class _FakeServer:
+    def __init__(self):
+        self.calls = []
+        self.handled = []
+
+    def call_tool(self, name, args):
+        self.calls.append((name, dict(args)))
+        if name == "matrixark_retrieve":
+            return {"pack": [{"text": "staging = 1.9.2"}], "tokens": 7}
+        return {"ok": name}
+
+    def handle(self, body):  # used by the legacy /mcp + /v1/mcp path
+        self.handled.append(body)
+        return {"jsonrpc": "2.0", "id": body.get("id"), "result": {"m": body.get("method")}}
+
+
+# ---- fake datanode blob connection (no network) -------------------------------------------------
+class _FakeResponse:
+    def __init__(self, status, body=b"", headers=None):
+        self.status = status
+        self._body = body
+        self._pos = 0
+        self._headers = headers or {}
+
+    def read(self, amt=None):
+        if amt is None:
+            data, self._pos = self._body[self._pos:], len(self._body)
+            return data
+        data = self._body[self._pos:self._pos + amt]
+        self._pos += len(data)
+        return data
+
+    def getheader(self, name):
+        return self._headers.get(name.lower())
+
+
+class _FakeConn:
+    """Records the request line/headers/body and returns a canned response."""
+
+    last = None
+
+    def __init__(self, response):
+        self._response = response
+        self.method = None
+        self.url = None
+        self.headers = {}
+        self.body = b""
+        _FakeConn.last = self
+
+    def putrequest(self, method, url):
+        self.method, self.url = method, url
+
+    def putheader(self, name, value):
+        self.headers[name] = value
+
+    def endheaders(self):
+        pass
+
+    def send(self, data):
+        self.body += data
+
+    def getresponse(self):
+        return self._response
+
+    def close(self):
+        pass
+
+
+def _factory_for(response):
+    return lambda cfg: _FakeConn(response)
+
+
+# ---- ASGI test harness --------------------------------------------------------------------------
+def drive(app, *, method="POST", path="/v1/ingest", body=None, raw=None,
+          headers=None, chunks=None):
+    """Run one request; return (status, headers_dict, body_bytes)."""
+    if raw is not None:
+        payload = raw
+    else:
+        payload = json.dumps(body if body is not None else {}).encode()
+    hdrs = [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]
+    scope = {"type": "http", "method": method, "path": path, "headers": hdrs}
+
+    # Optionally stream the body as multiple http.request messages.
+    if chunks is not None:
+        queue = list(chunks)
+
+        async def receive():
+            if queue:
+                b = queue.pop(0)
+                return {"type": "http.request", "body": b, "more_body": bool(queue)}
+            return {"type": "http.request", "body": b"", "more_body": False}
+    else:
+        async def receive():
+            return {"type": "http.request", "body": payload, "more_body": False}
+
+    sent = []
+
+    async def send(msg):
+        sent.append(msg)
+
+    asyncio.run(app(scope, receive, send))
+    start = next(x for x in sent if x["type"] == "http.response.start")
+    hmap = {k.decode().lower(): v.decode() for k, v in start["headers"]}
+    data = b"".join(x.get("body", b"") for x in sent if x["type"] == "http.response.body")
+    return start["status"], hmap, data
+
+
+def _cfg(**over):
+    base = {"api_keys": {"k-acme": "acme", "k-globex": "globex"}, "require_auth": True}
+    base.update(over)
+    return gw.GatewayConfig.from_env(base)
+
+
+class GatewayTest(unittest.TestCase):
+    def setUp(self):
+        self.s = _FakeServer()
+        self.cfg = _cfg()
+        self.app = gw.make_v1_app(self.s, self.cfg)
+
+    # ---- auth -----------------------------------------------------------------------------------
+    def test_missing_key_401(self):
+        st, _, body = drive(self.app, path="/v1/ingest", body={"records": [1]})
+        self.assertEqual(401, st)
+        self.assertEqual("unauthorized", json.loads(body)["error"])
+        self.assertEqual([], self.s.calls)
+
+    def test_bad_key_401(self):
+        st, _, _ = drive(self.app, path="/v1/retrieve", body={"query": "x"},
+                         headers={"Authorization": "Bearer nope"})
+        self.assertEqual(401, st)
+
+    def test_anonymous_allowed_when_auth_disabled(self):
+        app = gw.make_v1_app(self.s, _cfg(require_auth=False))
+        st, _, _ = drive(app, path="/v1/retrieve", body={"query": "x"})
+        self.assertEqual(200, st)
+
+    # ---- happy paths ----------------------------------------------------------------------------
+    def test_ingest_202_and_scope_isolation(self):
+        st, hmap, body = drive(self.app, path="/v1/ingest",
+                               body={"scope": "agent-7", "records": [{"t": "a"}, {"t": "b"}]},
+                               headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual(202, st)
+        payload = json.loads(body)
+        self.assertEqual(2, payload["accepted"])
+        self.assertEqual("acme/agent-7", payload["scope"])          # tenant-prefixed
+        name, args = self.s.calls[0]
+        self.assertEqual("matrixark_ingest", name)
+        self.assertTrue(args["async_processing"])                    # fast-ack default
+        self.assertEqual("acme", args["tenant"])
+        self.assertEqual("k-acme", args["api_key"])
+        self.assertIn("x-ratelimit-limit", hmap)                     # rate-limit headers present
+
+    def test_scope_defaults_to_tenant_and_no_double_prefix(self):
+        drive(self.app, path="/v1/ingest", body={"records": [1]},
+              headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual("acme", self.s.calls[0][1]["scope"])
+        self.s.calls.clear()
+        drive(self.app, path="/v1/ingest", body={"scope": "acme/x", "records": [1]},
+              headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual("acme/x", self.s.calls[0][1]["scope"])      # already-prefixed untouched
+
+    def test_retrieve_200(self):
+        st, hmap, body = drive(self.app, path="/v1/retrieve", body={"query": "roll staging"},
+                               headers={"X-API-Key": "k-globex"})
+        self.assertEqual(200, st)
+        self.assertEqual("matrixark_retrieve", self.s.calls[0][0])
+        self.assertNotIn("async_processing", self.s.calls[0][1])
+        self.assertEqual(7, json.loads(body)["tokens"])              # ContextPack returned directly
+
+    def test_session_commit_200(self):
+        st, _, _ = drive(self.app, path="/v1/session/commit", body={"force": True},
+                         headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual(200, st)
+        self.assertEqual("matrixark_session_commit", self.s.calls[0][0])
+
+    def test_mcp_dispatch_200(self):
+        st, _, body = drive(self.app, path="/v1/mcp",
+                            body={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                            headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual(200, st)
+        self.assertEqual({"m": "tools/list"}, json.loads(body)["result"])
+
+    # ---- rate limiting --------------------------------------------------------------------------
+    def test_rate_limit_429_with_headers(self):
+        app = gw.make_v1_app(self.s, _cfg(ingest_rps=1, ingest_burst=1))
+        st1, h1, _ = drive(app, path="/v1/ingest", body={"records": [1]},
+                           headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual(202, st1)
+        self.assertEqual("1", h1["x-ratelimit-limit"])
+        self.assertEqual("0", h1["x-ratelimit-remaining"])
+        st2, h2, body = drive(app, path="/v1/ingest", body={"records": [1]},
+                              headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual(429, st2)
+        self.assertEqual("rate_limited", json.loads(body)["error"])
+        self.assertIn("retry-after", h2)
+        self.assertIn("x-ratelimit-remaining", h2)
+
+    def test_rate_limit_is_per_key(self):
+        app = gw.make_v1_app(self.s, _cfg(ingest_rps=1, ingest_burst=1))
+        drive(app, path="/v1/ingest", body={"records": [1]}, headers={"Authorization": "Bearer k-acme"})
+        # a different tenant's key still has its own bucket -> not throttled
+        st, _, _ = drive(app, path="/v1/ingest", body={"records": [1]},
+                         headers={"Authorization": "Bearer k-globex"})
+        self.assertEqual(202, st)
+
+    # ---- quotas ---------------------------------------------------------------------------------
+    def test_oversized_body_413(self):
+        app = gw.make_v1_app(self.s, _cfg(max_body_bytes=32))
+        big = json.dumps({"records": [{"x": "y" * 200}]}).encode()
+        st, _, body = drive(app, path="/v1/ingest", raw=big, headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual(413, st)
+        self.assertEqual("payload_too_large", json.loads(body)["error"])
+        self.assertEqual([], self.s.calls)
+
+    def test_oversized_batch_413(self):
+        app = gw.make_v1_app(self.s, _cfg(max_batch=3))
+        st, _, body = drive(app, path="/v1/ingest", body={"records": [1, 2, 3, 4]},
+                            headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual(413, st)
+        self.assertEqual("payload_too_large", json.loads(body)["error"])
+        self.assertEqual([], self.s.calls)
+
+    def test_storage_quota_507(self):
+        class _QuotaServer(_FakeServer):
+            def call_tool(self, name, args):
+                raise RuntimeError("tenant storage quota exceeded")
+        app = gw.make_v1_app(_QuotaServer(), self.cfg)
+        st, _, body = drive(app, path="/v1/ingest", body={"records": [1]},
+                            headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual(507, st)
+        self.assertEqual("storage_quota_exceeded", json.loads(body)["error"])
+
+    # ---- health ---------------------------------------------------------------------------------
+    def test_healthz(self):
+        st, _, body = drive(self.app, method="GET", path="/v1/healthz")
+        self.assertEqual(200, st)
+        self.assertEqual("ok", json.loads(body)["status"])
+
+    def test_readyz(self):
+        # probe factory returns a 200 /health response
+        app = gw.make_v1_app(self.s, _cfg(blob_connection_factory=_factory_for(_FakeResponse(200))))
+        st, _, body = drive(app, method="GET", path="/v1/readyz")
+        self.assertEqual(200, st)
+        payload = json.loads(body)
+        self.assertTrue(payload["ready"])
+        self.assertEqual("ok", payload["datanode"])
+
+    # ---- blob proxy (streamed, monkeypatched connection) ----------------------------------------
+    def test_blob_put_streams_and_returns_receipt(self):
+        resp = _FakeResponse(200, body=json.dumps({"stored": True}).encode())
+        app = gw.make_v1_app(self.s, _cfg(blob_connection_factory=_factory_for(resp)))
+        st, _, body = drive(app, method="PUT", path="/v1/blob/report-q3.pdf",
+                            chunks=[b"hello ", b"world"],
+                            headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual(200, st)
+        payload = json.loads(body)
+        self.assertTrue(payload["stored"])
+        self.assertEqual(11, payload["bytes"])                       # hello world
+        self.assertEqual("PUT", _FakeConn.last.method)
+        self.assertEqual("/blob/acme/report-q3.pdf", _FakeConn.last.url)  # tenant-isolated key
+        self.assertEqual(b"hello world", _extract_streamed_body(_FakeConn.last))
+
+    def test_blob_get_streams_back(self):
+        resp = _FakeResponse(200, body=b"BLOBDATA", headers={"content-length": "8"})
+        app = gw.make_v1_app(self.s, _cfg(blob_connection_factory=_factory_for(resp)))
+        st, hmap, body = drive(app, method="GET", path="/v1/blob/acme/x.bin",
+                               headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual(200, st)
+        self.assertEqual(b"BLOBDATA", body)
+        self.assertEqual("8", hmap["content-length"])
+
+    def test_blob_requires_auth(self):
+        st, _, _ = drive(self.app, method="GET", path="/v1/blob/x")
+        self.assertEqual(401, st)
+
+    def test_oversized_blob_413_by_content_length(self):
+        app = gw.make_v1_app(self.s, _cfg(max_blob_bytes=4,
+                                          blob_connection_factory=_factory_for(_FakeResponse(200))))
+        st, _, body = drive(app, method="PUT", path="/v1/blob/big.bin", raw=b"toolong",
+                            headers={"Authorization": "Bearer k-acme", "Content-Length": "7"})
+        self.assertEqual(413, st)
+        self.assertEqual("payload_too_large", json.loads(body)["error"])
+
+    # ---- back-compat ----------------------------------------------------------------------------
+    def test_api_backcompat_still_routes(self):
+        st, _, body = drive(self.app, path="/api/ingest",
+                            body={"messages": [{"role": "user", "content": "hi"}]},
+                            headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual(200, st)                                    # legacy front returns 200
+        self.assertEqual("matrixark_ingest", self.s.calls[0][0])
+        self.assertEqual("ok", json.loads(body)["status"])
+
+    def test_legacy_healthz_still_routes(self):
+        st, _, body = drive(self.app, method="GET", path="/healthz")
+        self.assertEqual(200, st)
+        self.assertEqual("ok", json.loads(body)["status"])
+
+
+def _extract_streamed_body(conn):
+    """Reassemble what the PUT streamed to the datanode (Content-Length -> raw, else de-chunk)."""
+    if conn.headers.get("Content-Length") is not None:
+        return conn.body
+    out, data = b"", conn.body
+    while data:
+        size_line, _, rest = data.partition(b"\r\n")
+        size = int(size_line, 16)
+        if size == 0:
+            break
+        out += rest[:size]
+        data = rest[size + 2:]
+    return out
+
+
+if __name__ == "__main__":
+    unittest.main()
