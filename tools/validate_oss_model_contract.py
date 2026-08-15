@@ -155,11 +155,11 @@ def main() -> int:
         "rows": rows,
         "errors": errors,
         "rule": (
-            "MatrixArk, OpenViking, VikingMem, and peer rows must use the same OSS "
+            "MatrixArk and peer rows must use the same OSS "
             "reader model, embedding/encoding model, retrieved event budget, reader evidence policy, and "
             "reader context/output-token budget before token-savings or reader-quality claims are comparable. "
             "Reader fallback, reader errors, diagnostic-only rows, and reader prompt-policy drift fail "
-            "by default so MatrixArk and VikingMem/OpenViking use the same OSS encoder and reader setup."
+            "by default so MatrixArk and peer rows use the same OSS encoder and reader setup."
         ),
     }
     if args.output_json:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Diagnose local OpenViking memory-extraction evidence for benchmark baselines."""
+"""Diagnose local external-memory-engine extraction evidence for benchmark baselines."""
 
 from __future__ import annotations
 
@@ -17,11 +17,11 @@ from typing import Any
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="/tmp/openviking_matrixark_oss/ov_qwen_memory_fresh.conf")
-    parser.add_argument("--import-success", default="/tmp/openviking_matrixark_oss/results_qwen_memory/import_success.csv")
-    parser.add_argument("--server-log", default="/tmp/openviking_matrixark_oss/server_qwen_memory.log")
-    parser.add_argument("--workspace", default="/tmp/openviking_matrixark_oss/qwen_memory_data")
-    parser.add_argument("--report", default="/tmp/openviking_memory_extraction_diagnosis.json")
+    parser.add_argument("--config", default="/tmp/external_memory_matrixark_oss/qwen_memory_fresh.conf")
+    parser.add_argument("--import-success", default="/tmp/external_memory_matrixark_oss/results_qwen_memory/import_success.csv")
+    parser.add_argument("--server-log", default="/tmp/external_memory_matrixark_oss/server_qwen_memory.log")
+    parser.add_argument("--workspace", default="/tmp/external_memory_matrixark_oss/qwen_memory_data")
+    parser.add_argument("--report", default="/tmp/external_memory_extraction_diagnosis.json")
     args = parser.parse_args()
 
     config = read_json(Path(args.config))
@@ -40,7 +40,7 @@ def main() -> int:
     embedding_endpoint_probe = probe_openai_models(embedding_api_base)
     task_evidence = collect_task_evidence(Path(args.workspace))
     report: dict[str, Any] = {
-        "schema": "matrixark_openviking_memory_extraction_diagnosis_v1",
+        "schema": "matrixark_external_memory_extraction_diagnosis_v1",
         "config": args.config,
         "import_success": args.import_success,
         "server_log": args.server_log,
@@ -118,7 +118,7 @@ def infer_gap(
     if not vlm_chat_probe.get("ok"):
         return "configured_vlm_endpoint_models_list_works_but_chat_completion_failed"
     if embedding_tokens > 0 and vlm_tokens == 0 and completion_tokens == 0:
-        return "messages_archived_and_embedded_but_openviking_did_not_record_chat_completion_usage_for_memory_extraction"
+        return "messages_archived_and_embedded_but_engine_did_not_record_chat_completion_usage_for_memory_extraction"
     if extracted_counts and sum(extracted_counts) == 0:
         return "memory_extractor_completed_but_returned_zero_memories"
     if not extracted_counts:

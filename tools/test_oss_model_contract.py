@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Regression tests for MatrixArk/OpenViking OSS benchmark model contracts."""
+"""Regression tests for MatrixArk OSS benchmark model contracts."""
 
 from __future__ import annotations
 

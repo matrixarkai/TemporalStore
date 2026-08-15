@@ -24,8 +24,8 @@ BUDGETS = [3000, 8000, 30000, 100000, 300000]
 
 def main() -> int:
     roles = {"user", "assistant"}
-    claude = S.iter_claude_events(Path(S.default_claude_root()), 200, 400, roles)
-    codex = S.iter_codex_events(Path(S.default_codex_root()), 200, 400, roles)
+    claude = S.iter_claude_events(Path("/mnt/c/Users/Deeproute/.claude/projects"), 200, 400, roles)
+    codex = S.iter_codex_events(Path("/mnt/c/Users/Deeproute/.codex/sessions"), 200, 400, roles)
     events = sorted(claude + codex, key=lambda e: e.timestamp_ms)
     segments = S.build_segments(events, 10)
     entities = S.build_entities(events, 18)

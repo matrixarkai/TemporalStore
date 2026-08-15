@@ -585,7 +585,7 @@ def live_topic_entities(prompt_text):
         ("native_temporalstore", ("native", "native", "native temporalstore")),
         ("codex_hook", ("codex", "hook", "userpromptsubmit", "realtime ingestion")),
         ("context_management", ("context", "entity", "summary", "segment", "retrieval")),
-        ("oss_reader_benchmark", ("qwen", "ollama", "vllm", "locomo", "longmemeval", "vikingmem")),
+        ("oss_reader_benchmark", ("qwen", "ollama", "vllm", "locomo", "longmemeval")),
         ("storage_engine", ("storage", "page", "block", "zone", "stream", "raft", "gc")),
         ("matrixobject_shared_storage", ("matrixobject", "s3", "object storage", "shared storage")),
     ]
@@ -1169,7 +1169,7 @@ def live_topic_entities(prompt_text):
         ("native_temporalstore", ("native", "native", "native temporalstore")),
         ("codex_hook", ("codex", "hook", "userpromptsubmit", "realtime ingestion")),
         ("context_management", ("context", "entity", "summary", "segment", "retrieval")),
-        ("oss_reader_benchmark", ("qwen", "ollama", "vllm", "locomo", "longmemeval", "vikingmem")),
+        ("oss_reader_benchmark", ("qwen", "ollama", "vllm", "locomo", "longmemeval")),
         ("storage_engine", ("storage", "page", "block", "zone", "stream", "raft", "gc")),
         ("matrixobject_shared_storage", ("matrixobject", "s3", "object storage", "shared storage")),
     ]

@@ -822,7 +822,7 @@ class _CodexPipelinePart2:
             "profile_memory_kind": "memory_feature",
             "profile_memory_class": "memory_feature",
             "token_estimate": 8,
-            "text": "user: focus on OpenViking-style profile memory features",
+            "text": "user: focus on profile memory features",
         }
         profile_entity = {
             "ref_type": "entity",
@@ -835,7 +835,7 @@ class _CodexPipelinePart2:
             "profile_memory_class": "memory_feature",
             "source_event_ids": [901],
             "token_estimate": 7,
-            "text": "memory_feature_profile: focus on OpenViking-style profile memory features",
+            "text": "memory_feature_profile: focus on profile memory features",
         }
         dropped: dict = {}
 

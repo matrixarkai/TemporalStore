@@ -68,27 +68,27 @@ class ToolLeaningTest(unittest.TestCase):
             self.assertEqual("/tmp/dedicated-codex-root", B.agent_root("codex"))
 
     def test_windows_home_from_path_uses_active_profile(self):
-        with patch.object(B.os.path, "isdir", lambda p: p == "/mnt/d/Users/testuser"):
+        with patch.object(B.os.path, "isdir", lambda p: p == "/mnt/c/Users/Deeproute"):
             self.assertEqual(
-                "/mnt/d/Users/testuser",
-                B._windows_home_from_path("/mnt/d/Users/testuser/Documents/Codex/task"),
+                "/mnt/c/Users/Deeproute",
+                B._windows_home_from_path("/mnt/c/Users/Deeproute/Documents/Codex/task"),
             )
 
     def test_homes_prefers_pwd_profile_before_sorted_discovery(self):
         existing = {
-            "/mnt/d/Users",
-            "/mnt/d/Users/CodexSandboxOffline",
-            "/mnt/d/Users/CodexSandboxOffline/.codex",
-            "/mnt/d/Users/testuser",
-            "/mnt/d/Users/testuser/.codex",
-            "/mnt/d/Users/testuser/.claude",
+            "/mnt/c/Users",
+            "/mnt/c/Users/CodexSandboxOffline",
+            "/mnt/c/Users/CodexSandboxOffline/.codex",
+            "/mnt/c/Users/Deeproute",
+            "/mnt/c/Users/Deeproute/.codex",
+            "/mnt/c/Users/Deeproute/.claude",
             "/root",
         }
-        with patch.dict(os.environ, {"PWD": "/mnt/d/Users/testuser/Documents/Codex/task"}, clear=True):
-            with patch.object(B.os, "getcwd", return_value="/root/work/github-services/TemporalStore"):
+        with patch.dict(os.environ, {"PWD": "/mnt/c/Users/Deeproute/Documents/Codex/task"}, clear=True):
+            with patch.object(B.os, "getcwd", return_value="/root/src/github-services/TemporalStore"):
                 with patch.object(B.os.path, "isdir", lambda p: p in existing):
-                    with patch.object(B.os, "listdir", return_value=["CodexSandboxOffline", "testuser"]):
-                        self.assertEqual(("/mnt/d/Users/testuser", "/tmp"), B._homes())
+                    with patch.object(B.os, "listdir", return_value=["CodexSandboxOffline", "Deeproute"]):
+                        self.assertEqual(("/mnt/c/Users/Deeproute", "/tmp"), B._homes())
 
     def test_emit_jsonl_streams_local_codex_and_claude_context(self):
         with tempfile.TemporaryDirectory() as td:
