@@ -21,6 +21,11 @@ use super::hll::Hll;
 /// `event_time_ms` bounds track the earliest/latest events that made the node dirty.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(super) struct ContextDirtyEntry {
+    // `tenant_hash` is populated for embedding-dirty entries so the all-pending
+    // drain scan (which spans every tenant on the shard) can recover each node's
+    // tenant. It is left 0 for summary-dirty entries, whose queries are always
+    // per-node and already carry the tenant.
+    pub(super) tenant_hash: u64,
     pub(super) node_hash: u64,
     pub(super) first_event_time_ms: u64,
     pub(super) last_event_time_ms: u64,
@@ -105,6 +110,15 @@ pub(super) struct ShardState {
     // worker re-marks nodes on the next event and stale summaries are self-healing.
     #[serde(skip)]
     pub(super) context_dirty_index: HashMap<String, ContextDirtyEntry>,
+    // Embedding-dirty tracking, independent of `context_dirty_index` (summary).
+    // Keyed by `ctx:embdirty:{tenant}:{node}`; coalescing hashmap so repeated
+    // marks for the same node collapse into one entry. Like the summary index it
+    // is in-memory only (`#[serde(skip)]`) and ephemeral: on restart the drainer
+    // re-derives pending work — a node whose embedding is still missing is simply
+    // re-marked by the next ingest, and the hybrid retrieve path keeps it
+    // rankable via lexical scoring in the meantime.
+    #[serde(skip)]
+    pub(super) context_embedding_dirty_index: HashMap<String, ContextDirtyEntry>,
     // Per-node temporal-compression high-water mark: the latest event time already
     // folded into a ContextCompressionEvent for this event object key. In-memory and
     // ephemeral (serde-skipped); on loss the auto-compression trigger re-compresses
