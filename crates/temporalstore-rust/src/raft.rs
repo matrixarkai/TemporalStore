@@ -399,7 +399,7 @@ impl DataRaftCommittedLogApplier {
                 entry.raft_index, raft_index
             )));
         }
-        let response = engine.execute_durable(ExecuteRequest {
+        let response = engine.execute_raft_apply(ExecuteRequest {
             shard_id: entry.shard_id,
             command: entry.command,
         });
@@ -2612,7 +2612,7 @@ pub mod temporal_raft_integration {
                 self.state.voters = voters;
             }
             if let (Some(engine), Some(command)) = (&self.engine, &record.command) {
-                let response = engine.execute_durable(ExecuteRequest {
+                let response = engine.execute_raft_apply(ExecuteRequest {
                     shard_id: self.state.shard_id,
                     command: command.clone(),
                 });
@@ -4704,7 +4704,7 @@ fn apply_committed(node: &mut RaftNode) -> Option<CommandResponse> {
         if node.applied.insert(entry.index) {
             let response = node
                 .engine
-                .execute_durable(ExecuteRequest {
+                .execute_raft_apply(ExecuteRequest {
                     shard_id: entry.shard_id,
                     command: entry.command.clone(),
                 })
@@ -4721,7 +4721,7 @@ fn install_snapshot_state(node: &mut RaftNode, snapshot: RaftSnapshot) {
     let engine = TemporalEngine::default();
     engine.load_shard(snapshot.shard_id);
     for entry in &snapshot.entries {
-        engine.execute_durable(ExecuteRequest {
+        engine.execute_raft_apply(ExecuteRequest {
             shard_id: entry.shard_id,
             command: entry.command.clone(),
         });

@@ -780,7 +780,7 @@ impl RaftCluster {
             let engine = TemporalEngine::default();
             engine.load_shard(shard_id);
             for entry in &snapshot.entries {
-                engine.execute_durable(ExecuteRequest {
+                engine.execute_raft_apply(ExecuteRequest {
                     shard_id: entry.shard_id,
                     command: entry.command.clone(),
                 });

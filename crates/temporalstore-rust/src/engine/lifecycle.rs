@@ -403,11 +403,12 @@ impl TemporalEngine {
                 status: Status::error("shard_not_found", "shard is not loaded"),
             };
         }
-        // Delta path: the per-write base rewrite is deferred, so materialize the current
+        // The per-write base rewrite is deferred, so unload materializes the current
         // in-memory index to disk before the shard leaves memory. This keeps a later cold
         // load (and any consumer that reads shard-{id}.index.json directly) on a current
-        // base. No-op on the default path, where the base is already current per write.
-        if delta_served_index_enabled() {
+        // base. The index-log is bounded separately by the storage-manager's consumer-aware
+        // index GC, so unload does not truncate it here.
+        {
             let index_bytes = self
                 .shards
                 .read()

@@ -112,6 +112,17 @@ impl TemporalEngine {
         self.execute_with_storage_override(request, Some(false))
     }
 
+    /// Apply a committed raft entry to the state machine, durably (fsync'd WAL) but with a
+    /// NON-BLOCKING index-log append: on the raft path the raft log is the durability +
+    /// reconstruction source, so the per-apply index-log fsync is redundant. Removing it off
+    /// the critical replication path shortens apply latency (which otherwise widens the
+    /// snapshot-transfer / backpressure window). A crash that loses the non-fsync'd index-log
+    /// tail is safe -- raft-log replay on restart re-applies and rebuilds the served index.
+    pub fn execute_raft_apply(&self, request: ExecuteRequest) -> ExecuteResponse {
+        let _guard = RaftApplyGuard::enter();
+        self.execute_with_storage_override(request, Some(false))
+    }
+
     pub fn execute_replicated(&self, request: ReplicatedExecuteRequest) -> ExecuteResponse {
         let replication_mode = request.replication_mode;
         let request = ExecuteRequest {
@@ -326,11 +337,7 @@ impl TemporalEngine {
             let object_keys = command_object_keys(&command);
             // Capture this write's touched keys for the O(delta) index-log append below
             // (the command is moved into the WAL append before we reach that point).
-            let delta_command_keys = if delta_served_index_enabled() {
-                object_keys.clone()
-            } else {
-                Vec::new()
-            };
+            let delta_command_keys = object_keys.clone();
             if object_keys.is_empty() {
                 rebuild_bucket_page_ownership(
                     request.shard_id,
@@ -431,34 +438,27 @@ impl TemporalEngine {
                 // dumped-log-id anchor read back on load).
                 shard.applied_wal_sequence =
                     Some(self.wal_store.stats(request.shard_id).last_sequence);
-                if delta_served_index_enabled() {
-                    // Delta path: append ONLY the pages this write changed (O(delta)) to the
-                    // index-log, advancing the index-log sequence and populating the
-                    // served-index delta stream. DO NOT rewrite the whole base index
-                    // (O(store)); the base is materialized at compaction/unload, the funnel
-                    // serves the live in-memory shard between them, and cold reload replays
-                    // the WAL suffix beyond the last materialized anchor.
-                    let items = collect_command_index_items(
-                        shard,
-                        &delta_command_keys,
-                        start_routing_bucket,
-                        end_routing_bucket,
-                    );
-                    let key_states = capture_key_states(shard, &delta_command_keys);
-                    let _ = self.index_log_store.append_delta(
-                        request.shard_id,
-                        items,
-                        key_states,
-                        shard.applied_wal_sequence,
-                        None,
-                    );
-                } else {
-                    let index_bytes = serialize_index(shard);
-                    let _ = self
-                        .index_log_store
-                        .append_json(request.shard_id, &index_bytes);
-                    let _ = self.persist_index_bytes(request.shard_id, &index_bytes);
-                }
+                // Append ONLY the pages this write changed (O(delta)) to the index-log,
+                // advancing the index-log sequence and populating the served-index delta
+                // stream. The whole base index is NOT rewritten per write (that O(store) path
+                // is gone); the base is materialized at compaction/unload, the funnel serves
+                // the live in-memory shard between them, and cold reload folds base + deltas.
+                let items = collect_command_index_items(
+                    shard,
+                    &delta_command_keys,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                );
+                let key_states = capture_key_states(shard, &delta_command_keys);
+                let _ = self.index_log_store.append_delta(
+                    request.shard_id,
+                    items,
+                    key_states,
+                    shard.applied_wal_sequence,
+                    None,
+                    // Non-blocking on the raft apply path (raft log is the durability source).
+                    !raft_applying(),
+                );
             }
         }
         ExecuteResponse {
@@ -1107,23 +1107,6 @@ fn bulk_ingest_mode() -> bool {
     )
 }
 
-/// Whether the delta / incremental served-index path is enabled. When ON, a write no
-/// longer rewrites the whole `shard-{id}.index.json` (O(store)); the full base snapshot is
-/// materialized only at compaction points (flush / dump / gc / unload) and the in-memory
-/// shard is the authoritative served index, which every reader reaches through
-/// `load_served_index_bytes`. Defaults OFF: the funnel then reads the base file, i.e. the
-/// established per-write-persist behavior, so this gate is behavior-preserving until set.
-pub(super) fn delta_served_index_enabled() -> bool {
-    matches!(
-        std::env::var("MATRIXARK_DELTA_SERVED_INDEX")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
-}
-
 /// Whether the per-command model-map -> bucket-index promotion and first-index
 /// rebuild should be DEFERRED to a single reconstruct pass. True during bulk
 /// backfill (MATRIXARK_BULK_INGEST) and during WAL replay on load: both re-drive
@@ -1380,6 +1363,37 @@ thread_local! {
 
 fn replaying_wal() -> bool {
     REPLAYING_WAL.with(|cell| cell.get())
+}
+
+thread_local! {
+    // Set while applying a committed raft entry to the state machine. On this path the raft
+    // log is the durability source (quorum-replicated + fsync'd), and a node reconstructs on
+    // restart by loading the base and REPLAYING the raft log from the snapshot/base anchor --
+    // which re-executes the commands and rebuilds the served index. The per-apply index-log
+    // fsync is therefore redundant on the critical replication path (it only slows apply and
+    // widens the snapshot-transfer window), so the index-log delta is appended NON-BLOCKING
+    // (buffered, no fsync). Losing a non-fsync'd index-log tail on crash is safe: raft replay
+    // rebuilds it. Thread-local because raft apply runs synchronously on the apply thread.
+    static RAFT_APPLYING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn raft_applying() -> bool {
+    RAFT_APPLYING.with(|cell| cell.get())
+}
+
+struct RaftApplyGuard;
+
+impl RaftApplyGuard {
+    fn enter() -> Self {
+        RAFT_APPLYING.with(|cell| cell.set(true));
+        RaftApplyGuard
+    }
+}
+
+impl Drop for RaftApplyGuard {
+    fn drop(&mut self) {
+        RAFT_APPLYING.with(|cell| cell.set(false));
+    }
 }
 
 thread_local! {
