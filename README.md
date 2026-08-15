@@ -84,6 +84,51 @@ native (non-Docker) builds are covered step by step in the [Install Guide](docs/
 
 ---
 
+## Use it as a Rust library
+
+All three components are Apache-2.0 **Rust crates you can depend on directly** — TemporalStore
+(the engine), plus [MatrixCache](https://github.com/matrixarkai/MatrixCache) (multi-layer cache)
+and [MatrixRaft](https://github.com/matrixarkai/MatrixRaft) (Rust Raft consensus). Nothing is
+gated: the engine, typed client, proxy, context pipeline, and the RESP / gRPC / MCP / HTTP
+surfaces all live in these open repos. (The only enterprise piece is the hosted **web management
+console** — a separate product, not in this repo.)
+
+Add the crates to your `Cargo.toml` (pin a tag or rev for production):
+
+```toml
+[dependencies]
+temporalstore-rust = { git = "https://github.com/matrixarkai/TemporalStore.git" }
+matrixcache        = { git = "https://github.com/matrixarkai/MatrixCache.git" }
+matrixraft         = { git = "https://github.com/matrixarkai/MatrixRaft.git" }
+```
+
+Talk to a running node with the typed client (start one with the Docker quick start above, or run
+the `server`/`proxy` bins):
+
+```rust
+use temporalstore_rust::{TemporalStoreClient, TableOptions};
+
+// in a fn returning Result<(), temporalstore_rust::ClientError>
+let client = TemporalStoreClient::new("127.0.0.1:17000"); // proxy address
+let table = client.open_table("acme", "sessions", TableOptions::default());
+
+table.set("hello", b"world".to_vec())?;
+let value = table.get("hello")?;                 // Option<Vec<u8>>
+assert_eq!(value.as_deref(), Some(&b"world"[..]));
+```
+
+The public surface is organized by module: `engine` (temporal storage engine), `client`
+(strings / hashes / sets / control verbs), `context_workflow` (ingest -> extract -> retrieve a
+ranked ContextPack), `proxy`, `redis` (RESP), `sdk` (tonic/gRPC), and `raft`. Runnable
+end-to-end examples ship as bins/harnesses:
+
+```bash
+cargo run -p temporalstore-rust --bin context_workflow_harness
+cargo run -p temporalstore-rust --bin readiness_gate -- --service-reports
+```
+
+---
+
 ## Use it with your agent
 
 TemporalStore installs as a memory layer for coding agents — automatic ingest/inject on every
@@ -111,7 +156,12 @@ MCP-capable client.
 
 ---
 
-## Enterprise Cloud API (ingest & retrieve at scale)
+## Cloud API (ingest & retrieve at scale)
+
+> **Open vs enterprise.** The `/v1` HTTP API, the proxy, and every engine surface in this
+> repo are open — self-host and use them freely. The only enterprise pieces are the *managed
+> hosting* of this endpoint and the *web management console* (a separate product, not in this
+> repo).
 
 For teams that ingest their own resources and skills programmatically — through **APIs rather than
 agent hooks** — TemporalStore Cloud exposes a managed, multi-tenant HTTPS endpoint. Every route is
