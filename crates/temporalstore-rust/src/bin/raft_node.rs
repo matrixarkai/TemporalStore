@@ -20,6 +20,7 @@ use temporalstore_rust::{
     RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions, Status,
 };
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
+use tracing::info;
 
 #[derive(Debug, Deserialize)]
 struct RaftAdminLivenessRequest {
@@ -152,6 +153,7 @@ fn uri_scheme(uri: &str) -> String {
 }
 
 fn main() {
+    temporalstore_rust::telemetry::init();
     let options = runtime_options_from_env();
     let bind_addr = std::env::var("TS_RAFT_BIND_ADDR")
         .ok()
@@ -167,9 +169,10 @@ fn main() {
     let _timer = runtime.start_timer_loop();
     let local_admin_enabled = env_bool("TS_RAFT_ENABLE_LOCAL_ADMIN", false);
     let blocked_peers = Arc::new(Mutex::new(BTreeSet::new()));
-    println!(
-        "temporalstore raft node {} listening on {bind_addr}",
-        runtime.status().leader_id
+    info!(
+        node = runtime.status().leader_id,
+        addr = %bind_addr,
+        "temporalstore raft node listening"
     );
     serve(&bind_addr, move |request| {
         handle(&runtime, local_admin_enabled, &blocked_peers, request)
