@@ -8,6 +8,13 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Max ref_hashes per ContextQueryEmbeddings command. Must not exceed the
+/// engine's CONTEXT_MAX_LIMIT (engine/constants.rs), which command validation
+/// enforces by rejecting larger requests. Retrieval chunks its summary-embedding
+/// lookups at this size so a namespace with more nodes than the cap is still
+/// fully scored instead of silently falling back to lexical ranking.
+const CONTEXT_EMBEDDING_QUERY_CHUNK: usize = 1000;
+
 mod query;
 mod resource;
 mod benchmark;
@@ -24,6 +31,8 @@ pub(crate) use benchmark::*;
 pub use reports::*;
 pub use ingest::{ingest_extract_context, ingest_resource_skill_context, validate_resource_skill_secondary_indexes};
 pub(crate) use model_provider::*;
+pub use model_provider::context_backfill_embeddings;
+pub use query::context_embedding_ref_hash;
 pub use skill::{
     context_skill_registry_from_parsed, parse_context_skill_markdown,
     select_context_skills_for_retrieval, update_context_skill_registry,
@@ -1784,13 +1793,25 @@ pub fn retrieve_context(
         }
     }
     let mut summary_scores_by_node = BTreeMap::<u64, (i64, usize)>::new();
-    if !summary_ref_hashes.is_empty() {
+    // The engine caps a single ContextQueryEmbeddings at CONTEXT_MAX_LIMIT
+    // ref_hashes -- command validation REJECTS a larger request outright rather
+    // than truncating it. A large (bulk-ingested) namespace has many more nodes
+    // than that, so the summary-embedding pass MUST chunk its lookups: sending
+    // all node_hashes*2 ref_hashes in one command silently fails, leaving every
+    // node at score 0 and collapsing retrieval to the lexical/recency fallback
+    // (0% focused recall at scale). Chunk at the cap so every node is scored.
+    for chunk in summary_ref_hashes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let chunk_refs = chunk.to_vec();
+        let chunk_len = chunk_refs.len();
         let embeddings = engine.execute(ExecuteRequest {
             shard_id: request.shard_id,
             command: Command::ContextQueryEmbeddings {
                 tenant_hash: request.tenant_hash,
-                ref_hashes: summary_ref_hashes,
-                limit: Some(node_hashes.len().saturating_mul(2).max(1)),
+                ref_hashes: chunk_refs,
+                limit: Some(chunk_len.max(1)),
             },
         });
         if let CommandResponse::ContextEmbeddings { embeddings } = embeddings.response {
