@@ -39,7 +39,8 @@ pub use client::{
     TemporalStoreClient, TemporalStorePipeline, TemporalStoreTable,
 };
 pub use context_workflow::{
-    context_pipeline_manage_report, context_pipeline_parity_evidence,
+    context_backfill_embeddings, context_embedding_ref_hash, context_pipeline_manage_report,
+    context_pipeline_parity_evidence,
     context_resource_chunk_embedding, context_skill_registry_from_parsed,
     context_workflow_state_report, default_context_model_providers, extract_context,
     ingest_extract_context, ingest_resource_skill_context, inject_context,

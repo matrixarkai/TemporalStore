@@ -1164,7 +1164,11 @@ pub(super) fn context_embedding_model_hash(model: &str) -> u64 {
     }
 }
 
-pub(super) fn context_embedding_ref_hash(tenant_hash: u64, ref_hash: u64, level: &str) -> u64 {
+/// Derive the object-key ref-hash under which a context embedding is stored/read
+/// (`ctx:embedding:{tenant_hash}:{ref_hash}`). Public so out-of-band tooling
+/// (e.g. the `context_embed_backfill` bin) can attach embeddings under the exact
+/// key the retrieve path reads, without duplicating the label formula.
+pub fn context_embedding_ref_hash(tenant_hash: u64, ref_hash: u64, level: &str) -> u64 {
     stable_hash64(&format!("ctx-embedding:{tenant_hash}:{ref_hash}:{level}"))
 }
 
