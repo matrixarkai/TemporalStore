@@ -18,7 +18,7 @@
     "matrixark_home": {
       "type": "string",
       "title": "TemporalStore checkout path",
-      "description": "Absolute path to your TemporalStore repo (the directory containing tools/matrixark_claude_hook.sh and tools/run_matrixark_mcp_server.sh). Example: /root/src/github-services/TemporalStore",
+      "description": "Absolute path to your TemporalStore repo (the directory containing tools/matrixark_claude_hook.sh and tools/run_matrixark_mcp_server.sh). Example: <repo-root>/TemporalStore",
       "required": true
     }
   }
