@@ -1,6 +1,0 @@
-=== CRASH SOAK START Sat Aug 15 09:42:04 PDT 2026 ===
-SCEN-A crash+recover flag=0  write-abort_exit=134 recover_exit=0 | "before_value": "before-value" | "after_value": "after-value" | "all_live_pages_readable": true | 
-SCEN-B crash+corrupt+recover flag=0  corrupt_exit=0 recover_exit=0 | "all_live_pages_readable": false | "readable_page_refs": 1 | "total_page_refs": 2
-SCEN-A crash+recover flag=1  write-abort_exit=134 recover_exit=0 | "before_value": "before-value" | "after_value": "after-value" | "all_live_pages_readable": true | 
-SCEN-B crash+corrupt+recover flag=1  corrupt_exit=0 recover_exit=0 | "all_live_pages_readable": true | "readable_page_refs": 2 | "total_page_refs": 2
-=== CRASH SOAK END Sat Aug 15 09:42:08 PDT 2026 ===
