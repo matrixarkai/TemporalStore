@@ -48,7 +48,7 @@ variable "root_volume_gb" {
 }
 
 variable "data_cache_volume_gb" {
-  description = "Extra gp3 EBS volume per data node for the MtCache SSD tier."
+  description = "Extra gp3 EBS volume per data node for the MatrixCache SSD tier."
   type        = number
   default     = 10
 }

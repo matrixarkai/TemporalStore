@@ -55,10 +55,10 @@ if [ -n "$CACHE_DEV" ]; then
     echo "UUID=$CACHE_UUID /mnt/temporalstore-cache xfs defaults,nofail 0 2" >> /etc/fstab
   fi
   mount /mnt/temporalstore-cache
-  mkdir -p /mnt/temporalstore-cache/mtcache-ssd
+  mkdir -p /mnt/temporalstore-cache/matrixcache-ssd
 fi
 
 cat >/opt/temporalstore/node.env <<EOF
 TEMPORALSTORE_SHARED_PATH=/mnt/temporalstore-shared
-TEMPORALSTORE_CACHE_PATH=/mnt/temporalstore-cache/mtcache-ssd
+TEMPORALSTORE_CACHE_PATH=/mnt/temporalstore-cache/matrixcache-ssd
 EOF

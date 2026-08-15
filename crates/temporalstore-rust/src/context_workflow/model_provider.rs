@@ -86,30 +86,6 @@ pub(crate) fn context_summaries_for_extract(
     }
 }
 
-/// Backfill helper: compute REAL model embeddings for a batch of already-stored
-/// context node/event texts, reusing the exact provider path the live extract
-/// path uses -- request batching, `MATRIXARK_REQUIRE_MODEL_EMBEDDINGS`
-/// enforcement, and response shape/finiteness validation. Returns one vector per
-/// input text, in the same order.
-///
-/// This exists so an out-of-band embed-backfill (the `context_embed_backfill`
-/// bin) can attach semantic vectors to `raw_first` bulk stores WITHOUT rerunning
-/// summary extraction or changing live-ingest behavior.
-pub fn context_backfill_embeddings(
-    provider: &ContextModelProviderConfig,
-    texts: &[&str],
-) -> Result<Vec<Vec<f32>>, Status> {
-    if texts.is_empty() {
-        return Ok(Vec::new());
-    }
-    let inputs: Vec<(&str, u64, u32, &str)> = texts
-        .iter()
-        .map(|text| ("node_l0", 0u64, 1u32, *text))
-        .collect();
-    let (vectors, _report) = context_embeddings_for_extract(provider, &inputs)?;
-    Ok(vectors)
-}
-
 pub(crate) fn context_embeddings_for_extract(
     provider: &ContextModelProviderConfig,
     inputs: &[(&str, u64, u32, &str)],
