@@ -1,0 +1,96 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
+"""Tiny OpenAI-compatible /v1/embeddings server wrapping the cached
+sentence-transformers/all-MiniLM-L6-v2 model. Stdlib HTTP only (no flask).
+
+POST /v1/embeddings  {"model": "...", "input": "text" | ["t1","t2",...]}
+  -> {"object":"list","data":[{"object":"embedding","index":i,"embedding":[...]}],
+      "model": "...","usage":{...}}
+
+Run detached; prints the bound port to stdout as: LISTENING <port>
+"""
+import json
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from sentence_transformers import SentenceTransformer
+
+MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+print("loading model...", file=sys.stderr, flush=True)
+_MODEL = SentenceTransformer(MODEL_NAME)
+_LOCK = threading.Lock()
+print("model loaded", file=sys.stderr, flush=True)
+
+
+def embed(texts):
+    with _LOCK:
+        vecs = _MODEL.encode(
+            texts, normalize_embeddings=False, convert_to_numpy=True
+        )
+    return [[float(x) for x in row] for row in vecs]
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _send(self, code, obj):
+        body = json.dumps(obj).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        if not self.path.rstrip("/").endswith("/embeddings"):
+            self._send(404, {"error": "not found"})
+            return
+        try:
+            n = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(n) or b"{}")
+        except Exception as exc:  # noqa: BLE001
+            self._send(400, {"error": str(exc)})
+            return
+        model = payload.get("model", MODEL_NAME)
+        inp = payload.get("input", [])
+        if isinstance(inp, str):
+            inp = [inp]
+        inp = ["" if t is None else str(t) for t in inp]
+        try:
+            vectors = embed(inp) if inp else []
+        except Exception as exc:  # noqa: BLE001
+            self._send(500, {"error": str(exc)})
+            return
+        data = [
+            {"object": "embedding", "index": i, "embedding": v}
+            for i, v in enumerate(vectors)
+        ]
+        self._send(
+            200,
+            {
+                "object": "list",
+                "data": data,
+                "model": model,
+                "usage": {"prompt_tokens": 0, "total_tokens": 0},
+            },
+        )
+
+    def do_GET(self):
+        # health check
+        self._send(200, {"status": "ok", "model": MODEL_NAME})
+
+
+def main():
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    bound = server.server_address[1]
+    print("LISTENING %d" % bound, flush=True)
+    with open("/tmp/minilm_embed_server.port", "w") as fh:
+        fh.write(str(bound))
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
