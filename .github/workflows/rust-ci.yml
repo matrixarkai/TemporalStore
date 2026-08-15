@@ -1,20 +1,16 @@
 name: Rust CI
 
-# Compile the Rust workspace on every push and pull request. Until this job
-# existed, no workflow invoked cargo, so build breakage (unreachable git
-# dependencies, uncompiled/orphaned source, API drift) reached main undetected.
-# `cargo check --all-targets` is the minimum gate that catches those; the crate
-# is also built in release to mirror the Docker images, and the library +
-# integration test suite runs single-threaded (as documented in the README) in
-# release mode -- a few high-cardinality tests are O(n^2) and are far too slow
-# to run unoptimized.
+# Compile the Rust workspace. `cargo check --all-targets` is the fast gate that
+# runs on every Rust-touching push; the heavier release build + single-threaded
+# release test suite (a few high-cardinality tests are O(n^2) and far too slow
+# unoptimized) runs on pull requests and once nightly -- NOT on every push. That
+# keeps Actions minutes down on a high-churn main while PRs still get full CI.
 
 on:
   push:
     branches: [main, rust-main]
-    # Only spend the release build+test on pushes that touch Rust; doc/tool/
-    # website-only commits to main skip it. PRs below still always run the full
-    # suite, so required-check / branch protection is unaffected.
+    # Push only runs the fast `check` job (below); skip even that on
+    # doc/tool/website-only commits.
     paths:
       - 'crates/**'
       - 'Cargo.toml'
@@ -22,11 +18,12 @@ on:
       - '.github/workflows/rust-ci.yml'
   pull_request:
     branches: [main, rust-main]
+  schedule:
+    - cron: '0 7 * * *'  # nightly full build + test on the default branch
   workflow_dispatch:
 
-# Cancel superseded runs on the same ref so rapid pushes to a busy branch do
-# not each re-run the full release build + test suite -- only the newest
-# commit's run survives. Saves Actions minutes on a high-churn branch.
+# Cancel superseded runs on the same ref so rapid pushes to a busy branch do not
+# each re-run CI -- only the newest commit's run survives.
 concurrency:
   group: rust-ci-${{ github.ref }}
   cancel-in-progress: true
@@ -38,8 +35,43 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  check:
+    name: cargo check (fast, on push)
+    # On push we only spend the fast compile gate; PRs / nightly run the full
+    # build+test job below instead.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system build dependencies
+        # librocksdb-sys (via matrixcache's rocksdb-ssd feature) runs bindgen and
+        # needs libclang; building RocksDB itself needs cmake.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang libclang-dev cmake
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.87.0 --profile minimal --no-self-update && rustup default 1.87.0
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: cargo check (all targets)
+        run: cargo check -p temporalstore-rust --all-targets
+
   build-and-test:
     name: cargo check / build / test
+    # Runs on pull requests, the nightly schedule, and manual dispatch -- NOT on
+    # push, so post-merge pushes to a busy main do not each pay the ~45-min run.
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -72,10 +104,7 @@ jobs:
 
       # The compile gates above are what enforce this workflow. The suite is run
       # for visibility but is NOT yet a required gate: the tree carries a small
-      # number of known, pre-existing baseline failures (e.g.
-      # storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_flags,
-      # whose eviction phase moves cached bytes to the SSD tier before the
-      # pressure snapshot, so cache_memory_bytes == 0). Flip continue-on-error
+      # number of known, pre-existing baseline failures. Flip continue-on-error
       # off once the baseline is fully green.
       - name: cargo test (lib + integration, single-threaded, release)
         timeout-minutes: 45
