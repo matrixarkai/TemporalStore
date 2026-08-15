@@ -409,7 +409,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase, _CodexPipelinePart5, _Co
     def test_user_prompt_selection_keeps_goal_and_task_memory_without_large_context(self) -> None:
         large_prompt = "\n".join(
             [
-                "goal: implement VikingMem style profile memory extraction for Codex hooks",
+                "goal: implement external-memory profile memory extraction for Codex hooks",
                 "```",
                 "irrelevant pasted code " * 200,
                 "```",
@@ -419,7 +419,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase, _CodexPipelinePart5, _Co
         )
 
         selected = matrixark_codex_hook.selected_user_prompt_memory_text(large_prompt, max_chars=500)
-        self.assertIn("goal: implement VikingMem style profile memory extraction", selected)
+        self.assertIn("goal: implement external-memory profile memory extraction", selected)
         self.assertIn("please implement threshold and idle batch extraction", selected)
         self.assertIn("retrieval budgets include profile and cross-session entities", selected)
         self.assertNotIn("irrelevant pasted code", selected)
@@ -435,7 +435,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase, _CodexPipelinePart5, _Co
         ]
         self.assertTrue(plan_entities, entities)
         plan_text = " ".join(str(entity.get("state") or "") for entity in plan_entities)
-        self.assertIn("VikingMem style profile memory extraction", plan_text)
+        self.assertIn("external-memory profile memory extraction", plan_text)
         self.assertIn("threshold and idle batch extraction", plan_text)
         self.assertTrue(all(entity.get("source_roles") == ["user"] for entity in plan_entities))
 
@@ -514,7 +514,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase, _CodexPipelinePart5, _Co
             [
                 {
                     "role": "user",
-                    "content": "Goal: implement VikingMem-style profile memory retrieval for TemporalStore.",
+                    "content": "Goal: implement external-memory profile memory retrieval for TemporalStore.",
                 }
             ],
             {"source_event_ids": ["user_goal_event"]},
@@ -524,7 +524,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase, _CodexPipelinePart5, _Co
             entity
             for entity in entities
             if entity.get("entity_type") == "current_plan"
-            and "VikingMem-style profile memory retrieval" in str(entity.get("state") or "")
+            and "external-memory profile memory retrieval" in str(entity.get("state") or "")
         ]
         self.assertTrue(plans, entities)
         self.assertEqual(["user"], plans[0]["source_roles"])

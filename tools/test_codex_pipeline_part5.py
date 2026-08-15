@@ -51,7 +51,7 @@ class _CodexPipelinePart5:
         original_message = {
             "role": "assistant",
             "content": (
-                "I will focus on OpenViking feature parity for session memory; "
+                "I will focus on feature parity for session memory; "
                 "no testing, monitoring, debugging, or evidence for this step."
             ),
             "metadata": {
@@ -102,7 +102,7 @@ class _CodexPipelinePart5:
                 {
                     "role": "assistant",
                     "content": (
-                        "I will focus on OpenViking feature parity for session memory; "
+                        "I will focus on feature parity for session memory; "
                         "no testing, monitoring, debugging, or evidence."
                     ),
                     "metadata": {
@@ -202,7 +202,7 @@ class _CodexPipelinePart5:
         message = {
             "role": "assistant",
             "content": (
-                "I will focus on OpenViking/VikingMem-style session memory features; "
+                "I will focus on external-memory-style session memory features; "
                 "no testing, monitoring, debugging, or evidence in this step."
             ),
             "metadata": {
@@ -235,11 +235,11 @@ class _CodexPipelinePart5:
             messages_by_session = [
                 (
                     "session_profile_feature_accumulate_1",
-                    "Focus on OpenViking session memory features and threshold batch extraction.",
+                    "Focus on session memory features and threshold batch extraction.",
                 ),
                 (
                     "session_profile_feature_accumulate_2",
-                    "Focus on VikingMem profile retrieval budgets and idle batch extraction.",
+                    "Focus on profile retrieval budgets and idle batch extraction.",
                 ),
             ]
             for session_id, content in messages_by_session:
@@ -266,8 +266,8 @@ class _CodexPipelinePart5:
             ]
             self.assertTrue(profile_entities)
             latest_profile = profile_entities[-1]
-            self.assertIn("OpenViking session memory features", latest_profile["state"])
-            self.assertIn("VikingMem profile retrieval budgets", latest_profile["state"])
+            self.assertIn("session memory features", latest_profile["state"])
+            self.assertIn("profile retrieval budgets", latest_profile["state"])
             self.assertIn("session_profile_feature_accumulate_1", latest_profile["source_session_ids"])
             self.assertIn("session_profile_feature_accumulate_2", latest_profile["source_session_ids"])
             self.assertGreaterEqual(latest_profile["profile_revision"], 2)

@@ -3088,7 +3088,7 @@ ASSISTANT_MEMORY_LINE_PATTERNS = [
         r"\b(?:reply|respond|answer|write|communication style|response style|answer style|preferred language|preferred format|timezone|time zone|locale)\b.{0,120}\b(?:concise|brief|detailed|bullets?|markdown|language|tone|style|format|timezone|locale)\b",
         r"\b(?:workspace|repo|repository|branch|remote|github|origin/main|main branch|ubuntu|wsl|linux|windows folder|worktree|build|deploy|deployment|rustraft|temporalstore|matrixark)\b.{0,140}\b(?:always|prefer|use|keep|must|should|avoid|never|don't|push|build|deploy)\b",
         r"\b(?:i(?:'ll| will)|codex will|assistant will|going forward|from now on)\b.{0,80}\b(?:use|keep|follow|prefer|avoid|never use|not use|always use|push|build|deploy)\b.{0,140}\b(?:workspace|repo|repository|branch|remote|github|origin/main|main branch|ubuntu|wsl|linux|windows folder|worktree|build|deploy|deployment|rustraft|temporalstore|matrixark)\b",
-        r"\b(?:openviking|vikingmem|mem0|feature parity|feature[- ]focused|functionalit(?:y|ies)|algorithms?|no testing|no tests?|skip tests?|without tests?|no monitoring|no debugging|no debug|no evidence|no eviden[ct]e|live ingestion|memory ingestion|threshold|idle batch|batch extraction|profile promotion|retrieval budgets?|memory retrieval|secondary indexes?|context events?|context entit(?:y|ies)|context summaries?|contextpacks?)\b",
+        r"\b(?:mem0|feature parity|feature[- ]focused|functionalit(?:y|ies)|algorithms?|no testing|no tests?|skip tests?|without tests?|no monitoring|no debugging|no debug|no evidence|no eviden[ct]e|live ingestion|memory ingestion|threshold|idle batch|batch extraction|profile promotion|retrieval budgets?|memory retrieval|secondary indexes?|context events?|context entit(?:y|ies)|context summaries?|contextpacks?)\b",
     ]
 ]
 
@@ -3103,7 +3103,7 @@ ASSISTANT_PROFILE_MEMORY_POLICY_PATTERNS = [
         r"\b(?:reply|respond|answer|write|communication style|response style|answer style|preferred language|preferred format|timezone|time zone|locale)\b.{0,120}\b(?:concise|brief|detailed|bullets?|markdown|language|tone|style|format|timezone|locale)\b",
         r"\b(?:workspace|repo|repository|branch|remote|github|origin/main|main branch|ubuntu|wsl|linux|windows folder|worktree|build|deploy|deployment|rustraft|temporalstore|matrixark)\b.{0,140}\b(?:always|prefer|use|keep|must|should|avoid|never|don't|push|build|deploy)\b",
         r"\b(?:i(?:'ll| will)|codex will|assistant will|going forward|from now on)\b.{0,80}\b(?:use|keep|follow|prefer|avoid|never use|not use|always use|push|build|deploy)\b.{0,140}\b(?:workspace|repo|repository|branch|remote|github|origin/main|main branch|ubuntu|wsl|linux|windows folder|worktree|build|deploy|deployment|rustraft|temporalstore|matrixark)\b",
-        r"\b(?:openviking|vikingmem|mem0|feature parity|feature[- ]focused|functionalit(?:y|ies)|algorithms?|no testing|no tests?|skip tests?|without tests?|no monitoring|no debugging|no debug|no evidence|no eviden[ct]e|live ingestion|memory ingestion|threshold|idle batch|batch extraction|profile promotion|retrieval budgets?|memory retrieval|secondary indexes?|context events?|context entit(?:y|ies)|context summaries?|contextpacks?)\b",
+        r"\b(?:mem0|feature parity|feature[- ]focused|functionalit(?:y|ies)|algorithms?|no testing|no tests?|skip tests?|without tests?|no monitoring|no debugging|no debug|no evidence|no eviden[ct]e|live ingestion|memory ingestion|threshold|idle batch|batch extraction|profile promotion|retrieval budgets?|memory retrieval|secondary indexes?|context events?|context entit(?:y|ies)|context summaries?|contextpacks?)\b",
     ]
 ]
 
@@ -3119,7 +3119,7 @@ FEATURE_SCOPE_EXCLUDED_DIMENSION_RE = re.compile(
 )
 
 FEATURE_MEMORY_POLICY_RE = re.compile(
-    r"\b(?:openviking|vikingmem|mem0|feature parity|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionalit(?:y|ies)|algorithms?|memory feature|long[- ]term memory|session memory|profile memory|cross[- ]session memory|live ingestion|memory ingestion|threshold|idle batch|batch extraction|profile promotion|retrieval budgets?|memory retrieval|secondary indexes?|context events?|context entit(?:y|ies)|context summaries?|contextpacks?)\b",
+    r"\b(?:mem0|feature parity|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionalit(?:y|ies)|algorithms?|memory feature|long[- ]term memory|session memory|profile memory|cross[- ]session memory|live ingestion|memory ingestion|threshold|idle batch|batch extraction|profile promotion|retrieval budgets?|memory retrieval|secondary indexes?|context events?|context entit(?:y|ies)|context summaries?|contextpacks?)\b",
     re.IGNORECASE,
 )
 
@@ -3378,7 +3378,7 @@ USER_PROMPT_MEMORY_LINE_PATTERNS = [
         r"\b(?:fix|add|remove|replace|move|keep|make\s+sure|ensure)\b",
         r"\b(?:we\s+should|should|need\s+to|must|have\s+to|always|never|do\s+not|don't)\b",
         r"\b(?:ingest|extract|retrieve|profile|cross[- ]session|memory|context|summary|entity|index|budget)\b",
-        r"\b(?:openviking|vikingmem|mem0|long[- ]term memory|session memory|profile memory|feature parity|features?|functionalit(?:y|ies)|algorithms?|feature[- ]focused|no testing|no tests?|skip tests?|without tests?|no monitoring|no debugging|no debug|no evidence|no eviden[ct]e|threshold|idle batch|batch extraction)\b",
+        r"\b(?:mem0|long[- ]term memory|session memory|profile memory|feature parity|features?|functionalit(?:y|ies)|algorithms?|feature[- ]focused|no testing|no tests?|skip tests?|without tests?|no monitoring|no debugging|no debug|no evidence|no eviden[ct]e|threshold|idle batch|batch extraction)\b",
     ]
 ]
 

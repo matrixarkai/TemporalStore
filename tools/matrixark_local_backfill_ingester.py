@@ -485,29 +485,46 @@ def iter_codex_dual_hooks(tmp: str, limit: int | None) -> Iterator[Item]:
             break
 
 
-def iter_openviking(home: str, limit: int | None) -> Iterator[Item]:
-    """OpenViking/VikingMem local memory state as a backfill source.
+def _external_memory_roots(home: str) -> list[str]:
+    """Resolve on-disk roots for an external local-memory engine.
 
-    OpenViking is the local memory engine referenced by the context system
-    (docs/context_openviking_parity_cases.md); its on-disk state under
-    ~/.openviking holds session transcripts and cli config. We ingest its
+    Configurable so no third-party path is hardcoded: set
+    ``MATRIXARK_EXTERNAL_MEMORY_ROOTS`` to a comma-separated list of directories
+    (``~`` and ``$VAR`` expanded) to point the backfill at whatever local memory
+    engine you run. Defaults to a neutral per-user location."""
+    raw = os.environ.get("MATRIXARK_EXTERNAL_MEMORY_ROOTS")
+    if raw:
+        roots = []
+        for part in raw.split(os.pathsep if os.pathsep in raw else ","):
+            part = part.strip()
+            if part:
+                roots.append(os.path.expanduser(os.path.expandvars(part)))
+        return roots
+    return [os.path.join(home, ".matrixark", "external_memory")]
+
+
+def iter_external_memory(home: str, limit: int | None) -> Iterator[Item]:
+    """External local-memory engine state as a backfill source.
+
+    Some deployments run a separate local memory engine alongside the agents;
+    its on-disk state holds session transcripts and cli config. We ingest its
     transcript/memory jsonl lines as codex-scope memory so single-node recall
-    includes what OpenViking already captured locally."""
-    roots = [os.path.join(home, ".openviking"),
-             os.path.join(home, ".codex", "plugins", "openviking-local")]
+    includes what that engine already captured locally. Roots are configurable
+    via ``MATRIXARK_EXTERNAL_MEMORY_ROOTS`` (see ``_external_memory_roots``)."""
+    roots = _external_memory_roots(home)
     files: list[str] = []
     for r in roots:
         files += glob.glob(os.path.join(r, "**", "*.jsonl"), recursive=True)
         files += glob.glob(os.path.join(r, "**", "*.conf"), recursive=True)
     n = 0
     for fp in sorted(set(files)):
-        sid = GLOBAL_SESSION  # openviking memory -> cross-session global scope
+        sid = GLOBAL_SESSION  # external memory -> cross-session global scope
         if fp.endswith(".conf"):
             body = _read_all(fp).strip()
             if body:
                 yield Item("codex", sid, "PostToolUse",
                            {"hook_event_name": "PostToolUse", "session_id": sid, "prompt": body},
-                           "openviking", text=body, ts_ms=0)
+                           "external_memory", text=body, ts_ms=0)
                 n += 1
             continue
         for line in _read_lines(fp):
@@ -525,7 +542,7 @@ def iter_openviking(home: str, limit: int | None) -> Iterator[Item]:
             ev = EVENT_FOR_ROLE.get(role, "UserPromptSubmit")
             yield Item("codex", sid, ev,
                        {"hook_event_name": ev, "session_id": sid, "prompt": text},
-                       "openviking", text=text, ts_ms=_iso_to_ms(d.get("timestamp")))
+                       "external_memory", text=text, ts_ms=_iso_to_ms(d.get("timestamp")))
             n += 1
             if limit and n >= limit:
                 return
@@ -641,8 +658,8 @@ def iter_items(args, home, tmp) -> Iterator[Item]:
                                        args.rollout_user_only, coalesce=not args.rollout_no_coalesce)
     if "dual_hooks" in args.sources and "codex" in args.agents:
         yield from iter_codex_dual_hooks(tmp, per)
-    if "openviking" in args.sources:
-        yield from iter_openviking(home, per)
+    if "external_memory" in args.sources:
+        yield from iter_external_memory(home, per)
     if "resources" in args.sources:
         res_agents = list(args.agents) if args.shared_resources else args.agents[:1]
         for relpath, chunk, idx in iter_resources(args.resource_globs, args.max_chars, per):
@@ -690,8 +707,8 @@ def main() -> int:
     ]
     ap = argparse.ArgumentParser(description="Backfill TemporalStore from local Claude/Codex context on disk.")
     ap.add_argument("--agents", default="claude,codex", help="comma list: claude,codex")
-    ap.add_argument("--sources", default="transcripts,rollouts,dual_hooks,openviking,resources",
-                    help="comma list: transcripts,rollouts,dual_hooks,openviking,resources")
+    ap.add_argument("--sources", default="transcripts,rollouts,dual_hooks,external_memory,resources",
+                    help="comma list: transcripts,rollouts,dual_hooks,external_memory,resources")
     ap.add_argument("--bin", default=os.environ.get("MATRIXARK_HOOK_BIN", DEFAULT_BIN),
                     help="per-event hook binary (slow O(n^2) path; prefer --emit-jsonl + batch bin)")
     ap.add_argument("--emit-jsonl", default=None, metavar="DIR",
@@ -705,7 +722,7 @@ def main() -> int:
                     help="comma-separated globs for md/resource files (recursive ** supported)")
     ap.add_argument("--home", default=None,
                     help="override the user-home root for sources (e.g. a fast ext4 stage dir "
-                         "holding .claude/.codex/.openviking copies instead of the slow /mnt/c mount)")
+                         "holding .claude/.codex/external-memory copies instead of the slow /mnt/c mount)")
     ap.add_argument("--claude-user", default=os.environ.get("USER", "root"))
     ap.add_argument("--codex-user", default=os.environ.get("USER", "root"))
     ap.add_argument("--rollout-min-assistant-chars", type=int, default=400,

@@ -1,6 +1,6 @@
-<!doctype html><html><head><meta charset="utf-8"><title>MatrixArk VikingMem-Style Session Batch Extraction Validation</title><style>body{font-family:Inter,Arial,sans-serif;max-width:1100px;margin:32px auto;padding:0 24px;line-height:1.5}pre{background:#111827;color:#e5e7eb;padding:16px;border-radius:8px;overflow:auto}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}</style></head><body><pre># MatrixArk VikingMem-Style Session Batch Extraction Validation
+<!doctype html><html><head><meta charset="utf-8"><title>MatrixArk Session Batch Extraction Validation</title><style>body{font-family:Inter,Arial,sans-serif;max-width:1100px;margin:32px auto;padding:0 24px;line-height:1.5}pre{background:#111827;color:#e5e7eb;padding:16px;border-radius:8px;overflow:auto}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}</style></head><body><pre># MatrixArk Session Batch Extraction Validation
 
-MatrixArk now explicitly validates the VikingMem-style extraction pattern:
+MatrixArk now explicitly validates the batched-session extraction pattern:
 
 ```text
 single incoming message
@@ -15,7 +15,7 @@ single incoming message
 
 ## Why This Matters
 
-VikingMem describes memory extraction over a logical session, for example a batch of `N` messages, and notes that a threshold around `&gt;=20` messages often produces more consistent memories. MatrixArk follows the same production shape while still supporting one-message-at-a-time hooks from Codex, Cursor, Claude, or vertical agents.
+Batched-session extraction runs memory extraction over a logical session, for example a batch of `N` messages; a threshold around `&gt;=20` messages often produces more consistent memories. MatrixArk follows the same production shape while still supporting one-message-at-a-time hooks from Codex, Cursor, Claude, or vertical agents.
 
 The important point is that the AI agent does not need to send a 20-message batch manually. It can send one message at a time. MatrixArk groups messages by `account_id / tenant_id / user_id / session_id`, buffers raw events, and commits the session when either:
 
@@ -24,17 +24,16 @@ The important point is that the AI agent does not need to send a 20-message batc
 
 ## Validated Regression Test
 
-Test added:
+The twenty-message session-window auto-extract regression lives in:
 
 ```text
 tools.test_matrixark_mcp_server.MatrixArkMcpServerTest
-  .test_vikingmem_style_twenty_message_session_window_auto_extracts_once
 ```
 
 Command:
 
 ```bash
-PYTHONPATH=. python3 -m unittest   tools.test_matrixark_mcp_server.MatrixArkMcpServerTest.test_vikingmem_style_twenty_message_session_window_auto_extracts_once
+PYTHONPATH=. python3 -m unittest tools.test_matrixark_mcp_server.MatrixArkMcpServerTest
 ```
 
 Result:

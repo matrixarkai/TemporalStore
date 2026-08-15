@@ -656,7 +656,7 @@ class _ModuleBoundaryPart2:
         local_mod = importlib.import_module("tools.matrixark_mcp_local_adapter")
 
         args = {
-            "query": "OpenViking feature-focused profile memory threshold extraction",
+            "query": "feature-focused profile memory threshold extraction",
             "memory_layer_budget_mode": "auto",
         }
         ranking = {"query": "feature profile memory across sessions"}
@@ -778,7 +778,7 @@ class _ModuleBoundaryPart2:
 
         scenarios = [
             (
-                {"query": "focus on OpenViking style profile memory and threshold batch extraction features"},
+                {"query": "focus on profile memory and threshold batch extraction features"},
                 "fact",
                 "always_consider_same_user_cross_session_for_profile_memory",
                 0.30,
@@ -1326,7 +1326,7 @@ class _ModuleBoundaryPart2:
         self.assertFalse(scheduled_task["final_session_boundary"])
 
         feature_prompt = (
-            "Focus on OpenViking/VikingMem feature parity for session memory, "
+            "Focus on feature parity for session memory, "
             "no testing or monitoring evidence in this pass."
         )
         feature_metadata = agent_hook_mod.agent_memory_selection_metadata(
