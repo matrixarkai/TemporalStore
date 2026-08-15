@@ -16,6 +16,13 @@ on:
     branches: [main, rust-main]
   workflow_dispatch:
 
+# Cancel superseded runs on the same ref so rapid pushes to a busy branch do
+# not each re-run the full release build + test suite -- only the newest
+# commit's run survives. Saves Actions minutes on a high-churn branch.
+concurrency:
+  group: rust-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
