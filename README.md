@@ -268,7 +268,7 @@ python3 tools/run_temporalstore_unified_tests.py --validate-only
 
 ## Status & evidence
 
-Apache-2.0. Production-readiness claims should be read from passing readiness reports, not this
+Apache-2.0. The project's production-readiness claims should be read from passing readiness reports, not this
 README alone:
 
 - [Benchmarks: token & quality vs full local replay](docs/benchmarks/README.md)
@@ -276,11 +276,11 @@ README alone:
   [technical blog](docs/blog_context_management_temporalstore.md)
 - Deploy: [Windows Docker](docs/windows_docker_install.md) · [Linux](docs/linux_deploy.md) · [macOS](docs/macos_deploy.md)
 
-Out of scope unless separately re-added: alternate wire-protocol compatibility and live external object-store (S3) integration.
+Out of scope unless separately re-added: alternate wire-protocol compatibility (no brpc/thrift wire-compatible clone) and live external object-store (S3) integration.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). New product-behavior tests
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). Contributions target the `rust-main` branch. New product-behavior tests
 should reference a shared corpus case with `shared-corpus: <case_id>`; Rust-only implementation
 tests should be marked `rust-internal: <reason>`.
 
