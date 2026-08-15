@@ -157,10 +157,10 @@ fn control_api_reads_and_scans_index_log_stream() {
     });
     assert!(stream.status.ok);
     let text = String::from_utf8(stream.data).unwrap();
+    // The index-log advances one record per write in both the whole-index and the delta
+    // formats; assert the per-write sequence rather than a format-specific record shape.
     assert!(text.contains("\"sequence\":1"));
     assert!(text.contains("\"sequence\":2"));
-    assert!(text.contains("\"strings\""));
-    assert!(text.contains("\"hashes\""));
 
     let scan = engine.scan_stream(ScanStreamRequest {
         shard_id: 1,
@@ -171,15 +171,19 @@ fn control_api_reads_and_scans_index_log_stream() {
         max_bytes: 8192,
     });
     assert_eq!(scan.records.len(), 2);
+    assert_eq!(engine.index_log_store().stats(1).last_sequence, 2);
 
-    let last_record: crate::index_log::IndexLogRecord =
-        serde_json::from_slice(&scan.records[1].data).unwrap();
-    assert_eq!(last_record.sequence, 2);
+    // Content is asserted over the folded served-index reconstruction (export_index_bytes),
+    // which is the complete, current ShardState in both the whole-index (base-file) and the
+    // delta (live-in-memory) paths -- the index-log itself is a per-write log, not the
+    // authoritative complete image.
+    let served: serde_json::Value =
+        serde_json::from_slice(&engine.export_index_bytes(1).unwrap()).unwrap();
     assert_eq!(
-        last_record.index["hashes"]["h"]["f"]["page_segment_id"],
+        served["hashes"]["h"]["f"]["page_segment_id"],
         serde_json::json!(0)
     );
-    assert_eq!(engine.index_log_store().stats(1).last_sequence, 2);
+    assert!(served["strings"].get("k1").is_some());
 }
 
 #[test]

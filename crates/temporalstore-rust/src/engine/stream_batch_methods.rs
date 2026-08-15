@@ -11,17 +11,22 @@ impl TemporalEngine {
                 .page_store
                 .read_logical_range(request.page_slab_id, request.offset, request.size)
                 .map_err(|err| err.to_string()),
-            StreamKind::Index => fs::read(self.index_path(request.shard_id))
-                .map_err(|err| err.to_string())
-                .map(|bytes| {
-                    let start = request.offset as usize;
-                    let end = start.saturating_add(request.size as usize).min(bytes.len());
-                    if start >= bytes.len() {
-                        Vec::new()
-                    } else {
-                        bytes[start..end].to_vec()
-                    }
-                }),
+            StreamKind::Index => {
+                // Serve the complete current index through the funnel (live in-memory on
+                // the delta path, base file otherwise), then slice the requested window.
+                // Preserves the original missing-file -> error semantics.
+                self.load_served_index_bytes(request.shard_id)
+                    .map_err(|err| err.to_string())
+                    .map(|bytes| {
+                        let start = request.offset as usize;
+                        let end = start.saturating_add(request.size as usize).min(bytes.len());
+                        if start >= bytes.len() {
+                            Vec::new()
+                        } else {
+                            bytes[start..end].to_vec()
+                        }
+                    })
+            }
             StreamKind::Wal => self
                 .wal_store
                 .read_range(request.shard_id, request.offset, request.size)
@@ -200,6 +205,9 @@ impl TemporalEngine {
         }
         let mut mutated_any = false;
         let mut wal_commands = Vec::new();
+        // Accumulate the object keys every mutating command in the batch touched, for the
+        // single O(delta) index-log append below (delta path). Empty when the flag is off.
+        let mut delta_command_keys: Vec<String> = Vec::new();
         for command in request.commands {
             let write_command = is_write_command(&command);
             if readonly && write_command {
@@ -276,6 +284,9 @@ impl TemporalEngine {
             if outcome.mutated {
                 mutated_any = true;
                 let object_keys = command_object_keys(&command_for_post_write);
+                if delta_served_index_enabled() {
+                    delta_command_keys.extend(object_keys.iter().cloned());
+                }
                 if object_keys.is_empty() {
                     rebuild_bucket_page_ownership(
                         request.shard_id,
@@ -333,11 +344,32 @@ impl TemporalEngine {
                 // single-command path) so shard load replays only records after it.
                 shard.applied_wal_sequence =
                     Some(self.wal_store.stats(request.shard_id).last_sequence);
-                let index_bytes = serialize_index(shard);
-                let _ = self
-                    .index_log_store
-                    .append_json(request.shard_id, &index_bytes);
-                let _ = self.persist_index_bytes(request.shard_id, &index_bytes);
+                if delta_served_index_enabled() {
+                    // Delta path: append the pages this batch changed (O(delta)) to the
+                    // index-log (advances the sequence + populates the delta stream); defer
+                    // the whole-index base rewrite to the next compaction point (see the
+                    // single-command execute path).
+                    let items = collect_command_index_items(
+                        shard,
+                        &delta_command_keys,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                    );
+                    let key_states = capture_key_states(shard, &delta_command_keys);
+                    let _ = self.index_log_store.append_delta(
+                        request.shard_id,
+                        items,
+                        key_states,
+                        shard.applied_wal_sequence,
+                        None,
+                    );
+                } else {
+                    let index_bytes = serialize_index(shard);
+                    let _ = self
+                        .index_log_store
+                        .append_json(request.shard_id, &index_bytes);
+                    let _ = self.persist_index_bytes(request.shard_id, &index_bytes);
+                }
             }
         }
         BatchExecuteResponse {
@@ -393,7 +425,11 @@ impl TemporalEngine {
     }
 
     pub fn export_index_bytes(&self, shard_id: ShardId) -> Result<Vec<u8>, std::io::Error> {
-        fs::read(self.index_path(shard_id))
+        // Route through the served-index funnel: on the delta path (and outside bulk) the
+        // authoritative index is the live in-memory shard; otherwise fall back to the base
+        // file, preserving the original missing-file -> Err contract that callers map to a
+        // dump/publish failure status.
+        self.load_served_index_bytes(shard_id)
     }
 
     pub fn publish_shard_index_snapshot(&self, shard_id: ShardId) -> Result<usize, Status> {

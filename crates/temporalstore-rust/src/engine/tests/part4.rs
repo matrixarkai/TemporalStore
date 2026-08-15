@@ -638,7 +638,13 @@ fn partial_compaction_failure_durably_persists_the_consistent_partial_index() {
         },
     });
 
-    let index_before = fs::read(engine.index_path(1)).unwrap();
+    // On the delta served-index path the per-write base rewrite is deferred, so the base file
+    // may not exist yet before the first compaction (the served index is the live shard; a
+    // compaction is what materializes the base). Tolerate an absent base here: the assertion
+    // below still holds -- compaction must durably write the relocated partial index, so
+    // `index_after` differs from an absent/empty `index_before` exactly as it differs from a
+    // per-write-persisted one on the default path.
+    let index_before = fs::read(engine.index_path(1)).unwrap_or_default();
 
     // Corrupt only the newest page slab (k2's): truncate it to empty so k2's page cannot be read.
     let mut slabs = fs::read_dir(&pages)

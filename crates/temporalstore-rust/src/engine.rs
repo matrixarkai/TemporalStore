@@ -324,6 +324,13 @@ impl TemporalEngine {
         }
         if outcome.mutated {
             let object_keys = command_object_keys(&command);
+            // Capture this write's touched keys for the O(delta) index-log append below
+            // (the command is moved into the WAL append before we reach that point).
+            let delta_command_keys = if delta_served_index_enabled() {
+                object_keys.clone()
+            } else {
+                Vec::new()
+            };
             if object_keys.is_empty() {
                 rebuild_bucket_page_ownership(
                     request.shard_id,
@@ -424,11 +431,34 @@ impl TemporalEngine {
                 // dumped-log-id anchor read back on load).
                 shard.applied_wal_sequence =
                     Some(self.wal_store.stats(request.shard_id).last_sequence);
-                let index_bytes = serialize_index(shard);
-                let _ = self
-                    .index_log_store
-                    .append_json(request.shard_id, &index_bytes);
-                let _ = self.persist_index_bytes(request.shard_id, &index_bytes);
+                if delta_served_index_enabled() {
+                    // Delta path: append ONLY the pages this write changed (O(delta)) to the
+                    // index-log, advancing the index-log sequence and populating the
+                    // served-index delta stream. DO NOT rewrite the whole base index
+                    // (O(store)); the base is materialized at compaction/unload, the funnel
+                    // serves the live in-memory shard between them, and cold reload replays
+                    // the WAL suffix beyond the last materialized anchor.
+                    let items = collect_command_index_items(
+                        shard,
+                        &delta_command_keys,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                    );
+                    let key_states = capture_key_states(shard, &delta_command_keys);
+                    let _ = self.index_log_store.append_delta(
+                        request.shard_id,
+                        items,
+                        key_states,
+                        shard.applied_wal_sequence,
+                        None,
+                    );
+                } else {
+                    let index_bytes = serialize_index(shard);
+                    let _ = self
+                        .index_log_store
+                        .append_json(request.shard_id, &index_bytes);
+                    let _ = self.persist_index_bytes(request.shard_id, &index_bytes);
+                }
             }
         }
         ExecuteResponse {
@@ -1077,6 +1107,23 @@ fn bulk_ingest_mode() -> bool {
     )
 }
 
+/// Whether the delta / incremental served-index path is enabled. When ON, a write no
+/// longer rewrites the whole `shard-{id}.index.json` (O(store)); the full base snapshot is
+/// materialized only at compaction points (flush / dump / gc / unload) and the in-memory
+/// shard is the authoritative served index, which every reader reaches through
+/// `load_served_index_bytes`. Defaults OFF: the funnel then reads the base file, i.e. the
+/// established per-write-persist behavior, so this gate is behavior-preserving until set.
+pub(super) fn delta_served_index_enabled() -> bool {
+    matches!(
+        std::env::var("MATRIXARK_DELTA_SERVED_INDEX")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
 /// Whether the per-command model-map -> bucket-index promotion and first-index
 /// rebuild should be DEFERRED to a single reconstruct pass. True during bulk
 /// backfill (MATRIXARK_BULK_INGEST) and during WAL replay on load: both re-drive
@@ -1106,6 +1153,221 @@ fn eager_cache_warm_on_load() -> bool {
 
 fn serialize_index(shard: &ShardState) -> Vec<u8> {
     serde_json::to_vec(shard).expect("shard index should serialize")
+}
+
+/// Collect the served-index delta items for exactly the object keys a single write
+/// touched. Looks up only the routing buckets those keys map to (never the whole store),
+/// so the result is O(delta): one `IndexItem` per live/tombstoned page currently backing a
+/// touched key. Deleted pages ride as `deleted` tombstones so a fold applies the removal.
+/// Empty when the command has no object keys (e.g. a context rebuild command); the caller
+/// still appends the record so the index-log sequence advances per write.
+fn collect_command_index_items(
+    shard: &ShardState,
+    command_keys: &[String],
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+) -> Vec<crate::index_log::IndexItem> {
+    use std::collections::BTreeSet;
+    let keys: BTreeSet<&str> = command_keys.iter().map(String::as_str).collect();
+    if keys.is_empty() {
+        return Vec::new();
+    }
+    let buckets: BTreeSet<u32> = keys
+        .iter()
+        .map(|key| page_routing_bucket(key, start_routing_bucket, end_routing_bucket))
+        .collect();
+    let mut items = Vec::new();
+    for routing_bucket in buckets {
+        let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
+            continue;
+        };
+        for (page_ref_key, page) in &bucket.page_index {
+            if !keys.contains(page.object_key.as_str()) {
+                continue;
+            }
+            items.push(crate::index_log::IndexItem {
+                kind: crate::index_log::IndexItemKind::Page,
+                routing_bucket,
+                page_ref_key: page_ref_key.clone(),
+                object_key: page.object_key.clone(),
+                model_id: page.model_id.clone(),
+                component: page.component.clone(),
+                object_id: page.object_id,
+                page_id: page.address.page_id.unwrap_or(0),
+                address: Some(page.address.clone()),
+                size: page.address.length,
+                in_log: page.log_backed,
+                deleted: page.deleted,
+            });
+        }
+    }
+    items
+}
+
+/// Capture the authoritative post-write state of the maps that a single page-index entry
+/// cannot reconstruct on reload, for exactly the object keys a write touched (O(delta)):
+///  - packed timestamped series (features + the context timestamped maps): one physical
+///    page holds many timestamps, so an eviction that trims the in-memory membership leaves
+///    the dropped timestamps physically in the page. Pinning the membership here stops
+///    reconstruction-from-pages resurrecting them.
+///  - non-page maps that ride only on the serialized index (TTL expiry, control-state
+///    change/sketch/selection, context nodes/entities/embeddings), which no page entry
+///    encodes.
+/// Each blob is `{"key": ..., "<map>": <value-or-null>}`; a null marks the key absent from
+/// that map (a tombstone). Opaque JSON so the index-log layer stays decoupled from the
+/// concrete `ShardState` field types.
+fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Value> {
+    keys.iter()
+        .map(|key| {
+            serde_json::json!({
+                "key": key,
+                "features": shard.features.get(key),
+                "expires_at_ms": shard.expires_at_ms.get(key),
+                "control_state_changes": shard.control_state_changes.get(key),
+                "control_state_change_sketch": shard.control_state_change_sketch.get(key),
+                "control_state_selection": shard.control_state_selection.get(key),
+                "context_nodes": shard.context_nodes.get(key),
+                "context_events": shard.context_events.get(key),
+                "context_indexes": shard.context_indexes.get(key),
+                "context_audits": shard.context_audits.get(key),
+                "context_children": shard.context_children.get(key),
+                "context_summaries": shard.context_summaries.get(key),
+                "context_compressions": shard.context_compressions.get(key),
+                "context_entities": shard.context_entities.get(key),
+                "context_embeddings": shard.context_embeddings.get(key),
+            })
+        })
+        .collect()
+}
+
+/// Apply the captured per-key state blobs back onto a shard (last blob wins per key),
+/// pinning the authoritative membership a write produced. Used on reload after WAL replay
+/// to correct the exact touched keys, so reconstruction from physical pages honors the
+/// evicted/tombstoned membership instead of resurrecting it.
+fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
+    for blob in key_states {
+        let Some(key) = blob.get("key").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        apply_key_state_field(&mut shard.features, key, blob.get("features"));
+        apply_key_state_field(&mut shard.expires_at_ms, key, blob.get("expires_at_ms"));
+        apply_key_state_field(
+            &mut shard.control_state_changes,
+            key,
+            blob.get("control_state_changes"),
+        );
+        apply_key_state_field(
+            &mut shard.control_state_change_sketch,
+            key,
+            blob.get("control_state_change_sketch"),
+        );
+        apply_key_state_field(
+            &mut shard.control_state_selection,
+            key,
+            blob.get("control_state_selection"),
+        );
+        apply_key_state_field(&mut shard.context_nodes, key, blob.get("context_nodes"));
+        apply_key_state_field(&mut shard.context_events, key, blob.get("context_events"));
+        apply_key_state_field(&mut shard.context_indexes, key, blob.get("context_indexes"));
+        apply_key_state_field(&mut shard.context_audits, key, blob.get("context_audits"));
+        apply_key_state_field(&mut shard.context_children, key, blob.get("context_children"));
+        apply_key_state_field(&mut shard.context_summaries, key, blob.get("context_summaries"));
+        apply_key_state_field(
+            &mut shard.context_compressions,
+            key,
+            blob.get("context_compressions"),
+        );
+        apply_key_state_field(&mut shard.context_entities, key, blob.get("context_entities"));
+        apply_key_state_field(
+            &mut shard.context_embeddings,
+            key,
+            blob.get("context_embeddings"),
+        );
+    }
+}
+
+fn apply_key_state_field<V: serde::de::DeserializeOwned>(
+    map: &mut HashMap<String, V>,
+    key: &str,
+    value: Option<&serde_json::Value>,
+) {
+    match value {
+        Some(value) if !value.is_null() => {
+            if let Ok(parsed) = serde_json::from_value::<V>(value.clone()) {
+                map.insert(key.to_string(), parsed);
+            }
+        }
+        _ => {
+            map.remove(key);
+        }
+    }
+}
+
+/// Apply one delta record's page items to the bucket index, making the delta's view of the
+/// covered object keys authoritative: every existing live page entry for a covered key is
+/// removed first (so an overwrite that relocated or dropped a page does not leave the stale
+/// entry behind), then the delta's live items are inserted at their ORIGINAL recorded
+/// addresses. This is what lets reload reconstruct the exact on-disk page layout without
+/// re-executing the WAL (which would write fresh pages and relocate them to the active
+/// slab). `covered_keys` are the object keys the write touched (from the key-state blobs).
+fn fold_delta_page_items(
+    bucket_index: &mut CoreIndex,
+    covered_keys: &BTreeSet<String>,
+    items: &[crate::index_log::IndexItem],
+) {
+    if !covered_keys.is_empty() {
+        for bucket in bucket_index.bucket_map.values_mut() {
+            bucket
+                .page_index
+                .retain(|_, page| !covered_keys.contains(&page.object_key));
+        }
+    }
+    for item in items {
+        if item.deleted {
+            continue;
+        }
+        let Some(address) = item.address.clone() else {
+            continue;
+        };
+        let bucket = bucket_index
+            .bucket_map
+            .entry(item.routing_bucket)
+            .or_insert_with(|| BucketNode {
+                routing_bucket: item.routing_bucket,
+                meta_loaded: true,
+                in_memory: true,
+                ..BucketNode::default()
+            });
+        bucket.object_index.insert(item.object_id);
+        bucket.page_index.insert(
+            item.page_ref_key.clone(),
+            PageIndex {
+                object_key: item.object_key.clone(),
+                model_id: item.model_id.clone(),
+                component: item.component.clone(),
+                object_id: item.object_id,
+                address,
+                dirty: false,
+                deleted: false,
+                log_backed: item.in_log,
+            },
+        );
+    }
+}
+
+/// Collect the object keys a delta record touched, read from its per-key state blobs.
+fn delta_record_covered_keys(record: &crate::index_log::IndexDeltaRecord) -> BTreeSet<String> {
+    let mut keys: BTreeSet<String> = record
+        .key_states
+        .iter()
+        .filter_map(|blob| blob.get("key").and_then(|value| value.as_str()))
+        .map(str::to_string)
+        .collect();
+    // Fall back to the items' own object keys if a record carried page items but no blobs.
+    for item in &record.items {
+        keys.insert(item.object_key.clone());
+    }
+    keys
 }
 
 thread_local! {
