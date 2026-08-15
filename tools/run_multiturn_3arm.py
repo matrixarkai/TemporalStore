@@ -87,8 +87,8 @@ def _pack_breakdown(pack: dict) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Multi-turn 3-arm token/quality experiment.")
-    ap.add_argument("--codex-root", default="/mnt/c/Users/Deeproute/.codex/sessions")
-    ap.add_argument("--claude-root", default="/mnt/c/Users/Deeproute/.claude/projects")
+    ap.add_argument("--codex-root", default=S.default_codex_root())
+    ap.add_argument("--claude-root", default=S.default_claude_root())
     ap.add_argument("--max-sessions", type=int, default=200)
     ap.add_argument("--max-msgs", type=int, default=400)
     ap.add_argument("--reader-base-url", default="http://127.0.0.1:11434/v1")

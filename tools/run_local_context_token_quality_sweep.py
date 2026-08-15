@@ -36,6 +36,20 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 
+def default_claude_root() -> str:
+    """Local Claude Code transcript root; override with MATRIXARK_CLAUDE_ROOT."""
+    return os.environ.get(
+        "MATRIXARK_CLAUDE_ROOT", os.path.expanduser("~/.claude/projects")
+    )
+
+
+def default_codex_root() -> str:
+    """Local Codex rollout session root; override with MATRIXARK_CODEX_ROOT."""
+    return os.environ.get(
+        "MATRIXARK_CODEX_ROOT", os.path.expanduser("~/.codex/sessions")
+    )
+
+
 # --------------------------------------------------------------------------------------
 # Query set tuned to this user's real history, each with objective expected key terms.
 # --------------------------------------------------------------------------------------
@@ -645,8 +659,8 @@ def make_reader(kind: str, args: argparse.Namespace):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--codex-root", default="/mnt/c/Users/Deeproute/.codex/sessions")
-    ap.add_argument("--claude-root", default="/mnt/c/Users/Deeproute/.claude/projects")
+    ap.add_argument("--codex-root", default=default_codex_root())
+    ap.add_argument("--claude-root", default=default_claude_root())
     ap.add_argument("--max-sessions", type=int, default=40)
     ap.add_argument("--max-msgs", type=int, default=120)
     ap.add_argument("--segment-size", type=int, default=10)
