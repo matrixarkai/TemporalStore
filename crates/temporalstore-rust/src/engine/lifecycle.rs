@@ -344,6 +344,10 @@ impl TemporalEngine {
         }
 
         if replayed_through > watermark {
+            // Only the uncaptured tail beyond the reconstructed delta anchor reaches here
+            // (e.g. async writes, which do not append index-log deltas). The delta path's
+            // sync writes were already folded at their original addresses in load_index, so
+            // this reconstruct handles just the replayed tail.
             let index_bytes = {
                 let mut shards = self.shards.write().expect("engine lock poisoned");
                 match shards.get_mut(&shard_id) {
@@ -398,6 +402,21 @@ impl TemporalEngine {
             return UnloadShardResponse {
                 status: Status::error("shard_not_found", "shard is not loaded"),
             };
+        }
+        // Delta path: the per-write base rewrite is deferred, so materialize the current
+        // in-memory index to disk before the shard leaves memory. This keeps a later cold
+        // load (and any consumer that reads shard-{id}.index.json directly) on a current
+        // base. No-op on the default path, where the base is already current per write.
+        if delta_served_index_enabled() {
+            let index_bytes = self
+                .shards
+                .read()
+                .expect("engine lock poisoned")
+                .get(&request.shard_id)
+                .map(serialize_index);
+            if let Some(index_bytes) = index_bytes {
+                let _ = self.persist_index_bytes_durable(request.shard_id, &index_bytes);
+            }
         }
         self.shards
             .write()
