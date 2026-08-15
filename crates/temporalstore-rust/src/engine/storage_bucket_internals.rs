@@ -1358,6 +1358,19 @@ pub(super) fn rebuild_bucket_first_index(
     start_routing_bucket: u32,
     end_routing_bucket: u32,
 ) {
+    // Preserve tombstone (deleted) object ids across the rebuild. A delete removes the object
+    // from the model maps (strings/hashes/...), so collect_model_live_page_entries no longer
+    // sees it, but the object manager must keep reporting it as a tombstone until GC reclaims
+    // the slot. The deserialize + reconcile load path keeps deleted_object_index; a
+    // promote/rebuild reconstruct (flush or the WAL-replay tail) would otherwise silently drop
+    // it, undercounting objects after a reconstruct-based reload.
+    let prior_deleted_object_index: BTreeMap<u32, ObjectIndex> = shard
+        .bucket_index
+        .bucket_map
+        .iter()
+        .filter(|(_, bucket)| !bucket.deleted_object_index.is_empty())
+        .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.deleted_object_index.clone()))
+        .collect();
     let mut bucket_index = CoreIndex::default();
     for entry in collect_model_live_page_entries(shard) {
         let routing_bucket = entry.address.routing_bucket.unwrap_or_else(|| {
@@ -1401,6 +1414,23 @@ pub(super) fn rebuild_bucket_first_index(
             },
         );
         update_bucket_layout(bucket);
+    }
+    // Re-attach the tombstone ids captured above. Keep them in object_index too so the object
+    // manager's object_count matches the deserialize/reconcile load path (which never dropped
+    // them); a live page entry re-adding the same id is a no-op (BTreeSet).
+    for (routing_bucket, deleted) in prior_deleted_object_index {
+        let bucket = bucket_index
+            .bucket_map
+            .entry(routing_bucket)
+            .or_insert_with(|| BucketNode {
+                routing_bucket,
+                meta_loaded: true,
+                ..BucketNode::default()
+            });
+        for object_id in &deleted {
+            bucket.object_index.insert(*object_id);
+        }
+        bucket.deleted_object_index.extend(deleted);
     }
     bucket_index.rebuild_object_page_lookup();
     shard.bucket_index = bucket_index;

@@ -9,6 +9,35 @@ impl TemporalEngine {
         self.index_dir.join(format!("shard-{shard_id}.index.json"))
     }
 
+    /// The single funnel through which every consumer reads the COMPLETE served index for
+    /// a shard. It always returns a full, current `serialize_index`-shaped byte image of
+    /// the `ShardState`, so callers never see a partial or stale index regardless of the
+    /// delta path.
+    ///
+    /// - Delta path ON, shard loaded, not bulk: serialize the LIVE in-memory shard. This
+    ///   is the authoritative current state and is what makes deferring the per-write base
+    ///   rewrite safe -- readers reconstruct from memory rather than from the on-disk base.
+    /// - Otherwise: read the on-disk base `shard-{id}.index.json`. This is the established
+    ///   behavior (default OFF) and is also the correct source in bulk mode, where the base
+    ///   is deliberately frozen at the last flush anchor while the WAL tail races ahead
+    ///   (serving the live tail there would over-advance the manifest replay watermark).
+    pub(super) fn load_served_index_bytes(
+        &self,
+        shard_id: ShardId,
+    ) -> Result<Vec<u8>, std::io::Error> {
+        if delta_served_index_enabled() && !bulk_ingest_mode() {
+            if let Some(shard) = self
+                .shards
+                .read()
+                .expect("engine lock poisoned")
+                .get(&shard_id)
+            {
+                return Ok(serialize_index(shard));
+            }
+        }
+        fs::read(self.index_path(shard_id))
+    }
+
     pub(super) fn persist_bucket_dump_manifest(
         &self,
         manifest: &BucketDumpManifest,
@@ -104,8 +133,19 @@ impl TemporalEngine {
     }
 
     pub(super) fn load_index(&self, shard_id: ShardId, warm_cache: bool) -> Option<ShardState> {
-        let bytes = fs::read(self.index_path(shard_id)).ok()?;
-        let mut shard = serde_json::from_slice::<ShardState>(&bytes).ok()?;
+        let delta = delta_served_index_enabled();
+        let read = fs::read(self.index_path(shard_id));
+        let base_present = read.is_ok();
+        // Default path: a missing base means nothing to load. Delta path: the base is
+        // materialized only at compaction/unload, so a crash before the first compaction
+        // leaves no base -- start empty and rebuild from the index-log deltas below.
+        if !base_present && !delta {
+            return None;
+        }
+        let mut shard = match read {
+            Ok(bytes) => serde_json::from_slice::<ShardState>(&bytes).ok()?,
+            Err(_) => ShardState::default(),
+        };
         // Thin-layer Sequence fold: a pre-fold on-disk index stored Sequence rows in a
         // separate `sequences` map. Sequence now lives in `features` (same timestamped-KV
         // storage, typed row codec at the API layer), so fold any legacy series forward
@@ -113,6 +153,22 @@ impl TemporalEngine {
         if !shard.sequences.is_empty() {
             for (key, series) in std::mem::take(&mut shard.sequences) {
                 shard.features.entry(key).or_default().extend(series);
+            }
+        }
+        // Delta path: fold the index-log deltas beyond the base snapshot's anchor into the
+        // bucket index (reconstructing the exact on-disk page layout at the ORIGINAL
+        // addresses) and apply the captured per-key non-page state, BEFORE reconcile. This
+        // is what lets a crash reload reconstruct the served index WITHOUT re-executing the
+        // WAL -- re-execution would write fresh pages and relocate them to the active slab,
+        // doubling physical page counts and losing the recorded slab layout.
+        if delta {
+            self.fold_index_log_deltas(shard_id, &mut shard);
+            // ON but no base and nothing to fold -> genuinely nothing persisted yet.
+            if !base_present
+                && shard.bucket_index.bucket_map.is_empty()
+                && shard.applied_wal_sequence.is_none()
+            {
+                return None;
             }
         }
         // Fold disk->memory cache promotion into reconcile's page reads on a warming
@@ -140,6 +196,47 @@ impl TemporalEngine {
         }
         refresh_bucket_runtime_flags(&mut shard);
         Some(shard)
+    }
+
+    /// Fold the append-only index-log deltas onto a (possibly empty) base `ShardState`,
+    /// reconstructing the served index for the delta path. Only deltas with a WAL anchor
+    /// beyond the base snapshot's own anchor are applied -- deltas already captured by the
+    /// base are skipped (their pages may have been relocated/reclaimed by the compaction
+    /// that produced the base). Each delta's page items are re-attached at their ORIGINAL
+    /// addresses (authoritative replace per covered key) and its per-key non-page state is
+    /// applied, then the reconstructed anchor advances so WAL replay re-executes only the
+    /// uncaptured (e.g. async) tail rather than relocating the pages the deltas already pin.
+    fn fold_index_log_deltas(&self, shard_id: ShardId, shard: &mut ShardState) {
+        let records = match self.index_log_store.read_delta_records(shard_id, 0) {
+            Ok(records) => records,
+            Err(_) => return,
+        };
+        if records.is_empty() {
+            return;
+        }
+        let base_anchor = shard.applied_wal_sequence.unwrap_or(0);
+        let mut max_anchor = base_anchor;
+        let mut applied = false;
+        for record in &records {
+            let record_anchor = record.applied_wal_sequence.unwrap_or(0);
+            // A present base already reflects everything at/below its anchor; fold only the
+            // suffix. An absent base (anchor 0) folds the whole log.
+            if base_anchor > 0 && record_anchor <= base_anchor {
+                continue;
+            }
+            let covered = delta_record_covered_keys(record);
+            fold_delta_page_items(&mut shard.bucket_index, &covered, &record.items);
+            apply_key_states(shard, &record.key_states);
+            max_anchor = max_anchor.max(record_anchor);
+            applied = true;
+        }
+        if applied {
+            for bucket in shard.bucket_index.bucket_map.values_mut() {
+                update_bucket_layout(bucket);
+            }
+            shard.bucket_index.rebuild_object_page_lookup();
+            shard.applied_wal_sequence = Some(max_anchor);
+        }
     }
 
     /// Persist the in-memory shard index to disk once (used by bulk backfill
