@@ -51,6 +51,7 @@ use temporalstore_rust::{
 use temporalstore_snapshot::object_store::ObjectStore;
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
 use bytes::Bytes;
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct ServerTopologyValidationRequest {
@@ -81,6 +82,7 @@ struct BlobReceipt {
 }
 
 fn main() {
+    temporalstore_rust::telemetry::init();
     let addr = std::env::var("TS_SERVER_BIND_ADDR")
         .or_else(|_| std::env::var("TS_SERVER_ADDR"))
         .unwrap_or_else(|_| "127.0.0.1:17002".to_string());
@@ -131,35 +133,37 @@ fn main() {
         let startup_load = startup_load_shard_request(shard_id, node_id);
         let load_response = engine.load_shard_with(startup_load);
         if !load_response.status.ok {
-            eprintln!(
-                "startup shard load failed for shard {shard_id}: {}",
-                load_response.status.message
+            error!(
+                shard_id,
+                message = %load_response.status.message,
+                "startup shard load failed"
             );
         }
     } else {
-        println!("join-empty datanode: awaiting metaserver shard placement");
+        info!("join-empty datanode: awaiting metaserver shard placement");
     }
     // Resolve the distributed storage/replication backend for this node:
     // matrixobject shared storage when detected, else a configured shared object
     // store, else raft replication (the default when nothing is configured).
     let storage_backend = temporalstore_rust::StorageBackendConfig::from_env().resolve();
-    println!(
-        "storage backend: {} (replication {:?})",
-        storage_backend.describe(),
-        storage_backend.replication_mode()
+    info!(
+        backend = %storage_backend.describe(),
+        replication = ?storage_backend.replication_mode(),
+        "resolved storage backend"
     );
     // Construct the shared object store early so a broken shared-storage config
     // fails fast at startup rather than on the first write.
     match storage_backend.build_shared_object_store() {
-        Ok(Some(_shared_store)) => println!(
-            "shared-storage backend ready: {} — shard durability served by shared storage",
-            storage_backend.describe()
+        Ok(Some(_shared_store)) => info!(
+            backend = %storage_backend.describe(),
+            "shared-storage backend ready — shard durability served by shared storage"
         ),
         Ok(None) => {}
         Err(err) => {
-            eprintln!(
-                "configured storage backend {} is unusable: {err}",
-                storage_backend.describe()
+            error!(
+                backend = %storage_backend.describe(),
+                %err,
+                "configured storage backend is unusable"
             );
             std::process::exit(1);
         }
@@ -211,8 +215,10 @@ fn main() {
         _ => !(meta_addr_is_real || env_bool("TS_DISTRIBUTED", false)),
     };
     if standalone {
-        println!(
-            "standalone datanode: no metaserver — serving shard {shard_id} locally at {advertised_addr}"
+        info!(
+            shard_id,
+            addr = %advertised_addr,
+            "standalone datanode: no metaserver — serving shard locally"
         );
     } else {
         let server_registration = RegisterServerRequest {
@@ -223,16 +229,17 @@ fn main() {
         };
         match post_json::<_, AckResponse>(&meta_addr, "/servers/register", &server_registration) {
             Ok(response) if response.status.ok => {
-                println!("registered server {advertised_addr} with metaserver {meta_addr}");
+                info!(server = %advertised_addr, meta = %meta_addr, "registered server with metaserver");
             }
             Ok(response) => {
-                eprintln!(
-                    "metaserver rejected server registration: {}",
-                    response.status.message
+                warn!(
+                    server = %advertised_addr,
+                    message = %response.status.message,
+                    "metaserver rejected server registration"
                 );
             }
             Err(err) => {
-                eprintln!("failed to register server {advertised_addr}: {err}");
+                warn!(server = %advertised_addr, %err, "failed to register server");
             }
         }
 
@@ -244,16 +251,17 @@ fn main() {
             match post_json::<_, RegisterShardResponse>(&meta_addr, "/register_shard", &registration)
             {
                 Ok(response) if response.status.ok => {
-                    println!("registered shard {shard_id} with metaserver {meta_addr}");
+                    info!(shard_id, meta = %meta_addr, "registered shard with metaserver");
                 }
                 Ok(response) => {
-                    eprintln!(
-                        "metaserver rejected registration: {}",
-                        response.status.message
+                    warn!(
+                        shard_id,
+                        message = %response.status.message,
+                        "metaserver rejected shard registration"
                     );
                 }
                 Err(err) => {
-                    eprintln!("failed to register shard {shard_id}: {err}");
+                    warn!(shard_id, %err, "failed to register shard");
                 }
             }
         }
@@ -292,9 +300,10 @@ fn main() {
             match &storage_backend {
                 StorageBackend::SharedPath { root, cluster_id } => {
                     let store = Arc::new(FileObjectStore::new(root.clone()));
-                    println!(
-                        "shard data movement enabled: shared-storage checkpoints at {} (cluster {cluster_id})",
-                        root.display()
+                    info!(
+                        checkpoints = %root.display(),
+                        cluster = %cluster_id,
+                        "shard data movement enabled: shared-storage checkpoints"
                     );
                     Some(Arc::new(SharedStoreReplicator::new(
                         cluster_id.clone(),
@@ -302,9 +311,9 @@ fn main() {
                     )))
                 }
                 other => {
-                    eprintln!(
-                        "TS_AUTO_REBALANCE_DATA_MOVE set but backend {} is not a shared path — data movement disabled",
-                        other.describe()
+                    warn!(
+                        backend = %other.describe(),
+                        "TS_AUTO_REBALANCE_DATA_MOVE set but backend is not a shared path — data movement disabled"
                     );
                     None
                 }
@@ -313,7 +322,7 @@ fn main() {
             None
         };
 
-    println!("temporalstore server listening on {addr}");
+    info!(%addr, "temporalstore server listening");
     // Streaming pre-handler: owns `/blob/<key>` and moves bytes straight between
     // the socket and the object store (no full-body buffering). Everything else
     // is Declined and falls through to the buffered handler below.
@@ -322,7 +331,7 @@ fn main() {
     let handler_replicator = shard_replicator.clone();
     let handler_block_runtime = Arc::clone(&blob_runtime);
     let stream_chunk_bytes = blob_chunk_bytes;
-    serve_with_stream_handler(
+    if let Err(err) = serve_with_stream_handler(
         &addr,
         move |head, transfer| {
             handle_blob_stream(
@@ -334,6 +343,7 @@ fn main() {
             )
         },
         move |request| {
+        debug!(method = %request.method, path = %request.path, "serving request");
         if let Some(response) = handle_ping_route(&request) {
             return response;
         }
@@ -790,8 +800,10 @@ fn main() {
             _ => json_response(404, &Status::error("not_found", "unknown server route")),
         }
         },
-    )
-    .expect("server failed");
+    ) {
+        error!(%err, "server serve loop exited");
+        std::process::exit(1);
+    }
 }
 
 fn handle_ping_route(request: &HttpRequest) -> Option<(u16, Vec<u8>)> {
@@ -942,13 +954,15 @@ fn replay_shard_from_shared(
     match runtime.block_on(replicator.replay_wal(shard_id, 0, engine)) {
         Ok(report) => {
             if report.applied > 0 {
-                println!(
-                    "replayed shard {shard_id} from shared storage: {} records (through wal_index {})",
-                    report.applied, report.last_wal_index
+                info!(
+                    shard_id,
+                    records = report.applied,
+                    wal_index = report.last_wal_index,
+                    "replayed shard from shared storage"
                 );
             }
         }
-        Err(err) => eprintln!("no shared-storage data replayed for shard {shard_id}: {err}"),
+        Err(err) => warn!(shard_id, %err, "no shared-storage data replayed for shard"),
     }
 }
 

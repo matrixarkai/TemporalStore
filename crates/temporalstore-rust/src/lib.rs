@@ -26,6 +26,7 @@ pub mod sdk;
 pub mod shared_store;
 pub mod storage_backend;
 pub mod storage_config;
+pub mod telemetry;
 pub mod types;
 pub mod wal;
 
