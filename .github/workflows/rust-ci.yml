@@ -12,6 +12,14 @@ name: Rust CI
 on:
   push:
     branches: [main, rust-main]
+    # Only spend the release build+test on pushes that touch Rust; doc/tool/
+    # website-only commits to main skip it. PRs below still always run the full
+    # suite, so required-check / branch protection is unaffected.
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/rust-ci.yml'
   pull_request:
     branches: [main, rust-main]
   workflow_dispatch:
