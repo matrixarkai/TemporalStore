@@ -82,7 +82,7 @@ pub use data_node::{
     CompactionRequest, CompactionResponse, DataNodeLifecycleReport, DataNodePreflightReport,
     DataNodeRuntime, DataNodeRuntimeOptions, DataNodeRuntimeStats, DataNodeShardLifecycleState,
     DataNodeTaskKind, DataNodeTaskOutput, DataNodeTaskStatus, DirtyObjectInfo, DumpShardRequest,
-    DumpShardResponse, GcRequest, GcResponse, RequestController, ShardWorkerInfo,
+    DumpShardResponse, GcRequest, GcResponse, RequestController, SharedWalSink, ShardWorkerInfo,
     StorageLifecycleResponse, StorageLifecycleScheduler,
 };
 pub use e2e::{

@@ -1112,6 +1112,23 @@ where
         Ok(serde_json::from_slice(bytes)?)
     }
 
+    /// The highest WAL index currently persisted in shared storage for
+    /// `shard_id`, or `0` when no WAL exists yet. A restarting node uses this to
+    /// resume publishing WAL entries at `latest + 1` without clobbering
+    /// already-persisted entries. Works for both WAL append encodings (the
+    /// protobuf offset index and the per-key JSON objects).
+    pub async fn latest_persisted_wal_index(
+        &self,
+        shard_id: ShardId,
+    ) -> Result<u64, SharedStoreReplicationError> {
+        let offset_metadata = self.load_wal_offset_metadata(shard_id).await?;
+        if let Some(max) = offset_metadata.keys().max().copied() {
+            return Ok(max);
+        }
+        let entries = self.load_wal_entries(shard_id).await?;
+        Ok(entries.keys().max().copied().unwrap_or(0))
+    }
+
     async fn load_wal_entries(
         &self,
         shard_id: ShardId,

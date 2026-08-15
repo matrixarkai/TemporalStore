@@ -117,6 +117,15 @@ fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or_default();
+    // Whether this node already holds local shard state on disk, captured
+    // BEFORE the engine constructs/loads (which may create empty dir
+    // scaffolding). Drives matrixobject recovery: absent local state (a fresh
+    // node, or one whose local dirs were wiped) is rebuilt from shared storage,
+    // while intact local state is left untouched so non-idempotent commands are
+    // not double-applied.
+    #[cfg(feature = "matrixobject")]
+    let local_state_present =
+        local_shard_state_present(&[&cache_dir, &block_store_dir, &index_dir]);
     let block_store_options = block_store_options_from_env();
     let engine = TemporalEngine::with_local_dirs_and_block_store_options(
         cache_memory_bytes,
@@ -212,6 +221,15 @@ fn main() {
             run_embed_drainer_loop(&drainer_engine, &drainer_config, || false);
         });
     }
+    // Wire the durable matrixobject shared store into the running node: replay
+    // shard data from shared storage when local state is absent, and mirror
+    // every accepted write to shared storage from here on. Kept alive for the
+    // process lifetime so the durability runtime/sink outlive request handling.
+    // Only active for the matrixobject shared-storage backend; every other
+    // backend (raft/local/shared-path) is completely unchanged.
+    #[cfg(feature = "matrixobject")]
+    let _matrixobject_durability_rt =
+        wire_matrixobject_durability(&storage_backend, &engine, &runtime, shard_id, local_state_present);
 
     let location = std::env::var("TS_SERVER_LOCATION").unwrap_or_default();
     let binary_version = env!("CARGO_PKG_VERSION").to_string();
@@ -1246,6 +1264,150 @@ fn ingest_batch_route(engine: &TemporalEngine, body: &[u8]) -> (u16, Vec<u8>) {
         Ok(req) => json_response(200, &engine.ingest_batch(req)),
         Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
     }
+}
+
+/// `true` when any of the local shard dirs already holds on-disk state.
+///
+/// Used to decide matrixobject recovery: an empty/absent set of dirs means a
+/// fresh node or one whose local dirs were wiped, so its shard is rebuilt from
+/// shared storage; a non-empty set means intact local state that must not be
+/// replayed over (some commands are not idempotent).
+#[cfg(feature = "matrixobject")]
+fn local_shard_state_present(dirs: &[&str]) -> bool {
+    dirs.iter().any(|dir| match std::fs::read_dir(dir) {
+        Ok(mut entries) => entries.next().is_some(),
+        Err(_) => false,
+    })
+}
+
+/// Durable shared-storage sink backed by a matrixobject WAL writer.
+///
+/// Runs each write to completion on a dedicated Tokio runtime (the datanode's
+/// request/worker threads are plain OS threads, so blocking on this handle is
+/// safe). Sync storage mode means the durable put — and its flush-on-commit
+/// snapshot — completes before the write is acknowledged.
+#[cfg(feature = "matrixobject")]
+struct MatrixObjectWalSink {
+    handle: tokio::runtime::Handle,
+    writer: std::sync::Arc<
+        temporalstore_rust::SharedStoreStorageWriter<
+            temporalstore_rust::matrixobject_store::MatrixObjectObjectStore,
+        >,
+    >,
+}
+
+#[cfg(feature = "matrixobject")]
+impl std::fmt::Debug for MatrixObjectWalSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MatrixObjectWalSink").finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "matrixobject")]
+impl temporalstore_rust::SharedWalSink for MatrixObjectWalSink {
+    fn record_write(&self, shard_id: u64, command: &Command) {
+        let writer = std::sync::Arc::clone(&self.writer);
+        let command = command.clone();
+        let result = self
+            .handle
+            .block_on(async move { writer.write(shard_id, command).await });
+        if let Err(err) = result {
+            // Durability failure: log loudly. The local write already
+            // succeeded, so the node stays available; shared storage will catch
+            // up on the next successful publish or on the next full replay.
+            eprintln!("matrixobject durable write failed for shard {shard_id}: {err}");
+        }
+    }
+}
+
+/// Build the durable matrixobject store, replay shard data from it when local
+/// state is absent, and attach a write-mirroring sink to `runtime`. Returns the
+/// Tokio runtime that must be kept alive for the process lifetime. A no-op
+/// (returns `None`) for any backend other than matrixobject.
+#[cfg(feature = "matrixobject")]
+fn wire_matrixobject_durability(
+    storage_backend: &temporalstore_rust::StorageBackend,
+    engine: &TemporalEngine,
+    runtime: &DataNodeRuntime,
+    shard_id: u64,
+    local_state_present: bool,
+) -> Option<tokio::runtime::Runtime> {
+    use std::sync::Arc;
+    use temporalstore_rust::matrixobject_store::MatrixObjectObjectStore;
+    use temporalstore_rust::{SharedStoreReplicator, SharedStoreStorageMode, StorageBackend};
+
+    let (bucket, cluster_id) = match storage_backend {
+        StorageBackend::MatrixObject { bucket, cluster_id } => (bucket.clone(), cluster_id.clone()),
+        // Other backends (raft/local/shared-path) keep their existing behavior.
+        _ => return None,
+    };
+
+    let store_dir = std::env::var("TS_MATRIXOBJECT_STORE_DIR")
+        .unwrap_or_else(|_| "target/temporalstore-matrixobject".to_string());
+
+    // Durable, on-disk matrixobject store: flush-on-commit snapshot that is read
+    // back on construction, so its bytes survive a process restart.
+    let store = match MatrixObjectObjectStore::with_persistent_dir(&bucket, &store_dir) {
+        Ok(store) => store,
+        Err(err) => {
+            eprintln!("matrixobject durable store at {store_dir} is unusable: {err}");
+            std::process::exit(1);
+        }
+    };
+
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(err) => {
+            eprintln!("failed to start matrixobject durability runtime: {err}");
+            std::process::exit(1);
+        }
+    };
+
+    let replicator = SharedStoreReplicator::new(cluster_id, Arc::new(store));
+
+    let latest = match rt.block_on(replicator.latest_persisted_wal_index(shard_id)) {
+        Ok(latest) => latest,
+        Err(err) => {
+            eprintln!("failed to read matrixobject WAL state for shard {shard_id}: {err}");
+            std::process::exit(1);
+        }
+    };
+
+    if !local_state_present && latest > 0 {
+        match rt.block_on(replicator.replay_wal(shard_id, 0, engine)) {
+            Ok(report) => println!(
+                "recovered shard {shard_id} from matrixobject shared storage at {store_dir}: {} WAL entries replayed (through index {})",
+                report.applied, report.last_wal_index
+            ),
+            Err(err) => {
+                eprintln!("matrixobject recovery replay failed for shard {shard_id}: {err}");
+                std::process::exit(1);
+            }
+        }
+    } else if local_state_present {
+        println!(
+            "matrixobject durability active for shard {shard_id} at {store_dir}; local state intact, skipping replay (WAL resumes at {})",
+            latest + 1
+        );
+    } else {
+        println!(
+            "matrixobject durability active for shard {shard_id} at {store_dir}; no shared WAL yet (fresh cluster)"
+        );
+    }
+
+    // Continue publishing at latest + 1 so we never overwrite persisted WAL
+    // entries. Sync mode makes each publish durable before the write returns.
+    let writer = Arc::new(replicator.storage_writer(SharedStoreStorageMode::Sync, latest + 1));
+    runtime.set_shared_wal_sink(Arc::new(MatrixObjectWalSink {
+        handle: rt.handle().clone(),
+        writer,
+    }));
+
+    Some(rt)
 }
 
 fn env_usize(name: &str, default: usize) -> usize {
