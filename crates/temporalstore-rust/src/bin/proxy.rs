@@ -3,8 +3,10 @@
 
 use temporalstore_rust::http::serve;
 use temporalstore_rust::{ProxyOptions, ProxyService, ProxyServingMode};
+use tracing::info;
 
 fn main() {
+    temporalstore_rust::telemetry::init();
     let addr = std::env::var("TS_PROXY_BIND_ADDR")
         .or_else(|_| std::env::var("TS_PROXY_ADDR"))
         .unwrap_or_else(|_| "127.0.0.1:17000".to_string());
@@ -36,7 +38,7 @@ fn main() {
     let proxy = ProxyService::new(options);
     let heartbeat_interval_ms = env_u64("TS_PROXY_HEARTBEAT_INTERVAL_MS", 10_000);
     let _heartbeat_loop = proxy.start_heartbeat_loop(heartbeat_interval_ms);
-    println!("temporalstore proxy listening on {addr}");
+    info!(%addr, "temporalstore proxy listening");
     serve(&addr, move |request| proxy.handle(request)).expect("proxy failed");
 }
 
