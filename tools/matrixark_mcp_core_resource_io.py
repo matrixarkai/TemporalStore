@@ -33,7 +33,7 @@ try:  # resource-parser helpers (core imports these inside a try/except too)
 except ImportError:
     from matrixark_resource_parser import content_hash, normalize_parse_warnings
 
-__all__ = ['deployment_scope_from_args', 'resource_storage_mode_from_args', 'is_s3_uri', 'parse_s3_uri', '_cloud_resource_bucket', '_cloud_resource_prefix', '_s3_client', '_aws_cli_s3_cp', 'upload_file_to_s3', 'download_s3_to_file', '_resource_object_key', '_archive_directory_for_upload', 'resolve_raw_resource_for_ingest', 'infer_resource_suffix', 'rewrite_chunk_uris', 'cleanup_temp_paths', 'aggregate_parse_warnings_from_chunks']
+__all__ = ['deployment_scope_from_args', 'resource_storage_mode_from_args', 'is_s3_uri', 'parse_s3_uri', 'is_matrixobject_uri', 'parse_matrixobject_uri', '_cloud_resource_bucket', '_cloud_resource_prefix', '_s3_client', '_aws_cli_s3_cp', 'upload_file_to_s3', 'download_s3_to_file', '_resource_object_key', '_archive_directory_for_upload', 'resolve_raw_resource_for_ingest', 'infer_resource_suffix', 'rewrite_chunk_uris', 'cleanup_temp_paths', 'aggregate_parse_warnings_from_chunks']
 
 
 def deployment_scope_from_args(args: Json, envelope: Json) -> str:
@@ -71,6 +71,22 @@ def parse_s3_uri(uri: str) -> tuple[str, str]:
     bucket, sep, key = rest.partition("/")
     if not bucket or not sep or not key:
         raise MatrixArkError(f"invalid s3 uri: {uri}")
+    return bucket, key
+
+
+def is_matrixobject_uri(value: str) -> bool:
+    return bool(value) and value.startswith("matrixobject://")
+
+
+def parse_matrixobject_uri(uri: str) -> tuple[str, str]:
+    """matrixobject://<bucket>/<key> -> (bucket, key). Key may contain slashes
+    (the object client stores content-addressed ``ab/cd/<sha256>`` keys)."""
+    if not is_matrixobject_uri(uri):
+        raise MatrixArkError(f"not a matrixobject uri: {uri}")
+    rest = uri[len("matrixobject://") :]
+    bucket, sep, key = rest.partition("/")
+    if not bucket or not sep or not key:
+        raise MatrixArkError(f"invalid matrixobject uri: {uri}")
     return bucket, key
 
 
@@ -208,6 +224,34 @@ def resolve_raw_resource_for_ingest(args: Json, envelope: Json, raw_uri: str, re
         "cloud_bucket": "",
         "cloud_key": "",
     }
+
+    # matrixobject:// input -> the raw bytes already live in our object store.
+    # Fetch them via MatrixObjectClient, drop them in a temp file, and let the
+    # parser chunk that file (parse_text=None). Parallel to the s3:// download
+    # branch below; non-breaking for inline/local/s3 inputs.
+    if is_matrixobject_uri(raw_uri):
+        obj_bucket, obj_key = parse_matrixobject_uri(raw_uri)
+        try:  # top-level path (matches the object-upload branch's import style)
+            from matrixark_object_store import MatrixObjectClient as _ObjClient
+        except ImportError:  # package path
+            from tools.matrixark_object_store import MatrixObjectClient as _ObjClient  # type: ignore
+        data, meta = _ObjClient(bucket=obj_bucket).get(obj_key, bucket=obj_bucket)
+        suffix = infer_resource_suffix(resource_type, obj_key)
+        temp_file = Path(tempfile.mkdtemp(prefix="matrixark-object-resource-")) / f"downloaded.{suffix}"
+        temp_file.write_bytes(data if isinstance(data, (bytes, bytearray)) else bytes(data))
+        result["temp_paths"].append(str(temp_file.parent))
+        result["parse_uri"] = str(temp_file)
+        result["parse_text"] = None
+        result["storage_mode"] = "matrixobject"
+        result["stored_raw_uri"] = raw_uri
+        result["raw_storage_policy"] = "object_store"
+        result["raw_bytes_stored"] = True
+        result["cloud_bucket"] = obj_bucket
+        result["cloud_key"] = obj_key
+        if isinstance(meta, dict) and meta.get("content_hash"):
+            result["content_hash"] = meta["content_hash"]
+        return result
+
     local_path = Path(raw_uri) if raw_uri != "inline-resource" and not is_s3_uri(raw_uri) else None
     if mode == "local":
         if local_path is not None and local_path.exists():
