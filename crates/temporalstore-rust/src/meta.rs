@@ -21,8 +21,12 @@ mod state_setters;
 mod registration;
 mod table_ops;
 mod topology_helpers;
+mod auto_rebalance;
 use self::partitioning::*;
 use self::topology_helpers::*;
+pub use self::auto_rebalance::{
+    compute_auto_rebalance, AutoRebalanceOptions, ShardReassignment, ShardReassignmentReason,
+};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

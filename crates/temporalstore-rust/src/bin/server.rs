@@ -33,7 +33,7 @@ use temporalstore_rust::raft::{
 };
 use temporalstore_rust::types::{
     BatchExecuteRequest, ExecuteRequest, ExecuteResponse, ReplicatedBatchExecuteRequest,
-    ReplicatedExecuteRequest, Status,
+    ReplicatedExecuteRequest, ShardId, Status,
 };
 use temporalstore_rust::{
     handle_authenticated_raft_http, production_raft_security_from_env, production_readiness_report,
@@ -44,6 +44,7 @@ use temporalstore_rust::{
     ProductionRaftRuntime, ProductionRaftRuntimeOptions, RaftConfig, RaftControlLeadershipRequest,
     RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions,
     RequestController, ScanStreamRequest, SchedulerLifecycleToken, SetConfigRequest,
+    SharedStoreReplicator, SharedStoreWalEntry, StorageBackend, WriteAheadLogRecord,
     BucketDumpManifest, StorageCacheInvalidateBucketRequest, StorageLifecycleRequest,
     StorageProductionReadinessRequest, StreamReadRequest, UnloadShardRequest,
 };
@@ -120,13 +121,23 @@ fn main() {
         index_dir,
         block_store_options,
     );
-    let startup_load = startup_load_shard_request(shard_id, node_id);
-    let load_response = engine.load_shard_with(startup_load);
-    if !load_response.status.ok {
-        eprintln!(
-            "startup shard load failed for shard {shard_id}: {}",
-            load_response.status.message
-        );
+    // Join-empty mode (TS_SERVER_JOIN_EMPTY): register as a server but load and
+    // self-register no shard, waiting for the metaserver to place shards here via
+    // `/load`. This is the clean path for metaserver-driven placement onto a fresh
+    // node (as opposed to a node self-declaring ownership of its TS_SHARD_ID). OFF
+    // by default, so normal single-shard startup is unchanged.
+    let join_empty = env_bool("TS_SERVER_JOIN_EMPTY", false);
+    if !join_empty {
+        let startup_load = startup_load_shard_request(shard_id, node_id);
+        let load_response = engine.load_shard_with(startup_load);
+        if !load_response.status.ok {
+            eprintln!(
+                "startup shard load failed for shard {shard_id}: {}",
+                load_response.status.message
+            );
+        }
+    } else {
+        println!("join-empty datanode: awaiting metaserver shard placement");
     }
     // Resolve the distributed storage/replication backend for this node:
     // matrixobject shared storage when detected, else a configured shared object
@@ -225,22 +236,25 @@ fn main() {
             }
         }
 
-        let registration = RegisterShardRequest {
-            shard_id,
-            server_addr: advertised_addr.clone(),
-        };
-        match post_json::<_, RegisterShardResponse>(&meta_addr, "/register_shard", &registration) {
-            Ok(response) if response.status.ok => {
-                println!("registered shard {shard_id} with metaserver {meta_addr}");
-            }
-            Ok(response) => {
-                eprintln!(
-                    "metaserver rejected registration: {}",
-                    response.status.message
-                );
-            }
-            Err(err) => {
-                eprintln!("failed to register shard {shard_id}: {err}");
+        if !join_empty {
+            let registration = RegisterShardRequest {
+                shard_id,
+                server_addr: advertised_addr.clone(),
+            };
+            match post_json::<_, RegisterShardResponse>(&meta_addr, "/register_shard", &registration)
+            {
+                Ok(response) if response.status.ok => {
+                    println!("registered shard {shard_id} with metaserver {meta_addr}");
+                }
+                Ok(response) => {
+                    eprintln!(
+                        "metaserver rejected registration: {}",
+                        response.status.message
+                    );
+                }
+                Err(err) => {
+                    eprintln!("failed to register shard {shard_id}: {err}");
+                }
             }
         }
 
@@ -268,12 +282,45 @@ fn main() {
             .expect("blob tokio runtime should start"),
     );
 
+    // Shared-storage shard-data mover (opt-in, TS_AUTO_REBALANCE_DATA_MOVE): when a
+    // shared-path backend is configured, a shard reassigned to this node restores
+    // its data from shared storage on `/load`, and `/shard/publish_checkpoint`
+    // publishes the shard's durable state so a future owner can restore it. OFF by
+    // default, so single-node/standalone durability behavior is unchanged.
+    let shard_replicator: Option<Arc<SharedStoreReplicator<FileObjectStore>>> =
+        if env_bool("TS_AUTO_REBALANCE_DATA_MOVE", false) {
+            match &storage_backend {
+                StorageBackend::SharedPath { root, cluster_id } => {
+                    let store = Arc::new(FileObjectStore::new(root.clone()));
+                    println!(
+                        "shard data movement enabled: shared-storage checkpoints at {} (cluster {cluster_id})",
+                        root.display()
+                    );
+                    Some(Arc::new(SharedStoreReplicator::new(
+                        cluster_id.clone(),
+                        store,
+                    )))
+                }
+                other => {
+                    eprintln!(
+                        "TS_AUTO_REBALANCE_DATA_MOVE set but backend {} is not a shared path — data movement disabled",
+                        other.describe()
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
     println!("temporalstore server listening on {addr}");
     // Streaming pre-handler: owns `/blob/<key>` and moves bytes straight between
     // the socket and the object store (no full-body buffering). Everything else
     // is Declined and falls through to the buffered handler below.
     let stream_blob_store = Arc::clone(&blob_store);
     let stream_blob_runtime = Arc::clone(&blob_runtime);
+    let handler_replicator = shard_replicator.clone();
+    let handler_block_runtime = Arc::clone(&blob_runtime);
     let stream_chunk_bytes = blob_chunk_bytes;
     serve_with_stream_handler(
         &addr,
@@ -487,8 +534,43 @@ fn main() {
                     .unwrap_or_default();
                 json_response(200, &runtime.shard_worker_info(shard_id))
             }
+            ("POST", "/shard/publish_checkpoint") => {
+                match parse_json::<PublishShardCheckpointRequest>(&request.body) {
+                    Ok(req) => json_response(
+                        200,
+                        &publish_shard_checkpoint(
+                            &handler_replicator,
+                            &handler_block_runtime,
+                            &engine,
+                            req.shard_id,
+                        ),
+                    ),
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
+            }
             ("POST", "/load") => match parse_json::<LoadShardRequest>(&request.body) {
-                Ok(req) => json_response(200, &runtime.load_shard_with(req)),
+                Ok(req) => {
+                    // A shard reassigned here replays its data from shared storage
+                    // (when a shared backend is configured) after the local load.
+                    // Only a foreign shard (no local WAL) replays, so a node's own
+                    // shard is never double-applied.
+                    let shard_id = req.shard_id;
+                    let had_local_wal = engine
+                        .write_ahead_log_store()
+                        .stats(shard_id)
+                        .last_sequence
+                        > 0;
+                    let load_response = runtime.load_shard_with(req);
+                    if load_response.status.ok && !had_local_wal {
+                        replay_shard_from_shared(
+                            &handler_replicator,
+                            &handler_block_runtime,
+                            &engine,
+                            shard_id,
+                        );
+                    }
+                    json_response(200, &load_response)
+                }
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             },
             ("POST", "/reload") => match parse_json::<LoadShardRequest>(&request.body) {
@@ -827,6 +909,123 @@ fn write_stream_json<T: Serialize>(transfer: &mut StreamTransfer, status: u16, v
 /// Stream a `POST|PUT /blob/<key>` body from the socket into the object store in
 /// `chunk_bytes` appends. Memory is bounded to one `chunk_bytes` buffer, never
 /// the whole upload. Returns `(bytes_written, object_length, chunks)`.
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct PublishShardCheckpointRequest {
+    shard_id: ShardId,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct PublishShardCheckpointResponse {
+    status: Status,
+    #[serde(default)]
+    checkpoint_id: Option<String>,
+    #[serde(default)]
+    page_slab_count: usize,
+    #[serde(default)]
+    checkpoint_wal_index: u64,
+}
+
+/// Replay a reassigned shard's data from the shared object store after a fresh
+/// local load. No-op when data movement is disabled. `had_local_wal` guards
+/// against double-apply: a node reloading its own shard replays its local WAL
+/// during load, so shared replay runs only for a foreign shard placed here by the
+/// metaserver (which has no local WAL). A missing shared WAL is not an error.
+fn replay_shard_from_shared(
+    replicator: &Option<Arc<SharedStoreReplicator<FileObjectStore>>>,
+    runtime: &Arc<tokio::runtime::Runtime>,
+    engine: &TemporalEngine,
+    shard_id: ShardId,
+) {
+    let Some(replicator) = replicator else {
+        return;
+    };
+    match runtime.block_on(replicator.replay_wal(shard_id, 0, engine)) {
+        Ok(report) => {
+            if report.applied > 0 {
+                println!(
+                    "replayed shard {shard_id} from shared storage: {} records (through wal_index {})",
+                    report.applied, report.last_wal_index
+                );
+            }
+        }
+        Err(err) => eprintln!("no shared-storage data replayed for shard {shard_id}: {err}"),
+    }
+}
+
+/// Publish this node's data for `shard_id` to the shared object store so a future
+/// owner can replay it. Reads the shard's write-ahead log (read-only — never
+/// disturbs the live shard) and mirrors each record as a shared-store WAL entry.
+/// Returns an error status when data movement is not enabled.
+fn publish_shard_checkpoint(
+    replicator: &Option<Arc<SharedStoreReplicator<FileObjectStore>>>,
+    runtime: &Arc<tokio::runtime::Runtime>,
+    engine: &TemporalEngine,
+    shard_id: ShardId,
+) -> PublishShardCheckpointResponse {
+    let Some(replicator) = replicator else {
+        return PublishShardCheckpointResponse {
+            status: Status::error(
+                "shared_store_disabled",
+                "shard data movement is not enabled on this node",
+            ),
+            checkpoint_id: None,
+            page_slab_count: 0,
+            checkpoint_wal_index: 0,
+        };
+    };
+    // Read the shard's WAL records (read-only) and mirror each to shared storage.
+    let records = match engine
+        .write_ahead_log_store()
+        .scan(shard_id, 0, u64::MAX, u64::MAX)
+    {
+        Ok(records) => records,
+        Err(err) => {
+            return PublishShardCheckpointResponse {
+                status: Status::error("wal_scan_failed", err.to_string()),
+                checkpoint_id: None,
+                page_slab_count: 0,
+                checkpoint_wal_index: 0,
+            };
+        }
+    };
+    let mut published = 0usize;
+    let mut last_wal_index = 0u64;
+    for (_offset, line) in records {
+        let record: WriteAheadLogRecord = match serde_json::from_slice(&line) {
+            Ok(record) => record,
+            Err(err) => {
+                return PublishShardCheckpointResponse {
+                    status: Status::error("wal_decode_failed", err.to_string()),
+                    checkpoint_id: None,
+                    page_slab_count: published,
+                    checkpoint_wal_index: last_wal_index,
+                };
+            }
+        };
+        let entry = SharedStoreWalEntry {
+            shard_id,
+            wal_index: record.sequence,
+            command: record.command,
+        };
+        if let Err(err) = runtime.block_on(replicator.publish_wal_entry(entry)) {
+            return PublishShardCheckpointResponse {
+                status: Status::error("publish_wal_failed", err.to_string()),
+                checkpoint_id: None,
+                page_slab_count: published,
+                checkpoint_wal_index: last_wal_index,
+            };
+        }
+        published += 1;
+        last_wal_index = record.sequence;
+    }
+    PublishShardCheckpointResponse {
+        status: Status::ok(),
+        checkpoint_id: None,
+        page_slab_count: published,
+        checkpoint_wal_index: last_wal_index,
+    }
+}
+
 fn stream_blob_upload(
     transfer: &mut StreamTransfer,
     blob_store: &Arc<FileObjectStore>,

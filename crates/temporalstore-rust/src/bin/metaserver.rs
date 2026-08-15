@@ -11,12 +11,13 @@ use temporalstore_rust::http::{
     HttpRequestOptions,
 };
 use temporalstore_rust::meta::{
-    AckResponse, AddNamespaceRequest, AddTableRequest, DeleteTableRequest,
+    AckResponse, AddNamespaceRequest, AddTableRequest, AutoRebalanceOptions, DeleteTableRequest,
     FreezeStaleServersRequest, GetShardResponse, GetTableTopologyRequest, LoadFinishRequest,
     MetaSnapshot, MetaSnapshotFileRequest, MetaSnapshotFileResponse, MetaSnapshotResponse,
     ProxyHeartbeatRequest, PublishShardSnapshotRequest, RegisterProxyRequest,
     RegisterServerRequest, RegisterShardRequest, SafeModePolicy, ServerHeartbeatRequest,
-    SingleNodeMeta, StateChangeRequest, TopologyVersionRequest, UpdateTableRequest,
+    ShardReassignmentReason, SingleNodeMeta, StateChangeRequest, TopologyVersionRequest,
+    UpdateTableRequest,
 };
 use temporalstore_rust::raft::{
     ProductionMetaRaftRuntime, ProductionMetaRaftRuntimeOptions, ProductionRaftEngineKind,
@@ -47,6 +48,34 @@ fn main() {
             meta.start_failure_detector_loop(stale_after_ms, detector_interval_ms),
         )),
         MetaBackend::Raft(runtime) => Some(MetaBackground::Raft(runtime.start_timer_loop())),
+    };
+    // Automatic shard rebalancing: on a membership change (a node freezes/leaves,
+    // or a fresh node joins) recompute placement and drive the target nodes to
+    // load their shards, then rewrite the owner map so clients stop resolving to a
+    // dead node. OFF by default (TS_META_AUTO_REBALANCE) so single-node/standalone
+    // behavior is unchanged. Only the single-node backend is auto-driven here; the
+    // raft backend rebalances through its own membership machinery.
+    let _auto_rebalancer = if env_bool("TS_META_AUTO_REBALANCE", false) {
+        match &backend {
+            MetaBackend::Single(meta) => {
+                let interval_ms = env_u64("TS_META_AUTO_REBALANCE_INTERVAL_MS", detector_interval_ms);
+                let balance_load = env_bool("TS_META_AUTO_REBALANCE_BALANCE", true);
+                println!(
+                    "auto-rebalance enabled (interval {interval_ms}ms, balance_load {balance_load})"
+                );
+                Some(start_auto_rebalance_loop(
+                    meta.clone(),
+                    interval_ms,
+                    balance_load,
+                ))
+            }
+            MetaBackend::Raft(_) => {
+                eprintln!("TS_META_AUTO_REBALANCE ignored: raft backend manages placement itself");
+                None
+            }
+        }
+    } else {
+        None
     };
     println!("temporalstore metaserver listening on {addr}");
     serve(&addr, move |request| handle(&backend, &scheduler, request)).expect("metaserver failed");
@@ -557,6 +586,105 @@ fn fetch_node_lifecycle(
             (None, None)
         }
     }
+}
+
+/// Background loop that drives automatic shard rebalancing for the single-node
+/// backend. Each tick it recomputes placement ([`SingleNodeMeta::plan_auto_rebalance`]),
+/// tells each target datanode to load its newly-assigned shard (the datanode
+/// restores the shard's data from shared storage on load when that backend is
+/// configured), unloads shards leaving a still-live source, and rewrites the
+/// owner map so `/shards/<id>` no longer resolves to a departed node.
+fn start_auto_rebalance_loop(
+    meta: SingleNodeMeta,
+    interval_ms: u64,
+    balance_load: bool,
+) -> std::thread::JoinHandle<()> {
+    let interval = std::time::Duration::from_millis(interval_ms.max(1));
+    let http_options = HttpRequestOptions {
+        connect_timeout_ms: env_u64("TS_META_AUTO_REBALANCE_CONNECT_TIMEOUT_MS", 500),
+        io_timeout_ms: env_u64("TS_META_AUTO_REBALANCE_IO_TIMEOUT_MS", 2_000),
+        max_retries: 1,
+    };
+    std::thread::spawn(move || loop {
+        run_auto_rebalance_round(&meta, balance_load, http_options);
+        std::thread::sleep(interval);
+    })
+}
+
+fn run_auto_rebalance_round(
+    meta: &SingleNodeMeta,
+    balance_load: bool,
+    http_options: HttpRequestOptions,
+) {
+    let options = AutoRebalanceOptions {
+        balance_load,
+        ..AutoRebalanceOptions::default()
+    };
+    let plans = meta.plan_auto_rebalance_with_options(options);
+    for plan in plans {
+        let load_version = now_epoch_ms();
+        let load_request = LoadShardRequest {
+            shard_id: plan.shard_id,
+            load_version,
+            local_node_id: None,
+            shard_uri: String::new(),
+            start_routing_bucket: 0,
+            end_routing_bucket: u32::MAX,
+            readonly: false,
+            table_name: String::new(),
+        };
+        // Ask the target to load (and, on a shared-storage node, restore) the
+        // shard. `already_exists` means the target already serves it — also a
+        // success for placement purposes.
+        let load_status = post_load_or_error(
+            &plan.to_server,
+            "/load",
+            &load_request,
+            http_options,
+            false,
+        );
+        if !load_status.ok && load_status.code != "already_exists" {
+            eprintln!(
+                "auto-rebalance: target {} failed to load shard {}: {} — retrying next round",
+                plan.to_server, plan.shard_id, load_status.message
+            );
+            continue;
+        }
+        // A balance move vacates a still-live source: unload there (best-effort).
+        if plan.reason == ShardReassignmentReason::Rebalance {
+            if let Some(from_server) = &plan.from_server {
+                let unload_status = post_unload_or_error(
+                    from_server,
+                    "/unload",
+                    &UnloadShardRequest {
+                        shard_id: plan.shard_id,
+                    },
+                    http_options,
+                    false,
+                );
+                if !unload_status.ok {
+                    eprintln!(
+                        "auto-rebalance: source {from_server} failed to unload shard {}: {}",
+                        plan.shard_id, unload_status.message
+                    );
+                }
+            }
+        }
+        let ack = meta.reassign_shard(plan.shard_id, &plan.to_server);
+        if ack.status.ok {
+            println!(
+                "auto-rebalance: shard {} -> {} ({:?})",
+                plan.shard_id, plan.to_server, plan.reason
+            );
+        }
+    }
+}
+
+fn now_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
 }
 
 fn default_connect_timeout_ms() -> u64 {
