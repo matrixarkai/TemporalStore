@@ -198,7 +198,7 @@ resource "aws_iam_role_policy" "artifact_read" {
       Action = [
         "s3:GetObject"
       ]
-      Resource = "arn:aws:s3:::temporalstore-test-artifacts-${data.aws_caller_identity.current.account_id}-${var.aws_region}/temporalstore-runtime-release-mtcache-ssd.tar.gz"
+      Resource = "arn:aws:s3:::temporalstore-test-artifacts-${data.aws_caller_identity.current.account_id}-${var.aws_region}/temporalstore-runtime-release-matrixcache-ssd.tar.gz"
     }]
   })
 }

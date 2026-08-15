@@ -22,7 +22,7 @@ class OssModelContractValidationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             matrixark = write_report(tmp_path / "matrixark.json")
-            baseline = write_report(tmp_path / "openviking.json")
+            baseline = write_report(tmp_path / "baseline.json")
 
             result = run_validator(matrixark, baseline)
 
@@ -32,7 +32,7 @@ class OssModelContractValidationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             matrixark = write_report(tmp_path / "matrixark.json")
-            baseline = write_report(tmp_path / "openviking.json", reader_model="llama3.1:8b")
+            baseline = write_report(tmp_path / "baseline.json", reader_model="llama3.1:8b")
 
             result = run_validator(matrixark, baseline)
 
@@ -43,7 +43,7 @@ class OssModelContractValidationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             matrixark = write_report(tmp_path / "matrixark.json", encoding_model="nomic-embed-text")
-            baseline = write_report(tmp_path / "openviking.json")
+            baseline = write_report(tmp_path / "baseline.json")
 
             result = run_validator(matrixark, baseline)
 
@@ -58,7 +58,7 @@ class OssModelContractValidationTest(unittest.TestCase):
                 embedding_model="matrixark-hash-embedding-32",
             )
             baseline = write_report(
-                tmp_path / "openviking.json",
+                tmp_path / "baseline.json",
                 embedding_model="matrixark-hash-embedding-32",
             )
 
@@ -72,7 +72,7 @@ class OssModelContractValidationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             matrixark = write_report(tmp_path / "matrixark.json", reader_model="deterministic-reader")
-            baseline = write_report(tmp_path / "openviking.json", reader_model="deterministic-reader")
+            baseline = write_report(tmp_path / "baseline.json", reader_model="deterministic-reader")
 
             result = run_validator(matrixark, baseline)
 
@@ -83,7 +83,7 @@ class OssModelContractValidationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             matrixark = write_report(tmp_path / "matrixark.json", reader_model="gpt-4o-mini")
-            baseline = write_report(tmp_path / "openviking.json", reader_model="gpt-4o-mini")
+            baseline = write_report(tmp_path / "baseline.json", reader_model="gpt-4o-mini")
 
             result = run_validator(matrixark, baseline)
 
@@ -94,7 +94,7 @@ class OssModelContractValidationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             matrixark = write_report(tmp_path / "matrixark.json")
-            baseline = write_report(tmp_path / "openviking.json", reader_max_tokens=192)
+            baseline = write_report(tmp_path / "baseline.json", reader_max_tokens=192)
 
             result = run_validator(matrixark, baseline)
 
@@ -105,7 +105,7 @@ class OssModelContractValidationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             matrixark = write_report(tmp_path / "matrixark.json", reader_fallback_allowed=False)
-            baseline = write_report(tmp_path / "openviking.json", reader_fallback_allowed=True)
+            baseline = write_report(tmp_path / "baseline.json", reader_fallback_allowed=True)
 
             result = run_validator(matrixark, baseline)
 
@@ -116,7 +116,7 @@ class OssModelContractValidationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             matrixark = write_report(tmp_path / "matrixark.json")
-            baseline = write_report(tmp_path / "openviking.json", forced=False)
+            baseline = write_report(tmp_path / "baseline.json", forced=False)
 
             result = run_validator(matrixark, baseline)
 
@@ -127,7 +127,7 @@ class OssModelContractValidationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             matrixark = write_report(tmp_path / "matrixark.json", question_offset=50, question_limit=50)
-            baseline = write_report(tmp_path / "openviking.json", question_offset=0, question_limit=50)
+            baseline = write_report(tmp_path / "baseline.json", question_offset=0, question_limit=50)
 
             result = run_validator(matrixark, baseline)
 
@@ -147,7 +147,7 @@ def run_validator(matrixark: Path, baseline: Path) -> subprocess.CompletedProces
             "--report",
             str(baseline),
             "--label",
-            "openviking_locomo",
+            "baseline_locomo",
             "--allow-diagnostic",
         ],
         cwd=REPO,

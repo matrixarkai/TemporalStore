@@ -23,7 +23,7 @@
 # Flow: build batch bin (offline) -> emit per-agent JSONL once -> ingest in
 # bounded chunks (MATRIXARK_BULK_INGEST keeps disk O(1)/record) advancing an
 # offset per chunk -> mark done. High-value durable memory (resources/skills/
-# memory/openviking) is emitted under the `_global` scope by the ingester, so it
+# memory/external) is emitted under the `_global` scope by the ingester, so it
 # becomes cross-session-retrievable as soon as the first chunks land.
 set -uo pipefail
 
@@ -53,7 +53,7 @@ INGESTER="$REPO_ROOT/tools/matrixark_local_backfill_ingester.py"
 WORK="${MATRIXARK_BACKFILL_WORK:-/root/.matrixark/temporalstore-backfill}"
 CHUNK="${MATRIXARK_BACKFILL_CHUNK:-4000}"
 AGENTS="${MATRIXARK_BACKFILL_AGENTS:-claude codex}"
-SOURCES="${MATRIXARK_BACKFILL_SOURCES:-transcripts,rollouts,dual_hooks,openviking,resources}"
+SOURCES="${MATRIXARK_BACKFILL_SOURCES:-transcripts,rollouts,dual_hooks,external_memory,resources}"
 LOCK="$WORK/.lock"
 DONE="$WORK/.done"
 LOG="$WORK/daemon.log"

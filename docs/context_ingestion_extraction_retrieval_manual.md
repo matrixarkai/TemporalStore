@@ -370,7 +370,7 @@ For the baseline memory system benchmark parity, use the GPT-4o-mini reader prof
 ```json
 {
   "provider": {
-    "provider_name": "vikingmem-gpt-4o-mini-reader",
+    "provider_name": "baseline-gpt-4o-mini-reader",
     "provider_kind": "open_ai_compatible",
     "base_url": "https://api.openai.com/v1",
     "api_key_env": "OPENAI_API_KEY",

@@ -353,7 +353,7 @@ def validate_context_workflow(job, summary):
         require(parity[field], f"{job}: context parity report field {field} is false")
     require(
         any("Hierarchical L0/L1/L2" in item for item in summary["parity_evidence"]),
-        f"{job}: context parity evidence missing OpenViking tier coverage",
+        f"{job}: context parity evidence missing hierarchical tier coverage",
     )
     require(
         any("model ids 9-13" in item for item in summary["parity_evidence"]),

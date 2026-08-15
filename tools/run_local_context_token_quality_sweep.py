@@ -315,8 +315,8 @@ TOPIC_TERMS = {
     "userpromptsubmit": "codex_hook", "codex": "codex_agent", "claude": "claude_agent",
     # OSS-reader / memory benchmarking consolidated into one strong entity so it ranks for q_bench
     "qwen": "oss_reader_benchmark", "ollama": "oss_reader_benchmark", "vllm": "oss_reader_benchmark",
-    "locomo": "oss_reader_benchmark", "longmemeval": "oss_reader_benchmark", "vikingmem": "oss_reader_benchmark",
-    "benchmark": "oss_reader_benchmark", "openviking": "oss_reader_benchmark",
+    "locomo": "oss_reader_benchmark", "longmemeval": "oss_reader_benchmark",
+    "benchmark": "oss_reader_benchmark",
     "windows": "windows_docker_install", "docker": "windows_docker_install", "wsl": "windows_docker_install",
     "matrixobject": "matrixobject_shared_storage", "s3": "matrixobject_shared_storage",
     "backfill": "context_backfill", "compact": "context_compaction", "context": "context_management",

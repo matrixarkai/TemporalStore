@@ -100,7 +100,7 @@ profiles through `GET /context/workflow/state`:
 - `baseline-internvl-vllm`: `OpenGVLab/InternVL2_5-8B` VLM,
   `Qwen/Qwen2.5-7B-Instruct` chat model, `BAAI/bge-m3` embedding model, OpenAI-compatible
   gateway at `127.0.0.1:8000/v1`
-- `vikingmem-gpt-4o-mini-reader`: `gpt-4o-mini` reader/chat model for the baseline memory system benchmark parity,
+- `baseline-gpt-4o-mini-reader`: `gpt-4o-mini` reader/chat model for the baseline memory system benchmark parity,
   `sentence-transformers/all-MiniLM-L6-v2` embedding model, OpenAI-compatible gateway at
   `https://api.openai.com/v1`
 - `matrixark-native-oss-context`: `google/flan-t5-small` extraction model and
@@ -320,8 +320,8 @@ after the dinner update?" and "What risk score was recorded after the latest fra
 numeric memory updates. Alias cases such as "What is Emma's roommate's name after the move?" and
 "What is the dog's name in the latest pet update?" cover entity-disambiguation updates.
 
-The shared conformance corpus also has a dedicated `context_openviking_reasoning_vlm_parity` case.
-Rust executes `context_openviking_reasoning_vlm_cases_cover_required_gaps`, which requires explicit
+The shared conformance corpus also has a dedicated reasoning/VLM parity case.
+Rust executes a conformance check that requires explicit
 coverage for multi-hop reasoning, temporal reasoning, memory updates, stale-memory replacement,
 open-domain retrieval, and VLM image/content understanding. The VLM case is currently a
 configuration and retrieval-shape proof, not a passed VLM benchmark; it remains marked

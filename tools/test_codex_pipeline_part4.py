@@ -3879,7 +3879,7 @@ class _CodexPipelinePart4:
                         {
                             "role": "user",
                             "content": (
-                                "Focus on OpenViking feature parity for session memory; "
+                                "Focus on feature parity for session memory; "
                                 "no testing, monitoring, debugging, or evidence at this point."
                             ),
                         }
@@ -3911,7 +3911,7 @@ class _CodexPipelinePart4:
                 {
                     "scope": scope,
                     "session_scope": "prefer",
-                    "query": "What OpenViking feature parity memory instruction is pending?",
+                    "query": "What feature parity memory instruction is pending?",
                     "max_context_tokens": 220,
                     "audit_mode": "off",
                     "debug_context_pack": True,
@@ -3928,7 +3928,7 @@ class _CodexPipelinePart4:
                 ref
                 for ref in pack["selected_refs"]
                 if ref.get("ref_type") == "event"
-                and "OpenViking feature parity" in str(ref.get("text") or "")
+                and "feature parity" in str(ref.get("text") or "")
             ]
             self.assertTrue(pending_refs, pack["selected_refs"])
             self.assertEqual("memory_feature", pending_refs[0]["event_type"])

@@ -125,7 +125,7 @@ def diagram_overall():
     for x, name in zip(xs, names):
         box(d, (x, 520, x + 330, 620), name, "#eef6ff", "#2563eb", FONT_B)
         box(d, (x, 700, x + 330, 790), "Memory\nObject State + Index", "#fefce8", "#ca8a04")
-        box(d, (x, 825, x + 330, 915), "BlockCache / MtCache\nDRAM + SSD", "#f5f3ff", "#7c3aed")
+        box(d, (x, 825, x + 330, 915), "BlockCache / MatrixCache\nDRAM + SSD", "#f5f3ff", "#7c3aed")
         arrow(d, (850, 430), (x + 165, 520))
         arrow(d, (x + 165, 620), (x + 165, 700))
         arrow(d, (x + 165, 790), (x + 165, 825))

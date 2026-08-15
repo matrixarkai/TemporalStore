@@ -20,7 +20,7 @@ Json = dict[str, Any]
 
 
 QUERY_TYPE_LABELS: dict[str, str] = {
-    "profile_memory": "question asks user profile long term memory profile entities profile summaries cross session memories across sessions openviking vikingmem feature parity features only no testing monitoring debugging evidence",
+    "profile_memory": "question asks user profile long term memory profile entities profile summaries cross session memories across sessions feature parity features only no testing monitoring debugging evidence",
     "benchmark_quality": "question asks benchmark quality hit rate latency p50 p99 throughput locomo longmemeval memory evaluation",
     "date": "question asks when date before after yesterday tomorrow week month year",
     "current_state": "question asks current latest now still status preference location role valid state active goal task request requirement",
@@ -33,7 +33,7 @@ QUERY_TYPE_LABELS: dict[str, str] = {
 }
 
 PROFILE_MEMORY_QUERY_RE = re.compile(
-    r"\b(user profile|profile memory|long[- ]term memor(?:y|ies)|cross[- ]session memor(?:y|ies)|profile entit(?:y|ies)|profile summar(?:y|ies)|identity profile|communication profile|workspace profile|openviking|vikingmem|mem0|memory feature parity|feature parity|feature[- ]focused memor(?:y|ies)|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionality only|memory functionalit(?:y|ies)|memory algorithms?|memory algos?|no testing|no teseting|no monitoring|no debugging|no evidence|no evident|session memory|remember about me|remember about|what should (?:i|you|we) remember|standing instructions?|standing preferences?|persistent instructions?|saved preferences?|know about (?:me|my|the user)|what (?:have|did) i (?:tell|told) you|what (?:are|were|do|did) my preferences|what do i prefer|do i prefer|my preferences|my .*?(?:policy|policies|instruction|instructions|preference|preferences)|told you before|from previous sessions?|across sessions?|across conversations?|between conversations?|how should (?:you|codex) (?:address|reply|respond|answer)|what (?:is|are) my (?:name|nickname|pronouns?|preferred language|preferred format|communication style|response style|workspace rules?|repo rules?|repository rules?|branch rules?|build rules?|deployment rules?)|what (?:workspace|repo|repository|branch|build|deployment|github|remote) rules? (?:do|should) (?:you|codex) remember|what (?:workflow|workflows|rules?|instructions?|preferences?) (?:do|should) (?:you|codex) follow)\b"
+    r"\b(user profile|profile memory|long[- ]term memor(?:y|ies)|cross[- ]session memor(?:y|ies)|profile entit(?:y|ies)|profile summar(?:y|ies)|identity profile|communication profile|workspace profile|mem0|memory feature parity|feature parity|feature[- ]focused memor(?:y|ies)|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionality only|memory functionalit(?:y|ies)|memory algorithms?|memory algos?|no testing|no teseting|no monitoring|no debugging|no evidence|no evident|session memory|remember about me|remember about|what should (?:i|you|we) remember|standing instructions?|standing preferences?|persistent instructions?|saved preferences?|know about (?:me|my|the user)|what (?:have|did) i (?:tell|told) you|what (?:are|were|do|did) my preferences|what do i prefer|do i prefer|my preferences|my .*?(?:policy|policies|instruction|instructions|preference|preferences)|told you before|from previous sessions?|across sessions?|across conversations?|between conversations?|how should (?:you|codex) (?:address|reply|respond|answer)|what (?:is|are) my (?:name|nickname|pronouns?|preferred language|preferred format|communication style|response style|workspace rules?|repo rules?|repository rules?|branch rules?|build rules?|deployment rules?)|what (?:workspace|repo|repository|branch|build|deployment|github|remote) rules? (?:do|should) (?:you|codex) remember|what (?:workflow|workflows|rules?|instructions?|preferences?) (?:do|should) (?:you|codex) follow)\b"
 )
 
 PROFILE_MEMORY_STANDING_RULE_QUERY_RE = re.compile(
@@ -77,7 +77,7 @@ QUERY_INDEX_LABELS: dict[str, str] = {
     "entity_type:assistant_decision": "assistant decision final answer done implemented chose decided next action",
     "event_type:assistant_response": "assistant response final answer outcome done implemented fixed decision",
     "event_type:user_prompt": "user prompt request asks asked requirement instruction",
-    "entity_type:memory_feature_profile": "memory feature parity openviking vikingmem mem0 extraction retrieval profile session threshold idle batch live ingestion profile promotion retrieval budget secondary index context event context entity context summary feature focused features only no testing monitoring debugging evidence",
+    "entity_type:memory_feature_profile": "memory feature parity mem0 extraction retrieval profile session threshold idle batch live ingestion profile promotion retrieval budget secondary index context event context entity context summary feature focused features only no testing monitoring debugging evidence",
     "entity_type:tool_evidence": "tool evidence tests passed failed exit code commit push rebase validation benchmark blocker",
     "event_type:tool_evidence": "tool event evidence tests passed failed exit code commit push rebase validation benchmark blocker",
     "memory_scope:user_profile": "user profile long term memory profile entity profile summary durable cross session user state",
@@ -86,8 +86,8 @@ QUERY_INDEX_LABELS: dict[str, str] = {
     "session_continuity:same_session": "same session current conversation active turn local context",
     "profile_entity_current:true": "current profile entity latest durable user state standing preference instruction",
     "profile_summary_current:true": "current profile summary latest durable long term memory profile overview",
-    "profile_memory_class:memory_feature": "memory feature profile openviking vikingmem feature parity extraction retrieval budget live ingestion profile promotion secondary index context event context entity context summary",
-    "profile_memory_kind:memory_feature": "memory feature durable preference openviking vikingmem feature focused features only no testing no monitoring no debugging no evidence no evident live ingestion profile promotion retrieval budget",
+    "profile_memory_class:memory_feature": "memory feature profile feature parity extraction retrieval budget live ingestion profile promotion secondary index context event context entity context summary",
+    "profile_memory_kind:memory_feature": "memory feature durable preference feature focused features only no testing no monitoring no debugging no evidence no evident live ingestion profile promotion retrieval budget",
     "memory_selection_policy:selected_profile_current_state": "selected profile current state standing instruction durable preference",
     "memory_selection_policy:selected_user_prompt": "selected user prompt explicit request instruction preference",
     "memory_selection_policy:selected_user_profile_fact": "selected user profile fact standing preference durable instruction",
@@ -241,7 +241,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         add_group(context_index_name("entity_type", "preference"), context_index_name("event_type", "preference_update"))
         add_group(context_index_name("profile_memory_kind", "durable_profile"))
         add_group(context_index_name("memory_selection_policy", "selected_user_profile_fact"))
-    if re.search(r"\b(openviking|vikingmem|mem0|feature parity|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionality|functionalities|functionality only|algorithms?|algos?|implementation focus|no testing|no teseting|no tests?|skip tests?|without tests?|no monitoring|no debugging|no debug|no evidence|no evident|no eviden[ct]e|feature work only|code changes only|session memory|profile memory|cross[- ]session memory|live ingestion|memory ingestion|threshold|idle batch|batch extraction|profile promotion|retrieval budgets?|memory retrieval|secondary indexes?|context events?|context entit(?:y|ies)|context summaries?|contextpacks?)\b", lower) or ACTIVE_MEMORY_GOAL_QUERY_RE.search(lower):
+    if re.search(r"\b(mem0|feature parity|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionality|functionalities|functionality only|algorithms?|algos?|implementation focus|no testing|no teseting|no tests?|skip tests?|without tests?|no monitoring|no debugging|no debug|no evidence|no evident|no eviden[ct]e|feature work only|code changes only|session memory|profile memory|cross[- ]session memory|live ingestion|memory ingestion|threshold|idle batch|batch extraction|profile promotion|retrieval budgets?|memory retrieval|secondary indexes?|context events?|context entit(?:y|ies)|context summaries?|contextpacks?)\b", lower) or ACTIVE_MEMORY_GOAL_QUERY_RE.search(lower):
         add_group(context_index_name("entity_type", "memory_feature_profile"))
         add_group(context_index_name("profile_memory_class", "memory_feature"))
         add_group(context_index_name("profile_memory_kind", "memory_feature"))

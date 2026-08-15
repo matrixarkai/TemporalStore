@@ -246,7 +246,7 @@ ONE_PASS_MEMORY_SCHEMA: Json = {
 def one_pass_memory_extraction(envelope: Json, *, prior_context: Json) -> Json:
     """Extract events, entities, summaries, and indexes from one batch pass.
 
-    This mirrors the VikingMem one-pass idea: compile the desired memory outputs
+    This mirrors a single-pass extraction idea: compile the desired memory outputs
     into one schema and process the input session once. The local MVP uses
     deterministic rules, while a production provider can replace this function
     with one GPT-4o-mini/OSS call that emits the same JSON shape.

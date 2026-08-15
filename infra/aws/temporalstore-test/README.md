@@ -15,7 +15,7 @@ Small EC2-first deployment for validating TemporalStore on AWS.
 
 Data nodes:
 
-- `/mnt/temporalstore-cache/matrixcache-ssd`: MtCache SSD tier on extra EBS gp3
+- `/mnt/temporalstore-cache/matrixcache-ssd`: MatrixCache SSD tier on extra EBS gp3
 - `/mnt/temporalstore-shared`: EFS shared storage
 
 All nodes:
