@@ -786,6 +786,34 @@ class _BackendPolicyPart2:
         with self.assertRaises(mcp.MatrixArkError):
             mcp.validate_mcp_backend_policy(self._args("local"))
 
+    def test_default_backend_prefers_temporalstore_rust_when_cli_configured(self) -> None:
+        saved_profile = mcp.MATRIXARK_MCP_PROFILE
+        saved_env = {
+            key: os.environ.get(key)
+            for key in ("MATRIXARK_MCP_BACKEND", "MATRIXARK_TEMPORALSTORE_RUST_CLI")
+        }
+        try:
+            mcp.MATRIXARK_MCP_PROFILE = "dev"
+            os.environ.pop("MATRIXARK_MCP_BACKEND", None)
+            # No rust binary configured -> pure dev keeps the JSONL local backend.
+            os.environ.pop("MATRIXARK_TEMPORALSTORE_RUST_CLI", None)
+            self.assertEqual(mcp.default_mcp_backend(), "local")
+            # A configured rust proxy/CLI binary makes a deployed gateway prefer the
+            # durable TemporalStore backend instead of silently falling back to the
+            # O(store) JSONL local adapter for durable record storage.
+            os.environ["MATRIXARK_TEMPORALSTORE_RUST_CLI"] = "/opt/temporalstore/matrixark_rust_proxy"
+            self.assertEqual(mcp.default_mcp_backend(), "temporalstore-rust")
+            # An explicit backend selection always wins (dev escape hatch to JSONL).
+            os.environ["MATRIXARK_MCP_BACKEND"] = "local"
+            self.assertEqual(mcp.default_mcp_backend(), "local")
+        finally:
+            mcp.MATRIXARK_MCP_PROFILE = saved_profile
+            for key, value in saved_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
     def test_local_jsonl_guardrails_strip_bulky_fields_by_default(self) -> None:
         mcp_local.LOCAL_JSONL_INCLUDE_BULKY_FIELDS = False
         with tempfile.TemporaryDirectory() as tmpdir:
