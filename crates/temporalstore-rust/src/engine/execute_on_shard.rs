@@ -1968,6 +1968,107 @@ pub(crate) fn execute_on_shard(
                 markers,
             }
         }
+        Command::ContextMarkEmbeddingDirty {
+            tenant_hash,
+            marker,
+            clear,
+        } => {
+            // In-memory, coalesced embedding-dirty tracking, independent of the
+            // summary-dirty index. `clear` removes the entry (the drainer clears a
+            // node once it has been successfully embedded); otherwise repeated marks
+            // for the same node coalesce into a single entry so dirty records stay
+            // bounded by distinct dirty nodes, not by events. The map is ephemeral
+            // (never written to the page store) and re-derived after restart.
+            let object_key = context_embedding_dirty_key(tenant_hash, marker.node_hash);
+            if clear {
+                shard.context_embedding_dirty_index.remove(&object_key);
+            } else {
+                let entry = shard
+                    .context_embedding_dirty_index
+                    .entry(object_key.clone())
+                    .or_default();
+                if entry.mark_count == 0 {
+                    entry.tenant_hash = tenant_hash;
+                    entry.node_hash = marker.node_hash;
+                    entry.first_event_time_ms = marker.event_time_ms;
+                    entry.last_event_time_ms = marker.event_time_ms;
+                } else {
+                    entry.first_event_time_ms =
+                        entry.first_event_time_ms.min(marker.event_time_ms);
+                    entry.last_event_time_ms =
+                        entry.last_event_time_ms.max(marker.event_time_ms);
+                }
+                entry.reason = marker.reason;
+                entry.propagate_depth = entry.propagate_depth.max(marker.propagate_depth);
+                entry.mark_count = entry.mark_count.saturating_add(1);
+            }
+            CommandResponse::ContextObjectKey { object_key }
+        }
+        Command::ContextQueryEmbeddingDirty {
+            tenant_hash,
+            node_hash,
+            start_time_ms,
+            end_time_ms,
+            limit,
+        } => {
+            // node_hash == 0 -> the drainer's O(pending) scan over the whole
+            // embedding-dirty index (all tenants on the shard). node_hash != 0 ->
+            // the single coalesced entry for that node. Either way this touches only
+            // the pending set, never the corpus.
+            let cap = context_limit(limit);
+            let mut markers = Vec::new();
+            let mut tenant_hashes = Vec::new();
+            let object_key = if node_hash == 0 {
+                // Deterministic order (by object key) so a bounded drain pass is
+                // stable across calls.
+                let mut entries: Vec<_> = shard
+                    .context_embedding_dirty_index
+                    .iter()
+                    .filter(|(_, entry)| {
+                        entry.mark_count > 0
+                            && entry.last_event_time_ms >= start_time_ms
+                            && entry.first_event_time_ms <= end_time_ms
+                            && (tenant_hash == 0 || entry.tenant_hash == tenant_hash)
+                    })
+                    .collect();
+                entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+                for (_, entry) in entries.into_iter().take(cap) {
+                    markers.push(ContextSummaryDirtyMarker {
+                        node_hash: entry.node_hash,
+                        event_time_ms: entry.last_event_time_ms,
+                        reason: entry.reason,
+                        propagate_depth: entry.propagate_depth,
+                    });
+                    tenant_hashes.push(entry.tenant_hash);
+                }
+                context_embedding_dirty_key(tenant_hash, 0)
+            } else {
+                let object_key = context_embedding_dirty_key(tenant_hash, node_hash);
+                if let Some(entry) = shard
+                    .context_embedding_dirty_index
+                    .get(&object_key)
+                    .filter(|entry| {
+                        entry.mark_count > 0
+                            && entry.last_event_time_ms >= start_time_ms
+                            && entry.first_event_time_ms <= end_time_ms
+                    })
+                {
+                    markers.push(ContextSummaryDirtyMarker {
+                        node_hash: entry.node_hash,
+                        event_time_ms: entry.last_event_time_ms,
+                        reason: entry.reason,
+                        propagate_depth: entry.propagate_depth,
+                    });
+                    tenant_hashes.push(entry.tenant_hash);
+                }
+                object_key
+            };
+            CommandResponse::ContextEmbeddingDirtyMarkers {
+                object_key,
+                markers,
+                tenant_hashes,
+            }
+        }
         Command::ContextUpsertEntity {
             tenant_hash,
             entity,

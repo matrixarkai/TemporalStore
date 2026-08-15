@@ -153,6 +153,11 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
             tenant_hash,
             marker,
         } => vec![context_dirty_key(*tenant_hash, marker.node_hash)],
+        Command::ContextMarkEmbeddingDirty {
+            tenant_hash,
+            marker,
+            ..
+        } => vec![context_embedding_dirty_key(*tenant_hash, marker.node_hash)],
         Command::ContextUpsertEntity {
             tenant_hash,
             entity,
@@ -212,6 +217,7 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::ContextQueryIndexIntersection { .. }
         | Command::ContextQueryPackAudit { .. }
         | Command::ContextQuerySummaryDirty { .. }
+        | Command::ContextQueryEmbeddingDirty { .. }
         | Command::ContextGetEntity { .. }
         | Command::ContextQueryEntities { .. }
         | Command::ContextQueryChildren { .. }
@@ -278,6 +284,7 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::ContextWriteIndexRef { .. }
             | Command::ContextWritePackAudit { .. }
             | Command::ContextMarkSummaryDirty { .. }
+            | Command::ContextMarkEmbeddingDirty { .. }
             | Command::ContextUpsertEntity { .. }
             | Command::ContextUpsertChildRef { .. }
             | Command::ContextUpsertEmbedding { .. }
@@ -585,6 +592,26 @@ pub(super) fn validate_command_preconditions(
         } => {
             validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
             validate_context_required(*node_hash != 0, "node_hash is required")?;
+            validate_context_limit(*limit)?;
+            validate_context_range(*start_time_ms, *end_time_ms)?;
+        }
+        Command::ContextMarkEmbeddingDirty {
+            tenant_hash,
+            marker,
+            ..
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_dirty_marker(marker)?;
+        }
+        Command::ContextQueryEmbeddingDirty {
+            start_time_ms,
+            end_time_ms,
+            limit,
+            ..
+        } => {
+            // Both node_hash == 0 (all pending nodes) and tenant_hash == 0 (all
+            // tenants on the shard) are permitted: together they are the drainer's
+            // O(pending) all-pending scan.
             validate_context_limit(*limit)?;
             validate_context_range(*start_time_ms, *end_time_ms)?;
         }

@@ -36,6 +36,7 @@ pub(super) fn proxy_command_is_write(command: &Command) -> bool {
             | Command::ContextWriteIndexRef { .. }
             | Command::ContextWritePackAudit { .. }
             | Command::ContextMarkSummaryDirty { .. }
+            | Command::ContextMarkEmbeddingDirty { .. }
             | Command::ContextUpsertEntity { .. }
             | Command::ContextUpsertChildRef { .. }
             | Command::ContextUpsertEmbedding { .. }
@@ -104,6 +105,8 @@ fn proxy_command_key(command: &Command) -> Option<&str> {
         | Command::ContextQueryPackAudit { .. }
         | Command::ContextMarkSummaryDirty { .. }
         | Command::ContextQuerySummaryDirty { .. }
+        | Command::ContextMarkEmbeddingDirty { .. }
+        | Command::ContextQueryEmbeddingDirty { .. }
         | Command::ContextUpsertEntity { .. }
         | Command::ContextGetEntity { .. }
         | Command::ContextQueryEntities { .. }
@@ -196,6 +199,16 @@ pub(super) fn proxy_command_routing_key(command: &Command) -> Option<String> {
                 node_hash,
                 ..
             } => Some(format!("ctx:dirty:{tenant_hash}:{node_hash}")),
+            Command::ContextMarkEmbeddingDirty {
+                tenant_hash,
+                marker,
+                ..
+            } => Some(format!("ctx:embdirty:{tenant_hash}:{}", marker.node_hash)),
+            Command::ContextQueryEmbeddingDirty {
+                tenant_hash,
+                node_hash,
+                ..
+            } => Some(format!("ctx:embdirty:{tenant_hash}:{node_hash}")),
             Command::ContextUpsertEntity {
                 tenant_hash,
                 entity,
