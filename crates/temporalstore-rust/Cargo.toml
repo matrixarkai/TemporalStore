@@ -1,0 +1,82 @@
+[package]
+name = "temporalstore-rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rust-native TemporalStore engine, storage, client/proxy, and production Raft readiness surfaces."
+readme = "README.md"
+repository = "https://github.com/bjmeetsfo/TemporalStore"
+homepage = "https://github.com/bjmeetsfo/TemporalStore"
+keywords = ["temporalstore", "database", "storage", "raft", "memory"]
+categories = ["database-implementations", "data-structures"]
+
+[dependencies]
+async-trait = "0.1"
+bytes = "1"
+hex = "0.4"
+prost = "0.13"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+sha2 = "0.10"
+matrixraft = { package = "matrixraft", git = "https://github.com/matrixarkai/MatrixRaft.git", rev = "a4334b37ba6592e7c7192f3eaa2afe087746ccc9" }
+matrixcache = { git = "https://github.com/matrixarkai/MatrixCache.git", rev = "8bddbcd391592120680ce1019b004cd9b5c40935", features = ["rocksdb-ssd"] }
+temporalstore-snapshot = { path = "../temporalstore-snapshot" }
+thiserror = "1"
+tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "sync"] }
+tonic = { version = "0.12", default-features = false, features = ["codegen", "prost", "transport"] }
+uuid = { version = "=1.8.0", features = ["v4", "serde"] }
+zstd = "0.13"
+
+[build-dependencies]
+protoc-bin-vendored = "3"
+tonic-build = "0.12"
+
+[features]
+default = ["temporal-raft-engine"]
+temporal-raft-engine = []
+open-source-surface = []
+# The matrixobject backend links the enterprise-only MatrixObjectStore crate,
+# which has no public source. It is intentionally left as an inert feature
+# stub in the open-source tree (off by default; the code is fully gated by
+# `#[cfg(feature = "matrixobject")]`). Enterprise builds re-add the private
+# `matrixobjectstore-rs` dependency and this feature's `dep:` entry.
+matrixobject = []
+
+# This example links the optional MatrixObjectStore crate; gate it behind the
+# `matrixobject` feature so the default `cargo build --all-targets` does not try
+# to compile it without the dependency enabled.
+[[example]]
+name = "shared_store_append_blob_parity_report"
+required-features = ["matrixobject"]
+
+[[example]]
+name = "shared_store_append_blob_smoke"
+required-features = ["matrixobject"]
+
+[[bin]]
+name = "matrixark_rust_proxy"
+path = "src/bin/matrixark_rust_proxy.rs"
+
+[[bin]]
+name = "matrixark_rust_direct_sdk"
+path = "src/bin/matrixark_rust_direct_sdk.rs"
+
+[[bin]]
+name = "matrixark_rust_metaserver"
+path = "src/bin/matrixark_rust_metaserver.rs"
+
+[[bin]]
+name = "matrixark_rust_datanode"
+path = "src/bin/matrixark_rust_datanode.rs"
+
+[[bin]]
+name = "matrixark_rust_service_proxy"
+path = "src/bin/matrixark_rust_service_proxy.rs"
+
+[[bin]]
+name = "native_persistence_workflow"
+path = "src/bin/native_persistence_workflow.rs"
+
+[dev-dependencies]
+async-trait = "0.1"
+tempfile = "=3.10.1"

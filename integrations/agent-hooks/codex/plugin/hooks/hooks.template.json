@@ -1,0 +1,172 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "clear|startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__NODE__\" \"__PLUGIN_ROOT__/scripts/temporalstore_hook_launcher.mjs\" SessionStart",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "sessionStart": [
+      {
+        "matcher": "clear|startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__NODE__\" \"__PLUGIN_ROOT__/scripts/temporalstore_hook_launcher.mjs\" SessionStart",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "session_start": [
+      {
+        "matcher": "clear|startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__NODE__\" \"__PLUGIN_ROOT__/scripts/temporalstore_hook_launcher.mjs\" SessionStart",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__NODE__\" \"__PLUGIN_ROOT__/scripts/temporalstore_hook_launcher.mjs\" UserPromptSubmit",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "userPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__NODE__\" \"__PLUGIN_ROOT__/scripts/temporalstore_hook_launcher.mjs\" UserPromptSubmit",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "user_prompt_submit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__NODE__\" \"__PLUGIN_ROOT__/scripts/temporalstore_hook_launcher.mjs\" UserPromptSubmit",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__NODE__\" \"__PLUGIN_ROOT__/scripts/temporalstore_hook_launcher.mjs\" PostToolUse",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "postToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__NODE__\" \"__PLUGIN_ROOT__/scripts/temporalstore_hook_launcher.mjs\" PostToolUse",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "post_tool_use": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__NODE__\" \"__PLUGIN_ROOT__/scripts/temporalstore_hook_launcher.mjs\" PostToolUse",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__NODE__\" \"__PLUGIN_ROOT__/scripts/temporalstore_hook_launcher.mjs\" Stop",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__NODE__\" \"__PLUGIN_ROOT__/scripts/temporalstore_hook_launcher.mjs\" Stop",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__NODE__\" \"__PLUGIN_ROOT__/scripts/temporalstore_hook_launcher.mjs\" PreCompact",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "preCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__NODE__\" \"__PLUGIN_ROOT__/scripts/temporalstore_hook_launcher.mjs\" PreCompact",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "pre_compact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__NODE__\" \"__PLUGIN_ROOT__/scripts/temporalstore_hook_launcher.mjs\" PreCompact",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}

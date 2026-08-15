@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TemporalStore Observability</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body data-page="temporalstore">
+    <header class="topbar">
+      <a class="brand" href="./index.html"><span class="brand-mark">M</span><span><strong>MatrixArk</strong><small>Observability</small></span></a>
+      <nav class="nav">
+        <a href="./index.html" data-nav="overview">Overview</a>
+        <a href="./temporalstore.html" data-nav="temporalstore">TemporalStore</a>
+        <a href="./matrixdb.html" data-nav="matrixdb">MatrixDB</a>
+        <a href="./matrixkv.html" data-nav="matrixkv">MatrixKV</a>
+        <a href="./prometheus.html" data-nav="prometheus">Prometheus</a>
+      </nav>
+    </header>
+    <main class="shell">
+      <section class="intro compact">
+        <div>
+          <p class="eyebrow">Temporal Feature Serving</p>
+          <h1>TemporalStore</h1>
+          <p class="lead">
+            Built for high-cardinality temporal windows, filtered event state, long sequence
+            features, risk controls, and persisted online feature serving.
+          </p>
+        </div>
+        <div class="live-tile">
+          <span class="status-dot ok"></span>
+          <strong>Live scrape wired</strong>
+          <small>Metaserver plus two data nodes are visible through Prometheus text metrics.</small>
+        </div>
+      </section>
+
+      <section class="kpi-grid" data-temporal-kpis></section>
+
+      <section class="split wide-left">
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Runtime</p>
+              <h2>Node-level view</h2>
+            </div>
+            <a class="button" href="./prometheus.html">Prometheus</a>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Node</th><th>Endpoint</th><th>Scrape series</th><th>CPU signal</th><th>Worker signal</th></tr>
+              </thead>
+              <tbody data-temporal-node-table></tbody>
+            </table>
+          </div>
+        </article>
+        <article class="panel">
+          <p class="eyebrow">Known Work</p>
+          <h2>Guardrails</h2>
+          <ul class="plain-list" data-temporal-issues></ul>
+        </article>
+      </section>
+
+      <section class="panel">
+        <p class="eyebrow">Data Models</p>
+        <h2>Module coverage in the latest run</h2>
+        <div class="module-grid" data-module-grid></div>
+      </section>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>

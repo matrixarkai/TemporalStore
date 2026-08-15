@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "description": "Default MatrixArk retrieval weighting for agent context memory.",
+  "passes": [
+    { "name": "same_session", "top_k": 5, "affinity": 1.0 },
+    { "name": "same_repo_workspace", "top_k": 10, "affinity": 0.75 },
+    { "name": "same_product_topic", "top_k": 10, "affinity": 0.45 },
+    { "name": "global_durable", "top_k": 5, "affinity": 0.25 }
+  ],
+  "score_weights": {
+    "semantic_score": 0.45,
+    "session_affinity": 0.25,
+    "repo_affinity": 0.15,
+    "recency_score": 0.1,
+    "source_quality": 0.05
+  },
+  "fallback_affinity": 0.05
+}

@@ -1,0 +1,73 @@
+# Build outputs
+build/
+build-*/
+build-ubuntu22/
+output/
+output-*/
+cmake-build-*/
+target/
+target-rust-bench/
+benchmark_reports/
+
+# Compiled artifacts
+*.o
+*.obj
+*.a
+*.so
+*.dll
+*.exe
+*.lib
+*.pdb
+*.jar
+*.class
+
+# Logs and local reports
+crash.log
+*.log
+*.err.log
+*.out.log
+last-*.txt
+ssm-*.json
+terraform-output*.json
+
+# Local dependency drops and vendored/private dependency sandboxes
+dependencies/
+thirdparty/
+local_build/
+objectstorelab-master/
+matrixdb2_images/
+objectstore_images/
+
+# Terraform/runtime state
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Language build outputs and caches
+__pycache__/
+*.pyc
+node_modules/
+dist/
+out/
+crates/*/shard-*.index.json
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.codex/
+.local/
+*.png
+
+# Benchmark/result/trace dumps (regenerable; keep .md summaries only)
+docs/debug/
+docs/benchmark_archives/*.json
+docs/benchmark_archives/*.jsonl
+docs/benchmark_archives/**/*.json
+docs/benchmark_archives/**/*.jsonl
+*.trace.json
+*_trace.json
+*_trace.jsonl
+benchmarks/data-type-trace-*/

@@ -1,0 +1,12 @@
+aws_region       = "us-west-2"
+eks_cluster_name = "existing-eks-cluster-name"
+image            = "123456789012.dkr.ecr.us-west-2.amazonaws.com/temporalstore-rust:latest"
+
+# Optional:
+# aws_profile        = "default"
+# namespace          = "temporalstore"
+# storage_class_name = "gp3"
+# proxy_service_type = "LoadBalancer"
+# redis_service_type = "LoadBalancer"
+# proxy_replicas      = 3
+# redis_proxy_replicas = 3

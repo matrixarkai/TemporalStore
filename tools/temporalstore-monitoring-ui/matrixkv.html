@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MatrixKV Observability</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body data-page="matrixkv">
+    <header class="topbar">
+      <a class="brand" href="./index.html"><span class="brand-mark">M</span><span><strong>MatrixArk</strong><small>Observability</small></span></a>
+      <nav class="nav">
+        <a href="./index.html" data-nav="overview">Overview</a>
+        <a href="./temporalstore.html" data-nav="temporalstore">TemporalStore</a>
+        <a href="./matrixdb.html" data-nav="matrixdb">MatrixDB</a>
+        <a href="./matrixkv.html" data-nav="matrixkv">MatrixKV</a>
+        <a href="./prometheus.html" data-nav="prometheus">Prometheus</a>
+      </nav>
+    </header>
+    <main class="shell">
+      <section class="intro compact">
+        <div>
+          <p class="eyebrow">Transactional Distributed KV</p>
+          <h1>MatrixKV</h1>
+          <p class="lead">
+            A strong-consistency transactional KV engine with timestamp services, partitioned
+            data serving, release packaging, and scale-test deployment paths.
+          </p>
+        </div>
+        <div class="live-tile pending">
+          <span class="status-dot warn"></span>
+          <strong>Exporter wiring staged</strong>
+          <small>Runtime page is prepared; MatrixKV service metrics can be added beside TemporalStore targets.</small>
+        </div>
+      </section>
+      <section class="product-detail-grid" data-product-detail="matrixkv"></section>
+      <section class="panel">
+        <p class="eyebrow">Operational Signals</p>
+        <h2>What to monitor first</h2>
+        <div class="check-grid">
+          <div><strong>Timestamp service</strong><span>Allocation latency, failure rate, and monotonicity guardrails.</span></div>
+          <div><strong>Transaction path</strong><span>Commit latency, read latency, conflict rate, and retry pressure.</span></div>
+          <div><strong>Partition health</strong><span>Leader distribution, replica lag, shard state, and disk pressure.</span></div>
+          <div><strong>Client package</strong><span>Dynamic library loading, direct SDK path, and proxy path availability.</span></div>
+        </div>
+      </section>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>

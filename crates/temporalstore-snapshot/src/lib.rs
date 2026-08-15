@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
+//! S3-compatible Raft snapshot storage for the TemporalStore Rust rewrite.
+
+pub mod metrics;
+pub mod object_store;
+pub mod snapshot_store;
+pub mod types;
+
+pub use metrics::SnapshotMetrics;
+pub use object_store::{FileObjectStore, ObjectStore, ObjectStoreError};
+pub use snapshot_store::{S3SnapshotStore, SnapshotStore, SnapshotStoreError};
+pub use types::{
+    ChecksumEntry, CompressionFormat, LocalSnapshot, PageSegmentManifest, SnapshotManifest,
+    SnapshotRef, SnapshotRetention, SnapshotStatus,
+};

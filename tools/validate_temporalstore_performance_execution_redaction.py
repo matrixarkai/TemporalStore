@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
+"""Validate that conformance parity execution artifacts are publishable.
+
+The next-performance workflow may execute with local SDK and Rust CLI
+paths, but committed evidence must keep those paths redacted. This gate scans
+the parity execution JSON artifacts and fails if local Windows/WSL workspace or
+backend artifact paths leak into stored evidence.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+from validate_temporalstore_rust_performance_parity import (
+    REQUIRED_SAME_CONFIG_COMMAND_ARGS,
+    SAME_CONFIG_KEYS,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_ARTIFACT_ROOT = ROOT / "docs" / "benchmarks"
+EXECUTION_SCHEMA = "temporalstore_rust_next_performance_execution_v1"
+
+PRIVATE_PATH_MARKERS = (
+    "C:\\Users\\",
+    "/mnt/c/Users/",
+    "/mnt/c/Users\\",
+    "/root/src/",
+    "Deeproute",
+)
+
+REQUIRED_PLACEHOLDERS = {
+    "--native-lib": "<MATRIXARK_PARITY_NATIVE_LIB>",
+    "--rust-cli": "<MATRIXARK_PARITY_RUST_CLI>",
+    "--cd": "<WORKSPACE_ROOT_WSL>",
+}
+REQUIRED_RUN_WORKLOAD_FLAGS = (
+    "--require-perf-parity",
+    "--require-phase-scale-matrix",
+)
+REQUIRED_POST_IMPORT_VALIDATORS = (
+    ("python", "tools/validate_temporalstore_rust_goal_parity.py"),
+    ("python", "tools/validate_storage_engine_9_phase_parity.py", "--loops", "9"),
+)
+REQUIRED_PHASE_SCALE_COVERAGE = {
+    "events": [1000, 10000, 100000],
+    "retrieve_workers": [4, 8, 16, 32],
+    "resource_imports": ["large_pdf", "large_csv", "repo_directory"],
+    "contextmemory_features": [
+        "resources",
+        "skills",
+        "cross_session_retrieval",
+        "compact_indexes",
+        "audit_light_telemetry",
+    ],
+}
+
+
+def _walk_json(value: Any, path: str = "$") -> list[tuple[str, str]]:
+    found: list[tuple[str, str]] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            found.extend(_walk_json(child, f"{path}.{key}"))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            found.extend(_walk_json(child, f"{path}[{index}]"))
+    elif isinstance(value, str):
+        for marker in PRIVATE_PATH_MARKERS:
+            if marker in value:
+                found.append((path, marker))
+                break
+    return found
+
+
+def _validate_sensitive_flag_placeholders(path: Path, data: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    for row_index, row in enumerate(data.get("results") or []):
+        if not isinstance(row, dict):
+            continue
+        argv = row.get("argv")
+        if not isinstance(argv, list):
+            continue
+        for flag, placeholder in REQUIRED_PLACEHOLDERS.items():
+            for index, item in enumerate(argv):
+                if item == flag and index + 1 < len(argv) and argv[index + 1] != placeholder:
+                    failures.append(
+                        f"{path}: results[{row_index}].argv {flag} value is not redacted"
+                    )
+                if isinstance(item, str) and item.startswith(f"{flag}="):
+                    expected = f"{flag}={placeholder}"
+                    if item != expected:
+                        failures.append(
+                            f"{path}: results[{row_index}].argv {flag}= value is not redacted"
+                        )
+    return failures
+
+
+def _validate_run_workload_flags(path: Path, data: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    for row_index, row in enumerate(data.get("results") or []):
+        if not isinstance(row, dict) or row.get("step") != "run_workload":
+            continue
+        argv = row.get("argv")
+        if not isinstance(argv, list):
+            failures.append(f"{path}: results[{row_index}].argv must be a list")
+            continue
+        for flag in REQUIRED_RUN_WORKLOAD_FLAGS:
+            if flag not in argv:
+                failures.append(f"{path}: results[{row_index}].argv missing {flag}")
+        if row.get("status") != "passed":
+            # Historical failed/preflight attempts are useful diagnostics, but
+            # they are not admissible performance evidence. Do not rewrite old
+            # argv values as if they ran under the current same-config policy.
+            continue
+        for flag, expected_value in REQUIRED_SAME_CONFIG_COMMAND_ARGS.items():
+            if flag not in argv:
+                failures.append(f"{path}: results[{row_index}].argv missing same-config flag {flag}")
+                continue
+            flag_index = argv.index(flag)
+            actual_value = argv[flag_index + 1] if flag_index + 1 < len(argv) else None
+            if actual_value != expected_value:
+                failures.append(
+                    f"{path}: results[{row_index}].argv {flag} drift "
+                    f"expected {expected_value!r} got {actual_value!r}"
+                )
+        same_config_fields = row.get("required_same_config_fields")
+        if not isinstance(same_config_fields, list):
+            failures.append(f"{path}: results[{row_index}] missing required_same_config_fields")
+        else:
+            missing_fields = [key for key in SAME_CONFIG_KEYS if key not in same_config_fields]
+            if missing_fields:
+                failures.append(
+                    f"{path}: results[{row_index}].required_same_config_fields "
+                    f"missing {missing_fields}"
+                )
+    return failures
+
+
+def _validate_phase_scale_coverage(path: Path, data: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    for row_index, row in enumerate(data.get("results") or []):
+        if not isinstance(row, dict) or row.get("step") not in {"run_workload", "import_evidence"}:
+            continue
+        coverage = row.get("phase_scale_coverage_required")
+        if not isinstance(coverage, dict):
+            failures.append(f"{path}: results[{row_index}] missing phase_scale_coverage_required")
+            continue
+        for key, expected in REQUIRED_PHASE_SCALE_COVERAGE.items():
+            if coverage.get(key) != expected:
+                failures.append(
+                    f"{path}: results[{row_index}].phase_scale_coverage_required.{key} drift"
+                )
+    return failures
+
+
+def _validate_post_import_validators(path: Path, data: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    results = data.get("results") if isinstance(data.get("results"), list) else []
+    import_passed = any(
+        isinstance(row, dict)
+        and row.get("step") == "import_evidence"
+        and row.get("status") == "passed"
+        for row in results
+    )
+    if not import_passed:
+        return failures
+    post_validators = {
+        tuple(row.get("argv"))
+        for row in results
+        if isinstance(row, dict)
+        and row.get("step") == "post_import_validation"
+        and row.get("status") == "passed"
+        and isinstance(row.get("argv"), list)
+        and all(isinstance(item, str) for item in row.get("argv"))
+    }
+    for required in REQUIRED_POST_IMPORT_VALIDATORS:
+        if required not in post_validators:
+            failures.append(
+                f"{path}: missing passed post_import_validation {list(required)!r}"
+            )
+    return failures
+
+
+def validate_artifact(path: Path) -> list[str]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return [f"{path}: invalid JSON: {exc}"]
+    if not isinstance(data, dict) or data.get("schema") != EXECUTION_SCHEMA:
+        return []
+
+    failures = [
+        f"{path}: unredacted local path marker {marker!r} at {location}"
+        for location, marker in _walk_json(data)
+    ]
+    failures.extend(_validate_sensitive_flag_placeholders(path, data))
+    failures.extend(_validate_run_workload_flags(path, data))
+    failures.extend(_validate_phase_scale_coverage(path, data))
+    failures.extend(_validate_post_import_validators(path, data))
+    return failures
+
+
+def main() -> int:
+    artifacts = sorted(DEFAULT_ARTIFACT_ROOT.glob("parity_*/execution*.json"))
+    failures: list[str] = []
+    for artifact in artifacts:
+        failures.extend(validate_artifact(artifact))
+    if failures:
+        raise SystemExit(
+            "TemporalStore performance execution redaction failed:\n"
+            + "\n".join(f"- {failure}" for failure in failures[:50])
+        )
+    print(
+        "TemporalStore performance execution artifacts are redacted "
+        f"artifacts_scanned={len(artifacts)}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

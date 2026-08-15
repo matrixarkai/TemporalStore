@@ -1,0 +1,64 @@
+[
+  {
+    "sample_id": "longmem_fixture_1",
+    "haystack_session_ids": ["session_1", "session_2", "session_3"],
+    "haystack_dates": ["2025-01-10", "2025-02-14", "2025-03-20"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "I moved my preferred pharmacy to the Cedar Clinic pickup desk."},
+        {"role": "assistant", "content": "I will remember Cedar Clinic as your pharmacy pickup location."}
+      ],
+      [
+        {"role": "user", "content": "Update my pharmacy preference. Use the Northside Pharmacy counter from now on."},
+        {"role": "assistant", "content": "Northside Pharmacy is now the current pharmacy preference."}
+      ],
+      [
+        {"role": "user", "content": "My backup contact changed from Robin to Jamie Chen after the travel delay."},
+        {"role": "assistant", "content": "Jamie Chen is the backup contact after the travel delay."}
+      ]
+    ],
+    "questions": [
+      {
+        "question": "What is the current pharmacy preference?",
+        "answer": "Northside Pharmacy",
+        "ability": "memory_update"
+      },
+      {
+        "question": "Who is the backup contact after the travel delay?",
+        "answer": "Jamie Chen",
+        "ability": "multi_session_reasoning"
+      }
+    ]
+  },
+  {
+    "sample_id": "longmem_fixture_2",
+    "haystack_session_ids": ["week_1", "week_4", "week_8"],
+    "haystack_dates": ["2025-04-01", "2025-04-28", "2025-05-30"],
+    "haystack_sessions": [
+      [
+        {"speaker": "user", "text": "The launch checklist originally used the blue deployment notebook."},
+        {"speaker": "assistant", "text": "I noted the blue deployment notebook for launch work."}
+      ],
+      [
+        {"speaker": "user", "text": "We replaced the blue deployment notebook with the amber runbook for launch."},
+        {"speaker": "assistant", "text": "The amber runbook supersedes the blue deployment notebook."}
+      ],
+      [
+        {"speaker": "user", "text": "The postmortem root cause was a stale cache token in the proxy layer."},
+        {"speaker": "assistant", "text": "Root cause: stale cache token in the proxy layer."}
+      ]
+    ],
+    "qa": [
+      {
+        "question": "Which launch document should be used now?",
+        "answers": ["amber runbook"],
+        "reasoning_type": "memory_update"
+      },
+      {
+        "question": "What was the postmortem root cause?",
+        "answer": "stale cache token",
+        "reasoning_type": "temporal_reasoning"
+      }
+    ]
+  }
+]

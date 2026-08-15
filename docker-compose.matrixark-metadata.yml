@@ -1,0 +1,26 @@
+services:
+  matrixark-mysql-metadata:
+    image: ${MATRIXARK_MYSQL_IMAGE:-mysql:8}
+    container_name: matrixark-mysql-metadata
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${MATRIXARK_MYSQL_DATABASE:-matrixark}
+      MYSQL_USER: ${MATRIXARK_MYSQL_USER:-matrixark}
+      MYSQL_PASSWORD: ${MATRIXARK_MYSQL_PASSWORD:-matrixark_password}
+      MYSQL_ROOT_PASSWORD: ${MATRIXARK_MYSQL_ROOT_PASSWORD:-matrixark_root_password}
+    ports:
+      - "${MATRIXARK_MYSQL_PORT:-3307}:3306"
+    volumes:
+      - matrixark_mysql_metadata:/var/lib/mysql
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mysqladmin ping -h 127.0.0.1 -u${MATRIXARK_MYSQL_USER:-matrixark} -p${MATRIXARK_MYSQL_PASSWORD:-matrixark_password} --silent",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+
+volumes:
+  matrixark_mysql_metadata:

@@ -1,0 +1,83 @@
+{
+  "_comment": "MatrixArk context-memory hooks for Claude Code (ingestion / extraction / retrieval). Copy into ~/.claude/settings.json (user-global) or .claude/settings.json (project) and replace ${CLAUDE_PROJECT_DIR} with the absolute TemporalStore repo path if your project root differs. UserPromptSubmit retrieves + injects prior context; PostToolUse/Stop/SubagentStop/PreCompact/SessionEnd ingest and commit. The default `auto` backend routes through the shared tools/matrixark_agent_hook.py pipeline — the SAME ingest/extract/retrieve engine the Codex hook uses — whenever the rust proxy is available; SessionStart builds that proxy in the background, and until it is ready (or if unavailable) the hook falls back to the self-contained offline rust engine so it never blocks a turn. Force a backend with MATRIXARK_CLAUDE_HOOK_BACKEND=auto|python|rust. See docs/matrixark_claude_hook_integration.md.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PROJECT_DIR}/tools/matrixark_claude_hook.sh --event SessionStart",
+            "timeout": 600
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PROJECT_DIR}/tools/matrixark_claude_hook.sh --event UserPromptSubmit",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PROJECT_DIR}/tools/matrixark_claude_hook.sh --event PostToolUse",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PROJECT_DIR}/tools/matrixark_claude_hook.sh --event Stop",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PROJECT_DIR}/tools/matrixark_claude_hook.sh --event SubagentStop",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PROJECT_DIR}/tools/matrixark_claude_hook.sh --event PreCompact",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PROJECT_DIR}/tools/matrixark_claude_hook.sh --event SessionEnd",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}

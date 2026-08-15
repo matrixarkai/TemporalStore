@@ -1,0 +1,68 @@
+name: Rust CI
+
+# Compile the Rust workspace on every push and pull request. Until this job
+# existed, no workflow invoked cargo, so build breakage (unreachable git
+# dependencies, uncompiled/orphaned source, API drift) reached main undetected.
+# `cargo check --all-targets` is the minimum gate that catches those; the crate
+# is also built in release to mirror the Docker images, and the library +
+# integration test suite runs single-threaded (as documented in the README) in
+# release mode -- a few high-cardinality tests are O(n^2) and are far too slow
+# to run unoptimized.
+
+on:
+  push:
+    branches: [main, rust-main]
+  pull_request:
+    branches: [main, rust-main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-test:
+    name: cargo check / build / test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system build dependencies
+        # librocksdb-sys (via matrixcache's rocksdb-ssd feature) runs bindgen and
+        # needs libclang; building RocksDB itself needs cmake.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang libclang-dev cmake
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.87.0 --profile minimal --no-self-update && rustup default 1.87.0
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: cargo check (all targets)
+        run: cargo check -p temporalstore-rust --all-targets
+
+      - name: cargo build (release service binaries)
+        run: cargo build --release -p temporalstore-rust --bin matrixark_rust_metaserver --bin matrixark_rust_datanode
+
+      # The compile gates above are what enforce this workflow. The suite is run
+      # for visibility but is NOT yet a required gate: the tree carries a small
+      # number of known, pre-existing baseline failures (e.g.
+      # storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_flags,
+      # whose eviction phase moves cached bytes to the SSD tier before the
+      # pressure snapshot, so cache_memory_bytes == 0). Flip continue-on-error
+      # off once the baseline is fully green.
+      - name: cargo test (lib + integration, single-threaded, release)
+        timeout-minutes: 45
+        continue-on-error: true
+        run: cargo test --release -p temporalstore-rust --lib --tests -- --test-threads=1

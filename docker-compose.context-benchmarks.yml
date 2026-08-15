@@ -1,0 +1,51 @@
+services:
+  open-reader:
+    image: "${TEMPORALSTORE_READER_IMAGE:-ollama/ollama:0.3.14}"
+    ports:
+      - "${TEMPORALSTORE_READER_PORT:-11434}:11434"
+    volumes:
+      - temporalstore-ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  hf-reader:
+    build:
+      context: .
+      dockerfile: Dockerfile.context-oss-reader
+    environment:
+      TEMPORALSTORE_READER_MODEL: "${TEMPORALSTORE_READER_MODEL:-google/flan-t5-small}"
+      TEMPORALSTORE_HF_READER_HOST: "0.0.0.0"
+      TEMPORALSTORE_HF_READER_PORT: "8000"
+    ports:
+      - "${TEMPORALSTORE_HF_READER_PORT:-8000}:8000"
+    volumes:
+      - temporalstore-hf-cache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/models', timeout=2).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+
+  benchmark-runner:
+    image: python:3.11-slim
+    working_dir: /workspace
+    environment:
+      TEMPORALSTORE_READER_BASE_URL: "http://open-reader:11434/v1"
+      TEMPORALSTORE_READER_MODEL: "${TEMPORALSTORE_READER_MODEL:-qwen2.5:0.5b}"
+    volumes:
+      - .:/workspace:ro
+      - "${TEMPORALSTORE_BENCHMARK_INPUT_DIR:-/tmp}:/bench-input:ro"
+      - "${TEMPORALSTORE_BENCHMARK_REPORT_DIR:-./benchmark_reports}:/bench-output"
+    depends_on:
+      open-reader:
+        condition: service_healthy
+    profiles:
+      - runner
+    command: ["python3", "--version"]
+
+volumes:
+  temporalstore-ollama:
+  temporalstore-hf-cache:

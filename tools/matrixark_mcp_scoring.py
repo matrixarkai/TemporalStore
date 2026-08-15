@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
+"""MatrixArk retrieval scoring helpers."""
+
+from __future__ import annotations
+
+import math
+import re
+from typing import Any
+
+
+Json = dict[str, Any]
+
+try:
+    from tools.matrixark_mcp_errors import MatrixArkError
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_errors import MatrixArkError
+
+
+def tokens(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9_]+", text.lower())
+
+
+def cosine(left: list[float], right: list[float]) -> float:
+    if not left or not right or len(left) != len(right):
+        return 0.0
+    return round(sum(a * b for a, b in zip(left, right)), 6)
+
+
+def clamp01(value: Any, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(0.0, min(1.0, number))
+
+
+def normalized_dense_score(value: float) -> float:
+    return clamp01((value + 1.0) / 2.0)
+
+
+def sparse_lexical_score(query_terms: set[str], text: str) -> float:
+    if not query_terms:
+        return 0.0
+    matched = len(query_terms.intersection(tokens(text)))
+    return clamp01(matched / max(len(query_terms), 1))
+
+
+def hybrid_origin_score(query_terms: set[str], text: str, embedding_score: float, node_score: float) -> float:
+    dense = normalized_dense_score(embedding_score)
+    sparse = sparse_lexical_score(query_terms, text)
+    node = normalized_dense_score(node_score)
+    return round(clamp01(0.55 * dense + 0.35 * sparse + 0.10 * node), 6)
+
+
+def final_recall_score(
+    origin_score: float,
+    time_score: float,
+    business_score: float,
+    weights: Json,
+    *,
+    default_time_weight: float = 0.18,
+    default_business_weight: float = 0.22,
+) -> float:
+    time_weight = clamp01(weights.get("time", default_time_weight), default_time_weight)
+    business_weight = clamp01(weights.get("business", default_business_weight), default_business_weight)
+    if time_weight + business_weight > 1.0:
+        scale = 1.0 / (time_weight + business_weight)
+        time_weight *= scale
+        business_weight *= scale
+    origin_weight = 1.0 - time_weight - business_weight
+    return round(
+        origin_weight * origin_score + time_weight * time_score + business_weight * business_score,
+        6,
+    )
+
+
+def time_decay_score(
+    record_time_ms: Any,
+    *,
+    reference_time_ms: int,
+    freshness_tolerance_ms: int,
+    half_life_ms: int,
+) -> float:
+    try:
+        event_time_ms = int(record_time_ms)
+    except (TypeError, ValueError):
+        return 0.5
+    age_ms = max(0, reference_time_ms - event_time_ms)
+    if age_ms <= freshness_tolerance_ms:
+        return 1.0
+    decay_age = age_ms - freshness_tolerance_ms
+    half_life_ms = max(1, half_life_ms)
+    # Fast initial decay, then slower long-tail decay for durable memories.
+    return round(math.exp(-math.sqrt(decay_age / half_life_ms)), 6)
+
+
+def business_instance_weight(*sources: Json) -> float | None:
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for field in ["business_weight", "business_score", "importance", "priority"]:
+            if field in source:
+                return clamp01(source.get(field))
+    return None
+
+
+def business_type_score(type_name: str, type_weights: Json) -> float:
+    if not type_name:
+        return 0.5
+    normalized = type_name.lower()
+    if normalized in type_weights:
+        return clamp01(type_weights[normalized], 0.5)
+    if "approval" in normalized or "budget" in normalized:
+        return 0.9
+    if "correction" in normalized or "confirmation" in normalized:
+        return 1.0
+    if "preference" in normalized or "plan" in normalized or "status" in normalized:
+        return 0.75
+    return 0.5
+
+
+def business_score_for_candidate(candidate: Json, type_weights: Json) -> float:
+    instance = business_instance_weight(candidate, candidate.get("metadata", {}), candidate.get("scope", {}))
+    if instance is not None:
+        return instance
+    type_name = str(
+        candidate.get("event_type")
+        or candidate.get("entity_type")
+        or candidate.get("topic")
+        or candidate.get("ref_type")
+        or ""
+    )
+    return business_type_score(type_name, type_weights)
+
+
+def numeric_field(record: Json, field: str = "value") -> float | None:
+    for source in [record, record.get("metadata", {}), record.get("envelope", {}).get("metadata", {})]:
+        if not isinstance(source, dict) or field not in source:
+            continue
+        try:
+            return float(source[field])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def apply_statistical_operator(operator: str, records: list[Json], *, field: str = "value") -> float | int | None:
+    values = [value for record in records if (value := numeric_field(record, field)) is not None]
+    op = operator.upper()
+    if op == "COUNT":
+        return len(records)
+    if not values:
+        return None
+    if op == "SUM":
+        return round(sum(values), 6)
+    if op == "AVG":
+        return round(sum(values) / len(values), 6)
+    if op == "MAX":
+        return max(values)
+    raise MatrixArkError(f"unsupported statistical operator: {operator}")
+
+
+def latest_record(records: list[Json], *, time_field: str = "updated_at_ms") -> Json | None:
+    if not records:
+        return None
+    return max(records, key=lambda record: int(record.get(time_field) or 0))

@@ -1,0 +1,1080 @@
+{
+  "schema_version": 1,
+  "name": "temporalstore-storage-lifecycle-report-pair-corpus",
+  "description": "Synthetic conformance report pair proving canonical public storage shape normalization and lifecycle metric parity.",
+  "native": {
+    "effective_storage_tuning": {
+      "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
+      "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
+      "TS_STORAGE_ZONE_SIZE": 10485760,
+      "TS_STREAM_MAX_BLOB_SIZE": 10485760,
+      "TS_COMPACTION_WATERMARK_BYTES": 268435456,
+      "TS_COLD_SCAN_NO_CACHE_FILL": true,
+      "TS_PAGE_INDEX_CACHE_BYTES": 67108864,
+      "TS_BLOCK_INDEX_CACHE_BYTES": 67108864
+    },
+    "public_storage_contract": {
+      "page_address": "PageAddress",
+      "block_address": "BlockAddress",
+      "page_index_entry": "PageIndexEntry",
+      "block_index_entry": "BlockIndexEntry",
+      "object_index_entry": "ObjectIndexEntry",
+      "storage_zone": "StorageZone",
+      "stream": "Stream",
+      "segment": "Segment",
+      "extent": "Extent",
+      "slot": "Slot",
+      "append_watermark": "AppendWatermark",
+      "compaction_watermark": "CompactionWatermark",
+      "tombstone": "Tombstone",
+      "gc_eligibility": "GcEligibility",
+      "follower_cursor_safety": "FollowerCursorSafety",
+      "compatibility_aliases": {
+        "page_store": "StorageZone",
+        "object_index": "ObjectIndexEntry",
+        "page_segment_id": "segment_id",
+        "oplog": "AppendWatermark"
+      }
+    },
+    "public_storage_feature_shapes": {
+      "page_address_fields": ["shard_id", "zone_id", "segment_id", "page_id", "offset", "length", "generation"],
+      "block_address_fields": ["shard_id", "zone_id", "block_id", "offset", "length", "checksum"],
+      "page_index_entry_fields": ["logical_key", "timestamp_range", "page_addresses", "append_watermark", "generation"],
+      "block_index_entry_fields": ["page_address", "block_address", "extent", "checksum", "generation"],
+      "object_index_entry_fields": ["model", "table", "object_key", "page_chain", "tombstone", "generation"],
+      "storage_zone_fields": ["zone_id", "total_bytes", "used_bytes", "stale_bytes", "segments"],
+      "stream_fields": ["stream_id", "segments", "rollover_count", "sealed_segment_count"],
+      "segment_fields": ["segment_id", "extent", "start_offset", "sealed", "generation"],
+      "extent_fields": ["extent", "block_range", "reclaim_state", "generation"],
+      "slot_fields": ["slot_id", "dirty_generation", "object_refs", "page_refs", "tombstones", "owner_mismatch_count"],
+      "append_watermark_fields": ["shard_id", "slot_id", "log_index", "timestamp_ms"],
+      "compaction_watermark_fields": ["shard_id", "safe_generation", "safe_timestamp_ms", "follower_floor"],
+      "tombstone_fields": ["ref", "generation", "deleted_at_ms", "reason"],
+      "gc_eligibility_fields": ["ref", "eligible_after_ms", "has_tombstone", "follower_safe", "reclaimable_bytes"],
+      "follower_cursor_safety_fields": ["min_follower_cursor", "blocked_reclaim_bytes", "safe_to_reclaim"]
+    },
+    "storage_read_sequence": [
+      "logical_key_timestamp_range",
+      "object_page_index_lookup",
+      "page_address_list",
+      "block_index_lookup",
+      "page_read",
+      "decode_records",
+      "return_filtered_result"
+    ],
+    "storage_read_contract": {
+      "logical_key": "context:t=tenant|u=user|s=session|:node=42",
+      "timestamp_range": "0..7",
+      "object_index_entry": "ObjectIndexEntry",
+      "page_index_entries": 1,
+      "page_addresses": 2,
+      "block_index_entries": 2,
+      "records_decoded": 3,
+      "records_returned": 2,
+      "tombstones_filtered": 1,
+      "stale_generations_filtered": 0,
+      "filter_policy": "normal",
+      "object_page_index_lookup_count": 1,
+      "object_page_index_lookup_ms": 0.2,
+      "page_address_count": 2,
+      "block_index_lookup_count": 2,
+      "block_index_lookup_ms": 0.3,
+      "page_reads": 2,
+      "decode_records_ms": 0.4
+    },
+    "storage_cold_scan_sequence": [
+      "timestamp_page_index_scan",
+      "no_cache_page_read",
+      "bounded_decode",
+      "no_hot_cache_promotion"
+    ],
+    "storage_cold_scan_contract": {
+      "timestamp_range": "0..7",
+      "page_index_scan": "PageIndex",
+      "no_cache_page_reads": 3,
+      "decode_batch_limit": 128,
+      "decode_byte_limit": 1048576,
+      "deadline_ms": 250,
+      "records_decoded": 3,
+      "records_returned": 2,
+      "hot_cache_promotions": 0,
+      "cache_fill": false,
+      "promotion_policy": "no_promote",
+      "cold_scan_no_cache_reads": 3,
+      "cold_scan_page_index_scan_count": 1,
+      "cold_scan_page_index_scan_ms": 0.2,
+      "cold_scan_page_reads": 3,
+      "cold_scan_decode_records_ms": 0.4,
+      "cold_scan_records_decoded": 3,
+      "cold_scan_records_returned": 2,
+      "cold_scan_decode_batch_limit": 128,
+      "cold_scan_decode_byte_limit": 1048576
+    },
+    "storage_write_sequence": [
+      "append_record",
+      "route_shard_slot",
+      "choose_page",
+      "append_page_buffer",
+      "update_page_index",
+      "flush_page_block_segment",
+      "update_block_index",
+      "publish_append_watermark"
+    ],
+    "storage_write_contract": {
+      "shard_id": 1,
+      "slot": "slot:7",
+      "placement_key": "context:t=tenant|u=user|s=session|:node=42",
+      "page_address": "PageAddress",
+      "block_address": "BlockAddress",
+      "append_watermark": 7,
+      "durability": "async",
+      "storage_family": "shared_store",
+      "write_mode": "async",
+      "index_generation": 3,
+      "batch_watermark": 7,
+      "records_appended": 3,
+      "append_queue_wait_ms": 0.4,
+      "append_engine_ms": 1.2,
+      "append_queue_depth": 0,
+      "append_batch_size": 3,
+      "append_batch_bytes": 4096,
+      "append_coalesced_writes": 2,
+      "append_durability_failures": 0,
+      "page_writes": 2,
+      "block_writes": 2,
+      "bytes_written": 4096
+    },
+    "storage_lifecycle_phases": [
+      "prepare",
+      "reclaim",
+      "evict",
+      "expire",
+      "page_gc",
+      "block_gc",
+      "compaction",
+      "index_gc",
+      "delayed_destroy",
+      "follower_cursor_safety",
+      "watermark_progress"
+    ],
+    "storage_reclaim_semantics": [
+      "cache_eviction_memory_only",
+      "logical_tombstone_required",
+      "stale_pages_blocks_rewritten_or_skipped",
+      "reclaimed_bytes_reported",
+      "physical_reclaim_errors_zero"
+    ],
+    "storage_reclaim_scope": {
+      "owner": "temporalstore_storage_lifecycle",
+      "matrixark_context_gc_role": "marks_logical_raw_event_eligibility_only",
+      "physical_reclaim_context_specific": false
+    },
+    "storage_cache_layers": [
+      "memory_object_cache",
+      "page_index_cache",
+      "block_index_cache",
+      "disk_block_cache",
+      "shared_store_read_through"
+    ],
+    "storage_cache_semantics": [
+      "lookup_hot_to_cold",
+      "refill_from_durable_on_miss",
+      "invalidate_on_append_watermark",
+      "invalidate_on_compaction_watermark",
+      "cold_scan_no_promote",
+      "writeback_backpressure_reported"
+    ],
+    "storage_lifecycle_metrics": {
+      "storage_manager_prepare_count": 1,
+      "storage_manager_reclaim_count": 1,
+      "storage_manager_evict_count": 1,
+      "storage_manager_expire_count": 1,
+      "storage_manager_page_gc_count": 1,
+      "storage_manager_block_gc_count": 1,
+      "storage_manager_compaction_count": 1,
+      "storage_manager_index_gc_count": 1,
+      "storage_manager_delayed_destroy_count": 1,
+      "storage_manager_follower_cursor_safety_count": 1,
+      "storage_manager_watermark_progress_count": 1,
+      "storage_manager_loop_ms": 4,
+      "stream_rollover_count": 1,
+      "segment_open_count": 1,
+      "segment_sealed_count": 1,
+      "storage_zone_total_bytes": 10485760,
+      "storage_zone_used_bytes": 4096,
+      "storage_zone_stale_bytes": 1024,
+      "append_log_replay_records": 3,
+      "append_log_reclaimed_records": 1,
+      "slot_dirty_generation_count": 2,
+      "slot_tombstone_count": 1,
+      "slot_stale_ref_count": 1,
+      "slot_owner_mismatch_count": 0,
+      "page_index_rebuild_count": 1,
+      "block_index_rebuild_count": 1,
+      "object_index_rebuild_count": 1,
+      "cache_admissions": 10,
+      "cache_evictions": 2,
+      "cache_rehydrates": 1,
+      "memory_cache_hits": 11,
+      "memory_cache_misses": 3,
+      "page_index_cache_hits": 9,
+      "page_index_cache_misses": 1,
+      "block_index_cache_hits": 8,
+      "block_index_cache_misses": 1,
+      "disk_cache_hits": 4,
+      "disk_cache_misses": 1,
+      "shared_store_read_throughs": 1,
+      "cache_refills": 3,
+      "cache_invalidations": 2,
+      "cache_writeback_queue_depth": 0,
+      "cache_writeback_rejections": 0,
+      "cold_scan_no_cache_reads": 3,
+      "hot_cache_promotions": 0,
+      "tombstone_records": 1,
+      "stale_page_tombstones": 1,
+      "stale_block_tombstones": 1,
+      "stale_pages_rewritten": 1,
+      "stale_pages_skipped": 1,
+      "stale_blocks_rewritten": 1,
+      "stale_blocks_skipped": 1,
+      "delayed_destroy_backlog": 0,
+      "follower_cursor_retention_floor": 0,
+      "reclaimable_bytes": 1024,
+      "compaction_reclaimed_bytes": 512,
+      "physical_reclaimed_bytes": 512,
+      "physical_reclaim_errors": 0,
+      "append_watermark": 7,
+      "compaction_watermark": 6
+    },
+    "storage_manager_contract": {
+      "manager_identity": "StorageManager/StoreManager",
+      "native_public_name": "StorageManager",
+      "rust_public_name": "StoreManager",
+      "phase_order": [
+        "prepare",
+        "reclaim",
+        "evict",
+        "expire",
+        "page_gc",
+        "block_gc",
+        "compaction",
+        "index_gc",
+        "delayed_destroy",
+        "follower_cursor_safety",
+        "watermark_progress"
+      ],
+      "phase_metrics": {
+        "prepare": "storage_manager_prepare_count",
+        "reclaim": "storage_manager_reclaim_count",
+        "evict": "storage_manager_evict_count",
+        "expire": "storage_manager_expire_count",
+        "page_gc": "storage_manager_page_gc_count",
+        "block_gc": "storage_manager_block_gc_count",
+        "compaction": "storage_manager_compaction_count",
+        "index_gc": "storage_manager_index_gc_count",
+        "delayed_destroy": "storage_manager_delayed_destroy_count",
+        "follower_cursor_safety": "storage_manager_follower_cursor_safety_count",
+        "watermark_progress": "storage_manager_watermark_progress_count"
+      },
+      "phase_counts": {
+        "prepare": 1,
+        "reclaim": 1,
+        "evict": 1,
+        "expire": 1,
+        "page_gc": 1,
+        "block_gc": 1,
+        "compaction": 1,
+        "index_gc": 1,
+        "delayed_destroy": 1,
+        "follower_cursor_safety": 1,
+        "watermark_progress": 1
+      },
+      "loop_metric": "storage_manager_loop_ms",
+      "loop_ms": 4.0,
+      "phase_order_enforced": true,
+      "missing_phase_count": 0
+    },
+    "storage_index_contract": {
+      "page_address_codec": "PageAddress",
+      "block_address_codec": "BlockAddress",
+      "stable_order": [
+        "shard_id",
+        "zone_id",
+        "segment_id",
+        "page_id",
+        "offset"
+      ],
+      "slot_index": "slot -> object/page refs",
+      "page_index": "logical timestamp/key ranges -> page addresses",
+      "block_index": "page addresses -> physical durable locations",
+      "required_behaviors": [
+        "page_address_encode_decode",
+        "page_address_stable_order",
+        "timestamp_range_page_lookup",
+        "slot_index_maps_slot_to_object_page_refs",
+        "object_index_maps_model_table_object_key_to_page_chain",
+        "page_index_maps_logical_ranges_to_page_addresses",
+        "block_index_maps_page_addresses_to_durable_locations",
+        "restart_rebuilds_page_block_object_indexes"
+      ],
+      "page_address_encode_decode": true,
+      "block_address_encode_decode": true,
+      "stable_order_verified": true,
+      "timestamp_range_lookup_verified": true,
+      "slot_index_entry_count": 2,
+      "slot_object_ref_count": 1,
+      "slot_page_ref_count": 3,
+      "object_index_entry_count": 1,
+      "page_index_entry_count": 1,
+      "block_index_entry_count": 1,
+      "restart_rebuild_verified": true,
+      "unreadable_page_refs": 0,
+      "checksum_mismatches": 0,
+      "object_index_entry": "{model/table/object_key} -> current page chain"
+    },
+    "storage_cache_contract": {
+      "layers": [
+        "memory_object_cache",
+        "page_index_cache",
+        "block_index_cache",
+        "disk_block_cache",
+        "shared_store_read_through"
+      ],
+      "semantics": [
+        "lookup_hot_to_cold",
+        "refill_from_durable_on_miss",
+        "invalidate_on_append_watermark",
+        "invalidate_on_compaction_watermark",
+        "cold_scan_no_promote",
+        "writeback_backpressure_reported"
+      ],
+      "metrics": [
+        "memory_cache_hits",
+        "memory_cache_misses",
+        "page_index_cache_hits",
+        "page_index_cache_misses",
+        "block_index_cache_hits",
+        "block_index_cache_misses",
+        "disk_cache_hits",
+        "disk_cache_misses",
+        "shared_store_read_throughs",
+        "cache_refills",
+        "cache_invalidations",
+        "cache_writeback_queue_depth",
+        "cache_writeback_rejections"
+      ],
+      "hot_to_cold_lookup": true,
+      "durable_refill_on_miss": true,
+      "append_watermark_invalidation": true,
+      "compaction_watermark_invalidation": true,
+      "cold_scan_no_promote": true,
+      "writeback_backpressure_measured": true,
+      "cache_refills": 3,
+      "cache_invalidations": 2,
+      "cache_writeback_queue_depth": 0,
+      "cache_writeback_rejections": 0,
+      "hot_cache_promotions": 0
+    },
+    "storage_reclaim_contract": {
+      "cache_eviction_frees_memory_only": true,
+      "logical_gc_marks_expired_deletable": true,
+      "physical_reclaim_requires_compaction_or_safe_skip": true,
+      "cache_evictions": 2,
+      "tombstone_records": 1,
+      "stale_page_tombstones": 1,
+      "stale_block_tombstones": 1,
+      "stale_pages_rewritten": 1,
+      "stale_pages_skipped": 1,
+      "stale_blocks_rewritten": 1,
+      "stale_blocks_skipped": 1,
+      "reclaimable_bytes": 1024,
+      "compaction_reclaimed_bytes": 512,
+      "physical_reclaimed_bytes": 512,
+      "physical_reclaim_errors": 0
+    },
+    "storage_safety_snapshot": {
+      "append_watermark": 42,
+      "compaction_watermark": 7,
+      "tombstone_records": 3,
+      "gc_eligible_record_count": 3,
+      "reclaimable_bytes": 1024,
+      "follower_cursor_retention_floor": 0,
+      "follower_cursor_blocked_reclaim_count": 2,
+      "follower_cursor_safe_to_reclaim": false,
+      "physical_reclaim_errors": 0
+    },
+    "storage_watermark_snapshot": {
+      "append_watermark": 42,
+      "compaction_watermark": 7,
+      "follower_cursor_retention_floor": 0,
+      "follower_cursor_safe_watermark": 7,
+      "page_index_rebuild_watermark": 1,
+      "block_index_rebuild_watermark": 1,
+      "object_index_rebuild_watermark": 1,
+      "append_watermark_samples": [
+        {"shard_id": 1, "slot_id": 7, "log_index": 42, "timestamp_ms": 1000}
+      ],
+      "compaction_watermark_samples": [
+        {"shard_id": 1, "safe_generation": 7, "safe_timestamp_ms": 7, "follower_floor": 0}
+      ]
+    },
+    "storage_index_snapshot": {
+      "page_index_entry_count": 2,
+      "block_index_entry_count": 2,
+      "object_index_entry_count": 2,
+      "slot_index_entry_count": 1,
+      "slot_object_ref_count": 2,
+      "slot_page_ref_count": 2,
+      "page_address_count": 2,
+      "unreadable_page_refs": 0,
+      "checksum_mismatches": 0,
+      "missing_owner_ref_count": 0,
+      "owner_mismatch_count": 0,
+      "restart_rebuild_verified": true,
+      "page_index_entry_samples": [
+        {
+          "logical_key": "model/table/object-a",
+          "timestamp_range": [1000, 1999],
+          "page_addresses": [
+            {"shard_id": 1, "zone_id": 2, "segment_id": 3, "page_id": 4, "offset": 128, "length": 512, "generation": 7}
+          ],
+          "append_watermark": 42,
+          "generation": 7
+        }
+      ],
+      "block_index_entry_samples": [
+        {
+          "page_address": {"shard_id": 1, "zone_id": 2, "segment_id": 3, "page_id": 4, "offset": 128, "length": 512, "generation": 7},
+          "block_address": {"shard_id": 1, "zone_id": 2, "block_id": 3, "offset": 128, "length": 512, "checksum": "sha256:native-sample"},
+          "extent": 2,
+          "checksum": "sha256:native-sample",
+          "generation": 7
+        }
+      ],
+      "object_index_entry_samples": [
+        {
+          "model": "model",
+          "table": "table",
+          "object_key": "object-a",
+          "page_chain": [
+            {"shard_id": 1, "zone_id": 2, "segment_id": 3, "page_id": 4, "offset": 128, "length": 512, "generation": 7}
+          ],
+          "tombstone": false,
+          "generation": 7
+        }
+      ]
+    },
+    "storage_topology_snapshot": {
+      "storage_zone_count": 2,
+      "active_storage_zones": 1,
+      "sealed_storage_zones": 1,
+      "stream_segment_count": 2,
+      "segment_open_count": 1,
+      "segment_sealed_count": 1,
+      "delayed_destroy_backlog": 1,
+      "storage_zone_total_bytes": 4096,
+      "storage_zone_used_bytes": 3072,
+      "storage_zone_stale_bytes": 1024,
+      "append_log_replay_records": 4,
+      "append_log_reclaimed_records": 1,
+      "storage_zone_samples": [
+        {"zone_id": 2, "total_bytes": 4096, "used_bytes": 3072, "stale_bytes": 1024, "segments": [3, 4]}
+      ],
+      "stream_samples": [
+        {"stream_id": "native:page_stream", "segments": [3, 4], "rollover_count": 1, "sealed_segment_count": 1}
+      ],
+      "segment_samples": [
+        {"segment_id": 3, "extent": 2, "start_offset": 128, "sealed": false, "generation": 7}
+      ],
+      "extent_samples": [
+        {"extent": 2, "block_range": [128, 640], "reclaim_state": "mixed_live_stale", "generation": 7}
+      ],
+      "slot_samples": [
+        {
+          "slot_id": 7,
+          "dirty_generation": 7,
+          "object_refs": [7],
+          "page_refs": [
+            {"shard_id": 1, "zone_id": 2, "segment_id": 3, "page_id": 4, "offset": 128, "length": 512, "generation": 7}
+          ],
+          "tombstones": ["native:model:object-7"],
+          "owner_mismatch_count": 0
+        }
+      ]
+    },
+    "storage_gc_snapshot": {
+      "tombstone_records": 1,
+      "stale_page_tombstones": 1,
+      "stale_block_tombstones": 1,
+      "gc_eligible_record_count": 3,
+      "reclaimable_bytes": 1024,
+      "compaction_reclaimed_bytes": 512,
+      "physical_reclaimed_bytes": 512,
+      "physical_reclaim_errors": 0,
+      "follower_cursor_retention_floor": 0,
+      "follower_cursor_blocked_reclaim_count": 2,
+      "follower_cursor_safe_to_reclaim": false,
+      "tombstone_samples": [
+        {
+          "ref": "native:model:object-7",
+          "generation": 7,
+          "deleted_at_ms": 1782600000000,
+          "reason": "object_tombstone"
+        }
+      ],
+      "gc_eligibility_samples": [
+        {
+          "ref": "native:model:object-7",
+          "eligible_after_ms": 1782600000000,
+          "has_tombstone": true,
+          "follower_safe": false,
+          "reclaimable_bytes": 0
+        }
+      ],
+      "follower_cursor_safety_samples": [
+        {
+          "min_follower_cursor": 0,
+          "blocked_reclaim_bytes": 4096,
+          "safe_to_reclaim": false
+        }
+      ]
+    }
+  },
+  "rust": {
+    "effective_storage_tuning": {
+      "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
+      "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
+      "TS_STORAGE_ZONE_SIZE": 10485760,
+      "TS_STREAM_MAX_BLOB_SIZE": 10485760,
+      "TS_COMPACTION_WATERMARK_BYTES": 268435456,
+      "TS_COLD_SCAN_NO_CACHE_FILL": true,
+      "TS_PAGE_INDEX_CACHE_BYTES": 67108864,
+      "TS_BLOCK_INDEX_CACHE_BYTES": 67108864
+    },
+    "public_storage_contract": {
+      "page_address": "PageAddress",
+      "block_address": "BlockAddress",
+      "page_index_entry": "PageIndexEntry",
+      "block_index_entry": "BlockIndexEntry",
+      "object_index_entry": "ObjectIndexEntry",
+      "storage_zone": "StorageZone",
+      "stream": "Stream",
+      "segment": "Segment",
+      "extent": "Extent",
+      "slot": "Slot",
+      "append_watermark": "AppendWatermark",
+      "compaction_watermark": "CompactionWatermark",
+      "tombstone": "Tombstone",
+      "gc_eligibility": "GcEligibility",
+      "follower_cursor_safety": "FollowerCursorSafety",
+      "compatibility_aliases": {
+        "block_store": "StorageZone",
+        "stream_blob": "Segment",
+        "oplog_sequence": "AppendWatermark"
+      }
+    },
+    "public_storage_feature_shapes": {
+      "page_address_fields": ["shard_id", "zone_id", "segment_id", "page_id", "offset", "length", "generation"],
+      "block_address_fields": ["shard_id", "zone_id", "block_id", "offset", "length", "checksum"],
+      "page_index_entry_fields": ["logical_key", "timestamp_range", "page_addresses", "append_watermark", "generation"],
+      "block_index_entry_fields": ["page_address", "block_address", "extent", "checksum", "generation"],
+      "object_index_entry_fields": ["model", "table", "object_key", "page_chain", "tombstone", "generation"],
+      "storage_zone_fields": ["zone_id", "total_bytes", "used_bytes", "stale_bytes", "segments"],
+      "stream_fields": ["stream_id", "segments", "rollover_count", "sealed_segment_count"],
+      "segment_fields": ["segment_id", "extent", "start_offset", "sealed", "generation"],
+      "extent_fields": ["extent", "block_range", "reclaim_state", "generation"],
+      "slot_fields": ["slot_id", "dirty_generation", "object_refs", "page_refs", "tombstones", "owner_mismatch_count"],
+      "append_watermark_fields": ["shard_id", "slot_id", "log_index", "timestamp_ms"],
+      "compaction_watermark_fields": ["shard_id", "safe_generation", "safe_timestamp_ms", "follower_floor"],
+      "tombstone_fields": ["ref", "generation", "deleted_at_ms", "reason"],
+      "gc_eligibility_fields": ["ref", "eligible_after_ms", "has_tombstone", "follower_safe", "reclaimable_bytes"],
+      "follower_cursor_safety_fields": ["min_follower_cursor", "blocked_reclaim_bytes", "safe_to_reclaim"]
+    },
+    "storage_read_sequence": [
+      "logical_key_timestamp_range",
+      "object_page_index_lookup",
+      "page_address_list",
+      "block_index_lookup",
+      "page_read",
+      "decode_records",
+      "return_filtered_result"
+    ],
+    "storage_read_contract": {
+      "logical_key": "context:t=tenant|u=user|s=session|:node=42",
+      "timestamp_range": "0..7",
+      "object_index_entry": "ObjectIndexEntry",
+      "page_index_entries": 1,
+      "page_addresses": 2,
+      "block_index_entries": 2,
+      "records_decoded": 3,
+      "records_returned": 2,
+      "tombstones_filtered": 1,
+      "stale_generations_filtered": 0,
+      "filter_policy": "normal",
+      "object_page_index_lookup_count": 1,
+      "object_page_index_lookup_ms": 0.25,
+      "page_address_count": 2,
+      "block_index_lookup_count": 2,
+      "block_index_lookup_ms": 0.35,
+      "page_reads": 2,
+      "decode_records_ms": 0.45
+    },
+    "storage_cold_scan_sequence": [
+      "timestamp_page_index_scan",
+      "no_cache_page_read",
+      "bounded_decode",
+      "no_hot_cache_promotion"
+    ],
+    "storage_cold_scan_contract": {
+      "timestamp_range": "0..7",
+      "page_index_scan": "PageIndex",
+      "no_cache_page_reads": 3,
+      "decode_batch_limit": 128,
+      "decode_byte_limit": 1048576,
+      "deadline_ms": 250,
+      "records_decoded": 3,
+      "records_returned": 2,
+      "hot_cache_promotions": 0,
+      "cache_fill": false,
+      "promotion_policy": "no_promote",
+      "cold_scan_no_cache_reads": 3,
+      "cold_scan_page_index_scan_count": 1,
+      "cold_scan_page_index_scan_ms": 0.25,
+      "cold_scan_page_reads": 3,
+      "cold_scan_decode_records_ms": 0.45,
+      "cold_scan_records_decoded": 3,
+      "cold_scan_records_returned": 2,
+      "cold_scan_decode_batch_limit": 128,
+      "cold_scan_decode_byte_limit": 1048576
+    },
+    "storage_write_sequence": [
+      "append_record",
+      "route_shard_slot",
+      "choose_page",
+      "append_page_buffer",
+      "update_page_index",
+      "flush_page_block_segment",
+      "update_block_index",
+      "publish_append_watermark"
+    ],
+    "storage_write_contract": {
+      "shard_id": 1,
+      "slot": "slot:7",
+      "placement_key": "context:t=tenant|u=user|s=session|:node=42",
+      "page_address": "PageAddress",
+      "block_address": "BlockAddress",
+      "append_watermark": 7,
+      "durability": "async",
+      "storage_family": "shared_store",
+      "write_mode": "async",
+      "index_generation": 3,
+      "batch_watermark": 7,
+      "records_appended": 3,
+      "append_queue_wait_ms": 0.5,
+      "append_engine_ms": 1.3,
+      "append_queue_depth": 0,
+      "append_batch_size": 3,
+      "append_batch_bytes": 4096,
+      "append_coalesced_writes": 2,
+      "append_durability_failures": 0,
+      "page_writes": 2,
+      "block_writes": 2,
+      "bytes_written": 4096
+    },
+    "storage_lifecycle_phases": [
+      "prepare",
+      "reclaim",
+      "evict",
+      "expire",
+      "page_gc",
+      "block_gc",
+      "compaction",
+      "index_gc",
+      "delayed_destroy",
+      "follower_cursor_safety",
+      "watermark_progress"
+    ],
+    "storage_reclaim_semantics": [
+      "cache_eviction_memory_only",
+      "logical_tombstone_required",
+      "stale_pages_blocks_rewritten_or_skipped",
+      "reclaimed_bytes_reported",
+      "physical_reclaim_errors_zero"
+    ],
+    "storage_reclaim_scope": {
+      "owner": "temporalstore_storage_lifecycle",
+      "matrixark_context_gc_role": "marks_logical_raw_event_eligibility_only",
+      "physical_reclaim_context_specific": false
+    },
+    "storage_cache_layers": [
+      "memory_object_cache",
+      "page_index_cache",
+      "block_index_cache",
+      "disk_block_cache",
+      "shared_store_read_through"
+    ],
+    "storage_cache_semantics": [
+      "lookup_hot_to_cold",
+      "refill_from_durable_on_miss",
+      "invalidate_on_append_watermark",
+      "invalidate_on_compaction_watermark",
+      "cold_scan_no_promote",
+      "writeback_backpressure_reported"
+    ],
+    "storage_lifecycle_metrics": {
+      "storage_manager_prepare_count": 1,
+      "storage_manager_reclaim_count": 1,
+      "storage_manager_evict_count": 1,
+      "storage_manager_expire_count": 1,
+      "storage_manager_page_gc_count": 1,
+      "storage_manager_block_gc_count": 1,
+      "storage_manager_compaction_count": 1,
+      "storage_manager_index_gc_count": 1,
+      "storage_manager_delayed_destroy_count": 1,
+      "storage_manager_follower_cursor_safety_count": 1,
+      "storage_manager_watermark_progress_count": 1,
+      "storage_manager_loop_ms": 5,
+      "stream_rollover_count": 1,
+      "segment_open_count": 1,
+      "segment_sealed_count": 1,
+      "storage_zone_total_bytes": 10485760,
+      "storage_zone_used_bytes": 4096,
+      "storage_zone_stale_bytes": 1024,
+      "append_log_replay_records": 3,
+      "append_log_reclaimed_records": 1,
+      "slot_dirty_generation_count": 2,
+      "slot_tombstone_count": 1,
+      "slot_stale_ref_count": 1,
+      "slot_owner_mismatch_count": 0,
+      "page_index_rebuild_count": 1,
+      "block_index_rebuild_count": 1,
+      "object_index_rebuild_count": 1,
+      "cache_admissions": 10,
+      "cache_evictions": 2,
+      "cache_rehydrates": 1,
+      "memory_cache_hits": 11,
+      "memory_cache_misses": 3,
+      "page_index_cache_hits": 9,
+      "page_index_cache_misses": 1,
+      "block_index_cache_hits": 8,
+      "block_index_cache_misses": 1,
+      "disk_cache_hits": 4,
+      "disk_cache_misses": 1,
+      "shared_store_read_throughs": 1,
+      "cache_refills": 3,
+      "cache_invalidations": 2,
+      "cache_writeback_queue_depth": 0,
+      "cache_writeback_rejections": 0,
+      "cold_scan_no_cache_reads": 3,
+      "hot_cache_promotions": 0,
+      "tombstone_records": 1,
+      "stale_page_tombstones": 1,
+      "stale_block_tombstones": 1,
+      "stale_pages_rewritten": 1,
+      "stale_pages_skipped": 1,
+      "stale_blocks_rewritten": 1,
+      "stale_blocks_skipped": 1,
+      "delayed_destroy_backlog": 0,
+      "follower_cursor_retention_floor": 0,
+      "reclaimable_bytes": 1024,
+      "compaction_reclaimed_bytes": 512,
+      "physical_reclaimed_bytes": 512,
+      "physical_reclaim_errors": 0,
+      "append_watermark": 7,
+      "compaction_watermark": 6
+    },
+    "storage_manager_contract": {
+      "manager_identity": "StorageManager/StoreManager",
+      "native_public_name": "StorageManager",
+      "rust_public_name": "StoreManager",
+      "phase_order": [
+        "prepare",
+        "reclaim",
+        "evict",
+        "expire",
+        "page_gc",
+        "block_gc",
+        "compaction",
+        "index_gc",
+        "delayed_destroy",
+        "follower_cursor_safety",
+        "watermark_progress"
+      ],
+      "phase_metrics": {
+        "prepare": "storage_manager_prepare_count",
+        "reclaim": "storage_manager_reclaim_count",
+        "evict": "storage_manager_evict_count",
+        "expire": "storage_manager_expire_count",
+        "page_gc": "storage_manager_page_gc_count",
+        "block_gc": "storage_manager_block_gc_count",
+        "compaction": "storage_manager_compaction_count",
+        "index_gc": "storage_manager_index_gc_count",
+        "delayed_destroy": "storage_manager_delayed_destroy_count",
+        "follower_cursor_safety": "storage_manager_follower_cursor_safety_count",
+        "watermark_progress": "storage_manager_watermark_progress_count"
+      },
+      "phase_counts": {
+        "prepare": 1,
+        "reclaim": 1,
+        "evict": 1,
+        "expire": 1,
+        "page_gc": 1,
+        "block_gc": 1,
+        "compaction": 1,
+        "index_gc": 1,
+        "delayed_destroy": 1,
+        "follower_cursor_safety": 1,
+        "watermark_progress": 1
+      },
+      "loop_metric": "storage_manager_loop_ms",
+      "loop_ms": 5.0,
+      "phase_order_enforced": true,
+      "missing_phase_count": 0
+    },
+    "storage_index_contract": {
+      "page_address_codec": "PageAddress",
+      "block_address_codec": "BlockAddress",
+      "stable_order": [
+        "shard_id",
+        "zone_id",
+        "segment_id",
+        "page_id",
+        "offset"
+      ],
+      "slot_index": "slot -> object/page refs",
+      "page_index": "logical timestamp/key ranges -> page addresses",
+      "block_index": "page addresses -> physical durable locations",
+      "required_behaviors": [
+        "page_address_encode_decode",
+        "page_address_stable_order",
+        "timestamp_range_page_lookup",
+        "slot_index_maps_slot_to_object_page_refs",
+        "object_index_maps_model_table_object_key_to_page_chain",
+        "page_index_maps_logical_ranges_to_page_addresses",
+        "block_index_maps_page_addresses_to_durable_locations",
+        "restart_rebuilds_page_block_object_indexes"
+      ],
+      "page_address_encode_decode": true,
+      "block_address_encode_decode": true,
+      "stable_order_verified": true,
+      "timestamp_range_lookup_verified": true,
+      "slot_index_entry_count": 2,
+      "slot_object_ref_count": 1,
+      "slot_page_ref_count": 3,
+      "object_index_entry_count": 1,
+      "page_index_entry_count": 1,
+      "block_index_entry_count": 1,
+      "restart_rebuild_verified": true,
+      "unreadable_page_refs": 0,
+      "checksum_mismatches": 0,
+      "object_index_entry": "{model/table/object_key} -> current page chain"
+    },
+    "storage_cache_contract": {
+      "layers": [
+        "memory_object_cache",
+        "page_index_cache",
+        "block_index_cache",
+        "disk_block_cache",
+        "shared_store_read_through"
+      ],
+      "semantics": [
+        "lookup_hot_to_cold",
+        "refill_from_durable_on_miss",
+        "invalidate_on_append_watermark",
+        "invalidate_on_compaction_watermark",
+        "cold_scan_no_promote",
+        "writeback_backpressure_reported"
+      ],
+      "metrics": [
+        "memory_cache_hits",
+        "memory_cache_misses",
+        "page_index_cache_hits",
+        "page_index_cache_misses",
+        "block_index_cache_hits",
+        "block_index_cache_misses",
+        "disk_cache_hits",
+        "disk_cache_misses",
+        "shared_store_read_throughs",
+        "cache_refills",
+        "cache_invalidations",
+        "cache_writeback_queue_depth",
+        "cache_writeback_rejections"
+      ],
+      "hot_to_cold_lookup": true,
+      "durable_refill_on_miss": true,
+      "append_watermark_invalidation": true,
+      "compaction_watermark_invalidation": true,
+      "cold_scan_no_promote": true,
+      "writeback_backpressure_measured": true,
+      "cache_refills": 3,
+      "cache_invalidations": 2,
+      "cache_writeback_queue_depth": 0,
+      "cache_writeback_rejections": 0,
+      "hot_cache_promotions": 0
+    },
+    "storage_reclaim_contract": {
+      "cache_eviction_frees_memory_only": true,
+      "logical_gc_marks_expired_deletable": true,
+      "physical_reclaim_requires_compaction_or_safe_skip": true,
+      "cache_evictions": 2,
+      "tombstone_records": 1,
+      "stale_page_tombstones": 1,
+      "stale_block_tombstones": 1,
+      "stale_pages_rewritten": 1,
+      "stale_pages_skipped": 1,
+      "stale_blocks_rewritten": 1,
+      "stale_blocks_skipped": 1,
+      "reclaimable_bytes": 1024,
+      "compaction_reclaimed_bytes": 512,
+      "physical_reclaimed_bytes": 512,
+      "physical_reclaim_errors": 0
+    },
+    "storage_safety_snapshot": {
+      "append_watermark": 42,
+      "compaction_watermark": 7,
+      "tombstone_records": 3,
+      "gc_eligible_record_count": 3,
+      "reclaimable_bytes": 1024,
+      "follower_cursor_retention_floor": 0,
+      "follower_cursor_blocked_reclaim_count": 2,
+      "follower_cursor_safe_to_reclaim": false,
+      "physical_reclaim_errors": 0
+    },
+    "storage_watermark_snapshot": {
+      "append_watermark": 42,
+      "compaction_watermark": 7,
+      "follower_cursor_retention_floor": 0,
+      "follower_cursor_safe_watermark": 7,
+      "page_index_rebuild_watermark": 1,
+      "block_index_rebuild_watermark": 1,
+      "object_index_rebuild_watermark": 1,
+      "append_watermark_samples": [
+        {"shard_id": 1, "slot_id": 7, "log_index": 42, "timestamp_ms": 1000}
+      ],
+      "compaction_watermark_samples": [
+        {"shard_id": 1, "safe_generation": 7, "safe_timestamp_ms": 7, "follower_floor": 0}
+      ]
+    },
+    "storage_index_snapshot": {
+      "page_index_entry_count": 2,
+      "block_index_entry_count": 2,
+      "object_index_entry_count": 2,
+      "slot_index_entry_count": 1,
+      "slot_object_ref_count": 2,
+      "slot_page_ref_count": 2,
+      "page_address_count": 2,
+      "unreadable_page_refs": 0,
+      "checksum_mismatches": 0,
+      "missing_owner_ref_count": 0,
+      "owner_mismatch_count": 0,
+      "restart_rebuild_verified": true,
+      "page_index_entry_samples": [
+        {
+          "logical_key": "model/table/object-a",
+          "timestamp_range": [1000, 1999],
+          "page_addresses": [
+            {"shard_id": 1, "zone_id": 2, "segment_id": 3, "page_id": 4, "offset": 128, "length": 512, "generation": 7}
+          ],
+          "append_watermark": 42,
+          "generation": 7
+        }
+      ],
+      "block_index_entry_samples": [
+        {
+          "page_address": {"shard_id": 1, "zone_id": 2, "segment_id": 3, "page_id": 4, "offset": 128, "length": 512, "generation": 7},
+          "block_address": {"shard_id": 1, "zone_id": 2, "block_id": 3, "offset": 128, "length": 512, "checksum": "sha256:rust-sample"},
+          "extent": 2,
+          "checksum": "sha256:rust-sample",
+          "generation": 7
+        }
+      ],
+      "object_index_entry_samples": [
+        {
+          "model": "model",
+          "table": "table",
+          "object_key": "object-a",
+          "page_chain": [
+            {"shard_id": 1, "zone_id": 2, "segment_id": 3, "page_id": 4, "offset": 128, "length": 512, "generation": 7}
+          ],
+          "tombstone": false,
+          "generation": 7
+        }
+      ]
+    },
+    "storage_topology_snapshot": {
+      "storage_zone_count": 2,
+      "active_storage_zones": 1,
+      "sealed_storage_zones": 1,
+      "stream_segment_count": 2,
+      "segment_open_count": 1,
+      "segment_sealed_count": 1,
+      "delayed_destroy_backlog": 1,
+      "storage_zone_total_bytes": 4096,
+      "storage_zone_used_bytes": 3072,
+      "storage_zone_stale_bytes": 1024,
+      "append_log_replay_records": 4,
+      "append_log_reclaimed_records": 1,
+      "storage_zone_samples": [
+        {"zone_id": 2, "total_bytes": 4096, "used_bytes": 3072, "stale_bytes": 1024, "segments": [3, 4]}
+      ],
+      "stream_samples": [
+        {"stream_id": "rust:page_stream", "segments": [3, 4], "rollover_count": 1, "sealed_segment_count": 1}
+      ],
+      "segment_samples": [
+        {"segment_id": 3, "extent": 2, "start_offset": 128, "sealed": false, "generation": 7}
+      ],
+      "extent_samples": [
+        {"extent": 2, "block_range": [128, 640], "reclaim_state": "mixed_live_stale", "generation": 7}
+      ],
+      "slot_samples": [
+        {
+          "slot_id": 7,
+          "dirty_generation": 7,
+          "object_refs": [7],
+          "page_refs": [
+            {"shard_id": 1, "zone_id": 2, "segment_id": 3, "page_id": 4, "offset": 128, "length": 512, "generation": 7}
+          ],
+          "tombstones": ["rust:model:object-7"],
+          "owner_mismatch_count": 0
+        }
+      ]
+    },
+    "storage_gc_snapshot": {
+      "tombstone_records": 1,
+      "stale_page_tombstones": 1,
+      "stale_block_tombstones": 1,
+      "gc_eligible_record_count": 3,
+      "reclaimable_bytes": 1024,
+      "compaction_reclaimed_bytes": 512,
+      "physical_reclaimed_bytes": 512,
+      "physical_reclaim_errors": 0,
+      "follower_cursor_retention_floor": 0,
+      "follower_cursor_blocked_reclaim_count": 2,
+      "follower_cursor_safe_to_reclaim": false,
+      "tombstone_samples": [
+        {
+          "ref": "rust:model:object-7",
+          "generation": 7,
+          "deleted_at_ms": 1782600000000,
+          "reason": "object_tombstone"
+        }
+      ],
+      "gc_eligibility_samples": [
+        {
+          "ref": "rust:model:object-7",
+          "eligible_after_ms": 1782600000000,
+          "has_tombstone": true,
+          "follower_safe": false,
+          "reclaimable_bytes": 0
+        }
+      ],
+      "follower_cursor_safety_samples": [
+        {
+          "min_follower_cursor": 0,
+          "blocked_reclaim_bytes": 4096,
+          "safe_to_reclaim": false
+        }
+      ]
+    }
+  }
+}

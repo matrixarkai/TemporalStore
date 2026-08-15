@@ -1,0 +1,158 @@
+{
+  "corpus_candidates": 13790,
+  "queries": [
+    {
+      "query": "What did we decide about real-time Codex/Claude prompt ingestion via hooks?",
+      "score_gt0_candidates": 4242,
+      "budgets": [
+        {
+          "budget": 3000,
+          "strict_refs": 8,
+          "relaxed_refs": 8,
+          "identical": true,
+          "relaxed_zero_score_refs": 0,
+          "strict_tokens": 3000,
+          "relaxed_tokens": 3000
+        },
+        {
+          "budget": 8000,
+          "strict_refs": 6,
+          "relaxed_refs": 6,
+          "identical": true,
+          "relaxed_zero_score_refs": 0,
+          "strict_tokens": 8000,
+          "relaxed_tokens": 8000
+        },
+        {
+          "budget": 30000,
+          "strict_refs": 11,
+          "relaxed_refs": 11,
+          "identical": true,
+          "relaxed_zero_score_refs": 0,
+          "strict_tokens": 30000,
+          "relaxed_tokens": 30000
+        },
+        {
+          "budget": 100000,
+          "strict_refs": 99,
+          "relaxed_refs": 99,
+          "identical": true,
+          "relaxed_zero_score_refs": 0,
+          "strict_tokens": 100000,
+          "relaxed_tokens": 100000
+        },
+        {
+          "budget": 300000,
+          "strict_refs": 521,
+          "relaxed_refs": 521,
+          "identical": true,
+          "relaxed_zero_score_refs": 0,
+          "strict_tokens": 300000,
+          "relaxed_tokens": 300000
+        }
+      ]
+    },
+    {
+      "query": "Why did that matter for token savings?",
+      "score_gt0_candidates": 1583,
+      "budgets": [
+        {
+          "budget": 3000,
+          "strict_refs": 7,
+          "relaxed_refs": 7,
+          "identical": true,
+          "relaxed_zero_score_refs": 0,
+          "strict_tokens": 3000,
+          "relaxed_tokens": 3000
+        },
+        {
+          "budget": 8000,
+          "strict_refs": 10,
+          "relaxed_refs": 11,
+          "identical": false,
+          "relaxed_zero_score_refs": 1,
+          "strict_tokens": 7999,
+          "relaxed_tokens": 8000
+        },
+        {
+          "budget": 30000,
+          "strict_refs": 41,
+          "relaxed_refs": 41,
+          "identical": true,
+          "relaxed_zero_score_refs": 0,
+          "strict_tokens": 30000,
+          "relaxed_tokens": 30000
+        },
+        {
+          "budget": 100000,
+          "strict_refs": 82,
+          "relaxed_refs": 82,
+          "identical": true,
+          "relaxed_zero_score_refs": 0,
+          "strict_tokens": 100000,
+          "relaxed_tokens": 100000
+        },
+        {
+          "budget": 300000,
+          "strict_refs": 612,
+          "relaxed_refs": 612,
+          "identical": true,
+          "relaxed_zero_score_refs": 0,
+          "strict_tokens": 300000,
+          "relaxed_tokens": 300000
+        }
+      ]
+    },
+    {
+      "query": "What did the 3-arm token and quality benchmark show?",
+      "score_gt0_candidates": 1816,
+      "budgets": [
+        {
+          "budget": 3000,
+          "strict_refs": 6,
+          "relaxed_refs": 6,
+          "identical": true,
+          "relaxed_zero_score_refs": 0,
+          "strict_tokens": 3000,
+          "relaxed_tokens": 3000
+        },
+        {
+          "budget": 8000,
+          "strict_refs": 9,
+          "relaxed_refs": 9,
+          "identical": true,
+          "relaxed_zero_score_refs": 0,
+          "strict_tokens": 8000,
+          "relaxed_tokens": 8000
+        },
+        {
+          "budget": 30000,
+          "strict_refs": 30,
+          "relaxed_refs": 30,
+          "identical": true,
+          "relaxed_zero_score_refs": 0,
+          "strict_tokens": 30000,
+          "relaxed_tokens": 30000
+        },
+        {
+          "budget": 100000,
+          "strict_refs": 100,
+          "relaxed_refs": 100,
+          "identical": true,
+          "relaxed_zero_score_refs": 0,
+          "strict_tokens": 100000,
+          "relaxed_tokens": 100000
+        },
+        {
+          "budget": 300000,
+          "strict_refs": 720,
+          "relaxed_refs": 720,
+          "identical": true,
+          "relaxed_zero_score_refs": 0,
+          "strict_tokens": 300000,
+          "relaxed_tokens": 300000
+        }
+      ]
+    }
+  ]
+}

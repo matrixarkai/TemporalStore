@@ -1,0 +1,781 @@
+{
+  "schema_version": 1,
+  "name": "raft_data_node_parity_report_pair",
+  "description": "Synthetic conformance report pair for validate_raft_data_node_parity.",
+  "native": {
+    "schema_version": 1,
+    "raft_public_contract": {
+      "raft_node_id": "RaftNodeId",
+      "raft_group_id": "RaftGroupId",
+      "term": "Term",
+      "log_index": "LogIndex",
+      "commit_index": "CommitIndex",
+      "applied_index": "AppliedIndex",
+      "snapshot_index": "SnapshotIndex",
+      "leader_id": "LeaderId",
+      "membership_config": "MembershipConfig",
+      "replica_set": "ReplicaSet",
+      "learner_set": "LearnerSet",
+      "raft_health": "RaftHealth",
+      "raft_failover_event": "RaftFailoverEvent"
+    },
+    "raft_backend_identity": {
+      "backend": "native",
+      "engine": "temporalstore-native",
+      "raft_library": "temporalstore-raft"
+    },
+    "metaserver_raft": {
+      "raft_group_id": "meta:default",
+      "leader_id": 1,
+      "term": 4,
+      "commit_index": 128,
+      "applied_index": 128,
+      "snapshot_index": 96,
+      "membership_config": {
+        "voters": [
+          1,
+          2,
+          3
+        ],
+        "learners": []
+      },
+      "replica_set": [
+        1,
+        2,
+        3
+      ],
+      "learner_set": [],
+      "raft_health": {
+        "status": "healthy",
+        "quorum": true
+      },
+      "behavior_evidence": {
+        "leader_election": {
+          "status": "passed",
+          "leader_id": 1,
+          "term": 4
+        },
+        "namespace_table_creation": {
+          "status": "passed",
+          "namespace": "deploy_ns",
+          "table": "deploy_table"
+        },
+        "slot_assignment": {
+          "status": "passed",
+          "assigned_slots": [
+            1,
+            2,
+            3
+          ]
+        },
+        "primary_placement": {
+          "status": "passed",
+          "primary_node_id": 11
+        },
+        "topology_readiness": {
+          "status": "passed",
+          "topology_ready": true
+        },
+        "membership_add_remove": {
+          "status": "passed",
+          "added": [
+            4
+          ],
+          "removed": [
+            2
+          ]
+        },
+        "follower_catch_up": {
+          "status": "passed",
+          "max_lag": 0
+        },
+        "leader_failover": {
+          "status": "passed",
+          "old_leader_id": 2,
+          "new_leader_id": 1
+        },
+        "restart_recovery": {
+          "status": "passed",
+          "commit_index_after_restart": 128
+        },
+        "snapshot_restore": {
+          "status": "passed",
+          "snapshot_index": 96,
+          "checksum_match": true
+        }
+      },
+      "metrics": {
+        "leader_election_ms": 12,
+        "term_changes": 1,
+        "commit_index": 128,
+        "applied_index": 128,
+        "membership_change_count": 2,
+        "topology_ready_ms": 25,
+        "snapshot_restore_ms": 18,
+        "failed_ready_checks": 0,
+        "stale_leader_observed": false
+      }
+    },
+    "data_node_raft": {
+      "raft_group_id": "data:slot-0001",
+      "leader_id": 11,
+      "term": 7,
+      "commit_index": 4096,
+      "applied_index": 4096,
+      "snapshot_index": 3072,
+      "membership_config": {
+        "voters": [
+          11,
+          12,
+          13
+        ],
+        "learners": []
+      },
+      "replica_set": [
+        11,
+        12,
+        13
+      ],
+      "learner_set": [],
+      "raft_health": {
+        "status": "healthy",
+        "quorum": true
+      },
+      "metrics": {
+        "leader_election_ms": 15,
+        "term_changes": 1,
+        "commit_index": 4096,
+        "applied_index": 4096,
+        "membership_change_count": 1,
+        "topology_ready_ms": 31,
+        "snapshot_restore_ms": 33,
+        "failed_ready_checks": 0,
+        "stale_leader_observed": false,
+        "append_qps": 1200.0,
+        "replication_p50_ms": 4.0,
+        "replication_p95_ms": 11.0,
+        "replication_p99_ms": 19.0,
+        "apply_lag_max": 0,
+        "commit_lag_max": 0,
+        "follower_visible_lag_ms": 7,
+        "failover_recovery_ms": 45,
+        "snapshot_install_ms": 33,
+        "quorum_write_failures": 0,
+        "stale_read_count": 0
+      },
+      "behavior_evidence": {
+        "append_replication": {
+          "status": "passed",
+          "leader_append_index": 4096,
+          "replicated_to": [
+            11,
+            12,
+            13
+          ]
+        },
+        "quorum_write": {
+          "status": "passed",
+          "quorum_size": 2,
+          "ack_count": 3
+        },
+        "async_sync_apply": {
+          "status": "passed",
+          "async_applied_index": 4096,
+          "sync_applied_index": 4096
+        },
+        "follower_visibility": {
+          "status": "passed",
+          "visible_on_followers": [
+            12,
+            13
+          ],
+          "max_visibility_lag": 0
+        },
+        "leader_failover": {
+          "status": "passed",
+          "old_leader_id": 12,
+          "new_leader_id": 11
+        },
+        "replica_add_remove": {
+          "status": "passed",
+          "added": [
+            14
+          ],
+          "removed": [
+            12
+          ]
+        },
+        "learner_promotion": {
+          "status": "passed",
+          "learner_id": 14,
+          "promoted_to_voter": true
+        },
+        "snapshot_install": {
+          "status": "passed",
+          "snapshot_index": 3072,
+          "installed_on": [
+            12,
+            13
+          ]
+        },
+        "apply_lag_recovery": {
+          "status": "passed",
+          "max_lag_before": 128,
+          "max_lag_after": 0
+        },
+        "read_after_write_under_leader_change": {
+          "status": "passed",
+          "write_index": 4096,
+          "read_index_after_failover": 4096
+        }
+      }
+    },
+    "membership_events": [
+      {
+        "event": "add_voter",
+        "raft_group_id": "data:slot-0001",
+        "term": 7,
+        "membership_config": {
+          "voters": [
+            11,
+            12,
+            13
+          ],
+          "learners": []
+        }
+      }
+    ],
+    "leader_election_events": [
+      {
+        "event": "leader_elected",
+        "raft_group_id": "meta:default",
+        "leader_id": 1,
+        "term": 4,
+        "commit_index": 128,
+        "applied_index": 128
+      }
+    ],
+    "replication_metrics": {
+      "commit_index": 4096,
+      "applied_index": 4096,
+      "max_apply_lag": 0,
+      "stale_read_count": 0
+    },
+    "failover_metrics": {
+      "raft_failover_event": {
+        "status": "passed",
+        "old_leader_id": 10,
+        "new_leader_id": 11,
+        "term": 7
+      },
+      "failover_recovery_ms": 45
+    },
+    "snapshot_restore_metrics": {
+      "snapshot_index": 3072,
+      "snapshot_restore_ms": 33,
+      "checksum_match": true
+    },
+    "readiness": {
+      "status": "ready",
+      "topology_ready": true,
+      "metaserver_ready": true,
+      "data_node_ready": true
+    },
+    "parity_status": {
+      "feature_correct": true,
+      "performance_candidate": true,
+      "production_performance_parity": false
+    },
+    "test_matrix": {
+      "three_node_metaserver_raft": {
+        "status": "passed"
+      },
+      "three_node_data_node_raft": {
+        "status": "passed"
+      },
+      "combined_metaserver_data_node_raft": {
+        "status": "passed"
+      },
+      "leader_kill_restart": {
+        "status": "passed"
+      },
+      "follower_kill_restart": {
+        "status": "passed"
+      },
+      "add_replica": {
+        "status": "passed"
+      },
+      "remove_replica": {
+        "status": "passed"
+      },
+      "learner_catch_up": {
+        "status": "passed"
+      },
+      "snapshot_restore": {
+        "status": "passed"
+      },
+      "network_delay_simulation": {
+        "status": "passed"
+      },
+      "disk_restart_recovery": {
+        "status": "passed"
+      },
+      "stale_follower_cursor_blocks_unsafe_reclaim": {
+        "status": "passed"
+      }
+    },
+    "fail_closed_gates": {
+      "same_quorum_rule": {
+        "status": "passed",
+        "quorum_rule": "majority(voters)"
+      },
+      "commit_applied_index_no_unexpected_drift": {
+        "status": "passed",
+        "commit_index_drift": 0,
+        "applied_index_drift": 0,
+        "max_allowed_drift": 0
+      },
+      "no_stale_follower_reads_when_ready": {
+        "status": "passed",
+        "readiness_status": "healthy",
+        "stale_read_count": 0
+      },
+      "membership_change_result_match": {
+        "status": "passed",
+        "membership_change_result": "add_remove_committed"
+      },
+      "snapshot_restore_record_count_checksum_match": {
+        "status": "passed",
+        "record_count_match": true,
+        "checksum_match": true
+      },
+      "metaserver_ready_after_slot_primary_assignment": {
+        "status": "passed",
+        "topology_ready": true,
+        "slot_assignment_complete": true,
+        "primary_assignment_complete": true
+      },
+      "data_node_unhealthy_when_apply_lag_exceeds_threshold": {
+        "status": "passed",
+        "raft_health_status": "healthy",
+        "apply_lag_max": 0,
+        "apply_lag_threshold": 64
+      }
+    },
+    "report_summary": {
+      "command": "validate_raft_data_node_parity",
+      "backend": "native",
+      "storage_mode": "raft sync",
+      "metaserver_status": "ready",
+      "data_node_status": "ready",
+      "leader_election_result": "passed",
+      "membership_result": "passed",
+      "failover_result": "passed",
+      "snapshot_result": "passed",
+      "latency_qps": {
+        "append_qps": 1200.0,
+        "replication_p95_ms": 11.0
+      },
+      "errors": [],
+      "open_blockers": [],
+      "status_labels": {
+        "feature_correct": true,
+        "performance_candidate": true,
+        "production_performance_parity": false
+      },
+      "status_label_descriptions": {
+        "feature_correct": "shared Raft contract passes",
+        "performance_candidate": "live and Rust runs complete under same config",
+        "production_performance_parity": "failover/recovery/QPS/latency within thresholds"
+      }
+    }
+  },
+  "rust": {
+    "schema_version": 1,
+    "raft_public_contract": {
+      "raft_node_id": "RaftNodeId",
+      "raft_group_id": "RaftGroupId",
+      "term": "Term",
+      "log_index": "LogIndex",
+      "commit_index": "CommitIndex",
+      "applied_index": "AppliedIndex",
+      "snapshot_index": "SnapshotIndex",
+      "leader_id": "LeaderId",
+      "membership_config": "MembershipConfig",
+      "replica_set": "ReplicaSet",
+      "learner_set": "LearnerSet",
+      "raft_health": "RaftHealth",
+      "raft_failover_event": "RaftFailoverEvent"
+    },
+    "raft_backend_identity": {
+      "backend": "rust",
+      "engine": "temporalstore-rust",
+      "raft_library": "rustraft"
+    },
+    "metaserver_raft": {
+      "raft_group_id": "meta:default",
+      "leader_id": 1,
+      "term": 4,
+      "commit_index": 128,
+      "applied_index": 128,
+      "snapshot_index": 96,
+      "membership_config": {
+        "voters": [
+          1,
+          2,
+          3
+        ],
+        "learners": []
+      },
+      "replica_set": [
+        1,
+        2,
+        3
+      ],
+      "learner_set": [],
+      "raft_health": {
+        "status": "healthy",
+        "quorum": true
+      },
+      "behavior_evidence": {
+        "leader_election": {
+          "status": "passed",
+          "leader_id": 1,
+          "term": 4
+        },
+        "namespace_table_creation": {
+          "status": "passed",
+          "namespace": "deploy_ns",
+          "table": "deploy_table"
+        },
+        "slot_assignment": {
+          "status": "passed",
+          "assigned_slots": [
+            1,
+            2,
+            3
+          ]
+        },
+        "primary_placement": {
+          "status": "passed",
+          "primary_node_id": 11
+        },
+        "topology_readiness": {
+          "status": "passed",
+          "topology_ready": true
+        },
+        "membership_add_remove": {
+          "status": "passed",
+          "added": [
+            4
+          ],
+          "removed": [
+            2
+          ]
+        },
+        "follower_catch_up": {
+          "status": "passed",
+          "max_lag": 0
+        },
+        "leader_failover": {
+          "status": "passed",
+          "old_leader_id": 2,
+          "new_leader_id": 1
+        },
+        "restart_recovery": {
+          "status": "passed",
+          "commit_index_after_restart": 128
+        },
+        "snapshot_restore": {
+          "status": "passed",
+          "snapshot_index": 96,
+          "checksum_match": true
+        }
+      },
+      "metrics": {
+        "leader_election_ms": 12,
+        "term_changes": 1,
+        "commit_index": 128,
+        "applied_index": 128,
+        "membership_change_count": 2,
+        "topology_ready_ms": 25,
+        "snapshot_restore_ms": 18,
+        "failed_ready_checks": 0,
+        "stale_leader_observed": false
+      }
+    },
+    "data_node_raft": {
+      "raft_group_id": "data:slot-0001",
+      "leader_id": 11,
+      "term": 7,
+      "commit_index": 4096,
+      "applied_index": 4096,
+      "snapshot_index": 3072,
+      "membership_config": {
+        "voters": [
+          11,
+          12,
+          13
+        ],
+        "learners": []
+      },
+      "replica_set": [
+        11,
+        12,
+        13
+      ],
+      "learner_set": [],
+      "raft_health": {
+        "status": "healthy",
+        "quorum": true
+      },
+      "metrics": {
+        "leader_election_ms": 15,
+        "term_changes": 1,
+        "commit_index": 4096,
+        "applied_index": 4096,
+        "membership_change_count": 1,
+        "topology_ready_ms": 31,
+        "snapshot_restore_ms": 33,
+        "failed_ready_checks": 0,
+        "stale_leader_observed": false,
+        "append_qps": 1200.0,
+        "replication_p50_ms": 4.0,
+        "replication_p95_ms": 11.0,
+        "replication_p99_ms": 19.0,
+        "apply_lag_max": 0,
+        "commit_lag_max": 0,
+        "follower_visible_lag_ms": 7,
+        "failover_recovery_ms": 45,
+        "snapshot_install_ms": 33,
+        "quorum_write_failures": 0,
+        "stale_read_count": 0
+      },
+      "behavior_evidence": {
+        "append_replication": {
+          "status": "passed",
+          "leader_append_index": 4096,
+          "replicated_to": [
+            11,
+            12,
+            13
+          ]
+        },
+        "quorum_write": {
+          "status": "passed",
+          "quorum_size": 2,
+          "ack_count": 3
+        },
+        "async_sync_apply": {
+          "status": "passed",
+          "async_applied_index": 4096,
+          "sync_applied_index": 4096
+        },
+        "follower_visibility": {
+          "status": "passed",
+          "visible_on_followers": [
+            12,
+            13
+          ],
+          "max_visibility_lag": 0
+        },
+        "leader_failover": {
+          "status": "passed",
+          "old_leader_id": 12,
+          "new_leader_id": 11
+        },
+        "replica_add_remove": {
+          "status": "passed",
+          "added": [
+            14
+          ],
+          "removed": [
+            12
+          ]
+        },
+        "learner_promotion": {
+          "status": "passed",
+          "learner_id": 14,
+          "promoted_to_voter": true
+        },
+        "snapshot_install": {
+          "status": "passed",
+          "snapshot_index": 3072,
+          "installed_on": [
+            12,
+            13
+          ]
+        },
+        "apply_lag_recovery": {
+          "status": "passed",
+          "max_lag_before": 128,
+          "max_lag_after": 0
+        },
+        "read_after_write_under_leader_change": {
+          "status": "passed",
+          "write_index": 4096,
+          "read_index_after_failover": 4096
+        }
+      }
+    },
+    "membership_events": [
+      {
+        "event": "add_voter",
+        "raft_group_id": "data:slot-0001",
+        "term": 7,
+        "membership_config": {
+          "voters": [
+            11,
+            12,
+            13
+          ],
+          "learners": []
+        }
+      }
+    ],
+    "leader_election_events": [
+      {
+        "event": "leader_elected",
+        "raft_group_id": "meta:default",
+        "leader_id": 1,
+        "term": 4,
+        "commit_index": 128,
+        "applied_index": 128
+      }
+    ],
+    "replication_metrics": {
+      "commit_index": 4096,
+      "applied_index": 4096,
+      "max_apply_lag": 0,
+      "stale_read_count": 0
+    },
+    "failover_metrics": {
+      "raft_failover_event": {
+        "status": "passed",
+        "old_leader_id": 10,
+        "new_leader_id": 11,
+        "term": 7
+      },
+      "failover_recovery_ms": 45
+    },
+    "snapshot_restore_metrics": {
+      "snapshot_index": 3072,
+      "snapshot_restore_ms": 33,
+      "checksum_match": true
+    },
+    "readiness": {
+      "status": "ready",
+      "topology_ready": true,
+      "metaserver_ready": true,
+      "data_node_ready": true
+    },
+    "parity_status": {
+      "feature_correct": true,
+      "performance_candidate": true,
+      "production_performance_parity": false
+    },
+    "test_matrix": {
+      "three_node_metaserver_raft": {
+        "status": "passed"
+      },
+      "three_node_data_node_raft": {
+        "status": "passed"
+      },
+      "combined_metaserver_data_node_raft": {
+        "status": "passed"
+      },
+      "leader_kill_restart": {
+        "status": "passed"
+      },
+      "follower_kill_restart": {
+        "status": "passed"
+      },
+      "add_replica": {
+        "status": "passed"
+      },
+      "remove_replica": {
+        "status": "passed"
+      },
+      "learner_catch_up": {
+        "status": "passed"
+      },
+      "snapshot_restore": {
+        "status": "passed"
+      },
+      "network_delay_simulation": {
+        "status": "passed"
+      },
+      "disk_restart_recovery": {
+        "status": "passed"
+      },
+      "stale_follower_cursor_blocks_unsafe_reclaim": {
+        "status": "passed"
+      }
+    },
+    "fail_closed_gates": {
+      "same_quorum_rule": {
+        "status": "passed",
+        "quorum_rule": "majority(voters)"
+      },
+      "commit_applied_index_no_unexpected_drift": {
+        "status": "passed",
+        "commit_index_drift": 0,
+        "applied_index_drift": 0,
+        "max_allowed_drift": 0
+      },
+      "no_stale_follower_reads_when_ready": {
+        "status": "passed",
+        "readiness_status": "healthy",
+        "stale_read_count": 0
+      },
+      "membership_change_result_match": {
+        "status": "passed",
+        "membership_change_result": "add_remove_committed"
+      },
+      "snapshot_restore_record_count_checksum_match": {
+        "status": "passed",
+        "record_count_match": true,
+        "checksum_match": true
+      },
+      "metaserver_ready_after_slot_primary_assignment": {
+        "status": "passed",
+        "topology_ready": true,
+        "slot_assignment_complete": true,
+        "primary_assignment_complete": true
+      },
+      "data_node_unhealthy_when_apply_lag_exceeds_threshold": {
+        "status": "passed",
+        "raft_health_status": "healthy",
+        "apply_lag_max": 0,
+        "apply_lag_threshold": 64
+      }
+    },
+    "report_summary": {
+      "command": "validate_raft_data_node_parity",
+      "backend": "rust",
+      "storage_mode": "raft sync",
+      "metaserver_status": "ready",
+      "data_node_status": "ready",
+      "leader_election_result": "passed",
+      "membership_result": "passed",
+      "failover_result": "passed",
+      "snapshot_result": "passed",
+      "latency_qps": {
+        "append_qps": 1200.0,
+        "replication_p95_ms": 11.0
+      },
+      "errors": [],
+      "open_blockers": [],
+      "status_labels": {
+        "feature_correct": true,
+        "performance_candidate": true,
+        "production_performance_parity": false
+      },
+      "status_label_descriptions": {
+        "feature_correct": "shared Raft contract passes",
+        "performance_candidate": "live and Rust runs complete under same config",
+        "production_performance_parity": "failover/recovery/QPS/latency within thresholds"
+      }
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "temporalstore-agent-hooks",
+  "version": "0.1.0",
+  "description": "Global Codex lifecycle hooks for MatrixArk context memory backed by TemporalStore.",
+  "author": {
+    "name": "MatrixArk"
+  },
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "TemporalStore Agent Hooks",
+    "shortDescription": "TemporalStore-backed memory hooks for Codex.",
+    "longDescription": "Ingests Codex prompts, tool outputs, and turn boundaries into MatrixArk backed by TemporalStore, and retrieves relevant context on UserPromptSubmit.",
+    "developerName": "MatrixArk",
+    "category": "Productivity",
+    "capabilities": [
+      "Global Codex memory ingestion",
+      "TemporalStore-backed context retrieval",
+      "Cross-session context continuity"
+    ]
+  }
+}

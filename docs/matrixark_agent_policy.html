@@ -1,0 +1,227 @@
+<!doctype html><meta charset='utf-8'><title>MatrixArk Agent Policy</title><style>body{font-family:Inter,Segoe UI,Arial,sans-serif;max-width:1120px;margin:32px auto;padding:0 24px;color:#172033;line-height:1.45}pre{white-space:pre-wrap;background:#f6f8fb;border:1px solid #dde5f0;padding:14px;overflow:auto;border-radius:8px}</style><pre># MatrixArk Agent Policy
+
+Use this policy in Codex, Claude, Cursor, or a vertical AI harness when the
+agent can call MatrixArk MCP tools.
+
+## Principle
+
+Use MatrixArk as durable remote context. Keep using native local context for
+currently open files, active buffers, terminal output, selected code, tool
+results, and the immediate conversation window.
+
+MatrixArk should provide:
+
+```text
+cross-session memory
+time-aware current state
+shared resources and runbooks
+skills and operating procedures
+accepted/rejected evidence
+team or enterprise governed context
+```
+
+## Before Answering
+
+Call `matrixark_retrieve` when the request may depend on prior or shared
+context.
+
+Use it for:
+
+```text
+previous decisions
+approvals or budget state
+prior debugging attempts
+customer/user preferences
+current-state facts
+shared runbooks/resources
+team skills
+cross-device context
+```
+
+Request shape:
+
+```json
+{
+  &quot;query&quot;: &quot;What did we decide about the GPU budget?&quot;,
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_acme&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_prod&quot;,
+    &quot;user_id&quot;: &quot;user_123&quot;,
+    &quot;session_id&quot;: &quot;cursor_thread_456&quot;
+  },
+  &quot;local_context&quot;: [
+    {&quot;ref&quot;: &quot;open-buffer:src/billing.py&quot;, &quot;text&quot;: &quot;short visible local summary&quot;},
+    {&quot;ref&quot;: &quot;tool-output:test&quot;, &quot;text&quot;: &quot;relevant test output summary&quot;}
+  ],
+  &quot;local_context_tokens&quot;: 700,
+  &quot;max_context_tokens&quot;: 2048,
+  &quot;ranking&quot;: {
+    &quot;weights&quot;: {&quot;time&quot;: 0.2, &quot;business&quot;: 0.1}
+  }
+}
+```
+
+Send only visible local context: open files, selected text, tool outputs,
+terminal summaries, current page refs, and explicit local summaries. Do not send
+hidden/internal prompt context. MatrixArk dedupes local refs and fills only the
+remaining budget with remote context.
+
+## After Answering
+
+Call `matrixark_ingest` or `matrixark_feedback` when the turn produced durable
+information.
+
+Store:
+
+```text
+final answer summaries
+accepted refs
+rejected refs
+corrections
+confirmations
+decisions
+tool outcomes
+new facts
+new resource or skill refs
+```
+
+Post-answer ingest shape:
+
+```json
+{
+  &quot;messages&quot;: [
+    {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;What did we decide about the GPU budget?&quot;},
+    {&quot;role&quot;: &quot;assistant&quot;, &quot;content&quot;: &quot;The GPU request is approved under capex.&quot;}
+  ],
+  &quot;metadata&quot;: {
+    &quot;source&quot;: &quot;agent_post_answer&quot;,
+    &quot;reply_to_context_pack_id&quot;: &quot;pack_123&quot;,
+    &quot;local_context_refs&quot;: [&quot;open-buffer:src/billing.py&quot;, &quot;tool-output:test&quot;]
+  },
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_acme&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_prod&quot;,
+    &quot;user_id&quot;: &quot;user_123&quot;,
+    &quot;session_id&quot;: &quot;cursor_thread_456&quot;
+  }
+}
+```
+
+Feedback shape:
+
+```json
+{
+  &quot;context_pack_id&quot;: &quot;pack_123&quot;,
+  &quot;messages&quot;: [
+    {&quot;role&quot;: &quot;assistant&quot;, &quot;content&quot;: &quot;The GPU request is approved under capex.&quot;},
+    {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Yes, that is correct.&quot;}
+  ],
+  &quot;accepted_refs&quot;: [&quot;event_gpu_approval&quot;],
+  &quot;rejected_refs&quot;: [],
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_acme&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_prod&quot;,
+    &quot;user_id&quot;: &quot;user_123&quot;,
+    &quot;session_id&quot;: &quot;cursor_thread_456&quot;
+  }
+}
+```
+
+## Session Commit
+
+Call `matrixark_session_commit` when:
+
+```text
+task is finished
+conversation is compacted
+agent is about to stop
+pending same-session messages &gt;= 20
+session has been idle for 10-30 minutes
+```
+
+This lets MatrixArk run one-pass batch extraction and produce stronger segments,
+entities, summaries, and indexes without making every single-message ingestion
+heavy.
+
+## Local Plus Remote Context
+
+Do not blindly append every MatrixArk result to every prompt.
+
+Recommended budget policy:
+
+```text
+code-local question:
+  local code first, MatrixArk for prior decisions/resources/skills
+
+cross-session question:
+  MatrixArk first, local code only if current state matters
+  same-user cross-session is considered by default in session_scope=prefer
+  default budget is 12% normal, 15% broad/evidence, 20% current/latest/multi-hop/date
+  cross-session candidates still need to pass the score threshold, session fanout, candidate cap, and token budget; raw cross-session events need a higher evidence score
+
+current-state question:
+  ContextEntity + fresh ContextEvent first, stale blockers as warnings
+
+resource/runbook question:
+  selected ResourceChunk with citation, not full raw file
+```
+
+MatrixArk should decide what to do from the payload:
+
+```text
+before_llm + query/messages:
+  lightweight ingest user message, retrieve ContextPack
+
+after_llm/tool_result:
+  ingest assistant/tool evidence and link to prior ContextPack
+
+ResourceAdded/SkillAdded + raw_uri:
+  run import task, chunk, embed, extract resource facts or skill sections
+
+Stop/PostCompact/idle:
+  commit pending session buffer and run one-pass extraction
+```
+
+## Minimum Scope
+
+For production, pass at least one durable user/session identifier:
+
+```text
+account_id or tenant_id
+user_id and preferably session_id
+```
+
+`session_id` is strongly recommended for confirmation detection, same-session
+batch extraction, replay, and audit.
+
+## OSS Understanding And Summary Requirement
+
+Production and benchmark integrations should use OSS/OpenAI-compatible models for
+message/resource extraction, query understanding, segmentation, and ContextNode
+L0/L1 summary synthesis. Do not rely on heuristic or deterministic summaries for
+quality claims.
+
+Recommended strict environment:
+
+```bash
+MATRIXARK_UNDERSTANDING_PROVIDER=openai_compatible
+MATRIXARK_EXTRACTION_PROVIDER=openai_compatible
+MATRIXARK_SEGMENT_PROVIDER=openai_compatible
+MATRIXARK_SUMMARY_PROVIDER=openai_compatible
+MATRIXARK_EXTRACTION_BASE_URL=http://127.0.0.1:8000/v1
+MATRIXARK_EXTRACTION_MODEL=qwen2.5:1.5b
+MATRIXARK_SUMMARY_MODEL=qwen2.5:1.5b
+MATRIXARK_REQUIRE_OSS_UNDERSTANDING=1
+```
+
+With this setting, `matrixark_refresh_summaries` asks the configured model to
+generate `node_l0` and `node_l1` summaries. `node_l0` remains a compact routing
+abstract; `node_l1` is a richer semantic synthesis over child summaries, entity
+state, operator/compression state, and recent events. If the model endpoint is
+not available, strict mode fails instead of silently falling back to deterministic
+text.
+
+Local/offline CI may still use deterministic fallback for smoke tests, but those
+runs must be labeled as fallback and must not be used as OSS/baseline-style
+quality evidence.
+</pre>

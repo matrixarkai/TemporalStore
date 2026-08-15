@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
+#
+# TemporalStore Enterprise Cloud API gateway (the `/v1/*` contract) — a slim, pure-Python image.
+#
+#   docker build -f docker/Dockerfile.cloud-api -t temporalstore-cloud-api:latest .
+#   docker run --rm -p 8080:8080 \
+#     -e MATRIXARK_API_KEYS='sk_live_demo:acme' \
+#     -e MATRIXARK_DATANODE_BLOB_URL='http://datanode:17102' \
+#     temporalstore-cloud-api:latest
+#
+# The gateway is framework-free stdlib Python; only uvicorn is a runtime dependency. It fronts the
+# same MatrixArk backend as the tools/ management API, so the whole tools/ tree is copied in.
+FROM python:3.11-slim
+
+# uvicorn is the only runtime dep; the gateway itself is stdlib-only.
+RUN pip install --no-cache-dir "uvicorn[standard]>=0.23"
+
+RUN useradd --system --uid 10001 --create-home matrixark
+WORKDIR /app
+
+# Ship the Python control plane (gateway + MCP server + adapters).
+COPY tools/ /app/tools/
+# Make the modules importable both as `matrixark_v1_gateway` and `tools.matrixark_v1_gateway`.
+ENV PYTHONPATH=/app:/app/tools \
+    MATRIXARK_HTTP_HOST=0.0.0.0 \
+    MATRIXARK_HTTP_PORT=8080 \
+    MATRIXARK_REQUIRE_AUTH=1
+
+USER matrixark
+EXPOSE 8080
+
+HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=5 \
+  CMD python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/v1/healthz',timeout=2).status==200 else 1)" || exit 1
+
+WORKDIR /app/tools
+CMD ["uvicorn", "matrixark_v1_gateway:application", "--host", "0.0.0.0", "--port", "8080", "--workers", "4"]

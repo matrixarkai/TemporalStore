@@ -1,0 +1,2313 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+use crate::storage_config::{effective_block_slab_target_bytes, storage_zone_size_bytes};
+
+mod paths;
+mod band_manifest;
+mod band_reports;
+mod append;
+mod read;
+mod gc;
+mod slab_ids;
+mod record;
+
+use paths::{
+    delayed_destroy_dir, delayed_destroy_path, band_manifest_path, file_created_unix_ms,
+    file_modified_unix_ms, legacy_zone_manifest_path, now_unix_ms, slab_path, sync_dir,
+    sync_parent_dir, system_time_unix_ms, unique_temp_path,
+};
+use record::{
+    decode_page_record, default_page_record_compression_enabled,
+    default_page_record_compression_level, default_page_record_compression_min_bytes,
+    encode_page_record, inspect_slab, logical_range_from_slab, sha256_hex, summarize_slab,
+    PageRecordCompression,
+};
+use self::band_manifest::*;
+pub(crate) use slab_ids::*;
+#[cfg(test)]
+use record::{
+    PAGE_RECORD_COMPRESSION_NONE, PAGE_RECORD_COMPRESSION_ZSTD, PAGE_RECORD_HEADER_LEN,
+    PAGE_RECORD_MAGIC, PAGE_RECORD_VERSION,
+};
+
+#[derive(Debug, Error)]
+pub enum BlockStoreError {
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error(
+        "block checksum mismatch for segment {page_slab_id} offset {offset} length {length}: expected {expected}, got {actual}"
+    )]
+    ChecksumMismatch {
+        page_slab_id: u64,
+        offset: u64,
+        length: u64,
+        expected: String,
+        actual: String,
+    },
+    #[error("corrupt block envelope for segment {page_slab_id} offset {offset}: {reason}")]
+    CorruptPageEnvelope {
+        page_slab_id: u64,
+        offset: u64,
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct BlockAddress {
+    #[serde(rename = "page_segment_id")]
+    pub page_slab_id: u64,
+    pub offset: u64,
+    pub length: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "routing_slot")]
+    pub routing_bucket: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<u64>,
+    #[serde(default, alias = "extent_id", alias = "zone_id", skip_serializing_if = "Option::is_none")]
+    pub band_id: Option<u64>,
+    #[serde(default, alias = "checksum", skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
+impl BlockAddress {
+    pub fn compact_slab_id(&self) -> Option<u32> {
+        u32::try_from(self.page_slab_id).ok()
+    }
+
+    pub fn compact_slab_offset(&self) -> Option<u32> {
+        u32::try_from(self.offset).ok()
+    }
+
+    pub fn compact_slab_address(&self) -> Option<u64> {
+        compact_slab_address_from_parts(self.page_slab_id, self.offset)
+    }
+
+    pub fn from_compact_slab_address(compact_slab_address: u64, length: u64) -> Self {
+        Self {
+            page_slab_id: compact_extract_band_id(compact_slab_address) as u64,
+            offset: compact_extract_band_offset(compact_slab_address) as u64,
+            length,
+            page_id: None,
+            object_id: None,
+            routing_bucket: None,
+            generation: None,
+            band_id: None,
+            sha256: None,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockStoreStats {
+    pub writes: u64,
+    pub reads: u64,
+    pub bytes_written: u64,
+    pub bytes_read: u64,
+    #[serde(default)]
+    pub logical_bytes_written: u64,
+    #[serde(default)]
+    pub logical_bytes_read: u64,
+    #[serde(default)]
+    pub compressed_records_written: u64,
+    #[serde(default)]
+    pub compressed_records_read: u64,
+    #[serde(default)]
+    pub compression_bytes_saved: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockStoreOptions {
+    #[serde(default = "default_page_record_compression_enabled")]
+    pub compression_enabled: bool,
+    #[serde(default = "default_page_record_compression_min_bytes")]
+    pub compression_min_bytes: usize,
+    #[serde(default = "default_page_record_compression_level")]
+    pub compression_level: i32,
+}
+
+pub type BlockAppendRecord = (Vec<u8>, Option<u64>, Option<u32>);
+
+impl Default for BlockStoreOptions {
+    fn default() -> Self {
+        Self {
+            compression_enabled: default_page_record_compression_enabled(),
+            compression_min_bytes: default_page_record_compression_min_bytes(),
+            compression_level: default_page_record_compression_level(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockStoreGcReport {
+    #[serde(alias = "retain_from_page_segment_id")]
+    pub retain_from_page_slab_id: u64,
+    #[serde(alias = "removed_page_segment_ids")]
+    pub removed_page_slab_ids: Vec<u64>,
+    #[serde(alias = "retained_page_segment_ids")]
+    pub retained_page_slab_ids: Vec<u64>,
+    #[serde(default)]
+    pub removed_physical_bytes: u64,
+    #[serde(default)]
+    pub retained_physical_bytes: u64,
+    #[serde(default)]
+    #[serde(alias = "delayed_destroy_page_segment_ids")]
+    pub delayed_destroy_page_slab_ids: Vec<u64>,
+    #[serde(default)]
+    pub delayed_destroy_physical_bytes: u64,
+    #[serde(default)]
+    #[serde(alias = "retained_live_page_segment_ids")]
+    pub retained_live_page_slab_ids: Vec<u64>,
+    #[serde(default)]
+    pub retained_live_physical_bytes: u64,
+    #[serde(default)]
+    #[serde(alias = "retained_current_page_segment_ids")]
+    pub retained_current_page_slab_ids: Vec<u64>,
+    #[serde(default)]
+    pub retained_current_physical_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockStoreGcUtilityCandidate {
+    #[serde(rename = "page_segment_id")]
+    pub page_slab_id: u64,
+    pub bytes: u64,
+    #[serde(default)]
+    pub total_bytes: u64,
+    #[serde(default)]
+    pub used_bytes: u64,
+    #[serde(default)]
+    pub stale_bytes: u64,
+    #[serde(default)]
+    pub utility_basis_points: u64,
+    pub utility_score: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_unix_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_unix_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockStoreGcPolicy {
+    #[serde(default)]
+    #[serde(alias = "max_destroy_segments")]
+    pub max_destroy_slabs: usize,
+    #[serde(default)]
+    pub max_destroy_physical_bytes: u64,
+    #[serde(default)]
+    pub max_utility_score: Option<u64>,
+    #[serde(default)]
+    pub min_age_ms: Option<u64>,
+    /// Reclaim only bands whose garbage ratio (10_000 - utility_basis_points) is at
+    /// least this many basis points. `None`/0 reclaims every eligible band (today's
+    /// behavior). The garbage-ratio gate (reclaim the most-garbage zones),
+    /// expressed against Rust bands.
+    #[serde(default)]
+    pub min_band_garbage_basis_points: Option<u64>,
+}
+
+impl BlockStoreGcPolicy {
+    pub fn max_slabs(max_destroy_slabs: usize) -> Self {
+        Self {
+            max_destroy_slabs,
+            max_destroy_physical_bytes: 0,
+            max_utility_score: None,
+            min_age_ms: None,
+            min_band_garbage_basis_points: None,
+        }
+    }
+
+    /// Reclaim eligible bands whose garbage ratio is at least
+    /// `min_band_garbage_basis_points`, highest-garbage first, optionally bounded by a
+    /// minimum band age. Mirrors selecting the maximum-garbage-rate zone under GC.
+    pub fn with_band_garbage_floor(
+        min_band_garbage_basis_points: u64,
+        min_age_ms: Option<u64>,
+    ) -> Self {
+        Self {
+            max_destroy_slabs: 0,
+            max_destroy_physical_bytes: 0,
+            max_utility_score: None,
+            min_age_ms,
+            min_band_garbage_basis_points: Some(min_band_garbage_basis_points),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockStoreGcPolicyPlan {
+    #[serde(alias = "retain_from_page_segment_id")]
+    pub retain_from_page_slab_id: u64,
+    #[serde(alias = "selected_page_segment_ids")]
+    pub selected_page_slab_ids: Vec<u64>,
+    pub selected_physical_bytes: u64,
+    #[serde(default)]
+    pub candidate_total_bytes: u64,
+    #[serde(default)]
+    pub candidate_used_bytes: u64,
+    #[serde(default)]
+    pub candidate_stale_bytes: u64,
+    #[serde(default)]
+    pub candidate_utility_basis_points: u64,
+    pub candidate_count: usize,
+    pub candidate_physical_bytes: u64,
+    pub skipped_by_policy_count: usize,
+    pub skipped_by_policy_physical_bytes: u64,
+    pub skipped_by_budget_count: usize,
+    pub skipped_by_budget_physical_bytes: u64,
+    pub candidates: Vec<BlockStoreGcUtilityCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockStoreDelayedDestroySlabReport {
+    #[serde(rename = "page_segment_id")]
+    pub page_slab_id: u64,
+    pub physical_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_unix_ms: Option<u64>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockStorePurgeDelayedDestroyReport {
+    #[serde(alias = "purged_page_segment_ids")]
+    pub purged_page_slab_ids: Vec<u64>,
+    pub purged_physical_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockStoreBandState {
+    Active,
+    Sealed,
+    DelayedDestroy,
+    Purged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockStoreBandDescriptor {
+    #[serde(alias = "extent_id", alias = "zone_id")]
+    pub band_id: u64,
+    #[serde(rename = "page_segment_id")]
+    pub page_slab_id: u64,
+    pub state: BlockStoreBandState,
+    pub physical_bytes: u64,
+    pub logical_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_unix_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_unix_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_page_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_page_id: Option<u64>,
+    #[serde(default)]
+    pub readable_prefix_physical_bytes: u64,
+    #[serde(default)]
+    pub has_corruption: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_error_offset: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_error: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockStoreBandSummary {
+    #[serde(alias = "active_zones")]
+    pub active_bands: u64,
+    #[serde(alias = "sealed_zones")]
+    pub sealed_bands: u64,
+    #[serde(alias = "delayed_destroy_zones")]
+    pub delayed_destroy_bands: u64,
+    #[serde(alias = "purged_zones")]
+    pub purged_bands: u64,
+    pub active_physical_bytes: u64,
+    pub sealed_physical_bytes: u64,
+    pub delayed_destroy_physical_bytes: u64,
+    pub purged_physical_bytes: u64,
+    pub live_physical_bytes: u64,
+    pub reclaimable_physical_bytes: u64,
+    pub total_known_physical_bytes: u64,
+    #[serde(
+        default,
+        alias = "oldest_known_zone_unix_ms",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub oldest_known_band_unix_ms: Option<u64>,
+    #[serde(
+        default,
+        alias = "oldest_known_zone_age_ms",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub oldest_known_band_age_ms: Option<u64>,
+    #[serde(
+        default,
+        alias = "oldest_live_zone_unix_ms",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub oldest_live_band_unix_ms: Option<u64>,
+    #[serde(
+        default,
+        alias = "oldest_live_zone_age_ms",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub oldest_live_band_age_ms: Option<u64>,
+    #[serde(
+        default,
+        alias = "oldest_reclaimable_zone_unix_ms",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub oldest_reclaimable_band_unix_ms: Option<u64>,
+    #[serde(
+        default,
+        alias = "oldest_reclaimable_zone_age_ms",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub oldest_reclaimable_band_age_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockStoreBandUsage {
+    #[serde(alias = "extent_id", alias = "zone_id")]
+    pub band_id: u64,
+    #[serde(rename = "page_segment_id")]
+    pub page_slab_id: u64,
+    #[serde(default)]
+    pub storage_zone_id: u64,
+    #[serde(default)]
+    #[serde(alias = "stream_segment_id")]
+    pub stream_slab_id: u64,
+    pub state: BlockStoreBandState,
+    #[serde(default)]
+    pub used_bytes: u64,
+    #[serde(default)]
+    pub live_bytes: u64,
+    #[serde(default)]
+    pub reclaimable_bytes: u64,
+    #[serde(default)]
+    pub purged_bytes: u64,
+    pub page_store_used_bytes: u64,
+    pub live_page_store_used_bytes: u64,
+    pub reclaimable_page_store_used_bytes: u64,
+    pub purged_page_store_used_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_page_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_page_id: Option<u64>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamBackedBandRuntimeReport {
+    pub runtime_ready: bool,
+    #[serde(default)]
+    pub band_lifecycle_states: Vec<String>,
+    #[serde(alias = "extent_count", alias = "zone_count")]
+    pub band_count: u64,
+    #[serde(alias = "active_zones")]
+    pub active_bands: u64,
+    #[serde(alias = "sealed_zones")]
+    pub sealed_bands: u64,
+    #[serde(alias = "delayed_destroy_zones")]
+    pub delayed_destroy_bands: u64,
+    #[serde(alias = "purged_zones")]
+    pub purged_bands: u64,
+    #[serde(default)]
+    pub zone_stats_ready: bool,
+    #[serde(default)]
+    pub zone_usage: Vec<BlockStoreBandUsage>,
+    #[serde(alias = "stream_segment_count")]
+    pub stream_slab_count: u64,
+    pub physical_bytes: u64,
+    pub logical_bytes: u64,
+    #[serde(default)]
+    pub stream_record_count: u64,
+    #[serde(default)]
+    pub first_page_id: Option<u64>,
+    #[serde(default)]
+    pub last_page_id: Option<u64>,
+    #[serde(default)]
+    pub page_id_continuity_ready: bool,
+    #[serde(default)]
+    pub logical_stream_bytes_read: u64,
+    #[serde(default)]
+    pub band_state_transition_count: u64,
+    pub logical_stream_read_ready: bool,
+    pub append_roll_ready: bool,
+    #[serde(alias = "extent_manifest_ready", alias = "zone_manifest_ready")]
+    pub band_manifest_ready: bool,
+    #[serde(default)]
+    pub band_manifest_rebuild_ready: bool,
+    #[serde(default)]
+    pub band_manifest_reconciled_on_open: bool,
+    #[serde(default)]
+    pub band_manifest_disk_consistent: bool,
+    #[serde(default)]
+    pub manifest_missing_stream_bands: u64,
+    #[serde(default)]
+    pub manifest_extra_stream_bands: u64,
+    #[serde(default)]
+    pub corrupt_band_count: u64,
+    #[serde(default)]
+    pub partial_band_count: u64,
+    #[serde(default)]
+    pub readable_prefix_physical_bytes: u64,
+    #[serde(default)]
+    pub partial_band_recovery_ready: bool,
+    pub envelope_checksum_ready: bool,
+    pub compression_stream_ready: bool,
+    pub delayed_destroy_ready: bool,
+    #[serde(default)]
+    pub purge_lifecycle_ready: bool,
+    pub blockers: Vec<String>,
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockStoreSlabReport {
+    #[serde(rename = "page_segment_id")]
+    pub page_slab_id: u64,
+    pub physical_bytes: u64,
+    pub logical_bytes: u64,
+    pub page_count: u64,
+    #[serde(default)]
+    pub readable_prefix_physical_bytes: u64,
+    #[serde(default)]
+    pub has_corruption: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_error_offset: Option<u64>,
+    #[serde(default)]
+    pub object_count: u64,
+    #[serde(default)]
+    #[serde(rename = "routing_slot_count")]
+    pub routing_bucket_count: u64,
+    pub compressed_records: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_page_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_page_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "first_routing_slot")]
+    pub first_routing_bucket: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "last_routing_slot")]
+    pub last_routing_bucket: Option<u32>,
+    #[serde(default, alias = "page_index_count")]
+    pub block_index_count: u64,
+    #[serde(default, alias = "page_index_entries")]
+    pub block_index_entries: Vec<BlockStoreBlockIndexReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockStoreBlockIndexReport {
+    #[serde(alias = "page_segment_id")]
+    #[serde(alias = "block_segment_id")]
+    pub block_slab_id: u64,
+    pub offset: u64,
+    pub length: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "compact_segment_address")]
+    pub compact_slab_address: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "compact_segment_id")]
+    pub compact_slab_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "compact_segment_offset")]
+    pub compact_slab_offset: Option<u32>,
+    #[serde(
+        default,
+        alias = "extent_id",
+        alias = "zone_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[serde(alias = "storage_segment_id")]
+    pub storage_slab_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<u8>,
+    #[serde(default, alias = "page_id", skip_serializing_if = "Option::is_none")]
+    pub block_id: Option<u64>,
+    #[serde(alias = "page_size")]
+    pub block_size: u64,
+    pub stored_size: u64,
+    pub dirty: bool,
+    pub deleted: bool,
+    #[serde(alias = "page_in_log")]
+    pub block_in_log: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "routing_slot")]
+    pub routing_bucket: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct BlockStoreBandManifest {
+    version: u32,
+    #[serde(alias = "extents", alias = "zones")]
+    bands: Vec<BlockStoreBandDescriptor>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockStoreRollReport {
+    #[serde(alias = "previous_page_segment_id")]
+    pub previous_page_slab_id: u64,
+    #[serde(alias = "new_page_segment_id")]
+    pub new_page_slab_id: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalBlockStore {
+    inner: Arc<Mutex<BlockStoreInner>>,
+}
+
+#[derive(Debug)]
+struct BlockStoreInner {
+    root: PathBuf,
+    // Set when a relaxed (bulk) append deferred its fsync + manifest persist;
+    // cleared by sync_durable(). See bulk_relaxed_durability().
+    relaxed_dirty: bool,
+    page_slab_id: u64,
+    write_offset: u64,
+    next_page_id: u64,
+    options: BlockStoreOptions,
+    bands: BTreeMap<u64, BlockStoreBandDescriptor>,
+    band_manifest_reconciled_on_open: bool,
+    stats: BlockStoreStats,
+}
+
+impl LocalBlockStore {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self::with_options(root, BlockStoreOptions::default())
+    }
+
+    pub fn with_options(root: impl Into<PathBuf>, options: BlockStoreOptions) -> Self {
+        let root = root.into();
+        let _ = fs::create_dir_all(&root);
+        let page_slab_id = latest_slab_id_at(&root).unwrap_or_default();
+        let mut write_offset = slab_path(&root, page_slab_id)
+            .metadata()
+            .map(|metadata| metadata.len())
+            .unwrap_or_default();
+        let next_page_id = next_page_id_at(&root).unwrap_or_default();
+        let manifest_exists =
+            band_manifest_path(&root).exists() || legacy_zone_manifest_path(&root).exists();
+        let (mut bands, mut manifest_rebuilt) = if manifest_exists {
+            match load_band_manifest_at(&root) {
+                Ok(bands) => (bands, false),
+                Err(_) => (rebuild_band_manifest_at(&root).unwrap_or_default(), true),
+            }
+        } else {
+            (rebuild_band_manifest_at(&root).unwrap_or_default(), true)
+        };
+        let band_manifest_reconciled_on_open =
+            reconcile_band_manifest_with_disk(&root, &mut bands).unwrap_or_default();
+        manifest_rebuilt |= band_manifest_reconciled_on_open;
+        ensure_band_descriptor(
+            &mut bands,
+            &root,
+            page_slab_id,
+            BlockStoreBandState::Active,
+        );
+        // Fence a torn tail on the ACTIVE slab. After a crash mid-append the raw file length
+        // includes uncommitted/partial bytes past the last intact record; reconcile computed
+        // the intact `readable_prefix`. Resuming appends at raw EOF would embed the torn record
+        // permanently mid-slab and, via the early-halting page-id scan, regress next_page_id ->
+        // page-id/generation reuse -> stale reads. Mirror the resume-at-committed-length:
+        // physically truncate the active slab to its readable prefix and resume there.
+        let active_readable_prefix = bands
+            .get(&page_slab_id)
+            .map(|band| band.readable_prefix_physical_bytes);
+        if let Some(readable_prefix) = active_readable_prefix {
+            if readable_prefix < write_offset {
+                if let Ok(file) = OpenOptions::new()
+                    .write(true)
+                    .open(slab_path(&root, page_slab_id))
+                {
+                    if file.set_len(readable_prefix).is_ok() {
+                        let _ = file.sync_all();
+                        if let Ok(dir) = File::open(&root) {
+                            let _ = dir.sync_all();
+                        }
+                        write_offset = readable_prefix;
+                        if let Some(band) = bands.get_mut(&page_slab_id) {
+                            band.physical_bytes = readable_prefix;
+                            band.has_corruption = false;
+                            band.first_error_offset = None;
+                        }
+                        manifest_rebuilt = true;
+                    }
+                }
+            }
+        }
+        if manifest_rebuilt {
+            let _ = persist_band_manifest(&root, &bands);
+        }
+        Self {
+            inner: Arc::new(Mutex::new(BlockStoreInner {
+                root,
+                relaxed_dirty: false,
+                page_slab_id,
+                write_offset,
+                next_page_id,
+                options,
+                bands,
+                band_manifest_reconciled_on_open,
+                stats: BlockStoreStats::default(),
+            })),
+        }
+    }
+
+    pub fn roll_slab(&self) -> Result<BlockStoreRollReport, BlockStoreError> {
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
+        roll_slab_inner(&mut inner)
+    }
+
+    pub fn slab_ids(&self) -> Result<Vec<u64>, BlockStoreError> {
+        let root = self
+            .inner
+            .lock()
+            .expect("block store lock poisoned")
+            .root
+            .clone();
+        let mut ids = Vec::new();
+        if !root.exists() {
+            return Ok(ids);
+        }
+        for entry in fs::read_dir(root)? {
+            let entry = entry?;
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            if let Some(id) = name
+                .strip_prefix("page_segment_")
+                .and_then(|name| name.strip_suffix(".seg"))
+                .and_then(|id| id.parse::<u64>().ok())
+            {
+                ids.push(id);
+            }
+        }
+        ids.sort_unstable();
+        Ok(ids)
+    }
+
+    pub fn zone_summary(&self) -> BlockStoreBandSummary {
+        self.band_summary()
+    }
+
+    pub fn zone_descriptors(&self) -> Vec<BlockStoreBandDescriptor> {
+        self.band_descriptors()
+    }
+
+    pub fn zone_usage(&self) -> Vec<BlockStoreBandUsage> {
+        band_zone_usage(
+            &self
+                .inner
+                .lock()
+                .expect("block store lock poisoned")
+                .bands,
+        )
+    }
+
+
+    pub fn delayed_destroy_slab_ids(&self) -> Result<Vec<u64>, BlockStoreError> {
+        let root = self
+            .inner
+            .lock()
+            .expect("block store lock poisoned")
+            .root
+            .clone();
+        delayed_destroy_slab_ids_at(&root)
+    }
+
+    pub fn delayed_destroy_slab_reports(
+        &self,
+    ) -> Result<Vec<BlockStoreDelayedDestroySlabReport>, BlockStoreError> {
+        let root = self
+            .inner
+            .lock()
+            .expect("block store lock poisoned")
+            .root
+            .clone();
+        delayed_destroy_slab_reports_at(&root)
+    }
+
+    pub fn purge_delayed_destroy_slabs(&self) -> Result<Vec<u64>, BlockStoreError> {
+        Ok(self
+            .purge_delayed_destroy_slabs_with_report()?
+            .purged_page_slab_ids)
+    }
+
+    pub fn purge_delayed_destroy_slabs_with_report(
+        &self,
+    ) -> Result<BlockStorePurgeDelayedDestroyReport, BlockStoreError> {
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
+        let trash_dir = delayed_destroy_dir(&inner.root);
+        let mut purged = Vec::new();
+        let mut purged_physical_bytes = 0;
+        if !trash_dir.exists() {
+            return Ok(BlockStorePurgeDelayedDestroyReport::default());
+        }
+        for entry in fs::read_dir(&trash_dir)? {
+            let entry = entry?;
+            let Some(id) = delayed_destroy_slab_id_from_name(&entry.file_name()) else {
+                continue;
+            };
+            purged_physical_bytes += entry
+                .metadata()
+                .map(|metadata| metadata.len())
+                .unwrap_or_default();
+            fs::remove_file(entry.path())?;
+            set_band_state(&mut inner.bands, id, BlockStoreBandState::Purged);
+            purged.push(id);
+        }
+        purged.sort_unstable();
+        sync_dir(&trash_dir)?;
+        persist_band_manifest(&inner.root, &inner.bands)?;
+        Ok(BlockStorePurgeDelayedDestroyReport {
+            purged_page_slab_ids: purged,
+            purged_physical_bytes,
+        })
+    }
+
+
+    pub fn slab_reports(&self) -> Result<Vec<BlockStoreSlabReport>, BlockStoreError> {
+        let root = self
+            .inner
+            .lock()
+            .expect("block store lock poisoned")
+            .root
+            .clone();
+        let mut reports = Vec::new();
+        for page_slab_id in slab_ids_at(&root)? {
+            let bytes = fs::read(slab_path(&root, page_slab_id))?;
+            reports.push(inspect_slab(&bytes, page_slab_id));
+        }
+        Ok(reports)
+    }
+
+    pub fn stats(&self) -> BlockStoreStats {
+        self.inner.lock().expect("block store lock poisoned").stats
+    }
+}
+
+fn should_roll_before_append(
+    write_offset: u64,
+    record_len: u64,
+    slab_target_bytes: u64,
+) -> bool {
+    write_offset > 0 && write_offset.saturating_add(record_len) > slab_target_bytes
+}
+
+/// Bulk backfill (MATRIXARK_BULK_INGEST) defers per-append fsync + manifest
+/// persistence to an explicit sync_durable(), trading crash-durability *within a
+/// resumable/WAL-backed chunk* for far fewer fsyncs. The live path (env unset)
+/// keeps full per-append durability.
+pub(crate) fn bulk_relaxed_durability() -> bool {
+    matches!(
+        std::env::var("MATRIXARK_BULK_INGEST")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn roll_slab_inner(
+    inner: &mut BlockStoreInner,
+) -> Result<BlockStoreRollReport, BlockStoreError> {
+    fs::create_dir_all(&inner.root)?;
+    let previous_page_slab_id = inner.page_slab_id;
+    // The outgoing slab may hold relaxed (un-fsynced) bulk appends; make them
+    // durable before we seal and stop writing to it.
+    {
+        let prev_path = slab_path(&inner.root, previous_page_slab_id);
+        if let Ok(prev) = OpenOptions::new().append(true).open(&prev_path) {
+            let _ = prev.sync_data();
+        }
+    }
+    let next_from_current = inner.page_slab_id.saturating_add(1);
+    let next_from_disk = slab_ids_at(&inner.root)?
+        .into_iter()
+        .max()
+        .map(|id| id.saturating_add(1))
+        .unwrap_or_default();
+    inner.page_slab_id = next_from_current.max(next_from_disk);
+    inner.write_offset = 0;
+    let path = slab_path(&inner.root, inner.page_slab_id);
+    let file = File::create(&path)?;
+    file.sync_all()?;
+    sync_parent_dir(&path)?;
+    let transition_unix_ms = now_unix_ms();
+    if let Some(previous) = inner.bands.get_mut(&previous_page_slab_id) {
+        previous.state = BlockStoreBandState::Sealed;
+        previous.updated_unix_ms = Some(transition_unix_ms);
+    }
+    let new_band = BlockStoreBandDescriptor {
+        band_id: band_id_for_slab(inner.page_slab_id),
+        page_slab_id: inner.page_slab_id,
+        state: BlockStoreBandState::Active,
+        physical_bytes: 0,
+        logical_bytes: 0,
+        created_unix_ms: Some(transition_unix_ms),
+        updated_unix_ms: Some(transition_unix_ms),
+        first_page_id: None,
+        last_page_id: None,
+        readable_prefix_physical_bytes: 0,
+        has_corruption: false,
+        first_error_offset: None,
+        first_error: None,
+    };
+    let page_slab_id = inner.page_slab_id;
+    inner.bands.insert(page_slab_id, new_band);
+    persist_band_manifest(&inner.root, &inner.bands)?;
+    Ok(BlockStoreRollReport {
+        previous_page_slab_id,
+        new_page_slab_id: inner.page_slab_id,
+    })
+}
+
+fn band_lifecycle_states(summary: &BlockStoreBandSummary) -> Vec<String> {
+    let mut states = Vec::new();
+    if summary.active_bands > 0 {
+        states.push("active".to_string());
+    }
+    if summary.sealed_bands > 0 {
+        states.push("sealed".to_string());
+    }
+    if summary.delayed_destroy_bands > 0 {
+        states.push("delayed_destroy".to_string());
+    }
+    if summary.purged_bands > 0 {
+        states.push("purged".to_string());
+    }
+    states
+}
+
+fn band_zone_usage(
+    bands: &BTreeMap<u64, BlockStoreBandDescriptor>,
+) -> Vec<BlockStoreBandUsage> {
+    #[derive(Debug, Clone)]
+    struct ZoneUsageAcc {
+        usage: BlockStoreBandUsage,
+    }
+
+    fn merged_zone_state(
+        left: BlockStoreBandState,
+        right: BlockStoreBandState,
+    ) -> BlockStoreBandState {
+        use BlockStoreBandState::*;
+        match (left, right) {
+            (Active, _) | (_, Active) => Active,
+            (Sealed, _) | (_, Sealed) => Sealed,
+            (DelayedDestroy, _) | (_, DelayedDestroy) => DelayedDestroy,
+            (Purged, Purged) => Purged,
+        }
+    }
+
+    let mut zones = BTreeMap::<u64, ZoneUsageAcc>::new();
+    for band in bands.values() {
+        let (live, reclaimable, purged) = match band.state {
+            BlockStoreBandState::Active | BlockStoreBandState::Sealed => {
+                (band.physical_bytes, 0, 0)
+            }
+            BlockStoreBandState::DelayedDestroy => (0, band.physical_bytes, 0),
+            BlockStoreBandState::Purged => (0, 0, band.physical_bytes),
+        };
+        let entry = zones
+            .entry(band.band_id)
+            .or_insert_with(|| ZoneUsageAcc {
+                usage: BlockStoreBandUsage {
+                    band_id: band.band_id,
+                    page_slab_id: band.page_slab_id,
+                    storage_zone_id: band.band_id,
+                    stream_slab_id: band.page_slab_id,
+                    state: band.state,
+                    used_bytes: 0,
+                    live_bytes: 0,
+                    reclaimable_bytes: 0,
+                    purged_bytes: 0,
+                    page_store_used_bytes: 0,
+                    live_page_store_used_bytes: 0,
+                    reclaimable_page_store_used_bytes: 0,
+                    purged_page_store_used_bytes: 0,
+                    first_page_id: None,
+                    last_page_id: None,
+                },
+            });
+        let usage = &mut entry.usage;
+        usage.page_slab_id = usage.page_slab_id.min(band.page_slab_id);
+        usage.stream_slab_id = usage.stream_slab_id.min(band.page_slab_id);
+        usage.state = merged_zone_state(usage.state, band.state);
+        usage.used_bytes = usage.used_bytes.saturating_add(band.physical_bytes);
+        usage.live_bytes = usage.live_bytes.saturating_add(live);
+        usage.reclaimable_bytes = usage.reclaimable_bytes.saturating_add(reclaimable);
+        usage.purged_bytes = usage.purged_bytes.saturating_add(purged);
+        usage.page_store_used_bytes = usage
+            .page_store_used_bytes
+            .saturating_add(band.physical_bytes);
+        usage.live_page_store_used_bytes = usage.live_page_store_used_bytes.saturating_add(live);
+        usage.reclaimable_page_store_used_bytes = usage
+            .reclaimable_page_store_used_bytes
+            .saturating_add(reclaimable);
+        usage.purged_page_store_used_bytes =
+            usage.purged_page_store_used_bytes.saturating_add(purged);
+        usage.first_page_id = match (usage.first_page_id, band.first_page_id) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (None, right) => right,
+            (left, None) => left,
+        };
+        usage.last_page_id = match (usage.last_page_id, band.last_page_id) {
+            (Some(left), Some(right)) => Some(left.max(right)),
+            (None, right) => right,
+            (left, None) => left,
+        };
+    }
+    zones.into_values().map(|acc| acc.usage).collect()
+}
+
+impl Default for LocalBlockStore {
+    fn default() -> Self {
+        Self::new(unique_temp_path("pages"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn active_slab_torn_tail_is_fenced_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let a1 = store.append(b"record-one").unwrap();
+        let a2 = store.append(b"record-two").unwrap();
+        drop(store);
+        // Simulate a crash that left a partial/torn record (no valid envelope) on the ACTIVE
+        // slab past the last committed record.
+        let slab = slab_path(dir.path(), a2.page_slab_id);
+        let clean_len = std::fs::metadata(&slab).unwrap().len();
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&slab)
+                .unwrap();
+            file.write_all(b"\x01\x02 torn partial record without a valid envelope")
+                .unwrap();
+            file.sync_all().unwrap();
+        }
+        assert!(std::fs::metadata(&slab).unwrap().len() > clean_len);
+        // Reopen: the torn tail must be physically fenced back to the readable prefix (mirrors
+        // resume-at-committed-length), not left embedded mid-slab.
+        let reopened = LocalBlockStore::new(dir.path());
+        assert_eq!(
+            std::fs::metadata(&slab).unwrap().len(),
+            clean_len,
+            "torn active-slab tail must be truncated to the readable prefix on reopen"
+        );
+        // Committed records survive and remain readable.
+        assert_eq!(reopened.read(&a1).unwrap(), b"record-one");
+        assert_eq!(reopened.read(&a2).unwrap(), b"record-two");
+        // A new append lands right after the fenced prefix and does not reuse a page id.
+        let a3 = reopened.append(b"record-three").unwrap();
+        assert_ne!(a3.page_id, a1.page_id);
+        assert_ne!(a3.page_id, a2.page_id);
+        assert_eq!(reopened.read(&a3).unwrap(), b"record-three");
+    }
+
+    #[test]
+    fn gc_slabs_removes_old_non_current_slabs() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        store.install_slab(0, b"current").unwrap();
+        store.install_slab(1, b"old").unwrap();
+        store.install_slab(2, b"keep").unwrap();
+
+        let report = store.gc_slabs_before(2).unwrap();
+        assert_eq!(report.removed_page_slab_ids, vec![0, 1]);
+        assert_eq!(report.retained_page_slab_ids, vec![2]);
+        assert_eq!(
+            report.removed_physical_bytes,
+            (b"current".len() + b"old".len()) as u64
+        );
+        assert_eq!(report.retained_physical_bytes, b"keep".len() as u64);
+        assert!(report.retained_current_page_slab_ids.is_empty());
+        assert!(report.retained_live_page_slab_ids.is_empty());
+        assert_eq!(store.slab_ids().unwrap(), vec![2]);
+    }
+
+    #[test]
+    fn roll_slab_moves_future_appends_to_fresh_slab() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let first = store.append(b"first").unwrap();
+        assert_eq!(first.page_slab_id, 0);
+
+        let roll = store.roll_slab().unwrap();
+        assert_eq!(roll.previous_page_slab_id, 0);
+        assert_eq!(roll.new_page_slab_id, 1);
+        let second = store.append(b"second").unwrap();
+        assert_eq!(second.page_slab_id, 1);
+        assert_eq!(second.offset, 0);
+        assert_eq!(store.read(&first).unwrap(), b"first");
+        assert_eq!(store.read(&second).unwrap(), b"second");
+    }
+
+    #[test]
+    fn reopened_store_appends_to_latest_existing_slab() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let first = store.append(b"first").unwrap();
+        let roll = store.roll_slab().unwrap();
+        let second = store.append(b"second").unwrap();
+        assert_eq!(roll.new_page_slab_id, second.page_slab_id);
+
+        let reopened = LocalBlockStore::new(dir.path());
+        let third = reopened.append(b"third").unwrap();
+
+        assert_eq!(third.page_slab_id, second.page_slab_id);
+        assert!(third.offset > second.offset);
+        assert_eq!(reopened.read(&first).unwrap(), b"first");
+        assert_eq!(reopened.read(&second).unwrap(), b"second");
+        assert_eq!(reopened.read(&third).unwrap(), b"third");
+    }
+
+    // shared-corpus: storage_stream_manifest_disk_reconciliation;
+    #[test]
+    fn reopen_reconciles_manifest_missing_existing_stream_band() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let first = store.append(b"first").unwrap();
+        store.roll_slab().unwrap();
+        let second = store.append(b"second").unwrap();
+        drop(store);
+
+        let manifest_path = band_manifest_path(dir.path());
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["bands"] = serde_json::json!([manifest["bands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|band| band["page_segment_id"] == serde_json::json!(first.page_slab_id))
+            .unwrap()
+            .clone()]);
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let reopened = LocalBlockStore::new(dir.path());
+        let descriptors = reopened.band_descriptors();
+
+        assert!(descriptors
+            .iter()
+            .any(|band| band.page_slab_id == first.page_slab_id
+                && band.state == BlockStoreBandState::Sealed));
+        assert!(descriptors
+            .iter()
+            .any(|band| band.page_slab_id == second.page_slab_id
+                && band.state == BlockStoreBandState::Active));
+        let report = reopened.stream_backed_band_runtime_report().unwrap();
+        assert!(report.band_manifest_reconciled_on_open);
+        assert!(report.band_manifest_disk_consistent);
+        assert_eq!(report.manifest_extra_stream_bands, 0);
+        assert_eq!(report.manifest_missing_stream_bands, 0);
+        assert_eq!(reopened.read(&first).unwrap(), b"first");
+        assert_eq!(reopened.read(&second).unwrap(), b"second");
+    }
+
+    // shared-corpus: storage_stream_manifest_disk_reconciliation;
+    #[test]
+    fn reopen_marks_manifest_band_without_stream_file_as_purged() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let first = store.append(b"first").unwrap();
+        store.roll_slab().unwrap();
+        let second = store.append(b"second").unwrap();
+        drop(store);
+
+        fs::remove_file(slab_path(dir.path(), first.page_slab_id)).unwrap();
+
+        let reopened = LocalBlockStore::new(dir.path());
+        let descriptors = reopened.band_descriptors();
+
+        assert!(descriptors
+            .iter()
+            .any(|band| band.page_slab_id == first.page_slab_id
+                && band.state == BlockStoreBandState::Purged));
+        assert!(descriptors
+            .iter()
+            .any(|band| band.page_slab_id == second.page_slab_id
+                && band.state == BlockStoreBandState::Active));
+        let report = reopened.stream_backed_band_runtime_report().unwrap();
+        assert!(report.band_manifest_reconciled_on_open);
+        assert!(report.band_manifest_disk_consistent);
+        assert_eq!(report.manifest_extra_stream_bands, 0);
+        assert_eq!(report.manifest_missing_stream_bands, 0);
+        assert_eq!(reopened.read(&second).unwrap(), b"second");
+    }
+
+    #[test]
+    fn installed_higher_slab_becomes_current_for_future_appends() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        store.install_slab(3, b"restored-segment").unwrap();
+
+        let next = store.append(b"after-restore").unwrap();
+
+        assert_eq!(next.page_slab_id, 3);
+        assert_eq!(next.offset, b"restored-segment".len() as u64);
+        assert_eq!(next.compact_slab_id(), Some(3));
+        assert_eq!(
+            next.compact_slab_offset(),
+            Some(b"restored-segment".len() as u32)
+        );
+        assert_eq!(
+            next.compact_slab_address(),
+            Some((3_u64 << 32) | b"restored-segment".len() as u64)
+        );
+        let from_compact_slab = BlockAddress::from_compact_slab_address(
+            next.compact_slab_address().unwrap(),
+            next.length,
+        );
+        assert_eq!(from_compact_slab.page_slab_id, next.page_slab_id);
+        assert_eq!(from_compact_slab.offset, next.offset);
+        assert_eq!(from_compact_slab.length, next.length);
+        assert_eq!(store.read(&next).unwrap(), b"after-restore");
+    }
+
+    #[test]
+    fn page_address_checksum_rejects_corrupt_slab_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let address = store.append(b"verified-page").unwrap();
+        assert_eq!(address.sha256, Some(sha256_hex(b"verified-page")));
+        assert_eq!(store.read(&address).unwrap(), b"verified-page");
+
+        let path = slab_path(dir.path(), address.page_slab_id);
+        let mut slab = fs::read(&path).unwrap();
+        *slab.last_mut().unwrap() ^= 0xff;
+        fs::write(path, slab).unwrap();
+        let err = store.read(&address).unwrap_err();
+        assert!(matches!(err, BlockStoreError::ChecksumMismatch { .. }));
+    }
+
+    // shared-corpus: storage_object_page_bucket_parity_surfaces;
+    #[test]
+    fn page_address_matches_compact_slab_metadata_contract_and_checksum_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let address = store
+            .append_with_page_metadata(b"address-contract", Some(4242), Some(17))
+            .unwrap();
+
+        assert_eq!(address.page_slab_id, 0);
+        assert_eq!(address.offset, 0);
+        assert!(address.length > b"address-contract".len() as u64);
+        assert_eq!(address.page_id, Some(0));
+        assert_eq!(address.object_id, Some(4242));
+        assert_eq!(address.routing_bucket, Some(17));
+        assert_eq!(address.band_id, Some(0));
+        assert_eq!(address.sha256, Some(sha256_hex(b"address-contract")));
+        assert_eq!(address.compact_slab_id(), Some(0));
+        assert_eq!(address.compact_slab_offset(), Some(0));
+        assert_eq!(address.compact_slab_address(), Some(0));
+        let from_compact_slab = BlockAddress::from_compact_slab_address(
+            address.compact_slab_address().unwrap(),
+            address.length,
+        );
+        assert_eq!(
+            from_compact_slab.page_slab_id,
+            address.page_slab_id
+        );
+        assert_eq!(from_compact_slab.offset, address.offset);
+        assert_eq!(from_compact_slab.length, address.length);
+        assert_eq!(store.read(&address).unwrap(), b"address-contract");
+
+        let legacy_alias_json = serde_json::json!({
+            "page_segment_id": address.page_slab_id,
+            "offset": address.offset,
+            "length": address.length,
+            "page_id": address.page_id,
+            "object_id": address.object_id,
+            "routing_slot": address.routing_bucket,
+            // generation is a canonical, always-present field on write (append sets
+            // Some(page_id)) and on read (record decode derives it), so the legacy
+            // alias JSON must carry it or the round-trip deserializes to None.
+            "generation": address.generation,
+            "band_id": address.band_id,
+            "checksum": address.sha256,
+        });
+        let from_checksum_alias: BlockAddress = serde_json::from_value(legacy_alias_json).unwrap();
+        assert_eq!(from_checksum_alias, address);
+        assert_eq!(
+            serde_json::to_value(&address).unwrap()["sha256"],
+            serde_json::json!(sha256_hex(b"address-contract"))
+        );
+    }
+
+    #[test]
+    fn page_slab_records_have_self_describing_envelope() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let address = store.append(b"enveloped-page").unwrap();
+        let raw = store.read_slab(address.page_slab_id).unwrap();
+
+        assert!(raw.starts_with(PAGE_RECORD_MAGIC));
+        assert_eq!(raw[8], PAGE_RECORD_VERSION);
+        assert_eq!(address.page_id, Some(0));
+        assert_eq!(store.read(&address).unwrap(), b"enveloped-page");
+    }
+
+    #[test]
+    fn page_ids_are_persisted_and_continue_after_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let first = store.append(b"first").unwrap();
+        let second = store.append(b"second").unwrap();
+        assert_eq!(first.page_id, Some(0));
+        assert_eq!(second.page_id, Some(1));
+
+        let reopened = LocalBlockStore::new(dir.path());
+        let third = reopened.append(b"third").unwrap();
+
+        assert_eq!(third.page_id, Some(2));
+        assert_eq!(reopened.read(&third).unwrap(), b"third");
+    }
+
+    #[test]
+    fn installed_slab_page_ids_advance_future_allocations() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_dir = tempfile::tempdir().unwrap();
+        let source = LocalBlockStore::new(source_dir.path());
+        let _ = source.append(b"first").unwrap();
+        let restored = source.append(b"restored").unwrap();
+        let restored_bytes = source.read_slab(restored.page_slab_id).unwrap();
+
+        let store = LocalBlockStore::new(dir.path());
+        store.install_slab(4, &restored_bytes).unwrap();
+        let next = store.append(b"next").unwrap();
+
+        assert_eq!(next.page_id, Some(2));
+        assert_eq!(store.read(&next).unwrap(), b"next");
+    }
+
+    #[test]
+    fn page_id_mismatch_rejects_corrupt_address_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let mut address = store.append(b"identity-checked-page").unwrap();
+        address.page_id = Some(address.page_id.unwrap() + 1);
+
+        let err = store.read(&address).unwrap_err();
+        assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
+    }
+
+    #[test]
+    fn object_ids_are_persisted_and_checked_in_page_envelopes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let mut address = store
+            .append_with_page_metadata(b"object-page", Some(42), Some(7))
+            .unwrap();
+
+        assert_eq!(address.object_id, Some(42));
+        assert_eq!(address.routing_bucket, Some(7));
+        assert_eq!(address.band_id, Some(0));
+        assert_eq!(store.read(&address).unwrap(), b"object-page");
+
+        address.object_id = Some(43);
+        let err = store.read(&address).unwrap_err();
+        assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
+
+        address.object_id = Some(42);
+        address.routing_bucket = Some(8);
+        let err = store.read(&address).unwrap_err();
+        assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
+
+        address.routing_bucket = Some(7);
+        address.band_id = Some(1);
+        let err = store.read(&address).unwrap_err();
+        assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
+    }
+
+    #[test]
+    fn rolled_slabs_stamp_new_band_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let first = store.append(b"first-band").unwrap();
+        let roll = store.roll_slab().unwrap();
+        let second = store.append(b"second-band").unwrap();
+
+        assert_eq!(first.band_id, Some(first.page_slab_id));
+        assert_eq!(second.band_id, Some(second.page_slab_id));
+        assert_eq!(second.band_id, Some(roll.new_page_slab_id));
+        assert_ne!(first.band_id, second.band_id);
+    }
+
+    #[test]
+    fn band_manifest_tracks_roll_reopen_gc_and_purge() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let first = store.append(b"first-band").unwrap();
+        store.roll_slab().unwrap();
+        let second = store.append(b"second-band").unwrap();
+
+        let bands = store.band_descriptors();
+        assert_eq!(bands.len(), 2);
+        assert_eq!(bands[0].page_slab_id, first.page_slab_id);
+        assert_eq!(bands[0].state, BlockStoreBandState::Sealed);
+        assert_eq!(bands[0].first_page_id, first.page_id);
+        assert_eq!(bands[0].last_page_id, first.page_id);
+        assert!(bands[0].created_unix_ms.is_some());
+        assert!(bands[0].updated_unix_ms.is_some());
+        assert_eq!(bands[1].page_slab_id, second.page_slab_id);
+        assert_eq!(bands[1].state, BlockStoreBandState::Active);
+        assert_eq!(bands[1].first_page_id, second.page_id);
+        assert_eq!(bands[1].last_page_id, second.page_id);
+        assert!(bands[1].created_unix_ms.is_some());
+        assert!(bands[1].updated_unix_ms.is_some());
+        assert!(band_manifest_path(dir.path()).exists());
+        let initial_summary = store.band_summary();
+        assert_eq!(initial_summary.sealed_bands, 1);
+        assert_eq!(initial_summary.active_bands, 1);
+        assert_eq!(initial_summary.delayed_destroy_bands, 0);
+        assert_eq!(initial_summary.purged_bands, 0);
+        assert_eq!(
+            initial_summary.sealed_physical_bytes,
+            bands[0].physical_bytes
+        );
+        assert_eq!(
+            initial_summary.active_physical_bytes,
+            bands[1].physical_bytes
+        );
+        assert_eq!(
+            initial_summary.live_physical_bytes,
+            bands[0].physical_bytes + bands[1].physical_bytes
+        );
+        assert_eq!(initial_summary.reclaimable_physical_bytes, 0);
+        assert!(initial_summary.oldest_known_band_unix_ms.is_some());
+        assert!(initial_summary.oldest_known_band_age_ms.is_some());
+        assert!(initial_summary.oldest_live_band_unix_ms.is_some());
+        assert!(initial_summary.oldest_live_band_age_ms.is_some());
+        assert!(initial_summary.oldest_reclaimable_band_unix_ms.is_none());
+        assert!(initial_summary.oldest_reclaimable_band_age_ms.is_none());
+        let initial_zone_usage = store.zone_usage();
+        assert_eq!(initial_zone_usage.len(), 2);
+        assert_eq!(initial_zone_usage[0].band_id, bands[0].band_id);
+        assert_eq!(
+            initial_zone_usage[0].page_slab_id,
+            bands[0].page_slab_id
+        );
+        assert_eq!(
+            initial_zone_usage[0].page_store_used_bytes,
+            bands[0].physical_bytes
+        );
+        assert_eq!(
+            initial_zone_usage[0].live_page_store_used_bytes,
+            bands[0].physical_bytes
+        );
+        assert_eq!(initial_zone_usage[0].reclaimable_page_store_used_bytes, 0);
+        assert_eq!(initial_zone_usage[0].purged_page_store_used_bytes, 0);
+
+        let reopened = LocalBlockStore::new(dir.path());
+        let reopened_bands = reopened.band_descriptors();
+        assert_eq!(reopened_bands.len(), bands.len());
+        assert_eq!(reopened_bands[0], bands[0]);
+        assert_eq!(
+            reopened_bands[1].page_slab_id,
+            bands[1].page_slab_id
+        );
+        assert_eq!(reopened_bands[1].state, bands[1].state);
+        assert_eq!(
+            reopened_bands[1].physical_bytes,
+            bands[1].physical_bytes
+        );
+        assert_eq!(reopened_bands[1].logical_bytes, bands[1].logical_bytes);
+        assert_eq!(
+            reopened_bands[1].created_unix_ms,
+            bands[1].created_unix_ms
+        );
+        assert!(reopened_bands[1].updated_unix_ms >= bands[1].updated_unix_ms);
+
+        let report = reopened
+            .gc_slabs_before_with_live_refs_delayed_destroy(1, std::iter::empty())
+            .unwrap();
+        assert_eq!(report.delayed_destroy_page_slab_ids, vec![0]);
+        let delayed = reopened.band_descriptors();
+        assert_eq!(delayed[0].state, BlockStoreBandState::DelayedDestroy);
+        assert!(delayed[0].physical_bytes > 0);
+        assert_eq!(delayed[0].created_unix_ms, bands[0].created_unix_ms);
+        assert!(delayed[0].updated_unix_ms >= bands[0].updated_unix_ms);
+        assert_eq!(delayed[1].state, BlockStoreBandState::Active);
+        let delayed_summary = reopened.band_summary();
+        assert_eq!(delayed_summary.delayed_destroy_bands, 1);
+        assert_eq!(delayed_summary.active_bands, 1);
+        assert_eq!(
+            delayed_summary.delayed_destroy_physical_bytes,
+            delayed[0].physical_bytes
+        );
+        assert_eq!(
+            delayed_summary.reclaimable_physical_bytes,
+            delayed[0].physical_bytes
+        );
+        assert_eq!(
+            delayed_summary.live_physical_bytes,
+            delayed[1].physical_bytes
+        );
+        assert!(delayed_summary.oldest_known_band_unix_ms.is_some());
+        assert!(delayed_summary.oldest_live_band_unix_ms.is_some());
+        assert_eq!(
+            delayed_summary.oldest_reclaimable_band_unix_ms,
+            delayed[0].updated_unix_ms
+        );
+        assert!(delayed_summary.oldest_reclaimable_band_age_ms.is_some());
+        let delayed_zone_usage = reopened.zone_usage();
+        let delayed_first = delayed_zone_usage
+            .iter()
+            .find(|zone| zone.page_slab_id == first.page_slab_id)
+            .unwrap();
+        assert_eq!(
+            delayed_first.reclaimable_page_store_used_bytes,
+            delayed[0].physical_bytes
+        );
+        assert_eq!(delayed_first.live_page_store_used_bytes, 0);
+
+        let purge = reopened
+            .purge_delayed_destroy_slabs_with_report()
+            .unwrap();
+        assert_eq!(purge.purged_page_slab_ids, vec![0]);
+        assert!(purge.purged_physical_bytes > 0);
+        let purged = LocalBlockStore::new(dir.path()).band_descriptors();
+        assert_eq!(purged[0].state, BlockStoreBandState::Purged);
+        assert_eq!(purged[0].created_unix_ms, bands[0].created_unix_ms);
+        assert!(purged[0].updated_unix_ms >= delayed[0].updated_unix_ms);
+        assert_eq!(purged[1].state, BlockStoreBandState::Active);
+        let purged_summary = LocalBlockStore::new(dir.path()).band_summary();
+        assert_eq!(purged_summary.purged_bands, 1);
+        assert_eq!(purged_summary.active_bands, 1);
+        assert_eq!(
+            purged_summary.purged_physical_bytes,
+            purged[0].physical_bytes
+        );
+        assert_eq!(purged_summary.live_physical_bytes, purged[1].physical_bytes);
+        assert_eq!(purged_summary.reclaimable_physical_bytes, 0);
+        let purged_zone_usage = LocalBlockStore::new(dir.path()).zone_usage();
+        let purged_first = purged_zone_usage
+            .iter()
+            .find(|zone| zone.page_slab_id == first.page_slab_id)
+            .unwrap();
+        assert_eq!(
+            purged_first.purged_page_store_used_bytes,
+            purged[0].physical_bytes
+        );
+        assert_eq!(purged_first.reclaimable_page_store_used_bytes, 0);
+        assert!(purged_summary.oldest_known_band_unix_ms.is_some());
+        assert!(purged_summary.oldest_live_band_unix_ms.is_some());
+        assert!(purged_summary.oldest_reclaimable_band_unix_ms.is_none());
+        assert!(purged_summary.oldest_reclaimable_band_age_ms.is_none());
+    }
+
+    #[test]
+    fn missing_band_manifest_rebuilds_from_existing_slabs() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let first = store.append(b"first-band").unwrap();
+        store.roll_slab().unwrap();
+        let second = store.append(b"second-band").unwrap();
+        fs::remove_file(band_manifest_path(dir.path())).unwrap();
+
+        let rebuilt = LocalBlockStore::new(dir.path());
+        let bands = rebuilt.band_descriptors();
+
+        assert_eq!(bands.len(), 2);
+        assert_eq!(bands[0].page_slab_id, first.page_slab_id);
+        assert_eq!(bands[0].state, BlockStoreBandState::Sealed);
+        assert_eq!(bands[0].first_page_id, first.page_id);
+        assert_eq!(bands[0].last_page_id, first.page_id);
+        assert!(bands[0].created_unix_ms.is_some());
+        assert!(bands[0].updated_unix_ms.is_some());
+        assert_eq!(bands[1].page_slab_id, second.page_slab_id);
+        assert_eq!(bands[1].state, BlockStoreBandState::Active);
+        assert_eq!(bands[1].first_page_id, second.page_id);
+        assert_eq!(bands[1].last_page_id, second.page_id);
+        assert!(bands[1].created_unix_ms.is_some());
+        assert!(bands[1].updated_unix_ms.is_some());
+        assert!(band_manifest_path(dir.path()).exists());
+
+        let report = rebuilt.stream_backed_band_runtime_report().unwrap();
+        assert!(report.runtime_ready, "{report:?}");
+        assert_eq!(report.band_lifecycle_states, vec!["active", "sealed"]);
+        assert!(report.band_manifest_ready);
+        assert!(report.band_manifest_rebuild_ready);
+        assert!(report.zone_stats_ready);
+        assert_eq!(report.zone_usage.len(), 2);
+        assert_eq!(
+            report
+                .zone_usage
+                .iter()
+                .map(|zone| zone.page_store_used_bytes)
+                .sum::<u64>(),
+            report.physical_bytes
+        );
+        assert!(!report.band_manifest_reconciled_on_open);
+        assert!(report.band_manifest_disk_consistent);
+        assert_eq!(report.manifest_missing_stream_bands, 0);
+        assert_eq!(report.manifest_extra_stream_bands, 0);
+        assert_eq!(report.corrupt_band_count, 0);
+        assert_eq!(report.partial_band_count, 0);
+        assert!(report.partial_band_recovery_ready);
+        assert_eq!(report.readable_prefix_physical_bytes, report.physical_bytes);
+    }
+
+    // shared-corpus: storage_stream_partial_band_rebuild;
+    #[test]
+    fn partial_band_manifest_rebuild_preserves_readable_prefix_and_reports_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let first_payload = b"sealed-readable-prefix".repeat(64);
+        let first = store.append(&first_payload).unwrap();
+        store.roll_slab().unwrap();
+        let second = store.append(b"active-clean-tail").unwrap();
+
+        let first_slab = slab_path(dir.path(), first.page_slab_id);
+        let readable_prefix = fs::metadata(&first_slab).unwrap().len();
+        OpenOptions::new()
+            .append(true)
+            .open(&first_slab)
+            .unwrap()
+            .write_all(b"partial-corrupt-tail")
+            .unwrap();
+        fs::remove_file(band_manifest_path(dir.path())).unwrap();
+
+        let rebuilt = LocalBlockStore::new(dir.path());
+        assert_eq!(rebuilt.read(&first).unwrap(), first_payload);
+        assert_eq!(rebuilt.read(&second).unwrap(), b"active-clean-tail");
+
+        let bands = rebuilt.band_descriptors();
+        let sealed = bands
+            .iter()
+            .find(|band| band.page_slab_id == first.page_slab_id)
+            .unwrap();
+        assert_eq!(sealed.state, BlockStoreBandState::Sealed);
+        assert!(sealed.has_corruption);
+        assert_eq!(sealed.first_error_offset, Some(readable_prefix));
+        assert_eq!(sealed.readable_prefix_physical_bytes, readable_prefix);
+        assert_eq!(sealed.first_page_id, first.page_id);
+        assert_eq!(sealed.last_page_id, first.page_id);
+        assert!(sealed
+            .first_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("mixed raw bytes"));
+        assert!(band_manifest_path(dir.path()).exists());
+
+        let report = rebuilt.stream_backed_band_runtime_report().unwrap();
+        assert!(!report.runtime_ready, "{report:?}");
+        assert!(report.band_manifest_ready);
+        assert!(report.band_manifest_rebuild_ready);
+        assert!(!report.band_manifest_reconciled_on_open);
+        assert!(report.band_manifest_disk_consistent);
+        assert_eq!(report.manifest_missing_stream_bands, 0);
+        assert_eq!(report.manifest_extra_stream_bands, 0);
+        assert_eq!(report.band_lifecycle_states, vec!["active", "sealed"]);
+        assert_eq!(report.corrupt_band_count, 1);
+        assert_eq!(report.partial_band_count, 1);
+        assert_eq!(
+            report.readable_prefix_physical_bytes,
+            readable_prefix + second.length
+        );
+        assert!(report.partial_band_recovery_ready);
+        assert!(!report.envelope_checksum_ready);
+        assert!(report
+            .blockers
+            .iter()
+            .any(|blocker| blocker.contains("readable prefix was preserved")));
+    }
+
+    #[test]
+    fn logical_page_range_skips_record_envelopes_across_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        store.append(b"abc").unwrap();
+        store.append(b"def").unwrap();
+
+        assert_eq!(store.read_logical_range(0, 1, 4).unwrap(), b"bcde");
+    }
+
+    #[test]
+    fn compressed_page_records_round_trip_and_remain_logical() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let first_payload = b"prefix-".repeat(80);
+        let second_payload = b"suffix-".repeat(80);
+        let first = store.append(&first_payload).unwrap();
+        let second = store.append(&second_payload).unwrap();
+        let raw = store.read_slab(first.page_slab_id).unwrap();
+
+        assert!(first.length < (PAGE_RECORD_HEADER_LEN + first_payload.len()) as u64);
+        assert!(second.length < (PAGE_RECORD_HEADER_LEN + second_payload.len()) as u64);
+        assert_eq!(store.read(&first).unwrap(), first_payload);
+        assert_eq!(store.read(&second).unwrap(), second_payload);
+
+        let logical_offset = first_payload.len() as u64 - 3;
+        let logical = store
+            .read_logical_range(first.page_slab_id, logical_offset, 12)
+            .unwrap();
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&first_payload[first_payload.len() - 3..]);
+        expected.extend_from_slice(&second_payload[..9]);
+        assert_eq!(logical, expected);
+        assert_eq!(raw[8], PAGE_RECORD_VERSION);
+        assert_eq!(raw[92], PAGE_RECORD_COMPRESSION_ZSTD);
+
+        let stats = store.stats();
+        assert_eq!(stats.writes, 2);
+        assert_eq!(
+            stats.logical_bytes_written,
+            (first_payload.len() + second_payload.len()) as u64
+        );
+        assert_eq!(stats.compressed_records_written, 2);
+        assert_eq!(stats.compressed_records_read, 4);
+        assert!(stats.compression_bytes_saved > 0);
+        assert!(stats.bytes_written < stats.logical_bytes_written);
+        assert!(stats.logical_bytes_read >= stats.bytes_read);
+    }
+
+    // shared-corpus: storage_stream_backed_band_runtime;
+    #[test]
+    fn stream_backed_band_runtime_report_covers_roll_read_manifest_and_delayed_destroy() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let first_payload = b"band-stream-first-".repeat(96);
+        let second_payload = b"band-stream-second-".repeat(96);
+        let first = store
+            .append_with_page_metadata(&first_payload, Some(11), Some(7))
+            .unwrap();
+        let second = store
+            .append_with_page_metadata(&second_payload, Some(12), Some(7))
+            .unwrap();
+        assert_eq!(first.page_slab_id, second.page_slab_id);
+
+        let logical_offset = first_payload.len() as u64 - 8;
+        let logical = store
+            .read_logical_range(first.page_slab_id, logical_offset, 16)
+            .unwrap();
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&first_payload[first_payload.len() - 8..]);
+        expected.extend_from_slice(&second_payload[..8]);
+        assert_eq!(logical, expected);
+
+        let roll = store.roll_slab().unwrap();
+        let third_payload = b"band-stream-third-".repeat(96);
+        let third = store
+            .append_with_page_metadata(&third_payload, Some(13), Some(8))
+            .unwrap();
+        assert_eq!(third.page_slab_id, roll.new_page_slab_id);
+        let before_gc = store.stream_backed_band_runtime_report().unwrap();
+        assert!(before_gc.runtime_ready, "{before_gc:?}");
+        assert_eq!(before_gc.active_bands, 1);
+        assert_eq!(before_gc.sealed_bands, 1);
+        assert_eq!(before_gc.band_lifecycle_states, vec!["active", "sealed"]);
+        assert_eq!(before_gc.stream_record_count, 3);
+        assert_eq!(before_gc.first_page_id, first.page_id);
+        assert_eq!(before_gc.last_page_id, third.page_id);
+        assert!(before_gc.page_id_continuity_ready);
+        assert!(before_gc.band_manifest_rebuild_ready);
+        assert!(before_gc.zone_stats_ready);
+        assert_eq!(before_gc.zone_usage.len(), 2);
+        assert_eq!(
+            before_gc
+                .zone_usage
+                .iter()
+                .map(|zone| zone.page_store_used_bytes)
+                .sum::<u64>(),
+            before_gc.physical_bytes
+        );
+        assert!(before_gc.logical_stream_bytes_read >= 16);
+        assert!(before_gc.band_state_transition_count >= 2);
+
+        let delayed = store
+            .gc_slabs_before_with_live_refs_delayed_destroy(
+                roll.new_page_slab_id,
+                [roll.new_page_slab_id],
+            )
+            .unwrap();
+        assert_eq!(
+            delayed.delayed_destroy_page_slab_ids,
+            vec![roll.previous_page_slab_id]
+        );
+
+        let reopened = LocalBlockStore::new(dir.path());
+        assert_eq!(reopened.read(&third).unwrap(), third_payload);
+        let report = reopened.stream_backed_band_runtime_report().unwrap();
+        assert!(report.runtime_ready, "{report:?}");
+        assert_eq!(report.active_bands, 1);
+        assert_eq!(report.delayed_destroy_bands, 1);
+        assert_eq!(
+            report.band_lifecycle_states,
+            vec!["active", "delayed_destroy"]
+        );
+        assert!(report.band_count >= 2);
+        assert!(report.stream_slab_count >= 1);
+        assert!(report.logical_stream_read_ready);
+        assert!(report.append_roll_ready);
+        assert!(report.band_manifest_ready);
+        assert!(report.band_manifest_rebuild_ready);
+        assert!(report.zone_stats_ready);
+        assert!(report
+            .zone_usage
+            .iter()
+            .any(|zone| zone.state == BlockStoreBandState::DelayedDestroy
+                && zone.reclaimable_page_store_used_bytes > 0));
+        assert!(report
+            .zone_usage
+            .iter()
+            .any(|zone| zone.state == BlockStoreBandState::Active
+                && zone.live_page_store_used_bytes > 0));
+        assert!(report.envelope_checksum_ready);
+        assert!(report.compression_stream_ready);
+        assert!(report.delayed_destroy_ready);
+        assert!(!report.purge_lifecycle_ready);
+        assert!(report.logical_bytes >= third_payload.len() as u64);
+        assert_eq!(report.stream_record_count, 1);
+        assert_eq!(report.first_page_id, third.page_id);
+        assert_eq!(report.last_page_id, third.page_id);
+        assert!(report.page_id_continuity_ready);
+        assert!(report.blockers.is_empty());
+        assert!(report
+            .evidence
+            .iter()
+            .any(|item| item.contains("logical stream reads span records")));
+        assert!(report
+            .evidence
+            .iter()
+            .any(|item| item.contains("page-id continuity")));
+
+        let purge = reopened
+            .purge_delayed_destroy_slabs_with_report()
+            .unwrap();
+        assert_eq!(
+            purge.purged_page_slab_ids,
+            vec![roll.previous_page_slab_id]
+        );
+        let purged = LocalBlockStore::new(dir.path())
+            .stream_backed_band_runtime_report()
+            .unwrap();
+        assert!(purged.runtime_ready, "{purged:?}");
+        assert_eq!(purged.active_bands, 1);
+        assert_eq!(purged.delayed_destroy_bands, 0);
+        assert_eq!(purged.purged_bands, 1);
+        assert_eq!(purged.band_lifecycle_states, vec!["active", "purged"]);
+        assert!(purged.zone_stats_ready);
+        assert!(purged
+            .zone_usage
+            .iter()
+            .any(|zone| zone.state == BlockStoreBandState::Purged
+                && zone.purged_page_store_used_bytes > 0));
+        assert!(purged.purge_lifecycle_ready);
+        assert!(purged.append_roll_ready);
+        assert!(purged.page_id_continuity_ready);
+    }
+
+    #[test]
+    fn slab_reports_describe_page_counts_bytes_and_compression() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let first_payload = b"prefix-".repeat(80);
+        let second_payload = b"suffix-".repeat(80);
+        let first = store.append(&first_payload).unwrap();
+        let second = store.append(&second_payload).unwrap();
+
+        let reports = store.slab_reports().unwrap();
+
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].page_slab_id, first.page_slab_id);
+        assert_eq!(reports[0].physical_bytes, first.length + second.length);
+        assert_eq!(
+            reports[0].logical_bytes,
+            (first_payload.len() + second_payload.len()) as u64
+        );
+        assert_eq!(reports[0].page_count, 2);
+        assert_eq!(reports[0].compressed_records, 2);
+        assert_eq!(
+            reports[0].readable_prefix_physical_bytes,
+            reports[0].physical_bytes
+        );
+        assert!(!reports[0].has_corruption);
+        assert_eq!(reports[0].first_error_offset, None);
+        assert_eq!(reports[0].first_page_id, first.page_id);
+        assert_eq!(reports[0].last_page_id, second.page_id);
+        assert_eq!(reports[0].block_index_count, 2);
+        assert_eq!(reports[0].block_index_entries.len(), 2);
+        assert_eq!(
+            reports[0].block_index_entries[0].block_slab_id,
+            first.page_slab_id
+        );
+        assert_eq!(reports[0].block_index_entries[0].offset, first.offset);
+        assert_eq!(reports[0].block_index_entries[0].length, first.length);
+        assert_eq!(
+            reports[0].block_index_entries[0].compact_slab_address,
+            first.compact_slab_address()
+        );
+        assert_eq!(
+            reports[0].block_index_entries[0].compact_slab_id,
+            first.compact_slab_id()
+        );
+        assert_eq!(
+            reports[0].block_index_entries[0].compact_slab_offset,
+            first.compact_slab_offset()
+        );
+        assert_eq!(reports[0].block_index_entries[0].block_id, first.page_id);
+        assert_eq!(
+            reports[0].block_index_entries[0].block_size,
+            first_payload.len() as u64
+        );
+        assert!(reports[0].block_index_entries[0].stored_size < first_payload.len() as u64);
+        assert!(!reports[0].block_index_entries[0].dirty);
+        assert!(!reports[0].block_index_entries[0].deleted);
+        assert!(!reports[0].block_index_entries[0].block_in_log);
+        assert_eq!(reports[0].block_index_entries[0].checksum, first.sha256);
+        assert_eq!(reports[0].block_index_entries[1].offset, second.offset);
+        assert_eq!(reports[0].block_index_entries[1].length, second.length);
+        assert_eq!(reports[0].block_index_entries[1].block_id, second.page_id);
+        assert_eq!(reports[0].first_error, None);
+    }
+
+    #[test]
+    fn slab_reports_describe_object_and_routing_bucket_ownership() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        store
+            .append_with_page_metadata(b"slot-7-object-100", Some(100), Some(7))
+            .unwrap();
+        store
+            .append_with_page_metadata(b"slot-11-object-101", Some(101), Some(11))
+            .unwrap();
+        store
+            .append_with_page_metadata(b"slot-7-object-100-again", Some(100), Some(7))
+            .unwrap();
+
+        let reports = store.slab_reports().unwrap();
+
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].page_count, 3);
+        assert_eq!(reports[0].object_count, 2);
+        assert_eq!(reports[0].routing_bucket_count, 2);
+        assert_eq!(reports[0].first_routing_bucket, Some(7));
+        assert_eq!(reports[0].last_routing_bucket, Some(11));
+        assert_eq!(reports[0].block_index_count, 3);
+        assert_eq!(
+            reports[0]
+                .block_index_entries
+                .iter()
+                .filter_map(|entry| entry.object_id)
+                .collect::<Vec<_>>(),
+            vec![100, 101, 100]
+        );
+        assert_eq!(
+            reports[0]
+                .block_index_entries
+                .iter()
+                .filter_map(|entry| entry.routing_bucket)
+                .collect::<Vec<_>>(),
+            vec![7, 11, 7]
+        );
+        assert!(reports[0]
+            .block_index_entries
+            .iter()
+            .all(|entry| !entry.dirty && !entry.deleted && !entry.block_in_log));
+        assert_eq!(
+            reports[0].readable_prefix_physical_bytes,
+            reports[0].physical_bytes
+        );
+        assert!(!reports[0].has_corruption);
+        assert_eq!(reports[0].first_error, None);
+    }
+
+    #[test]
+    fn slab_reports_capture_first_corrupt_record_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let first = store.append(b"healthy").unwrap();
+        let second = store.append(b"damaged").unwrap();
+        let path = slab_path(dir.path(), second.page_slab_id);
+        let mut slab = fs::read(&path).unwrap();
+        *slab.last_mut().unwrap() ^= 0xff;
+        fs::write(path, slab).unwrap();
+
+        let reports = store.slab_reports().unwrap();
+
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].page_count, 1);
+        assert_eq!(reports[0].logical_bytes, b"healthy".len() as u64);
+        assert_eq!(reports[0].readable_prefix_physical_bytes, first.length);
+        assert!(reports[0].has_corruption);
+        assert_eq!(reports[0].first_error_offset, Some(first.length));
+        assert_eq!(reports[0].first_page_id, first.page_id);
+        assert_eq!(reports[0].last_page_id, first.page_id);
+        let error = reports[0]
+            .first_error
+            .as_ref()
+            .expect("corrupt second record should be reported");
+        assert!(error.contains("checksum") || error.contains("corrupt page envelope"));
+    }
+
+    #[test]
+    fn page_record_compression_policy_can_disable_or_raise_threshold() {
+        let payload = b"policy-controlled-".repeat(80);
+
+        let disabled_dir = tempfile::tempdir().unwrap();
+        let disabled_store = LocalBlockStore::with_options(
+            disabled_dir.path(),
+            BlockStoreOptions {
+                compression_enabled: false,
+                ..BlockStoreOptions::default()
+            },
+        );
+        let disabled_address = disabled_store.append(&payload).unwrap();
+        let disabled_raw = disabled_store
+            .read_slab(disabled_address.page_slab_id)
+            .unwrap();
+
+        assert_eq!(
+            disabled_address.length,
+            (PAGE_RECORD_HEADER_LEN + payload.len()) as u64
+        );
+        assert_eq!(disabled_raw[92], PAGE_RECORD_COMPRESSION_NONE);
+        assert_eq!(disabled_store.read(&disabled_address).unwrap(), payload);
+        assert_eq!(disabled_store.stats().compressed_records_written, 0);
+        assert_eq!(disabled_store.stats().compression_bytes_saved, 0);
+
+        let threshold_dir = tempfile::tempdir().unwrap();
+        let threshold_store = LocalBlockStore::with_options(
+            threshold_dir.path(),
+            BlockStoreOptions {
+                compression_min_bytes: payload.len() + 1,
+                ..BlockStoreOptions::default()
+            },
+        );
+        let threshold_address = threshold_store.append(&payload).unwrap();
+        let threshold_raw = threshold_store
+            .read_slab(threshold_address.page_slab_id)
+            .unwrap();
+
+        assert_eq!(
+            threshold_address.length,
+            (PAGE_RECORD_HEADER_LEN + payload.len()) as u64
+        );
+        assert_eq!(threshold_raw[92], PAGE_RECORD_COMPRESSION_NONE);
+        assert_eq!(threshold_store.read(&threshold_address).unwrap(), payload);
+        assert_eq!(threshold_store.stats().compressed_records_written, 0);
+        assert_eq!(threshold_store.stats().compression_bytes_saved, 0);
+    }
+
+    #[test]
+    fn page_envelope_rejects_corrupt_compressed_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let address = store.append(&b"compress-me-".repeat(80)).unwrap();
+        let path = slab_path(dir.path(), address.page_slab_id);
+        let mut slab = fs::read(&path).unwrap();
+        *slab.last_mut().unwrap() ^= 0xff;
+        fs::write(path, slab).unwrap();
+
+        let err = store.read(&address).unwrap_err();
+        assert!(matches!(
+            err,
+            BlockStoreError::ChecksumMismatch { .. } | BlockStoreError::CorruptPageEnvelope { .. }
+        ));
+    }
+
+    #[test]
+    fn page_envelope_rejects_corrupt_header_lengths() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let address = store.append(b"header-checked-page").unwrap();
+        let path = slab_path(dir.path(), address.page_slab_id);
+        let mut slab = fs::read(&path).unwrap();
+        slab[10] = 1;
+        slab[11] = 0;
+        fs::write(path, slab).unwrap();
+
+        let err = store.read(&address).unwrap_err();
+        assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
+    }
+
+    #[test]
+    fn page_address_without_checksum_keeps_legacy_read_compatibility() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let legacy_address = BlockAddress {
+            page_slab_id: 0,
+            offset: 0,
+            length: b"alteredpage".len() as u64,
+            page_id: None,
+            object_id: None,
+            routing_bucket: None,
+            generation: None,
+            band_id: None,
+            sha256: None,
+        };
+        fs::write(
+            slab_path(dir.path(), legacy_address.page_slab_id),
+            b"alteredpage",
+        )
+        .unwrap();
+
+        assert_eq!(store.read(&legacy_address).unwrap(), b"alteredpage");
+    }
+
+    #[test]
+    fn gc_slabs_retains_live_index_references_below_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        store.install_slab(0, b"current").unwrap();
+        store.install_slab(1, b"live").unwrap();
+        store.install_slab(2, b"stale").unwrap();
+        store.install_slab(3, b"keep").unwrap();
+
+        let report = store.gc_slabs_before_with_live_refs(3, [1_u64]).unwrap();
+        assert_eq!(report.removed_page_slab_ids, vec![0, 2]);
+        assert_eq!(report.retained_page_slab_ids, vec![1, 3]);
+        assert_eq!(
+            report.removed_physical_bytes,
+            (b"current".len() + b"stale".len()) as u64
+        );
+        assert_eq!(
+            report.retained_physical_bytes,
+            (b"live".len() + b"keep".len()) as u64
+        );
+        assert!(report.retained_current_page_slab_ids.is_empty());
+        assert_eq!(report.retained_live_page_slab_ids, vec![1]);
+        assert_eq!(report.retained_live_physical_bytes, b"live".len() as u64);
+        assert_eq!(store.slab_ids().unwrap(), vec![1, 3]);
+    }
+
+    #[test]
+    fn delayed_destroy_gc_quarantines_stale_slabs_before_purge() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        store.install_slab(0, b"current").unwrap();
+        store.install_slab(1, b"stale").unwrap();
+        store.install_slab(2, b"live").unwrap();
+        store.install_slab(3, b"keep").unwrap();
+
+        let report = store
+            .gc_slabs_before_with_live_refs_delayed_destroy(3, [2_u64])
+            .unwrap();
+
+        assert_eq!(report.removed_page_slab_ids, vec![0, 1]);
+        assert_eq!(report.delayed_destroy_page_slab_ids, vec![0, 1]);
+        assert_eq!(
+            report.removed_physical_bytes,
+            (b"current".len() + b"stale".len()) as u64
+        );
+        assert_eq!(
+            report.delayed_destroy_physical_bytes,
+            report.removed_physical_bytes
+        );
+        assert_eq!(report.retained_page_slab_ids, vec![2, 3]);
+        assert_eq!(report.retained_live_page_slab_ids, vec![2]);
+        assert_eq!(report.retained_live_physical_bytes, b"live".len() as u64);
+        assert_eq!(store.slab_ids().unwrap(), vec![2, 3]);
+        assert_eq!(store.delayed_destroy_slab_ids().unwrap(), vec![0, 1]);
+        let delayed_reports = store.delayed_destroy_slab_reports().unwrap();
+        assert_eq!(delayed_reports.len(), 2);
+        assert_eq!(delayed_reports[0].page_slab_id, 0);
+        assert_eq!(delayed_reports[0].physical_bytes, b"current".len() as u64);
+        assert!(delayed_reports[0].modified_unix_ms.is_some());
+        assert_eq!(delayed_reports[1].page_slab_id, 1);
+        assert_eq!(delayed_reports[1].physical_bytes, b"stale".len() as u64);
+        assert!(delayed_reports[1].modified_unix_ms.is_some());
+
+        let purge = store.purge_delayed_destroy_slabs_with_report().unwrap();
+        assert_eq!(purge.purged_page_slab_ids, vec![0, 1]);
+        assert_eq!(
+            purge.purged_physical_bytes,
+            (b"current".len() + b"stale".len()) as u64
+        );
+        assert!(store.delayed_destroy_slab_ids().unwrap().is_empty());
+        assert!(store.delayed_destroy_slab_reports().unwrap().is_empty());
+        assert_eq!(store.slab_ids().unwrap(), vec![2, 3]);
+    }
+
+    #[test]
+    fn utility_gc_selects_low_utility_stale_slabs_with_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        store.install_slab(0, b"small").unwrap();
+        store.install_slab(1, b"largest-stale-segment").unwrap();
+        store.install_slab(2, b"live-segment").unwrap();
+        store.install_slab(3, b"current-segment").unwrap();
+
+        let candidates = store.gc_utility_candidates(3, [2_u64]).unwrap();
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.page_slab_id)
+                .collect::<Vec<_>>(),
+            vec![1, 0]
+        );
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.utility_score == 0));
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.utility_basis_points == 0));
+        assert!(candidates.iter().all(|candidate| candidate.used_bytes == 0));
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.stale_bytes == candidate.total_bytes));
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.created_unix_ms.is_some()));
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.updated_unix_ms.is_some()));
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.age_ms.is_some()));
+
+        let no_op = store
+            .gc_slabs_before_with_live_refs_utility(3, [2_u64], 0, true)
+            .unwrap();
+        assert!(no_op.removed_page_slab_ids.is_empty());
+        assert_eq!(no_op.removed_physical_bytes, 0);
+        assert_eq!(store.slab_ids().unwrap(), vec![0, 1, 2, 3]);
+
+        let report = store
+            .gc_slabs_before_with_live_refs_utility(3, [2_u64], 1, true)
+            .unwrap();
+        assert_eq!(report.removed_page_slab_ids, vec![1]);
+        assert_eq!(report.delayed_destroy_page_slab_ids, vec![1]);
+        assert_eq!(
+            report.removed_physical_bytes,
+            b"largest-stale-segment".len() as u64
+        );
+        assert_eq!(
+            report.delayed_destroy_physical_bytes,
+            b"largest-stale-segment".len() as u64
+        );
+        assert_eq!(report.retained_page_slab_ids, vec![0, 2, 3]);
+        assert_eq!(report.retained_live_page_slab_ids, vec![2]);
+        assert_eq!(
+            report.retained_live_physical_bytes,
+            b"live-segment".len() as u64
+        );
+        assert_eq!(store.slab_ids().unwrap(), vec![0, 2, 3]);
+        assert_eq!(store.delayed_destroy_slab_ids().unwrap(), vec![1]);
+        let delayed_reports = store.delayed_destroy_slab_reports().unwrap();
+        assert_eq!(delayed_reports.len(), 1);
+        assert_eq!(delayed_reports[0].page_slab_id, 1);
+        assert_eq!(
+            delayed_reports[0].physical_bytes,
+            b"largest-stale-segment".len() as u64
+        );
+        assert!(delayed_reports[0].modified_unix_ms.is_some());
+    }
+
+    #[test]
+    fn band_garbage_floor_gates_reclaim_by_garbage_ratio() {
+        // garbage-ratio GC parity: reclaim is gated on a minimum band garbage ratio
+        // (garbage = 10_000 - band live-fraction). Floor 0 (the default) reclaims every
+        // eligible band as before; a floor above a band's garbage ratio excludes it.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        store.install_slab(0, b"stale-a").unwrap();
+        store.install_slab(1, b"stale-b").unwrap();
+        store.install_slab(2, b"kept-above-floor").unwrap();
+        let floor_zero = store
+            .gc_policy_plan(
+                2,
+                Vec::<u64>::new(),
+                &BlockStoreGcPolicy::with_band_garbage_floor(0, None),
+            )
+            .unwrap();
+        assert_eq!(floor_zero.selected_page_slab_ids, vec![0, 1]);
+        assert_eq!(floor_zero.skipped_by_policy_count, 0);
+        let floor_impossible = store
+            .gc_policy_plan(
+                2,
+                Vec::<u64>::new(),
+                &BlockStoreGcPolicy::with_band_garbage_floor(10_001, None),
+            )
+            .unwrap();
+        assert!(floor_impossible.selected_page_slab_ids.is_empty());
+        assert_eq!(floor_impossible.skipped_by_policy_count, 2);
+    }
+
+    #[test]
+    fn policy_gc_plans_and_applies_byte_bounded_destroy() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        store.install_slab(0, b"small").unwrap();
+        store.install_slab(1, b"largest-stale-segment").unwrap();
+        store.install_slab(2, b"live-segment").unwrap();
+        store.install_slab(3, b"current-segment").unwrap();
+
+        let policy = BlockStoreGcPolicy {
+            max_destroy_slabs: 2,
+            max_destroy_physical_bytes: b"small".len() as u64,
+            max_utility_score: Some(0),
+            min_age_ms: Some(0),
+            min_band_garbage_basis_points: None,
+        };
+        let plan = store.gc_policy_plan(3, [2_u64], &policy).unwrap();
+        assert_eq!(plan.retain_from_page_slab_id, 3);
+        assert_eq!(plan.candidate_count, 2);
+        assert_eq!(
+            plan.candidate_physical_bytes,
+            (b"small".len() + b"largest-stale-segment".len()) as u64
+        );
+        assert_eq!(plan.candidate_total_bytes, plan.candidate_physical_bytes);
+        assert_eq!(plan.candidate_used_bytes, 0);
+        assert_eq!(plan.candidate_stale_bytes, plan.candidate_physical_bytes);
+        assert_eq!(plan.candidate_utility_basis_points, 0);
+        assert_eq!(plan.selected_page_slab_ids, vec![0]);
+        assert_eq!(plan.selected_physical_bytes, b"small".len() as u64);
+        assert_eq!(plan.skipped_by_policy_count, 0);
+        assert_eq!(plan.skipped_by_policy_physical_bytes, 0);
+        assert_eq!(plan.skipped_by_budget_count, 1);
+        assert_eq!(
+            plan.skipped_by_budget_physical_bytes,
+            b"largest-stale-segment".len() as u64
+        );
+        assert_eq!(
+            plan.candidates
+                .iter()
+                .map(|candidate| candidate.page_slab_id)
+                .collect::<Vec<_>>(),
+            vec![1, 0]
+        );
+
+        let report = store
+            .gc_slabs_before_with_live_refs_policy(3, [2_u64], policy, true)
+            .unwrap();
+        assert_eq!(report.removed_page_slab_ids, vec![0]);
+        assert_eq!(report.delayed_destroy_page_slab_ids, vec![0]);
+        assert_eq!(report.retained_page_slab_ids, vec![1, 2, 3]);
+        assert_eq!(store.slab_ids().unwrap(), vec![1, 2, 3]);
+        assert_eq!(store.delayed_destroy_slab_ids().unwrap(), vec![0]);
+    }
+}

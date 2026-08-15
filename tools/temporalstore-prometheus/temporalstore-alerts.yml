@@ -1,0 +1,312 @@
+groups:
+  - name: temporalstore.local.production
+    rules:
+      - alert: TemporalStoreServiceDown
+        expr: temporalstore_service_role_up{service_role=~"nodeserver|metaserver|proxy"} == 0
+        for: 30s
+        labels:
+          severity: critical
+          component: temporalstore
+        annotations:
+          summary: "TemporalStore service role is down"
+          description: "The {{ $labels.service_role }} /vars endpoint is not reachable from the local Prometheus exporter."
+
+      - alert: TemporalStoreVarsExporterScrapeErrors
+        expr: increase(temporalstore_vars_exporter_scrape_errors_total[2m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: prometheus
+        annotations:
+          summary: "TemporalStore /vars scrape errors detected"
+          description: "The vars-to-Prometheus exporter is failing to scrape one or more configured targets."
+
+      - alert: TemporalStoreClientValidationMissing
+        expr: absent(temporalstore_client_validation_up)
+        for: 5m
+        labels:
+          severity: warning
+          component: client
+        annotations:
+          summary: "TemporalStore client validation metric is missing"
+          description: "The local validation harness has not published temporalstore_client_validation_up."
+
+      - alert: TemporalStoreClientValidationFailed
+        expr: temporalstore_client_validation_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: client
+        annotations:
+          summary: "TemporalStore client validation failed"
+          description: "A local client validation iteration reported failure."
+
+      - alert: TemporalStoreProxySmokeFailure
+        expr: temporalstore_proxy_smoke_success == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: proxy
+        annotations:
+          summary: "TemporalStore proxy smoke failed"
+          description: "The proxy smoke validation metric reported failure."
+
+      - alert: TemporalStoreClientBenchmarkErrors
+        expr: temporalstore_client_benchmark_errors > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: client
+        annotations:
+          summary: "TemporalStore client benchmark errors detected"
+          description: "The local scale benchmark emitted one or more client-side errors."
+
+      - alert: TemporalStoreClientRetryFailures
+        expr: temporalstore_client_retry_failures_total > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: client
+        annotations:
+          summary: "TemporalStore client retries exhausted"
+          description: "The local client/proxy validation observed retries that still failed after the retry budget."
+
+      - alert: TemporalStoreProxyRetryFailures
+        expr: temporalstore_proxy_retry_failures_total > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: proxy
+        annotations:
+          summary: "TemporalStore proxy retries exhausted"
+          description: "The proxy smoke validation observed retries that still failed after the retry budget."
+
+      - alert: TemporalStoreRaftGateNotProductionReady
+        expr: temporalstore_raft_gate_production_ready == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: raft
+        annotations:
+          summary: "TemporalStore raft production gate failed"
+          description: "The raft production gate reported that failover, lag, membership, or snapshot readiness is not production-ready."
+
+      - alert: TemporalStoreRaftGateFailures
+        expr: temporalstore_raft_gate_failed_cases > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: raft
+        annotations:
+          summary: "TemporalStore raft gate has failed cases"
+          description: "The latest raft gate summary contains failed cases."
+
+      - alert: TemporalStoreIngestionDeadLetters
+        expr: temporalstore_ingestion_dead_letters_total > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: ingestion
+        annotations:
+          summary: "TemporalStore ingestion dead letters detected"
+          description: "Queue ingestion replay or worker metrics reported dead-lettered records."
+
+      - alert: TemporalStoreIngestionLagHigh
+        expr: temporalstore_ingestion_max_partition_lag_records > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: ingestion
+        annotations:
+          summary: "TemporalStore ingestion partition lag is non-zero"
+          description: "At least one ingestion partition still has uncommitted lag after the validation window."
+
+      - alert: TemporalStoreIngestionRetryExhausted
+        expr: temporalstore_ingestion_retry_exhausted_records_total > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: ingestion
+        annotations:
+          summary: "TemporalStore ingestion retries exhausted"
+          description: "Queue ingestion replay or worker metrics reported records that exhausted retry budget."
+
+      - alert: TemporalStoreIngestionBackpressure
+        expr: temporalstore_ingestion_backpressure_records > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: ingestion
+        annotations:
+          summary: "TemporalStore ingestion backpressure detected"
+          description: "Queue ingestion replay or worker metrics reported uncommitted backlog or partition lag."
+
+      - alert: TemporalStoreCacheFallbackEvidenceMissing
+        expr: temporalstore_cache_fallback_static_checks_pass == 0
+        for: 1m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "TemporalStore cache fallback evidence is missing"
+          description: "The cache fallback metrics gate did not prove blockcache and persistent-read fallback instrumentation."
+
+      - alert: TemporalStoreCacheFallbackRuntimeAbort
+        expr: temporalstore_cache_fallback_runtime_test_aborted > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "TemporalStore cache fallback runtime test aborted"
+          description: "The optional focused partition runtime test aborted locally; refresh or repair the test binary before release gating."
+
+      - alert: TemporalStoreFollowerReadSlaFailed
+        expr: temporalstore_follower_read_sla_pass == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: data-node
+        annotations:
+          summary: "TemporalStore follower-read SLA failed"
+          description: "The bounded-stale follower-read gate reported errors or visibility p95/p99 above the configured SLA."
+
+      - alert: TemporalStoreFollowerReadLatencyHigh
+        expr: temporalstore_follower_read_visibility_p99_us > 100000
+        for: 1m
+        labels:
+          severity: warning
+          component: data-node
+        annotations:
+          summary: "TemporalStore follower-read p99 latency is high"
+          description: "Bounded-stale follower-read visibility p99 exceeded 100 ms in the local production-readiness gate."
+
+      - alert: TemporalStoreMultitenantNoisyNeighborFailed
+        expr: temporalstore_multitenant_noisy_neighbor_pass == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: tenant-isolation
+        annotations:
+          summary: "TemporalStore multi-tenant isolation gate failed"
+          description: "The victim tenant had errors, low QPS, or high p99 latency while the noisy tenant was active."
+
+      - alert: TemporalStoreMultitenantVictimLatencyHigh
+        expr: temporalstore_multitenant_benchmark_p99_us{tenant_role="victim"} > scalar(temporalstore_multitenant_victim_p99_sla_us)
+        for: 1m
+        labels:
+          severity: warning
+          component: tenant-isolation
+        annotations:
+          summary: "TemporalStore victim tenant p99 latency is high"
+          description: "The multi-tenant noisy-neighbor gate reported victim p99 above the configured SLA."
+
+      - alert: TemporalStoreMetaserverSnapshotRestoreFailed
+        expr: temporalstore_metaserver_snapshot_restore_pass == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: metaserver
+        annotations:
+          summary: "TemporalStore metaserver snapshot restore gate failed"
+          description: "The metaserver raft snapshot restore gate did not prove snapshot, restart, metadata recovery, and post-restore write health."
+
+      - alert: TemporalStoreMetaserverSnapshotMissing
+        expr: temporalstore_metaserver_snapshot_files{phase="before_restart"} <= 0
+        for: 1m
+        labels:
+          severity: warning
+          component: metaserver
+        annotations:
+          summary: "TemporalStore metaserver snapshot files missing"
+          description: "The metaserver snapshot restore gate did not observe local snapshot files before restart."
+
+      - alert: TemporalStoreStaleLocalDataRestartFailed
+        expr: temporalstore_stale_local_data_restart_pass == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: data-node
+        annotations:
+          summary: "TemporalStore stale local data restart gate failed"
+          description: "The stale local data restart gate did not prove restart from persisted raft/storage state."
+
+      - alert: TemporalStoreStaleLocalDataGuardMissing
+        expr: temporalstore_stale_local_data_guard_present == 0
+        for: 1m
+        labels:
+          severity: warning
+          component: data-node
+        annotations:
+          summary: "TemporalStore stale local data guard missing"
+          description: "The stale local data restart gate did not find expected missing/malformed applied-index guards."
+
+      - alert: TemporalStoreDataRaft5NodeScaleFailed
+        expr: temporalstore_data_raft_5node_scale_pass == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: data-node
+        annotations:
+          summary: "TemporalStore 5-node data raft scale gate failed"
+          description: "The 5-node data raft scale gate did not prove five normal servers, replica distribution, replication smoke, and zero-error reads/writes."
+
+      - alert: TemporalStoreRemoteAuthGateFailed
+        expr: temporalstore_remote_auth_gate_pass == 0
+        for: 1m
+        labels:
+          severity: warning
+          component: ci
+        annotations:
+          summary: "TemporalStore remote auth gate failed"
+          description: "The non-interactive git remote auth gate could not validate the bjmeetsfo/TemporalStore remote and ls-remote path."
+
+      - alert: TemporalStoreRemoteAuthUnexpectedRemote
+        expr: temporalstore_remote_auth_expected_remote_match == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: ci
+        annotations:
+          summary: "TemporalStore remote points at an unexpected repository"
+          description: "The remote auth gate did not match the expected bjmeetsfo/TemporalStore remote URL."
+
+      - alert: TemporalStoreDependencyCacheGateFailed
+        expr: temporalstore_dependency_cache_gate_pass == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: ci
+        annotations:
+          summary: "TemporalStore dependency-cache CI gate failed"
+          description: "The Ubuntu 22 dependency-cache gate could not prove build tools, local dependency symlinks, build knobs, and script syntax."
+
+      - alert: TemporalStoreDependencyCacheOptionalArtifactsMissing
+        expr: temporalstore_dependency_cache_optional_missing > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: ci
+        annotations:
+          summary: "TemporalStore optional dependency-cache artifacts are missing"
+          description: "The dependency-cache gate is passing with system packages or link shims, but some reusable optional artifacts are unavailable."
+
+      - alert: TemporalStoreRebalanceHarnessFailed
+        expr: temporalstore_rebalance_harness_pass == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: metaserver
+        annotations:
+          summary: "TemporalStore rebalance harness failed"
+          description: "The local rebalance harness did not pass all enabled data-raft and shared-store redistribution cases."
+
+      - alert: TemporalStoreRebalanceCaseFailed
+        expr: temporalstore_rebalance_case_pass == 0
+        for: 1m
+        labels:
+          severity: warning
+          component: metaserver
+        annotations:
+          summary: "TemporalStore rebalance case failed"
+          description: "One local rebalance case did not pass; inspect the case label and harness result directory."

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Prometheus Metrics</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body data-page="prometheus">
+    <header class="topbar">
+      <a class="brand" href="./index.html"><span class="brand-mark">M</span><span><strong>MatrixArk</strong><small>Observability</small></span></a>
+      <nav class="nav">
+        <a href="./index.html" data-nav="overview">Overview</a>
+        <a href="./temporalstore.html" data-nav="temporalstore">TemporalStore</a>
+        <a href="./matrixdb.html" data-nav="matrixdb">MatrixDB</a>
+        <a href="./matrixkv.html" data-nav="matrixkv">MatrixKV</a>
+        <a href="./prometheus.html" data-nav="prometheus">Prometheus</a>
+      </nav>
+    </header>
+    <main class="shell">
+      <section class="intro compact">
+        <div>
+          <p class="eyebrow">Metrics Endpoint</p>
+          <h1>Prometheus</h1>
+          <p class="lead">
+            The exporter converts service `/vars` endpoints into Prometheus text format with
+            source labels for metaserver and data-node attribution.
+          </p>
+        </div>
+        <a class="button primary" href="../temporalstore-vars.prom">Open raw metrics</a>
+      </section>
+
+      <section class="split wide-left">
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Live Samples</p>
+              <h2>Scrape status</h2>
+            </div>
+            <button class="button" type="button" data-refresh-prom>Refresh</button>
+          </div>
+          <div class="prom-grid" data-prom-grid></div>
+        </article>
+        <article class="panel">
+          <p class="eyebrow">Usage</p>
+          <h2>Pull from Prometheus</h2>
+          <pre class="code-block">curl http://35.92.109.186:8088/temporalstore-vars.prom</pre>
+          <p class="muted">
+            Current live targets are TemporalStore metaserver, data01, and data02. MatrixDB and
+            MatrixKV should be added with the same source-label pattern when their exporters are enabled.
+          </p>
+        </article>
+      </section>
+
+      <section class="panel">
+        <p class="eyebrow">Metric Groups</p>
+        <h2>What to wire into dashboards</h2>
+        <div class="check-grid">
+          <div><strong>CPU and workers</strong><span>Process CPU, worker usage, bthread counts, queue pressure.</span></div>
+          <div><strong>Replication</strong><span>Replay progress, lag, out-of-sync counters, partition recovery state.</span></div>
+          <div><strong>Storage</strong><span>Oplog write latency, cache hit ratio, SSD cache bytes, shared-store errors.</span></div>
+          <div><strong>Client path</strong><span>Request latency, error classes, retry visibility, proxy routing readiness.</span></div>
+        </div>
+      </section>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>

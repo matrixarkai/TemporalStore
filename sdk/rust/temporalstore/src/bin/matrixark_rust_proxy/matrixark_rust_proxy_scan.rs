@@ -1,0 +1,141 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
+use std::collections::HashSet;
+
+use serde_json::Value;
+use temporalstore::Client;
+
+use crate::matrixark_rust_proxy_cache::{
+    filtered_scan_cache_key, get_filtered_scan_cache, put_filtered_scan_cache,
+    scan_record_cache_key, FilteredScanCacheEntry,
+};
+use crate::matrixark_rust_proxy_candidate_node_path::{
+    node_path_matches_filters, query_node_path_filters,
+};
+use crate::matrixark_rust_proxy_candidates::record_node_hash;
+use crate::matrixark_rust_proxy_protocol::Command;
+use crate::matrixark_rust_proxy_scan_node_paths::node_paths_by_hash;
+use crate::matrixark_rust_proxy_scan_records::{
+    load_scan_records, matrixark_serving_count, required,
+};
+use crate::matrixark_rust_proxy_scan_response::{
+    build_filtered_cache_hit_response, build_scan_response, ScanResponseInput,
+};
+use crate::matrixark_rust_proxy_scan_secondary::apply_secondary_prefilter;
+use crate::matrixark_rust_proxy_scope::scope_matches_record;
+
+pub(crate) fn scan_matrixark_candidates(
+    client: &Client,
+    command: &Command,
+) -> Result<Value, String> {
+    let count_key = required(command.count_key.clone(), "count_key")?;
+    let record_hash_key = required(command.record_hash_key.clone(), "record_hash_key")?;
+    let shard_size = command.shard_size.unwrap_or(1024).max(1);
+    let count_text = client
+        .get_string(&count_key)
+        .map_err(|err| err.to_string())?;
+    let count = count_text.parse::<u64>().unwrap_or(0);
+    let serving_count = matrixark_serving_count(client, &count_key, count);
+    let allowed_types: HashSet<String> = command
+        .record_types
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let selected_nodes: HashSet<u64> = command
+        .selected_node_hashes
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let secondary_groups = command.secondary_index_groups.clone().unwrap_or_default();
+    let cache_key = scan_record_cache_key(&record_hash_key, shard_size, serving_count);
+    let filtered_cache_key = filtered_scan_cache_key(
+        &cache_key,
+        &allowed_types,
+        &selected_nodes,
+        &secondary_groups,
+        command.scope.as_ref(),
+    );
+    if let Some(entry) = get_filtered_scan_cache(&filtered_cache_key) {
+        return Ok(build_filtered_cache_hit_response(
+            entry,
+            count,
+            serving_count,
+            secondary_groups.len(),
+        ));
+    }
+    let (records_source, scanned_records, cache_hit) =
+        load_scan_records(client, &record_hash_key, shard_size, count, cache_key)?;
+    let mut dropped_by_type = 0_u64;
+    let mut dropped_by_scope = 0_u64;
+    let mut selected_node_dropped = 0_u64;
+    let node_paths_by_hash = node_paths_by_hash(records_source.as_ref());
+    let node_path_filters = query_node_path_filters(command.scope.as_ref());
+    let records = records_source
+        .iter()
+        .filter_map(|record| {
+            let record_type = record
+                .get("record_type")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if !allowed_types.is_empty() && !allowed_types.contains(record_type) {
+                dropped_by_type += 1;
+                return None;
+            }
+            if !scope_matches_record(record, command.scope.as_ref()) {
+                dropped_by_scope += 1;
+                return None;
+            }
+            if !node_path_matches_filters(record, &node_path_filters, &node_paths_by_hash) {
+                dropped_by_scope += 1;
+                return None;
+            }
+            if !selected_nodes.is_empty() {
+                let keep_index = matches!(record_type, "context_index" | "context_embedding");
+                let keep_node = record_node_hash(record)
+                    .map(|node| selected_nodes.contains(&node))
+                    .unwrap_or(false);
+                if !keep_index && !keep_node {
+                    selected_node_dropped += 1;
+                    return None;
+                }
+            }
+            Some(record.clone())
+        })
+        .collect::<Vec<_>>();
+
+    let secondary_filter = apply_secondary_prefilter(records, &secondary_groups);
+    let filtered = secondary_filter.records;
+    let secondary_dropped = secondary_filter.secondary_dropped;
+    let secondary_matched = secondary_filter.secondary_matched;
+
+    put_filtered_scan_cache(
+        filtered_cache_key,
+        FilteredScanCacheEntry {
+            records: filtered.clone(),
+            scanned_records,
+            dropped_by_type,
+            dropped_by_scope,
+            selected_node_dropped,
+            secondary_dropped,
+            secondary_matched,
+            node_path_filter_count: node_path_filters.len(),
+        },
+    );
+    Ok(build_scan_response(ScanResponseInput {
+        filtered,
+        scanned_records,
+        cache_hit,
+        count,
+        serving_count,
+        dropped_by_type,
+        dropped_by_scope,
+        selected_node_dropped,
+        secondary_groups_len: secondary_groups.len(),
+        secondary_matched,
+        secondary_dropped,
+        node_path_filter_count: node_path_filters.len(),
+    }))
+}

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://matrixark.ai/schemas/agent_event.schema.json",
+  "title": "MatrixArk Agent Event",
+  "type": "object",
+  "required": ["agent", "event", "session_id", "role", "text", "timestamp_ms"],
+  "properties": {
+    "agent": { "type": "string" },
+    "event": { "type": "string" },
+    "hook_type": { "type": "string" },
+    "lifecycle_stage": { "type": "string" },
+    "should_retrieve": { "type": "boolean" },
+    "should_commit": { "type": "boolean" },
+    "extraction_phase": { "type": "string", "enum": ["provisional", "final"] },
+    "final_session_boundary": { "type": "boolean" },
+    "conversation_id": { "type": "string" },
+    "session_id": { "type": "string" },
+    "session_id_source": { "type": "string" },
+    "workspace_root": { "type": "string" },
+    "repo_remote": { "type": "string" },
+    "repo_branch": { "type": "string" },
+    "project": { "type": "string" },
+    "products": { "type": "array", "items": { "type": "string" } },
+    "topics": { "type": "array", "items": { "type": "string" } },
+    "role": { "type": "string", "enum": ["user", "assistant", "tool", "system", "unknown"] },
+    "text": { "type": "string" },
+    "timestamp_ms": { "type": "integer" },
+    "raw": { "type": "object" }
+  },
+  "additionalProperties": true
+}

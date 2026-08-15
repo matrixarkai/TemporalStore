@@ -1,0 +1,155 @@
+{
+  "schema": "temporalstore_open_source_redis_surface_v1",
+  "surface": "trimmed_open_source_context_feature_control",
+  "benchmark_commands": {
+    "required": [
+      "set_get",
+      "hset",
+      "hget",
+      "expire"
+    ],
+    "opt_in": []
+  },
+  "production_gate_artifacts": {
+    "required": [
+      "redis_open_source_surface_manifest.json",
+      "redis_open_source_surface_validation.txt",
+      "redis_rust_surface_parity_contract.json",
+      "redis_rust_surface_consistency.txt",
+      "matrixobject_name_validation.txt",
+      "redis-production-gate-summary.json"
+    ],
+    "benchmark_enabled": [
+      "redis-production-benchmark-rollup.json"
+    ],
+    "live_run_required": [
+      "redis-live-storage-smoke-summary.json"
+    ]
+  },
+  "allowed_surface_families": [
+    "connection",
+    "auth_client",
+    "metadata",
+    "minimal_string",
+    "minimal_ttl",
+    "minimal_hash",
+    "context_management",
+    "feature_capability",
+    "control_state"
+  ],
+  "blocked_command_families": [
+    "broad_keyspace_scan",
+    "server_configuration",
+    "partition_management",
+    "set_collection_clone",
+    "list_collection_clone",
+    "zset_collection_clone",
+    "pubsub",
+    "scripting",
+    "streams"
+  ],
+  "native_command_count": 16,
+  "native_commands": [
+    "INFO",
+    "AUTH",
+    "PING",
+    "COMMAND",
+    "GET",
+    "SET",
+    "DEL",
+    "EXISTS",
+    "EXPIRE",
+    "TTL",
+    "HSET",
+    "HGET",
+    "HDEL",
+    "HEXISTS",
+    "HLEN",
+    "HGETALL"
+  ],
+  "matrixobject_note": "MatrixObject integration sits below TemporalStore storage/backfill. It must not expand the public Redis API into collection-clone commands.",
+  "opt_in_commands": {},
+  "purpose": "Keep only first-release Redis commands needed for minimal string/hash/TTL access plus MatrixArk Context capability, Feature observations with FeatureAggregate exact serving aggregates, and Control State for fast-changing serving signals such as counters, caps, quotas, pacing, eligibility, suppression, and control state.",
+  "feature_aggregate": {
+    "capability": "FeatureAggregate",
+    "parent_capability": "Feature",
+    "public_exact_aggregates": [
+      "count",
+      "sum",
+      "min",
+      "max",
+      "avg",
+      "first",
+      "latest"
+    ],
+    "compatibility_aliases": {
+      "events": "count",
+      "average": "avg",
+      "last": "latest"
+    },
+    "gated_high_cardinality_aggregates": [
+      "distinct_count",
+      "unique_count",
+      "top_k",
+      "heavy_hitters",
+      "hll",
+      "theta_sketch",
+      "count_min_sketch",
+      "histogram",
+      "percentile"
+    ],
+    "policy": "FeatureAggregate remains inside the Feature capability; public v1 exposes exact serving aggregates only and rejects sketch/high-cardinality aggregate names until mature."
+  },
+  "control_state": {
+    "capability": "Control State",
+    "public_commands": [
+      "CONTROLINCR",
+      "CONTROLINCROPT",
+      "CONTROLCHANGE",
+      "CONTROLCOUNT",
+      "CONTROLQUERY",
+      "CONTROLDETAIL",
+      "CONTROLHSET"
+    ],
+    "compatibility_aliases": [
+      "CONTROL_STATEINCR",
+      "CONTROL_STATEINCROPT",
+      "CONTROL_STATECHANGE",
+      "CONTROL_STATECOUNT",
+      "CONTROL_STATEQUERY",
+      "CONTROL_STATEDETAIL",
+      "CONTROL_STATEHSET",
+      "HCHANGE",
+      "HQUERY",
+      "HSETANDGET"
+    ],
+    "description": "Control State stores fast-changing serving signals such as counters, caps, quotas, pacing, eligibility, suppression, and control state."
+  },
+  "rust_extra_commands": [
+    "FAPPEND",
+    "FAPPENDPOLICY",
+    "FQUERY",
+    "FQUERYFILTER",
+    "FQUERYFILTERSTR",
+    "FAGG",
+    "CONTROLINCR",
+    "CONTROLINCROPT",
+    "CONTROLCHANGE",
+    "CONTROLCOUNT",
+    "CONTROLQUERY",
+    "CONTROLDETAIL",
+    "CONTROLHSET",
+    "CONTROL_STATEINCR",
+    "CONTROL_STATEINCROPT",
+    "CONTROL_STATECHANGE",
+    "CONTROL_STATECOUNT",
+    "CONTROL_STATEQUERY",
+    "CONTROL_STATEDETAIL",
+    "CONTROL_STATEHSET",
+    "HCHANGE",
+    "HQUERY",
+    "HSETANDGET"
+  ],
+  "rust_normal_helpers": [],
+  "unsupported_policy": "Only commands listed in native_commands and rust_extra_commands are public in the first open-source release; all other Redis-style commands and capabilities fail closed without being part of the public contract. CONTROL* is the preferred Control State spelling; CONTROL_STATE* remains a compatibility alias during migration."
+}

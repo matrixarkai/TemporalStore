@@ -1,0 +1,31 @@
+# One-command single-node TemporalStore for local development.
+#
+#   docker compose -f docker-compose.single-node.yml up --build
+#
+# Then, from another terminal:
+#   curl http://127.0.0.1:17102/health
+#
+# Data survives restarts in the named volume below. Remove it with:
+#   docker compose -f docker-compose.single-node.yml down -v
+services:
+  temporalstore:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.single-node
+    image: temporalstore:single-node
+    container_name: temporalstore-single-node
+    ports:
+      - "17101:17101"   # metaserver HTTP (health, topology)
+      - "17102:17102"   # datanode HTTP (health + writes/reads via POST /execute)
+    volumes:
+      - temporalstore-data:/var/lib/temporalstore
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:17102/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  temporalstore-data:

@@ -1,0 +1,421 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+use serde::{Deserialize, Serialize};
+
+use crate::block_store::BlockAddress;
+use crate::types::{CommandResponse, FeaturePoint, ControlStateSelectionType, ShardId};
+
+use super::control_rollup::RollupEntry;
+use super::hll::Hll;
+
+/// In-memory, coalesced summary-dirty entry.
+///
+/// One entry per dirty object key (`ctx:dirty:{tenant}:{node}`). Repeated
+/// `ContextMarkSummaryDirty` commands for the same node update this single entry
+/// in place instead of appending a new persisted marker, so the number of dirty
+/// records is bounded by the number of distinct dirty nodes rather than the number
+/// of events. `propagate_depth` keeps the deepest parent-propagation requested and
+/// `event_time_ms` bounds track the earliest/latest events that made the node dirty.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) struct ContextDirtyEntry {
+    pub(super) node_hash: u64,
+    pub(super) first_event_time_ms: u64,
+    pub(super) last_event_time_ms: u64,
+    pub(super) reason: u32,
+    pub(super) propagate_depth: u32,
+    pub(super) mark_count: u64,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub(super) struct ShardState {
+    pub(super) expires_at_ms: HashMap<String, u64>,
+    pub(super) strings: HashMap<String, BlockAddress>,
+    pub(super) hashes: HashMap<String, HashMap<String, BlockAddress>>,
+    #[serde(default, with = "super::set_index_serde")]
+    pub(super) sets: HashMap<String, BTreeMap<Vec<u8>, BlockAddress>>,
+    pub(super) features: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    // Sequence data is now stored in `features` (thin-layer fold: Sequence is Feature
+    // with a typed row codec over identical timestamped-KV storage). This field is
+    // retained only to fold a pre-fold on-disk index that still carries a `sequences`
+    // map into `features` at load time (see load_index); new code never writes it, so
+    // it serializes away once empty.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub(super) sequences: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    pub(super) control_state: HashMap<String, BTreeMap<u64, i64>>,
+    #[serde(default)]
+    pub(super) control_state_pages: HashMap<String, BlockAddress>,
+    #[serde(default)]
+    pub(super) control_state_changes: HashMap<String, BTreeMap<u64, BTreeSet<Vec<u8>>>>,
+    // Bounded distinct: per (key, bucket) HyperLogLog sketch. A bucket lives in EITHER
+    // control_state_changes (exact set, small) OR here (fixed-size HLL, converted once the
+    // exact set exceeds the threshold), so high-cardinality distinct counts stay memory-bounded.
+    // Serde-default + durable (rides the index snapshot + WAL, like control_state_changes).
+    #[serde(default)]
+    pub(super) control_state_change_sketch: HashMap<String, BTreeMap<u64, Hll>>,
+    #[serde(default, alias = "control_state_fol")]
+    pub(super) control_state_selection: HashMap<String, ControlStateSelectionValue>,
+    // UUID idempotency ledger for control-state writes: uuid -> expiry_ms. Mirrors
+    // the control_state 300s dedup window so at-least-once queue replays do not
+    // double-count. Lazily garbage-collected on write; in-memory + serde-default so
+    // it is rebuilt via command replay and never blocks recovery.
+    #[serde(default)]
+    pub(super) control_state_uuid: HashMap<String, u64>,
+    // Derived, in-memory rollup ladder over `control_state` for O(levels) sum-family
+    // window aggregates (frequency caps / long-window counts). Serde-skipped: rebuilt
+    // lazily from the authoritative counter series and never blocks recovery. Gated by
+    // Config.control_rollup_enabled(); empty and inert when the gate is off.
+    #[serde(skip)]
+    pub(super) control_state_rollups: HashMap<String, RollupEntry>,
+    // Transient per-execute hint: when true (async_storage + control_coalesce_persist),
+    // control-state counter writes skip the redundant per-write whole-series page rewrite
+    // and rely on the index snapshot + WAL replay for durability, exactly like the
+    // control_state_changes/fol sub-stores already do. Serde-skipped; set on every execute.
+    #[serde(skip)]
+    pub(super) control_coalesce_persist: bool,
+    // Transient per-execute hint: gate for converting oversized exact distinct sets to HLL
+    // sketches on the CHANGE write path. Serde-skipped; set on every execute.
+    #[serde(skip)]
+    pub(super) control_distinct_sketch: bool,
+    // Derived, in-memory feature-aggregate rollup: the numeric view of the feature series
+    // (feature_values, decoded via aggregate_feature_values so it is bit-identical to the raw
+    // aggregate) plus the shared rollup ladder over it. Serde-skipped; rebuilt lazily on the
+    // FeatureAggQuery read path when stale. Gated by Config.control_rollup_enabled(); empty
+    // and inert when off.
+    #[serde(skip)]
+    pub(super) feature_values: HashMap<String, BTreeMap<u64, i64>>,
+    #[serde(skip)]
+    pub(super) feature_rollups: HashMap<String, RollupEntry>,
+    #[serde(default)]
+    pub(super) context_nodes: HashMap<String, BlockAddress>,
+    #[serde(default)]
+    pub(super) context_events: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    #[serde(default)]
+    pub(super) context_indexes: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    #[serde(default)]
+    pub(super) context_audits: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    // Summary-dirty tracking is intentionally in-memory only. Instead of appending a
+    // persisted `ctx:dirty` page per event (which produced one dirty node per write and
+    // unbounded dirty-page growth: a real e2e capture stored 47 dirty records for only 6
+    // events), we keep a coalescing hashmap keyed by dirty object key so repeated edits to
+    // the same node collapse into a single entry. This map is `#[serde(skip)]`: it is
+    // ephemeral and may be lost on restart, which is acceptable because the async summary
+    // worker re-marks nodes on the next event and stale summaries are self-healing.
+    #[serde(skip)]
+    pub(super) context_dirty_index: HashMap<String, ContextDirtyEntry>,
+    // Per-node temporal-compression high-water mark: the latest event time already
+    // folded into a ContextCompressionEvent for this event object key. In-memory and
+    // ephemeral (serde-skipped); on loss the auto-compression trigger re-compresses
+    // the oldest pending window idempotently (stable compression id per window).
+    #[serde(skip)]
+    pub(super) context_compression_watermark: HashMap<String, u64>,
+    #[serde(default)]
+    pub(super) context_entities: HashMap<String, BlockAddress>,
+    #[serde(default)]
+    pub(super) context_children: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    #[serde(default)]
+    pub(super) context_embeddings: HashMap<String, BlockAddress>,
+    #[serde(default)]
+    pub(super) context_summaries: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    #[serde(default)]
+    pub(super) context_compressions: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    #[serde(default)]
+    #[serde(rename = "slot_index")]
+    pub(super) bucket_index: CoreIndex,
+    /// Highest WAL sequence whose effect is already materialized in this
+    /// serialized index. On shard load, WAL records with sequence greater than this
+    /// are replayed to rebuild in-memory state, matching startup load
+    /// replaying the WAL from the dumped-log-id anchor. `None` marks an index
+    /// written before this anchor existed (treated as fully authoritative -> no
+    /// replay); a missing index file replays the whole retained WAL onto empty state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) applied_wal_sequence: Option<u64>,
+    /// Per-bucket LRU recency: wall-clock ms of the last read/write that touched the
+    /// bucket. In-memory and ephemeral (serde-skipped, like context_dirty_index); on
+    /// restart every bucket resets to 0 (== never touched == evicted first), which
+    /// self-corrects as traffic re-warms hot buckets. Mirrors SlotNode last_used
+    /// without persisting it.
+    #[serde(skip)]
+    pub(super) bucket_recency: HashMap<u32, u64>,
+    #[serde(skip)]
+    pub(super) dirty_objects: BTreeSet<String>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub(super) struct CoreIndex {
+    #[serde(default, alias = "slots")]
+    #[serde(rename = "slot_map")]
+    pub(super) bucket_map: BucketMap,
+    #[serde(default)]
+    pub(super) object_page_lookup: ObjectPageLookup,
+    #[serde(default)]
+    pub(super) object_component_lookup: ObjectComponentLookup,
+}
+
+pub(super) type BucketMap = BTreeMap<u32, BucketNode>;
+pub(super) type ObjectIndex = BTreeSet<u64>;
+pub(super) type PageIndexMap = BTreeMap<String, PageIndex>;
+pub(super) type ObjectPageLookup = BTreeMap<String, BTreeSet<PageLookupRef>>;
+pub(super) type ObjectComponentLookup = BTreeMap<String, BTreeSet<ComponentPageLookupRef>>;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(super) struct PageLookupRef {
+    #[serde(rename = "routing_slot")]
+    pub(super) routing_bucket: u32,
+    pub(super) page_ref_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(super) struct ComponentPageLookupRef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) component: Option<String>,
+    #[serde(rename = "routing_slot")]
+    pub(super) routing_bucket: u32,
+    pub(super) page_ref_key: String,
+}
+
+/// Rust-native core index mirroring the shape:
+/// Index -> BucketMap -> BucketNode -> PageIndex/ObjectIndex.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub(super) struct BucketNode {
+    #[serde(rename = "routing_slot")]
+    pub(super) routing_bucket: u32,
+    #[serde(default)]
+    pub(super) layout: BucketLayoutState,
+    pub(super) dirty: bool,
+    #[serde(default)]
+    pub(super) deleted: bool,
+    pub(super) meta_loaded: bool,
+    pub(super) loading: bool,
+    pub(super) in_memory: bool,
+    pub(super) ttl_ms: Option<u64>,
+    pub(super) dirty_generation: u64,
+    pub(super) last_dump_sequence: u64,
+    #[serde(default, alias = "object_ids")]
+    pub(super) object_index: ObjectIndex,
+    #[serde(default, alias = "deleted_object_ids")]
+    pub(super) deleted_object_index: ObjectIndex,
+    #[serde(default, alias = "page_refs")]
+    pub(super) page_index: PageIndexMap,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) enum BucketLayoutState {
+    #[default]
+    Empty,
+    SingleObject,
+    SinglePageObject,
+    MultiPageObject,
+    MultiObject,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct PageIndex {
+    pub(super) object_key: String,
+    pub(super) model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) component: Option<String>,
+    pub(super) object_id: u64,
+    pub(super) address: BlockAddress,
+    pub(super) dirty: bool,
+    pub(super) deleted: bool,
+    pub(super) log_backed: bool,
+}
+
+impl CoreIndex {
+    pub(super) fn rebuild_object_page_lookup(&mut self) {
+        self.object_page_lookup.clear();
+        self.object_component_lookup.clear();
+        let refs = self
+            .bucket_map
+            .iter()
+            .flat_map(|(routing_bucket, bucket)| {
+                bucket.page_index.iter().map(move |(page_ref_key, page)| {
+                    (*routing_bucket, page_ref_key.clone(), page.clone())
+                })
+            })
+            .collect::<Vec<_>>();
+        for (routing_bucket, page_ref_key, page) in refs {
+            self.insert_object_page_lookup(routing_bucket, page_ref_key, &page);
+        }
+    }
+
+    pub(super) fn insert_object_page_lookup(
+        &mut self,
+        routing_bucket: u32,
+        page_ref_key: String,
+        page: &PageIndex,
+    ) {
+        if page.deleted {
+            return;
+        }
+        self.object_page_lookup
+            .entry(object_page_lookup_key(
+                &page.model_id,
+                &page.object_key,
+                page.component.as_deref(),
+            ))
+            .or_default()
+            .insert(PageLookupRef {
+                routing_bucket,
+                page_ref_key: page_ref_key.clone(),
+            });
+        self.object_component_lookup
+            .entry(object_component_lookup_key(
+                &page.model_id,
+                &page.object_key,
+            ))
+            .or_default()
+            .insert(ComponentPageLookupRef {
+                component: page.component.clone(),
+                routing_bucket,
+                page_ref_key,
+            });
+    }
+
+    pub(super) fn remove_object_page_lookup_entry(
+        &mut self,
+        model_id: &str,
+        object_key: &str,
+        component: Option<&str>,
+    ) {
+        self.object_page_lookup
+            .remove(&object_page_lookup_key(model_id, object_key, component));
+        let component_lookup_key = object_component_lookup_key(model_id, object_key);
+        if let Some(component_refs) = self.object_component_lookup.get_mut(&component_lookup_key) {
+            component_refs.retain(|page_ref| page_ref.component.as_deref() != component);
+            if component_refs.is_empty() {
+                self.object_component_lookup.remove(&component_lookup_key);
+            }
+        }
+    }
+
+    pub(super) fn contains_object_page_address(
+        &self,
+        model_id: &str,
+        object_key: &str,
+        component: Option<&str>,
+        address: &BlockAddress,
+    ) -> bool {
+        let lookup_key = object_page_lookup_key(model_id, object_key, component);
+        if let Some(page_refs) = self.object_page_lookup.get(&lookup_key) {
+            return page_refs.iter().any(|page_ref| {
+                self.bucket_map
+                    .get(&page_ref.routing_bucket)
+                    .and_then(|bucket| bucket.page_index.get(&page_ref.page_ref_key))
+                    .map(|page| {
+                        !page.deleted
+                            && page.model_id == model_id
+                            && page.object_key == object_key
+                            && page.component.as_deref() == component
+                            && same_page_address(&page.address, address)
+                    })
+                    .unwrap_or(false)
+            });
+        }
+
+        if !self.object_page_lookup.is_empty() {
+            return false;
+        }
+
+        self.bucket_map.values().any(|bucket| {
+            bucket.page_index.values().any(|page| {
+                !page.deleted
+                    && page.model_id == model_id
+                    && page.object_key == object_key
+                    && page.component.as_deref() == component
+                    && same_page_address(&page.address, address)
+            })
+        })
+    }
+}
+
+pub(super) fn object_component_lookup_key(model_id: &str, object_key: &str) -> String {
+    let mut key = String::new();
+    push_lookup_part(&mut key, model_id);
+    push_lookup_part(&mut key, object_key);
+    key
+}
+
+pub(super) fn object_page_lookup_key(
+    model_id: &str,
+    object_key: &str,
+    component: Option<&str>,
+) -> String {
+    let mut key = String::new();
+    push_lookup_part(&mut key, model_id);
+    push_lookup_part(&mut key, object_key);
+    match component {
+        Some(component) => {
+            key.push_str("1|");
+            push_lookup_part(&mut key, component);
+        }
+        None => key.push_str("0|"),
+    }
+    key
+}
+
+fn push_lookup_part(buffer: &mut String, value: &str) {
+    buffer.push_str(&value.len().to_string());
+    buffer.push(':');
+    buffer.push_str(value);
+    buffer.push('|');
+}
+
+fn same_page_address(left: &BlockAddress, right: &BlockAddress) -> bool {
+    left.page_slab_id == right.page_slab_id
+        && left.offset == right.offset
+        && left.length == right.length
+        && left.page_id == right.page_id
+        && left.object_id == right.object_id
+        && left.routing_bucket == right.routing_bucket
+        && left.generation == right.generation
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct ControlStateSelectionValue {
+    pub(super) occur_time_ms: u64,
+    pub(super) value: Vec<u8>,
+    #[serde(alias = "fol_type")]
+    pub(super) selection_type: ControlStateSelectionType,
+}
+
+#[derive(Debug, Default, Clone)]
+pub(super) struct AdmissionState {
+    pub(super) window_epoch_sec: u64,
+    pub(super) read_count: u64,
+    pub(super) write_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) enum AdmissionScope {
+    Shard(ShardId),
+    Table(String),
+    Tenant(String),
+}
+
+pub(super) struct AdmissionLimit {
+    pub(super) scope: AdmissionScope,
+    pub(super) limit: u64,
+    pub(super) label: &'static str,
+}
+
+pub(super) struct ExecuteOutcome {
+    pub(super) response: CommandResponse,
+    pub(super) mutated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct PackedFeaturePage {
+    pub(super) version: u8,
+    pub(super) points: Vec<FeaturePoint>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum PackedFeaturePageDecode {
+    Legacy,
+    Packed(Vec<FeaturePoint>),
+    Corrupt(String),
+}

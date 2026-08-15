@@ -1,0 +1,49 @@
+name: Governance
+
+# Additive OSS-governance gates: SPDX license-header enforcement on Rust
+# sources and forward-looking secret scanning. Both jobs are dependency-light
+# (no Rust toolchain, no private git dependencies) so they stay green on any
+# runner.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  license-headers:
+    name: license headers (SPDX)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify SPDX Apache-2.0 header on all Rust sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=$(git ls-files 'crates/**/*.rs' 'sdk/**/*.rs')
+          if [ -z "$files" ]; then
+            echo "No Rust sources found."; exit 0
+          fi
+          missing=$(grep -L 'SPDX-License-Identifier: Apache-2.0' $files || true)
+          if [ -n "$missing" ]; then
+            echo "The following Rust sources are missing the SPDX Apache-2.0 header:"
+            echo "$missing"
+            exit 1
+          fi
+          echo "OK: all $(echo "$files" | wc -l) Rust sources carry the SPDX Apache-2.0 header."
+
+  secret-scan:
+    name: secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

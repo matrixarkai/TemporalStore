@@ -1,0 +1,101 @@
+<!doctype html><meta charset='utf-8'><title>What MatrixArk Really Gets From Codex</title><style>body{font-family:Inter,Segoe UI,Arial,sans-serif;max-width:1120px;margin:32px auto;padding:0 24px;color:#172033;line-height:1.45}pre{white-space:pre-wrap;background:#f6f8fb;border:1px solid #dde5f0;padding:14px;overflow:auto;border-radius:8px}</style><pre># What MatrixArk Really Gets From Codex
+
+Date: 2026-06-23
+
+## Short Answer
+
+Codex does not natively send MatrixArk this full schema:
+
+```json
+{
+  &quot;messages&quot;: [{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;...&quot;}],
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_acme&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_prod&quot;,
+    &quot;user_id&quot;: &quot;user_123&quot;,
+    &quot;session_id&quot;: &quot;codex_thread_456&quot;
+  }
+}
+```
+
+That is the MatrixArk normalized envelope. The Codex hook receives a raw hook payload from Codex plus the hook event name. Our hook wrapper then constructs the MatrixArk envelope.
+
+## Raw Codex Hook Input
+
+For `UserPromptSubmit`, the useful raw field is usually one of these text-like fields:
+
+```json
+{&quot;prompt&quot;: &quot;Alice approved the GPU purchase after finance reviewed the budget.&quot;}
+```
+
+The hook parser also accepts variants such as `user_prompt`, `input`, `text`, `message`, `params.prompt`, `params.input`, `params.text`, `turn.input`, or a list under `messages`/`items`/`input`.
+
+For `Stop` and `PostCompact`, the useful field is usually a message or compacted summary text. For `PostToolUse`, the payload is tool-related text/JSON.
+
+## Scope Comes From Hook Config And Session Derivation
+
+`account_id`, `tenant_id`, and `user_id` are not reliably provided by Codex as a clean MatrixArk schema. In our local setup they come from `.codex/hooks.json` command arguments:
+
+```text
+--account-id acct_codex
+--tenant-id tenant_codex
+--user-id local_user
+```
+
+`session_id` is different. The hook now derives it dynamically:
+
+```text
+1. explicit --session-id or MATRIXARK_SESSION_ID
+2. raw payload fields such as session_id, thread_id, conversation_id, transcript_id
+3. raw payload path fields such as transcript_path, conversation_path, thread_path
+4. persisted local fallback state under MATRIXARK_CODEX_SESSION_STATE_DIR
+```
+
+So MatrixArk receives access-control scope from hook config, while session scope can follow the Codex thread when Codex exposes a thread/conversation id.
+
+## What The Hook Sends To MatrixArk
+
+The hook converts raw Codex input into:
+
+```json
+{
+  &quot;messages&quot;: [{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Alice approved the GPU purchase after finance reviewed the budget.&quot;}],
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_codex&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_codex&quot;,
+    &quot;user_id&quot;: &quot;local_user&quot;,
+    &quot;session_id&quot;: &quot;codex:thread-abc&quot;,
+    &quot;team&quot;: &quot;codex&quot;,
+    &quot;project&quot;: &quot;local&quot;
+  },
+  &quot;metadata&quot;: {
+    &quot;source&quot;: &quot;codex_hook&quot;,
+    &quot;codex_event&quot;: &quot;UserPromptSubmit&quot;,
+    &quot;codex_session_id_source&quot;: &quot;payload_field&quot;,
+    &quot;raw_hook_payload&quot;: {&quot;prompt&quot;: &quot;...&quot;}
+  },
+  &quot;agent_hook&quot;: {
+    &quot;source&quot;: &quot;codex&quot;,
+    &quot;hook_type&quot;: &quot;before_llm&quot;,
+    &quot;auto_captured&quot;: true
+  }
+}
+```
+
+The hook no longer forces a deep `metadata.node_path`. MatrixArk uses the shallow default tree:
+
+```text
+user:&lt;user_id&gt; / session:&lt;session_id&gt;
+```
+
+Account and tenant stay in `scope` for access control and isolation, not as automatic ContextNode layers.
+
+## MCP Difference
+
+If Codex calls MatrixArk through MCP tools, then Codex/the agent explicitly calls a tool such as `matrixark_ingest` or `matrixark_retrieve` with that tool&#x27;s schema. MCP calls are explicit. They do not automatically fire for every message unless Codex is instructed or hooked to call them.
+
+
+## Rich Agent Context Envelope
+
+For the full product contract across Codex, Claude, Cursor, and other agents, open: matrixark_agent_context_envelope.html. The rule is: the agent sends what it knows, while MatrixArk resolves and enforces final identity, access scopes, roles, audit, SSO mapping, and per-user/session isolation.
+</pre>
