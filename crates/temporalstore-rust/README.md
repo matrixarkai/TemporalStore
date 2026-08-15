@@ -8,6 +8,32 @@ legacy wire-compatible clone: brpc and Thrift are intentionally out of scope.
 The production migration contract is Rust APIs plus HTTP/JSON, RESP, tonic/gRPC,
 and executable shared conformance test cases.
 
+## Using the crate
+
+Add it to `Cargo.toml` (pin a tag/rev in production):
+
+```toml
+[dependencies]
+temporalstore-rust = { git = "https://github.com/matrixarkai/TemporalStore.git" }
+```
+
+Typed client against a running node (`server`/`proxy` bins, or the Docker quick start):
+
+```rust
+use temporalstore_rust::{TemporalStoreClient, TableOptions};
+
+let client = TemporalStoreClient::new("127.0.0.1:17000"); // proxy address
+let table = client.open_table("acme", "sessions", TableOptions::default());
+table.set("hello", b"world".to_vec())?;
+let value = table.get("hello")?;   // Option<Vec<u8>>
+# Ok::<(), temporalstore_rust::ClientError>(())
+```
+
+Public modules: `engine`, `client`, `context_workflow`, `proxy`, `redis`, `sdk`, `raft`,
+`ingestion`, `control`, `block_store`. This crate is a Rust-native implementation path, not a
+legacy wire-compatible clone (brpc and Thrift are out of scope); the contract is Rust APIs plus
+HTTP/JSON, RESP, and tonic/gRPC.
+
 ## Raft Library Contract
 
 TemporalStore consumes the pinned MatrixRaft library through the default
@@ -83,7 +109,7 @@ deployment profiles. `StorageTuningConfig::from_env()` reads:
 
 The block store consumes the segment/blob knobs directly for append rolling, and
 context packed pages consume `TS_CONTEXT_PAGE_TARGET_BYTES`. The remaining knobs
-are part of the shared lifecycle/cold-scan config surface so and Rust
+are part of the shared lifecycle/cold-scan config surface so Rust
 benchmarks can run with the same named production profile.
 
 launchers consume the same names through `tools/temporalstore_runtime_env.sh`.
@@ -93,7 +119,7 @@ The storage-facing subset maps into existing gflags:
 `TEMPORALSTORE_STORAGE_ZONE_SIZE` and `TEMPORALSTORE_STREAM_MAX_BLOB_SIZE`
 overrides still work for compatibility.
 
-Keep the and Rust surfaces synchronized with:
+Keep the Rust surfaces synchronized with:
 
 ```bash
 python3 tools/validate_storage_tuning_parity.py
