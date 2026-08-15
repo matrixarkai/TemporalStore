@@ -387,15 +387,26 @@ class DirectBackendTest(unittest.TestCase):
         self.assertEqual(2, len(sent["messages"]))
         self.assertIn("x-ratelimit-limit", hmap)
 
-    def test_direct_ingest_finalize_flag_marks_finalized(self):
+    def test_direct_ingest_finalize_routes_to_extract(self):
         app = self._direct_app(_FakeResponse(200, body=json.dumps({"status": {"ok": True}}).encode()))
         st, _, body = drive(
             app, path="/v1/ingest",
             body={"messages": [{"role": "user", "content": "hi"}], "finalize": True},
             headers={"Authorization": "Bearer k-acme"})
         self.assertEqual(202, st)
-        self.assertTrue(json.loads(body)["finalized"])               # inline extraction on datanode
+        self.assertTrue(json.loads(body)["finalized"])               # batched extraction now
+        self.assertEqual("/context/extract", _FakeConn.last.url)     # finalize -> extract route
         self.assertEqual([], self.s.calls)
+
+    def test_direct_session_commit_routes_to_extract(self):
+        # /v1/session/commit replays + extracts the buffered raw events (scope only).
+        app = self._direct_app(_FakeResponse(200, body=json.dumps({"status": {"ok": True}, "accepted": 3}).encode()))
+        st, _, body = drive(app, path="/v1/session/commit", body={"force": True},
+                            headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual(200, st)
+        self.assertEqual("/context/extract", _FakeConn.last.url)
+        self.assertEqual([], self.s.calls)                           # MCP adapter NOT used
+        self.assertEqual({"tenant_id": "acme"}, json.loads(_FakeConn.last.body)["scope"])
 
     def test_direct_retrieve_200_and_bypasses_mcp(self):
         pack = {"pack": [{"text": "staging = 1.9.2"}], "tokens": 7, "status": {"ok": True}}

@@ -2,23 +2,33 @@
 // Copyright 2026 MatrixArkAI
 
 //! High-level `/context/*` routing for the service proxy (the "direct network
-//! path"). The proxy accepts a HIGH-LEVEL body
-//! `{scope:{tenant_id, account_id?, user_id?, session_id?}, messages:[{role,
-//! content}] | sources | records, query?, ...}`, computes `tenant_hash` and
-//! `shard_id` reusing the SAME routing the `/execute` path uses
-//! (`crate::client::shard_id_for_key`), builds the low-level
-//! `ContextIngestExtractRequest` / `ContextRetrieveRequest`, looks up the owning
-//! datanode through the metaserver topology, and forwards the request to that
-//! datanode's `/context/ingest_extract` / `/context/retrieve` endpoint. The
-//! datanode's JSON is returned verbatim so multi-tenant `/v1` traffic never
-//! touches the serial stdio MCP adapter.
+//! path"), split fast-ack / batched:
+//!
+//! * `POST /context/ingest`  -- FAST raw store. Each message is written as a
+//!   lightweight `raw_event` hash record via the datanode's `/ingest/batch`
+//!   (a plain command store, ~3ms), with NO inline extraction. This is the hot
+//!   path `/v1/ingest` uses so ingest QPS is bounded by a raw write, not by
+//!   embedding + summary generation (~218ms).
+//! * `POST /context/extract` -- BATCHED extraction. Builds a
+//!   `ContextIngestExtractRequest` and forwards to the datanode's
+//!   `/context/ingest_extract` (full node/event/summary/embedding fanout). Used
+//!   on commit / finalize. When the request carries no messages/sources it reads
+//!   the buffered `raw_event` records back (HGETALL over `/execute`) and extracts
+//!   those, then clears the buffer.
+//! * `POST /context/retrieve` -- forwards a `ContextRetrieveRequest`.
+//!
+//! In every case the proxy computes `tenant_hash` + `shard_id` reusing the SAME
+//! routing `/execute` uses (`crate::client::shard_id_for_key`) and looks up the
+//! owning datanode through the metaserver topology. The `/v1` gateway sends raw
+//! identifiers only -- the proxy owns all hashing.
 use super::*;
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::client::shard_id_for_key;
-use crate::http::request_bytes_with_options;
+use crate::http::{post_json_with_options, request_bytes_with_options};
+use crate::types::{Command, CommandResponse, ExecuteRequest, ExecuteResponse};
 
 /// Tenant scope carried in a high-level `/context/*` request. The proxy owns
 /// hashing; callers (the `/v1` gateway) send raw identifiers only.
@@ -120,6 +130,38 @@ fn wide_window_end(now: u64) -> u64 {
     now.saturating_add(86_400_000)
 }
 
+fn scope_session(scope: &ProxyContextScope) -> String {
+    if scope.session_id.is_empty() {
+        "default".to_string()
+    } else {
+        scope.session_id.clone()
+    }
+}
+
+/// Buffer key holding the per-scope `raw_event` records awaiting extraction.
+fn rawlog_key(tenant_hash: u64, session: &str) -> String {
+    format!("context:rawlog:{tenant_hash}:{session}")
+}
+
+fn source_from_fields(
+    shard_id: ShardId,
+    tenant_hash: u64,
+    source_id: String,
+    title: String,
+    body: String,
+    timestamp_ms: u64,
+) -> Value {
+    json!({
+        "shard_id": shard_id,
+        "tenant_hash": tenant_hash,
+        "source_kind": "chat",
+        "source_id": source_id,
+        "title": title,
+        "body": body,
+        "timestamp_ms": timestamp_ms,
+    })
+}
+
 impl ProxyService {
     /// Route a tenant to its owning shard using the same key hashing as
     /// `/execute` (`shard_id_for_key`). The tenant hash string is the routing
@@ -134,35 +176,41 @@ impl ProxyService {
         )
     }
 
-    fn context_forward(&self, shard_id: ShardId, path: &str, body: &[u8]) -> (u16, Vec<u8>) {
-        let server_addr = match self.get_shard(shard_id, true) {
-            Ok(response) => match response.location {
-                Some(location) => location.server_addr,
-                None => {
-                    return crate::http::json_response(
-                        502,
-                        &Status::error(
-                            "metaserver_error",
-                            format!("shard {shard_id} has no registered datanode"),
-                        ),
-                    )
-                }
-            },
-            Err(status) => return crate::http::json_response(502, &status),
-        };
+    fn context_http_options(&self) -> HttpRequestOptions {
         let options = self.options();
-        let http_options = HttpRequestOptions {
+        HttpRequestOptions {
             connect_timeout_ms: options.connect_timeout_ms.max(1_000),
             io_timeout_ms: options.context_io_timeout_ms,
             max_retries: options.max_retries,
-        };
+        }
+    }
+
+    /// Resolve the datanode that owns `shard_id` via the metaserver topology, or
+    /// an HTTP error response ready to return.
+    fn context_shard_addr(&self, shard_id: ShardId) -> Result<String, (u16, Vec<u8>)> {
+        match self.get_shard(shard_id, true) {
+            Ok(response) => match response.location {
+                Some(location) => Ok(location.server_addr),
+                None => Err(crate::http::json_response(
+                    502,
+                    &Status::error(
+                        "metaserver_error",
+                        format!("shard {shard_id} has no registered datanode"),
+                    ),
+                )),
+            },
+            Err(status) => Err(crate::http::json_response(502, &status)),
+        }
+    }
+
+    fn context_forward_to(&self, server_addr: &str, path: &str, body: &[u8]) -> (u16, Vec<u8>) {
         match request_bytes_with_options(
-            &server_addr,
+            server_addr,
             "POST",
             path,
             body,
             "application/json",
-            http_options,
+            self.context_http_options(),
         ) {
             Ok(raw) => (200, raw),
             Err(err) => {
@@ -182,22 +230,20 @@ impl ProxyService {
         }
     }
 
-    /// Handle `POST /context/ingest`: build a `ContextIngestExtractRequest` from
-    /// the high-level body and forward it to the owning datanode's
-    /// `/context/ingest_extract`.
+    /// FAST path: buffer the messages as lightweight `raw_event` records in ONE
+    /// routed `/execute` `HashMultiSet` (a single raw write, NO extraction, no
+    /// embeddings/summaries). Reuses the proxy's cached-route execute path, so it
+    /// is one datanode write regardless of message count.
     pub(super) fn context_ingest(&self, request: ProxyContextIngestRequest) -> (u16, Vec<u8>) {
         let tenant_hash = context_tenant_hash(&request.scope);
         let shard_id = self.context_shard_id(tenant_hash);
+        let session = scope_session(&request.scope);
+        let key = rawlog_key(tenant_hash, &session);
         let now = now_ms();
 
-        let mut sources: Vec<Value> = Vec::new();
+        let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
         for (idx, message) in request.messages.iter().enumerate() {
-            let timestamp_ms = message.timestamp_ms.unwrap_or_else(|| now + idx as u64);
-            let session = if request.scope.session_id.is_empty() {
-                "session".to_string()
-            } else {
-                request.scope.session_id.clone()
-            };
+            let timestamp_ms = message.timestamp_ms.unwrap_or(now);
             let title = message
                 .title
                 .clone()
@@ -209,20 +255,84 @@ impl ProxyService {
                         message.role.clone()
                     }
                 });
-            sources.push(json!({
-                "shard_id": shard_id,
-                "tenant_hash": tenant_hash,
-                "source_kind": "chat",
-                "source_id": format!("chat:{tenant_hash}:{session}:{idx}"),
+            // Field orders raw events by (timestamp, seq) so read-back is stable.
+            let field = format!("{timestamp_ms:020}:{idx:06}");
+            let value = json!({
+                "record_type": "raw_event",
+                "role": message.role,
                 "title": title,
                 "body": message.content,
                 "timestamp_ms": timestamp_ms,
-            }));
+            })
+            .to_string();
+            entries.push((field, value.into_bytes()));
         }
-        // Pre-shaped low-level sources / records pass through; the datanode
-        // re-stamps shard_id + tenant_hash from the request envelope anyway.
+        if entries.is_empty() {
+            // Nothing to buffer (e.g. pre-shaped records only) -- still a fast ack.
+            return crate::http::json_response(200, &Status::ok());
+        }
+        let server_addr = match self.context_shard_addr(shard_id) {
+            Ok(addr) => addr,
+            Err(resp) => return resp,
+        };
+        // Forward the raw store straight to the owning datanode's /execute
+        // (bypassing the proxy's command admission policy, exactly as the
+        // extract/retrieve context routes forward) so a single HashMultiSet
+        // write is the whole cost of a fast-ack ingest.
+        let request = ExecuteRequest {
+            shard_id,
+            command: Command::HashMultiSet { key, entries },
+        };
+        let body = serde_json::to_vec(&request).unwrap_or_default();
+        self.context_forward_to(&server_addr, "/execute", &body)
+    }
+
+    /// BATCHED path: build a `ContextIngestExtractRequest` and forward to the
+    /// datanode's `/context/ingest_extract` (full extraction). Used on commit /
+    /// finalize. When no messages/sources are supplied, replay the buffered
+    /// `raw_event` records for the scope and extract those.
+    pub(super) fn context_extract(&self, request: ProxyContextIngestRequest) -> (u16, Vec<u8>) {
+        let tenant_hash = context_tenant_hash(&request.scope);
+        let shard_id = self.context_shard_id(tenant_hash);
+        let session = scope_session(&request.scope);
+        let now = now_ms();
+        let server_addr = match self.context_shard_addr(shard_id) {
+            Ok(addr) => addr,
+            Err(resp) => return resp,
+        };
+
+        let mut sources: Vec<Value> = Vec::new();
+        for (idx, message) in request.messages.iter().enumerate() {
+            let timestamp_ms = message.timestamp_ms.unwrap_or(now + idx as u64);
+            let title = message
+                .title
+                .clone()
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| {
+                    if message.role.is_empty() {
+                        "message".to_string()
+                    } else {
+                        message.role.clone()
+                    }
+                });
+            sources.push(source_from_fields(
+                shard_id,
+                tenant_hash,
+                format!("chat:{tenant_hash}:{session}:{idx}"),
+                title,
+                message.content.clone(),
+                timestamp_ms,
+            ));
+        }
         for extra in request.sources.iter().chain(request.records.iter()) {
             sources.push(extra.clone());
+        }
+
+        // Commit with no inline messages: replay the buffered raw events.
+        let mut replayed_buffer = false;
+        if sources.is_empty() {
+            sources = self.context_replay_rawlog(&server_addr, shard_id, tenant_hash, &session);
+            replayed_buffer = !sources.is_empty();
         }
 
         let end_time_ms = if request.end_time_ms == 0 {
@@ -245,12 +355,15 @@ impl ProxyService {
             payload["provider"] = provider;
         }
         let body = serde_json::to_vec(&payload).unwrap_or_default();
-        self.context_forward(shard_id, "/context/ingest_extract", &body)
+        let response = self.context_forward_to(&server_addr, "/context/ingest_extract", &body);
+        // Clear the buffer only after a successful replay-driven extraction.
+        if replayed_buffer && response.0 == 200 {
+            self.context_clear_rawlog(&server_addr, shard_id, tenant_hash, &session);
+        }
+        response
     }
 
-    /// Handle `POST /context/retrieve`: build a `ContextRetrieveRequest` from the
-    /// high-level body and forward it to the owning datanode's
-    /// `/context/retrieve`.
+    /// Forward a `ContextRetrieveRequest` to the owning datanode.
     pub(super) fn context_retrieve(&self, request: ProxyContextRetrieveRequest) -> (u16, Vec<u8>) {
         let tenant_hash = context_tenant_hash(&request.scope);
         let shard_id = self.context_shard_id(tenant_hash);
@@ -275,6 +388,95 @@ impl ProxyService {
             payload["provider"] = provider;
         }
         let body = serde_json::to_vec(&payload).unwrap_or_default();
-        self.context_forward(shard_id, "/context/retrieve", &body)
+        let server_addr = match self.context_shard_addr(shard_id) {
+            Ok(addr) => addr,
+            Err(resp) => return resp,
+        };
+        self.context_forward_to(&server_addr, "/context/retrieve", &body)
+    }
+
+    /// Read the buffered `raw_event` records (HGETALL) back into extract sources.
+    /// Forwards straight to the owning datanode (bypassing admission policy).
+    fn context_replay_rawlog(
+        &self,
+        server_addr: &str,
+        shard_id: ShardId,
+        tenant_hash: u64,
+        session: &str,
+    ) -> Vec<Value> {
+        let request = ExecuteRequest {
+            shard_id,
+            command: Command::HashGetAll {
+                key: rawlog_key(tenant_hash, session),
+            },
+        };
+        let response: ExecuteResponse = match post_json_with_options(
+            server_addr,
+            "/execute",
+            &request,
+            self.context_http_options(),
+        ) {
+            Ok(response) => response,
+            Err(_) => return Vec::new(),
+        };
+        let CommandResponse::HashEntries { mut entries } = response.response else {
+            return Vec::new();
+        };
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut sources = Vec::new();
+        for (field, value) in entries {
+            let parsed: Value = match serde_json::from_slice(&value) {
+                Ok(parsed) => parsed,
+                Err(_) => continue,
+            };
+            let body = parsed
+                .get("body")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if body.is_empty() {
+                continue;
+            }
+            let title = parsed
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("message")
+                .to_string();
+            let timestamp_ms = parsed
+                .get("timestamp_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or_else(now_ms);
+            sources.push(source_from_fields(
+                shard_id,
+                tenant_hash,
+                format!("chat:{tenant_hash}:{session}:{field}"),
+                title,
+                body,
+                timestamp_ms,
+            ));
+        }
+        sources
+    }
+
+    /// Best-effort clear of the per-scope raw-event buffer after extraction.
+    fn context_clear_rawlog(
+        &self,
+        server_addr: &str,
+        shard_id: ShardId,
+        tenant_hash: u64,
+        session: &str,
+    ) {
+        let request = ExecuteRequest {
+            shard_id,
+            command: Command::CommonDelete {
+                key: rawlog_key(tenant_hash, session),
+            },
+        };
+        let _ = post_json_with_options::<ExecuteRequest, ExecuteResponse>(
+            server_addr,
+            "/execute",
+            &request,
+            self.context_http_options(),
+        );
     }
 }

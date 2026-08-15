@@ -149,7 +149,7 @@ pub(super) fn redis_type_response(
 ) -> RespValue {
     let key = string_arg(key);
     match execute(Command::StringGet { key: key.clone() }) {
-        Ok(CommandResponse::Bytes { value: Some(value) }) => {
+        Ok(CommandResponse::Bytes { value: Some(_) }) => {
             return RespValue::SimpleString("string".to_string());
         }
         Ok(CommandResponse::Bytes { value: None }) => {}

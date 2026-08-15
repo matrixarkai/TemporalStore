@@ -640,11 +640,15 @@ def _install_sized_executor() -> Optional[int]:
     return n
 
 
-def _direct_context_body(tool: str, args: Json) -> Tuple[str, Json]:
+def _direct_context_body(tool: str, args: Json, finalize: bool) -> Tuple[str, Json]:
     """Translate the parsed `/v1` args into a proxy `/context/*` high-level body.
 
     Returns `(proxy_path, body)`. The gateway performs NO hashing: it forwards the
     raw `scope` identifiers and lets the proxy derive `tenant_hash` + `shard_id`.
+
+    Fast-ack split: a plain streaming ingest goes to `/context/ingest` (raw store,
+    no extraction); a finalize/commit goes to `/context/extract` (batched
+    extraction) which replays the buffered raw events when no messages are given.
     """
     scope = args.get("scope")
     if not isinstance(scope, dict):
@@ -656,6 +660,11 @@ def _direct_context_body(tool: str, args: Json) -> Tuple[str, Json]:
                 body[key] = args[key]
         return "/context/retrieve", body
 
+    if tool == "matrixark_session_commit":
+        # Commit replays and extracts the buffered raw events for the scope.
+        return "/context/extract", {"scope": scope}
+
+    # matrixark_ingest
     body = {"scope": scope}
     messages = args.get("messages")
     records = args.get("records") or args.get("sources")
@@ -666,15 +675,17 @@ def _direct_context_body(tool: str, args: Json) -> Tuple[str, Json]:
     for key in ("query", "start_time_ms", "end_time_ms", "max_events", "provider"):
         if args.get(key) is not None:
             body[key] = args[key]
-    return "/context/ingest", body
+    # finalize:true / kind=conversation -> extract now; else fast raw store.
+    return ("/context/extract" if finalize else "/context/ingest"), body
 
 
 async def _dispatch_direct(client: "DirectBackendClient", cfg: GatewayConfig, tool: str,
                            parsed: Json, args: Json, send: Callable,
                            rl_headers: list[Tuple[bytes, bytes]], *,
                            n_records: Optional[int], n_messages: Optional[int]) -> None:
-    """Serve one `/v1/ingest` or `/v1/retrieve` over the direct network path."""
-    path, body = _direct_context_body(tool, args)
+    """Serve one `/v1/ingest`, `/v1/retrieve`, or `/v1/session/commit` over the direct path."""
+    finalize = tool == "matrixark_ingest" and _finalize_requested(parsed, args)
+    path, body = _direct_context_body(tool, args, finalize)
     try:
         status, data = await asyncio.wait_for(client.post_json(path, body), cfg.backend_timeout)
     except asyncio.TimeoutError:
@@ -691,12 +702,12 @@ async def _dispatch_direct(client: "DirectBackendClient", cfg: GatewayConfig, to
     if tool == "matrixark_ingest":
         accepted = n_records if n_records is not None else (n_messages or 0)
         out: Json = {"accepted": accepted, "scope": args.get("scope"), "result": data}
-        # The datanode's /context/ingest_extract extracts inline, so a complete
-        # conversation is already finalized by the time the proxy returns.
-        if _finalize_requested(parsed, args):
+        # A finalize goes through /context/extract, so it is already extracted.
+        if finalize:
             out["finalized"] = True
             out["extraction"] = data
         return await _json(send, 202, out, rl_headers)
+    # session/commit (200) and retrieve (200) pass the backend body through.
     return await _json(send, 200, _ok_body(data), rl_headers)
 
 
@@ -814,7 +825,8 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         # /v1/ingest and /v1/retrieve POST a high-level {scope, messages}/{scope, query} body over
         # the shared pool to the Rust service proxy, which owns tenant_hash + shard routing. When
         # the flag is off, control falls through to the byte-for-byte-unchanged MCP path below.
-        if direct_client is not None and tool in ("matrixark_ingest", "matrixark_retrieve"):
+        if direct_client is not None and tool in (
+                "matrixark_ingest", "matrixark_retrieve", "matrixark_session_commit"):
             _apply_identity(args, key, tenant)  # scope object only; proxy does the hashing
             return await _dispatch_direct(
                 direct_client, cfg, tool, parsed, args, send, rl_headers,

@@ -2961,16 +2961,26 @@ mod tests {
         panic!("server {addr} did not start");
     }
 
-    /// Minimal datanode surface that serves the low-level context endpoints the
-    /// proxy forwards to (`/context/ingest_extract`, `/context/retrieve`).
+    /// Minimal datanode surface that serves the low-level endpoints the proxy
+    /// forwards to: the raw fast store (`/ingest/batch`, `/execute`) and the
+    /// batched context endpoints (`/context/ingest_extract`, `/context/retrieve`).
     fn start_context_server(addr: String, engine: TemporalEngine) {
         use crate::context_workflow::{
             ingest_extract_context, retrieve_context, ContextIngestExtractRequest,
             ContextRetrieveRequest,
         };
+        use crate::ingestion::IngestionBatchRequest;
         std::thread::spawn(move || {
             serve(&addr, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
+                    ("POST", "/ingest/batch") => {
+                        let req = parse_json::<IngestionBatchRequest>(&request.body).unwrap();
+                        json_response(200, &engine.ingest_batch(req))
+                    }
+                    ("POST", "/execute") => {
+                        let req = parse_json::<ExecuteRequest>(&request.body).unwrap();
+                        json_response(200, &engine.execute(req))
+                    }
                     ("POST", "/context/ingest_extract") => {
                         let req =
                             parse_json::<ContextIngestExtractRequest>(&request.body).unwrap();
@@ -3021,6 +3031,9 @@ mod tests {
         };
         assert_eq!(proxy.context_shard_id(context::context_tenant_hash(&scope)), 1);
 
+        // FAST path: /context/ingest stores raw events in one routed HashMultiSet
+        // write (no extraction) and returns an ExecuteResponse, not an extraction
+        // report. The buffer is verified by the commit-replay below.
         let ingest_body = serde_json::to_vec(&serde_json::json!({
             "scope": {"tenant_id": "team-alpha", "account_id": "acct_42"},
             "messages": [
@@ -3035,9 +3048,24 @@ mod tests {
             body: ingest_body,
         });
         assert_eq!(code, 200);
+        let fast = parse_json::<crate::types::ExecuteResponse>(&body).unwrap();
+        assert!(fast.status.ok, "fast ingest status: {:?}", fast.status);
+
+        // BATCHED commit with NO messages: the proxy replays the buffered raw
+        // events (HGETALL) and extracts them via /context/ingest_extract.
+        let commit_body = serde_json::to_vec(&serde_json::json!({
+            "scope": {"tenant_id": "team-alpha", "account_id": "acct_42"}
+        }))
+        .unwrap();
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/context/extract".to_string(),
+            body: commit_body,
+        });
+        assert_eq!(code, 200);
         let report = parse_json::<ContextIngestExtractReport>(&body).unwrap();
-        assert!(report.status.ok, "ingest status: {:?}", report.status);
-        assert_eq!(report.accepted, 2);
+        assert!(report.status.ok, "extract status: {:?}", report.status);
+        assert_eq!(report.accepted, 2, "commit replayed the buffer: {report:?}");
         assert!(!report.node_hashes.is_empty());
         let node_hashes = report.node_hashes.clone();
 
