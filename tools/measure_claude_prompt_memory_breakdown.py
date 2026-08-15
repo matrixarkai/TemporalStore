@@ -24,8 +24,8 @@ TOOLS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS))
 import run_local_context_token_quality_sweep as S  # noqa: E402
 
-CLAUDE_ROOT = Path("/mnt/c/Users/Deeproute/.claude/projects")
-CODEX_ROOT = Path("/mnt/c/Users/Deeproute/.codex/sessions")
+CLAUDE_ROOT = Path(S.default_claude_root())
+CODEX_ROOT = Path(S.default_codex_root())
 WORKING_BUDGET = 4000          # working-turn managed budget (fill with relevant refs)
 BASELINE_WINDOW = 128000       # let full local replay use the whole window (uncapped-ish)
 
