@@ -65,7 +65,20 @@ def default_mcp_backend() -> str:
     configured = os.environ.get("MATRIXARK_MCP_BACKEND")
     if configured:
         return configured
-    return "temporalstore-direct" if production_profile_enabled() else "local"
+    if production_profile_enabled():
+        return "temporalstore-direct"
+    # A deployed gateway must never silently fall back to the O(store) JSONL local
+    # adapter for durable record storage. Whenever a Rust TemporalStore proxy/CLI
+    # binary is configured, prefer the durable `temporalstore-rust` backend so that
+    # records land in TemporalStore over the persistent pooled proxy client and the
+    # Python gateway only keeps an in-memory async session buffer (for batch
+    # extraction). The JSONL `local` backend stays the default only for pure dev
+    # (no rust binary configured) and remains explicitly selectable via
+    # MATRIXARK_MCP_BACKEND=local.
+    rust_cli = os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", "").strip()
+    if rust_cli:
+        return "temporalstore-rust"
+    return "local"
 
 
 def validate_mcp_backend_policy(args: argparse.Namespace) -> None:
