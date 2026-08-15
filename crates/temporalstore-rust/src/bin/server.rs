@@ -1282,10 +1282,16 @@ fn local_shard_state_present(dirs: &[&str]) -> bool {
 
 /// Durable shared-storage sink backed by a matrixobject WAL writer.
 ///
-/// Runs each write to completion on a dedicated Tokio runtime (the datanode's
-/// request/worker threads are plain OS threads, so blocking on this handle is
-/// safe). Sync storage mode means the durable put — and its flush-on-commit
-/// snapshot — completes before the write is acknowledged.
+/// The datanode's request/worker threads are plain OS threads, so blocking on
+/// the dedicated durability runtime is safe. In the default **async** mode
+/// `record_write` only enqueues the entry (cheap — a lock + push) and returns;
+/// a background task on the same runtime drains the queue in batches off the
+/// write critical path. The local WAL+page are already durable before the entry
+/// is enqueued, so acknowledgement no longer waits on the matrixobject append.
+///
+/// With `TS_MATRIXOBJECT_SYNC_FLUSH=1` the writer runs in **sync** mode instead:
+/// every write is published to the durable store before the write is
+/// acknowledged.
 #[cfg(feature = "matrixobject")]
 struct MatrixObjectWalSink {
     handle: tokio::runtime::Handle,
@@ -1294,6 +1300,12 @@ struct MatrixObjectWalSink {
             temporalstore_rust::matrixobject_store::MatrixObjectObjectStore,
         >,
     >,
+    /// `false` in sync mode (each write publishes inline); `true` in async mode
+    /// (each write enqueues and the background flusher publishes).
+    async_mode: bool,
+    /// Wake the background flusher when the queue reaches `batch_full`.
+    flush_signal: std::sync::Arc<tokio::sync::Notify>,
+    batch_full: usize,
 }
 
 #[cfg(feature = "matrixobject")]
@@ -1308,6 +1320,9 @@ impl temporalstore_rust::SharedWalSink for MatrixObjectWalSink {
     fn record_write(&self, shard_id: u64, command: &Command) {
         let writer = std::sync::Arc::clone(&self.writer);
         let command = command.clone();
+        // In async mode `write` only locks the queue and pushes (no durable I/O
+        // is awaited), so this returns immediately; in sync mode it publishes to
+        // the durable store before returning.
         let result = self
             .handle
             .block_on(async move { writer.write(shard_id, command).await });
@@ -1317,13 +1332,72 @@ impl temporalstore_rust::SharedWalSink for MatrixObjectWalSink {
             // up on the next successful publish or on the next full replay.
             eprintln!("matrixobject durable write failed for shard {shard_id}: {err}");
         }
+        // Threshold flush: if the queue has filled up, wake the flusher now
+        // instead of waiting for the next interval tick.
+        if self.async_mode && self.writer.queued_len() >= self.batch_full {
+            self.flush_signal.notify_one();
+        }
+    }
+}
+
+/// Owns the dedicated durability runtime and the shared-store writer. Its
+/// `Drop` drains any queued (async) writes before the runtime shuts down, so a
+/// clean stop loses nothing.
+#[cfg(feature = "matrixobject")]
+struct MatrixObjectDurability {
+    rt: tokio::runtime::Runtime,
+    writer: std::sync::Arc<
+        temporalstore_rust::SharedStoreStorageWriter<
+            temporalstore_rust::matrixobject_store::MatrixObjectObjectStore,
+        >,
+    >,
+    shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    async_mode: bool,
+    drain_batch: usize,
+}
+
+#[cfg(feature = "matrixobject")]
+impl Drop for MatrixObjectDurability {
+    fn drop(&mut self) {
+        self.shutdown
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        if !self.async_mode {
+            return;
+        }
+        // Graceful drain: publish everything still queued before the runtime
+        // (and the background flusher) go away. `rt` is dropped after this
+        // returns, so the handle is still live here.
+        let writer = std::sync::Arc::clone(&self.writer);
+        let drain_batch = self.drain_batch;
+        let drained = self.rt.handle().block_on(async move {
+            let mut total = 0usize;
+            loop {
+                match writer.flush_pending(drain_batch).await {
+                    Ok(report) => {
+                        total += report.flushed;
+                        if report.remaining == 0 {
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("matrixobject shutdown drain failed: {err}");
+                        break;
+                    }
+                }
+            }
+            total
+        });
+        if drained > 0 {
+            println!("matrixobject durability: drained {drained} queued writes on shutdown");
+        }
     }
 }
 
 /// Build the durable matrixobject store, replay shard data from it when local
-/// state is absent, and attach a write-mirroring sink to `runtime`. Returns the
-/// Tokio runtime that must be kept alive for the process lifetime. A no-op
-/// (returns `None`) for any backend other than matrixobject.
+/// state is absent, and attach a write-mirroring sink to `runtime`. Returns a
+/// guard that must be kept alive for the process lifetime (it owns the
+/// durability runtime and drains queued writes on drop). A no-op (returns
+/// `None`) for any backend other than matrixobject.
 #[cfg(feature = "matrixobject")]
 fn wire_matrixobject_durability(
     storage_backend: &temporalstore_rust::StorageBackend,
@@ -1331,8 +1405,10 @@ fn wire_matrixobject_durability(
     runtime: &DataNodeRuntime,
     shard_id: u64,
     local_state_present: bool,
-) -> Option<tokio::runtime::Runtime> {
+) -> Option<MatrixObjectDurability> {
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::time::Duration;
     use temporalstore_rust::matrixobject_store::MatrixObjectObjectStore;
     use temporalstore_rust::{SharedStoreReplicator, SharedStoreStorageMode, StorageBackend};
 
@@ -1399,15 +1475,76 @@ fn wire_matrixobject_durability(
         );
     }
 
+    // `TS_MATRIXOBJECT_SYNC_FLUSH=1` forces every write durable before ack;
+    // otherwise writes are batched off the critical path (the default).
+    let sync_flush = env_bool("TS_MATRIXOBJECT_SYNC_FLUSH", false);
+    let mode = SharedStoreStorageMode::from_sync_flag(sync_flush);
+    let async_mode = mode.is_async();
+
     // Continue publishing at latest + 1 so we never overwrite persisted WAL
-    // entries. Sync mode makes each publish durable before the write returns.
-    let writer = Arc::new(replicator.storage_writer(SharedStoreStorageMode::Sync, latest + 1));
+    // entries.
+    let writer = Arc::new(replicator.storage_writer(mode, latest + 1));
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let flush_signal = Arc::new(tokio::sync::Notify::new());
+
+    let flush_interval_ms = env_u64("TS_MATRIXOBJECT_FLUSH_INTERVAL_MS", 100).max(1);
+    let flush_batch = env_usize("TS_MATRIXOBJECT_FLUSH_BATCH", 256).max(1);
+
+    if async_mode {
+        // Background flusher: drains the queue in batches every interval, or as
+        // soon as the queue reaches `flush_batch` (threshold flush). One drain
+        // pass coalesces up to the whole backlog into batched appends.
+        let bg_writer = Arc::clone(&writer);
+        let bg_shutdown = Arc::clone(&shutdown);
+        let bg_signal = Arc::clone(&flush_signal);
+        rt.spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_millis(flush_interval_ms));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {}
+                    _ = bg_signal.notified() => {}
+                }
+                if bg_shutdown.load(Ordering::SeqCst) {
+                    break;
+                }
+                loop {
+                    match bg_writer.flush_pending(flush_batch).await {
+                        Ok(report) => {
+                            if report.remaining == 0 {
+                                break;
+                            }
+                        }
+                        Err(err) => {
+                            eprintln!("matrixobject async flush failed for shard {shard_id}: {err}");
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        println!(
+            "matrixobject durability: async batched flush (interval {flush_interval_ms}ms, batch {flush_batch}); durable local WAL covers process crash"
+        );
+    } else {
+        println!("matrixobject durability: sync flush (every write durable before ack)");
+    }
+
     runtime.set_shared_wal_sink(Arc::new(MatrixObjectWalSink {
         handle: rt.handle().clone(),
-        writer,
+        writer: Arc::clone(&writer),
+        async_mode,
+        flush_signal,
+        batch_full: flush_batch,
     }));
 
-    Some(rt)
+    Some(MatrixObjectDurability {
+        rt,
+        writer,
+        shutdown,
+        async_mode,
+        drain_batch: flush_batch.max(4096),
+    })
 }
 
 fn env_usize(name: &str, default: usize) -> usize {
