@@ -14,6 +14,13 @@ token-budgeted **ContextPack** retrieval, exact serving-time **feature aggregate
 **control state** (caps, quotas, pacing) — all from one temporal index. It runs locally with
 one Docker command and scales out to a replicated, shared-storage cluster.
 
+**Three open Apache-2.0 repositories — free for anyone to use.**
+[TemporalStore](https://github.com/matrixarkai/TemporalStore) (this repo — the engine) ·
+[MatrixCache](https://github.com/matrixarkai/MatrixCache) (multi-layer cache) ·
+[MatrixRaft](https://github.com/matrixarkai/MatrixRaft) (Rust Raft consensus).
+Depend on them as **Rust crates**, run the server with one Docker command, or talk to it
+over RESP / gRPC / HTTP / MCP — see [Use it as a Rust library](#use-it-as-a-rust-library).
+
 ---
 
 ## What you get
@@ -137,7 +144,7 @@ turn, plus recall/remember tools.
 ### Claude Code (marketplace plugin)
 
 ```text
-/plugin marketplace add bjmeetsfo/TemporalStore
+/plugin marketplace add matrixarkai/TemporalStore
 /plugin install matrixark-memory@temporalstore
 ```
 
