@@ -2,8 +2,10 @@
 // Copyright 2026 MatrixArkAI
 
 use temporalstore_rust::serve_redis_proxy;
+use tracing::info;
 
 fn main() {
+    temporalstore_rust::telemetry::init();
     let addr = std::env::var("TS_REDIS_BIND_ADDR")
         .or_else(|_| std::env::var("TS_REDIS_ADDR"))
         .unwrap_or_else(|_| "127.0.0.1:16379".to_string());
@@ -13,8 +15,11 @@ fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1);
-    println!(
-        "temporalstore redis proxy listening on {addr}, routing shard {shard_id} via {proxy_addr}"
+    info!(
+        %addr,
+        shard_id,
+        proxy = %proxy_addr,
+        "temporalstore redis proxy listening"
     );
     serve_redis_proxy(&addr, proxy_addr, shard_id).expect("redis proxy failed");
 }

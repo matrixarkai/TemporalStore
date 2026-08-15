@@ -33,8 +33,10 @@ use temporalstore_rust::{
     DataNodeShardLifecycleState, LoadShardRequest, LoadShardResponse, SchedulerLifecycleToken,
     UnloadShardRequest, UnloadShardResponse,
 };
+use tracing::{debug, error, info, warn};
 
 fn main() {
+    temporalstore_rust::telemetry::init();
     let addr = std::env::var("TS_META_BIND_ADDR")
         .or_else(|_| std::env::var("TS_META_ADDR"))
         .unwrap_or_else(|_| "127.0.0.1:17001".to_string());
@@ -60,9 +62,7 @@ fn main() {
             MetaBackend::Single(meta) => {
                 let interval_ms = env_u64("TS_META_AUTO_REBALANCE_INTERVAL_MS", detector_interval_ms);
                 let balance_load = env_bool("TS_META_AUTO_REBALANCE_BALANCE", true);
-                println!(
-                    "auto-rebalance enabled (interval {interval_ms}ms, balance_load {balance_load})"
-                );
+                info!(interval_ms, balance_load, "auto-rebalance enabled");
                 Some(start_auto_rebalance_loop(
                     meta.clone(),
                     interval_ms,
@@ -70,15 +70,18 @@ fn main() {
                 ))
             }
             MetaBackend::Raft(_) => {
-                eprintln!("TS_META_AUTO_REBALANCE ignored: raft backend manages placement itself");
+                warn!("TS_META_AUTO_REBALANCE ignored: raft backend manages placement itself");
                 None
             }
         }
     } else {
         None
     };
-    println!("temporalstore metaserver listening on {addr}");
-    serve(&addr, move |request| handle(&backend, &scheduler, request)).expect("metaserver failed");
+    info!(%addr, "temporalstore metaserver listening");
+    if let Err(err) = serve(&addr, move |request| handle(&backend, &scheduler, request)) {
+        error!(%err, "metaserver serve loop exited");
+        std::process::exit(1);
+    }
 }
 
 #[derive(Clone)]
@@ -644,9 +647,11 @@ fn run_auto_rebalance_round(
             false,
         );
         if !load_status.ok && load_status.code != "already_exists" {
-            eprintln!(
-                "auto-rebalance: target {} failed to load shard {}: {} — retrying next round",
-                plan.to_server, plan.shard_id, load_status.message
+            error!(
+                target = %plan.to_server,
+                shard_id = plan.shard_id,
+                message = %load_status.message,
+                "auto-rebalance: target failed to load shard — retrying next round"
             );
             continue;
         }
@@ -663,18 +668,22 @@ fn run_auto_rebalance_round(
                     false,
                 );
                 if !unload_status.ok {
-                    eprintln!(
-                        "auto-rebalance: source {from_server} failed to unload shard {}: {}",
-                        plan.shard_id, unload_status.message
+                    warn!(
+                        source = %from_server,
+                        shard_id = plan.shard_id,
+                        message = %unload_status.message,
+                        "auto-rebalance: source failed to unload shard"
                     );
                 }
             }
         }
         let ack = meta.reassign_shard(plan.shard_id, &plan.to_server);
         if ack.status.ok {
-            println!(
-                "auto-rebalance: shard {} -> {} ({:?})",
-                plan.shard_id, plan.to_server, plan.reason
+            info!(
+                shard_id = plan.shard_id,
+                to = %plan.to_server,
+                reason = ?plan.reason,
+                "auto-rebalance: shard reassigned"
             );
         }
     }
@@ -790,6 +799,7 @@ fn handle(
     scheduler: &MetaTaskScheduler,
     request: HttpRequest,
 ) -> (u16, Vec<u8>) {
+    debug!(method = %request.method, path = %request.path, "serving request");
     if let Some(response) = handle_master_service_route(meta, &request) {
         return response;
     }
