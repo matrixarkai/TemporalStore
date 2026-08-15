@@ -1,0 +1,16 @@
+=== SOAK START Sat Aug 15 09:34:03 PDT 2026 ===
+crash_write-abort_f0                                    flag=0 exit=134 badlines=0
+crash_corrupt-page_f0                                   flag=0 exit=101 badlines=1
+crash_recover_f0                                        flag=0 exit=0   badlines=5
+storage_modes_f0                                        flag=0 exit=0   badlines=0
+distributed_raft_f0                                     flag=0 exit=0   badlines=0
+raft_secondary_repl_f0                                  flag=0 exit=0   badlines=0
+scale_harness_f0                                        flag=0 exit=0   badlines=0
+crash_write-abort_f1                                    flag=1 exit=134 badlines=0
+crash_corrupt-page_f1                                   flag=1 exit=101 badlines=1
+crash_recover_f1                                        flag=1 exit=0   badlines=5
+storage_modes_f1                                        flag=1 exit=0   badlines=0
+distributed_raft_f1                                     flag=1 exit=0   badlines=0
+raft_secondary_repl_f1                                  flag=1 exit=0   badlines=0
+scale_harness_f1                                        flag=1 exit=0   badlines=0
+=== SOAK END Sat Aug 15 09:41:39 PDT 2026 ===

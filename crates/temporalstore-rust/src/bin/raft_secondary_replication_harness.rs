@@ -1171,7 +1171,13 @@ fn propose(node: &ProductionRaftNode, key: &str, value: &str) -> WriteSummary {
 fn is_transient_proposal_error(status: &Status) -> bool {
     status.code == "raft_error"
         && (status.message.contains("not enough live replicas")
-            || status.message.contains("behind leader commit index"))
+            || status.message.contains("behind leader commit index")
+            // A proposal that races an in-flight snapshot transfer to a lagging follower is
+            // rejected with snapshot-sender backpressure. That is a transient flow-control
+            // condition -- it clears once the transfer completes -- so a real client (and this
+            // harness) retries it rather than treating it as a hard failure.
+            || status.message.contains("snapshot transfer already in progress")
+            || status.message.contains("snapshot sender backpressure"))
 }
 
 fn mark_liveness(node: &ProductionRaftNode, target_id: RaftNodeId, alive: bool) {

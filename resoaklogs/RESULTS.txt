@@ -1,0 +1,10 @@
+=== rebuild release harnesses (source changed) Sat Aug 15 11:10:08 PDT 2026 ===
+   Compiling temporalstore-rust v0.1.0 (/root/ts-deltaidx/crates/temporalstore-rust)
+    Finished `release` profile [optimized] target(s) in 1m 30s
+SCEN-A crash+recover (write-abort exit=134): "before_value": "before-value" | "after_value": "after-value" | "all_live_pages_readable": true
+SCEN-B crash+corrupt+recover: "index_log_records": 2 | "all_live_pages_readable": false | "readable_page_refs": 1 | "total_page_refs": 2  (EXPECT all_readable=false, readable=1, total=2)
+storage_modes                    exit=0    badlines=0
+distributed_raft                 exit=0    badlines=0
+raft_secondary_repl              exit=101  badlines=2
+scale_harness                    exit=0    badlines=0
+=== RESOAK END Sat Aug 15 11:14:20 PDT 2026 ===

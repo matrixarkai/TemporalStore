@@ -11,21 +11,20 @@ impl TemporalEngine {
 
     /// The single funnel through which every consumer reads the COMPLETE served index for
     /// a shard. It always returns a full, current `serialize_index`-shaped byte image of
-    /// the `ShardState`, so callers never see a partial or stale index regardless of the
-    /// delta path.
+    /// the `ShardState`, so callers never see a partial or stale index.
     ///
-    /// - Delta path ON, shard loaded, not bulk: serialize the LIVE in-memory shard. This
-    ///   is the authoritative current state and is what makes deferring the per-write base
-    ///   rewrite safe -- readers reconstruct from memory rather than from the on-disk base.
-    /// - Otherwise: read the on-disk base `shard-{id}.index.json`. This is the established
-    ///   behavior (default OFF) and is also the correct source in bulk mode, where the base
-    ///   is deliberately frozen at the last flush anchor while the WAL tail races ahead
-    ///   (serving the live tail there would over-advance the manifest replay watermark).
+    /// - Shard loaded, not bulk: serialize the LIVE in-memory shard. This is the
+    ///   authoritative current state and is what makes deferring the per-write base rewrite
+    ///   safe -- readers reconstruct from memory rather than from the on-disk base.
+    /// - Otherwise: read the on-disk base `shard-{id}.index.json`. This is the correct source
+    ///   in bulk mode, where the base is deliberately frozen at the last flush anchor while
+    ///   the WAL tail races ahead (serving the live tail would over-advance the manifest
+    ///   replay watermark), and for a shard not currently loaded.
     pub(super) fn load_served_index_bytes(
         &self,
         shard_id: ShardId,
     ) -> Result<Vec<u8>, std::io::Error> {
-        if delta_served_index_enabled() && !bulk_ingest_mode() {
+        if !bulk_ingest_mode() {
             if let Some(shard) = self
                 .shards
                 .read()
@@ -133,15 +132,11 @@ impl TemporalEngine {
     }
 
     pub(super) fn load_index(&self, shard_id: ShardId, warm_cache: bool) -> Option<ShardState> {
-        let delta = delta_served_index_enabled();
         let read = fs::read(self.index_path(shard_id));
         let base_present = read.is_ok();
-        // Default path: a missing base means nothing to load. Delta path: the base is
-        // materialized only at compaction/unload, so a crash before the first compaction
-        // leaves no base -- start empty and rebuild from the index-log deltas below.
-        if !base_present && !delta {
-            return None;
-        }
+        // The base snapshot is materialized only at compaction/unload, so a crash before the
+        // first compaction leaves no base -- start empty and rebuild from the index-log
+        // deltas below.
         let mut shard = match read {
             Ok(bytes) => serde_json::from_slice::<ShardState>(&bytes).ok()?,
             Err(_) => ShardState::default(),
@@ -155,21 +150,19 @@ impl TemporalEngine {
                 shard.features.entry(key).or_default().extend(series);
             }
         }
-        // Delta path: fold the index-log deltas beyond the base snapshot's anchor into the
-        // bucket index (reconstructing the exact on-disk page layout at the ORIGINAL
-        // addresses) and apply the captured per-key non-page state, BEFORE reconcile. This
-        // is what lets a crash reload reconstruct the served index WITHOUT re-executing the
-        // WAL -- re-execution would write fresh pages and relocate them to the active slab,
-        // doubling physical page counts and losing the recorded slab layout.
-        if delta {
-            self.fold_index_log_deltas(shard_id, &mut shard);
-            // ON but no base and nothing to fold -> genuinely nothing persisted yet.
-            if !base_present
-                && shard.bucket_index.bucket_map.is_empty()
-                && shard.applied_wal_sequence.is_none()
-            {
-                return None;
-            }
+        // Fold the index-log deltas beyond the base snapshot's anchor into the bucket index
+        // (reconstructing the exact on-disk page layout at the ORIGINAL addresses) and apply
+        // the captured per-key non-page state, BEFORE reconcile. This is what lets a crash
+        // reload reconstruct the served index WITHOUT re-executing the WAL -- re-execution
+        // would write fresh pages and relocate them to the active slab, doubling physical
+        // page counts and losing the recorded slab layout.
+        self.fold_index_log_deltas(shard_id, &mut shard);
+        // No base and nothing to fold -> genuinely nothing persisted yet.
+        if !base_present
+            && shard.bucket_index.bucket_map.is_empty()
+            && shard.applied_wal_sequence.is_none()
+        {
+            return None;
         }
         // Fold disk->memory cache promotion into reconcile's page reads on a warming
         // load (normal restart): the pages reconcile reads to rebuild the secondary

@@ -23,17 +23,16 @@ impl TemporalEngine {
     }
 
     pub(super) fn storage_recovery_report_without_boundary(&self, shard_id: ShardId) -> StorageRecoveryReport {
-        // Durable served-index size. On the default path this is the atomically-written
-        // base file. On the delta path the base is materialized only at compaction, so a
-        // fresh crash-recovered shard has no base file yet -- the durable served index is
-        // the base folded with the index-log deltas, whose reconstructed size we report
-        // (via the served-index funnel) so recovery diagnostics reflect real durable state.
+        // Durable served-index size. The base is materialized only at compaction, so a fresh
+        // crash-recovered shard has no base file yet -- the durable served index is the base
+        // folded with the index-log deltas, whose reconstructed size we report (via the
+        // served-index funnel) so recovery diagnostics reflect real durable state.
         let base_index_bytes = self
             .index_path(shard_id)
             .metadata()
             .map(|metadata| metadata.len())
             .unwrap_or_default();
-        let index_bytes = if base_index_bytes == 0 && delta_served_index_enabled() {
+        let index_bytes = if base_index_bytes == 0 {
             self.load_served_index_bytes(shard_id)
                 .map(|bytes| bytes.len() as u64)
                 .unwrap_or_default()

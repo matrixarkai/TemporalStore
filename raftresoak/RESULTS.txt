@@ -1,0 +1,20 @@
+=== rebuild raft harnesses (lib changed) Sat Aug 15 11:36:33 PDT 2026 ===
+   Compiling temporalstore-rust v0.1.0 (/root/ts-deltaidx/crates/temporalstore-rust)
+    Finished `release` profile [optimized] target(s) in 1m 50s
+--- raft_secondary_replication x8 (acceptance: 8/8, reads-after-restart, zero mismatch) ---
+  secondary run 1: exit=0 mism=0  reads_after_restart
+  secondary run 2: exit=101 mism=0  panicked at crates/temporalstore-rust/src/bin/raft_secondary_replication_harness.rs:1438:9:
+  secondary run 3: exit=101 mism=0  panicked at crates/temporalstore-rust/src/bin/raft_secondary_replication_harness.rs:1438:9:
+  secondary run 4: exit=101 mism=0  panicked at crates/temporalstore-rust/src/bin/raft_secondary_replication_harness.rs:1438:9:
+  secondary run 5: exit=0 mism=0  reads_after_restart
+  secondary run 6: exit=0 mism=0  reads_after_restart
+  secondary run 7: exit=0 mism=0  reads_after_restart
+  secondary run 8: exit=0 mism=0  reads_after_restart
+  secondary TOTAL: pass=5 fail=3 / 8
+--- distributed_raft x4 ---
+  distraft run 1: exit=0  
+  distraft run 2: exit=0  
+  distraft run 3: exit=0  
+  distraft run 4: exit=0  
+  distraft TOTAL: pass=4 fail=0 / 4
+=== RAFT RESOAK END Sat Aug 15 11:40:08 PDT 2026 ===

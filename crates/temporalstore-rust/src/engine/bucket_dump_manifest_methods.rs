@@ -131,6 +131,13 @@ impl TemporalEngine {
         manifest.checksum = bucket_dump_manifest_checksum(&manifest)?;
         self.persist_bucket_dump_manifest(&manifest)
             .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
+        // The index-log is bounded by the storage-manager's consumer-aware index GC (see
+        // `storage_wal_reclaim_plan` / `run_storage_manager_cycle`), which retains from the
+        // durable dump frontier -- the min anchor across durable manifests, held back by any
+        // lagging follower replay cursor or raft snapshot. That is the correct layer for GC
+        // (this manifest-create path has no visibility into those consumers), and
+        // `install_latest_manifest_if_newer_on_load` bridges the on-disk base to the manifest
+        // anchor on reload, so fold(base + retained deltas) stays complete.
         Ok(manifest)
     }
 
