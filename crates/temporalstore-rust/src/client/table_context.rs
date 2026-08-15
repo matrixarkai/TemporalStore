@@ -252,4 +252,84 @@ impl TemporalStoreTable {
             }),
         }
     }
+
+    /// Mark a context node embedding-dirty (its semantic embedding is deferred or
+    /// failed). Independent of the summary-dirty marker.
+    pub fn context_mark_embedding_dirty(
+        &self,
+        tenant_hash: u64,
+        marker: ContextSummaryDirtyMarker,
+    ) -> Result<String, ClientError> {
+        match self
+            .execute(Command::ContextMarkEmbeddingDirty {
+                tenant_hash,
+                marker,
+                clear: false,
+            })?
+            .response
+        {
+            CommandResponse::ContextObjectKey { object_key } => Ok(object_key),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_mark_embedding_dirty",
+                response,
+            }),
+        }
+    }
+
+    /// Clear the embedding-dirty marker for a node (called once it is embedded).
+    pub fn context_clear_embedding_dirty(
+        &self,
+        tenant_hash: u64,
+        marker: ContextSummaryDirtyMarker,
+    ) -> Result<String, ClientError> {
+        match self
+            .execute(Command::ContextMarkEmbeddingDirty {
+                tenant_hash,
+                marker,
+                clear: true,
+            })?
+            .response
+        {
+            CommandResponse::ContextObjectKey { object_key } => Ok(object_key),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_clear_embedding_dirty",
+                response,
+            }),
+        }
+    }
+
+    /// Query embedding-dirty markers. `node_hash == 0` returns all pending
+    /// embedding-dirty nodes (the drainer's O(pending) scan); a non-zero
+    /// `node_hash` returns the single coalesced entry for that node. Returns the
+    /// markers alongside their per-marker tenant hashes (parallel vector; used by
+    /// the all-pending drain scan, which spans tenants).
+    pub fn context_query_embedding_dirty(
+        &self,
+        tenant_hash: u64,
+        node_hash: u64,
+        start_time_ms: u64,
+        end_time_ms: u64,
+        limit: Option<usize>,
+    ) -> Result<(Vec<ContextSummaryDirtyMarker>, Vec<u64>), ClientError> {
+        match self
+            .execute(Command::ContextQueryEmbeddingDirty {
+                tenant_hash,
+                node_hash,
+                start_time_ms,
+                end_time_ms,
+                limit,
+            })?
+            .response
+        {
+            CommandResponse::ContextEmbeddingDirtyMarkers {
+                markers,
+                tenant_hashes,
+                ..
+            } => Ok((markers, tenant_hashes)),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_query_embedding_dirty",
+                response,
+            }),
+        }
+    }
 }

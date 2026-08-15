@@ -15,7 +15,44 @@ use serde_json::Value;
 /// fully scored instead of silently falling back to lexical ranking.
 const CONTEXT_EMBEDDING_QUERY_CHUNK: usize = 1000;
 
+/// Reason code stamped on an embedding-dirty marker written by the live extraction
+/// path when the inline embedding call fails (after any fallback provider). Purely
+/// diagnostic; the drainer treats every pending marker identically. Distinct from
+/// the bulk-ingest deferral reason (2, see context_batch_ingest.rs).
+const EMBEDDING_DIRTY_REASON_LIVE_FAILURE: u32 = 3;
+
+/// Raw lexical-relevance score at/above which a node is treated as a full-strength
+/// lexical match, mapped to `LEXICAL_MATCH_MICROS`. Scores below scale linearly.
+/// A topic-phrase hit alone already contributes 1000 in `context_relevance_score_plan`.
+const LEXICAL_SCORE_SATURATION: i64 = 1_000;
+/// Micros a saturated lexical match maps to. Kept below the 1_000_000 ceiling a
+/// perfect cosine match reaches so that, in a MIXED store, a strong semantic
+/// (embedded) match still outranks a purely lexical one, while un-embedded nodes
+/// remain rankable (never a flat 0) instead of collapsing to recency order.
+const LEXICAL_MATCH_MICROS: i64 = 500_000;
+
+/// Hybrid lexical fallback for un-embedded nodes in `retrieve_context`
+/// (`MATRIXARK_CONTEXT_HYBRID_LEXICAL`, default ON). When enabled, a node with no
+/// stored summary embedding is scored by query/text lexical overlap instead of the
+/// flat 0 it used to get, so a freshly bulk-loaded store returns relevant results
+/// before the embed drainer catches up. Embedded-node scoring is unchanged.
+fn context_hybrid_lexical_enabled() -> bool {
+    std::env::var("MATRIXARK_CONTEXT_HYBRID_LEXICAL")
+        .ok()
+        .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
+        .unwrap_or(true)
+}
+
+/// Map a raw lexical-relevance score into the same micros scale cosine similarity
+/// uses (`context_embedding_similarity_micros`), so lexical and cosine node scores
+/// merge into one ranking. 0 stays 0 (no overlap => not surfaced by lexical).
+fn lexical_score_to_micros(raw: u32) -> i64 {
+    let raw = (raw as i64).min(LEXICAL_SCORE_SATURATION);
+    raw.saturating_mul(LEXICAL_MATCH_MICROS) / LEXICAL_SCORE_SATURATION
+}
+
 mod query;
+mod embed_drainer;
 mod resource;
 mod benchmark;
 mod model_provider;
@@ -33,6 +70,10 @@ pub use ingest::{ingest_extract_context, ingest_resource_skill_context, validate
 pub(crate) use model_provider::*;
 pub use model_provider::context_backfill_embeddings;
 pub use query::context_embedding_ref_hash;
+pub use embed_drainer::{
+    drain_embedding_dirty_once, embed_drainer_config_from_env, embed_drainer_enabled,
+    run_embed_drainer_loop, EmbedDrainReport, EmbedDrainerConfig,
+};
 pub use skill::{
     context_skill_registry_from_parsed, parse_context_skill_markdown,
     select_context_skills_for_retrieval, update_context_skill_registry,
@@ -1560,65 +1601,91 @@ pub(crate) fn extract_context_gated(
         embedding_inputs.push(("node_l1", node_hash, 2, l1.as_str()));
     }
     embedding_inputs.push(("event_text", event_id_hash, 3, request.body.as_str()));
-    let (embedding_vectors, embedding_generation) =
-        match context_embeddings_for_extract(&provider, &embedding_inputs) {
-            Ok(value) => value,
-            Err(status) => {
-                if let Some(fallback) = provider.fallback_provider.as_deref() {
-                    let fallback = normalize_provider(fallback.clone());
-                    match context_embeddings_for_extract(&fallback, &embedding_inputs) {
-                        Ok((vectors, mut report)) => {
-                            report.fallback_used = true;
-                            report.provider_name = format!(
-                                "{}+fallback:{}",
-                                provider.provider_name, report.provider_name
-                            );
-                            (vectors, report)
-                        }
-                        Err(fallback_status) => {
-                            return empty_extract_report(
-                                fallback_status,
-                                provider,
-                                request.tenant_hash,
-                                request.timestamp_ms,
-                            );
-                        }
-                    }
-                } else {
-                    return empty_extract_report(
-                        status,
-                        provider,
-                        request.tenant_hash,
-                        request.timestamp_ms,
-                    );
-                }
+    // Compute embeddings, trying the fallback provider on error. On total failure
+    // the behavior depends on `context_embed_defer_on_failure()`: the default is to
+    // DEFER (persist the node/event/summaries without vectors and mark the node
+    // embedding-dirty so the async drainer attaches vectors later, keeping it
+    // lexically rankable meanwhile); the fail-closed path aborts the extract.
+    let embed_outcome = match context_embeddings_for_extract(&provider, &embedding_inputs) {
+        Ok(value) => Ok(value),
+        Err(status) => {
+            if let Some(fallback) = provider.fallback_provider.as_deref() {
+                let fallback = normalize_provider(fallback.clone());
+                context_embeddings_for_extract(&fallback, &embedding_inputs).map(
+                    |(vectors, mut report)| {
+                        report.fallback_used = true;
+                        report.provider_name = format!(
+                            "{}+fallback:{}",
+                            provider.provider_name, report.provider_name
+                        );
+                        (vectors, report)
+                    },
+                )
+            } else {
+                Err(status)
             }
-        };
-    let embedding_l0 = ContextEmbedding {
-        ref_hash: context_embedding_ref_hash(request.tenant_hash, node_hash, "node_l0"),
-        level: 1,
-        model_hash: context_embedding_model_hash(&provider.model),
-        vector: embedding_vectors[0].clone(),
-        updated_at_ms: timestamp_ms,
+        }
     };
-    let embedding_l1 = if emit_l1 {
-        Some(ContextEmbedding {
-            ref_hash: context_embedding_ref_hash(request.tenant_hash, node_hash, "node_l1"),
-            level: 2,
-            model_hash: context_embedding_model_hash(&provider.model),
-            vector: embedding_vectors[1].clone(),
-            updated_at_ms: timestamp_ms,
-        })
+    let (embedding_vectors, embedding_generation, embedding_deferred) = match embed_outcome {
+        Ok((vectors, report)) => (vectors, report, false),
+        Err(status) => {
+            if !context_embed_defer_on_failure() {
+                return empty_extract_report(
+                    status,
+                    provider,
+                    request.tenant_hash,
+                    request.timestamp_ms,
+                );
+            }
+            (Vec::new(), ContextEmbeddingGenerationReport::default(), true)
+        }
+    };
+    // Embedding upsert commands are built only when embeddings actually succeeded;
+    // when deferred we skip them and mark the node embedding-dirty instead.
+    let embedding_commands: Vec<Command> = if embedding_deferred {
+        Vec::new()
     } else {
-        None
-    };
-    let event_vector_index = if emit_l1 { 2 } else { 1 };
-    let embedding_event = ContextEmbedding {
-        ref_hash: context_embedding_ref_hash(request.tenant_hash, event_id_hash, "event_text"),
-        level: 3,
-        model_hash: context_embedding_model_hash(&provider.model),
-        vector: embedding_vectors[event_vector_index].clone(),
-        updated_at_ms: timestamp_ms,
+        let embedding_l0 = ContextEmbedding {
+            ref_hash: context_embedding_ref_hash(request.tenant_hash, node_hash, "node_l0"),
+            level: 1,
+            model_hash: context_embedding_model_hash(&provider.model),
+            vector: embedding_vectors[0].clone(),
+            updated_at_ms: timestamp_ms,
+        };
+        let embedding_l1 = if emit_l1 {
+            Some(ContextEmbedding {
+                ref_hash: context_embedding_ref_hash(request.tenant_hash, node_hash, "node_l1"),
+                level: 2,
+                model_hash: context_embedding_model_hash(&provider.model),
+                vector: embedding_vectors[1].clone(),
+                updated_at_ms: timestamp_ms,
+            })
+        } else {
+            None
+        };
+        let event_vector_index = if emit_l1 { 2 } else { 1 };
+        let embedding_event = ContextEmbedding {
+            ref_hash: context_embedding_ref_hash(request.tenant_hash, event_id_hash, "event_text"),
+            level: 3,
+            model_hash: context_embedding_model_hash(&provider.model),
+            vector: embedding_vectors[event_vector_index].clone(),
+            updated_at_ms: timestamp_ms,
+        };
+        let mut embedding_commands = vec![Command::ContextUpsertEmbedding {
+            tenant_hash: request.tenant_hash,
+            embedding: embedding_l0,
+        }];
+        if let Some(embedding_l1) = embedding_l1 {
+            embedding_commands.push(Command::ContextUpsertEmbedding {
+                tenant_hash: request.tenant_hash,
+                embedding: embedding_l1,
+            });
+        }
+        embedding_commands.push(Command::ContextUpsertEmbedding {
+            tenant_hash: request.tenant_hash,
+            embedding: embedding_event,
+        });
+        embedding_commands
     };
 
     let mut commands = vec![
@@ -1650,27 +1717,29 @@ pub(crate) fn extract_context_gated(
             summary: summary_l0,
         },
     ];
-    // L1 summary + embedding are written only when L1 was emitted (see `emit_l1`).
+    // L1 summary is written only when L1 was emitted (see `emit_l1`).
     if let Some(summary_l1) = summary_l1 {
         commands.push(Command::ContextUpsertSummary {
             tenant_hash: request.tenant_hash,
             summary: summary_l1,
         });
     }
-    commands.push(Command::ContextUpsertEmbedding {
-        tenant_hash: request.tenant_hash,
-        embedding: embedding_l0,
-    });
-    if let Some(embedding_l1) = embedding_l1 {
-        commands.push(Command::ContextUpsertEmbedding {
+    if embedding_deferred {
+        // Live-path embed failed: persist the node without vectors and mark it
+        // embedding-dirty so the async drainer retries. Happy path marks nothing.
+        commands.push(Command::ContextMarkEmbeddingDirty {
             tenant_hash: request.tenant_hash,
-            embedding: embedding_l1,
+            marker: ContextSummaryDirtyMarker {
+                node_hash,
+                event_time_ms: timestamp_ms,
+                reason: EMBEDDING_DIRTY_REASON_LIVE_FAILURE,
+                propagate_depth: 0,
+            },
+            clear: false,
         });
     }
-    commands.push(Command::ContextUpsertEmbedding {
-        tenant_hash: request.tenant_hash,
-        embedding: embedding_event,
-    });
+    // Embedding upserts (empty when deferred).
+    commands.extend(embedding_commands);
     for command in commands {
         let response = engine.execute_durable(ExecuteRequest {
             shard_id: request.shard_id,
@@ -1826,6 +1895,50 @@ pub fn retrieve_context(
             }
         }
     }
+    // Hybrid lexical fallback: nodes with NO stored summary embedding used to score
+    // a flat 0 here (missing-embedding -> unwrap_or_default), so a freshly
+    // bulk-loaded (un-embedded) store collapsed to recency order and lost focused
+    // recall. Instead, load those un-embedded candidates and score them by
+    // query/text lexical overlap, normalized into the same micros scale as cosine.
+    // Embedded nodes keep their cosine score untouched, so when every node is
+    // embedded this pass does nothing and behavior is identical to before.
+    let mut prefetched_nodes = BTreeMap::<u64, ContextNode>::new();
+    let mut lexical_scores_by_node = BTreeMap::<u64, i64>::new();
+    if context_hybrid_lexical_enabled() {
+        let unembedded: Vec<u64> = node_hashes
+            .iter()
+            .copied()
+            .filter(|node_hash| {
+                summary_scores_by_node
+                    .get(node_hash)
+                    .map(|(_, found)| *found == 0)
+                    .unwrap_or(true)
+            })
+            .collect();
+        if !unembedded.is_empty() {
+            for chunk in unembedded.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
+                if chunk.is_empty() {
+                    continue;
+                }
+                let nodes_response = engine.execute(ExecuteRequest {
+                    shard_id: request.shard_id,
+                    command: Command::ContextGetNodes {
+                        tenant_hash: request.tenant_hash,
+                        node_hashes: chunk.to_vec(),
+                    },
+                });
+                if let CommandResponse::ContextNodes { nodes } = nodes_response.response {
+                    for node in nodes {
+                        let text = format!("{} {} {}", node.canonical_name, node.l0, node.l1_ref);
+                        let lexical = context_relevance_score_plan(&query_plan, &text);
+                        lexical_scores_by_node
+                            .insert(node.node_hash, lexical_score_to_micros(lexical));
+                        prefetched_nodes.insert(node.node_hash, node);
+                    }
+                }
+            }
+        }
+    }
     let mut summary_scores = node_hashes
         .iter()
         .map(|node_hash| {
@@ -1833,6 +1946,17 @@ pub fn retrieve_context(
                 .get(node_hash)
                 .copied()
                 .unwrap_or_default();
+            // Embedded node (found > 0): cosine score, exactly as before. Otherwise
+            // fall back to the hybrid lexical score (0 when there was no overlap or
+            // hybrid is disabled) so un-embedded nodes are still rankable.
+            let best_score = if found > 0 {
+                best_score
+            } else {
+                lexical_scores_by_node
+                    .get(node_hash)
+                    .copied()
+                    .unwrap_or(best_score)
+            };
             (*node_hash, best_score, found, 0u32, 0u64)
         })
         .collect::<Vec<_>>();
@@ -1856,7 +1980,6 @@ pub fn retrieve_context(
         .min(summary_node_limit.max(1))
         .min(query_aware_event_limit);
     let rerank_node_limit = summary_node_limit.min(summary_scores.len());
-    let mut prefetched_nodes = BTreeMap::<u64, ContextNode>::new();
     let rerank_node_hashes = summary_scores
         .iter()
         .take(rerank_node_limit)

@@ -1696,6 +1696,194 @@ fn context_workflow_extracts_with_openai_compatible_provider() {
     std::env::remove_var("TS_CONTEXT_TEST_KEY");
 }
 
+// --- Hybrid retrieve scoring (un-embedded nodes rankable via lexical) ---
+
+// Upsert a raw ContextNode + one event with NO embedding (mirrors raw-first bulk
+// ingest). `last_event_time_ms` is shared across callers in a test so the freshness
+// tiebreak does not decide ranking -- lexical/cosine score must.
+fn upsert_raw_context_node(
+    engine: &TemporalEngine,
+    tenant_hash: u64,
+    node_hash: u64,
+    text: &str,
+    event_time_ms: u64,
+) {
+    let ok = engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode {
+                tenant_hash,
+                node: ContextNode {
+                    node_hash,
+                    parent_hash: 0,
+                    kind: 0,
+                    canonical_name: format!("node {node_hash}"),
+                    l0: text.to_string(),
+                    status: 1,
+                    last_event_time_ms: event_time_ms,
+                    summary_dirty: true,
+                    l1_ref: String::new(),
+                    raw_metadata_ref: format!("src://{node_hash}"),
+                },
+            },
+        })
+        .status
+        .ok;
+    assert!(ok);
+    let ok = engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextWriteEvent {
+                tenant_hash,
+                node_hash,
+                event: ContextEvent {
+                    event_id_hash: node_hash.wrapping_mul(11).max(1),
+                    event_time_ms,
+                    ingestion_time_ms: event_time_ms,
+                    kind: 0,
+                    event_type: 1,
+                    actor_hash: 1,
+                    status: 1,
+                    valid_until_ms: 0,
+                    confidence: 1.0,
+                    importance: 1.0,
+                    text: text.to_string(),
+                    source_ref: String::new(),
+                    related_node_hashes: Vec::new(),
+                    compact_attrs: Vec::new(),
+                },
+                first_write_only: false,
+                cold_storage: false,
+            },
+        })
+        .status
+        .ok;
+    assert!(ok);
+}
+
+fn retrieve_top_node(engine: &TemporalEngine, tenant_hash: u64, node_hashes: Vec<u64>, query: &str) -> u64 {
+    let report = retrieve_context(
+        engine,
+        ContextRetrieveRequest {
+            shard_id: 1,
+            tenant_hash,
+            node_hashes,
+            query: query.to_string(),
+            start_time_ms: 0,
+            end_time_ms: 1_000_000,
+            max_events: 8,
+            min_confidence: 0.0,
+            min_importance: 0.0,
+            tiers: default_tiers(),
+            max_summary_nodes: 1,
+            max_event_nodes: 1,
+            prefer_current_agent: false,
+            current_agent_scope_key: String::new(),
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(report.status.ok, "{:?}", report.status);
+    report
+        .blocks
+        .first()
+        .map(|block| block.node_hash)
+        .unwrap_or(0)
+}
+
+#[test]
+fn hybrid_lexical_ranks_unembedded_nodes_above_flat_zero() {
+    let engine = test_engine();
+    let tenant_hash = 77;
+    // Both un-embedded. The relevant node has the LARGER node_hash so that WITHOUT
+    // hybrid (all scores 0) the ascending node_hash tiebreak would pick the
+    // irrelevant one; hybrid lexical scoring must flip that.
+    let irrelevant = 111u64;
+    let relevant = 222u64;
+    upsert_raw_context_node(
+        &engine,
+        tenant_hash,
+        irrelevant,
+        "Support ticket: user asked to update a notification preference.",
+        5_000,
+    );
+    upsert_raw_context_node(
+        &engine,
+        tenant_hash,
+        relevant,
+        "Checkout incident: payment fraud score spiked after an outage.",
+        5_000,
+    );
+
+    let top = retrieve_top_node(
+        &engine,
+        tenant_hash,
+        vec![irrelevant, relevant],
+        "payment fraud score",
+    );
+    assert_eq!(
+        top, relevant,
+        "un-embedded node with lexical overlap must outrank the flat-zero node"
+    );
+}
+
+#[test]
+fn hybrid_mixed_store_keeps_both_embedded_and_unembedded_rankable() {
+    let engine = test_engine();
+    let tenant_hash = 88;
+    // One node embedded via the extract path (stores cosine-scorable embeddings).
+    let embedded = extract_context(
+        &engine,
+        ContextExtractRequest {
+            shard_id: 1,
+            tenant_hash,
+            source_kind: ContextSourceKind::Incident,
+            source_id: "emb".to_string(),
+            title: "deploy".to_string(),
+            body: "Deployment rollout paused after a latency regression.".to_string(),
+            timestamp_ms: 6_000,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(embedded.status.ok, "{:?}", embedded.status);
+    // One node left un-embedded (raw upsert), lexically matching a different query.
+    let raw_node = 999u64;
+    upsert_raw_context_node(
+        &engine,
+        tenant_hash,
+        raw_node,
+        "Checkout incident: payment fraud score spiked after an outage.",
+        6_000,
+    );
+
+    // Query that lexically matches ONLY the un-embedded node: it must still surface
+    // (mixed store does not collapse un-embedded nodes to 0/invisible).
+    let report = retrieve_context(
+        &engine,
+        ContextRetrieveRequest {
+            shard_id: 1,
+            tenant_hash,
+            node_hashes: vec![embedded.node.node_hash, raw_node],
+            query: "payment fraud score".to_string(),
+            start_time_ms: 0,
+            end_time_ms: 1_000_000,
+            max_events: 8,
+            min_confidence: 0.0,
+            min_importance: 0.0,
+            tiers: default_tiers(),
+            max_summary_nodes: 8,
+            max_event_nodes: 8,
+            prefer_current_agent: false,
+            current_agent_scope_key: String::new(),
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(report.status.ok, "{:?}", report.status);
+    assert!(
+        report.blocks.iter().any(|block| block.node_hash == raw_node),
+        "un-embedded lexical-matching node must be retrievable in a mixed store"
+    );
+}
+
 #[test]
 fn context_workflow_falls_back_when_live_provider_fails() {
     let engine = test_engine();

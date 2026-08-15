@@ -67,6 +67,10 @@ pub(super) fn context_dirty_key(tenant_hash: u64, node_hash: u64) -> String {
     format!("ctx:dirty:{tenant_hash}:{node_hash}")
 }
 
+pub(super) fn context_embedding_dirty_key(tenant_hash: u64, node_hash: u64) -> String {
+    format!("ctx:embdirty:{tenant_hash}:{node_hash}")
+}
+
 pub(super) fn context_entity_key(tenant_hash: u64, node_hash: u64, entity_hash: u64) -> String {
     format!("ctx:entity:{tenant_hash}:{node_hash}:{entity_hash}")
 }

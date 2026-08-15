@@ -1469,6 +1469,30 @@ pub enum Command {
         #[serde(default)]
         limit: Option<usize>,
     },
+    // Embedding-dirty marker trio. Fully independent of the summary-dirty trio
+    // above (key `ctx:embdirty:{tenant}:{node}`): a node can be embedding-dirty
+    // without being summary-dirty and vice-versa. Marks nodes whose semantic
+    // embedding is deferred (raw-first bulk ingest) or failed (live-path provider
+    // error) so the async embed drainer can attach vectors later. `clear` turns
+    // the mark command into a per-node clear (used by the drainer once a node is
+    // successfully embedded); the marker struct is reused only as a lightweight
+    // {node_hash, event_time_ms} carrier.
+    ContextMarkEmbeddingDirty {
+        tenant_hash: u64,
+        marker: ContextSummaryDirtyMarker,
+        #[serde(default)]
+        clear: bool,
+    },
+    ContextQueryEmbeddingDirty {
+        tenant_hash: u64,
+        // node_hash == 0 means "all pending embedding-dirty nodes for this shard"
+        // (the drainer's O(pending) scan). A non-zero node_hash queries one node.
+        node_hash: u64,
+        start_time_ms: u64,
+        end_time_ms: u64,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
     ContextUpsertEntity {
         tenant_hash: u64,
         entity: ContextEntity,
@@ -1717,6 +1741,18 @@ pub enum CommandResponse {
     ContextSummaryDirtyMarkers {
         object_key: String,
         markers: Vec<ContextSummaryDirtyMarker>,
+    },
+    // Response for ContextQueryEmbeddingDirty. Mirrors ContextSummaryDirtyMarkers
+    // but adds a `tenant_hashes` vector parallel to `markers`: the all-pending scan
+    // (node_hash == 0) spans every tenant on the shard, so the drainer needs each
+    // marker's tenant to compute its embedding ref-hash and read its events. In the
+    // single-node per-node query `tenant_hashes` may be empty (the caller already
+    // knows the tenant it asked for).
+    ContextEmbeddingDirtyMarkers {
+        object_key: String,
+        markers: Vec<ContextSummaryDirtyMarker>,
+        #[serde(default)]
+        tenant_hashes: Vec<u64>,
     },
     ContextEntity {
         object_key: String,

@@ -83,6 +83,8 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::ContextQueryPackAudit { .. }
         | Command::ContextMarkSummaryDirty { .. }
         | Command::ContextQuerySummaryDirty { .. }
+        | Command::ContextMarkEmbeddingDirty { .. }
+        | Command::ContextQueryEmbeddingDirty { .. }
         | Command::ContextUpsertEntity { .. }
         | Command::ContextGetEntity { .. }
         | Command::ContextQueryEntities { .. }
@@ -184,6 +186,16 @@ pub(super) fn context_command_key(command: &Command) -> Option<String> {
             node_hash,
             ..
         } => Some(context_dirty_key(*tenant_hash, *node_hash)),
+        Command::ContextMarkEmbeddingDirty {
+            tenant_hash,
+            marker,
+            ..
+        } => Some(context_embedding_dirty_key(*tenant_hash, marker.node_hash)),
+        Command::ContextQueryEmbeddingDirty {
+            tenant_hash,
+            node_hash,
+            ..
+        } => Some(context_embedding_dirty_key(*tenant_hash, *node_hash)),
         Command::ContextUpsertEntity {
             tenant_hash,
             entity,
@@ -288,6 +300,10 @@ pub(super) fn context_audit_key(tenant_hash: u64, session_hash: u64) -> String {
 
 pub(super) fn context_dirty_key(tenant_hash: u64, node_hash: u64) -> String {
     format!("ctx:dirty:{tenant_hash}:{node_hash}")
+}
+
+pub(super) fn context_embedding_dirty_key(tenant_hash: u64, node_hash: u64) -> String {
+    format!("ctx:embdirty:{tenant_hash}:{node_hash}")
 }
 
 pub(super) fn context_entity_key(tenant_hash: u64, node_hash: u64, entity_hash: u64) -> String {

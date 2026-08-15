@@ -9,10 +9,12 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use temporalstore_rust::context_workflow::{
     context_pipeline_manage_report, context_workflow_state_report, default_context_model_providers,
-    extract_context, ingest_extract_context, inject_context, retrieve_context,
-    ContextExtractRequest, ContextIngestExtractRequest, ContextInjectRequest,
-    ContextModelProviderConfig, ContextRetrieveRequest,
+    embed_drainer_config_from_env, embed_drainer_enabled, extract_context, ingest_extract_context,
+    inject_context, retrieve_context, run_embed_drainer_loop, ContextExtractRequest,
+    ContextIngestExtractRequest, ContextInjectRequest, ContextModelProviderConfig,
+    ContextRetrieveRequest,
 };
+use temporalstore_rust::ContextProviderKind;
 use temporalstore_rust::data_node::{DataNodeLifecycleSnapshot, DataNodeTopologyValidationReport};
 use temporalstore_rust::engine::reports::{StorageManagerCycleReport, StorageManagerCycleRequest};
 use temporalstore_rust::engine::TemporalEngine;
@@ -176,6 +178,40 @@ fn main() {
             max_background_queue_depth: env_usize("TS_SERVER_MAX_BACKGROUND_QUEUE_DEPTH", 128),
         },
     );
+
+    // Async embedding drainer (gated by MATRIXARK_EMBED_DRAINER, default off).
+    // Attaches vectors to nodes left embedding-dirty by raw-first bulk ingest or a
+    // live-path embed failure, so a bulk-loaded store becomes semantically
+    // retrievable without slowing ingest. Scans only the pending dirty set
+    // (O(pending)); the interval is a short idle fallback (MATRIXARK_EMBED_DRAINER_INTERVAL_MS).
+    if embed_drainer_enabled() {
+        let drainer_engine = engine.clone();
+        // Provider: a configured OpenAI-compatible embed server (MATRIXARK_EMBED_BASE_URL)
+        // else the default deterministic provider (safe offline; real vectors need a
+        // real server + MATRIXARK_REQUIRE_MODEL_EMBEDDINGS).
+        let provider = match std::env::var("MATRIXARK_EMBED_BASE_URL").ok() {
+            Some(base_url) if !base_url.trim().is_empty() => ContextModelProviderConfig {
+                provider_name: "embed-drainer".to_string(),
+                provider_kind: ContextProviderKind::OpenAiCompatible,
+                base_url,
+                api_key_env: std::env::var("MATRIXARK_EMBED_API_KEY_ENV").unwrap_or_default(),
+                embedding_model: std::env::var("MATRIXARK_EMBEDDING_MODEL")
+                    .unwrap_or_else(|_| "all-MiniLM-L6-v2".to_string()),
+                mock_mode: false,
+                ..ContextModelProviderConfig::default()
+            },
+            _ => ContextModelProviderConfig::default(),
+        };
+        let drainer_config = embed_drainer_config_from_env(shard_id, 0, provider);
+        println!(
+            "embed drainer enabled: shard {shard_id}, batch {}, interval {}ms",
+            drainer_config.batch_size,
+            drainer_config.interval.as_millis()
+        );
+        std::thread::spawn(move || {
+            run_embed_drainer_loop(&drainer_engine, &drainer_config, || false);
+        });
+    }
 
     let location = std::env::var("TS_SERVER_LOCATION").unwrap_or_default();
     let binary_version = env!("CARGO_PKG_VERSION").to_string();

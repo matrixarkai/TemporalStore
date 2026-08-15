@@ -43,8 +43,13 @@ use serde_json::{json, Value};
 use temporalstore_rust::{
     ingest_extract_context, BatchExecuteRequest, Command, ContextEvent, ContextExtractRequest,
     ContextIndexRef, ContextIngestExtractRequest, ContextModelProviderConfig, ContextNode,
-    ContextSourceKind, TemporalEngine,
+    ContextSourceKind, ContextSummaryDirtyMarker, TemporalEngine,
 };
+
+// Reason code stamped on embedding-dirty markers written by the raw-first bulk
+// path, distinguishing "embedding deferred at bulk ingest" from a live-path embed
+// failure. Purely diagnostic; the drainer treats any pending marker identically.
+const EMBEDDING_DIRTY_REASON_BULK_DEFERRED: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct SessionIndex {
@@ -322,7 +327,7 @@ fn write_raw_sources(
         return (0, 0, Vec::new());
     }
     let shard_id = sources[0].shard_id;
-    let mut commands = Vec::with_capacity(sources.len().saturating_mul(3));
+    let mut commands = Vec::with_capacity(sources.len().saturating_mul(4));
     let mut node_hashes = Vec::new();
     for source in sources {
         let node_hash = stable_hash64(&format!(
@@ -380,6 +385,22 @@ fn write_raw_sources(
             event_time_ms: timestamp_ms,
             index_ref,
         });
+        // Raw-first bulk ingest stores no embeddings, so mark each node
+        // embedding-dirty. The async embed drainer (MATRIXARK_EMBED_DRAINER) picks
+        // these up and attaches vectors; until then the hybrid retrieve path keeps
+        // them rankable via lexical scoring. This is the ONLY place the bulk path
+        // marks embedding-dirty (the live/extraction path embeds inline and marks
+        // only on failure).
+        commands.push(Command::ContextMarkEmbeddingDirty {
+            tenant_hash,
+            marker: ContextSummaryDirtyMarker {
+                node_hash,
+                event_time_ms: timestamp_ms,
+                reason: EMBEDDING_DIRTY_REASON_BULK_DEFERRED,
+                propagate_depth: 0,
+            },
+            clear: false,
+        });
         node_hashes.push(node_hash);
     }
     let response = engine.batch_execute(BatchExecuteRequest { shard_id, commands });
@@ -392,7 +413,9 @@ fn write_raw_sources(
         .filter(|entry| !entry.status.ok)
         .count();
     if failed_commands > 0 {
-        let failed_rows = failed_commands.div_ceil(3);
+        // Four commands per source: upsert-node, write-event, write-index-ref,
+        // mark-embedding-dirty.
+        let failed_rows = failed_commands.div_ceil(4);
         let accepted = sources.len().saturating_sub(failed_rows) as u64;
         return (accepted, failed_rows as u64, node_hashes);
     }
