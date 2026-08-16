@@ -26,6 +26,10 @@ impl TemporalEngine {
         let index_dir = index_dir.into();
         let wal_store = LocalWriteAheadLogStore::new(index_dir.join("wals"));
         let index_log_store = LocalIndexLogStore::new(index_dir.join("indexlogs"));
+        // Install the durable read-by-address fallback for log-backed hot pages: an eviction
+        // handler spills an evicted hot page to a real slab (freeing DRAM + preventing the acked
+        // write from reading back as missing). Idempotent + a no-op when disabled.
+        hot_page_spill::install_spill_handler(&cache, &block_store);
         Self {
             shards: Arc::default(),
             cache,
@@ -248,18 +252,17 @@ impl TemporalEngine {
             .expect("config lock poisoned")
             .entry(request.shard_id)
             .or_default();
-        // Single-barrier mode: config is not carried in the served-index checkpoint, so restore
-        // the last durably-logged config before replay. This covers the no-replay path (a clean
+        // Config is not carried in the served-index checkpoint, so restore the last durably-logged
+        // config before replay REGARDLESS of barrier mode. This covers the no-replay path (a clean
         // dump with nothing to tail-replay) and post-restart client writes; the replay loop below
         // overrides it with the WAL-sequence-ordered config while re-driving historical records,
-        // then restores the latest again. No-op (and byte-for-byte unchanged) off the flag.
-        if wal_single_barrier() {
-            if let Some(entry) = self.config_log_entries(request.shard_id).into_iter().last() {
-                self.configs
-                    .write()
-                    .expect("config lock poisoned")
-                    .insert(request.shard_id, entry.config);
-            }
+        // then restores the latest again. Without this, a reload defaults `Config` and silently
+        // resets feature_max_size + the representation-changing extend gate flags.
+        if let Some(entry) = self.config_log_entries(request.shard_id).into_iter().last() {
+            self.configs
+                .write()
+                .expect("config lock poisoned")
+                .insert(request.shard_id, entry.config);
         }
         self.admissions
             .write()
@@ -365,19 +368,27 @@ impl TemporalEngine {
             return Ok(());
         }
         pending.sort_by_key(|record| record.sequence);
+        // Drop a trailing atomic batch that never reached its durability barrier. A batch is
+        // written as N contiguously-sequenced records sharing one batch_id, buffered, then made
+        // durable by a SINGLE barrier; a crash before that barrier can leave a partial suffix on
+        // disk. Because the engine assigns the batch a contiguous sequence block and serializes
+        // writes, an incomplete batch is always the WAL tail, so truncating it preserves strict
+        // sequence continuity for everything before it -- and guarantees the batch is applied
+        // all-or-nothing (never a double-applied durable prefix on retry).
+        truncate_trailing_incomplete_batch(&mut pending);
+        if pending.is_empty() {
+            return Ok(());
+        }
 
-        // Single-barrier mode: replay config-driven eviction (feature_max_size trims) with the
-        // config that was effective at each record's WAL frontier. An entry stamped `after_seq`
-        // is effective for records with sequence > after_seq, so before executing a record we
-        // apply every not-yet-applied config entry with `after_seq < record.sequence`. This
-        // re-derives the exact historical trim -- no resurrection (default config would skip the
-        // trim) and no over-trim/loss (the latest config applied to an older record). Empty (and
-        // inert) off the flag.
-        let config_log: Vec<ConfigLogEntry> = if wal_single_barrier() {
-            self.config_log_entries(shard_id)
-        } else {
-            Vec::new()
-        };
+        // Replay config-driven eviction (feature_max_size trims) with the config that was
+        // effective at each record's WAL frontier. An entry stamped `after_seq` is effective for
+        // records with sequence > after_seq, so before executing a record we apply every
+        // not-yet-applied config entry with `after_seq < record.sequence`. This re-derives the
+        // exact historical trim -- no resurrection (default config would skip the trim) and no
+        // over-trim/loss (the latest config applied to an older record). Runs in every barrier
+        // mode now that the config-log is persisted unconditionally; empty (and inert) for a
+        // shard that never had a config change logged.
+        let config_log: Vec<ConfigLogEntry> = self.config_log_entries(shard_id);
         let mut config_cursor = 0usize;
 
         let _guard = WalReplayGuard::enter();
@@ -527,6 +538,10 @@ impl TemporalEngine {
             .write()
             .expect("admission lock poisoned")
             .remove(&AdmissionScope::Shard(request.shard_id));
+        // Drop this shard's hot-page spill redirects: on the next load the WAL replay re-derives
+        // the hot pages (and re-spills them as needed), so the live-path redirect map stays
+        // bounded across load/unload cycles.
+        hot_page_spill::clear_shard(request.shard_id);
         UnloadShardResponse {
             status: Status::ok(),
         }
@@ -655,5 +670,116 @@ impl TemporalEngine {
         {
             info.recovering = false;
         }
+    }
+}
+
+/// Truncate a trailing atomic batch that is missing its commit marker.
+///
+/// `pending` is the sorted, contiguous WAL tail about to be replayed. The last record is
+/// inspected: if it carries batch framing (`batch_id` + `batch_size`) and the batch is not fully
+/// present -- fewer than `batch_size` records for that id, or the terminal `batch_index ==
+/// batch_size` commit marker is absent -- every record of that trailing batch is dropped. A
+/// complete batch (all records present, commit marker last) is kept; a non-batch tail record is
+/// left untouched. Interior batches are always complete (an incomplete batch can only be the
+/// crash tail), so this never opens a hole before a surviving record.
+fn truncate_trailing_incomplete_batch(pending: &mut Vec<WriteAheadLogRecord>) {
+    let Some(last) = pending.last() else {
+        return;
+    };
+    let Some((batch_id, batch_size)) = last
+        .metadata
+        .as_ref()
+        .and_then(|meta| meta.batch_id.zip(meta.batch_size))
+    else {
+        return;
+    };
+    // Walk back over the contiguous run of records sharing this batch id.
+    let mut first_index = pending.len();
+    let mut count = 0u32;
+    let mut commit_marker_present = false;
+    for (index, record) in pending.iter().enumerate().rev() {
+        let record_batch = record.metadata.as_ref().and_then(|meta| meta.batch_id);
+        if record_batch != Some(batch_id) {
+            break;
+        }
+        first_index = index;
+        count = count.saturating_add(1);
+        if record
+            .metadata
+            .as_ref()
+            .and_then(|meta| meta.batch_index)
+            == Some(batch_size)
+        {
+            commit_marker_present = true;
+        }
+    }
+    if count < batch_size || !commit_marker_present {
+        pending.truncate(first_index);
+    }
+}
+
+#[cfg(test)]
+mod batch_truncation_tests {
+    use super::truncate_trailing_incomplete_batch;
+    use crate::types::Command;
+    use crate::wal::{WriteAheadLogRecord, WriteAheadLogRecordMetadata};
+
+    fn rec(seq: u64, batch: Option<(u64, u32, u32)>) -> WriteAheadLogRecord {
+        let command = Command::StringSet {
+            key: format!("k{seq}"),
+            value: Vec::new(),
+        };
+        let mut metadata = WriteAheadLogRecordMetadata::single_command(&command);
+        if let Some((id, size, index)) = batch {
+            metadata.batch_id = Some(id);
+            metadata.batch_size = Some(size);
+            metadata.batch_index = Some(index);
+        }
+        WriteAheadLogRecord {
+            shard_id: 1,
+            sequence: seq,
+            command,
+            metadata: Some(metadata),
+        }
+    }
+
+    #[test]
+    fn keeps_complete_trailing_batch() {
+        let mut pending = vec![rec(1, None), rec(2, Some((7, 2, 1))), rec(3, Some((7, 2, 2)))];
+        truncate_trailing_incomplete_batch(&mut pending);
+        assert_eq!(pending.len(), 3);
+    }
+
+    #[test]
+    fn drops_incomplete_trailing_batch_missing_commit_marker() {
+        // batch id 7 has size 3 but only indexes 1 and 2 persisted (commit marker 3 lost to a
+        // crash before the barrier) -> the whole batch is dropped, all-or-nothing.
+        let mut pending = vec![rec(1, None), rec(2, Some((7, 3, 1))), rec(3, Some((7, 3, 2)))];
+        truncate_trailing_incomplete_batch(&mut pending);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].sequence, 1);
+    }
+
+    #[test]
+    fn keeps_non_batch_tail() {
+        let mut pending = vec![rec(1, None), rec(2, None)];
+        truncate_trailing_incomplete_batch(&mut pending);
+        assert_eq!(pending.len(), 2);
+    }
+
+    #[test]
+    fn keeps_complete_batch_before_non_batch_tail() {
+        let mut pending = vec![rec(1, Some((7, 2, 1))), rec(2, Some((7, 2, 2))), rec(3, None)];
+        truncate_trailing_incomplete_batch(&mut pending);
+        assert_eq!(pending.len(), 3);
+    }
+
+    #[test]
+    fn drops_single_persisted_record_of_larger_batch() {
+        // Only the first record of a 3-record batch survived the crash.
+        let mut pending = vec![rec(1, None), rec(2, Some((9, 3, 1)))];
+        truncate_trailing_incomplete_batch(&mut pending);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].sequence, 1);
     }
 }

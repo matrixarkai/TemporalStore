@@ -324,16 +324,39 @@ impl TemporalEngine {
         }
         if mutated_any {
             refresh_bucket_runtime_flags(shard);
-            // Every
-            // write records a WAL entry before any page is written.
-            // async_storage only changes whether the commit BLOCKS: sync -> fsync,
-            // async (or bulk backfill) -> buffered, no fsync (a fire-and-forget
-            // commit). Mirrors the single-command execute path.
+            // Every write records a WAL entry before any page is written. async_storage only
+            // changes whether the commit BLOCKS: sync -> fsync, async (or bulk backfill) ->
+            // buffered, no fsync (a fire-and-forget commit).
+            //
+            // The batch is logged as ONE crash-atomic group: all commands are appended under a
+            // single batch id and made durable by a SINGLE barrier (not a per-command fsync
+            // loop). A crash mid-batch therefore leaves an incomplete trailing batch that replay
+            // drops wholesale -- so a retry never double-applies a durable PREFIX of the batch,
+            // which for a non-idempotent / time-unspecified command (FeatureAppend occur_time=0 ->
+            // a fresh now on each apply) would otherwise duplicate points.
             let sync = !config.async_storage && !bulk_ingest_mode();
-            for command in wal_commands {
-                let _ = self
-                    .wal_store
-                    .append_with_sync(request.shard_id, command, sync);
+            if let Err(err) =
+                self.wal_store
+                    .append_batch_atomic(request.shard_id, wal_commands, sync)
+            {
+                if sync {
+                    // A durable batch commit that failed is not durable; surface it rather than
+                    // acking undurable writes (mirrors the single-command execute path).
+                    return BatchExecuteResponse {
+                        status: Status::error(
+                            "wal_commit_failed",
+                            format!("durable WAL batch commit failed: {err}"),
+                        ),
+                        responses,
+                    };
+                } else {
+                    tracing::error!(
+                        shard_id = request.shard_id,
+                        error = %err,
+                        "async WAL batch append failed: acked writes are NOT durable and will be \
+                         lost on a crash before the next flush"
+                    );
+                }
             }
             // Page/index materialization stays deferred to the background dump in
             // async and bulk modes (index_log/persist already no-op under bulk).
