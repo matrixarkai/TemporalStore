@@ -2101,4 +2101,135 @@ fn wal_recovery_rejects_ahead_of_storage_apply_fence() {
     );
 }
 
+/// Sets an env gate for the duration of a test and removes it on drop (even on panic), so a
+/// gated-behavior test never leaks its flag into the rest of the single-threaded suite.
+struct EnvFlagGuard {
+    name: &'static str,
+}
+
+impl EnvFlagGuard {
+    fn set(name: &'static str) -> Self {
+        std::env::set_var(name, "1");
+        Self { name }
+    }
+}
+
+impl Drop for EnvFlagGuard {
+    fn drop(&mut self) {
+        std::env::remove_var(self.name);
+    }
+}
+
+/// R3: a replica whose state machine has only APPLIED a prefix of what it has COMMITTED must
+/// not answer a follower read with that half-applied state as if it were fresh.
+#[test]
+fn r3_replica_with_applied_below_commit_does_not_serve_unapplied_as_fresh() {
+    let _guard = EnvFlagGuard::set("TS_RAFT_APPLIED_READ_SAFETY");
+    let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+    cluster
+        .propose(Command::StringSet {
+            key: "k".to_string(),
+            value: b"v1".to_vec(),
+        })
+        .unwrap();
+    // All voters have committed AND applied index 1 at this point.
+    assert_eq!(cluster.commit_index(3).unwrap(), 1);
+
+    // Simulate replica 3 having committed index 1 but only applied through 0 (apply lag).
+    cluster.set_applied_index_for_test(3, 0).unwrap();
+
+    // The read is rejected because applied_index (0) is below the leader's committed frontier.
+    let err = cluster
+        .read_from_replica(
+            3,
+            Command::StringGet {
+                key: "k".to_string(),
+            },
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            RaftError::ReplicaApplyLagging {
+                replica_id: 3,
+                replica_applied_index: 0,
+                required_index: 1,
+            }
+        ),
+        "expected ReplicaApplyLagging, got {err:?}"
+    );
+
+    // Once apply catches up to the committed frontier, the read is served normally.
+    cluster.set_applied_index_for_test(3, 1).unwrap();
+    assert_eq!(
+        cluster
+            .read_from_replica(
+                3,
+                Command::StringGet {
+                    key: "k".to_string(),
+                },
+            )
+            .unwrap(),
+        CommandResponse::Bytes {
+            value: Some(b"v1".to_vec())
+        }
+    );
+}
+
+/// R5: promotion goes through a durable per-term quorum vote round. A candidate that can only
+/// collect a minority of grants (its peers are partitioned away) cannot elect itself, so two
+/// disjoint partitions can never both promote a leader.
+#[test]
+fn r5_quorum_election_requires_majority_and_minority_cannot_elect() {
+    let _guard = EnvFlagGuard::set("TS_RAFT_QUORUM_ELECTION");
+    let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+
+    // Healthy quorum: node 2 collects a majority of grants and is promoted.
+    cluster.elect_leader(2).unwrap();
+    assert_eq!(cluster.leader_id(), 2);
+    let status = cluster.hard_state(2).unwrap();
+    assert_eq!(status.voted_for, Some(2));
+
+    // Partition away a majority: only node 1 remains reachable.
+    cluster.set_alive(2, false).unwrap();
+    cluster.set_alive(3, false).unwrap();
+    let err = cluster.elect_leader(1).unwrap_err();
+    assert!(
+        matches!(err, RaftError::NoMajority { live: 1, required: 2 }),
+        "a minority partition must not elect, got {err:?}"
+    );
+    // The lone reachable node did NOT install itself as leader.
+    assert_ne!(cluster.leader_id(), 1);
+}
+
+/// R4: a freshly elected leader must not serve a linearizable read-index until it has committed
+/// an entry in its own term — otherwise it could answer with stale state predating its
+/// leadership (the case a partitioned/just-superseded leader falls into).
+#[test]
+fn r4_new_leader_withholds_linearizable_read_until_committed_in_term() {
+    let _guard = EnvFlagGuard::set("TS_RAFT_LEADER_READY_BARRIER");
+    let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+
+    // Promote node 2 to a new term. It has not yet committed anything in that term.
+    cluster.elect_leader(2).unwrap();
+    assert_eq!(cluster.leader_id(), 2);
+
+    // The linearizable read-index is withheld: the leader is not yet ready.
+    let err = cluster.read_index(2).unwrap_err();
+    assert!(
+        matches!(err, RaftError::LeaderUnavailable),
+        "a not-yet-ready leader must withhold read-index, got {err:?}"
+    );
+
+    // Committing a write in the new term discharges the barrier; reads are then served.
+    cluster
+        .propose(Command::StringSet {
+            key: "k".to_string(),
+            value: b"v".to_vec(),
+        })
+        .unwrap();
+    let response = cluster.read_index(2).unwrap();
+    assert_eq!(response.leader_id, 2);
+}
+
 

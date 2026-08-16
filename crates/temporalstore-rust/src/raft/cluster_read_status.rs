@@ -55,6 +55,17 @@ impl RaftCluster {
                 leader_commit_index,
             });
         }
+        // R3: committed is not the right freshness bar — a replica can hold
+        // commit_index == leader_commit while its state machine has only applied a prefix of
+        // that (applied_index < commit_index), which would serve HALF-APPLIED state as fresh.
+        // Gate the read on applied_index reaching the leader's committed frontier.
+        if raft_applied_read_safety_on() && node.applied_index < leader_commit_index {
+            return Err(RaftError::ReplicaApplyLagging {
+                replica_id: node_id,
+                replica_applied_index: node.applied_index,
+                required_index: leader_commit_index,
+            });
+        }
         Ok(node
             .engine
             .execute(ExecuteRequest {
@@ -114,6 +125,27 @@ impl RaftCluster {
                 .read_safety_state
                 .lease_read_requests
                 .saturating_add(1);
+        }
+        // R4: withhold read-index/lease reads on a leader that has not yet committed an entry in
+        // its own term. A leader freshly elected (or one that has just superseded a partitioned
+        // predecessor) has not established its commit point until it commits in-term, so serving
+        // now risks returning stale linearizable state.
+        if raft_leader_ready_barrier_on()
+            && node_id == inner.leader_id
+            && !inner.leader_has_committed_current_term()
+        {
+            inner.read_safety_state.read_index_rejected = inner
+                .read_safety_state
+                .read_index_rejected
+                .saturating_add(1);
+            if lease_read {
+                inner.read_safety_state.lease_read_rejected = inner
+                    .read_safety_state
+                    .lease_read_rejected
+                    .saturating_add(1);
+            }
+            inner.persist_configured_wal()?;
+            return Err(RaftError::LeaderUnavailable);
         }
         let status = inner.status();
         let Some(node) = inner.nodes.get(&node_id) else {
@@ -602,5 +634,22 @@ impl RaftCluster {
             .get(&node_id)
             .ok_or(RaftError::NodeNotFound(node_id))?
             .commit_index)
+    }
+
+    /// Test-only: rewind a node's `applied_index` (below its `commit_index`) to reproduce a
+    /// replica that has COMMITTED but not yet APPLIED a prefix — the R3 half-applied read case.
+    #[cfg(test)]
+    pub(crate) fn set_applied_index_for_test(
+        &self,
+        node_id: RaftNodeId,
+        applied_index: u64,
+    ) -> Result<(), RaftError> {
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        let node = inner
+            .nodes
+            .get_mut(&node_id)
+            .ok_or(RaftError::NodeNotFound(node_id))?;
+        node.applied_index = applied_index;
+        Ok(())
     }
 }

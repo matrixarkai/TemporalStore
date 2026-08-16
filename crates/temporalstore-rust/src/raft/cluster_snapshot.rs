@@ -797,8 +797,23 @@ impl RaftCluster {
             }
             node.current_term = node.current_term.max(snapshot.last_included_term);
             node.commit_index = snapshot.last_included_index;
-            node.log
-                .retain(|entry| entry.index > snapshot.last_included_index);
+            // R8 (§7): only retain the log tail past the snapshot boundary if the local entry
+            // AT the boundary index term-matches the snapshot. If it is absent or from a
+            // divergent term, the entries following it may belong to an uncommitted, superseded
+            // branch — discard the entire log rather than fold a divergent tail onto the
+            // snapshot's state.
+            let boundary_matches = node
+                .log
+                .iter()
+                .find(|entry| entry.index == snapshot.last_included_index)
+                .map(|entry| entry.term == snapshot.last_included_term)
+                .unwrap_or(false);
+            if raft_snapshot_boundary_truncate_on() && !boundary_matches {
+                node.log.clear();
+            } else {
+                node.log
+                    .retain(|entry| entry.index > snapshot.last_included_index);
+            }
             node.applied.clear();
             node.applied
                 .extend(snapshot.entries.iter().map(|entry| entry.index));
