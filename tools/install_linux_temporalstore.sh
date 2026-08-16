@@ -240,6 +240,16 @@ for name in matrixark_rust_metaserver matrixark_rust_datanode matrixark_rust_pro
   printf '%s -> %s\n' "$name" "$bin_dir/$name"
 done
 
+step "Install centralized config + launcher"
+mkdir -p "$install_dir/config" "$install_dir/scripts" "$install_dir/tools"
+install -m 0755 "$repo/scripts/with_config.sh" "$install_dir/scripts/with_config.sh"
+install -m 0755 "$repo/tools/matrixark_load_config.py" "$install_dir/tools/matrixark_load_config.py"
+if [[ -f "$install_dir/config/temporalstore.toml" ]]; then
+  echo "keeping existing $install_dir/config/temporalstore.toml"
+else
+  install -m 0644 "$repo/config/temporalstore.toml" "$install_dir/config/temporalstore.toml"
+fi
+
 write_env_file() {
   cat > "$install_dir/temporalstore.env" <<EOF
 TEMPORALSTORE_INSTALL_DIR=$install_dir
@@ -268,7 +278,7 @@ Description=Rust TemporalStore metaserver
 
 [Service]
 EnvironmentFile=$install_dir/temporalstore.env
-ExecStart=$bin_dir/matrixark_rust_metaserver
+ExecStart=$install_dir/scripts/with_config.sh $install_dir/config/temporalstore.toml $bin_dir/matrixark_rust_metaserver
 Restart=on-failure
 RestartSec=2
 
@@ -282,7 +292,7 @@ After=temporalstore-rust-metaserver.service
 
 [Service]
 EnvironmentFile=$install_dir/temporalstore.env
-ExecStart=$bin_dir/matrixark_rust_datanode
+ExecStart=$install_dir/scripts/with_config.sh $install_dir/config/temporalstore.toml $bin_dir/matrixark_rust_datanode
 Restart=on-failure
 RestartSec=2
 
