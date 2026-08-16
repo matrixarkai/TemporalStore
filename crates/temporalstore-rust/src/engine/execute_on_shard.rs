@@ -581,13 +581,25 @@ pub(crate) fn execute_on_shard(
             start_ms,
             end_ms,
             count,
-        } => cached_response(
-            cache,
-            CacheKey::feature_query(shard_id, &key, start_ms, end_ms, count),
-            || {
-                let points = shard
-                    .features
-                    .get(&key)
+        } => {
+            // Apply lazy expiry before serving, matching FeatureAggQuery/SequenceQuery and
+            // every sibling read: a key past its deadline but not yet swept must read empty,
+            // otherwise FeatureQuery and FeatureAggQuery disagree on the same expired key.
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate_record(shard_id, "feature", &key);
+                return ExecuteOutcome {
+                    response: CommandResponse::FeaturePoints { points: Vec::new() },
+                    mutated,
+                };
+            }
+            cached_response(
+                cache,
+                CacheKey::feature_query(shard_id, &key, start_ms, end_ms, count),
+                || {
+                    let points = shard
+                        .features
+                        .get(&key)
                     .map(|series| {
                         let mut page_cache = HashMap::new();
                         // feature_append_keeps_oversized_single_timestamped_value_readable:
@@ -612,9 +624,10 @@ pub(crate) fn execute_on_shard(
                             .collect()
                     })
                     .unwrap_or_default();
-                CommandResponse::FeaturePoints { points }
-            },
-        ),
+                    CommandResponse::FeaturePoints { points }
+                },
+            )
+        }
         Command::FeatureQueryFiltered {
             key,
             start_ms,
@@ -622,6 +635,17 @@ pub(crate) fn execute_on_shard(
             count,
             filters,
         } => {
+            // Apply lazy expiry before serving, matching FeatureAggQuery/SequenceQuery and
+            // every sibling read: an expired-but-unswept key must read empty so filtered and
+            // aggregate reads stay consistent with each other on the same key.
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate_record(shard_id, "feature", &key);
+                return ExecuteOutcome {
+                    response: CommandResponse::FeaturePoints { points: Vec::new() },
+                    mutated,
+                };
+            }
             let limit = count.unwrap_or(feature_max_size).min(feature_max_size);
             let points = shard
                 .features

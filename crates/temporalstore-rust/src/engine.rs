@@ -37,6 +37,7 @@ mod command_validation;
 // which previously kept a drifted subset that mis-classified context/control-state writes
 // as reads -> lifecycle-write-barrier bypass + missing dump scheduling).
 pub(crate) use command_validation::{command_object_keys, is_write_command};
+pub(crate) use storage_manager_cycle::cross_shard_reclaim_guard_enabled;
 mod storage_bucket_internals;
 mod compaction;
 mod storage_reporting;

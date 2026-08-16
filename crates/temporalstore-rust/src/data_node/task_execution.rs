@@ -127,7 +127,15 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
     }
     if status.ok {
         if let Some(retain_from_page_slab_id) = request.retain_page_slabs_from_id {
-            let mut live_page_slab_ids = inner.engine.live_page_slab_ids(request.shard_id);
+            // One engine shares a single page_store across every shard it hosts, so a slab can
+            // hold pages from multiple shards. Retain slabs live in ANY loaded shard, not just
+            // this request's shard; a per-shard live set would delete another shard's live pages.
+            let mut live_page_slab_ids =
+                if crate::engine::cross_shard_reclaim_guard_enabled() {
+                    inner.engine.live_page_slab_ids_all_shards()
+                } else {
+                    inner.engine.live_page_slab_ids(request.shard_id)
+                };
             // Retain any page slab still referenced by a durable bucket-dump manifest. The
             // operator /gc RPC must not delete a slab a retained manifest needs: a lagging
             // follower's replay or a snapshot-install reads it, and deleting it makes the
