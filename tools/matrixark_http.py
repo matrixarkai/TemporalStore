@@ -17,6 +17,22 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import *
     from matrixark_mcp_core import _mcp_debug_log, adapter_ensure_backend_ready
 
+# Gateway default ceiling for the retrieve token budget when a caller omits
+# max_context_tokens. Historically hardcoded to 10000 (far below the backend
+# DEFAULT_MAX_CONTEXT_TOKENS=500000), which silently under-returned on deep/
+# broad queries. Now env-tunable and defaulted to the backend default. This is
+# a CEILING, not a target: the pack still fills only to relevant refs.
+try:
+    from tools.matrixark_mcp_runtime_config import DEFAULT_MAX_CONTEXT_TOKENS as _BACKEND_DEFAULT_MAX_CONTEXT_TOKENS
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    try:
+        from matrixark_mcp_runtime_config import DEFAULT_MAX_CONTEXT_TOKENS as _BACKEND_DEFAULT_MAX_CONTEXT_TOKENS
+    except Exception:
+        _BACKEND_DEFAULT_MAX_CONTEXT_TOKENS = 500000
+GATEWAY_DEFAULT_MAX_CONTEXT_TOKENS = int(
+    os.environ.get("MATRIXARK_GATEWAY_DEFAULT_MAX_CONTEXT_TOKENS", str(_BACKEND_DEFAULT_MAX_CONTEXT_TOKENS))
+)
+
 def _coerce_http_value(value: str) -> Any:
     lowered = value.strip().lower()
     if lowered in {"true", "false"}:
@@ -234,7 +250,7 @@ def _agent_hook_call(server: Any, body: Json) -> Json:
         retrieve_args: Json = {
             **args_common,
             "query": str(body.get("query") or text or event)[:500],
-            "max_context_tokens": int(body.get("max_context_tokens") or normalized.get("max_context_tokens") or 10000),
+            "max_context_tokens": int(body.get("max_context_tokens") or normalized.get("max_context_tokens") or GATEWAY_DEFAULT_MAX_CONTEXT_TOKENS),
             "audit_mode": str(body.get("audit_mode") or normalized.get("audit_mode") or "telemetry_only"),
             "audit_sample_rate": float(body.get("audit_sample_rate") or normalized.get("audit_sample_rate") or 0.0),
             "metadata": retrieve_metadata,
