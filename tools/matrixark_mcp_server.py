@@ -79,6 +79,7 @@ try:
         MatrixArkServerRequestPolicyMixin,
     )
     from tools.matrixark_mcp_schemas import TOOLS
+    from tools.matrixark_mcp_stream_materialize import flush_due_scopes
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
         MATRIXARK_ALLOW_LOCAL_BACKEND,
@@ -132,6 +133,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         MatrixArkServerRequestPolicyMixin,
     )
     from matrixark_mcp_schemas import TOOLS
+    from matrixark_mcp_stream_materialize import flush_due_scopes
 
 
 __all__ = [
@@ -163,6 +165,20 @@ __all__ = [
     "select_token_budgeted_refs",
     "validate_mcp_backend_policy",
 ]
+
+
+# Background stream-materializer: proactively drains SCHEDULED idle-commit tasks so a
+# plain (non-finalized) streaming ingest becomes retrievable on its own after a short
+# debounce, instead of waiting for a retrieve-time flush to happen to run. The loop drains
+# a per-scope registry (populated at ingest time) with the SAME backend-native flush the
+# retrieve path uses (`pre_retrieval_idle_commit_flush` over the rust-native, SCOPED
+# `idle_commit_task_records`) -- never Python `read_all`, and never a full-store scan. It is
+# started per worker process and wired into the gateway lifespan (see
+# matrixark_v1_gateway.create_v1_app / the ASGI lifespan handler). 0 disables the loop.
+STREAM_MATERIALIZE_INTERVAL_MS = int(os.environ.get("MATRIXARK_STREAM_MATERIALIZE_INTERVAL_MS", "1500"))
+# Hard cap on tracked pending scopes so a slow/stuck backend cannot grow the registry without
+# bound; the durable scheduled-task record + retrieve-time flush remain the backstop.
+STREAM_MATERIALIZE_MAX_SCOPES = int(os.environ.get("MATRIXARK_STREAM_MATERIALIZE_MAX_SCOPES", "20000"))
 
 
 try:
@@ -255,6 +271,13 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
         self._summary_thread: threading.Thread | None = None
         self._summary_refresh_interval_s = max(0.0, SUMMARY_REFRESH_INTERVAL_MS / 1000.0)
         self._summary_refresh_limit = max(1, SUMMARY_REFRESH_LIMIT)
+        self._stream_materialize_worker_started = False
+        self._stream_materialize_stop = threading.Event()
+        self._stream_materialize_thread: threading.Thread | None = None
+        self._stream_materialize_interval_s = max(0.0, STREAM_MATERIALIZE_INTERVAL_MS / 1000.0)
+        # scope_key -> (scope_dict, due_ms). Populated at ingest time; drained by the loop.
+        self._stream_materialize_registry: dict[str, tuple[Json, int]] = {}
+        self._stream_materialize_registry_lock = threading.Lock()
         self._operation_backpressure_timeout_ms = max(0, int(os.environ.get("MATRIXARK_BACKPRESSURE_TIMEOUT_MS", "100")))
         self._retrieve_shed_cooldown_ms = max(0, int(os.environ.get("MATRIXARK_RETRIEVE_SHED_COOLDOWN_MS", "0")))
         self._retrieve_shed_until_perf = 0.0
@@ -291,10 +314,87 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
                 self.metrics.observe_operation("summary_refresh", "error", 0.0, timeout=is_retryable_temporalstore_error(exc))
                 _mcp_debug_log(f"matrixark summary refresh loop failed: {exc}")
 
+    def ensure_stream_materialize_worker(self) -> None:
+        """Start the background stream-materializer loop (idempotent, per-process).
+
+        Modelled on `_ensure_summary_worker`. The gateway calls this once per uvicorn worker
+        (from `create_v1_app` and on ASGI `lifespan.startup`); the loop proactively drains
+        SCHEDULED idle-commit tasks so non-finalized streaming ingests become retrievable on
+        their own. It is a no-op when the interval is 0 or the backend adapter cannot serve the
+        native `idle_commit_task_records` scan (so we never fall back to Python `read_all`).
+        """
+        if self._stream_materialize_worker_started or self._stream_materialize_interval_s <= 0:
+            return
+        if not callable(getattr(self.adapter, "idle_commit_task_records", None)):
+            _mcp_debug_log("matrixark stream materializer skipped: adapter lacks native idle_commit_task_records")
+            return
+        self._stream_materialize_worker_started = True
+        self._stream_materialize_stop.clear()
+        self._stream_materialize_thread = threading.Thread(
+            target=self._stream_materialize_loop, name="matrixark-stream-materializer", daemon=True
+        )
+        self._stream_materialize_thread.start()
+        _mcp_debug_log(f"matrixark stream materializer started interval_ms={STREAM_MATERIALIZE_INTERVAL_MS}")
+
+    def register_stream_materialize_scope(self, scope: Json, due_ms: int) -> None:
+        """Record a scope whose streaming-ingest debounce should be flushed by the loop.
+
+        Called by the gateway right after a plain (non-finalize) `/v1/ingest`. Each scope is
+        owned by the worker process that handled the ingest, so the loop only ever runs cheap
+        SCOPED flushes and no cross-worker coordination is needed. Losing an entry (worker
+        crash) is safe: the durable scheduled-task record + retrieve-time flush still commit it.
+        """
+        if not self._stream_materialize_worker_started:
+            return
+        try:
+            key = json.dumps(scope or {}, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            key = str(scope)
+        with self._stream_materialize_registry_lock:
+            registry = self._stream_materialize_registry
+            existing = registry.get(key)
+            # Keep the EARLIEST due time so an idle scope is not perpetually deferred.
+            if existing is None or int(due_ms) < int(existing[1]):
+                registry[key] = (scope or {}, int(due_ms))
+            if len(registry) > STREAM_MATERIALIZE_MAX_SCOPES:
+                oldest = min(registry, key=lambda k: registry[k][1])
+                registry.pop(oldest, None)
+
+    def _stream_materialize_loop(self) -> None:
+        while not self._stream_materialize_stop.wait(self._stream_materialize_interval_s):
+            try:
+                now = now_ms()
+                with self._stream_materialize_registry_lock:
+                    due_keys = [k for k, (_scope, due_ms) in self._stream_materialize_registry.items() if due_ms <= now]
+                    due_scopes = [self._stream_materialize_registry.pop(k)[0] for k in due_keys]
+                if not due_scopes:
+                    continue
+                started_perf = time.perf_counter()
+                result = flush_due_scopes(self.adapter, due_scopes)
+                self.metrics.observe_operation("stream_materialize", "ok", (time.perf_counter() - started_perf) * 1000.0)
+                committed = int(result.get("committed_event_count") or 0)
+                if committed:
+                    self.access.append_audit(
+                        "context.stream_materialize.background",
+                        {"account_id": "system", "tenant_id": "system", "user_id": "stream_materializer"},
+                        status="ok",
+                        details={
+                            "committed_event_count": committed,
+                            "due_scope_count": int(result.get("due_scope_count") or 0),
+                            "interval_ms": STREAM_MATERIALIZE_INTERVAL_MS,
+                        },
+                    )
+            except Exception as exc:
+                self.metrics.observe_operation("stream_materialize", "error", 0.0, timeout=is_retryable_temporalstore_error(exc))
+                _mcp_debug_log(f"matrixark stream materialize loop failed: {exc}")
+
     def close(self, *, timeout_s: float = 5.0) -> None:
         self._summary_stop.set()
+        self._stream_materialize_stop.set()
         if self._summary_thread is not None:
             self._summary_thread.join(timeout=max(0.0, timeout_s))
+        if self._stream_materialize_thread is not None:
+            self._stream_materialize_thread.join(timeout=max(0.0, timeout_s))
         adapter_close = getattr(self.adapter, "close", None)
         if callable(adapter_close):
             adapter_close(timeout_s=timeout_s)
