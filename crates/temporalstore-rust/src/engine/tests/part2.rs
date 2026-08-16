@@ -865,6 +865,222 @@ fn async_storage_string_write_stays_on_hot_memory_path() {
 }
 
 #[test]
+fn async_hot_page_survives_memory_eviction_via_spill() {
+    // Regression for the log-backed hot-page read-as-missing bug (gap P1): under async_storage a
+    // write lives ONLY in the memory tier at a synthetic hot-page address. If the memory-only
+    // entry is evicted before the next dump, a read used to miss the cache, hit a non-existent
+    // slab file, and return value:None for an ACKED write. The eviction handler now spills the
+    // evicted hot page to a real slab and a hot-address cache miss resolves the redirect, so the
+    // value survives eviction on the live path (no reload needed).
+    let dir = tempfile::tempdir().unwrap();
+    // Deliberately tiny memory tier so the flood below forces capacity eviction of the target.
+    let engine = TemporalEngine::with_local_dirs(
+        2048,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config {
+                    version: 2,
+                    async_storage: true,
+                    ..Config::default()
+                },
+            })
+            .ok
+    );
+
+    // Async write -> memory-only hot page, nothing in the block store yet.
+    let target_value = b"durable-async-value-that-must-survive-eviction".to_vec();
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "target".to_string(),
+                    value: target_value.clone(),
+                },
+            })
+            .status
+            .ok
+    );
+    assert_eq!(engine.block_store().stats().writes, 0);
+
+    // Flood the memory tier with far more async hot pages than it can hold, forcing the target's
+    // page to be evicted (and spilled to a real slab by the eviction handler).
+    for i in 0..400 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("filler-{i}"),
+                value: vec![b'x'; 96],
+            },
+        });
+    }
+
+    // At least one hot page must have spilled to a durable slab (proves the handler fired).
+    assert!(
+        engine.block_store().stats().writes > 0,
+        "evicted hot pages must spill to a durable slab"
+    );
+
+    // Drop EVERY cache tier for the shard so the only surviving copy of the target is the durable
+    // spilled slab (plus the WAL). This defeats the cache's own cross-tier retention and forces
+    // the read to resolve through the hot-page spill redirect -- the path this fix adds.
+    let _ = engine.cache().invalidate_shard(1);
+
+    let reads_before = engine.block_store().stats().reads;
+    // The acked write must still read back as its value -- resolved via the spill redirect + a
+    // durable slab read, NOT as value:None.
+    let read = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "target".to_string(),
+        },
+    });
+    assert_eq!(
+        read.response,
+        CommandResponse::Bytes {
+            value: Some(target_value)
+        },
+        "an acked async write must not read as missing after its hot page is evicted"
+    );
+    // The value came from the durable spilled slab, confirming the redirect fallback was used.
+    assert!(
+        engine.block_store().stats().reads > reads_before,
+        "the evicted target must be served from the durable spilled slab"
+    );
+}
+
+fn set_async_config(engine: &TemporalEngine, shard_id: ShardId) {
+    assert!(
+        engine
+            .set_config(SetConfigRequest {
+                shard_id,
+                config: Config {
+                    version: 2,
+                    async_storage: true,
+                    ..Config::default()
+                },
+            })
+            .ok
+    );
+}
+
+#[test]
+fn atomic_batch_survives_restart_when_complete() {
+    // Positive control for gap E3: a fully-persisted atomic batch replays in full on restart.
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine =
+        TemporalEngine::with_local_dirs(1024 * 1024, dir.path().join("cache-a"), &page_dir, &index_dir);
+    engine.load_shard(1);
+    set_async_config(&engine, 1);
+    let batch = engine.batch_execute(BatchExecuteRequest {
+        shard_id: 1,
+        commands: vec![
+            Command::StringSet { key: "b0".to_string(), value: b"v0".to_vec() },
+            Command::StringSet { key: "b1".to_string(), value: b"v1".to_vec() },
+            Command::StringSet { key: "b2".to_string(), value: b"v2".to_vec() },
+        ],
+    });
+    assert!(batch.status.ok);
+    drop(engine);
+
+    let restarted =
+        TemporalEngine::with_local_dirs(1024 * 1024, dir.path().join("cache-b"), &page_dir, &index_dir);
+    restarted.load_shard(1);
+    for (key, value) in [("b0", "v0"), ("b1", "v1"), ("b2", "v2")] {
+        let read = restarted.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet { key: key.to_string() },
+        });
+        assert_eq!(
+            read.response,
+            CommandResponse::Bytes { value: Some(value.as_bytes().to_vec()) },
+            "complete batch key {key} must survive restart"
+        );
+    }
+}
+
+#[test]
+fn atomic_batch_is_all_or_nothing_when_commit_marker_lost() {
+    // Gap E3: a crash between the batch's buffered appends and its single durability barrier can
+    // leave a partial suffix on disk. Simulate that by dropping the batch's final (commit-marker)
+    // WAL line; on restart the WHOLE batch must be discarded -- never a partially-applied prefix
+    // that a retry would double-apply.
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine =
+        TemporalEngine::with_local_dirs(1024 * 1024, dir.path().join("cache-a"), &page_dir, &index_dir);
+    engine.load_shard(1);
+    set_async_config(&engine, 1);
+    // A standalone durable write before the batch, to prove only the batch is dropped.
+    assert!(engine
+        .execute_durable(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet { key: "keep".to_string(), value: b"kept".to_vec() },
+        })
+        .status
+        .ok);
+    let batch = engine.batch_execute(BatchExecuteRequest {
+        shard_id: 1,
+        commands: vec![
+            Command::StringSet { key: "b0".to_string(), value: b"v0".to_vec() },
+            Command::StringSet { key: "b1".to_string(), value: b"v1".to_vec() },
+            Command::StringSet { key: "b2".to_string(), value: b"v2".to_vec() },
+        ],
+    });
+    assert!(batch.status.ok);
+    drop(engine);
+
+    // Simulate the lost commit marker: drop the last WAL line (batch_index == batch_size).
+    let wal_path = index_dir.join("wals").join("shard-1.wal.jsonl");
+    let contents = std::fs::read_to_string(&wal_path).expect("wal file should exist");
+    let mut lines: Vec<&str> = contents.lines().collect();
+    assert!(lines.len() >= 4, "expected keep + 3 batch records, got {}", lines.len());
+    lines.pop(); // drop the batch commit-marker record
+    let mut truncated = lines.join("\n");
+    truncated.push('\n');
+    std::fs::write(&wal_path, truncated).expect("rewrite wal");
+
+    let restarted =
+        TemporalEngine::with_local_dirs(1024 * 1024, dir.path().join("cache-b"), &page_dir, &index_dir);
+    restarted.load_shard(1);
+
+    // The pre-batch durable write survives.
+    assert_eq!(
+        restarted
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet { key: "keep".to_string() },
+            })
+            .response,
+        CommandResponse::Bytes { value: Some(b"kept".to_vec()) }
+    );
+    // No member of the incomplete batch is applied -- not even the durable prefix (b0, b1).
+    for key in ["b0", "b1", "b2"] {
+        assert_eq!(
+            restarted
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet { key: key.to_string() },
+                })
+                .response,
+            CommandResponse::Bytes { value: None },
+            "incomplete-batch key {key} must NOT be applied"
+        );
+    }
+}
+
+
+#[test]
 fn durable_execute_overrides_async_storage_for_raft_local_file_path() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
