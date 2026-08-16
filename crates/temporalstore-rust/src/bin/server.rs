@@ -46,7 +46,8 @@ use temporalstore_rust::{
     ProductionRaftRuntime, ProductionRaftRuntimeOptions, RaftConfig, RaftControlLeadershipRequest,
     RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions,
     RequestController, ScanStreamRequest, SchedulerLifecycleToken, SetConfigRequest,
-    SharedStoreReplicator, SharedStoreWalEntry, StorageBackend, WriteAheadLogRecord,
+    SharedStoreReplicationError, SharedStoreReplicator, SharedStoreWalEntry, StorageBackend,
+    WriteAheadLogRecord,
     BucketDumpManifest, StorageCacheInvalidateBucketRequest, StorageLifecycleRequest,
     StorageProductionReadinessRequest, StreamReadRequest, UnloadShardRequest,
 };
@@ -987,14 +988,42 @@ fn replay_shard_from_shared(
     let Some(replicator) = replicator else {
         return;
     };
-    match runtime.block_on(replicator.replay_wal(shard_id, 0, engine)) {
+    // Reference-parity lazy recovery: when a shared checkpoint exists, install the served
+    // index + a lazy slab address map (no slab bytes) and replay only the WAL tail
+    // after the checkpoint. Old pages are read lazily through the block store's
+    // shared read-through on first access. With no checkpoint, fall back to the
+    // full WAL replay from 0 (backward compatible with WAL-only mirrors).
+    let after_wal_index =
+        match runtime.block_on(replicator.restore_index_and_page_addresses(
+            shard_id,
+            engine,
+            &engine.block_store(),
+        )) {
+            Ok(manifest) => {
+                info!(
+                    shard_id,
+                    checkpoint_id = %manifest.checkpoint_id,
+                    checkpoint_wal_index = manifest.checkpoint_wal_index,
+                    page_slabs = manifest.page_slabs.len(),
+                    "restored shard index and lazy page addresses from shared checkpoint"
+                );
+                manifest.checkpoint_wal_index
+            }
+            Err(SharedStoreReplicationError::CheckpointNotFound(_)) => 0,
+            Err(err) => {
+                warn!(shard_id, %err, "shared checkpoint restore failed; replaying full shared WAL");
+                0
+            }
+        };
+    match runtime.block_on(replicator.replay_wal(shard_id, after_wal_index, engine)) {
         Ok(report) => {
             if report.applied > 0 {
                 info!(
                     shard_id,
                     records = report.applied,
                     wal_index = report.last_wal_index,
-                    "replayed shard from shared storage"
+                    after_wal_index,
+                    "replayed shard WAL tail from shared storage"
                 );
             }
         }
@@ -1068,10 +1097,30 @@ fn publish_shard_checkpoint(
         published += 1;
         last_wal_index = record.sequence;
     }
+    // Publish a real metadata+slab checkpoint at the current last-applied WAL index so
+    // a future owner can lazily restore (index + slab addresses) and replay only the
+    // WAL tail after this index, rather than replaying the full history. Reuses the
+    // shared WAL mirrored above for the tail.
+    let checkpoint = match runtime.block_on(replicator.publish_checkpoint(
+        shard_id,
+        last_wal_index,
+        engine,
+        &engine.block_store(),
+    )) {
+        Ok(manifest) => manifest,
+        Err(err) => {
+            return PublishShardCheckpointResponse {
+                status: Status::error("publish_checkpoint_failed", err.to_string()),
+                checkpoint_id: None,
+                page_slab_count: published,
+                checkpoint_wal_index: last_wal_index,
+            };
+        }
+    };
     PublishShardCheckpointResponse {
         status: Status::ok(),
-        checkpoint_id: None,
-        page_slab_count: published,
+        checkpoint_id: Some(checkpoint.checkpoint_id),
+        page_slab_count: checkpoint.page_slabs.len(),
         checkpoint_wal_index: last_wal_index,
     }
 }

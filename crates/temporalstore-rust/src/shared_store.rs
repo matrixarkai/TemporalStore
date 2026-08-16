@@ -10,10 +10,12 @@ use bytes::Bytes;
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use temporalstore_snapshot::object_store::{AppendBlobReceipt, ObjectStore, ObjectStoreError};
+use temporalstore_snapshot::object_store::{
+    AppendBlobReceipt, FileObjectStore, ObjectStore, ObjectStoreError,
+};
 use thiserror::Error;
 
-use crate::block_store::{BlockStoreError, LocalBlockStore};
+use crate::block_store::{BlockStoreError, LocalBlockStore, SharedSlabSource};
 use crate::engine::TemporalEngine;
 use crate::sdk::{self, v1};
 use crate::types::{Command, ExecuteRequest, ShardId, Status};
@@ -122,6 +124,12 @@ pub struct SharedStoreCheckpointManifest {
     pub index_sha256: String,
     #[serde(alias = "page_segments")]
     pub page_slabs: Vec<SharedStorePageSlab>,
+    /// Next free block page id at checkpoint time. A lazy restore advances the fresh
+    /// owner's page-id counter past this floor so replayed/new writes never reuse a
+    /// page id that a lazily-fetched checkpoint slab still carries. Defaults to 0 for
+    /// manifests written before this field existed (backward compatible).
+    #[serde(default)]
+    pub next_page_id: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -565,6 +573,7 @@ where
             index_byte_size: index.len() as u64,
             index_sha256: sha256_hex(&index),
             page_slabs,
+            next_page_id: block_store.next_page_id(),
         };
         self.object_store
             .put(
@@ -1216,6 +1225,125 @@ where
     }
 }
 
+/// One slab's location + integrity in a shared-storage checkpoint: the object key to
+/// read it from and the checksum to verify it against before caching it locally.
+#[derive(Debug, Clone)]
+struct SharedSlabAddress {
+    key: String,
+    byte_size: u64,
+    sha256: String,
+}
+
+/// Lazy read-through source backing reference-parity recovery on the shared-filesystem
+/// (`FileObjectStore`) backend. Holds the checkpoint's slab address map (slab id ->
+/// shared object key) with no slab bytes, and resolves each slab on demand to a
+/// synchronous filesystem read of the shared store, verifying the checkpoint
+/// checksum before returning the bytes. The block store installs (caches) the
+/// returned bytes locally, so each shared slab is fetched at most once and only when
+/// a read actually needs it — never eagerly at recovery time.
+#[derive(Debug)]
+pub struct SharedPathSlabSource {
+    object_store: Arc<FileObjectStore>,
+    slabs: BTreeMap<u64, SharedSlabAddress>,
+}
+
+impl SharedPathSlabSource {
+    fn new(object_store: Arc<FileObjectStore>, slabs: BTreeMap<u64, SharedSlabAddress>) -> Self {
+        Self {
+            object_store,
+            slabs,
+        }
+    }
+
+    /// Number of slabs this source can serve lazily (i.e. the checkpoint's slab
+    /// count). Useful for asserting that recovery installed an address map, not bytes.
+    pub fn slab_count(&self) -> usize {
+        self.slabs.len()
+    }
+}
+
+impl SharedSlabSource for SharedPathSlabSource {
+    fn fetch_slab(&self, page_slab_id: u64) -> Result<Option<Vec<u8>>, BlockStoreError> {
+        let Some(address) = self.slabs.get(&page_slab_id) else {
+            return Ok(None);
+        };
+        let path = self.object_store.object_path(&address.key).map_err(|err| {
+            BlockStoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                err.to_string(),
+            ))
+        })?;
+        let bytes = std::fs::read(&path)?;
+        // Parity with restore_checkpoint: reject a corrupt shared slab before caching it.
+        let actual = sha256_hex(&bytes);
+        if bytes.len() as u64 != address.byte_size || actual != address.sha256 {
+            return Err(BlockStoreError::ChecksumMismatch {
+                page_slab_id,
+                offset: 0,
+                length: address.byte_size,
+                expected: address.sha256.clone(),
+                actual,
+            });
+        }
+        Ok(Some(bytes))
+    }
+}
+
+impl SharedStoreReplicator<FileObjectStore> {
+    /// Reference-parity LAZY restore for the shared-filesystem backend: install the served
+    /// INDEX and a per-slab shared address map WITHOUT downloading any slab bytes.
+    /// Old (pre-checkpoint) pages are then read lazily through [`SharedPathSlabSource`]
+    /// on the first read that needs them. The caller replays only the WAL tail after
+    /// `manifest.checkpoint_wal_index`, so recovery cost is O(index + recent WAL),
+    /// not O(full history + all slabs). Returns `CheckpointNotFound` when no
+    /// checkpoint exists so the caller can fall back to a full WAL replay.
+    pub async fn restore_index_and_page_addresses(
+        &self,
+        shard_id: ShardId,
+        engine: &TemporalEngine,
+        block_store: &LocalBlockStore,
+    ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
+        let manifest = self
+            .list_checkpoints(shard_id)
+            .await?
+            .pop()
+            .ok_or(SharedStoreReplicationError::CheckpointNotFound(shard_id))?;
+        let index = self.object_store.get(&manifest.index_key).await?;
+        verify_checksum(
+            &manifest.index_key,
+            &index,
+            manifest.index_byte_size,
+            &manifest.index_sha256,
+        )?;
+        engine.install_index_bytes(manifest.shard_id, &index)?;
+
+        let mut slabs = BTreeMap::new();
+        let mut max_slab_id = 0u64;
+        for slab in &manifest.page_slabs {
+            max_slab_id = max_slab_id.max(slab.page_slab_id);
+            slabs.insert(
+                slab.page_slab_id,
+                SharedSlabAddress {
+                    key: slab.key.clone(),
+                    byte_size: slab.byte_size,
+                    sha256: slab.sha256.clone(),
+                },
+            );
+        }
+        let source = Arc::new(SharedPathSlabSource::new(
+            Arc::clone(&self.object_store),
+            slabs,
+        ));
+        block_store.attach_shared_slab_source(source);
+        // Roll local appends past the checkpoint's slab/page-id range so replayed WAL-tail
+        // and new writes never overwrite a slab still served lazily from shared storage.
+        if !manifest.page_slabs.is_empty() {
+            block_store.reserve_lazy_checkpoint_range(max_slab_id, manifest.next_page_id)?;
+        }
+        Ok(manifest)
+    }
+}
+
 impl<O> SharedStoreStorageWriter<O>
 where
     O: ObjectStore + 'static,
@@ -1820,6 +1948,248 @@ mod tests {
                 .response,
             CommandResponse::Bytes {
                 value: Some(b"wal-value".to_vec())
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_store_lazy_restore_reads_old_page_on_demand() {
+        // Reference-parity lazy recovery: a fresh node with ONLY shared storage restores the
+        // served index + a slab ADDRESS map (no slab bytes), replays the WAL tail, and
+        // fetches an old (pre-checkpoint) slab ON DEMAND the first time a read needs it.
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "before".to_string(),
+                value: b"snapshot-value".to_vec(),
+            },
+        });
+
+        let (_store, replicator) = test_shared_store(dir.path());
+        // Publish a real metadata+slab checkpoint at WAL index 1, then a WAL tail entry.
+        let manifest = replicator
+            .publish_checkpoint(1, 1, &primary, &primary.block_store())
+            .await
+            .unwrap();
+        assert!(
+            !manifest.page_slabs.is_empty(),
+            "checkpoint must upload the slab bytes so a lazy owner can fetch them"
+        );
+        replicator
+            .publish_wal_entry(SharedStoreWalEntry {
+                shard_id: 1,
+                wal_index: 2,
+                command: Command::StringSet {
+                    key: "after".to_string(),
+                    value: b"wal-value".to_vec(),
+                },
+            })
+            .await
+            .unwrap();
+
+        // Fresh owner: no local slabs at all.
+        let follower = test_engine(dir.path(), "follower");
+        assert!(follower.block_store().slab_ids().unwrap().is_empty());
+
+        // Lazy restore: index + address map only, NO slab bytes installed up front.
+        let restored = replicator
+            .restore_index_and_page_addresses(1, &follower, &follower.block_store())
+            .await
+            .unwrap();
+        assert_eq!(restored.checkpoint_wal_index, 1);
+        assert!(
+            follower.block_store().has_shared_slab_source(),
+            "restore must attach a shared read-through source"
+        );
+        // Proof of laziness: the only local slab is the reserved (empty) append slab;
+        // the checkpoint's slab 0 was NOT installed, and nothing was fetched yet.
+        assert!(
+            !follower.block_store().slab_ids().unwrap().contains(&0),
+            "checkpoint slab 0 must not be installed eagerly"
+        );
+        assert_eq!(follower.block_store().stats().shared_slab_fetches, 0);
+
+        follower.load_shard(1);
+        // Replay only the WAL tail after the checkpoint index: applies exactly "after".
+        let report = replicator
+            .replay_wal(1, restored.checkpoint_wal_index, &follower)
+            .await
+            .unwrap();
+        assert_eq!(report.applied, 1);
+        assert_eq!(report.last_wal_index, 2);
+        // The tail write did not touch any pre-checkpoint slab, so still no lazy fetch.
+        assert_eq!(follower.block_store().stats().shared_slab_fetches, 0);
+
+        // Reading the OLD key triggers exactly ONE on-demand slab fetch and is correct.
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "before".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"snapshot-value".to_vec())
+            }
+        );
+        assert_eq!(
+            follower.block_store().stats().shared_slab_fetches,
+            1,
+            "reading one old key must fetch exactly one slab on demand (not all slabs up front)"
+        );
+
+        // The fetched slab is now cached locally; a second read does NOT re-fetch.
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "before".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"snapshot-value".to_vec())
+            }
+        );
+        assert_eq!(follower.block_store().stats().shared_slab_fetches, 1);
+
+        // The WAL-tail value is served from the reserved local slab.
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "after".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"wal-value".to_vec())
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_store_lazy_restore_replays_only_wal_tail() {
+        // WAL-tail replay is O(recent): applied count == number of post-checkpoint
+        // records, not the full history.
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "before".to_string(),
+                value: b"snapshot-value".to_vec(),
+            },
+        });
+
+        let (_store, replicator) = test_shared_store(dir.path());
+        let manifest = replicator
+            .publish_checkpoint(1, 1, &primary, &primary.block_store())
+            .await
+            .unwrap();
+        assert_eq!(manifest.checkpoint_wal_index, 1);
+
+        // Three post-checkpoint tail records.
+        for (wal_index, key) in [(2u64, "k2"), (3, "k3"), (4, "k4")] {
+            replicator
+                .publish_wal_entry(SharedStoreWalEntry {
+                    shard_id: 1,
+                    wal_index,
+                    command: Command::StringSet {
+                        key: key.to_string(),
+                        value: key.as_bytes().to_vec(),
+                    },
+                })
+                .await
+                .unwrap();
+        }
+
+        let follower = test_engine(dir.path(), "follower");
+        let restored = replicator
+            .restore_index_and_page_addresses(1, &follower, &follower.block_store())
+            .await
+            .unwrap();
+        follower.load_shard(1);
+        let report = replicator
+            .replay_wal(1, restored.checkpoint_wal_index, &follower)
+            .await
+            .unwrap();
+        assert_eq!(
+            report.applied, 3,
+            "replay applies only the 3 post-checkpoint records, not the full history"
+        );
+        assert_eq!(report.last_wal_index, 4);
+        for key in ["k2", "k3", "k4"] {
+            assert_eq!(
+                follower
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringGet {
+                            key: key.to_string()
+                        },
+                    })
+                    .response,
+                CommandResponse::Bytes {
+                    value: Some(key.as_bytes().to_vec())
+                }
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_store_lazy_restore_no_checkpoint_falls_back_to_full_replay() {
+        // Backward compatible: with no checkpoint published, the lazy restore reports
+        // CheckpointNotFound and the caller replays the full shared WAL from 0.
+        let dir = tempfile::tempdir().unwrap();
+        let (_store, replicator) = test_shared_store(dir.path());
+        for (wal_index, key, value) in [
+            (1u64, "a", b"1".to_vec()),
+            (2, "b", b"2".to_vec()),
+        ] {
+            replicator
+                .publish_wal_entry(SharedStoreWalEntry {
+                    shard_id: 1,
+                    wal_index,
+                    command: Command::StringSet {
+                        key: key.to_string(),
+                        value,
+                    },
+                })
+                .await
+                .unwrap();
+        }
+
+        let follower = test_engine(dir.path(), "follower");
+        follower.load_shard(1);
+        let after = match replicator
+            .restore_index_and_page_addresses(1, &follower, &follower.block_store())
+            .await
+        {
+            Err(SharedStoreReplicationError::CheckpointNotFound(_)) => 0,
+            other => panic!("expected CheckpointNotFound, got {other:?}"),
+        };
+        assert!(!follower.block_store().has_shared_slab_source());
+        let report = replicator.replay_wal(1, after, &follower).await.unwrap();
+        assert_eq!(report.applied, 2);
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "a".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"1".to_vec())
             }
         );
     }
