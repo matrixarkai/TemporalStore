@@ -25,6 +25,12 @@ pub enum ObjectStoreError {
     Http(String),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    /// A durable compare-and-set precondition failed: the object either did not hold the
+    /// expected bytes (lost a race / stale owner) or the backend does not support a fenced
+    /// conditional put. This is the single-writer FENCE signal — callers MUST treat it as a
+    /// hard abort, never a retryable transient error.
+    #[error("object store condition failed for {key}: {detail}")]
+    ConditionFailed { key: String, detail: String },
 }
 
 #[derive(Debug, Clone, Default, Eq, PartialEq, Serialize)]
@@ -63,6 +69,26 @@ pub trait ObjectStore: Send + Sync {
             self.put(key, bytes.clone()).await?;
         }
         Ok(())
+    }
+    /// Durable compare-and-set: atomically replace the object at `key` with `new` iff its
+    /// current contents exactly equal `expected` (`None` meaning "the object must not exist").
+    /// This is the substrate for a single-writer fence/lease: a stale owner that has been
+    /// superseded observes a value it does not expect and is rejected with
+    /// [`ObjectStoreError::ConditionFailed`]. The default implementation is FAIL-CLOSED — it
+    /// refuses rather than performing an unfenced read-modify-write — so a backend without a
+    /// real atomic conditional put can never silently degrade the fence to a racy no-op.
+    /// Overridden with a real cross-process atomic CAS by [`FileObjectStore`].
+    async fn compare_and_swap(
+        &self,
+        key: &str,
+        expected: Option<Bytes>,
+        new: Bytes,
+    ) -> Result<(), ObjectStoreError> {
+        let _ = (expected, new);
+        Err(ObjectStoreError::ConditionFailed {
+            key: key.to_string(),
+            detail: "compare_and_swap unsupported by this object store backend".to_string(),
+        })
     }
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError>;
     async fn get_range(
@@ -599,6 +625,46 @@ impl ObjectStore for FileObjectStore {
         })
     }
 
+    /// Cross-process atomic compare-and-set. Mutual exclusion is provided by an atomic
+    /// `mkdir` of a per-key lock directory (POSIX `mkdir` fails if the directory already
+    /// exists, and this atomicity holds over a shared filesystem too), so a concurrent
+    /// writer on another host cannot interleave its read-compare-write with ours. Inside the
+    /// lock we read the current object, reject with [`ObjectStoreError::ConditionFailed`] if
+    /// it does not exactly equal `expected`, then durably (`sync_all`) install `new`.
+    async fn compare_and_swap(
+        &self,
+        key: &str,
+        expected: Option<Bytes>,
+        new: Bytes,
+    ) -> Result<(), ObjectStoreError> {
+        let path = self.resolve(key)?;
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let lock_path = {
+            let mut p = path.clone().into_os_string();
+            p.push(".caslock");
+            PathBuf::from(p)
+        };
+        let _guard = CasLockGuard::acquire(lock_path).await?;
+        let current = match tokio::fs::read(&path).await {
+            Ok(bytes) => Some(Bytes::from(bytes)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => return Err(ObjectStoreError::Io(err)),
+        };
+        if current.as_deref() != expected.as_deref() {
+            return Err(ObjectStoreError::ConditionFailed {
+                key: key.to_string(),
+                detail: "current object contents do not match expected fence value".to_string(),
+            });
+        }
+        let mut file = tokio::fs::File::create(&path).await?;
+        file.write_all(&new).await?;
+        file.flush().await?;
+        file.sync_all().await?;
+        Ok(())
+    }
+
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
         let path = self.resolve(key)?;
         match tokio::fs::read(path).await {
@@ -633,6 +699,40 @@ impl ObjectStore for FileObjectStore {
 
     fn uri(&self, key: &str) -> String {
         format!("{}://{}", self.uri_scheme, key)
+    }
+}
+
+/// RAII cross-process lock backed by an atomic `mkdir`. Acquisition spins on `create_dir`
+/// (which fails atomically with `AlreadyExists` while another holder owns it) up to a bounded
+/// deadline; the directory is removed on drop so the lock is released even on the error path.
+struct CasLockGuard {
+    lock_path: PathBuf,
+}
+
+impl CasLockGuard {
+    async fn acquire(lock_path: PathBuf) -> Result<Self, ObjectStoreError> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match tokio::fs::create_dir(&lock_path).await {
+                Ok(()) => return Ok(Self { lock_path }),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(ObjectStoreError::ConditionFailed {
+                            key: lock_path.to_string_lossy().to_string(),
+                            detail: "timed out acquiring compare-and-swap lock".to_string(),
+                        });
+                    }
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+                Err(err) => return Err(ObjectStoreError::Io(err)),
+            }
+        }
+    }
+}
+
+impl Drop for CasLockGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir(&self.lock_path);
     }
 }
 
