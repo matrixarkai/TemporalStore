@@ -127,6 +127,23 @@ pub struct BlockStoreStats {
     pub compressed_records_read: u64,
     #[serde(default)]
     pub compression_bytes_saved: u64,
+    /// Slabs fetched on-demand from a shared-storage read-through source (reference-parity
+    /// lazy recovery). Each shared slab is fetched at most once, only when a read
+    /// misses it locally; a nonzero count proves recovery did not install every slab
+    /// up front.
+    #[serde(default)]
+    pub shared_slab_fetches: u64,
+}
+
+/// Lazy read-through source for slabs that live only in shared storage after a
+/// metadata-only (index + address map) recovery on the shared-filesystem backend.
+/// On a local slab miss the block store asks the source for exactly that slab's
+/// bytes, caches them locally, then serves the read, so old pages are read lazily
+/// by address rather than eagerly installed at recovery time. Implementations
+/// resolve a slab id to its shared object and return its verified bytes, or `None`
+/// when the slab is not part of the recovered checkpoint.
+pub trait SharedSlabSource: Send + Sync + std::fmt::Debug {
+    fn fetch_slab(&self, page_slab_id: u64) -> Result<Option<Vec<u8>>, BlockStoreError>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -590,6 +607,10 @@ struct BlockStoreInner {
     bands: BTreeMap<u64, BlockStoreBandDescriptor>,
     band_manifest_reconciled_on_open: bool,
     stats: BlockStoreStats,
+    // Optional shared-storage read-through (reference-parity lazy recovery): set by
+    // attach_shared_slab_source() after a metadata-only restore. When present, a
+    // read that misses a slab locally fetches it from here, caches it, then serves.
+    shared_slab_source: Option<Arc<dyn SharedSlabSource>>,
 }
 
 impl LocalBlockStore {
@@ -670,8 +691,117 @@ impl LocalBlockStore {
                 bands,
                 band_manifest_reconciled_on_open,
                 stats: BlockStoreStats::default(),
+                shared_slab_source: None,
             })),
         }
+    }
+
+    /// Attach a shared-storage read-through source (reference-parity lazy recovery). After a
+    /// metadata-only restore installs the served index and a slab address map, this
+    /// lets a later read fetch a missing old slab on demand from shared storage,
+    /// cache it locally, and serve it — instead of installing every slab up front.
+    pub fn attach_shared_slab_source(&self, source: Arc<dyn SharedSlabSource>) {
+        self.inner
+            .lock()
+            .expect("block store lock poisoned")
+            .shared_slab_source = Some(source);
+    }
+
+    pub fn has_shared_slab_source(&self) -> bool {
+        self.inner
+            .lock()
+            .expect("block store lock poisoned")
+            .shared_slab_source
+            .is_some()
+    }
+
+    /// The next free page id this store would assign on the next append. Recorded in a
+    /// shared checkpoint so a lazy restore can advance the fresh owner's counter past it.
+    pub fn next_page_id(&self) -> u64 {
+        self.inner
+            .lock()
+            .expect("block store lock poisoned")
+            .next_page_id
+    }
+
+    /// Reserve the slab-id (and page-id) range consumed by a lazily-restored checkpoint
+    /// so replayed/new appends land in a FRESH slab beyond it, never overwriting a slab
+    /// that is still served on-demand from shared storage. Mirrors the reference recovery
+    /// model where old pages stay addressable in shared storage while new writes roll
+    /// forward. Called right after attaching the shared read-through on a fresh owner.
+    pub fn reserve_lazy_checkpoint_range(
+        &self,
+        through_slab_id: u64,
+        next_page_id_floor: u64,
+    ) -> Result<(), BlockStoreError> {
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
+        fs::create_dir_all(&inner.root)?;
+        let existing_max = slab_ids_at(&inner.root)?.into_iter().max();
+        let new_slab_id = through_slab_id
+            .max(inner.page_slab_id)
+            .max(existing_max.unwrap_or_default())
+            .saturating_add(1);
+        let path = slab_path(&inner.root, new_slab_id);
+        let file = File::create(&path)?;
+        file.sync_all()?;
+        sync_parent_dir(&path)?;
+        inner.page_slab_id = new_slab_id;
+        inner.write_offset = 0;
+        inner.next_page_id = inner.next_page_id.max(next_page_id_floor);
+        let now = now_unix_ms();
+        // Any previously-active local band is now sealed; the reserved slab is active.
+        for band in inner.bands.values_mut() {
+            if band.state == BlockStoreBandState::Active {
+                band.state = BlockStoreBandState::Sealed;
+                band.updated_unix_ms = Some(now);
+            }
+        }
+        inner.bands.insert(
+            new_slab_id,
+            BlockStoreBandDescriptor {
+                band_id: band_id_for_slab(new_slab_id),
+                page_slab_id: new_slab_id,
+                state: BlockStoreBandState::Active,
+                physical_bytes: 0,
+                logical_bytes: 0,
+                created_unix_ms: Some(now),
+                updated_unix_ms: Some(now),
+                first_page_id: None,
+                last_page_id: None,
+                readable_prefix_physical_bytes: 0,
+                has_corruption: false,
+                first_error_offset: None,
+                first_error: None,
+            },
+        );
+        persist_band_manifest(&inner.root, &inner.bands)?;
+        Ok(())
+    }
+
+    /// Ensure `page_slab_id` is present locally, fetching it from the shared
+    /// read-through source (if any) on a local miss, caching it, and counting the
+    /// on-demand fetch. A no-op when the slab already exists locally or no source is
+    /// attached; in the latter case the normal read path surfaces the miss.
+    fn ensure_slab_present(&self, page_slab_id: u64) -> Result<(), BlockStoreError> {
+        let (root, source) = {
+            let inner = self.inner.lock().expect("block store lock poisoned");
+            (inner.root.clone(), inner.shared_slab_source.clone())
+        };
+        if slab_path(&root, page_slab_id).exists() {
+            return Ok(());
+        }
+        let Some(source) = source else {
+            return Ok(());
+        };
+        if let Some(bytes) = source.fetch_slab(page_slab_id)? {
+            self.install_slab(page_slab_id, &bytes)?;
+            self.inner
+                .lock()
+                .expect("block store lock poisoned")
+                .stats
+                .shared_slab_fetches += 1;
+        }
+        Ok(())
     }
 
     pub fn roll_slab(&self) -> Result<BlockStoreRollReport, BlockStoreError> {

@@ -32,7 +32,7 @@ pub mod wal;
 
 pub use block_store::{
     BlockAddress, BlockStoreBandDescriptor, BlockStoreBandState, BlockStoreBandSummary,
-    BlockStoreOptions, BlockStoreSlabReport, BlockStoreStats, LocalBlockStore,
+    BlockStoreOptions, BlockStoreSlabReport, BlockStoreStats, LocalBlockStore, SharedSlabSource,
 };
 pub use client::{
     crc64_jones, key_is_dropped_by_percent, shard_id_for_key, bucket_id_for_key, stable_key_hash,
@@ -200,8 +200,8 @@ pub use matrixobject_store::MatrixObjectObjectStore;
 pub use shared_store::{
     ReplayReport, SharedStoreCheckpointManifest, SharedStoreFlushReport, SharedStoreGcReport,
     SharedStoreWalEntry, SharedStoreWalObject, SharedStorePageSlab, SharedStoreReplayCursor,
-    SharedStoreReplicationError, SharedStoreReplicator, SharedStoreRetryPolicy,
-    SharedStoreWalAppendMode,
+    SharedPathSlabSource, SharedStoreReplicationError, SharedStoreReplicator,
+    SharedStoreRetryPolicy, SharedStoreWalAppendMode,
     SharedStoreStorageMode, SharedStoreStorageWriter, SharedStoreWriteReport,
 };
 pub use storage_backend::{
