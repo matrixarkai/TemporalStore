@@ -141,7 +141,19 @@ fn main() {
     // node (as opposed to a node self-declaring ownership of its TS_SHARD_ID). OFF
     // by default, so normal single-shard startup is unchanged.
     let join_empty = env_bool("TS_SERVER_JOIN_EMPTY", false);
-    if !join_empty {
+    // Networked shared-store cross-node data-follow: a FRESH node (no local state)
+    // configured with a `matrixobject://` shared store restores its on-disk index from
+    // the newest shared checkpoint BEFORE it loads, so the load reads the restored
+    // index into memory and the node auto-serves the followed data with NO manual
+    // `/load`. In that one case the startup load is DEFERRED into the restore wiring
+    // below (`wire_matrixobject_networked_durability`), which installs the index first,
+    // then loads (observing it), then replays the shared WAL tail on top. Every other
+    // startup — no shared URI, or a node with intact local state, or join-empty
+    // placement — loads here exactly as before, so default behavior is unchanged.
+    let networked_uri = matrixobject_networked_uri();
+    let defer_startup_load_to_networked_restore =
+        !join_empty && networked_uri.is_some() && !local_state_present;
+    if !join_empty && !defer_startup_load_to_networked_restore {
         let startup_load = startup_load_shard_request(shard_id, node_id);
         let load_response = engine.load_shard_with(startup_load);
         if !load_response.status.ok {
@@ -151,8 +163,13 @@ fn main() {
                 "startup shard load failed"
             );
         }
-    } else {
+    } else if join_empty {
         info!("join-empty datanode: awaiting metaserver shard placement");
+    } else {
+        info!(
+            shard_id,
+            "fresh node with networked shared store: deferring startup load until shared index is restored"
+        );
     }
     // Resolve the distributed storage/replication backend for this node:
     // matrixobject shared storage when detected, else a configured shared object
@@ -240,7 +257,6 @@ fn main() {
     // shard data follows shards across nodes. This path compiles under default
     // features (`MatrixObjectHttpStore` needs no enterprise crate). Absent the URI
     // it is a complete no-op and behavior is byte-identical.
-    let networked_uri = matrixobject_networked_uri();
     let _matrixobject_networked_durability = networked_uri.as_ref().and_then(|uri| {
         wire_matrixobject_networked_durability(
             uri,
@@ -248,7 +264,9 @@ fn main() {
             &engine,
             &runtime,
             shard_id,
+            node_id,
             local_state_present,
+            !join_empty,
         )
     });
     #[cfg(feature = "matrixobject")]
@@ -643,23 +661,38 @@ fn main() {
             }
             ("POST", "/load") => match parse_json::<LoadShardRequest>(&request.body) {
                 Ok(req) => {
-                    // A shard reassigned here replays its data from shared storage
-                    // (when a shared backend is configured) after the local load.
-                    // Only a foreign shard (no local WAL) replays, so a node's own
-                    // shard is never double-applied.
+                    // A shard reassigned here restores its data from shared storage
+                    // (when a shared backend is configured). Only a foreign shard (no
+                    // local WAL) restores, so a node's own shard is never double-applied.
+                    // Ordering matters: restore the on-disk index from the shared
+                    // checkpoint BEFORE the load so the load reads the restored index
+                    // into memory and the shard serves immediately; then replay the
+                    // shared WAL tail on top AFTER the shard is loaded (the tail applies
+                    // through execute, which needs a loaded shard).
                     let shard_id = req.shard_id;
                     let had_local_wal = engine
                         .write_ahead_log_store()
                         .stats(shard_id)
                         .last_sequence
                         > 0;
-                    let load_response = runtime.load_shard_with(req);
-                    if load_response.status.ok && !had_local_wal {
-                        replay_shard_from_shared(
+                    let restore_after_wal_index = if had_local_wal {
+                        None
+                    } else {
+                        restore_shared_index_before_load(
                             &handler_replicator,
                             &handler_block_runtime,
                             &engine,
                             shard_id,
+                        )
+                    };
+                    let load_response = runtime.load_shard_with(req);
+                    if load_response.status.ok && !had_local_wal {
+                        replay_shared_wal_tail(
+                            &handler_replicator,
+                            &handler_block_runtime,
+                            &engine,
+                            shard_id,
+                            restore_after_wal_index.unwrap_or(0),
                         );
                     }
                     json_response(200, &load_response)
@@ -1025,20 +1058,22 @@ struct PublishShardCheckpointResponse {
 /// against double-apply: a node reloading its own shard replays its local WAL
 /// during load, so shared replay runs only for a foreign shard placed here by the
 /// metaserver (which has no local WAL). A missing shared WAL is not an error.
-fn replay_shard_from_shared(
+/// Restore the served INDEX + a lazy slab address map (no slab bytes) from the newest
+/// shared checkpoint onto the on-disk base, so a subsequent `load_shard_with` reads the
+/// restored index into memory and the shard serves the followed data immediately. Old
+/// pages are read lazily through the block store's shared read-through on first access.
+/// Returns the checkpoint's WAL index (the watermark for the post-load tail replay);
+/// `None` when no shared replicator is configured. This MUST run BEFORE the load so the
+/// load observes the restored index — running it after leaves an empty in-memory shard
+/// (the ordering bug this split fixes). With no checkpoint, returns `Some(0)` and the
+/// caller replays the full shared WAL after loading an empty index (WAL-only mirrors).
+fn restore_shared_index_before_load(
     replicator: &Option<Arc<SharedStoreReplicator<FileObjectStore>>>,
     runtime: &Arc<tokio::runtime::Runtime>,
     engine: &TemporalEngine,
     shard_id: ShardId,
-) {
-    let Some(replicator) = replicator else {
-        return;
-    };
-    // Reference-parity lazy recovery: when a shared checkpoint exists, install the served
-    // index + a lazy slab address map (no slab bytes) and replay only the WAL tail
-    // after the checkpoint. Old pages are read lazily through the block store's
-    // shared read-through on first access. With no checkpoint, fall back to the
-    // full WAL replay from 0 (backward compatible with WAL-only mirrors).
+) -> Option<u64> {
+    let replicator = replicator.as_ref()?;
     let after_wal_index =
         match runtime.block_on(replicator.restore_index_and_page_addresses(
             shard_id,
@@ -1051,7 +1086,7 @@ fn replay_shard_from_shared(
                     checkpoint_id = %manifest.checkpoint_id,
                     checkpoint_wal_index = manifest.checkpoint_wal_index,
                     page_slabs = manifest.page_slabs.len(),
-                    "restored shard index and lazy page addresses from shared checkpoint"
+                    "restored shard index and lazy page addresses from shared checkpoint (pre-load)"
                 );
                 manifest.checkpoint_wal_index
             }
@@ -1061,6 +1096,22 @@ fn replay_shard_from_shared(
                 0
             }
         };
+    Some(after_wal_index)
+}
+
+/// Replay the shared WAL tail (records after `after_wal_index`) on top of the already
+/// loaded shard, applying each through `engine.execute` — which is why this runs AFTER
+/// the shard is loaded. No-op when no shared replicator is configured.
+fn replay_shared_wal_tail(
+    replicator: &Option<Arc<SharedStoreReplicator<FileObjectStore>>>,
+    runtime: &Arc<tokio::runtime::Runtime>,
+    engine: &TemporalEngine,
+    shard_id: ShardId,
+    after_wal_index: u64,
+) {
+    let Some(replicator) = replicator else {
+        return;
+    };
     match runtime.block_on(replicator.replay_wal(shard_id, after_wal_index, engine)) {
         Ok(report) => {
             if report.applied > 0 {
@@ -1699,7 +1750,9 @@ fn wire_matrixobject_networked_durability(
     engine: &TemporalEngine,
     runtime: &DataNodeRuntime,
     shard_id: u64,
+    node_id: u64,
     local_state_present: bool,
+    auto_load: bool,
 ) -> Option<MatrixObjectNetworkedDurability> {
     let store = match MatrixObjectHttpStore::new(uri) {
         Ok(store) => store,
@@ -1749,6 +1802,24 @@ fn wire_matrixobject_networked_durability(
                 0
             }
         };
+        // Read the just-restored on-disk index into memory so this node auto-serves the
+        // followed data. The process-level startup load was deferred to here precisely
+        // so it observes the index installed by `restore_index_and_page_addresses`
+        // above; the shared WAL-tail replay below then needs a loaded shard (it applies
+        // through `engine.execute`). Join-empty placement instead loads via a later
+        // `/load`, so `auto_load` is false and the load is skipped here (behavior
+        // unchanged for that mode).
+        if auto_load {
+            let load = startup_load_shard_request(shard_id, node_id);
+            let load_response = engine.load_shard_with(load);
+            if !load_response.status.ok {
+                warn!(
+                    shard_id,
+                    message = %load_response.status.message,
+                    "load of restored networked shard index failed"
+                );
+            }
+        }
         match rt.block_on(replicator.replay_wal(shard_id, after_wal_index, engine)) {
             Ok(report) => {
                 if report.applied > 0 {

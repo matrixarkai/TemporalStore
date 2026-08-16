@@ -2201,6 +2201,112 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shared_store_restore_before_load_auto_serves_but_load_before_restore_does_not() {
+        // Regression for the fresh-node startup ordering bug: on a fresh node the shared
+        // restore installs the served index onto the on-disk BASE only; the in-memory
+        // shard is populated from that base by `load_shard`. So the ORDER matters:
+        //   * restore THEN load  -> load reads the restored index -> node auto-serves.
+        //   * load THEN restore  -> load reads an EMPTY index -> reads return null even
+        //                           though the restore later wrote the real index to disk.
+        // A default fresh node (no join-empty, no manual /load) must use the first order.
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "before".to_string(),
+                value: b"snapshot-value".to_vec(),
+            },
+        });
+
+        let (_store, replicator) = test_shared_store(dir.path());
+        let manifest = replicator
+            .publish_checkpoint(1, 1, &primary, &primary.block_store())
+            .await
+            .unwrap();
+        assert_eq!(manifest.checkpoint_wal_index, 1);
+        // One post-checkpoint tail record so we also cover WAL-tail replay ordering.
+        replicator
+            .publish_wal_entry(SharedStoreWalEntry {
+                shard_id: 1,
+                wal_index: 2,
+                command: Command::StringSet {
+                    key: "after".to_string(),
+                    value: b"wal-value".to_vec(),
+                },
+            })
+            .await
+            .unwrap();
+
+        // BUGGY order (load BEFORE restore): reproduces the old default-startup path.
+        let buggy = test_engine(dir.path(), "buggy");
+        buggy.load_shard(1); // reads an empty on-disk index into memory
+        replicator
+            .restore_index_and_page_addresses(1, &buggy, &buggy.block_store())
+            .await
+            .unwrap(); // writes the real index to DISK, but the in-memory shard is already loaded empty
+        replicator
+            .replay_wal(1, manifest.checkpoint_wal_index, &buggy)
+            .await
+            .unwrap();
+        assert_eq!(
+            buggy
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "before".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes { value: None },
+            "load-before-restore leaves the checkpoint data unreadable in memory (the bug)"
+        );
+
+        // FIXED order (restore BEFORE load): what the fixed server startup + /load now do.
+        let fixed = test_engine(dir.path(), "fixed");
+        replicator
+            .restore_index_and_page_addresses(1, &fixed, &fixed.block_store())
+            .await
+            .unwrap(); // installs the served index onto the on-disk base first
+        fixed.load_shard(1); // load now reads the restored index into memory
+        replicator
+            .replay_wal(1, manifest.checkpoint_wal_index, &fixed)
+            .await
+            .unwrap();
+        // The pre-checkpoint value is served (fetched lazily from shared storage)...
+        assert_eq!(
+            fixed
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "before".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"snapshot-value".to_vec()),
+            },
+            "restore-before-load must auto-serve the restored checkpoint data"
+        );
+        // ...and so is the post-checkpoint WAL-tail value.
+        assert_eq!(
+            fixed
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "after".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"wal-value".to_vec()),
+            },
+            "restore-before-load must also serve the replayed WAL tail"
+        );
+    }
+
+    #[tokio::test]
     async fn shared_store_lazy_restore_replays_only_wal_tail() {
         // WAL-tail replay is O(recent): applied count == number of post-checkpoint
         // records, not the full history.
