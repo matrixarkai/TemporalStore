@@ -132,6 +132,30 @@ impl TemporalEngine {
     }
 
     pub(super) fn load_index(&self, shard_id: ShardId, warm_cache: bool) -> Option<ShardState> {
+        self.load_index_inner(shard_id, warm_cache, true)
+    }
+
+    /// Load ONLY the durable base snapshot (materialized at the last dump/unload), WITHOUT
+    /// folding the served-index delta. Used by single-barrier recovery: the delta-log fdatasync
+    /// is deferred, so the delta tail (and the anchor it advances) may reference pages that were
+    /// never fsync'd -- trusting it could skip WAL replay and leave dangling references. The base
+    /// is a durable checkpoint at its own watermark (flush_shard_index fsyncs every page before
+    /// advancing that watermark); the WAL tail beyond it is re-derived by replaying each record
+    /// exactly once (no delta fold means no double-apply of non-idempotent commands).
+    pub(super) fn load_index_base_only(
+        &self,
+        shard_id: ShardId,
+        warm_cache: bool,
+    ) -> Option<ShardState> {
+        self.load_index_inner(shard_id, warm_cache, false)
+    }
+
+    fn load_index_inner(
+        &self,
+        shard_id: ShardId,
+        warm_cache: bool,
+        fold_deltas: bool,
+    ) -> Option<ShardState> {
         let read = fs::read(self.index_path(shard_id));
         let base_present = read.is_ok();
         // The base snapshot is materialized only at compaction/unload, so a crash before the
@@ -156,7 +180,9 @@ impl TemporalEngine {
         // reload reconstruct the served index WITHOUT re-executing the WAL -- re-execution
         // would write fresh pages and relocate them to the active slab, doubling physical
         // page counts and losing the recorded slab layout.
-        self.fold_index_log_deltas(shard_id, &mut shard);
+        if fold_deltas {
+            self.fold_index_log_deltas(shard_id, &mut shard);
+        }
         // No base and nothing to fold -> genuinely nothing persisted yet.
         if !base_present
             && shard.bucket_index.bucket_map.is_empty()
