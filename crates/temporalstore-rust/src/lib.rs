@@ -200,7 +200,7 @@ pub use matrixobject_store::MatrixObjectObjectStore;
 pub use shared_store::{
     ReplayReport, SharedStoreCheckpointManifest, SharedStoreFlushReport, SharedStoreGcReport,
     SharedStoreWalEntry, SharedStoreWalObject, SharedStorePageSlab, SharedStoreReplayCursor,
-    SharedPathSlabSource, SharedStoreReplicationError, SharedStoreReplicator,
+    MatrixObjectSlabSource, SharedPathSlabSource, SharedStoreReplicationError, SharedStoreReplicator,
     SharedStoreRetryPolicy, SharedStoreWalAppendMode,
     SharedStoreStorageMode, SharedStoreStorageWriter, SharedStoreWriteReport,
 };

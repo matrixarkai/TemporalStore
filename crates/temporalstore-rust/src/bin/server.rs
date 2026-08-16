@@ -51,7 +51,7 @@ use temporalstore_rust::{
     BucketDumpManifest, StorageCacheInvalidateBucketRequest, StorageLifecycleRequest,
     StorageProductionReadinessRequest, StreamReadRequest, UnloadShardRequest,
 };
-use temporalstore_snapshot::object_store::ObjectStore;
+use temporalstore_snapshot::object_store::{MatrixObjectHttpStore, ObjectStore};
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
 use bytes::Bytes;
 use tracing::{debug, error, info, warn};
@@ -123,8 +123,8 @@ fn main() {
     // scaffolding). Drives matrixobject recovery: absent local state (a fresh
     // node, or one whose local dirs were wiped) is rebuilt from shared storage,
     // while intact local state is left untouched so non-idempotent commands are
-    // not double-applied.
-    #[cfg(feature = "matrixobject")]
+    // not double-applied. Used by both the node-local (feature-gated) and the
+    // networked (default-feature) matrixobject durability paths.
     let local_state_present =
         local_shard_state_present(&[&cache_dir, &block_store_dir, &index_dir]);
     let block_store_options = block_store_options_from_env();
@@ -233,9 +233,32 @@ fn main() {
     // process lifetime so the durability runtime/sink outlive request handling.
     // Only active for the matrixobject shared-storage backend; every other
     // backend (raft/local/shared-path) is completely unchanged.
+    //
+    // Networked cross-node lazy data-follow: when `TS_SHARED_STORE_URI` names a
+    // networked matrixobject object-store service, wire the *networked* durability
+    // path (lazy checkpoint restore + WAL-tail replay + sync write mirroring) so
+    // shard data follows shards across nodes. This path compiles under default
+    // features (`MatrixObjectHttpStore` needs no enterprise crate). Absent the URI
+    // it is a complete no-op and behavior is byte-identical.
+    let networked_uri = matrixobject_networked_uri();
+    let _matrixobject_networked_durability = networked_uri.as_ref().and_then(|uri| {
+        wire_matrixobject_networked_durability(
+            uri,
+            &storage_backend,
+            &engine,
+            &runtime,
+            shard_id,
+            local_state_present,
+        )
+    });
     #[cfg(feature = "matrixobject")]
-    let _matrixobject_durability_rt =
-        wire_matrixobject_durability(&storage_backend, &engine, &runtime, shard_id, local_state_present);
+    let _matrixobject_durability_rt = if networked_uri.is_some() {
+        // The networked path owns shard durability; skip the node-local on-disk path
+        // so writes are not mirrored twice.
+        None
+    } else {
+        wire_matrixobject_durability(&storage_backend, &engine, &runtime, shard_id, local_state_present)
+    };
 
     let location = std::env::var("TS_SERVER_LOCATION").unwrap_or_default();
     let binary_version = env!("CARGO_PKG_VERSION").to_string();
@@ -1326,7 +1349,6 @@ fn ingest_batch_route(engine: &TemporalEngine, body: &[u8]) -> (u16, Vec<u8>) {
 /// fresh node or one whose local dirs were wiped, so its shard is rebuilt from
 /// shared storage; a non-empty set means intact local state that must not be
 /// replayed over (some commands are not idempotent).
-#[cfg(feature = "matrixobject")]
 fn local_shard_state_present(dirs: &[&str]) -> bool {
     dirs.iter().any(|dir| match std::fs::read_dir(dir) {
         Ok(mut entries) => entries.next().is_some(),
@@ -1606,6 +1628,191 @@ fn wire_matrixobject_durability(
         shutdown,
         async_mode,
         drain_batch: flush_batch.max(4096),
+    })
+}
+
+/// Networked URI of the shared matrixobject object-store service, if configured.
+/// `TS_SHARED_STORE_URI=matrixobject://host:port` opts a datanode into networked
+/// cross-node lazy data-follow. Absent (or a non-matrixobject scheme) leaves the
+/// datanode on its existing behavior, byte-identical.
+fn matrixobject_networked_uri() -> Option<String> {
+    std::env::var("TS_SHARED_STORE_URI")
+        .ok()
+        .map(|uri| uri.trim().to_string())
+        .filter(|uri| uri.starts_with("matrixobject://"))
+}
+
+/// Durable shared-storage sink backed by a NETWORKED matrixobject WAL writer.
+/// Mirrors every accepted write to the networked object store in sync mode (the
+/// local WAL+page are already durable before this runs, so this rides after the
+/// local commit). Compiles under default features: `MatrixObjectHttpStore` needs
+/// no enterprise crate.
+struct MatrixObjectNetworkedWalSink {
+    handle: tokio::runtime::Handle,
+    writer: Arc<temporalstore_rust::SharedStoreStorageWriter<MatrixObjectHttpStore>>,
+}
+
+impl std::fmt::Debug for MatrixObjectNetworkedWalSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MatrixObjectNetworkedWalSink")
+            .finish_non_exhaustive()
+    }
+}
+
+impl temporalstore_rust::SharedWalSink for MatrixObjectNetworkedWalSink {
+    fn record_write(&self, shard_id: u64, command: &Command) {
+        let writer = Arc::clone(&self.writer);
+        let command = command.clone();
+        let result = self
+            .handle
+            .block_on(async move { writer.write(shard_id, command).await });
+        if let Err(err) = result {
+            // Durability failure: log loudly. The local write already succeeded, so
+            // the node stays available; the networked store catches up on the next
+            // successful publish or on the next full replay.
+            eprintln!("matrixobject networked durable write failed for shard {shard_id}: {err}");
+        }
+    }
+}
+
+/// Owns the networked durability runtime + writer for the process lifetime. The
+/// sink mirrors writes in sync mode, so there is no queued backlog to drain on
+/// drop; keeping the runtime alive is all that is required.
+struct MatrixObjectNetworkedDurability {
+    _rt: tokio::runtime::Runtime,
+    _writer: Arc<temporalstore_rust::SharedStoreStorageWriter<MatrixObjectHttpStore>>,
+}
+
+/// Wire the NETWORKED matrixobject shared store into the running node so shard data
+/// follows shards across nodes. On a fresh node (`!local_state_present`), restore
+/// the served index + a lazy slab address map from the newest networked checkpoint
+/// and replay only the WAL tail — old pages are then fetched on demand over the
+/// network on first access, never eagerly downloaded. When this node already holds
+/// authoritative local state, publish its current state as a networked checkpoint
+/// (index + slabs) so future owners can lazily follow it. Finally, mirror every
+/// accepted write to the networked store from here on. Active only when a
+/// `matrixobject://` URI is configured; returns `None` on a bad URI or runtime
+/// failure so the node still serves from local durability.
+fn wire_matrixobject_networked_durability(
+    uri: &str,
+    storage_backend: &StorageBackend,
+    engine: &TemporalEngine,
+    runtime: &DataNodeRuntime,
+    shard_id: u64,
+    local_state_present: bool,
+) -> Option<MatrixObjectNetworkedDurability> {
+    let store = match MatrixObjectHttpStore::new(uri) {
+        Ok(store) => store,
+        Err(err) => {
+            error!(%err, uri, "invalid TS_SHARED_STORE_URI; networked matrixobject durability disabled");
+            return None;
+        }
+    };
+    let cluster_id = match storage_backend {
+        StorageBackend::MatrixObject { cluster_id, .. } => cluster_id.clone(),
+        _ => std::env::var("TS_CLUSTER_ID").unwrap_or_else(|_| "default".to_string()),
+    };
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(err) => {
+            error!(%err, "failed to start networked matrixobject durability runtime");
+            return None;
+        }
+    };
+    let replicator = Arc::new(SharedStoreReplicator::new(cluster_id, Arc::new(store)));
+
+    // Fresh node: rebuild from the networked store via reference-parity lazy
+    // data-follow (index + address map, then WAL tail; old pages fetched on demand).
+    if !local_state_present {
+        let after_wal_index = match rt.block_on(replicator.restore_index_and_page_addresses(
+            shard_id,
+            engine,
+            &engine.block_store(),
+        )) {
+            Ok(manifest) => {
+                info!(
+                    shard_id,
+                    checkpoint_id = %manifest.checkpoint_id,
+                    checkpoint_wal_index = manifest.checkpoint_wal_index,
+                    page_slabs = manifest.page_slabs.len(),
+                    "restored shard index and lazy page addresses from networked matrixobject checkpoint"
+                );
+                manifest.checkpoint_wal_index
+            }
+            Err(SharedStoreReplicationError::CheckpointNotFound(_)) => 0,
+            Err(err) => {
+                warn!(shard_id, %err, "networked matrixobject checkpoint restore failed; replaying full shared WAL");
+                0
+            }
+        };
+        match rt.block_on(replicator.replay_wal(shard_id, after_wal_index, engine)) {
+            Ok(report) => {
+                if report.applied > 0 {
+                    info!(
+                        shard_id,
+                        records = report.applied,
+                        wal_index = report.last_wal_index,
+                        after_wal_index,
+                        "replayed shard WAL tail from networked matrixobject storage"
+                    );
+                }
+            }
+            Err(err) => {
+                warn!(shard_id, %err, "no networked matrixobject data replayed for shard")
+            }
+        }
+    }
+
+    // Resume publishing at latest + 1 so we never clobber persisted WAL entries.
+    let latest = match rt.block_on(replicator.latest_persisted_wal_index(shard_id)) {
+        Ok(latest) => latest,
+        Err(err) => {
+            error!(shard_id, %err, "failed to read networked matrixobject WAL state; durability disabled");
+            return None;
+        }
+    };
+
+    // Publish this node's authoritative state as a networked checkpoint (index +
+    // slabs) so a future owner can lazily follow it. Opt-out via env.
+    if local_state_present && env_bool("TS_MATRIXOBJECT_NETWORKED_CHECKPOINT_ON_START", true) {
+        match rt.block_on(replicator.publish_checkpoint(
+            shard_id,
+            latest,
+            engine,
+            &engine.block_store(),
+        )) {
+            Ok(manifest) => info!(
+                shard_id,
+                checkpoint_id = %manifest.checkpoint_id,
+                page_slabs = manifest.page_slabs.len(),
+                checkpoint_wal_index = manifest.checkpoint_wal_index,
+                "published networked matrixobject checkpoint (index + slabs)"
+            ),
+            Err(err) => {
+                warn!(shard_id, %err, "failed to publish networked matrixobject checkpoint at startup")
+            }
+        }
+    }
+
+    let writer = Arc::new(
+        replicator.storage_writer(temporalstore_rust::SharedStoreStorageMode::Sync, latest + 1),
+    );
+    runtime.set_shared_wal_sink(Arc::new(MatrixObjectNetworkedWalSink {
+        handle: rt.handle().clone(),
+        writer: Arc::clone(&writer),
+    }));
+    info!(
+        shard_id,
+        uri, "networked matrixobject durability active (sync write mirror + lazy cross-node data-follow)"
+    );
+
+    Some(MatrixObjectNetworkedDurability {
+        _rt: rt,
+        _writer: writer,
     })
 }
 
