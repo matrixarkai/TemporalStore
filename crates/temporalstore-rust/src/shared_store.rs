@@ -42,6 +42,21 @@ pub enum SharedStoreReplicationError {
     CheckpointNotFound(ShardId),
     #[error("replicated command failed at WAL index {wal_index}: {status:?}")]
     ApplyFailed { wal_index: u64, status: Status },
+    /// The durable single-writer fence rejected this operation: a newer owner (higher
+    /// load_version) holds the shard lease, so this (stale) writer must ABORT rather than
+    /// double-append to the shared WAL. Maps [`ObjectStoreError::ConditionFailed`].
+    #[error("shared-store fence rejected write: {detail}")]
+    StoreConditionFailed { detail: String },
+    /// A lease acquisition was refused because the object store already holds a lease at an
+    /// equal-or-higher load_version — this writer's ownership claim is stale.
+    #[error(
+        "shared-store lease for shard {shard_id} held at load_version {current} >= attempted {attempted}"
+    )]
+    StaleOwnership {
+        shard_id: ShardId,
+        current: u64,
+        attempted: u64,
+    },
     #[error("WAL replay gap: expected index {expected}, got {actual}")]
     ReplayGap { expected: u64, actual: u64 },
     #[error(
@@ -247,6 +262,45 @@ pub struct SharedStoreReplicator<O> {
     object_store: Arc<O>,
     retry_policy: SharedStoreRetryPolicy,
     wal_append_mode: SharedStoreWalAppendMode,
+    /// Durable single-writer fence. When set (and `TS_SHARED_STORE_FENCE` is on), every WAL
+    /// append and checkpoint publish first re-validates that this writer's `load_version`
+    /// still owns the shard lease in the object store, aborting a superseded stale owner
+    /// before it can double-append.
+    fence: Option<ShardFenceConfig>,
+}
+
+/// Ownership token carried by a fenced replicator: the `load_version` (monotonic ownership
+/// epoch) this writer believes it holds, plus a human-readable owner tag for diagnostics.
+#[derive(Debug, Clone)]
+struct ShardFenceConfig {
+    load_version: u64,
+    /// Retained for diagnostics / future lease-holder attribution; the fence decision keys on
+    /// `load_version` alone.
+    #[allow(dead_code)]
+    owner: String,
+}
+
+/// Durable lease object persisted in the shared object store, keyed by cluster+shard. The
+/// `load_version` is the fence token: a writer may only install a lease strictly greater than
+/// the currently stored one, and may only append while the stored value still equals its own.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ShardLease {
+    load_version: u64,
+    owner: String,
+}
+
+/// `TS_SHARED_STORE_FENCE`: gate for the durable single-writer fence (R2). Default OFF so the
+/// shared-store write path is byte-identical to the pre-fence behavior unless explicitly
+/// enabled.
+fn shared_store_fence_enabled() -> bool {
+    matches!(
+        std::env::var("TS_SHARED_STORE_FENCE")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 impl<O> Clone for SharedStoreReplicator<O> {
@@ -256,6 +310,7 @@ impl<O> Clone for SharedStoreReplicator<O> {
             object_store: Arc::clone(&self.object_store),
             retry_policy: self.retry_policy,
             wal_append_mode: self.wal_append_mode,
+            fence: self.fence.clone(),
         }
     }
 }
@@ -333,6 +388,7 @@ where
             object_store,
             retry_policy: SharedStoreRetryPolicy::default(),
             wal_append_mode: SharedStoreWalAppendMode::default(),
+            fence: None,
         }
     }
 
@@ -349,6 +405,7 @@ where
                 backoff_ms: retry_policy.backoff_ms,
             },
             wal_append_mode: SharedStoreWalAppendMode::default(),
+            fence: None,
         }
     }
 
@@ -357,10 +414,121 @@ where
         self
     }
 
+    /// Attach a durable single-writer fence: this replicator (and every storage writer it
+    /// spawns) claims `load_version` for its shard leases. Combine with
+    /// [`acquire_shard_lease`](Self::acquire_shard_lease) to install the lease and with
+    /// `TS_SHARED_STORE_FENCE=1` to enforce re-validation on every append/checkpoint.
+    pub fn with_fence(mut self, load_version: u64, owner: impl Into<String>) -> Self {
+        self.fence = Some(ShardFenceConfig {
+            load_version,
+            owner: owner.into(),
+        });
+        self
+    }
+
+    fn lease_key(&self, shard_id: ShardId) -> String {
+        format!("leases/{}/shard_{}.lease", self.cluster_id, shard_id)
+    }
+
+    /// Durably claim ownership of `shard_id` at `load_version` via a store compare-and-set.
+    /// Succeeds only if the currently persisted lease is absent or holds a strictly lower
+    /// load_version; a stale writer (equal-or-lower load_version) is rejected with
+    /// [`SharedStoreReplicationError::StaleOwnership`], and a lost CAS race with
+    /// [`SharedStoreReplicationError::StoreConditionFailed`]. This is the ONLY way a writer
+    /// becomes the fenced owner — it does not mutate in-memory state, so ownership is decided
+    /// by the durable store, not a local view.
+    pub async fn acquire_shard_lease(
+        &self,
+        shard_id: ShardId,
+        load_version: u64,
+        owner: impl Into<String>,
+    ) -> Result<(), SharedStoreReplicationError> {
+        let key = self.lease_key(shard_id);
+        let current_bytes = match self.object_store.get(&key).await {
+            Ok(bytes) => Some(bytes),
+            Err(ObjectStoreError::NotFound(_)) => None,
+            Err(err) => return Err(err.into()),
+        };
+        if let Some(bytes) = &current_bytes {
+            let current: ShardLease = serde_json::from_slice(bytes)?;
+            if current.load_version >= load_version {
+                return Err(SharedStoreReplicationError::StaleOwnership {
+                    shard_id,
+                    current: current.load_version,
+                    attempted: load_version,
+                });
+            }
+        }
+        let lease = ShardLease {
+            load_version,
+            owner: owner.into(),
+        };
+        let new_bytes = Bytes::from(serde_json::to_vec(&lease)?);
+        match self
+            .object_store
+            .compare_and_swap(&key, current_bytes, new_bytes)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(ObjectStoreError::ConditionFailed { detail, .. }) => {
+                Err(SharedStoreReplicationError::StoreConditionFailed { detail })
+            }
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    /// Re-read the durable lease and confirm it still records `load_version`. Any other value
+    /// (a newer owner took over) or a missing lease is a fence breach → StoreConditionFailed.
+    pub async fn validate_shard_lease(
+        &self,
+        shard_id: ShardId,
+        load_version: u64,
+    ) -> Result<(), SharedStoreReplicationError> {
+        let key = self.lease_key(shard_id);
+        let bytes = match self.object_store.get(&key).await {
+            Ok(bytes) => bytes,
+            Err(ObjectStoreError::NotFound(_)) => {
+                return Err(SharedStoreReplicationError::StoreConditionFailed {
+                    detail: format!("shard {shard_id} lease missing; ownership not held"),
+                });
+            }
+            Err(err) => return Err(err.into()),
+        };
+        let current: ShardLease = serde_json::from_slice(&bytes)?;
+        if current.load_version != load_version {
+            return Err(SharedStoreReplicationError::StoreConditionFailed {
+                detail: format!(
+                    "shard {shard_id} lease held by load_version {} (owner {}), not {}",
+                    current.load_version, current.owner, load_version
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    /// Fence check invoked on every WAL append + checkpoint publish. A no-op unless a fence is
+    /// configured AND `TS_SHARED_STORE_FENCE` is enabled, so the default write path is
+    /// unchanged. When active it re-validates the durable lease, aborting a superseded writer.
+    async fn enforce_fence(
+        &self,
+        shard_id: ShardId,
+    ) -> Result<(), SharedStoreReplicationError> {
+        let Some(fence) = &self.fence else {
+            return Ok(());
+        };
+        if !shared_store_fence_enabled() {
+            return Ok(());
+        }
+        self.validate_shard_lease(shard_id, fence.load_version).await
+    }
+
     pub async fn publish_wal_entry(
         &self,
         entry: SharedStoreWalEntry,
     ) -> Result<Option<AppendBlobReceipt>, SharedStoreReplicationError> {
+        // R2 single-writer fence: re-validate ownership before appending to the shared WAL so
+        // a partitioned-but-alive stale owner is rejected rather than double-appending.
+        self.enforce_fence(entry.shard_id).await?;
         if matches!(
             self.wal_append_mode,
             SharedStoreWalAppendMode::ProtobufAppendBlob
@@ -540,6 +708,9 @@ where
         engine: &TemporalEngine,
         block_store: &LocalBlockStore,
     ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
+        // R2 single-writer fence: a checkpoint publish is a durable-frontier advance, so a
+        // superseded stale owner must be rejected here just as on a WAL append.
+        self.enforce_fence(shard_id).await?;
         let checkpoint_id = uuid::Uuid::new_v4().to_string();
         let prefix = self.checkpoint_prefix(shard_id, &checkpoint_id);
         let index_key = format!("{prefix}index/shard.index.json");
@@ -3424,6 +3595,90 @@ mod tests {
                 CommandResponse::Bytes { value: Some(value) }
             );
         }
+    }
+
+    /// R2: a durable, cross-owner single-writer fence. Proves rejection happens at the STORE
+    /// layer (a superseded stale owner cannot double-append to the shared WAL), not merely via
+    /// an in-memory load_version check.
+    #[tokio::test]
+    async fn r2_stale_load_version_writer_is_rejected_at_store_layer() {
+        std::env::set_var("TS_SHARED_STORE_FENCE", "1");
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+        let shard: ShardId = 7;
+
+        // Owner A claims the shard at load_version 1 and writes successfully.
+        let repl_a = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone()).with_fence(1, "A");
+        repl_a.acquire_shard_lease(shard, 1, "A").await.unwrap();
+        let writer_a = repl_a.storage_writer(SharedStoreStorageMode::Sync, 1);
+        writer_a
+            .write(
+                shard,
+                Command::StringSet {
+                    key: "k".to_string(),
+                    value: b"from-a".to_vec(),
+                },
+            )
+            .await
+            .expect("owner A write should succeed while it holds the lease");
+
+        // A newer owner B takes over at a strictly higher load_version 2.
+        let repl_b = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone()).with_fence(2, "B");
+        repl_b.acquire_shard_lease(shard, 2, "B").await.unwrap();
+
+        // The stale owner A is now fenced OUT: its next WAL append is rejected at the store
+        // layer, so it cannot double-append and corrupt the shared WAL.
+        let err = writer_a
+            .write(
+                shard,
+                Command::StringSet {
+                    key: "k".to_string(),
+                    value: b"stale-a".to_vec(),
+                },
+            )
+            .await
+            .expect_err("stale owner A must be rejected after being superseded");
+        assert!(
+            matches!(err, SharedStoreReplicationError::StoreConditionFailed { .. }),
+            "expected fence rejection, got {err:?}"
+        );
+
+        // Owner B, holding the current lease, still writes fine.
+        let writer_b = repl_b.storage_writer(SharedStoreStorageMode::Sync, 2);
+        writer_b
+            .write(
+                shard,
+                Command::StringSet {
+                    key: "k".to_string(),
+                    value: b"from-b".to_vec(),
+                },
+            )
+            .await
+            .expect("current owner B write should succeed");
+
+        // A stale ownership claim (equal-or-lower load_version) cannot acquire the lease.
+        let repl_c = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone()).with_fence(1, "C");
+        let acquire_err = repl_c
+            .acquire_shard_lease(shard, 1, "C")
+            .await
+            .expect_err("a stale load_version must not be able to acquire the lease");
+        assert!(
+            matches!(acquire_err, SharedStoreReplicationError::StaleOwnership { .. }),
+            "expected StaleOwnership, got {acquire_err:?}"
+        );
+
+        // The underlying store CAS is itself fenced: a wrong `expected` is rejected.
+        let cas_err = store
+            .compare_and_swap(
+                "leases/probe.lease",
+                Some(Bytes::from_static(b"never-written")),
+                Bytes::from_static(b"new"),
+            )
+            .await
+            .expect_err("CAS with a mismatched expected value must fail");
+        assert!(matches!(cas_err, ObjectStoreError::ConditionFailed { .. }));
+
+        std::env::remove_var("TS_SHARED_STORE_FENCE");
     }
 
     #[derive(Debug)]

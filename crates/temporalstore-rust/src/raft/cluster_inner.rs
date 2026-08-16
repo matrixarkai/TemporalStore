@@ -462,6 +462,9 @@ impl RaftClusterInner {
     }
 
     pub(super) fn elect_leader(&mut self, node_id: RaftNodeId) -> Result<(), RaftError> {
+        if raft_quorum_election_on() {
+            return self.elect_leader_quorum_round(node_id);
+        }
         if self.config.prohibits_election {
             for node in self.nodes.values_mut() {
                 node.pipeline_state.election_rejections =
@@ -516,6 +519,125 @@ impl RaftClusterInner {
                 Some(node_id)
             } else {
                 None
+            };
+        }
+        self.election_elapsed_tick = 0;
+        self.renew_leader_lease();
+        Ok(())
+    }
+
+    /// R5: promote `node_id` only after a DURABLE per-term quorum RequestVote round grants it a
+    /// majority — instead of promoting from a local snapshot. This mirrors the receiver rules
+    /// already implemented in `receive_vote_request` (single vote per term via `voted_for`,
+    /// leader-completeness log-freshness), but drives them across every voter and gates
+    /// promotion on the collected grant count. A partitioned candidate whose granting voters
+    /// fall short of majority cannot elect, so two disjoint partitions can never each promote a
+    /// leader for the same term.
+    fn elect_leader_quorum_round(&mut self, node_id: RaftNodeId) -> Result<(), RaftError> {
+        if self.config.prohibits_election {
+            for node in self.nodes.values_mut() {
+                node.pipeline_state.election_rejections =
+                    node.pipeline_state.election_rejections.saturating_add(1);
+            }
+            return Err(RaftError::ElectionProhibited);
+        }
+        if let Some((live, required)) = self.joint_majority_failure() {
+            return Err(RaftError::NoMajority { live, required });
+        }
+        if !self
+            .nodes
+            .get(&node_id)
+            .map(|node| node.alive && node.replica_role.can_be_leader())
+            .unwrap_or(false)
+        {
+            return Err(RaftError::NodeNotFound(node_id));
+        }
+
+        let election_term = self
+            .nodes
+            .values()
+            .map(|node| node.current_term)
+            .max()
+            .unwrap_or_default()
+            .saturating_add(1);
+        let (candidate_last_index, candidate_last_term) = {
+            let candidate = self
+                .nodes
+                .get(&node_id)
+                .ok_or(RaftError::NodeNotFound(node_id))?;
+            let last_index = node_last_log_or_snapshot_index(candidate);
+            let last_term =
+                node_term_at_log_or_snapshot_index(candidate, last_index).unwrap_or_default();
+            (last_index, last_term)
+        };
+
+        // Candidate durably records its own term bump + self-vote first.
+        {
+            let candidate = self
+                .nodes
+                .get_mut(&node_id)
+                .ok_or(RaftError::NodeNotFound(node_id))?;
+            candidate.current_term = election_term;
+            candidate.voted_for = Some(node_id);
+        }
+        let required = self.required_majority();
+        let mut grants = 1usize; // self-vote
+
+        let voter_ids: Vec<RaftNodeId> = self
+            .nodes
+            .values()
+            .filter(|node| node.replica_role.participates_in_quorum() && node.id != node_id)
+            .map(|node| node.id)
+            .collect();
+        for voter_id in voter_ids {
+            let node = self
+                .nodes
+                .get_mut(&voter_id)
+                .ok_or(RaftError::NodeNotFound(voter_id))?;
+            // A partitioned / unreachable voter cannot respond to the RequestVote — it observes
+            // the higher term (so it cannot later grant a stale one) but does not grant here.
+            if !node.alive {
+                node.current_term = node.current_term.max(election_term);
+                continue;
+            }
+            let already_voted_other = node.current_term == election_term
+                && node.voted_for.is_some()
+                && node.voted_for != Some(node_id);
+            let voter_last_index = node_last_log_or_snapshot_index(node);
+            let voter_last_term =
+                node_term_at_log_or_snapshot_index(node, voter_last_index).unwrap_or_default();
+            let candidate_log_up_to_date = (candidate_last_term, candidate_last_index)
+                >= (voter_last_term, voter_last_index);
+            if !already_voted_other && candidate_log_up_to_date {
+                node.current_term = election_term;
+                node.voted_for = Some(node_id);
+                node.role = RaftRole::Follower;
+                grants += 1;
+            } else {
+                node.current_term = node.current_term.max(election_term);
+                node.pipeline_state.election_rejections =
+                    node.pipeline_state.election_rejections.saturating_add(1);
+            }
+        }
+
+        if grants < required {
+            // Did not collect a durable quorum — do NOT promote. Leave the cluster leaderless
+            // for this attempt rather than installing a minority "leader".
+            if let Some(candidate) = self.nodes.get_mut(&node_id) {
+                candidate.role = RaftRole::Follower;
+            }
+            return Err(RaftError::NoMajority {
+                live: grants,
+                required,
+            });
+        }
+
+        self.leader_id = node_id;
+        for node in self.nodes.values_mut() {
+            node.role = if node.id == node_id {
+                RaftRole::Leader
+            } else {
+                RaftRole::Follower
             };
         }
         self.election_elapsed_tick = 0;
@@ -579,6 +701,31 @@ impl RaftClusterInner {
             .get(&self.leader_id)
             .map(|node| node.commit_index)
             .unwrap_or_default()
+    }
+
+    /// R4 leader-ready barrier: has the current leader committed an entry in its OWN term? Until
+    /// it has, a freshly elected leader must not serve read-index/lease reads, because it cannot
+    /// yet know the true commit point of its predecessors' terms (Raft §5.4.2 — the reason a new
+    /// leader commits a no-op). A committed current-term entry (in the log or folded into an
+    /// installed snapshot) discharges the barrier.
+    pub(super) fn leader_has_committed_current_term(&self) -> bool {
+        let Some(leader) = self.nodes.get(&self.leader_id) else {
+            return false;
+        };
+        let term = leader.current_term;
+        let committed_in_log = leader
+            .log
+            .iter()
+            .any(|entry| entry.term == term && entry.index <= leader.commit_index);
+        let committed_in_snapshot = leader
+            .installed_snapshot
+            .as_ref()
+            .map(|snapshot| {
+                snapshot.last_included_term == term
+                    && snapshot.last_included_index <= leader.commit_index
+            })
+            .unwrap_or(false);
+        committed_in_log || committed_in_snapshot
     }
 
     pub(super) fn voting_node_ids(&self) -> Vec<RaftNodeId> {
