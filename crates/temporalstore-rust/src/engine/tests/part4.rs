@@ -2946,3 +2946,202 @@ fn storage_lifecycle_plan_matches_delayed_and_limited_dirty_bucket_dump_policy()
     assert!(!explicit.dump_delayed);
     assert_eq!(explicit.selected_dump_buckets, vec![delayed.dirty_buckets[0]]);
 }
+
+// E1 regression: one engine hosts many shards over a SINGLE page_store with a global slab
+// cursor, so two shards' pages can share a slab. Page reclaim used to compute the live set from
+// only the shard whose cycle was running, so a slab holding another shard's committed pages
+// looked like an orphan and was deleted -- silent cross-shard data loss.
+//
+// This test builds exactly that: shard B's page lands in slab 0, the slab is sealed by a roll,
+// shard A's page lands in slab 1, then shard A's storage-manager cycle runs page reclaim. Slab 0
+// is absent from shard A's live set, below the retention floor, and not the current slab, so the
+// legacy per-shard live set deletes it. The fix unions live slab ids across ALL loaded shards, so
+// slab 0 (live in shard B) is retained.
+//
+// FAIL-before / PASS-after is demonstrated with the TS_CROSS_SHARD_RECLAIM_GUARD kill-switch:
+// running this test with TS_CROSS_SHARD_RECLAIM_GUARD=0 reproduces the legacy per-shard behavior
+// and the assertions below fail (slab 0 is moved out of the read path); the default (guard on)
+// passes.
+#[test]
+fn cross_shard_page_reclaim_retains_another_shards_live_slab() {
+    let dir = tempfile::tempdir().unwrap();
+    let pages = dir.path().join("pages");
+    let indexes = dir.path().join("indexes");
+    // Tiny cache so reads hit the slab on disk rather than an in-memory copy.
+    let engine =
+        TemporalEngine::with_local_dirs(16, dir.path().join("cache"), &pages, &indexes);
+    // Two shards hosted by the SAME engine => the SAME page_store + global slab cursor.
+    engine.load_shard(1); // shard A -- runs the reclaim cycle
+    engine.load_shard(2); // shard B -- owns the shared slab's live page
+
+    // Shard B's committed page lands in the current slab (slab 0).
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 2,
+        command: Command::StringSet {
+            key: "shard-b-key".to_string(),
+            value: b"shard-b-committed-value".to_vec(),
+        },
+    });
+    assert!(response.status.ok, "{response:?}");
+
+    // Identify the slab file backing shard B's page (the only .seg under the pages root).
+    let shard_b_slab_path = fs::read_dir(&pages)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.starts_with("page_segment_") && name.ends_with(".seg"))
+                .unwrap_or(false)
+        })
+        .expect("shard B write must create a page slab");
+
+    // Seal slab 0 so future appends go to a fresh slab, then write shard A into slab 1. Slab 0 is
+    // now a non-current slab that is live ONLY in shard B.
+    engine.block_store().roll_slab().unwrap();
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "shard-a-key".to_string(),
+            value: b"shard-a-committed-value".to_vec(),
+        },
+    });
+    assert!(response.status.ok, "{response:?}");
+
+    // Sanity: from shard A's own viewpoint, slab 0 is NOT live (it holds no shard-A pages), which
+    // is precisely why the legacy per-shard reclaim would delete it.
+    assert!(
+        !engine.live_page_slab_ids(1).contains(&0),
+        "slab 0 must be absent from shard A's per-shard live set"
+    );
+    assert!(
+        engine.live_page_slab_ids_all_shards().contains(&0),
+        "slab 0 must be present in the cross-shard union live set"
+    );
+
+    // Run shard A's storage-manager cycle with page reclaim (only). Other stages are off so the
+    // test isolates the reclaim decision.
+    let cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        enable_prepare: true,
+        enable_wal_reclaim: false,
+        enable_evict: false,
+        enable_expire: false,
+        enable_page_reclaim: true,
+        enable_page_compaction: false,
+        enable_index_gc: false,
+        ..StorageManagerCycleRequest::default()
+    });
+    assert!(
+        cycle.errors.is_empty(),
+        "reclaim cycle should not error: {:?}",
+        cycle.errors
+    );
+
+    // Decisive, cache-independent check: shard B's slab file must still be in the read path (the
+    // legacy per-shard reclaim moves it into the delayed-destroy trash, vanishing shard B's data).
+    assert!(
+        shard_b_slab_path.exists(),
+        "shard B's live slab was reclaimed by shard A's cycle -> cross-shard data loss"
+    );
+
+    // Behavioral check: shard B's committed value is still readable after shard A's cycle.
+    let read_back = engine.execute(ExecuteRequest {
+        shard_id: 2,
+        command: Command::StringGet {
+            key: "shard-b-key".to_string(),
+        },
+    });
+    assert_eq!(
+        read_back.response,
+        CommandResponse::Bytes {
+            value: Some(b"shard-b-committed-value".to_vec()),
+        },
+        "shard B's committed value must survive shard A's reclaim cycle"
+    );
+}
+
+// E5 regression: FeatureQuery / FeatureQueryFiltered used to skip lazy expiry, so a key past its
+// deadline but not yet swept read live points from FeatureQuery while FeatureAggQuery (which
+// applies remove_if_expired) read empty -- an inconsistency between two reads of the same key.
+// All feature reads must agree: an expired-but-unswept key reads empty everywhere.
+#[test]
+fn expired_feature_key_reads_empty_consistently_across_feature_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for command in [
+        Command::FeatureAppend {
+            key: "expiring-feature".to_string(),
+            points: vec![FeaturePoint {
+                timestamp_ms: 10,
+                value: b"ten".to_vec(),
+            }],
+        },
+        Command::CommonExpire {
+            key: "expiring-feature".to_string(),
+            ttl_ms: 1,
+        },
+    ] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command,
+        });
+        assert!(response.status.ok, "{response:?}");
+    }
+    // Cross the deadline but run NO sweep: this is the window where lazy expiry must fire.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+
+    let feature_query = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureQuery {
+            key: "expiring-feature".to_string(),
+            start_ms: 0,
+            end_ms: 1000,
+            count: None,
+        },
+    });
+    assert_eq!(
+        feature_query.response,
+        CommandResponse::FeaturePoints { points: Vec::new() },
+        "FeatureQuery must apply lazy expiry and read empty for an expired-but-unswept key"
+    );
+
+    let filtered_query = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureQueryFiltered {
+            key: "expiring-feature".to_string(),
+            start_ms: 0,
+            end_ms: 1000,
+            count: None,
+            filters: Vec::new(),
+        },
+    });
+    assert_eq!(
+        filtered_query.response,
+        CommandResponse::FeaturePoints { points: Vec::new() },
+        "FeatureQueryFiltered must apply lazy expiry and read empty for an expired-but-unswept key"
+    );
+
+    let agg_query = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureAggQuery {
+            key: "expiring-feature".to_string(),
+            start_ms: 0,
+            end_ms: 1000,
+            aggregator: "count".to_string(),
+            count: None,
+        },
+    });
+    assert_eq!(
+        agg_query.response,
+        CommandResponse::Aggregate { value: 0 },
+        "FeatureAggQuery reads empty for an expired key -- the other feature reads must match"
+    );
+}
