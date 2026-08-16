@@ -1,0 +1,23 @@
+# Canonical systemd unit for the MatrixArk /v1 HTTP gateway.
+# Installed to /etc/systemd/system/matrixark-gateway.service on the node.
+#
+# ExecStart runs THROUGH the config launcher: with_config.sh reads the canonical
+# TOML, exports every mapped env var that is not already set, then exec's the
+# gateway. Any Environment= / EnvironmentFile= set below (or in a drop-in) still
+# wins, because systemd applies them before ExecStart runs.
+[Unit]
+Description=MatrixArk /v1 HTTP gateway
+After=network-online.target matrixark-proxy.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/temporalstore/gw
+# Explicit env here (or via a drop-in) overrides the config file (env wins):
+# Environment=MATRIXARK_HTTP_PORT=8080
+ExecStart=/opt/temporalstore/scripts/with_config.sh /opt/temporalstore/config/temporalstore.toml /usr/bin/python3 /opt/temporalstore/gw/tools/matrixark_v1_gateway.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,21 @@
+# Canonical systemd unit for the TemporalStore datanode (Rust engine).
+# Installed to /etc/systemd/system/matrixark-datanode.service on the node.
+#
+# ExecStart runs THROUGH the config launcher (with_config.sh reads the canonical
+# TOML -> exports mapped TS_* / MATRIXARK_* env if-unset -> exec's the binary).
+# Explicit Environment= / EnvironmentFile= still wins (systemd sets them first).
+# Requires python3 on the node for the loader (a stdlib-only script).
+[Unit]
+Description=TemporalStore datanode (Rust engine)
+After=network-online.target matrixark-metaserver.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/temporalstore
+ExecStart=/opt/temporalstore/scripts/with_config.sh /opt/temporalstore/config/temporalstore.toml /opt/temporalstore/bin/matrixark_rust_datanode
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
