@@ -1800,6 +1800,73 @@ mod tests {
     }
 
     #[test]
+    fn read_range_and_logical_range_drive_shared_slab_read_through() {
+        // Reference-parity lazy recovery must cover band-report / streaming reads too:
+        // read_range and read_logical_range on a metadata-only restored node must pull a
+        // not-yet-fetched checkpoint slab from shared storage on first access (previously
+        // they hit a local File::open miss instead of the shared read-through).
+        #[derive(Debug)]
+        struct OneSlabSource {
+            page_slab_id: u64,
+            bytes: Vec<u8>,
+        }
+        impl SharedSlabSource for OneSlabSource {
+            fn fetch_slab(&self, page_slab_id: u64) -> Result<Option<Vec<u8>>, BlockStoreError> {
+                Ok((page_slab_id == self.page_slab_id).then(|| self.bytes.clone()))
+            }
+        }
+
+        // Producer writes a real slab; capture its raw bytes to serve lazily to fresh nodes.
+        let producer_dir = tempfile::tempdir().unwrap();
+        let producer = LocalBlockStore::new(producer_dir.path());
+        producer.append(b"abc").unwrap();
+        producer.append(b"def").unwrap();
+        let raw = producer.read_slab(0).unwrap();
+        drop(producer);
+
+        // read_range: fresh node, slab absent locally, shared source attached.
+        let range_dir = tempfile::tempdir().unwrap();
+        let range_node = LocalBlockStore::new(range_dir.path());
+        range_node.attach_shared_slab_source(Arc::new(OneSlabSource {
+            page_slab_id: 0,
+            bytes: raw.clone(),
+        }));
+        assert!(
+            !range_node.slab_ids().unwrap().contains(&0),
+            "slab must not be installed before the range read"
+        );
+        assert_eq!(range_node.stats().shared_slab_fetches, 0);
+        let raw_prefix = range_node.read_range(0, 0, 3).unwrap();
+        assert_eq!(
+            range_node.stats().shared_slab_fetches, 1,
+            "read_range must fetch the missing slab exactly once"
+        );
+        assert_eq!(raw_prefix.len(), 3);
+        assert_eq!(raw, range_node.read_slab(0).unwrap());
+        // Cached now: a second range read must not re-fetch.
+        let _ = range_node.read_range(0, 0, 3).unwrap();
+        assert_eq!(
+            range_node.stats().shared_slab_fetches, 1,
+            "cached slab: no re-fetch"
+        );
+
+        // read_logical_range: independent fresh node so its fetch count starts at 0.
+        let logical_dir = tempfile::tempdir().unwrap();
+        let logical_node = LocalBlockStore::new(logical_dir.path());
+        logical_node.attach_shared_slab_source(Arc::new(OneSlabSource {
+            page_slab_id: 0,
+            bytes: raw.clone(),
+        }));
+        assert_eq!(logical_node.stats().shared_slab_fetches, 0);
+        let logical = logical_node.read_logical_range(0, 1, 4).unwrap();
+        assert_eq!(
+            logical_node.stats().shared_slab_fetches, 1,
+            "read_logical_range must fetch the missing slab exactly once"
+        );
+        assert_eq!(logical, b"bcde");
+    }
+
+    #[test]
     fn compressed_page_records_round_trip_and_remain_logical() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
