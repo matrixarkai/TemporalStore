@@ -452,13 +452,22 @@ impl TemporalEngine {
                         shard.applied_wal_sequence,
                         None,
                     );
-                } else {
+                } else if !wal_single_barrier() {
                     let index_bytes = serialize_index(shard);
                     let _ = self
                         .index_log_store
                         .append_json(request.shard_id, &index_bytes);
                     let _ = self.persist_index_bytes(request.shard_id, &index_bytes);
                 }
+                // Single-barrier mode (base-only recovery): the per-write base-index rewrite
+                // above is DEFERRED. It would otherwise advance the on-disk base watermark (and
+                // its page references) to the latest write while the data-page fdatasync is
+                // deferred, so a crash would leave the durable base pointing past the durable
+                // page frontier -- recovery would then trust a watermark whose pages were never
+                // synced and silently drop them. Instead the base index is materialized ONLY by
+                // the durable dump/flush path (which fsyncs every page BEFORE advancing its
+                // watermark), so base-only recovery never trusts a watermark or page reference
+                // beyond the durable frontier; the WAL (already synced above) re-derives the tail.
             }
         }
         ExecuteResponse {
@@ -635,8 +644,79 @@ impl TemporalEngine {
         if request.config.version == current.version {
             return Status::ok();
         }
+        let applied = request.config.clone();
         configs.insert(request.shard_id, request.config);
+        // Drop the config lock before touching the WAL/disk so the durable append never runs
+        // under the config mutex.
+        drop(configs);
+        // Single-barrier durability: config-driven trims (feature_max_size) are re-derived by
+        // WAL-tail replay on recovery, so the config must be durable and ordered relative to the
+        // WAL. Stamp this change with the current WAL frontier -- it is effective for every write
+        // with a strictly greater sequence -- and fsync it. Config changes are rare admin ops, so
+        // this extra barrier is off the per-write hot path. Off the flag this is a no-op and the
+        // config path is byte-for-byte unchanged.
+        if wal_single_barrier() {
+            let after_seq = self.wal_store.stats(request.shard_id).last_sequence;
+            if let Err(err) = self.append_config_log_entry(request.shard_id, after_seq, &applied) {
+                tracing::warn!(
+                    shard_id = request.shard_id,
+                    error = %err,
+                    "failed to persist single-barrier config-log entry"
+                );
+            }
+        }
         Status::ok()
+    }
+
+    /// Durable, WAL-sequence-ordered config-log path for a shard (single-barrier mode).
+    pub(super) fn config_log_path(&self, shard_id: ShardId) -> PathBuf {
+        self.index_dir
+            .join(format!("shard-{shard_id}.configlog.jsonl"))
+    }
+
+    /// Append one config-log entry `{after_seq, config}` and fsync it. `after_seq` is the WAL
+    /// sequence the config became effective AFTER (it applies to writes with sequence >
+    /// after_seq). Append-only + fsync'd so a crash cannot lose an acked config change.
+    pub(super) fn append_config_log_entry(
+        &self,
+        shard_id: ShardId,
+        after_seq: u64,
+        config: &Config,
+    ) -> std::io::Result<()> {
+        use std::io::Write as _;
+        std::fs::create_dir_all(&self.index_dir)?;
+        let entry = ConfigLogEntry {
+            after_seq,
+            config: config.clone(),
+        };
+        let mut bytes = serde_json::to_vec(&entry)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+        bytes.push(b'\n');
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.config_log_path(shard_id))?;
+        file.write_all(&bytes)?;
+        file.flush()?;
+        file.sync_data()?;
+        Ok(())
+    }
+
+    /// Read the config-log entries for a shard, sorted by ascending `after_seq` (stable). Empty
+    /// when the shard has no config-log (no single-barrier config change was ever persisted).
+    pub(super) fn config_log_entries(&self, shard_id: ShardId) -> Vec<ConfigLogEntry> {
+        let path = self.config_log_path(shard_id);
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(_) => return Vec::new(),
+        };
+        let mut entries: Vec<ConfigLogEntry> = contents
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .filter_map(|line| serde_json::from_str::<ConfigLogEntry>(line).ok())
+            .collect();
+        entries.sort_by_key(|entry| entry.after_seq);
+        entries
     }
 
     pub fn get_config(&self, shard_id: ShardId) -> GetConfigResponse {
@@ -1463,14 +1543,53 @@ fn atomic_write_bytes_synced(path: &Path, bytes: &[u8], sync: bool) -> Result<()
 /// barrier; the served-index checkpoint write is issued but its fsync is deferred to the
 /// background flush / OS writeback (reconstructable from the WAL on recovery). Default OFF.
 pub(super) fn wal_only_sync() -> bool {
+    env_flag_on("TS_WAL_ONLY_SYNC") || wal_single_barrier()
+}
+
+/// TS_WAL_SINGLE_BARRIER: the true SINGLE write-path durability barrier. Only the WAL takes a
+/// synchronous fdatasync per write (1.00/write); the data-page fdatasync, the served-index
+/// delta-log fdatasync, the band-manifest persist, and the base-index sync are all deferred.
+/// Correctness rests on the WAL + the durable dump checkpoint being a COMPLETE source of truth:
+///  - config changes (feature_max_size etc.) become durable and WAL-sequence-ordered via a
+///    per-shard config-log, so replay re-derives config-driven eviction (trims) at the exact
+///    frontier they took effect (see `append_config_log_entry` / `config_log_entries`). Without
+///    this, WAL-only replay re-executed feature appends with the default config and resurrected
+///    evicted points.
+///  - expiry (TTL) resolves against the leader timestamp captured in each WAL record (replay
+///    clock) and applies lazily; compaction is background + non-destructive to logical
+///    membership -- both already WAL-re-derivable.
+///  - the durable dump/flush path fsyncs every data page BEFORE it materializes the base index
+///    and advances its watermark, so every page at/below the base watermark is durable. Recovery
+///    is BASE-ONLY: it trusts only that durable base/manifest checkpoint (never the un-synced
+///    per-write base rewrite or served-index delta, which may reference pages that were never
+///    fsync'd), then replays the WAL tail from the watermark, re-deriving every post-dump page
+///    EXACTLY ONCE. A page written but never fsync'd is rebuilt from its WAL command rather than
+///    left dangling -- no page loss, no double-apply.
+/// Default OFF; when off the write and load paths are byte-for-byte unchanged.
+pub(super) fn wal_single_barrier() -> bool {
+    env_flag_on("TS_WAL_SINGLE_BARRIER")
+}
+
+fn env_flag_on(name: &str) -> bool {
     matches!(
-        std::env::var("TS_WAL_ONLY_SYNC")
+        std::env::var(name)
             .unwrap_or_default()
             .trim()
             .to_ascii_lowercase()
             .as_str(),
         "1" | "true" | "yes" | "on"
     )
+}
+
+/// One durable config-log entry: the shard config `config`, effective for every WAL write with
+/// sequence strictly greater than `after_seq`. Written under single-barrier mode so WAL-tail
+/// replay re-derives config-driven eviction (feature_max_size trims) at the exact frontier the
+/// change took effect, rather than replaying with a lost/default config and resurrecting or
+/// dropping points.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(super) struct ConfigLogEntry {
+    pub after_seq: u64,
+    pub config: Config,
 }
 
 fn next_temp_counter() -> u64 {

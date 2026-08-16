@@ -95,7 +95,10 @@ impl LocalBlockStore {
         //    fsync + rename EVERY record -- barriers 5/6) to sync_durable()/slab-seal. SAFE
         //    even with pages kept durable: the manifest is band/GC metadata reconstructed
         //    by reconcile-on-open from the durable page records, never a read dependency.
-        let defer_data_sync = bulk_relaxed_durability();
+        // Under the true single-barrier mode the data-page fdatasync is also deferred;
+        // base-only recovery re-derives every post-dump page by WAL replay, so a never-fsync'd
+        // page is rebuilt from its WAL command rather than left dangling.
+        let defer_data_sync = bulk_relaxed_durability() || page_wal_single_barrier();
         let defer_manifest = bulk_relaxed_durability() || page_wal_only_sync();
         if !defer_data_sync {
             file.sync_data()?;
@@ -219,8 +222,10 @@ impl LocalBlockStore {
         // The batch already amortizes the data barrier across all its records (one
         // sync_data for the whole batch). Keep that data barrier on the live path (durable
         // pages); only the extent-manifest persist is deferred under TS_WAL_ONLY_SYNC
-        // (reconciled on open), matching the single-append path.
-        let defer_data_sync = bulk_relaxed_durability();
+        // (reconciled on open), matching the single-append path. Under the true single-barrier
+        // mode the data-page fdatasync is also deferred; base-only recovery re-derives every
+        // post-dump page by WAL replay, so a never-fsync'd page is rebuilt, never left dangling.
+        let defer_data_sync = bulk_relaxed_durability() || page_wal_single_barrier();
         let defer_manifest = bulk_relaxed_durability() || page_wal_only_sync();
         if let Some(mut current) = file {
             current.flush()?;
