@@ -44,6 +44,20 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_asgi import make_asgi_app, _api_key  # type: ignore
     from matrixark_http import apply_ingest_route_defaults, mcp_http_dispatch  # type: ignore
 
+# Key hashing: reuse the backend's `secret_hash` (sha256 hex) so a key minted by the provisioner /
+# backend credential store verifies identically at the edge. Falls back to a self-contained sha256
+# so the gateway keeps importing cleanly even where the backend identity module is unavailable.
+try:  # pragma: no cover - trivial import shim
+    try:
+        from tools.matrixark_mcp_core_identity import secret_hash as _secret_hash  # type: ignore
+    except ImportError:
+        from matrixark_mcp_core_identity import secret_hash as _secret_hash  # type: ignore
+except Exception:  # pragma: no cover
+    import hashlib as _hashlib
+
+    def _secret_hash(value: str) -> str:
+        return _hashlib.sha256(value.encode("utf-8")).hexdigest()
+
 Json = dict[str, Any]
 
 # ---- defaults (all overridable via env or the `config` dict) -----------------------------------
@@ -51,6 +65,7 @@ _MIB = 1024 * 1024
 _GIB = 1024 * 1024 * 1024
 _DEFAULTS = {
     "require_auth": True,
+    "enforced": False,
     "ingest_rps": 5000.0,
     "ingest_burst": 10000.0,
     "retrieve_rps": 6000.0,
@@ -123,6 +138,72 @@ def _parse_api_keys(env: Any, overrides: Json) -> dict[str, str]:
     return keys
 
 
+def _parse_hashed_keys(env: Any, overrides: Json) -> dict[str, Json]:
+    """Enforced-mode keystore: ``{api_key_hash -> {"tenant_id", "account_id"}}``.
+
+    Keys are stored HASHED, never plaintext. The store is provisioned by
+    ``matrixark_provision_api_key.py`` (which reuses the backend ``secret_hash`` and the
+    ``matrixark_api_key`` record shape). Two source shapes are accepted from
+    ``MATRIXARK_API_KEYS_HASHED_FILE``:
+
+      * JSONL of ``matrixark_api_key`` records (same fields the backend credential store writes:
+        ``record_type``/``api_key_hash``/``account_id``/``tenant_id``/``status``/``expires_at_ms``).
+      * a plain JSON object ``{"<sha256hex>": {"tenant_id": ..., "account_id": ...}}``.
+
+    ``overrides["hashed_api_keys"]`` (a dict) short-circuits for tests. Inactive/expired records are
+    skipped. The last active record for a given hash wins.
+    """
+    if isinstance(overrides.get("hashed_api_keys"), dict):
+        return {str(k): dict(v) if isinstance(v, dict) else {"tenant_id": str(v)}
+                for k, v in overrides["hashed_api_keys"].items()}
+    path = str(env.get("MATRIXARK_API_KEYS_HASHED_FILE", "") or "").strip()
+    out: dict[str, Json] = {}
+    if not path or not os.path.exists(path):
+        return out
+    now = int(time.time() * 1000)
+
+    def _add(hash_hex: str, tenant_id: str, account_id: str) -> None:
+        if hash_hex and tenant_id:
+            out[hash_hex] = {"tenant_id": tenant_id, "account_id": account_id or "acct_local"}
+
+    with open(path, "r", encoding="utf-8") as handle:
+        text = handle.read()
+    stripped = text.strip()
+    if stripped.startswith("{") and '"api_key_hash"' not in stripped:
+        # plain JSON object form.
+        try:
+            data = json.loads(stripped)
+        except json.JSONDecodeError:
+            data = {}
+        if isinstance(data, dict):
+            for hash_hex, value in data.items():
+                if isinstance(value, dict):
+                    _add(str(hash_hex), str(value.get("tenant_id") or ""), str(value.get("account_id") or ""))
+                else:
+                    _add(str(hash_hex), str(value), "")
+        return out
+    # JSONL of records (append-only credential-store shape).
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict) or record.get("record_type") not in (None, "matrixark_api_key"):
+            continue
+        if str(record.get("status", "active")) != "active":
+            out.pop(str(record.get("api_key_hash") or ""), None)
+            continue
+        expires_at_ms = record.get("expires_at_ms")
+        if isinstance(expires_at_ms, int) and expires_at_ms <= now:
+            continue
+        _add(str(record.get("api_key_hash") or ""), str(record.get("tenant_id") or ""),
+             str(record.get("account_id") or ""))
+    return out
+
+
 class GatewayConfig:
     """Resolved gateway configuration (env + optional overrides)."""
 
@@ -130,6 +211,8 @@ class GatewayConfig:
         for name, value in _DEFAULTS.items():
             setattr(self, name, fields.get(name, value))
         self.api_keys: dict[str, str] = fields.get("api_keys", {})
+        # Enforced-mode hashed keystore: {api_key_hash -> {tenant_id, account_id}}.
+        self.hashed_keys: dict[str, Json] = fields.get("hashed_keys", {})
         # Datanode blob target, parsed for the http.client proxy.
         parsed = urlparse(str(self.datanode_url))
         self.blob_scheme = parsed.scheme or "http"
@@ -158,9 +241,14 @@ class GatewayConfig:
 
         return cls(
             api_keys=_parse_api_keys(env, overrides),
+            hashed_keys=_parse_hashed_keys(env, overrides),
             require_auth=_env_bool(
                 overrides.get("require_auth", env.get("MATRIXARK_REQUIRE_AUTH")),
                 _DEFAULTS["require_auth"],
+            ),
+            enforced=_env_bool(
+                overrides.get("enforced", env.get("MATRIXARK_AUTH_ENFORCED")),
+                _DEFAULTS["enforced"],
             ),
             ingest_rps=num("MATRIXARK_RL_INGEST_RPS", "ingest_rps", float),
             ingest_burst=num("MATRIXARK_RL_INGEST_BURST", "ingest_burst", float),
@@ -283,28 +371,56 @@ class _RateLimiter:
 # ================================================================================================
 # Auth + tenant isolation
 # ================================================================================================
-def _authorize(headers: list[Tuple[bytes, bytes]], cfg: GatewayConfig) -> Tuple[bool, Optional[str], Optional[str]]:
-    """Return (allowed, api_key, tenant). Unknown/missing key -> (False, ...) unless auth disabled."""
+def _authorize(headers: list[Tuple[bytes, bytes]],
+               cfg: GatewayConfig) -> Tuple[bool, Optional[str], Optional[str], Optional[str]]:
+    """Resolve the Bearer key to a tenant identity.
+
+    Returns ``(allowed, api_key, tenant_id, account_id)``.
+
+    ENFORCED mode (``MATRIXARK_AUTH_ENFORCED=1``): EVERY /v1 request must carry a Bearer key whose
+    sha256 hash is present in the provisioned hashed keystore. A missing, unknown, or revoked key --
+    and the legacy demo key ``sk_live_demo`` (which is never hashed into the enforced store) -- is
+    rejected. The identity ``{tenant_id, account_id}`` is taken from the stored record, NEVER from
+    client-supplied free text, so two tenants cannot collide on a shared scope string.
+
+    DEV/unenforced mode (default): unchanged legacy behavior -- the plaintext ``api_keys`` env map is
+    honored and, when ``require_auth`` is off, anonymous requests are allowed. This keeps existing dev
+    flows (the demo key) working when enforcement is off.
+    """
     key = _api_key(headers)
+    if cfg.enforced:
+        if not key:
+            return False, None, None, None
+        record = cfg.hashed_keys.get(_secret_hash(key))
+        if record:
+            return True, key, str(record.get("tenant_id") or ""), str(record.get("account_id") or "") or None
+        return False, None, None, None
+    # ---- dev / unenforced (legacy) --------------------------------------------------------------
     if key and key in cfg.api_keys:
-        return True, key, cfg.api_keys[key]
+        return True, key, cfg.api_keys[key], None
     if not cfg.require_auth:  # local/dev: anonymous is allowed.
-        return True, key, (cfg.api_keys.get(key) if key else None) or "anonymous"
-    return False, None, None
+        return True, key, (cfg.api_keys.get(key) if key else None) or "anonymous", None
+    return False, None, None, None
 
 
-def _apply_identity(args: Json, key: Optional[str], tenant: Optional[str]) -> Json:
-    """Inject identity and namespace-isolate `scope` under the tenant.
+def _apply_identity(args: Json, key: Optional[str], tenant: Optional[str],
+                    account: Optional[str] = None) -> Json:
+    """Inject identity and namespace-isolate `scope` under the tenant (and account).
 
     The shared backend access manager validates `scope` as an OBJECT (dict) for *every* backend
-    (`optional_object(args, "scope")`), so the tenant is injected as `scope["tenant_id"]`. Injecting
-    a bare tenant *string* (the previous behavior) made the backend reject every ingest/retrieve with
-    "scope must be an object" — a 100% failure that the unit tests missed by using a fake server.
+    (`optional_object(args, "scope")`), so the tenant is injected as `scope["tenant_id"]` (and the
+    resolved `scope["account_id"]`). Injecting a bare tenant *string* (an earlier behavior) made the
+    backend reject every ingest/retrieve with "scope must be an object".
+
+    The tenant identity is authoritative: the session/pending buffer key derives from
+    `(account_id, tenant_id, user_id, session_id)`, so pinning both `tenant_id` and `account_id` from
+    the authenticated key -- rather than trusting the client's `scope` string -- is what isolates one
+    tenant's memory (and the `pending_async_event` fallback buffer) from another's.
 
     The edge bearer key is forwarded as the backend `api_key` only when
     MATRIXARK_GATEWAY_FORWARD_API_KEY is truthy (default on). Deployments where the edge itself is the
-    trust boundary and the backend runs in `dev` access mode (so it does not expect scoped MatrixArk
-    keys) set it to 0, so the edge token is not misread as a backend credential.
+    trust boundary and the backend runs in `dev` access mode set it to 0, so the edge token is not
+    misread as a backend credential.
     """
     if key and _env_bool(os.environ.get("MATRIXARK_GATEWAY_FORWARD_API_KEY"), True):
         args["api_key"] = key
@@ -312,21 +428,30 @@ def _apply_identity(args: Json, key: Optional[str], tenant: Optional[str]) -> Js
         args["tenant"] = tenant
         scope = args.get("scope")
         if isinstance(scope, dict):
-            scope.setdefault("tenant_id", tenant)
+            scope["tenant_id"] = tenant
+            if account:
+                scope["account_id"] = account
         elif isinstance(scope, str) and scope:
             label = scope if (scope == tenant or scope.startswith(tenant + "/")) else f"{tenant}/{scope}"
-            args["scope"] = {"tenant_id": tenant, "namespace": label}
+            new_scope: Json = {"tenant_id": tenant, "namespace": label}
+            if account:
+                new_scope["account_id"] = account
+            args["scope"] = new_scope
         else:
-            args["scope"] = {"tenant_id": tenant}
+            new_scope = {"tenant_id": tenant}
+            if account:
+                new_scope["account_id"] = account
+            args["scope"] = new_scope
     return args
 
 
-def _isolate_key(key_str: str, tenant: Optional[str]) -> str:
+def _isolate_key(key_str: str, tenant: Optional[str], account: Optional[str] = None) -> str:
     if not tenant:
         return key_str
-    if key_str == tenant or key_str.startswith(tenant + "/"):
+    prefix = f"{account}/{tenant}" if account else tenant
+    if key_str == prefix or key_str.startswith(prefix + "/"):
         return key_str
-    return f"{tenant}/{key_str}"
+    return f"{prefix}/{key_str}"
 
 
 # ================================================================================================
@@ -406,14 +531,15 @@ def _finalize_requested(parsed: Json, args: Json) -> bool:
 # Blob proxy (streamed, bounded memory)
 # ================================================================================================
 async def _blob_put(scope: Json, receive: Callable, send: Callable, method: str,
-                    cfg: GatewayConfig, key_str: str, tenant: Optional[str]) -> None:
+                    cfg: GatewayConfig, key_str: str, tenant: Optional[str],
+                    account: Optional[str] = None) -> None:
     hmap = _headers_map(scope)
     cl_raw = hmap.get("content-length")
     declared = int(cl_raw) if cl_raw and cl_raw.isdigit() else None
     if declared is not None and declared > cfg.max_blob_bytes:
         return await _json(send, 413, {"error": "payload_too_large"})
 
-    dkey = _isolate_key(key_str, tenant)
+    dkey = _isolate_key(key_str, tenant, account)
     conn = cfg.blob_connection_factory(cfg)
     chunked = declared is None
 
@@ -468,8 +594,9 @@ async def _blob_put(scope: Json, receive: Callable, send: Callable, method: str,
     return await _json(send, out_status, receipt)
 
 
-async def _blob_get(send: Callable, cfg: GatewayConfig, key_str: str, tenant: Optional[str]) -> None:
-    dkey = _isolate_key(key_str, tenant)
+async def _blob_get(send: Callable, cfg: GatewayConfig, key_str: str, tenant: Optional[str],
+                    account: Optional[str] = None) -> None:
+    dkey = _isolate_key(key_str, tenant, account)
     conn = cfg.blob_connection_factory(cfg)
 
     def _start() -> Any:
@@ -751,7 +878,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
 
         # ---- blob (auth + concurrent-stream cap, streamed) ----------------------------------
         if path.startswith("/v1/blob/"):
-            allowed, key, tenant = _authorize(scope.get("headers", []), cfg)
+            allowed, key, tenant, account = _authorize(scope.get("headers", []), cfg)
             if not allowed:
                 return await _json(send, 401, {"error": "unauthorized"})
             key_str = path[len("/v1/blob/"):]
@@ -761,9 +888,9 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 return await _json(send, 429, {"error": "rate_limited"}, [(b"retry-after", b"1")])
             try:
                 if method in ("PUT", "POST"):
-                    return await _blob_put(scope, receive, send, method, cfg, key_str, tenant)
+                    return await _blob_put(scope, receive, send, method, cfg, key_str, tenant, account)
                 if method == "GET":
-                    return await _blob_get(send, cfg, key_str, tenant)
+                    return await _blob_get(send, cfg, key_str, tenant, account)
                 return await _json(send, 405, {"error": "method_not_allowed"})
             finally:
                 limiter.blob_release()
@@ -776,7 +903,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         if method != "POST":
             return await _json(send, 405, {"error": "method_not_allowed"})
 
-        allowed, key, tenant = _authorize(scope.get("headers", []), cfg)
+        allowed, key, tenant, account = _authorize(scope.get("headers", []), cfg)
         if not allowed:
             return await _json(send, 401, {"error": "unauthorized"})
 
@@ -827,13 +954,13 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         # the flag is off, control falls through to the byte-for-byte-unchanged MCP path below.
         if direct_client is not None and tool in (
                 "matrixark_ingest", "matrixark_retrieve", "matrixark_session_commit"):
-            _apply_identity(args, key, tenant)  # scope object only; proxy does the hashing
+            _apply_identity(args, key, tenant, account)  # scope object only; proxy does the hashing
             return await _dispatch_direct(
                 direct_client, cfg, tool, parsed, args, send, rl_headers,
                 n_records=n_records, n_messages=n_messages)
 
         apply_ingest_route_defaults("/api/ingest" if tool == "matrixark_ingest" else path, args)
-        _apply_identity(args, key, tenant)
+        _apply_identity(args, key, tenant, account)
 
         try:
             result = await asyncio.wait_for(
@@ -856,7 +983,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             # extraction NOW; a plain streaming message buffers and extracts later on commit/timeout.
             if _finalize_requested(parsed, args):
                 commit_args = {"scope": args.get("scope")}
-                _apply_identity(commit_args, key, tenant)
+                _apply_identity(commit_args, key, tenant, account)
                 try:
                     out["extraction"] = await asyncio.wait_for(
                         asyncio.to_thread(server.call_tool, "matrixark_session_commit", commit_args),
