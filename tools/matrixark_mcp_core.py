@@ -2480,13 +2480,40 @@ def extract_resource_facts(chunk: Any, *, chunk_metadata: Json, envelope: Json, 
     return facts
 
 
+def resolve_ingest_messages(args: Json, kind: str) -> list[Json]:
+    """Resolve the messages list for an ingest envelope.
+
+    Standard kinds (message/feedback/business_data) always require a non-empty
+    ``messages`` list, exactly as before. For ``resource``/``skill`` ingest we
+    additionally accept a single-call form with EITHER inline text
+    (``text`` or ``resource_text``) OR a local-file/URI ``raw_uri``, synthesizing
+    a messages list so callers no longer need to wrap a file path or a block of
+    text in a dummy ``messages`` list. The synthesized text reaches the resource
+    runtime as ``resource_text`` (derived from ``messages``); for a real file/URI
+    source the placeholder is ignored because the resolver parses the file.
+    """
+    messages = args.get("messages")
+    if isinstance(messages, list) and messages:
+        return require_messages(args)
+    if kind in {"resource", "skill"}:
+        for field in ("text", "resource_text"):
+            value = args.get(field)
+            if isinstance(value, str) and value:
+                return [{"role": "user", "content": value}]
+        raw_uri = args.get("raw_uri")
+        if isinstance(raw_uri, str) and raw_uri and raw_uri != "inline-resource":
+            return [{"role": "user", "content": f"resource:{raw_uri}"}]
+        raise MatrixArkError("resource/skill ingest needs one of: messages, text, or raw_uri")
+    return require_messages(args)
+
+
 def normalize_envelope(args: Json, *, default_kind: str) -> Json:
-    messages = require_messages(args)
-    scope = optional_object(args, "scope")
-    metadata = optional_object(args, "metadata")
     kind = args.get("kind", default_kind)
     if kind not in {"message", "feedback", "resource", "skill", "business_data"}:
         raise MatrixArkError("kind is invalid")
+    messages = resolve_ingest_messages(args, kind)
+    scope = optional_object(args, "scope")
+    metadata = optional_object(args, "metadata")
     ingestion_time_ms = args.get("ingestion_time_ms", metadata.get("ingestion_time_ms"))
     if ingestion_time_ms in (None, ""):
         ingestion_time_ms = now_ms()
