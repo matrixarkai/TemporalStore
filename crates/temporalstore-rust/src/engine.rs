@@ -1558,29 +1558,25 @@ pub(super) fn wal_only_sync() -> bool {
     env_flag_on("TS_WAL_ONLY_SYNC") || wal_single_barrier()
 }
 
-/// TS_WAL_SINGLE_BARRIER: relaxed-durability mode whose correctness rests on the WAL + the
-/// durable checkpoint (bucket-dump manifest + persisted served index) being a COMPLETE source of
-/// truth, so a pure WAL-tail replay from the checkpoint watermark reconstructs
-/// eviction/expiry/compaction membership without resurrecting or losing points. The enabling fix:
+/// TS_WAL_SINGLE_BARRIER: the true SINGLE write-path durability barrier. Only the WAL takes a
+/// synchronous fdatasync per write (1.00/write); the data-page fdatasync, the served-index
+/// delta-log fdatasync, the band-manifest persist, and the base-index sync are all deferred.
+/// Correctness rests on the WAL + the durable dump checkpoint being a COMPLETE source of truth:
 ///  - config changes (feature_max_size etc.) become durable and WAL-sequence-ordered via a
-///    per-shard config-log, so replay re-derives config-driven trims at the exact frontier they
-///    took effect (see `append_config_log_entry` / `config_log_entries`). Without this, WAL-only
-///    replay re-executed feature appends with the default config and resurrected evicted points.
+///    per-shard config-log, so replay re-derives config-driven eviction (trims) at the exact
+///    frontier they took effect (see `append_config_log_entry` / `config_log_entries`). Without
+///    this, WAL-only replay re-executed feature appends with the default config and resurrected
+///    evicted points.
 ///  - expiry (TTL) resolves against the leader timestamp captured in each WAL record (replay
-///    clock) and applies lazily, and compaction is background + non-destructive to logical
+///    clock) and applies lazily; compaction is background + non-destructive to logical
 ///    membership -- both already WAL-re-derivable.
-/// Given that, this mode defers the non-WAL durability barriers that are safely reconstructable:
-/// the served-index delta-log fdatasync, the band-manifest persist, and the base-index sync. That
-/// takes the synchronous write/ack path from three barriers (WAL + data-page + served-index) to
-/// two (WAL + data-page); the WAL fdatasync stays 1.00/write and remains the recovery source of
-/// truth. Default OFF; when off the write and load paths are byte-for-byte unchanged.
-///
-/// NOTE: deferring the remaining per-write DATA-PAGE fdatasync (to reach a true single barrier)
-/// is intentionally NOT enabled here. It requires recovery to stop trusting the un-synced
-/// served-index delta/anchor and instead replay every post-dump page from the durable dump
-/// watermark; that recovery-trust rework changes the on-reload reconstruction path and regresses
-/// the crash-recovery/layout invariants asserted by the storage tests, so it is a separate,
-/// scoped change (see the load path).
+///  - `flush_shard_index` fsyncs every data page (and the WAL) BEFORE advancing the dump
+///    watermark, so every page at/below the watermark is durable. Recovery is BASE-ONLY: it
+///    trusts only the durable base/manifest checkpoint (never the un-synced delta or the anchor
+///    it advances), then replays the WAL tail from the watermark, re-deriving every post-dump
+///    page EXACTLY ONCE. A page written but never fsync'd is rebuilt from its WAL command rather
+///    than left dangling -- no page loss, no double-apply.
+/// Default OFF; when off the write and load paths are byte-for-byte unchanged.
 pub(super) fn wal_single_barrier() -> bool {
     env_flag_on("TS_WAL_SINGLE_BARRIER")
 }

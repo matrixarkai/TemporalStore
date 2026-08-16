@@ -846,6 +846,26 @@ pub(crate) fn page_wal_only_sync() -> bool {
     })
 }
 
+/// TS_WAL_SINGLE_BARRIER: the true single-barrier mode also defers the per-write data-page
+/// fdatasync -- the last non-WAL synchronous barrier. This is safe ONLY because the flag also
+/// switches recovery to base-only replay: reload trusts only the durable dump checkpoint (whose
+/// `flush_shard_index` fsyncs every page BEFORE advancing the watermark) and re-derives every
+/// post-watermark page by replaying the WAL tail exactly once. A page that was written but never
+/// fsync'd is therefore rebuilt from its WAL command, never left as a dangling reference. The
+/// deferred page still becomes durable at the next dump (`sync_durable` fsyncs the active slab;
+/// a rolled slab is fsync'd at roll). Deliberately NOT enabled by the legacy TS_WAL_ONLY_SYNC,
+/// which does not change recovery trust.
+pub(crate) fn page_wal_single_barrier() -> bool {
+    matches!(
+        std::env::var("TS_WAL_SINGLE_BARRIER")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
 fn roll_slab_inner(
     inner: &mut BlockStoreInner,
 ) -> Result<BlockStoreRollReport, BlockStoreError> {

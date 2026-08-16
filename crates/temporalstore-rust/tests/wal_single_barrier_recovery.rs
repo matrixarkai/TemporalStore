@@ -66,6 +66,118 @@ fn recover_ok(root: &str, keys: &str) {
     );
 }
 
+// TS_WAL_SINGLE_BARRIER helpers: the TRUE single barrier (per-write data-page fdatasync also
+// deferred) with base-only recovery. Each phase runs in its own subprocess so the mode env never
+// leaks into the rest of the suite.
+fn populate_sb(root: &str, keys: &str, flush_at: Option<&str>) {
+    let mut cmd = Command::new(bin());
+    cmd.env("TS_WAL_SINGLE_BARRIER", "1")
+        .args(["--mode", "populate", "--root", root, "--keys", keys]);
+    if let Some(f) = flush_at {
+        cmd.args(["--flush-at", f]);
+    }
+    let out = cmd.output().expect("populate_sb should run");
+    assert!(
+        !out.status.success(),
+        "populate_sb must end in an abrupt abort (crash simulation)"
+    );
+}
+
+fn powerloss_sb(root: &str, scope: &str) {
+    let out = Command::new(bin())
+        .env("TS_WAL_SINGLE_BARRIER", "1")
+        .args(["--mode", "powerloss", "--root", root, "--scope", scope])
+        .output()
+        .expect("powerloss_sb should run");
+    assert!(
+        out.status.success(),
+        "powerloss_sb failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+fn recover_sb_ok(root: &str, keys: &str) {
+    let out = Command::new(bin())
+        .env("TS_WAL_SINGLE_BARRIER", "1")
+        .args(["--mode", "recover", "--root", root, "--keys", keys])
+        .output()
+        .expect("recover_sb should run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("\"ok\":true"),
+        "single-barrier recover reported data loss: stdout={stdout} stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("\"missing\":[]") && stdout.contains("\"mismatched\":[]"),
+        "single-barrier recover lost or corrupted an acked write: {stdout}"
+    );
+}
+
+#[test]
+fn single_barrier_data_page_loss_after_dump_rebuilds_from_wal() {
+    // THE data-page kill-point case for the true single barrier. The per-write data-page fdatasync
+    // is deferred, so pages become durable only at the dump. A dump at key 150 fsyncs pages 0..150
+    // and anchors the watermark; writes 151..300 then append pages that are NEVER fsync'd. Model a
+    // real power cut of exactly those un-synced page tails (truncate each slab back to its recorded
+    // post-dump durable length). Base-only recovery replays 151..300 from the dump watermark and
+    // rebuilds every lost page from its WAL command -> zero data loss.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    populate_sb(root, "300", Some("150"));
+    powerloss_sb(root, "truncate-tail");
+    recover_sb_ok(root, "300");
+}
+
+fn populate_counter_sb(root: &str, incrs: &str, flush_at: Option<&str>) {
+    let mut cmd = Command::new(bin());
+    cmd.env("TS_WAL_SINGLE_BARRIER", "1")
+        .args(["--mode", "populate-counter", "--root", root, "--keys", incrs]);
+    if let Some(f) = flush_at {
+        cmd.args(["--flush-at", f]);
+    }
+    let out = cmd.output().expect("populate-counter should run");
+    assert!(!out.status.success(), "populate-counter must abort");
+}
+
+fn recover_counter_sb_ok(root: &str, expected: &str) {
+    let out = Command::new(bin())
+        .env("TS_WAL_SINGLE_BARRIER", "1")
+        .args(["--mode", "recover-counter", "--root", root, "--keys", expected])
+        .output()
+        .expect("recover-counter should run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("\"ok\":true"),
+        "counter mis-applied on recovery (double-apply or loss): stdout={stdout} stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn single_barrier_non_idempotent_counter_applies_exactly_once() {
+    // A hash counter incremented 200 times, dumped at 100, then crashed with the un-synced tail
+    // pages lost. Base-only recovery replays 101..200 from the dump watermark EXACTLY ONCE (no
+    // delta fold that would re-apply the tail on top of the base), so the counter must be exactly
+    // 200 -- not doubled to 300, and not short.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    populate_counter_sb(root, "200", Some("100"));
+    powerloss_sb(root, "truncate-tail");
+    recover_counter_sb_ok(root, "200");
+}
+
+#[test]
+fn single_barrier_full_page_loss_no_dump_rebuilds_from_wal() {
+    // No dump: every data page is un-synced. Wipe all non-WAL state (pages + served index + delta);
+    // only the fsync'd WAL survives. Base-only replay from 0 rebuilds all 300 keys.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    populate_sb(root, "300", None);
+    powerloss_sb(root, "wipe-nondurable");
+    recover_sb_ok(root, "300");
+}
+
 fn populate_feature(root: &str) {
     let out = Command::new(bin())
         .env("TS_WAL_SINGLE_BARRIER", "1")

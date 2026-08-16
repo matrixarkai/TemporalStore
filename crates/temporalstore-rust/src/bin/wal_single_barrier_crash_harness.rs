@@ -308,6 +308,62 @@ fn recover_feature(root: PathBuf) {
     }
 }
 
+/// Exactly-once proof for a NON-idempotent command under base-only recovery. Increment one hash
+/// counter `keys` times (each a WAL command), dump halfway, then crash. Base-only replay applies
+/// each post-dump record EXACTLY ONCE (no delta fold that would re-apply the tail on top of the
+/// base), so the recovered counter must equal `keys`, never 2x.
+fn populate_counter(root: PathBuf, keys: u64, flush_at: Option<u64>) -> ! {
+    let engine = open_engine(&root);
+    engine.load_shard(1);
+    for i in 0..keys {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashIncrBy {
+                key: "counter".to_string(),
+                field: "n".to_string(),
+                increment: 1,
+            },
+        });
+        assert!(response.status.ok, "incr ack failed at {i}");
+        if Some(i) == flush_at {
+            engine.flush_shard_index(1);
+            record_durable_slab_lengths(&root);
+        }
+    }
+    if flush_at.is_none() {
+        fs::write(durable_lengths_path(&root), "").expect("record durable lengths");
+    }
+    std::process::abort();
+}
+
+fn recover_counter(root: PathBuf, expected: i64) {
+    let engine = open_engine(&root);
+    engine.load_shard(1); // forces WAL replay from the durable watermark
+    let got: i64 = match engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashGet {
+                key: "counter".to_string(),
+                field: "n".to_string(),
+            },
+        })
+        .response
+    {
+        CommandResponse::Bytes { value: Some(bytes) } => {
+            String::from_utf8_lossy(&bytes).trim().parse::<i64>().unwrap_or(-1)
+        }
+        other => {
+            eprintln!("unexpected counter response: {other:?}");
+            std::process::exit(3);
+        }
+    };
+    let ok = got == expected;
+    println!("{{\"counter\":{got},\"expected\":{expected},\"ok\":{ok}}}");
+    if !ok {
+        std::process::exit(2);
+    }
+}
+
 fn main() {
     let mut root = None;
     let mut mode = None;
@@ -333,8 +389,10 @@ fn main() {
         Some("recover") => recover(root, keys),
         Some("populate-feature") => populate_feature(root),
         Some("recover-feature") => recover_feature(root),
+        Some("populate-counter") => populate_counter(root, keys, flush_at),
+        Some("recover-counter") => recover_counter(root, keys as i64),
         other => panic!(
-            "--mode must be populate|powerloss|recover|populate-feature|recover-feature, got {other:?}"
+            "--mode must be populate|powerloss|recover|populate-feature|recover-feature|populate-counter|recover-counter, got {other:?}"
         ),
     }
 }
