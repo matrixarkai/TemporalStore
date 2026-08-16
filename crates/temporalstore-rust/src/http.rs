@@ -63,6 +63,13 @@ pub struct RequestHead {
     pub path: String,
     pub content_length: usize,
     pub keep_alive: bool,
+    /// True when the request arrived carrying the blob peer-fetch loop-guard
+    /// header (`X-Ts-Blob-Peer-Fetch: 0`). Such a request is itself a
+    /// cross-peer blob fetch hop and MUST be served local-only — never
+    /// re-forwarded to another peer — otherwise peers would fetch from each
+    /// other forever. Parsed generically here so the streaming blob handler can
+    /// enforce the guard without re-reading the socket headers.
+    pub blob_peer_fetch_loop_guard: bool,
 }
 
 /// What a streaming handler did with a request.
@@ -310,6 +317,20 @@ pub fn request_bytes_with_options(
     request_raw_with_options(addr, method, path, body, &headers, options)
 }
 
+/// Send a GET (empty body) and return the raw response body, with caller-supplied
+/// extra request headers (each header line must end in `\r\n`). Non-200 responses
+/// surface as `HttpError::BadResponse(status_line)`. Used by the cross-peer blob
+/// availability path, which sets the `X-Ts-Blob-Peer-Fetch: 0` loop-guard header so
+/// the queried peer serves local-only and never re-forwards.
+pub fn get_bytes_with_headers(
+    addr: &str,
+    path: &str,
+    extra_headers: &str,
+    options: HttpRequestOptions,
+) -> Result<Vec<u8>, HttpError> {
+    request_raw_with_options(addr, "GET", path, &[], extra_headers, options)
+}
+
 pub fn get_json<Res: DeserializeOwned>(addr: &str, path: &str) -> Result<Res, HttpError> {
     get_json_with_options(addr, path, HttpRequestOptions::default())
 }
@@ -446,12 +467,17 @@ fn parse_request_head(bytes: &[u8]) -> Result<RequestHead, HttpError> {
     let path = parts.next().unwrap_or_default().to_string();
     let mut content_length = 0usize;
     let mut keep_alive = true;
+    let mut blob_peer_fetch_loop_guard = false;
     for line in lines {
         if let Some((name, value)) = line.split_once(':') {
             if name.eq_ignore_ascii_case("content-length") {
                 content_length = value.trim().parse::<usize>().unwrap_or(0);
             } else if name.eq_ignore_ascii_case("connection") {
                 keep_alive = !value.trim().eq_ignore_ascii_case("close");
+            } else if name.eq_ignore_ascii_case("x-ts-blob-peer-fetch") {
+                // A value of "0" marks the request as a peer-fetch hop: serve it
+                // local-only, never re-forward (loop guard).
+                blob_peer_fetch_loop_guard = value.trim() == "0";
             }
         }
     }
@@ -460,6 +486,7 @@ fn parse_request_head(bytes: &[u8]) -> Result<RequestHead, HttpError> {
         path,
         content_length,
         keep_alive,
+        blob_peer_fetch_loop_guard,
     })
 }
 

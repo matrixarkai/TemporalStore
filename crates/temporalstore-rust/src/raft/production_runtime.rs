@@ -116,6 +116,14 @@ impl ProductionRaftRuntime {
         self.options.security.auth_token.as_deref()
     }
 
+    /// Advertised addresses of every raft node except this one. These are the same
+    /// addresses the datanode serves its HTTP tier on (raft, `/blob`, etc. share the
+    /// advertised server addr), so they double as the cross-peer blob-fetch target
+    /// list. Empty for a single-node cluster.
+    pub fn peer_addrs(&self) -> Vec<String> {
+        self.options.peer_map().into_values().collect()
+    }
+
     pub fn local_node_id(&self) -> RaftNodeId {
         self.options.local_node_id
     }

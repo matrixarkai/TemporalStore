@@ -19,8 +19,8 @@ use temporalstore_rust::data_node::{DataNodeLifecycleSnapshot, DataNodeTopologyV
 use temporalstore_rust::engine::reports::{StorageManagerCycleReport, StorageManagerCycleRequest};
 use temporalstore_rust::engine::TemporalEngine;
 use temporalstore_rust::http::{
-    json_response, parse_json, post_json, serve_with_stream_handler, HttpRequest, StreamAction,
-    StreamTransfer,
+    get_bytes_with_headers, json_response, parse_json, post_json, serve_with_stream_handler,
+    HttpRequest, HttpRequestOptions, StreamAction, StreamTransfer,
 };
 use std::io::Read as _;
 use temporalstore_rust::ingestion::{FlinkCheckpointStatus, IngestionBatchRequest};
@@ -382,6 +382,40 @@ fn main() {
     // feature is optional; a MatrixObject store drops in behind the same trait.
     let blob_store = Arc::new(FileObjectStore::new(PathBuf::from(&blob_store_dir)));
     let blob_chunk_bytes = env_usize("TS_BLOB_CHUNK_BYTES", 1024 * 1024).max(1);
+
+    // Cross-peer blob availability (opt-in, TS_BLOB_PEER_FETCH): on a local
+    // `GET /blob/<key>` MISS, fetch the blob from a raft peer that has it, serve it
+    // to the caller, and cache it locally (read-through). This makes large-file
+    // attachments available cluster-wide in multi-node raft mode WITHOUT full
+    // replication.
+    //
+    // AVAILABILITY, NOT DURABILITY: peer-fetch only lets any node *serve* a blob
+    // that already exists on SOME live peer. It provides no redundancy — if the one
+    // node holding a blob dies before another node has fetched (and thereby cached)
+    // it, the blob is gone. Real durability requires explicit replication or the
+    // enterprise object store; this feature is deliberately scoped to availability.
+    //
+    // The peer address list comes from the raft `peer_map()` (every node's
+    // advertised addr except this one — the same addr each node serves its `/blob`
+    // tier on). `None` when raft is off or the cluster is single-node, so
+    // standalone nodes skip peer-fetch entirely and behavior is byte-identical to
+    // today (404 on local miss).
+    let blob_peer_addrs: Option<Arc<Vec<String>>> = if env_bool("TS_BLOB_PEER_FETCH", false) {
+        raft_state
+            .as_ref()
+            .map(|state| state.runtime.peer_addrs())
+            .filter(|peers| !peers.is_empty())
+            .map(Arc::new)
+    } else {
+        None
+    };
+    if let Some(peers) = &blob_peer_addrs {
+        info!(
+            peers = peers.len(),
+            "cross-peer blob availability enabled (read-through peer-fetch on local miss)"
+        );
+    }
+    let blob_peer_timeout_ms = env_u64("TS_BLOB_PEER_FETCH_TIMEOUT_MS", 5_000);
     let blob_runtime = Arc::new(
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(env_usize("TS_BLOB_RUNTIME_THREADS", 4))
@@ -428,6 +462,8 @@ fn main() {
     // is Declined and falls through to the buffered handler below.
     let stream_blob_store = Arc::clone(&blob_store);
     let stream_blob_runtime = Arc::clone(&blob_runtime);
+    let stream_blob_peer_addrs = blob_peer_addrs.clone();
+    let stream_blob_peer_timeout_ms = blob_peer_timeout_ms;
     let handler_replicator = shard_replicator.clone();
     let handler_block_runtime = Arc::clone(&blob_runtime);
     let stream_chunk_bytes = blob_chunk_bytes;
@@ -440,6 +476,8 @@ fn main() {
                 &stream_blob_store,
                 &stream_blob_runtime,
                 stream_chunk_bytes,
+                stream_blob_peer_addrs.as_deref().map(Vec::as_slice),
+                stream_blob_peer_timeout_ms,
             )
         },
         move |request| {
@@ -951,12 +989,22 @@ fn handle_readiness_route(request: &HttpRequest) -> Option<(u16, Vec<u8>)> {
 /// `StreamAction::Handled`); any other path is `Declined` so the buffered handler
 /// runs. On the error / non-blob-method paths it drains the request body first so
 /// the kept-alive connection stays framed.
+///
+/// Cross-peer availability: when `peer_addrs` is `Some` (raft mode +
+/// `TS_BLOB_PEER_FETCH`), a `GET` that misses locally is retried against each peer
+/// in turn; the first peer to return 200 has its bytes streamed back to the caller
+/// AND cached locally via `append_blob` (read-through), so subsequent reads are
+/// local. A request that itself arrives carrying the loop-guard header
+/// (`head.blob_peer_fetch_loop_guard`) is served local-only and NEVER re-forwarded,
+/// which is what stops peers from fetching from each other forever.
 fn handle_blob_stream(
     head: &temporalstore_rust::http::RequestHead,
     transfer: &mut StreamTransfer,
     blob_store: &Arc<FileObjectStore>,
     runtime: &Arc<tokio::runtime::Runtime>,
     chunk_bytes: usize,
+    peer_addrs: Option<&[String]>,
+    peer_timeout_ms: u64,
 ) -> StreamAction {
     let Some(key) = head.path.strip_prefix("/blob/") else {
         return StreamAction::Declined;
@@ -1002,11 +1050,38 @@ fn handle_blob_stream(
             }
             match stream_blob_download(transfer, blob_store, chunk_bytes, key) {
                 Ok(true) => {}
-                Ok(false) => write_stream_json(
-                    transfer,
-                    404,
-                    &Status::error("blob_not_found", key.to_string()),
-                ),
+                Ok(false) => {
+                    // Local miss. Try cross-peer fetch unless this request is
+                    // itself a peer-fetch hop (loop guard) or peer-fetch is off.
+                    let peers = if head.blob_peer_fetch_loop_guard {
+                        None
+                    } else {
+                        peer_addrs
+                    };
+                    match peers.and_then(|peers| {
+                        peer_fetch_blob(
+                            transfer,
+                            blob_store,
+                            runtime,
+                            chunk_bytes,
+                            key,
+                            peers,
+                            peer_timeout_ms,
+                        )
+                    }) {
+                        // A peer served the blob (already streamed to the caller).
+                        Some(Ok(())) => {}
+                        // A peer had it but the socket broke mid-stream to the
+                        // caller: head already sent, nothing to recover.
+                        Some(Err(_)) => {}
+                        // No peer had it (or peer-fetch disabled): 404 as today.
+                        None => write_stream_json(
+                            transfer,
+                            404,
+                            &Status::error("blob_not_found", key.to_string()),
+                        ),
+                    }
+                }
                 // A mid-stream socket error: the head is already sent, nothing to
                 // recover; drop the connection.
                 Err(_) => {}
@@ -1304,6 +1379,86 @@ fn stream_blob_download(
     }
     transfer.flush()?;
     Ok(true)
+}
+
+/// Cross-peer blob availability read-through. On a local `GET /blob/<key>` MISS,
+/// query each raft peer in order for `GET /blob/<key>`, tagging the request with the
+/// `X-Ts-Blob-Peer-Fetch: 0` loop-guard header so the queried peer serves local-only
+/// and never re-forwards. The FIRST peer that returns the object wins: its bytes are
+/// cached locally via `append_blob` (read-through, so subsequent reads are local) and
+/// then streamed back to the original caller.
+///
+/// Returns:
+/// - `Some(Ok(()))`  — a peer had the blob; it was cached and streamed to the caller.
+/// - `Some(Err(_))`  — a peer had the blob and the 200 head was sent, but the socket
+///                     to the caller broke mid-stream (unrecoverable; drop the conn).
+/// - `None`          — no peer had the blob; the caller should send a 404 (as today).
+///
+/// Memory note: the peer response is buffered whole before being re-streamed, because
+/// the raw peer HTTP client returns the complete body. For the attachment tier this
+/// bounds peer-fetch memory to one blob per in-flight miss; a fully streamed pass-
+/// through would require a chunked peer client, which the raw client does not provide.
+/// This is an AVAILABILITY mechanism, not a durability one — see the wiring comment in
+/// `main`.
+fn peer_fetch_blob(
+    transfer: &mut StreamTransfer,
+    blob_store: &Arc<FileObjectStore>,
+    runtime: &Arc<tokio::runtime::Runtime>,
+    chunk_bytes: usize,
+    key: &str,
+    peer_addrs: &[String],
+    peer_timeout_ms: u64,
+) -> Option<std::io::Result<()>> {
+    let options = HttpRequestOptions {
+        connect_timeout_ms: 200,
+        io_timeout_ms: peer_timeout_ms.max(1),
+        max_retries: 0,
+    };
+    let path = format!("/blob/{key}");
+    for peer in peer_addrs {
+        // Peer addrs are advertised host:port; tolerate an accidental scheme.
+        let peer = peer
+            .strip_prefix("http://")
+            .or_else(|| peer.strip_prefix("https://"))
+            .unwrap_or(peer.as_str());
+        // Loop guard: the queried peer MUST serve local-only and never re-forward.
+        let bytes =
+            match get_bytes_with_headers(peer, &path, "X-Ts-Blob-Peer-Fetch: 0\r\n", options) {
+                Ok(bytes) => bytes,
+                // This peer missed (404 -> non-200 BadResponse) or was unreachable;
+                // try the next peer.
+                Err(_) => continue,
+            };
+        info!(
+            %key,
+            peer,
+            bytes = bytes.len(),
+            "cross-peer blob fetch hit; caching locally (read-through) and serving"
+        );
+        // Read-through cache: replace any partial then append the fetched bytes so a
+        // subsequent GET is served locally. Best-effort — a cache-write failure still
+        // serves this response (availability is preserved; the blob is simply
+        // re-fetched next time).
+        runtime.block_on(async {
+            let _ = blob_store.delete(key).await;
+            if let Err(err) = blob_store
+                .append_blob(key, Bytes::copy_from_slice(&bytes))
+                .await
+            {
+                warn!(%key, %err, "peer-fetched blob cache write failed; serving without caching");
+            }
+        });
+        // Stream the buffered bytes back to the original caller.
+        let result = (|| -> std::io::Result<()> {
+            transfer.send_head(200, "application/octet-stream", bytes.len())?;
+            for chunk in bytes.chunks(chunk_bytes.max(1)) {
+                transfer.write_chunk(chunk)?;
+            }
+            transfer.flush()
+        })();
+        return Some(result);
+    }
+    None
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
