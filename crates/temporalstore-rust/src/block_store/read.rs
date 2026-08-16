@@ -44,6 +44,9 @@ impl LocalBlockStore {
         offset: u64,
         size: u64,
     ) -> Result<Vec<u8>, BlockStoreError> {
+        // Reference-parity lazy recovery: drive the shared-store read-through for band-report /
+        // streaming reads too, so a not-yet-fetched checkpoint slab is pulled + cached on demand.
+        self.ensure_slab_present(page_slab_id)?;
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         let path = slab_path(&inner.root, page_slab_id);
         let mut file = File::open(path)?;
@@ -62,6 +65,9 @@ impl LocalBlockStore {
         offset: u64,
         size: u64,
     ) -> Result<Vec<u8>, BlockStoreError> {
+        // Reference-parity lazy recovery: drive the shared-store read-through for band-report /
+        // streaming reads too, so a not-yet-fetched checkpoint slab is pulled + cached on demand.
+        self.ensure_slab_present(page_slab_id)?;
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         let path = slab_path(&inner.root, page_slab_id);
         let slab = fs::read(path)?;
