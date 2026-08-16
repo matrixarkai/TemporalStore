@@ -66,6 +66,51 @@ fn recover_ok(root: &str, keys: &str) {
     );
 }
 
+fn populate_feature(root: &str) {
+    let out = Command::new(bin())
+        .env("TS_WAL_SINGLE_BARRIER", "1")
+        .env("TS_GROUP_COMMIT", "1")
+        .args(["--mode", "populate-feature", "--root", root])
+        .output()
+        .expect("populate-feature should run");
+    assert!(
+        !out.status.success(),
+        "populate-feature must end in an abrupt abort (crash simulation)"
+    );
+}
+
+fn recover_feature_ok(root: &str) {
+    let out = Command::new(bin())
+        .env("TS_WAL_SINGLE_BARRIER", "1")
+        .args(["--mode", "recover-feature", "--root", root])
+        .output()
+        .expect("recover-feature should run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("\"ok\":true"),
+        "single-barrier feature recovery failed: stdout={stdout} stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("\"feature_timestamps\":[30, 40, 50]"),
+        "recovery resurrected/lost feature points: {stdout}"
+    );
+}
+
+#[test]
+fn single_barrier_evict_then_crash_before_dump_does_not_resurrect() {
+    // THE decisive single-barrier case: a config-driven feature_max_size trim (eviction) happens,
+    // then the process is lost BEFORE any dump -- so the trim is recorded only in memory, never in
+    // a served-index checkpoint. Only the fsync'd WAL + config-log survive the power cut. Recovery
+    // must re-derive the trim from the WAL-ordered config-log and keep exactly the newest 3 points
+    // (no resurrection of the 2 evicted points, no loss of an acked point).
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    populate_feature(root);
+    powerloss(root, "wipe-nondurable");
+    recover_feature_ok(root);
+}
+
 #[test]
 fn deferred_indexlog_loss_never_drops_an_ack_after_a_dump() {
     // The mode's ONLY relaxation is the deferred delta-log fdatasync, so its worst-case loss is

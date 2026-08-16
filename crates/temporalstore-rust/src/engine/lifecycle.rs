@@ -202,6 +202,19 @@ impl TemporalEngine {
             .expect("config lock poisoned")
             .entry(request.shard_id)
             .or_default();
+        // Single-barrier mode: config is not carried in the served-index checkpoint, so restore
+        // the last durably-logged config before replay. This covers the no-replay path (a clean
+        // dump with nothing to tail-replay) and post-restart client writes; the replay loop below
+        // overrides it with the WAL-sequence-ordered config while re-driving historical records,
+        // then restores the latest again. No-op (and byte-for-byte unchanged) off the flag.
+        if wal_single_barrier() {
+            if let Some(entry) = self.config_log_entries(request.shard_id).into_iter().last() {
+                self.configs
+                    .write()
+                    .expect("config lock poisoned")
+                    .insert(request.shard_id, entry.config);
+            }
+        }
         self.admissions
             .write()
             .expect("admission lock poisoned")
@@ -307,6 +320,20 @@ impl TemporalEngine {
         }
         pending.sort_by_key(|record| record.sequence);
 
+        // Single-barrier mode: replay config-driven eviction (feature_max_size trims) with the
+        // config that was effective at each record's WAL frontier. An entry stamped `after_seq`
+        // is effective for records with sequence > after_seq, so before executing a record we
+        // apply every not-yet-applied config entry with `after_seq < record.sequence`. This
+        // re-derives the exact historical trim -- no resurrection (default config would skip the
+        // trim) and no over-trim/loss (the latest config applied to an older record). Empty (and
+        // inert) off the flag.
+        let config_log: Vec<ConfigLogEntry> = if wal_single_barrier() {
+            self.config_log_entries(shard_id)
+        } else {
+            Vec::new()
+        };
+        let mut config_cursor = 0usize;
+
         let _guard = WalReplayGuard::enter();
         let mut expected = watermark.saturating_add(1);
         let mut replayed_through = watermark;
@@ -323,6 +350,15 @@ impl TemporalEngine {
                         record.sequence
                     ),
                 ));
+            }
+            while config_cursor < config_log.len()
+                && config_log[config_cursor].after_seq < record.sequence
+            {
+                self.configs
+                    .write()
+                    .expect("config lock poisoned")
+                    .insert(shard_id, config_log[config_cursor].config.clone());
+                config_cursor += 1;
             }
             // Resolve TTL deadlines / event times against the LEADER's timestamp
             // captured when this record was written, not the (later) restart clock, so
@@ -341,6 +377,16 @@ impl TemporalEngine {
             }
             replayed_through = record.sequence;
             expected = expected.saturating_add(1);
+        }
+        // Restore the latest config for post-recovery client writes: any config entries stamped
+        // at/after the last replayed sequence (future-effective changes) were intentionally not
+        // applied above.
+        while config_cursor < config_log.len() {
+            self.configs
+                .write()
+                .expect("config lock poisoned")
+                .insert(shard_id, config_log[config_cursor].config.clone());
+            config_cursor += 1;
         }
 
         if replayed_through > watermark {

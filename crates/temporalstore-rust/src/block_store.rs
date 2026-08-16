@@ -834,14 +834,16 @@ pub(crate) fn bulk_relaxed_durability() -> bool {
 /// extent-manifest persist to sync_durable()/slab-seal (WAL replay re-materializes pages
 /// on recovery; the manifest is reconciled from disk on open). Default OFF.
 pub(crate) fn page_wal_only_sync() -> bool {
-    matches!(
-        std::env::var("TS_WAL_ONLY_SYNC")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+    ["TS_WAL_ONLY_SYNC", "TS_WAL_SINGLE_BARRIER"].iter().any(|name| {
+        matches!(
+            std::env::var(name)
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 fn roll_slab_inner(

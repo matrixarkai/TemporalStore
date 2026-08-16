@@ -27,7 +27,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use temporalstore_rust::{Command, CommandResponse, ExecuteRequest, TemporalEngine};
+use temporalstore_rust::{
+    Command, CommandResponse, Config, ExecuteRequest, FeaturePoint, SetConfigRequest,
+    TemporalEngine,
+};
 
 fn key_of(i: u64) -> String {
     format!("sbk-{i:010}")
@@ -235,6 +238,76 @@ fn recover(root: PathBuf, keys: u64) {
     }
 }
 
+/// DECISIVE single-barrier case: evict (feature_max_size trim) BEFORE any dump, then crash.
+/// One FeatureAppend of 5 points with feature_max_size=3 keeps the newest 3 in the series but
+/// leaves all 5 physically in the page. The trim decision is config-driven; the config is made
+/// durable + WAL-ordered by the single-barrier config-log. After the crash only the fsync'd WAL
+/// and config-log survive (no dump), so recovery must re-derive the trim and NOT resurrect the
+/// two evicted points.
+fn populate_feature(root: PathBuf) -> ! {
+    let engine = open_engine(&root);
+    engine.load_shard(1);
+    let applied = engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 2,
+            feature_max_size: 3,
+            ..Config::default()
+        },
+    });
+    assert!(applied.ok, "set_config failed: {applied:?}");
+    let points: Vec<FeaturePoint> = (1..=5u64)
+        .map(|i| FeaturePoint {
+            timestamp_ms: i * 10,
+            value: vec![i as u8],
+        })
+        .collect();
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureAppend {
+            key: "f".to_string(),
+            points,
+        },
+    });
+    assert!(response.status.ok, "feature append ack failed");
+    // No dump: only the fsync'd WAL + config-log are durable.
+    fs::write(durable_lengths_path(&root), "").expect("record durable lengths");
+    std::process::abort();
+}
+
+fn recover_feature(root: PathBuf) {
+    let engine = open_engine(&root);
+    engine.load_shard(1); // forces WAL replay from the durable watermark
+    let got: Vec<u64> = match engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureQuery {
+                key: "f".to_string(),
+                start_ms: 0,
+                end_ms: u64::MAX,
+                count: Some(100),
+            },
+        })
+        .response
+    {
+        CommandResponse::FeaturePoints { points } => {
+            points.iter().map(|p| p.timestamp_ms).collect()
+        }
+        other => {
+            eprintln!("unexpected feature query response: {other:?}");
+            std::process::exit(3);
+        }
+    };
+    let expected = vec![30u64, 40, 50];
+    let ok = got == expected;
+    println!(
+        "{{\"feature_timestamps\":{got:?},\"expected\":{expected:?},\"ok\":{ok}}}"
+    );
+    if !ok {
+        std::process::exit(2);
+    }
+}
+
 fn main() {
     let mut root = None;
     let mut mode = None;
@@ -258,6 +331,10 @@ fn main() {
         Some("populate") => populate(root, keys, flush_at),
         Some("powerloss") => powerloss(root, &scope),
         Some("recover") => recover(root, keys),
-        other => panic!("--mode must be populate|powerloss|recover, got {other:?}"),
+        Some("populate-feature") => populate_feature(root),
+        Some("recover-feature") => recover_feature(root),
+        other => panic!(
+            "--mode must be populate|powerloss|recover|populate-feature|recover-feature, got {other:?}"
+        ),
     }
 }
