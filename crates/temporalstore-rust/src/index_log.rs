@@ -231,6 +231,29 @@ fn indexlog_wal_only_sync() -> bool {
     )
 }
 
+/// TS_INDEXLOG_DEFER_SYNC: drop the served-index delta-log fdatasync from the synchronous
+/// write/ack path. The delta record is still APPENDED (so the served-index stream and every
+/// consumer of it -- gc / reclaim / manifest / reconcile / cold reload -- are unchanged); only
+/// its fdatasync is deferred. Combined with TS_WAL_ONLY_SYNC this takes the ack path from three
+/// synchronous barriers (WAL + data-page + index-log) to two: the WAL and the data pages stay
+/// durable per write, so no index reference can dangle at an un-synced page, and the durable WAL
+/// rebuilds any lost index-log delta tail on replay. Default OFF.
+///
+/// NOTE: this stops at two barriers on purpose. Eviction / expiry / compaction decisions are
+/// recorded ONLY in the served-index delta, not in the WAL, so a pure WAL replay would resurrect
+/// points a background op had removed. Reaching one barrier requires making those served-index-
+/// only mutations WAL-reconstructable first; that is a separate, larger change.
+fn indexlog_defer_sync() -> bool {
+    matches!(
+        std::env::var("TS_INDEXLOG_DEFER_SYNC")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
 impl LocalIndexLogStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
@@ -384,7 +407,13 @@ impl LocalIndexLogStore {
             .open(index_log_path(&inner.root, shard_id))?;
         file.write_all(&bytes)?;
         file.flush()?;
-        file.sync_data()?;
+        // Ack-path delta append. Under TS_INDEXLOG_DEFER_SYNC the record is written but its
+        // fdatasync is deferred: the WAL + data pages are still durable per write, so the lost
+        // delta tail is rebuilt by WAL replay and no page reference dangles. This drops the
+        // index-log fdatasync from the write critical path (three barriers -> two).
+        if !indexlog_defer_sync() {
+            file.sync_data()?;
+        }
         inner.stats.writes += 1;
         inner.stats.bytes_written += bytes.len() as u64;
         inner.stats.last_sequence = next_sequence;
