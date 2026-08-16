@@ -1490,3 +1490,75 @@ fn matrixraft_follower_rejoin_after_compaction_installs_snapshot_and_replays_tai
     );
 }
 
+// The metaserver-driven raft auto-failover feature (TS_RAFT_AUTO_FAILOVER) works
+// by POSTing the dead leader's liveness and a native failover request to a
+// surviving replica. These tests exercise exactly the two raft primitives that
+// path invokes — `set_alive(dead, false)` (what `/raft/admin/liveness` calls) and
+// `failover_primary()` (what `/raft/admin/failover` calls) — proving the group
+// re-elects and writes resume, and that the election refuses without a majority.
+
+#[test]
+fn metaserver_driven_failover_reelects_and_resumes_writes() {
+    let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+    // A committed write exists before the leader dies; the promoted follower must
+    // retain it (leader-completeness).
+    cluster
+        .propose(Command::StringSet {
+            key: "before-failover".to_string(),
+            value: b"v1".to_vec(),
+        })
+        .unwrap();
+    assert_eq!(cluster.leader_id(), 1);
+
+    // Metaserver detects node 1 stale -> POST /raft/admin/liveness {1, false}.
+    cluster.set_alive(1, false).unwrap();
+    // Metaserver -> POST /raft/admin/failover -> native promotion of the best
+    // caught-up live follower (guarded by elect_leader's majority + log checks).
+    let report = cluster.failover_primary().unwrap();
+    assert_eq!(report.old_leader_id, 1);
+    assert_ne!(report.new_leader_id, 1);
+    assert_ne!(report.new_leader_id, 0);
+    assert_eq!(cluster.leader_id(), report.new_leader_id);
+
+    // Writes resume on the freshly elected leader...
+    cluster
+        .propose(Command::StringSet {
+            key: "after-failover".to_string(),
+            value: b"v2".to_vec(),
+        })
+        .unwrap();
+    // ...and the pre-failover committed write survived the leadership change.
+    assert_eq!(
+        cluster
+            .read_from_replica(
+                report.new_leader_id,
+                Command::StringGet {
+                    key: "before-failover".to_string()
+                },
+            )
+            .unwrap(),
+        CommandResponse::Bytes {
+            value: Some(b"v1".to_vec())
+        }
+    );
+}
+
+#[test]
+fn metaserver_driven_failover_refuses_without_a_live_majority() {
+    // Split-brain guard: if the metaserver only reaches a minority of the group,
+    // the native failover must refuse to elect rather than fabricate a leader.
+    let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+    cluster.set_alive(1, false).unwrap();
+    cluster.set_alive(2, false).unwrap();
+    // Only node 3 is alive: 1 live < 2 required, so no election is possible.
+    assert_eq!(
+        cluster.failover_primary().unwrap_err(),
+        RaftError::NoMajority {
+            live: 1,
+            required: 2
+        }
+    );
+    // Leadership is unchanged; no split-brain second leader was created.
+    assert_eq!(cluster.leader_id(), 1);
+}
+
