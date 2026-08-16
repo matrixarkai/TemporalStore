@@ -456,5 +456,69 @@ def _extract_streamed_body(conn):
     return out
 
 
+class EnforcedAuthTest(unittest.TestCase):
+    """MATRIXARK_AUTH_ENFORCED=1: hashed per-tenant keys, demo rejected, tenant identity pinned."""
+
+    KEY_A = "sk_live_tenantA_secret"
+    KEY_B = "sk_live_tenantB_secret"
+
+    def setUp(self):
+        self.s = _FakeServer()
+        hashed = {
+            gw._secret_hash(self.KEY_A): {"tenant_id": "tenantA", "account_id": "acct_a"},
+            gw._secret_hash(self.KEY_B): {"tenant_id": "tenantB", "account_id": "acct_b"},
+        }
+        self.cfg = gw.GatewayConfig.from_env({"enforced": True, "hashed_api_keys": hashed})
+        self.app = gw.make_v1_app(self.s, self.cfg)
+
+    def test_missing_key_rejected(self):
+        st, _, _ = drive(self.app, path="/v1/retrieve", body={"query": "x"})
+        self.assertEqual(401, st)
+        self.assertEqual([], self.s.calls)
+
+    def test_bad_key_rejected(self):
+        st, _, _ = drive(self.app, path="/v1/retrieve", body={"query": "x"},
+                         headers={"Authorization": "Bearer nope"})
+        self.assertEqual(401, st)
+
+    def test_demo_key_rejected_when_enforced(self):
+        st, _, _ = drive(self.app, path="/v1/ingest", body={"records": [1]},
+                         headers={"Authorization": "Bearer sk_live_demo"})
+        self.assertEqual(401, st)
+        self.assertEqual([], self.s.calls)
+
+    def test_valid_key_pins_tenant_and_account(self):
+        st, _, body = drive(self.app, path="/v1/ingest",
+                            body={"scope": "cart", "records": [{"t": "a"}]},
+                            headers={"Authorization": f"Bearer {self.KEY_A}"})
+        self.assertEqual(202, st)
+        scope = json.loads(body)["scope"]
+        self.assertEqual("tenantA", scope["tenant_id"])
+        self.assertEqual("acct_a", scope["account_id"])
+        self.assertEqual("tenantA", self.s.calls[0][1]["tenant"])
+
+    def test_two_tenants_get_distinct_scope_identity(self):
+        # Same client scope string ("cart") must resolve to different tenant identities -> the
+        # session/pending buffer key (account_id, tenant_id, ...) cannot collide across tenants.
+        drive(self.app, path="/v1/ingest", body={"scope": "cart", "records": [1]},
+              headers={"Authorization": f"Bearer {self.KEY_A}"})
+        drive(self.app, path="/v1/ingest", body={"scope": "cart", "records": [1]},
+              headers={"Authorization": f"Bearer {self.KEY_B}"})
+        a_scope = self.s.calls[0][1]["scope"]
+        b_scope = self.s.calls[1][1]["scope"]
+        self.assertEqual(("tenantA", "acct_a"), (a_scope["tenant_id"], a_scope["account_id"]))
+        self.assertEqual(("tenantB", "acct_b"), (b_scope["tenant_id"], b_scope["account_id"]))
+        self.assertNotEqual((a_scope["tenant_id"], a_scope["account_id"]),
+                            (b_scope["tenant_id"], b_scope["account_id"]))
+
+    def test_dev_mode_still_accepts_demo(self):
+        # Enforcement OFF -> legacy behavior: demo key maps to its tenant, request succeeds.
+        cfg = gw.GatewayConfig.from_env({"api_keys": {"sk_live_demo": "acme"}, "require_auth": True})
+        app = gw.make_v1_app(self.s, cfg)
+        st, _, _ = drive(app, path="/v1/ingest", body={"records": [1]},
+                         headers={"Authorization": "Bearer sk_live_demo"})
+        self.assertEqual(202, st)
+
+
 if __name__ == "__main__":
     unittest.main()
