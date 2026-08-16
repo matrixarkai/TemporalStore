@@ -511,6 +511,49 @@ class EnforcedAuthTest(unittest.TestCase):
         self.assertNotEqual((a_scope["tenant_id"], a_scope["account_id"]),
                             (b_scope["tenant_id"], b_scope["account_id"]))
 
+    @staticmethod
+    def _buffer_key(scope):
+        # Mirrors matrixark_mcp_core_session.session_buffer_key_from_scope (the pending/session
+        # buffer key); kept inline so this stays a pure-Python gateway unit test with no backend import.
+        user_id = str(scope.get("user_id") or "")
+        session_id = str(scope.get("session_id") or user_id or "")
+        return (str(scope.get("account_id") or "acct_local"),
+                str(scope.get("tenant_id") or "tenant_local_agent"), user_id, session_id)
+
+    def test_same_tenant_users_get_distinct_buffer_keys(self):
+        # Two END-USERS of ONE tenant (same API key, same client scope string "cart") must NOT share a
+        # pending/session buffer. The gateway pins tenant_id/account_id from the key but PRESERVES the
+        # client-supplied user_id, so `alice` and `bob` land on distinct buffer keys.
+        drive(self.app, path="/v1/ingest",
+              body={"scope": {"user_id": "alice", "namespace": "cart"}, "records": [1]},
+              headers={"Authorization": f"Bearer {self.KEY_A}"})
+        drive(self.app, path="/v1/ingest",
+              body={"scope": {"user_id": "bob", "namespace": "cart"}, "records": [1]},
+              headers={"Authorization": f"Bearer {self.KEY_A}"})
+        a_scope = self.s.calls[0][1]["scope"]
+        b_scope = self.s.calls[1][1]["scope"]
+        # tenant/account pinned from the key (not client text); user_id preserved, never overwritten.
+        self.assertEqual(("tenantA", "acct_a", "alice"),
+                         (a_scope["tenant_id"], a_scope["account_id"], a_scope["user_id"]))
+        self.assertEqual(("tenantA", "acct_a", "bob"),
+                         (b_scope["tenant_id"], b_scope["account_id"], b_scope["user_id"]))
+        # The resulting pending/session buffer keys differ only on the user axis -> no cross-user leak.
+        ka, kb = self._buffer_key(a_scope), self._buffer_key(b_scope)
+        self.assertEqual(("acct_a", "tenantA", "alice", "alice"), ka)
+        self.assertEqual(("acct_a", "tenantA", "bob", "bob"), kb)
+        self.assertNotEqual(ka, kb)
+
+    def test_missing_user_id_falls_back_to_tenant_buffer(self):
+        # Contract: a tenant that omits user_id/session_id legitimately shares one tenant-level buffer.
+        drive(self.app, path="/v1/ingest", body={"scope": {"namespace": "cart"}, "records": [1]},
+              headers={"Authorization": f"Bearer {self.KEY_A}"})
+        drive(self.app, path="/v1/ingest", body={"scope": {"namespace": "cart"}, "records": [1]},
+              headers={"Authorization": f"Bearer {self.KEY_A}"})
+        k0 = self._buffer_key(self.s.calls[0][1]["scope"])
+        k1 = self._buffer_key(self.s.calls[1][1]["scope"])
+        self.assertEqual(("acct_a", "tenantA", "", ""), k0)
+        self.assertEqual(k0, k1)
+
     def test_dev_mode_still_accepts_demo(self):
         # Enforcement OFF -> legacy behavior: demo key maps to its tenant, request succeeds.
         cfg = gw.GatewayConfig.from_env({"api_keys": {"sk_live_demo": "acme"}, "require_auth": True})

@@ -425,6 +425,14 @@ def _apply_identity(args: Json, key: Optional[str], tenant: Optional[str],
     the authenticated key -- rather than trusting the client's `scope` string -- is what isolates one
     tenant's memory (and the `pending_async_event` fallback buffer) from another's.
 
+    The END-USER identity (`user_id`/`session_id`) is a different axis and is NOT server-pinned: the
+    tenant's own backend supplies it per request, so it is PRESERVED from the client `scope` here --
+    only `tenant_id`/`account_id` are (re)written, never `user_id`/`session_id`. That is what keeps
+    two end-users of the SAME tenant on distinct buffer keys (e.g. `alice` cannot read `bob`'s
+    pending/session buffer even under one shared API key). A tenant that wants per-user isolation MUST
+    pass `user_id` (and, for per-session isolation, `session_id`) in `scope`; when both are absent the
+    request legitimately falls back to the tenant-level buffer (`user_id`/`session_id` default to "").
+
     The edge bearer key is forwarded as the backend `api_key` only when
     MATRIXARK_GATEWAY_FORWARD_API_KEY is truthy (default on). Deployments where the edge itself is the
     trust boundary and the backend runs in `dev` access mode set it to 0, so the edge token is not
