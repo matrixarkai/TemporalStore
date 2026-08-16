@@ -37,6 +37,7 @@ mod command_validation;
 // which previously kept a drifted subset that mis-classified context/control-state writes
 // as reads -> lifecycle-write-barrier bypass + missing dump scheduling).
 pub(crate) use command_validation::{command_object_keys, is_write_command};
+pub(crate) use storage_manager_cycle::cross_shard_reclaim_guard_enabled;
 mod storage_bucket_internals;
 mod compaction;
 mod storage_reporting;
@@ -44,6 +45,7 @@ mod hashing;
 mod bucket_store;
 mod control_rollup;
 mod hll;
+mod hot_page_spill;
 mod state;
 
 // shared-corpus: storage_bucket_first_physical_index storage_object_manager_bucketstore_runtime_authority storage_model_layout_compaction_policies storage_merged_dump_load_lifecycle storage_object_manager_cold_hot_reload storage_page_address_disk_cache_shared_store_fallback
@@ -429,6 +431,19 @@ impl TemporalEngine {
                             ),
                             response: CommandResponse::Empty,
                         };
+                    } else {
+                        // Async / bulk mode is a fire-and-forget commit, so an append error does
+                        // NOT fail the command (the ack path is intentionally best-effort here).
+                        // But it must never be swallowed silently: a dropped async append means
+                        // the recovery source of truth is missing this write, so surface it in the
+                        // logs (with the failing shard) so operators can see acked-but-undurable
+                        // writes instead of discovering them only as post-crash data loss.
+                        tracing::error!(
+                            shard_id = request.shard_id,
+                            error = %err,
+                            "async WAL append failed: write acked to the client is NOT durable \
+                             and will be lost on a crash before the next flush"
+                        );
                     }
                 }
             }
@@ -647,21 +662,23 @@ impl TemporalEngine {
         // Drop the config lock before touching the WAL/disk so the durable append never runs
         // under the config mutex.
         drop(configs);
-        // Single-barrier durability: config-driven trims (feature_max_size) are re-derived by
-        // WAL-tail replay on recovery, so the config must be durable and ordered relative to the
-        // WAL. Stamp this change with the current WAL frontier -- it is effective for every write
-        // with a strictly greater sequence -- and fsync it. Config changes are rare admin ops, so
-        // this extra barrier is off the per-write hot path. Off the flag this is a no-op and the
-        // config path is byte-for-byte unchanged.
-        if wal_single_barrier() {
-            let after_seq = self.wal_store.stats(request.shard_id).last_sequence;
-            if let Err(err) = self.append_config_log_entry(request.shard_id, after_seq, &applied) {
-                tracing::warn!(
-                    shard_id = request.shard_id,
-                    error = %err,
-                    "failed to persist single-barrier config-log entry"
-                );
-            }
+        // Durably log the config so it survives reload REGARDLESS of barrier mode. Runtime config
+        // (feature_max_size + the representation-changing extend gate flags: control_rollup /
+        // coalesce / distinct_sketch) is NOT carried in the served-index checkpoint, so without a
+        // durable config-log a reload defaults `Config` and silently resets these -- which for the
+        // representation flags can misread already-written data. Stamp the change with the current
+        // WAL frontier (effective for every write with a strictly greater sequence) and fsync it.
+        // Config changes are rare admin ops, so this barrier is off the per-write hot path. In
+        // single-barrier mode WAL-tail replay additionally re-derives config-driven trims at this
+        // exact frontier; in every other mode the last entry is simply restored as the live config
+        // on load (see load_shard_with / replay_wal_into_shard).
+        let after_seq = self.wal_store.stats(request.shard_id).last_sequence;
+        if let Err(err) = self.append_config_log_entry(request.shard_id, after_seq, &applied) {
+            tracing::warn!(
+                shard_id = request.shard_id,
+                error = %err,
+                "failed to persist config-log entry"
+            );
         }
         Status::ok()
     }
@@ -2218,6 +2235,19 @@ fn read_page_bytes(
         address.routing_bucket);
     if let Ok(Some(bytes)) = cache.get(&cache_key) {
         return Some(bytes);
+    }
+    // Log-backed hot page (synthetic address, no block-store file): a cache miss here would read
+    // as MISSING for an acked async write. If it was spilled to a real slab on eviction, resolve
+    // the redirect and read the durable copy. On a genuine miss (never spilled, or spill failed)
+    // this falls through to the normal read below, which returns None -- the WAL still holds the
+    // value and a reload replays it.
+    if address.page_slab_id == HOT_PAGE_SLAB_ID {
+        if let Some(real_address) = hot_page_spill::lookup_spilled(shard_id, address.offset) {
+            if let Ok(bytes) = page_store.read(&real_address) {
+                let _ = cache.put(cache_key, bytes.clone());
+                return Some(bytes);
+            }
+        }
     }
     let bytes = page_store.read(address).ok()?;
     let _ = cache.put(cache_key, bytes.clone());

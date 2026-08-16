@@ -505,8 +505,32 @@ fn read_via_server_raft(
         DataRaftReadMode::BoundedStale | DataRaftReadMode::UnsafeAnyReplica => state.local_node_id,
     };
     let cluster = state.runtime.cluster();
-    cluster.check_data_raft_read_policy(target_node_id, state.read_policy)?;
+    let read_index_response = cluster.check_data_raft_read_policy(target_node_id, state.read_policy)?;
+    // R3: the read-index round returns the frontier this read must observe, but the previous
+    // code discarded it and served immediately — so a replica that had COMMITTED but not yet
+    // APPLIED up to that index could answer with stale/half-applied state. Wait for the target
+    // to apply through the returned read_index before serving. Gated so default behavior is
+    // unchanged.
+    if raft_applied_read_safety_enabled() {
+        cluster.wait_for_applied_index(
+            target_node_id,
+            read_index_response.read_index,
+            state.read_policy.read_index_timeout_ms,
+        )?;
+    }
     cluster.read_from_replica(target_node_id, command)
+}
+
+/// R3 gate mirror for the server read path (see `raft::raft_applied_read_safety_on`).
+fn raft_applied_read_safety_enabled() -> bool {
+    matches!(
+        std::env::var("TS_RAFT_APPLIED_READ_SAFETY")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 fn command_response(

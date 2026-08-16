@@ -10,6 +10,7 @@ from typing import Any
 
 try:
     from tools.matrixark_mcp_core import (
+        DEFAULT_MAX_CONTEXT_TOKENS,
         DIRECT_RECORD_LOG_SHARD_SIZE,
         Json,
         canonical_scope_key,
@@ -22,6 +23,7 @@ try:
     from tools.matrixark_mcp_retrieval import native_retrieve_fallback_allowed
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
+        DEFAULT_MAX_CONTEXT_TOKENS,
         DIRECT_RECORD_LOG_SHARD_SIZE,
         Json,
         canonical_scope_key,
@@ -107,7 +109,7 @@ def build_native_context_pack_request(target: Any, args: Json) -> Json:
         "allow_broad_scan_fallback": bool(native_retrieve_fallback_allowed(args)),
         "ranking": ranking,
         "storage_options": optional_object(args, "storage_options"),
-        "max_context_tokens": int(args.get("max_context_tokens") or 2048),
+        "max_context_tokens": int(args.get("max_context_tokens") or DEFAULT_MAX_CONTEXT_TOKENS),
         "local_context": local_context,
         "local_context_tokens": int(args.get("local_context_tokens") or 0),
         "local_context_safety_margin_tokens": args.get("local_context_safety_margin_tokens"),

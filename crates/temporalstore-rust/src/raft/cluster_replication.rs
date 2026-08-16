@@ -538,6 +538,37 @@ impl RaftCluster {
         candidate_id: RaftNodeId,
         target_id: RaftNodeId,
     ) -> Result<VoteRequest, RaftError> {
+        // R9: a candidate must durably persist its incremented term and a self-vote BEFORE it
+        // advertises the RequestVote, else a crash-restart could re-issue the same term without
+        // remembering it already voted for itself (double-vote in one term). Under the gate we
+        // take a write lock, bump `current_term`, record `voted_for = self`, and fsync the WAL
+        // before returning the request.
+        if raft_persist_vote_before_request_on() {
+            let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+            let shard_id = inner.shard_id;
+            let (election_term, last_log_index, last_log_term) = {
+                let candidate = inner
+                    .nodes
+                    .get_mut(&candidate_id)
+                    .ok_or(RaftError::NodeNotFound(candidate_id))?;
+                candidate.current_term = candidate.current_term.saturating_add(1);
+                candidate.voted_for = Some(candidate_id);
+                let last_log_index = node_last_log_or_snapshot_index(candidate);
+                let last_log_term =
+                    node_term_at_log_or_snapshot_index(candidate, last_log_index).unwrap_or_default();
+                (candidate.current_term, last_log_index, last_log_term)
+            };
+            inner.persist_configured_wal()?;
+            return Ok(VoteRequest {
+                rpc: None,
+                shard_id,
+                term: election_term,
+                candidate_id,
+                target_id,
+                last_log_index,
+                last_log_term,
+            });
+        }
         let inner = self.inner.read().expect("raft cluster lock poisoned");
         let candidate = inner
             .nodes

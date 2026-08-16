@@ -164,6 +164,50 @@ pub const DATA_RAFT_CODEC_VERSION: u32 = 1;
 const DATA_RAFT_LOG_HEADER_LEN: usize = 56;
 const DATA_RAFT_COMMAND_HEADER_LEN: usize = 40;
 
+/// Read a boolean gate env var (`1`/`true`/`yes`/`on`). Every replication-safety hardening in
+/// this module is gated OFF by default so the shipped behavior stays byte-identical until the
+/// operator opts in; the gated tests set the flag explicitly.
+fn raft_env_flag_on(name: &str) -> bool {
+    matches!(
+        std::env::var(name)
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+/// R8: §7 snapshot-install boundary-term truncation. When on, a snapshot install whose
+/// boundary entry does not term-match the local log discards the ENTIRE log instead of
+/// retaining a possibly-divergent tail.
+fn raft_snapshot_boundary_truncate_on() -> bool {
+    raft_env_flag_on("TS_RAFT_SNAPSHOT_BOUNDARY_TRUNCATE")
+}
+
+/// R9: durably persist the incremented term + a self-vote before advertising a RequestVote.
+fn raft_persist_vote_before_request_on() -> bool {
+    raft_env_flag_on("TS_RAFT_PERSIST_VOTE_BEFORE_REQUEST")
+}
+
+/// R3: gate reads on `applied_index` (reject/await unapplied-but-committed state) rather than
+/// bounding on commit-lag alone.
+fn raft_applied_read_safety_on() -> bool {
+    raft_env_flag_on("TS_RAFT_APPLIED_READ_SAFETY")
+}
+
+/// R4: after an election, withhold read-index/lease reads until the new leader has committed a
+/// no-op entry in its own term (leader-ready barrier).
+fn raft_leader_ready_barrier_on() -> bool {
+    raft_env_flag_on("TS_RAFT_LEADER_READY_BARRIER")
+}
+
+/// R5: require a durable per-term quorum RequestVote round (a candidate must collect a
+/// majority of granted votes) before promotion, instead of promoting from a local view.
+fn raft_quorum_election_on() -> bool {
+    raft_env_flag_on("TS_RAFT_QUORUM_ELECTION")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DataRaftLogCodecEntry {
     pub shard_id: ShardId,
@@ -3202,6 +3246,12 @@ pub enum RaftError {
         applied_index: u64,
         target_index: u64,
         timeout_ms: u64,
+    },
+    #[error("replica {replica_id} has committed but not applied up to the read frontier: applied={replica_applied_index}, required={required_index}")]
+    ReplicaApplyLagging {
+        replica_id: RaftNodeId,
+        replica_applied_index: u64,
+        required_index: u64,
     },
     #[error("snapshot shard mismatch: snapshot={snapshot_shard_id}, cluster={cluster_shard_id}")]
     SnapshotShardMismatch {

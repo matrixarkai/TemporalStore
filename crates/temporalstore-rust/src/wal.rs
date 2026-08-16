@@ -37,6 +37,19 @@ pub struct WriteAheadLogRecordMetadata {
     pub version: u32,
     pub timestamp_ms: u64,
     pub items: Vec<WriteAheadLogItemMetadata>,
+    // Atomic-batch framing (all three set together, or all absent for a standalone write). A
+    // batch of N commands is written as N contiguously-sequenced records sharing one `batch_id`,
+    // buffered and made durable by a SINGLE barrier after the last record. `batch_index` is
+    // 1-based; the record with `batch_index == batch_size` is the commit marker. Replay drops a
+    // trailing batch that is missing its commit marker (a crash between the buffered appends and
+    // the barrier), so a partially-persisted batch is never applied -- all-or-nothing. Absent
+    // (skipped in JSON) for every non-batch record, so standalone-write WALs are byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_size: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_index: Option<u32>,
 }
 
 impl WriteAheadLogRecordMetadata {
@@ -45,6 +58,9 @@ impl WriteAheadLogRecordMetadata {
             version: WRITE_AHEAD_LOG_FORMAT_VERSION,
             timestamp_ms: current_time_ms(),
             items: vec![WriteAheadLogItemMetadata::from_command(command)],
+            batch_id: None,
+            batch_size: None,
+            batch_index: None,
         }
     }
 }
@@ -299,6 +315,76 @@ impl LocalWriteAheadLogStore {
             self.group_commit_sync(shard_id, next_sequence)?;
         }
         Ok(record)
+    }
+
+    /// Append a group of commands as ONE crash-atomic batch: N contiguously-sequenced records
+    /// sharing a single `batch_id`, buffered, then made durable by a SINGLE barrier after the
+    /// last record (the commit marker). Either the whole batch is durable (barrier completed) or,
+    /// on a crash before the barrier, the trailing partial batch is dropped on replay -- so a
+    /// retry never double-applies a durable prefix of a non-idempotent / time-unspecified command
+    /// (e.g. FeatureAppend occur_time=0). `sync=false` skips the barrier (async / bulk mode: the
+    /// whole batch is buffered and lost-or-kept together, still all-or-nothing).
+    ///
+    /// Records are assigned a contiguous sequence block under a single `inner`-lock hold, so no
+    /// other writer can interleave a record into the middle of the batch (the engine also
+    /// serializes writes through its shard lock). A single command takes the standalone
+    /// `append_with_sync` path (no batch framing, byte-identical WAL).
+    pub fn append_batch_atomic(
+        &self,
+        shard_id: ShardId,
+        commands: Vec<Command>,
+        sync: bool,
+    ) -> Result<Vec<WriteAheadLogRecord>, WriteAheadLogError> {
+        if commands.len() <= 1 {
+            let mut records = Vec::with_capacity(commands.len());
+            if let Some(command) = commands.into_iter().next() {
+                records.push(self.append_with_sync(shard_id, command, sync)?);
+            }
+            return Ok(records);
+        }
+        let batch_id = next_batch_id();
+        let batch_size = commands.len() as u32;
+        let mut records = Vec::with_capacity(commands.len());
+        let last_sequence;
+        {
+            let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+            fs::create_dir_all(&inner.root)?;
+            let _append_lock = WalAppendLock::acquire(&inner.root, shard_id)?;
+            let disk_last_sequence = last_wal_sequence_at(&inner.root, shard_id)?;
+            let cached_last_sequence = inner
+                .last_sequence_by_shard
+                .get(&shard_id)
+                .copied()
+                .unwrap_or_default();
+            let mut seq = cached_last_sequence.max(disk_last_sequence);
+            for (index, command) in commands.into_iter().enumerate() {
+                seq = seq.saturating_add(1);
+                let mut metadata = WriteAheadLogRecordMetadata::single_command(&command);
+                metadata.batch_id = Some(batch_id);
+                metadata.batch_size = Some(batch_size);
+                metadata.batch_index = Some(index as u32 + 1);
+                let rec = WriteAheadLogRecord {
+                    shard_id,
+                    sequence: seq,
+                    metadata: Some(metadata),
+                    command,
+                };
+                // Buffer every record (sync=false); the single durability barrier below covers
+                // the whole batch. append_record_locked keeps last_flushed_sequence honest -- it
+                // only advances on an actual fsync, which happens once, after the loop.
+                let report = append_record_locked(&mut inner, &rec, false)?;
+                inner.stats.last_sequence = report.current_sequence;
+                records.push(rec);
+            }
+            inner.last_sequence_by_shard.insert(shard_id, seq);
+            last_sequence = seq;
+        }
+        if sync {
+            // One coalesced fdatasync makes the entire buffered batch durable. Reusing the
+            // group-commit barrier keeps the durable-watermark bookkeeping consistent.
+            self.group_commit_sync(shard_id, last_sequence)?;
+        }
+        Ok(records)
     }
 
     /// Coalesced WAL durability barrier (group commit). Ensures every byte appended for
@@ -671,6 +757,14 @@ fn lock_file_exclusive(_file: &File) -> Result<(), std::io::Error> {
 #[cfg(not(unix))]
 fn unlock_file(_file: &File) -> Result<(), std::io::Error> {
     Ok(())
+}
+
+/// Process-unique atomic-batch identifier. Only needs to disambiguate concurrently-live batches
+/// within one WAL replay window (a monotonic counter is more than enough); it is never persisted
+/// as a stable key across restarts.
+fn next_batch_id() -> u64 {
+    static BATCH_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    BATCH_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 fn wal_bulk_relaxed_durability() -> bool {

@@ -196,6 +196,29 @@ impl TemporalEngine {
         ids
     }
 
+    /// Union of live page-slab ids across EVERY shard currently loaded into this engine.
+    ///
+    /// One engine owns a single `page_store` shared by all shards it hosts, and the current
+    /// append cursor + slab counter are global, so two shards' pages can land in the same slab.
+    /// Any slab referenced by *any* loaded shard is live and must not be reclaimed. A single
+    /// shard's live set is therefore an unsafe basis for GC: a slab live only in shard B looks
+    /// stale to shard A's cycle and would be deleted, silently destroying B's committed pages.
+    /// Reclaim must be driven by this union so a slab referenced by any shard is retained.
+    ///
+    /// For a single loaded shard this equals `live_page_slab_ids(that_shard)`, so single-shard
+    /// callers are unaffected.
+    pub fn live_page_slab_ids_all_shards(&self) -> Vec<u64> {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let mut ids = shards
+            .values()
+            .flat_map(collect_live_page_slab_ids)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids
+    }
+
     pub fn sweep_expired_records(
         &self,
         shard_id: ShardId,

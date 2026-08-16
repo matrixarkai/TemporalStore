@@ -839,7 +839,7 @@ class _TemporalDirectReadMixin:
             local_context = []
         entry_count_cache = getattr(self, "_entry_count_cache", None)
         watermark_count = entry_count_cache if entry_count_cache is not None else self._get_count()
-        max_context_tokens = int(args.get("max_context_tokens") or 2048)
+        max_context_tokens = int(args.get("max_context_tokens") or DEFAULT_MAX_CONTEXT_TOKENS)
         local_budget = local_context_budget(args)
         local_tokens = int(local_budget.get("token_estimate", 0))
         safety_margin_tokens = int(local_budget.get("safety_margin_tokens", 0))
