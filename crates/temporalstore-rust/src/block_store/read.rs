@@ -6,6 +6,9 @@ use super::*;
 
 impl LocalBlockStore {
     pub fn read(&self, address: &BlockAddress) -> Result<Vec<u8>, BlockStoreError> {
+        // Reference-parity lazy recovery: if this slab lives only in shared storage after a
+        // metadata-only restore, fetch + cache it before serving the read.
+        self.ensure_slab_present(address.page_slab_id)?;
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         let path = slab_path(&inner.root, address.page_slab_id);
         let mut file = File::open(path)?;
@@ -72,6 +75,7 @@ impl LocalBlockStore {
     }
 
     pub fn read_slab(&self, page_slab_id: u64) -> Result<Vec<u8>, BlockStoreError> {
+        self.ensure_slab_present(page_slab_id)?;
         let root = self
             .inner
             .lock()
