@@ -487,4 +487,81 @@ impl TemporalEngine {
             status: Status::ok(),
         }
     }
+
+    /// Test-only: run the publish phase of `load_shard_with` (install newer manifest, load
+    /// the served-index base, publish the shard as `recovering: true`) but STOP before WAL
+    /// replay, leaving the shard parked in the recovery window. Returns the WAL replay
+    /// watermark to hand to `test_finish_recovery`. Reuses the exact real recovery helpers so
+    /// the observed gate behaviour matches production; it only splits the single synchronous
+    /// `load_shard_with` into two steps a single-threaded test can observe between.
+    #[cfg(test)]
+    pub(crate) fn test_publish_recovering_shard(&self, shard_id: ShardId) -> u64 {
+        let installed_manifest_watermark = self
+            .install_latest_manifest_if_newer_on_load(shard_id)
+            .expect("manifest install should succeed in test");
+        let loaded = self.load_index(shard_id, eager_cache_warm_on_load());
+        let replay_watermark = match installed_manifest_watermark {
+            Some(manifest_watermark) => manifest_watermark,
+            None => match &loaded {
+                None => 0,
+                Some(state) => state
+                    .applied_wal_sequence
+                    .unwrap_or_else(|| self.wal_store.stats(shard_id).last_sequence),
+            },
+        };
+        let mut state = loaded.unwrap_or_default();
+        promote_model_maps_to_bucket_index_authority(shard_id, &mut state, 0, u32::MAX);
+        self.infos.write().expect("info lock poisoned").insert(
+            shard_id,
+            ShardInfo {
+                shard_id,
+                loaded: true,
+                table_name: String::new(),
+                shard_uri: String::new(),
+                start_routing_bucket: 0,
+                end_routing_bucket: u32::MAX,
+                readonly: false,
+                load_version: 0,
+                local_node_id: None,
+                membership_version: 0,
+                replica_membership_version: 0,
+                membership_valid: true,
+                replica_node_ids: Vec::new(),
+                leader_node_id: None,
+                recovering: true,
+            },
+        );
+        self.shards
+            .write()
+            .expect("engine lock poisoned")
+            .insert(shard_id, state);
+        self.configs
+            .write()
+            .expect("config lock poisoned")
+            .entry(shard_id)
+            .or_default();
+        self.admissions
+            .write()
+            .expect("admission lock poisoned")
+            .entry(AdmissionScope::Shard(shard_id))
+            .or_default();
+        replay_watermark
+    }
+
+    /// Test-only: finish the recovery started by `test_publish_recovering_shard` by running
+    /// the real WAL replay and then clearing the `recovering` gate, exactly as
+    /// `load_shard_with`'s tail does.
+    #[cfg(test)]
+    pub(crate) fn test_finish_recovery(&self, shard_id: ShardId, watermark: u64) {
+        self.replay_wal_into_shard(shard_id, watermark)
+            .expect("wal replay should succeed in test");
+        if let Some(info) = self
+            .infos
+            .write()
+            .expect("info lock poisoned")
+            .get_mut(&shard_id)
+        {
+            info.recovering = false;
+        }
+    }
 }

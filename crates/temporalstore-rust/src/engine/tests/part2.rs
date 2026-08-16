@@ -1008,6 +1008,95 @@ fn async_write_survives_restart_via_wal_replay_like_native() {
     );
 }
 
+// Readiness race regression: after a restart with WAL entries not yet reflected in the served
+// index, the shard is published but NOT serving until `replay_wal_into_shard` completes
+// (ShardInfo.recovering gates it). A read that arrives inside that window must NOT observe a
+// false null from the half-reconstructed state -- it must be rejected with a retryable
+// `shard_not_loaded`. Once replay completes the same read must return the recovered value.
+// (The fix commit gated this deliberately without a deterministic test; this pins it.)
+#[test]
+fn read_during_wal_replay_recovery_returns_retryable_not_false_null() {
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-a"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+    // async_storage: the write lands in the WAL but page/index materialization is deferred, so
+    // it is absent from the served index until the WAL is replayed on the next load.
+    assert!(
+        engine
+            .set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config {
+                    version: 2,
+                    async_storage: true,
+                    ..Config::default()
+                },
+            })
+            .ok
+    );
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "k".to_string(),
+            value: b"recovered-value".to_vec(),
+        },
+    });
+    assert_eq!(engine.block_store().stats().writes, 0);
+    assert_eq!(engine.write_ahead_log_store().stats(1).writes, 1);
+    drop(engine);
+
+    // Restart, and park the shard in the recovery window: base index loaded (the async write is
+    // NOT in it yet), recovering=true, WAL not yet replayed.
+    let restarted = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    let watermark = restarted.test_publish_recovering_shard(1);
+
+    // A read inside the recovery window must be rejected retryably, NOT return a false null.
+    let during = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "k".to_string(),
+        },
+    });
+    assert!(
+        !during.status.ok,
+        "read during WAL-replay recovery must be rejected, not served from half-built state"
+    );
+    assert_eq!(during.status.code, "shard_not_loaded");
+    assert_eq!(
+        during.response,
+        CommandResponse::Empty,
+        "recovering read must return a retryable error, never a false null (Bytes {{ None }})"
+    );
+
+    // After replay completes and the gate clears, the same read returns the recovered value.
+    restarted.test_finish_recovery(1, watermark);
+    let after = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "k".to_string(),
+        },
+    });
+    assert!(after.status.ok, "shard must serve once recovery completes");
+    assert_eq!(
+        after.response,
+        CommandResponse::Bytes {
+            value: Some(b"recovered-value".to_vec())
+        },
+        "the WAL-recovered value must be served after recovery completes"
+    );
+}
+
 // Coalesced control-state persistence skips the per-write whole-series page rewrite
 // (write-amplification) and relies on the index snapshot + WAL replay for durability, the
 // same model control_state_changes/fol already use. This MUST stay crash-safe: increments
