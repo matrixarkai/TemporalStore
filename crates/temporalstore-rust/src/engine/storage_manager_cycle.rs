@@ -28,6 +28,33 @@ impl TemporalEngine {
         request: StorageManagerCycleRequest,
     ) -> StorageManagerCycleReport {
         let cycle_started_unix_ms = now_ms();
+        // Short-circuit while the shard is RECOVERING (WAL replay in progress). The cycle
+        // mutates shard state (eviction / page + WAL reclaim / compaction); a GC or compaction
+        // round interleaved with an in-flight replay would observe a half-reconstructed bucket
+        // index and could mis-reclaim a page that is still live -> silent durable loss. The
+        // synchronous POST /load path calls load_shard_with directly (it never registers in
+        // running_shards), so `recovering` is the reliable, path-independent guard: it is set
+        // for the whole replay window by both the async and the synchronous load. A recovering
+        // shard yields an inert (no-op) report; the next cycle after recovery runs normally.
+        if self
+            .infos
+            .read()
+            .expect("info lock poisoned")
+            .get(&request.shard_id)
+            .map(|info| info.recovering)
+            .unwrap_or(false)
+        {
+            return StorageManagerCycleReport {
+                shard_id: request.shard_id,
+                dry_run: request.dry_run,
+                completed: false,
+                errors: vec![format!(
+                    "storage manager cycle skipped for shard {}: recovery (WAL replay) is in progress; GC/compaction must not interleave with replay",
+                    request.shard_id
+                )],
+                ..StorageManagerCycleReport::default()
+            };
+        }
         let native_stage_order = [
             "prepare",
             "reclaim_wal",

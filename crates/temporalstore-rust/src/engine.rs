@@ -1548,12 +1548,36 @@ fn atomic_write_bytes_synced(path: &Path, bytes: &[u8], sync: bool) -> Result<()
             file.sync_all()?;
         }
         drop(file);
-        fs::rename(&temp_path, path)
+        fs::rename(&temp_path, path)?;
+        if sync {
+            // The rename is only crash-durable once the PARENT DIRECTORY entry is fsync'd:
+            // sync_all above makes the temp file's data+inode durable, but the rename that
+            // publishes it under `path` is a directory mutation that can still be lost on a
+            // crash. This backs the dump manifest (the durable WAL-reclaim watermark), the
+            // base index, and the install markers -- if the rename is not durable, a dump can
+            // let WAL-GC truncate the WAL to the manifest watermark, then a crash loses the
+            // manifest directory entry while the reclaimed WAL is already gone = permanent
+            // acked-write loss. Every other durable writer (wal.rs, index_log.rs,
+            // block_store) already syncs the parent dir here.
+            sync_parent_dir(path)?;
+        }
+        Ok(())
     })();
     if write_result.is_err() {
         let _ = fs::remove_file(&temp_path);
     }
     write_result
+}
+
+/// Make the atomic-rename that published `path` crash-durable by fsync'ing the parent
+/// directory entry (mirrors `wal::sync_parent_dir` / `index_log::sync_parent_dir`).
+fn sync_parent_dir(path: &Path) -> Result<(), std::io::Error> {
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = File::open(parent) {
+            dir.sync_all()?;
+        }
+    }
+    Ok(())
 }
 
 /// TS_WAL_ONLY_SYNC: on the write/ack path, only the WAL takes a synchronous durability

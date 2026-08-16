@@ -597,6 +597,22 @@ impl TemporalEngine {
             .iter()
             .filter(|policy| policy.layout_aware_rewrite_required)
             .count();
+        // Durability barrier BEFORE publishing the base index that names the relocated pages.
+        // Under deferred-fsync modes (bulk / page_wal_single_barrier / TS_WAL_ONLY_SYNC ->
+        // append.rs defer_data_sync) compaction relocates pages fsync-deferred, so the moved
+        // bytes may still be in the page cache. Persisting a base index that references them
+        // and crashing before the next barrier would leave dangling references at an un-synced
+        // slab (compaction does not advance applied_wal_sequence, so WAL replay does not
+        // re-derive them) = permanent silent loss. The partial-failure path above already
+        // syncs here; the success path must too. Unconditional, matching that path.
+        self.page_store.sync_durable().map_err(|barrier| {
+            Status::error(
+                "page_compaction_failed",
+                format!(
+                    "durability barrier failed before publishing the compacted base index: {barrier}"
+                ),
+            )
+        })?;
         let index_bytes = serde_json::to_vec_pretty(shard)
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         self.persist_index_bytes(shard_id, &index_bytes)

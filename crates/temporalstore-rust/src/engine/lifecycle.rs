@@ -191,7 +191,13 @@ impl TemporalEngine {
                     // WAL cannot be trusted to hold the records it covers -- refuse the load.
                     Err(status) => return LoadShardResponse { status },
                 };
-            let loaded = self.load_index(request.shard_id, eager_cache_warm_on_load());
+            // Fold-aware load: a corrupt served-index delta log is fatal here. Silently
+            // folding a holed delta prefix would advance the anchor past a removal/eviction
+            // recorded only in the delta -> silent loss. Refuse the load instead.
+            let loaded = match self.load_index_checked(request.shard_id, eager_cache_warm_on_load()) {
+                Ok(loaded) => loaded,
+                Err(status) => return LoadShardResponse { status },
+            };
             // WAL replay watermark, from the dumped-log id read on startup load:
             // installed manifest -> its wal_sequence; no index
             // file -> 0 (fresh/async-only shard, replay whole retained WAL); anchored index
@@ -355,15 +361,39 @@ impl TemporalEngine {
         shard_id: ShardId,
         watermark: u64,
     ) -> Result<(), Status> {
+        // A corrupt / unreadable WAL scan is DATA LOSS, not "nothing to replay": swallowing it
+        // to Ok(()) would load the shard from the stale base index only, silently discarding
+        // the committed WAL tail and defeating the caller's refuse-load-on-DataLoss guard. An
+        // absent WAL file is the only "nothing to replay" case, and `scan` already returns an
+        // empty vec for it (never an error), so any Err here is a genuine failure -> abort.
         let records = match self.wal_store.scan(shard_id, 0, u64::MAX, u64::MAX) {
             Ok(records) => records,
-            Err(_) => return Ok(()),
+            Err(err) => {
+                return Err(Status::error(
+                    "wal_scan_failed",
+                    format!(
+                        "WAL scan failed during recovery for shard {shard_id}; refusing load rather than serving a truncated prefix: {err}"
+                    ),
+                ));
+            }
         };
-        let mut pending: Vec<WriteAheadLogRecord> = records
-            .into_iter()
-            .filter_map(|(_, line)| serde_json::from_slice::<WriteAheadLogRecord>(&line).ok())
-            .filter(|record| record.sequence > watermark)
-            .collect();
+        // Decode each record through the integrity-verifying framing decoder and PROPAGATE a
+        // failure (a value-preserving bit-flip surfaces as `Corruption`) instead of dropping
+        // the record via `.ok()`, which would silently truncate the replayed tail.
+        let mut pending: Vec<WriteAheadLogRecord> = Vec::new();
+        for (_, line) in records {
+            let record = crate::wal::decode_wal_line(&line).map_err(|err| {
+                Status::error(
+                    "wal_record_corruption",
+                    format!(
+                        "WAL record integrity failure during recovery for shard {shard_id}; refusing load: {err}"
+                    ),
+                )
+            })?;
+            if record.sequence > watermark {
+                pending.push(record);
+            }
+        }
         if pending.is_empty() {
             return Ok(());
         }
