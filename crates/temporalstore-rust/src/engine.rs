@@ -433,7 +433,7 @@ impl TemporalEngine {
                 }
             }
             if !config.async_storage && !bulk_ingest_mode() && !replaying_wal() {
-                // Anchor the served index to the WAL sequence it now reflects, so a
+                // Anchor the (in-memory) served index to the WAL sequence it now reflects, so a
                 // later load replays only records written after this point (the
                 // dumped-log-id anchor read back on load).
                 shard.applied_wal_sequence =
@@ -450,14 +450,20 @@ impl TemporalEngine {
                     end_routing_bucket,
                 );
                 let key_states = capture_key_states(shard, &delta_command_keys);
+                // `durable` fsyncs the delta record before returning. Deferred on the raft
+                // apply path (raft log is the durability source) and, under
+                // TS_INDEXLOG_DEFER_SYNC, on the single-node path too: the record is still
+                // written (so the served-index stream is unchanged), but the durable WAL +
+                // data-page barriers already committed above make the lost delta tail
+                // recoverable by WAL replay, so its fdatasync leaves the ack critical path.
+                let index_log_durable = !raft_applying() && !indexlog_defer_sync();
                 let _ = self.index_log_store.append_delta(
                     request.shard_id,
                     items,
                     key_states,
                     shard.applied_wal_sequence,
                     None,
-                    // Non-blocking on the raft apply path (raft log is the durability source).
-                    !raft_applying(),
+                    index_log_durable,
                 );
             }
         }
@@ -1479,6 +1485,34 @@ fn atomic_write_bytes_synced(path: &Path, bytes: &[u8], sync: bool) -> Result<()
 pub(super) fn wal_only_sync() -> bool {
     matches!(
         std::env::var("TS_WAL_ONLY_SYNC")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+/// TS_INDEXLOG_DEFER_SYNC: drop the served-index delta-log fdatasync from the synchronous
+/// write/ack path. The delta record is still APPENDED per write (so the served-index stream,
+/// its record counts, and every consumer of it -- gc / reclaim / manifest / reconcile / cold
+/// reload -- are byte-for-byte unchanged); only its fdatasync is deferred. Combined with
+/// TS_WAL_ONLY_SYNC this takes the ack path from three synchronous barriers (WAL + data-page +
+/// index-log) down to two (WAL + data-page): the WAL and the data pages stay durable per
+/// write, so no index reference can ever dangle at an un-synced page, and the durably-synced
+/// WAL rebuilds any lost index-log delta tail on replay. Default OFF; when off the write path
+/// is byte-for-byte unchanged.
+///
+/// NOTE (why not a full single barrier / dropping the data-page + served-index sync too):
+/// eviction / expiry / compaction decisions are recorded ONLY in the served-index delta, not
+/// in the WAL, so a pure WAL replay resurrects points that a background op had removed (proven
+/// by engine::tests::part2::reconcile_does_not_resurrect_evicted_feature_points_on_reload).
+/// Reaching one barrier therefore requires those served-index-only mutations to become
+/// WAL-reconstructable first; that is a separate, larger change and is intentionally NOT done
+/// here.
+pub(super) fn indexlog_defer_sync() -> bool {
+    matches!(
+        std::env::var("TS_INDEXLOG_DEFER_SYNC")
             .unwrap_or_default()
             .trim()
             .to_ascii_lowercase()
