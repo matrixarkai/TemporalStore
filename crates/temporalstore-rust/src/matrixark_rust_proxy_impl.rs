@@ -2193,10 +2193,15 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
         shard_id: DEFAULT_SHARD_ID,
         config: Config {
             version: 2,
+            // Inherit the durable engine-library default (async_storage=false, i.e. every
+            // write is fsync-committed to the WAL before it is acked). The async path buffers
+            // the WAL with no barrier, so a crash before the next flush drops an acked write --
+            // that must never be the deployed front-door default. Async is opt-in only, via an
+            // explicit truthy MATRIXARK_RUST_PROXY_ASYNC_STORAGE.
             async_storage: env::var("MATRIXARK_RUST_PROXY_ASYNC_STORAGE")
                 .ok()
                 .and_then(|value| value.parse::<bool>().ok())
-                .unwrap_or(true),
+                .unwrap_or(false),
             ..Config::default()
         },
     });
