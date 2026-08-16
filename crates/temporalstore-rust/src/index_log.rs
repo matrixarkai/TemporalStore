@@ -212,6 +212,19 @@ fn bulk_ingest_mode() -> bool {
     )
 }
 
+/// TS_WAL_ONLY_SYNC: defer the ack-path index-log fsync (WAL replay is the durable
+/// recovery source). Default OFF.
+fn indexlog_wal_only_sync() -> bool {
+    matches!(
+        std::env::var("TS_WAL_ONLY_SYNC")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
 impl LocalIndexLogStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
@@ -263,7 +276,12 @@ impl LocalIndexLogStore {
             .open(index_log_path(&inner.root, shard_id))?;
         file.write_all(&bytes)?;
         file.flush()?;
-        file.sync_data()?;
+        // Ack-path index-log append. Under TS_WAL_ONLY_SYNC defer this fsync (bytes are
+        // still written): the WAL is the durable recovery source and replay rebuilds the
+        // served index, so the replay-log checkpoint need not be crash-durable per write.
+        if !indexlog_wal_only_sync() {
+            file.sync_data()?;
+        }
         inner.stats.writes += 1;
         inner.stats.bytes_written += bytes.len() as u64;
         inner.stats.last_sequence = next_sequence;
@@ -304,7 +322,12 @@ impl LocalIndexLogStore {
             .open(index_log_path(&inner.root, shard_id))?;
         file.write_all(&bytes)?;
         file.flush()?;
-        file.sync_data()?;
+        // Ack-path index-log append. Under TS_WAL_ONLY_SYNC defer this fsync (bytes are
+        // still written): the WAL is the durable recovery source and replay rebuilds the
+        // served index, so the replay-log checkpoint need not be crash-durable per write.
+        if !indexlog_wal_only_sync() {
+            file.sync_data()?;
+        }
         inner.stats.writes += 1;
         inner.stats.bytes_written += bytes.len() as u64;
         inner.stats.last_sequence = next_sequence;

@@ -85,8 +85,19 @@ impl LocalBlockStore {
         };
         file.write_all(&record.bytes)?;
         file.flush()?;
-        let relaxed = bulk_relaxed_durability();
-        if !relaxed {
+        // Two INDEPENDENT relaxations:
+        //  * `defer_data_sync` skips this record's data-page fdatasync. UNSAFE on the live
+        //    path: the served index references pages by (slab,offset,page_id) and recovery
+        //    may skip WAL replay when the index anchor is current, leaving dangling refs to
+        //    an un-synced page (verified data loss under SIGKILL). Only bulk backfill --
+        //    which pins the replay anchor and re-drives the whole chunk -- may defer it.
+        //  * `defer_manifest` defers the per-record extent-manifest persist (write-tmp +
+        //    fsync + rename EVERY record -- barriers 5/6) to sync_durable()/slab-seal. SAFE
+        //    even with pages kept durable: the manifest is band/GC metadata reconstructed
+        //    by reconcile-on-open from the durable page records, never a read dependency.
+        let defer_data_sync = bulk_relaxed_durability();
+        let defer_manifest = bulk_relaxed_durability() || page_wal_only_sync();
+        if !defer_data_sync {
             file.sync_data()?;
         }
         inner.next_page_id = inner.next_page_id.saturating_add(1);
@@ -100,7 +111,7 @@ impl LocalBlockStore {
             record.logical_len as u64,
             page_id,
         );
-        if relaxed {
+        if defer_manifest {
             inner.relaxed_dirty = true;
         } else {
             persist_band_manifest(&inner.root, &inner.bands)?;
@@ -205,11 +216,23 @@ impl LocalBlockStore {
             }
             addresses.push(address);
         }
+        // The batch already amortizes the data barrier across all its records (one
+        // sync_data for the whole batch). Keep that data barrier on the live path (durable
+        // pages); only the extent-manifest persist is deferred under TS_WAL_ONLY_SYNC
+        // (reconciled on open), matching the single-append path.
+        let defer_data_sync = bulk_relaxed_durability();
+        let defer_manifest = bulk_relaxed_durability() || page_wal_only_sync();
         if let Some(mut current) = file {
             current.flush()?;
-            current.sync_data()?;
+            if !defer_data_sync {
+                current.sync_data()?;
+            }
         }
-        persist_band_manifest(&inner.root, &inner.bands)?;
+        if defer_manifest {
+            inner.relaxed_dirty = true;
+        } else {
+            persist_band_manifest(&inner.root, &inner.bands)?;
+        }
         inner.stats.writes = inner.stats.writes.saturating_add(writes);
         inner.stats.bytes_written = inner.stats.bytes_written.saturating_add(bytes_written);
         inner.stats.logical_bytes_written = inner
