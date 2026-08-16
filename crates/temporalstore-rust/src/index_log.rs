@@ -19,6 +19,19 @@ pub enum IndexLogError {
     Io(#[from] std::io::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    /// A committed, newline-terminated served-index-log record failed its per-record
+    /// integrity envelope (framing length / SHA-256 digest) or violated delta
+    /// sequence-continuity. Surfaced as data loss so the load aborts instead of silently
+    /// skipping a delta (an eviction/removal recorded ONLY in the delta -- not the WAL --
+    /// would otherwise be lost, resurrecting the removed point or dangling its page ref).
+    #[error("index-log record integrity error: {0}")]
+    Corruption(String),
+}
+
+impl From<crate::log_framing::FramingError> for IndexLogError {
+    fn from(err: crate::log_framing::FramingError) -> Self {
+        IndexLogError::Corruption(err.0)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -270,8 +283,9 @@ impl LocalIndexLogStore {
             sequence: next_sequence,
             index: serde_json::from_slice(index_bytes)?,
         };
-        let mut bytes = serde_json::to_vec(&record)?;
-        bytes.push(b'\n');
+        // Frame the record with a length + SHA-256 digest (crate::log_framing) so a later
+        // value-preserving bit-flip in this committed line is detected on read.
+        let bytes = crate::log_framing::encode_line(&serde_json::to_vec(&record)?);
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -311,13 +325,17 @@ impl LocalIndexLogStore {
             }
         };
         let next_sequence = last_sequence.saturating_add(1);
-        let mut bytes = Vec::with_capacity(index_bytes.len().saturating_add(96));
+        // Build the JSON payload (no trailing newline) by splicing the pre-serialized index
+        // bytes in directly (avoids re-parsing/re-encoding the whole index), then frame it
+        // with a length + SHA-256 digest (crate::log_framing) for per-record integrity.
+        let mut payload = Vec::with_capacity(index_bytes.len().saturating_add(96));
         write!(
-            &mut bytes,
+            &mut payload,
             "{{\"shard_id\":{shard_id},\"sequence\":{next_sequence},\"index\":"
         )?;
-        bytes.extend_from_slice(index_bytes);
-        bytes.extend_from_slice(b"}\n");
+        payload.extend_from_slice(index_bytes);
+        payload.push(b'}');
+        let bytes = crate::log_framing::encode_line(&payload);
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -380,8 +398,10 @@ impl LocalIndexLogStore {
             applied_wal_sequence,
             key_states,
         };
-        let mut bytes = serde_json::to_vec(&record)?;
-        bytes.push(b'\n');
+        // Frame the delta record with a length + SHA-256 digest (crate::log_framing) so a
+        // value-preserving bit-flip (e.g. a flipped `deleted` flag or page address) in this
+        // committed line is detected on read rather than replayed as truth on recovery.
+        let bytes = crate::log_framing::encode_line(&serde_json::to_vec(&record)?);
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -415,26 +435,46 @@ impl LocalIndexLogStore {
         let file = File::open(&path)?;
         let reader = BufReader::new(file);
         let mut records = Vec::new();
+        let mut last_sequence = 0_u64;
         for line in reader.lines() {
             let line = line?;
             if line.trim().is_empty() {
                 continue;
             }
-            if let Ok(record) = serde_json::from_str::<IndexDeltaRecord>(&line) {
-                // A whole-index IndexLogRecord also deserializes into IndexDeltaRecord
-                // (its `index` field is ignored, leaving the delta fields empty). Only keep
-                // records that carry a delta payload OR a WAL anchor (an anchor-only record
-                // still advances the reconstructed watermark on load).
-                if record.items.is_empty()
-                    && record.meta.is_none()
-                    && record.key_states.is_empty()
-                    && record.applied_wal_sequence.is_none()
-                {
-                    continue;
-                }
-                if record.sequence > retain_after_sequence {
-                    records.push(record);
-                }
+            // PROPAGATE decode/parse failures instead of silently skipping the line. Silently
+            // dropping an unparseable interior delta record and continuing the fold advances
+            // the reconstructed anchor past it, so an eviction/removal recorded ONLY in that
+            // delta (not the WAL) is recovered from neither source = silent loss / dangling
+            // ref. `decode_line` also verifies the per-record integrity envelope, so a
+            // value-preserving bit-flip surfaces here as `Corruption`. Consistent with the
+            // scan / last_sequence_at path, which already treats interior corruption as fatal.
+            let payload = crate::log_framing::decode_line(line.as_bytes())?;
+            let record: IndexDeltaRecord = serde_json::from_slice(payload)?;
+            // Enforce delta sequence-continuity: sequences are assigned strictly monotonically
+            // across ALL appended records (whole-index and delta share one counter), and GC
+            // only truncates a leading prefix, so in file order each record's sequence must be
+            // strictly greater than the previous. A drop below or duplicate means a lost /
+            // reordered / corrupted record -- refuse rather than fold a holed delta stream.
+            if record.sequence <= last_sequence {
+                return Err(IndexLogError::Corruption(format!(
+                    "index-log delta sequence continuity violation: record sequence {} is not greater than previous {}",
+                    record.sequence, last_sequence
+                )));
+            }
+            last_sequence = record.sequence;
+            // A whole-index IndexLogRecord also deserializes into IndexDeltaRecord (its `index`
+            // field is ignored, leaving the delta fields empty). Only keep records that carry a
+            // delta payload OR a WAL anchor (an anchor-only record still advances the
+            // reconstructed watermark on load).
+            if record.items.is_empty()
+                && record.meta.is_none()
+                && record.key_states.is_empty()
+                && record.applied_wal_sequence.is_none()
+            {
+                continue;
+            }
+            if record.sequence > retain_after_sequence {
+                records.push(record);
             }
         }
         Ok(records)
@@ -466,9 +506,13 @@ impl LocalIndexLogStore {
         max_bytes: u64,
     ) -> Result<Vec<(u64, Vec<u8>)>, IndexLogError> {
         let mut inner = self.inner.lock().expect("index log lock poisoned");
-        let _ = last_sequence_at(&inner.root, shard_id)?;
         let path = index_log_path(&inner.root, shard_id);
-        let mut file = File::open(path)?;
+        if !path.exists() {
+            inner.stats.scans += 1;
+            return Ok(Vec::new());
+        }
+        let _ = last_sequence_at(&inner.root, shard_id)?;
+        let mut file = File::open(&path)?;
         file.seek(SeekFrom::Start(start_offset))?;
         let mut reader = BufReader::new(file);
         let mut offset = start_offset;
@@ -533,14 +577,23 @@ impl LocalIndexLogStore {
                 continue;
             }
             records_before += 1;
-            let record: IndexLogRecord = serde_json::from_str(&line)?;
+            // Preserve the exact on-disk payload for retained records so a delta record is not
+            // silently re-encoded as a whole-index record (which would drop its items/meta).
+            // Decode verifies the integrity envelope; the retained raw payload is re-framed on
+            // write-out below.
+            let payload = crate::log_framing::decode_line(line.as_bytes())?;
+            let record: IndexLogRecord = serde_json::from_slice(payload)?;
             if record.sequence < retain_from_sequence {
                 removable_records_before_budget = removable_records_before_budget.saturating_add(1);
             }
             if record.sequence >= retain_from_sequence
                 || (max_entries_per_round > 0 && removed_this_round >= max_entries_per_round)
             {
-                retained.push(record);
+                // Retain the EXACT decoded payload, not a re-serialized IndexLogRecord: a delta
+                // record also parses as IndexLogRecord (its delta fields are dropped), so
+                // re-encoding the parsed struct would silently destroy retained delta items on
+                // a GC round. Re-frame the untouched payload on write-out below.
+                retained.push(payload.to_vec());
             } else {
                 removed_this_round = removed_this_round.saturating_add(1);
             }
@@ -549,9 +602,8 @@ impl LocalIndexLogStore {
         let temp_path = path.with_extension("jsonl.tmp");
         {
             let mut temp = File::create(&temp_path)?;
-            for record in &retained {
-                serde_json::to_writer(&mut temp, record)?;
-                temp.write_all(b"\n")?;
+            for payload in &retained {
+                temp.write_all(&crate::log_framing::encode_line(payload))?;
             }
             temp.flush()?;
             temp.sync_all()?;
@@ -622,10 +674,12 @@ fn last_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, IndexLogError
         // it as end-of-log would set_len the file down to the last parseable record -- silently
         // dropping durable index-log records after the corrupt one AND rewinding the sequence
         // counter (the next append reuses a sequence that dump manifests already reference).
-        // Surface it as an error (index-log replay returns DataLoss on a hole / CRC
+        // Surface it as an error (index-log replay returns DataLoss on a hole / digest
         // mismatch, never trims). A genuine torn tail lacks the trailing '\n' (break above).
-        // Mirrors the WAL fix in wal.rs::last_wal_sequence_at.
-        let record = serde_json::from_slice::<IndexLogRecord>(&line)?;
+        // `decode_line` verifies the per-record length + SHA-256 envelope (crate::log_framing)
+        // and accepts legacy unframed records unchanged. Mirrors wal.rs::last_wal_sequence_at.
+        let payload = crate::log_framing::decode_line(&line)?;
+        let record = serde_json::from_slice::<IndexLogRecord>(payload)?;
         last = last.max(record.sequence);
         good_offset = offset;
     }
@@ -693,7 +747,8 @@ mod tests {
         assert_eq!(sequence, 1);
         let rows = store.scan(5, 0, u64::MAX, u64::MAX).unwrap();
         assert_eq!(rows.len(), 1);
-        let record: IndexLogRecord = serde_json::from_slice(&rows[0].1).unwrap();
+        let payload = crate::log_framing::decode_line(&rows[0].1).unwrap();
+        let record: IndexLogRecord = serde_json::from_slice(payload).unwrap();
         assert_eq!(record.shard_id, 5);
         assert_eq!(record.sequence, 1);
         assert_eq!(record.index, serde_json::json!({"value": 1}));
@@ -848,5 +903,100 @@ mod tests {
             reopened.scan(5, 0, u64::MAX, u64::MAX).is_err(),
             "interior index-log corruption must be fatal, not silently truncated"
         );
+    }
+
+    #[test]
+    fn read_delta_records_propagates_interior_delta_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        for key in ["a", "b", "c"] {
+            store
+                .append_delta(5, vec![page_item(1, key, false)], Vec::new(), Some(1), None, true)
+                .unwrap();
+        }
+        drop(store);
+        // Corrupt the 2nd delta record in place, keeping it newline-terminated with the 3rd
+        // intact after it. Previously read_delta_records `if let Ok(..)` SILENTLY SKIPPED such
+        // a line and folded on -- losing a removal/eviction recorded only in that delta. It
+        // must now propagate the error and abort.
+        let path = index_log_path(dir.path(), 5);
+        let contents = std::fs::read(&path).unwrap();
+        let mut lines: Vec<Vec<u8>> = contents
+            .split(|&byte| byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| line.to_vec())
+            .collect();
+        assert_eq!(lines.len(), 3);
+        lines[1] = b"corrupt-not-a-record".to_vec();
+        let mut rebuilt = Vec::new();
+        for line in &lines {
+            rebuilt.extend_from_slice(line);
+            rebuilt.push(b'\n');
+        }
+        std::fs::write(&path, &rebuilt).unwrap();
+        let reopened = LocalIndexLogStore::new(dir.path());
+        assert!(
+            reopened.read_delta_records(5, 0).is_err(),
+            "an interior delta record that fails to decode must abort, not be silently skipped"
+        );
+    }
+
+    #[test]
+    fn read_delta_records_enforces_sequence_continuity() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        for (index, key) in ["a", "b", "c"].iter().enumerate() {
+            store
+                .append_delta(
+                    5,
+                    vec![page_item(1, key, false)],
+                    Vec::new(),
+                    Some(index as u64 + 1),
+                    None,
+                    true,
+                )
+                .unwrap();
+        }
+        drop(store);
+        // Reorder the (valid, framed) records so their sequences read 1, 3, 2 -- a continuity
+        // violation that means a record was lost/reordered. Each line is individually valid
+        // (correct digest), so this exercises the sequence-continuity guard, not the checksum.
+        let path = index_log_path(dir.path(), 5);
+        let contents = std::fs::read(&path).unwrap();
+        let lines: Vec<Vec<u8>> = contents
+            .split(|&byte| byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| line.to_vec())
+            .collect();
+        assert_eq!(lines.len(), 3);
+        let mut rebuilt = Vec::new();
+        for index in [0usize, 2, 1] {
+            rebuilt.extend_from_slice(&lines[index]);
+            rebuilt.push(b'\n');
+        }
+        std::fs::write(&path, &rebuilt).unwrap();
+        let reopened = LocalIndexLogStore::new(dir.path());
+        match reopened.read_delta_records(5, 0) {
+            Err(IndexLogError::Corruption(_)) => {}
+            other => panic!("out-of-order delta sequences must be a Corruption error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn legacy_unframed_index_log_still_loads_after_upgrade() {
+        let dir = tempfile::tempdir().unwrap();
+        // Pre-upgrade whole-index records: raw single-line JSON, no framing.
+        let path = index_log_path(dir.path(), 8);
+        let raw = b"{\"shard_id\":8,\"sequence\":1,\"index\":{\"v\":1}}\n{\"shard_id\":8,\"sequence\":2,\"index\":{\"v\":2}}\n";
+        std::fs::write(&path, raw).unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        assert_eq!(store.stats(8).last_sequence, 2);
+        assert_eq!(store.scan(8, 0, u64::MAX, u64::MAX).unwrap().len(), 2);
+        // A new append is framed; the mixed file still loads and continues the sequence.
+        let record = store.append_json(8, b"{\"v\":3}").unwrap();
+        assert_eq!(record.sequence, 3);
+        let reopened = LocalIndexLogStore::new(dir.path());
+        assert_eq!(reopened.scan(8, 0, u64::MAX, u64::MAX).unwrap().len(), 3);
+        assert_eq!(reopened.stats(8).last_sequence, 3);
     }
 }

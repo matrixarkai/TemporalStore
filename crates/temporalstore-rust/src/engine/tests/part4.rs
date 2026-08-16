@@ -3157,3 +3157,222 @@ fn expired_feature_key_reads_empty_consistently_across_feature_reads() {
         "FeatureAggQuery reads empty for an expired key -- the other feature reads must match"
     );
 }
+
+// RN2: a storage-manager cycle must be an inert no-op while the shard is RECOVERING (WAL
+// replay in progress). A GC/compaction/reclaim round interleaved with an in-flight replay
+// would observe a half-reconstructed bucket index and could mis-reclaim a still-live page.
+#[test]
+fn storage_manager_cycle_is_a_noop_while_shard_is_recovering() {
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-a"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+    for i in 0..4 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("k{i}"),
+                value: b"v".to_vec(),
+            },
+        });
+        assert!(response.status.ok, "{response:?}");
+    }
+    drop(engine);
+
+    // Restart and park the shard in the recovery window (recovering=true, replay not yet run).
+    let restarted = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    let watermark = restarted.test_publish_recovering_shard(1);
+    let wal_before = restarted.write_ahead_log_store().stats(1).last_sequence;
+
+    let report = restarted.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        max_dump_buckets_per_round: 16,
+        min_undumped_wal_records: 0,
+        warm_cache: true,
+        enable_wal_reclaim: true,
+        enable_page_reclaim: true,
+        enable_page_compaction: true,
+        enable_index_gc: true,
+        ..StorageManagerCycleRequest::default()
+    });
+    assert!(
+        !report.completed,
+        "a storage-manager cycle must not complete while the shard is recovering: {report:?}"
+    );
+    assert!(
+        report.stages.is_empty(),
+        "a recovering cycle must build no stages (it returns early before any mutation)"
+    );
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| error.contains("recovering") || error.contains("recovery")),
+        "the skip reason must name recovery: {:?}",
+        report.errors
+    );
+    // The WAL tail is untouched (nothing reclaimed), and recovery still completes normally.
+    assert_eq!(
+        restarted.write_ahead_log_store().stats(1).last_sequence,
+        wal_before,
+        "no WAL record may be reclaimed during recovery"
+    );
+    restarted.test_finish_recovery(1, watermark);
+    let after = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "k0".to_string(),
+        },
+    });
+    assert!(after.status.ok, "the shard serves once recovery completes");
+}
+
+// F4: a corrupt / unreadable WAL scan on load is DATA LOSS, not "nothing to replay". The load
+// must refuse rather than silently serving the stale base index (dropping the committed WAL
+// tail). A value-preserving bit-flip in a committed, newline-terminated record exercises this.
+#[test]
+fn corrupt_wal_scan_refuses_load_rather_than_truncating() {
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-a"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+    for key in ["keepme", "corruptme"] {
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: key.to_string(),
+                        value: b"v".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+    }
+    drop(engine);
+
+    let wal_path = index_dir.join("wals").join("shard-1.wal.jsonl");
+    let mut bytes = std::fs::read(&wal_path).unwrap();
+    let position = bytes
+        .windows(9)
+        .position(|window| window == b"corruptme")
+        .expect("the second WAL record is present");
+    bytes[position + 1] = b'0'; // "corruptme" -> "c0rruptme": still valid JSON, wrong digest
+    std::fs::write(&wal_path, &bytes).unwrap();
+
+    let restarted = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    let response = restarted.load_shard_with(LoadShardRequest {
+        shard_id: 1,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: 0,
+        end_routing_bucket: u32::MAX,
+        readonly: false,
+        table_name: String::new(),
+    });
+    assert!(
+        !response.status.ok,
+        "a corrupt WAL scan must refuse the load, not serve a truncated prefix: {:?}",
+        response.status
+    );
+}
+
+// F3: a corrupt INTERIOR served-index delta record must abort the load, not be silently
+// skipped (a skipped delta loses a removal/eviction recorded only there -> resurrection or
+// dangling ref).
+#[test]
+fn corrupt_index_log_delta_refuses_load_rather_than_silently_skipping() {
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-a"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+    for key in ["alpha", "beta", "gamma"] {
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: key.to_string(),
+                        value: b"v".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+    }
+    drop(engine);
+
+    let index_log_path = index_dir
+        .join("indexlogs")
+        .join("shard-1.indexlog.jsonl");
+    let contents = std::fs::read(&index_log_path).unwrap();
+    let mut lines: Vec<Vec<u8>> = contents
+        .split(|&byte| byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| line.to_vec())
+        .collect();
+    assert!(
+        lines.len() >= 2,
+        "the write path must have appended index-log delta records"
+    );
+    // Corrupt an interior record (not the tail) so it is committed corruption, not a torn tail.
+    lines[0] = b"corrupt-not-a-record".to_vec();
+    let mut rebuilt = Vec::new();
+    for line in &lines {
+        rebuilt.extend_from_slice(line);
+        rebuilt.push(b'\n');
+    }
+    std::fs::write(&index_log_path, &rebuilt).unwrap();
+
+    let restarted = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    let response = restarted.load_shard_with(LoadShardRequest {
+        shard_id: 1,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: 0,
+        end_routing_bucket: u32::MAX,
+        readonly: false,
+        table_name: String::new(),
+    });
+    assert!(
+        !response.status.ok,
+        "a corrupt interior index-log delta must refuse the load, not be silently skipped: {:?}",
+        response.status
+    );
+}

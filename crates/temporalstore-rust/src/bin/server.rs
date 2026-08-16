@@ -47,7 +47,6 @@ use temporalstore_rust::{
     RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions,
     RequestController, ScanStreamRequest, SchedulerLifecycleToken, SetConfigRequest,
     SharedStoreReplicationError, SharedStoreReplicator, SharedStoreWalEntry, StorageBackend,
-    WriteAheadLogRecord,
     BucketDumpManifest, StorageCacheInvalidateBucketRequest, StorageLifecycleRequest,
     StorageProductionReadinessRequest, StreamReadRequest, UnloadShardRequest,
 };
@@ -1167,7 +1166,7 @@ fn publish_shard_checkpoint(
     let mut published = 0usize;
     let mut last_wal_index = 0u64;
     for (_offset, line) in records {
-        let record: WriteAheadLogRecord = match serde_json::from_slice(&line) {
+        let record = match temporalstore_rust::wal::decode_wal_line(&line) {
             Ok(record) => record,
             Err(err) => {
                 return PublishShardCheckpointResponse {

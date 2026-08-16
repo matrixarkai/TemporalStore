@@ -775,7 +775,11 @@ impl TemporalEngine {
         let removable_records_before_budget = records
             .iter()
             .filter_map(|(_, bytes)| {
-                serde_json::from_slice::<crate::index_log::IndexLogRecord>(bytes).ok()
+                // Decode the integrity framing (accepts legacy unframed records too) before
+                // reading the sequence; a corrupt line is simply not counted here (this is a
+                // GC-pressure metric, not the recovery path).
+                let payload = crate::log_framing::decode_line(bytes).ok()?;
+                serde_json::from_slice::<crate::index_log::IndexLogRecord>(payload).ok()
             })
             .filter(|record| record.sequence < wal_plan.retain_from_index_log_sequence)
             .count();

@@ -21,6 +21,27 @@ pub enum WriteAheadLogError {
     Io(#[from] std::io::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    /// A committed, newline-terminated record failed its per-record integrity envelope (the
+    /// length or CRC/SHA-256 digest did not match the payload). This is silent value-loss --
+    /// a bit-flip that still parses as JSON -- so recovery surfaces it as data loss and
+    /// refuses to trust the record rather than replaying the corrupted value.
+    #[error("wal record integrity error: {0}")]
+    Corruption(String),
+}
+
+impl From<crate::log_framing::FramingError> for WriteAheadLogError {
+    fn from(err: crate::log_framing::FramingError) -> Self {
+        WriteAheadLogError::Corruption(err.0)
+    }
+}
+
+/// Decode one raw WAL line (framed or legacy-unframed) into a [`WriteAheadLogRecord`],
+/// verifying the per-record integrity envelope when present. Used by every WAL reader
+/// (`last_wal_sequence_at`, `scan` consumers, GC, `info`) so a value-preserving bit-flip in a
+/// committed record surfaces as `Corruption` instead of replaying as truth.
+pub fn decode_wal_line(line: &[u8]) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
+    let payload = crate::log_framing::decode_line(line)?;
+    Ok(serde_json::from_slice::<WriteAheadLogRecord>(payload)?)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -505,9 +526,16 @@ impl LocalWriteAheadLogStore {
         max_bytes: u64,
     ) -> Result<Vec<(u64, Vec<u8>)>, WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
-        let _ = last_wal_sequence_at(&inner.root, shard_id)?;
         let path = write_ahead_log_path(&inner.root, shard_id);
-        let mut file = File::open(path)?;
+        // An absent WAL file is "nothing to scan", not an error. Distinguishing it here lets
+        // recovery treat a missing WAL as "nothing to replay" while still surfacing a genuine
+        // scan/decode failure (corruption) as data loss (see engine::lifecycle replay).
+        if !path.exists() {
+            inner.stats.scans += 1;
+            return Ok(Vec::new());
+        }
+        let _ = last_wal_sequence_at(&inner.root, shard_id)?;
+        let mut file = File::open(&path)?;
         file.seek(SeekFrom::Start(start_offset))?;
         let mut reader = BufReader::new(file);
         let mut offset = start_offset;
@@ -599,7 +627,7 @@ impl LocalWriteAheadLogStore {
                 continue;
             }
             records_before += 1;
-            let record: WriteAheadLogRecord = serde_json::from_str(&line)?;
+            let record = decode_wal_line(line.as_bytes())?;
             if record.sequence >= effective_retain {
                 retained.push(record);
             }
@@ -609,8 +637,8 @@ impl LocalWriteAheadLogStore {
         {
             let mut temp = File::create(&temp_path)?;
             for record in &retained {
-                serde_json::to_writer(&mut temp, record)?;
-                temp.write_all(b"\n")?;
+                // Re-emit each retained record framed so the integrity envelope survives GC.
+                temp.write_all(&crate::log_framing::encode_line(&serde_json::to_vec(record)?))?;
             }
             temp.flush()?;
             temp.sync_all()?;
@@ -661,7 +689,7 @@ impl LocalWriteAheadLogStore {
             if line.trim().is_empty() {
                 continue;
             }
-            let record: WriteAheadLogRecord = serde_json::from_str(&line)?;
+            let record = decode_wal_line(line.as_bytes())?;
             if start_sequence == 0 {
                 start_sequence = record.sequence;
             }
@@ -809,8 +837,10 @@ fn append_record_locked(
 ) -> Result<WriteAheadLogAppendReport, WriteAheadLogError> {
     let path = write_ahead_log_path(&inner.root, record.shard_id);
     let offset = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
-    let mut bytes = serde_json::to_vec(record)?;
-    bytes.push(b'\n');
+    // Frame the record with a length + SHA-256 digest so a later value-preserving bit-flip in
+    // this committed line is detected on read (see `crate::log_framing`). Offsets/stats below
+    // use the real byte length, so framing is transparent to the append report and replication.
+    let bytes = crate::log_framing::encode_line(&serde_json::to_vec(record)?);
     let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
     file.write_all(&bytes)?;
     if sync {
@@ -866,15 +896,17 @@ fn last_wal_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, WriteAhea
             good_offset = offset;
             continue;
         }
-        // A fully newline-terminated line that fails to parse is COMMITTED corruption, not a
+        // A fully newline-terminated line that fails to decode is COMMITTED corruption, not a
         // torn tail: WAL records are single-line JSON with no embedded newline, so a complete
-        // (\n-terminated) line is a complete write. Surface it as an error instead of breaking
-        // -- treating interior corruption as end-of-log would set_len the file down to the last
-        // parseable record, silently dropping every durable record after the corrupt one and
-        // defeating the strict replay-continuity DataLoss guard (ReplayWal returns
-        // DataLoss on a CRC failure / hole rather than trimming). A genuine torn tail lacks the
-        // trailing '\n' and is still handled by the break above.
-        let record = serde_json::from_slice::<WriteAheadLogRecord>(&line)?;
+        // (\n-terminated) line is a complete write. `decode_wal_line` verifies the per-record
+        // length + SHA-256 digest envelope (crate::log_framing) and returns `Corruption` on a
+        // value-preserving bit-flip; a legacy unframed record still decodes as before. Surface
+        // it as an error instead of breaking -- treating interior corruption as end-of-log
+        // would set_len the file down to the last good record, silently dropping every durable
+        // record after the corrupt one and defeating the strict replay-continuity DataLoss
+        // guard (ReplayWal refuses the load on a digest failure / hole rather than trimming). A
+        // genuine torn tail lacks the trailing '\n' and is still handled by the break above.
+        let record = decode_wal_line(&line)?;
         last = last.max(record.sequence);
         good_offset = offset;
     }
@@ -1133,6 +1165,91 @@ mod tests {
             restarted.scan(1, 0, u64::MAX, u64::MAX).is_err(),
             "interior WAL corruption must be fatal, not silently truncated to the last good record"
         );
+    }
+
+    #[test]
+    fn framed_wal_bitflip_that_still_parses_json_is_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        store
+            .append(
+                1,
+                Command::StringSet {
+                    key: "alpha".to_string(),
+                    value: b"one".to_vec(),
+                },
+            )
+            .unwrap();
+        store
+            .append(
+                1,
+                Command::StringSet {
+                    key: "target".to_string(),
+                    value: b"two".to_vec(),
+                },
+            )
+            .unwrap();
+        drop(store);
+        // Flip one byte inside the second record's key ("target" -> "tbrget"): the framed line
+        // stays VALID JSON but no longer matches its per-record SHA-256 digest. Without framing
+        // this would replay as truth; with it, the committed corruption is fatal.
+        let path = write_ahead_log_path(dir.path(), 1);
+        let mut bytes = std::fs::read(&path).unwrap();
+        let position = bytes
+            .windows(6)
+            .position(|window| window == b"target")
+            .expect("second record contains the target key");
+        bytes[position + 1] = b'b';
+        std::fs::write(&path, &bytes).unwrap();
+        let reopened = LocalWriteAheadLogStore::new(dir.path());
+        let scanned = reopened.scan(1, 0, u64::MAX, u64::MAX);
+        match scanned {
+            Err(WriteAheadLogError::Corruption(_)) => {}
+            other => panic!("expected a Corruption error from a value-preserving bit-flip, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn legacy_unframed_wal_still_loads_after_upgrade() {
+        let dir = tempfile::tempdir().unwrap();
+        // Simulate a pre-upgrade on-disk WAL: raw single-line JSON records, no framing.
+        let path = write_ahead_log_path(dir.path(), 3);
+        let make = |sequence: u64, key: &str| WriteAheadLogRecord {
+            shard_id: 3,
+            sequence,
+            command: Command::StringSet {
+                key: key.to_string(),
+                value: b"v".to_vec(),
+            },
+            metadata: None,
+        };
+        let mut raw = serde_json::to_vec(&make(1, "k1")).unwrap();
+        raw.push(b'\n');
+        raw.extend_from_slice(&serde_json::to_vec(&make(2, "k2")).unwrap());
+        raw.push(b'\n');
+        std::fs::write(&path, &raw).unwrap();
+
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        // The legacy (unframed) records still load: sequence tail + scan see both.
+        assert_eq!(store.stats(3).last_sequence, 2);
+        let rows = store.scan(3, 0, u64::MAX, u64::MAX).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(decode_wal_line(&rows[0].1).unwrap().sequence, 1);
+        assert_eq!(decode_wal_line(&rows[1].1).unwrap().sequence, 2);
+        // A new append is framed and continues the sequence; the mixed file still loads.
+        let appended = store
+            .append(
+                3,
+                Command::StringSet {
+                    key: "k3".to_string(),
+                    value: b"v".to_vec(),
+                },
+            )
+            .unwrap();
+        assert_eq!(appended.sequence, 3);
+        let reopened = LocalWriteAheadLogStore::new(dir.path());
+        assert_eq!(reopened.scan(3, 0, u64::MAX, u64::MAX).unwrap().len(), 3);
+        assert_eq!(reopened.stats(3).last_sequence, 3);
     }
 
     // rust-internal: verifies Rust WAL alias exports remain wired to the local mutation log API.
