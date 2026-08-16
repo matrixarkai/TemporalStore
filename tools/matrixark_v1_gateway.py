@@ -85,6 +85,11 @@ _DEFAULTS = {
     "direct_backend": False,
     "direct_backend_url": "http://127.0.0.1:17000",
     "direct_pool_size": 64,
+    # Streaming-ingest debounce: a plain (non-finalize) /v1/ingest schedules a native
+    # idle-commit task with this deadline so the background materializer can drain it and
+    # the ingest becomes retrievable on its own. Must be > 0 (0 would commit inline and
+    # defeat the debounce); <= 0 disables scheduling (retrieve-time flush still applies).
+    "stream_idle_commit_timeout_ms": 1000,
 }
 
 # route -> (tool name, rate-limit class). "__mcp__" is dispatched through mcp_http_dispatch.
@@ -278,6 +283,9 @@ class GatewayConfig:
             ),
             direct_pool_size=num("MATRIXARK_GATEWAY_DIRECT_POOL", "direct_pool_size", int),
             direct_connection_factory=overrides.get("direct_connection_factory"),
+            stream_idle_commit_timeout_ms=num(
+                "MATRIXARK_STREAM_IDLE_COMMIT_TIMEOUT_MS", "stream_idle_commit_timeout_ms", int
+            ),
         )
 
 
@@ -853,6 +861,31 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
     direct_client = _build_direct_client(cfg) if cfg.direct_backend else None
 
     async def app(scope: Json, receive: Callable, send: Callable) -> None:
+        # ASGI lifespan: start the background stream-materializer on startup (so a non-finalized
+        # streaming ingest becomes retrievable on its own) and stop it cleanly on shutdown. Started
+        # per uvicorn worker process; idempotent with the eager start in create_v1_app().
+        if scope.get("type") == "lifespan":
+            while True:
+                message = await receive()
+                mtype = message.get("type")
+                if mtype == "lifespan.startup":
+                    try:
+                        ensure = getattr(server, "ensure_stream_materialize_worker", None)
+                        if callable(ensure):
+                            ensure()
+                    except Exception:  # never block startup on the materializer
+                        pass
+                    await send({"type": "lifespan.startup.complete"})
+                elif mtype == "lifespan.shutdown":
+                    try:
+                        close = getattr(server, "close", None)
+                        if callable(close):
+                            close()
+                    except Exception:
+                        pass
+                    await send({"type": "lifespan.shutdown.complete"})
+                    return
+            return
         if scope.get("type") != "http":
             return
 
@@ -960,6 +993,16 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 n_records=n_records, n_messages=n_messages)
 
         apply_ingest_route_defaults("/api/ingest" if tool == "matrixark_ingest" else path, args)
+        # A plain (non-finalize) streaming ingest schedules a backend-native idle-commit task so
+        # the gateway's background materializer can drain it and make the ingest retrievable on
+        # its own -- without waiting for a client retrieve. A finalize ingest extracts inline
+        # below, so it is left alone. Callers keep control by passing idle_commit_timeout_ms.
+        if (
+            tool == "matrixark_ingest"
+            and not _finalize_requested(parsed, args)
+            and cfg.stream_idle_commit_timeout_ms > 0
+        ):
+            args.setdefault("idle_commit_timeout_ms", cfg.stream_idle_commit_timeout_ms)
         _apply_identity(args, key, tenant, account)
 
         try:
@@ -995,6 +1038,17 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 except Exception as exc:  # extraction failure must NOT lose the durable ingest
                     out["finalized"] = False
                     out["extraction_error"] = str(exc)
+            elif args.get("idle_commit_timeout_ms"):
+                # Plain streaming ingest: register the scope so the gateway's background
+                # materializer drains its scheduled idle-commit after the debounce, making the
+                # ingest retrievable without a client retrieve. Best-effort: the durable
+                # scheduled-task record + retrieve-time flush remain the backstop.
+                register = getattr(server, "register_stream_materialize_scope", None)
+                if callable(register):
+                    try:
+                        register(args.get("scope"), int(time.time() * 1000) + int(args.get("idle_commit_timeout_ms") or 0))
+                    except Exception:
+                        pass
             return await _json(send, 202, out, rl_headers)
         return await _json(send, 200, _ok_body(result), rl_headers)
 
@@ -1044,7 +1098,17 @@ def create_v1_app() -> Callable[..., Awaitable[None]]:
 
     Mirrors `matrixark_asgi.create_app` for `uvicorn matrixark_v1_gateway:application`.
     """
-    return make_v1_app(_build_server_from_env(), GatewayConfig.from_env())
+    server = _build_server_from_env()
+    app = make_v1_app(server, GatewayConfig.from_env())
+    # Eager per-process start so the background materializer runs even under ASGI servers that
+    # never drive the lifespan protocol. Idempotent with the lifespan.startup start above.
+    ensure = getattr(server, "ensure_stream_materialize_worker", None)
+    if callable(ensure):
+        try:
+            ensure()
+        except Exception:
+            pass
+    return app
 
 
 _LAZY_APP: Optional[Callable[..., Awaitable[None]]] = None
