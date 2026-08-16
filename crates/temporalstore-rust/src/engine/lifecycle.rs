@@ -131,32 +131,78 @@ impl TemporalEngine {
                 status: Status::error("already_exists", "shard already exists"),
             };
         }
-        // If the latest durable dump manifest is newer than the served index, install
-        // it as the load base first (recovers data already dumped into a manifest and
-        // then WAL-GC'd): the dumped index is restored first, then
-        // startup load replays the WAL on top.
-        let installed_manifest_watermark =
-            match self.install_latest_manifest_if_newer_on_load(request.shard_id) {
-                Ok(watermark) => watermark,
-                // An index-load failure is fatal. A newer durable manifest
-                // that will not install means the served snapshot + (possibly reclaimed)
-                // WAL cannot be trusted to hold the records it covers -- refuse the load.
-                Err(status) => return LoadShardResponse { status },
+        let (loaded, replay_watermark) = if wal_single_barrier() {
+            // SINGLE-BARRIER RECOVERY TRUST (base-only). The data-page + delta fdatasyncs and
+            // the per-write base rewrite are all deferred, so neither the served-index delta nor
+            // the un-synced base rewrite can be trusted -- they may reference pages that were
+            // never fsync'd. Recover ONLY from durable checkpoints:
+            //  * the base index snapshot, materialized durably (fsync) at the last dump/flush --
+            //    that path fsyncs every page BEFORE advancing its watermark, so every page
+            //    at/below the base watermark is on disk; and
+            //  * the latest durable dump manifest, if newer than the base file.
+            // Then replay the WAL tail from that durable watermark, re-deriving every page written
+            // after it (a lost un-synced page is rebuilt, never left dangling) and, via the
+            // config-log, re-applying config-driven eviction at the exact frontier. The delta is
+            // deliberately NOT folded (load_index_base_only), so each tail record is applied
+            // EXACTLY ONCE -- no double-apply of non-idempotent commands (counters, appends).
+            let base_only =
+                self.load_index_base_only(request.shard_id, eager_cache_warm_on_load());
+            let base_watermark = base_only
+                .as_ref()
+                .and_then(|state| state.applied_wal_sequence)
+                .unwrap_or(0);
+            match latest_bucket_dump_manifest_at(&self.index_dir, request.shard_id) {
+                Some(manifest) if manifest.wal_sequence > base_watermark => {
+                    // A durable dump is newer than the base file (base not materialized at that
+                    // dump). Use the manifest's embedded durable index as the recovery base. Read
+                    // it directly (not install_bucket_dump_manifest) so the stale-manifest guard --
+                    // which refuses to install a manifest older than the delta-advanced index-log
+                    // sequence -- cannot block trusting the durable checkpoint over the un-synced
+                    // delta.
+                    match serde_json::from_slice::<ShardState>(&manifest.index_bytes) {
+                        Ok(mut restored) => {
+                            rebuild_bucket_page_ownership(
+                                request.shard_id,
+                                &mut restored,
+                                0,
+                                u32::MAX,
+                            );
+                            (Some(restored), manifest.wal_sequence)
+                        }
+                        Err(_) => (base_only, base_watermark),
+                    }
+                }
+                _ => (base_only, base_watermark),
+            }
+        } else {
+            // If the latest durable dump manifest is newer than the served index, install
+            // it as the load base first (recovers data already dumped into a manifest and
+            // then WAL-GC'd): the dumped index is restored first, then
+            // startup load replays the WAL on top.
+            let installed_manifest_watermark =
+                match self.install_latest_manifest_if_newer_on_load(request.shard_id) {
+                    Ok(watermark) => watermark,
+                    // An index-load failure is fatal. A newer durable manifest
+                    // that will not install means the served snapshot + (possibly reclaimed)
+                    // WAL cannot be trusted to hold the records it covers -- refuse the load.
+                    Err(status) => return LoadShardResponse { status },
+                };
+            let loaded = self.load_index(request.shard_id, eager_cache_warm_on_load());
+            // WAL replay watermark, from the dumped-log id read on startup load:
+            // installed manifest -> its wal_sequence; no index
+            // file -> 0 (fresh/async-only shard, replay whole retained WAL); anchored index
+            // -> its anchor; unanchored (pre-field) index -> current last_sequence (replay
+            // nothing, safe upgrade).
+            let replay_watermark = match installed_manifest_watermark {
+                Some(manifest_watermark) => manifest_watermark,
+                None => match &loaded {
+                    None => 0,
+                    Some(state) => state
+                        .applied_wal_sequence
+                        .unwrap_or_else(|| self.wal_store.stats(request.shard_id).last_sequence),
+                },
             };
-        let loaded = self.load_index(request.shard_id, eager_cache_warm_on_load());
-        // WAL replay watermark, from the dumped-log id read on startup load:
-        // installed manifest -> its wal_sequence; no index
-        // file -> 0 (fresh/async-only shard, replay whole retained WAL); anchored index
-        // -> its anchor; unanchored (pre-field) index -> current last_sequence (replay
-        // nothing, safe upgrade).
-        let replay_watermark = match installed_manifest_watermark {
-            Some(manifest_watermark) => manifest_watermark,
-            None => match &loaded {
-                None => 0,
-                Some(state) => state
-                    .applied_wal_sequence
-                    .unwrap_or_else(|| self.wal_store.stats(request.shard_id).last_sequence),
-            },
+            (loaded, replay_watermark)
         };
         let mut state = loaded.unwrap_or_default();
         promote_model_maps_to_bucket_index_authority(
@@ -202,6 +248,19 @@ impl TemporalEngine {
             .expect("config lock poisoned")
             .entry(request.shard_id)
             .or_default();
+        // Single-barrier mode: config is not carried in the served-index checkpoint, so restore
+        // the last durably-logged config before replay. This covers the no-replay path (a clean
+        // dump with nothing to tail-replay) and post-restart client writes; the replay loop below
+        // overrides it with the WAL-sequence-ordered config while re-driving historical records,
+        // then restores the latest again. No-op (and byte-for-byte unchanged) off the flag.
+        if wal_single_barrier() {
+            if let Some(entry) = self.config_log_entries(request.shard_id).into_iter().last() {
+                self.configs
+                    .write()
+                    .expect("config lock poisoned")
+                    .insert(request.shard_id, entry.config);
+            }
+        }
         self.admissions
             .write()
             .expect("admission lock poisoned")
@@ -307,6 +366,20 @@ impl TemporalEngine {
         }
         pending.sort_by_key(|record| record.sequence);
 
+        // Single-barrier mode: replay config-driven eviction (feature_max_size trims) with the
+        // config that was effective at each record's WAL frontier. An entry stamped `after_seq`
+        // is effective for records with sequence > after_seq, so before executing a record we
+        // apply every not-yet-applied config entry with `after_seq < record.sequence`. This
+        // re-derives the exact historical trim -- no resurrection (default config would skip the
+        // trim) and no over-trim/loss (the latest config applied to an older record). Empty (and
+        // inert) off the flag.
+        let config_log: Vec<ConfigLogEntry> = if wal_single_barrier() {
+            self.config_log_entries(shard_id)
+        } else {
+            Vec::new()
+        };
+        let mut config_cursor = 0usize;
+
         let _guard = WalReplayGuard::enter();
         let mut expected = watermark.saturating_add(1);
         let mut replayed_through = watermark;
@@ -323,6 +396,15 @@ impl TemporalEngine {
                         record.sequence
                     ),
                 ));
+            }
+            while config_cursor < config_log.len()
+                && config_log[config_cursor].after_seq < record.sequence
+            {
+                self.configs
+                    .write()
+                    .expect("config lock poisoned")
+                    .insert(shard_id, config_log[config_cursor].config.clone());
+                config_cursor += 1;
             }
             // Resolve TTL deadlines / event times against the LEADER's timestamp
             // captured when this record was written, not the (later) restart clock, so
@@ -341,6 +423,16 @@ impl TemporalEngine {
             }
             replayed_through = record.sequence;
             expected = expected.saturating_add(1);
+        }
+        // Restore the latest config for post-recovery client writes: any config entries stamped
+        // at/after the last replayed sequence (future-effective changes) were intentionally not
+        // applied above.
+        while config_cursor < config_log.len() {
+            self.configs
+                .write()
+                .expect("config lock poisoned")
+                .insert(shard_id, config_log[config_cursor].config.clone());
+            config_cursor += 1;
         }
 
         if replayed_through > watermark {
@@ -379,8 +471,17 @@ impl TemporalEngine {
                     None => None,
                 }
             };
+            // Single-barrier mode: DO NOT persist the reconstructed base index here. The pages
+            // this replay just re-derived are not yet fsync'd (the data-page barrier is deferred),
+            // so writing a base index anchored at `replayed_through` would again advance the
+            // durable base watermark past the durable page frontier -- a second crash would then
+            // trust it and drop the un-synced replayed tail. The base index is advanced ONLY by
+            // the durable dump/flush path (which fsyncs pages first); until then every reload
+            // re-derives the tail from the WAL (the documented base-only re-derivation tradeoff).
             if let Some(index_bytes) = index_bytes {
-                let _ = self.persist_index_bytes(shard_id, &index_bytes);
+                if !wal_single_barrier() {
+                    let _ = self.persist_index_bytes(shard_id, &index_bytes);
+                }
             }
         }
         Ok(())

@@ -218,17 +218,19 @@ fn bulk_ingest_mode() -> bool {
     )
 }
 
-/// TS_WAL_ONLY_SYNC: defer the ack-path index-log fsync (WAL replay is the durable
-/// recovery source). Default OFF.
+/// TS_WAL_ONLY_SYNC / TS_WAL_SINGLE_BARRIER: defer the ack-path index-log fsync (WAL replay is
+/// the durable recovery source). Default OFF.
 fn indexlog_wal_only_sync() -> bool {
-    matches!(
-        std::env::var("TS_WAL_ONLY_SYNC")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+    ["TS_WAL_ONLY_SYNC", "TS_WAL_SINGLE_BARRIER"].iter().any(|name| {
+        matches!(
+            std::env::var(name)
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 /// TS_INDEXLOG_DEFER_SYNC: drop the served-index delta-log fdatasync from the synchronous

@@ -133,13 +133,37 @@ impl TemporalEngine {
     }
 
     pub(super) fn load_index(&self, shard_id: ShardId, warm_cache: bool) -> Option<ShardState> {
-        let delta = delta_served_index_enabled();
+        self.load_index_inner(shard_id, warm_cache, delta_served_index_enabled())
+    }
+
+    /// Load ONLY the durable base snapshot, WITHOUT folding the served-index delta. Used by
+    /// single-barrier recovery: under the flag the delta-log fdatasync and the per-write base
+    /// rewrite are deferred, so neither the served-index delta nor the un-synced base rewrite can
+    /// be trusted -- they may reference pages that were never fsync'd. The base index file is
+    /// materialized ONLY by the durable dump/flush path (which fsyncs every page before advancing
+    /// its watermark), so it is a durable checkpoint at its own watermark; the WAL tail beyond it
+    /// is re-derived by replaying each record exactly once (no delta fold means no double-apply of
+    /// non-idempotent commands).
+    pub(super) fn load_index_base_only(
+        &self,
+        shard_id: ShardId,
+        warm_cache: bool,
+    ) -> Option<ShardState> {
+        self.load_index_inner(shard_id, warm_cache, false)
+    }
+
+    fn load_index_inner(
+        &self,
+        shard_id: ShardId,
+        warm_cache: bool,
+        fold_deltas: bool,
+    ) -> Option<ShardState> {
         let read = fs::read(self.index_path(shard_id));
         let base_present = read.is_ok();
-        // Default path: a missing base means nothing to load. Delta path: the base is
-        // materialized only at compaction/unload, so a crash before the first compaction
-        // leaves no base -- start empty and rebuild from the index-log deltas below.
-        if !base_present && !delta {
+        // No fold: a missing base means nothing to load. Fold path: the base is materialized
+        // only at compaction/unload, so a crash before the first compaction leaves no base --
+        // start empty and rebuild from the index-log deltas below.
+        if !base_present && !fold_deltas {
             return None;
         }
         let mut shard = match read {
@@ -161,7 +185,7 @@ impl TemporalEngine {
         // is what lets a crash reload reconstruct the served index WITHOUT re-executing the
         // WAL -- re-execution would write fresh pages and relocate them to the active slab,
         // doubling physical page counts and losing the recorded slab layout.
-        if delta {
+        if fold_deltas {
             self.fold_index_log_deltas(shard_id, &mut shard);
             // ON but no base and nothing to fold -> genuinely nothing persisted yet.
             if !base_present
