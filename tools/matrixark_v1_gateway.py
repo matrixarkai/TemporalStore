@@ -21,7 +21,8 @@ Design constraints honored here (identical to the sibling front):
   * The blob proxy streams request/response bodies chunk-by-chunk (bounded memory) straight to the
     datanode's `POST|PUT|GET /blob/<key>` endpoint using only `http.client` from the stdlib.
 
-Routes: POST /v1/ingest (async fast-ack 202) · POST /v1/session/commit · POST /v1/retrieve ·
+Routes: POST /v1/ingest (async fast-ack 202) · POST /v1/ingest_file (stream file body, store to the
+        blob tier + ingest in one call) · POST /v1/session/commit · POST /v1/retrieve ·
         POST /v1/mcp · PUT|POST|GET /v1/blob/<key> · GET /v1/healthz|/readyz. Everything that is not
         under `/v1` is delegated to the legacy `make_asgi_app(server)` so `/api/*`, `/mcp`, `/healthz`
         keep working unchanged (back-compat).
@@ -29,9 +30,11 @@ Routes: POST /v1/ingest (async fast-ack 202) · POST /v1/session/commit · POST 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import os
+import tempfile
 import threading
 import time
 from typing import Any, Awaitable, Callable, Optional, Tuple
@@ -74,6 +77,9 @@ _DEFAULTS = {
     "max_body_bytes": 16 * _MIB,
     "max_batch": 1000,
     "max_blob_bytes": 5 * _GIB,
+    # Directory the /v1/ingest_file route spools the streamed body to before hashing
+    # (keeps memory flat for large files). Empty -> the system temp dir.
+    "ingest_spool_dir": "",
     "datanode_url": "http://127.0.0.1:17102",
     "blob_timeout": 30.0,
     "backend_timeout": 30.0,   # gateway-level cap on a single backend call (s)
@@ -263,6 +269,11 @@ class GatewayConfig:
             max_body_bytes=num("MATRIXARK_QUOTA_MAX_BODY_BYTES", "max_body_bytes", int),
             max_batch=num("MATRIXARK_QUOTA_MAX_BATCH", "max_batch", int),
             max_blob_bytes=num("MATRIXARK_QUOTA_MAX_BLOB_BYTES", "max_blob_bytes", int),
+            ingest_spool_dir=str(
+                overrides.get("ingest_spool_dir")
+                or env.get("MATRIXARK_INGEST_SPOOL_DIR")
+                or _DEFAULTS["ingest_spool_dir"]
+            ),
             datanode_url=str(
                 overrides.get("datanode_url")
                 or env.get("MATRIXARK_DATANODE_BLOB_URL")
@@ -654,6 +665,173 @@ def _safe_close(conn: Any) -> None:
 
 
 # ================================================================================================
+# Combined upload-and-ingest (POST /v1/ingest_file): stream file body -> blob tier -> ingest.
+# ================================================================================================
+_INGEST_CONTENT_TYPES = {
+    "md": "text/markdown", "markdown": "text/markdown", "txt": "text/plain",
+    "text": "text/plain", "pdf": "application/pdf", "json": "application/json",
+    "html": "text/html", "csv": "text/csv",
+}
+
+
+def _ingest_content_type(resource_type: str) -> str:
+    return _INGEST_CONTENT_TYPES.get((resource_type or "").lower(), "application/octet-stream")
+
+
+def _infer_ingest_resource_type(rtype_header: Optional[str], filename: Optional[str]) -> str:
+    """X-Resource-Type wins; else the suffix of X-Filename; else ``md`` (skill default)."""
+    if rtype_header:
+        return rtype_header.strip().lstrip(".").lower()
+    if filename:
+        suffix = os.path.splitext(filename)[1].lstrip(".").lower()
+        if suffix:
+            return suffix
+    return "md"
+
+
+async def _spool_and_hash(receive: Callable, cfg: GatewayConfig) -> Tuple[Optional[str], int, str, bool]:
+    """Stream the request body to a temp file while hashing, bounded memory.
+
+    Returns ``(spool_path, size, sha256_hex, too_big)``. When ``too_big`` is True the
+    partial spool is already removed and ``spool_path`` is None. Reads in native ASGI
+    chunks and writes straight through to disk -- nothing but one chunk is ever held
+    in memory, so a multi-GB file costs flat memory.
+    """
+    spool_dir = cfg.ingest_spool_dir or None
+    fd, path = tempfile.mkstemp(prefix="matrixark-ingest-", suffix=".spool", dir=spool_dir)
+    hasher = hashlib.sha256()
+    total = 0
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            while True:
+                msg = await receive()
+                if msg.get("type") != "http.request":
+                    break
+                body = msg.get("body", b"") or b""
+                if body:
+                    total += len(body)
+                    if total > cfg.max_blob_bytes:
+                        fh.close()
+                        _safe_unlink(path)
+                        return None, total, "", True
+                    hasher.update(body)
+                    await asyncio.to_thread(fh.write, body)
+                if not msg.get("more_body"):
+                    break
+    except Exception:
+        _safe_unlink(path)
+        raise
+    return path, total, hasher.hexdigest(), False
+
+
+async def _stream_spool_to_datanode(cfg: GatewayConfig, spool_path: str, size: int,
+                                    dkey: str, content_type: str) -> Tuple[int, bytes]:
+    """PUT the spooled file to the datanode ``/blob/<dkey>`` using the SAME streamed,
+    bounded-memory approach as ``_blob_put`` (Content-Length known -> raw stream)."""
+    conn = cfg.blob_connection_factory(cfg)
+
+    def _start() -> None:
+        conn.putrequest("PUT", f"/blob/{dkey}")
+        conn.putheader("Content-Length", str(size))
+        conn.putheader("Content-Type", content_type)
+        conn.endheaders()
+
+    await asyncio.to_thread(_start)
+    with open(spool_path, "rb") as fh:
+        while True:
+            chunk = await asyncio.to_thread(fh.read, 65536)
+            if not chunk:
+                break
+            await asyncio.to_thread(conn.send, chunk)
+    resp = await asyncio.to_thread(conn.getresponse)
+    raw = await asyncio.to_thread(resp.read)
+    status = int(getattr(resp, "status", 200) or 200)
+    await asyncio.to_thread(_safe_close, conn)
+    return status, raw
+
+
+def _safe_unlink(path: Optional[str]) -> None:
+    if not path:
+        return
+    try:
+        os.unlink(path)
+    except Exception:
+        pass
+
+
+async def _ingest_file(app: Callable, scope: Json, receive: Callable, send: Callable,
+                       cfg: GatewayConfig, key_str_unused: Optional[str],
+                       tenant: Optional[str], account: Optional[str]) -> None:
+    """Serve ``POST /v1/ingest_file``: stream the raw file body to the blob tier
+    (content-addressed, tenant-isolated, bounded memory), then invoke the SAME
+    ingest handler ``/v1/ingest`` uses by re-dispatching a synthesized JSON request
+    through the app -- so there is no duplicated ingest/finalize/extraction logic.
+    """
+    hmap = _headers_map(scope)
+    filename = hmap.get("x-filename")
+    kind = (hmap.get("x-resource-kind") or "skill").strip().lower() or "skill"
+    resource_type = _infer_ingest_resource_type(hmap.get("x-resource-type"), filename)
+    content_type = hmap.get("content-type") or _ingest_content_type(resource_type)
+
+    cl_raw = hmap.get("content-length")
+    declared = int(cl_raw) if cl_raw and cl_raw.isdigit() else None
+    if declared is not None and declared > cfg.max_blob_bytes:
+        return await _json(send, 413, {"error": "payload_too_large"})
+
+    spool_path, size, sha, too_big = await _spool_and_hash(receive, cfg)
+    if too_big:
+        return await _json(send, 413, {"error": "payload_too_large"})
+    try:
+        # Content-addressed key, server-side: resources/<sha2>/<sha256>. Same bytes ->
+        # same key -> dedup. Tenant-isolate exactly like the /v1/blob route.
+        logical_key = f"resources/{sha[:2]}/{sha}"
+        dkey = _isolate_key(logical_key, tenant, account)
+        status, raw = await _stream_spool_to_datanode(cfg, spool_path, size, dkey, content_type)
+        if status >= 400:
+            detail: Any = None
+            if raw:
+                try:
+                    detail = json.loads(raw)
+                except Exception:
+                    detail = raw[:256].decode("utf-8", "replace")
+            return await _json(send, status if status in (413, 429, 507) else 502,
+                               {"error": "blob_store_failed", "detail": detail})
+    finally:
+        _safe_unlink(spool_path)
+
+    # Re-dispatch through the SAME app as a normal /v1/ingest, carrying the auth header
+    # so identity/scope resolve identically. The body is a tiny pointer, not the bytes.
+    raw_uri = f"temporalstore://{logical_key}"
+    ingest_body: Json = {"kind": kind, "raw_uri": raw_uri, "resource_type": resource_type}
+    if _truthy_header(hmap.get("x-wait")):
+        ingest_body["finalize"] = True
+    x_scope = hmap.get("x-scope")
+    if x_scope:
+        ingest_body["scope"] = x_scope
+
+    auth_headers = [(k, v) for (k, v) in scope.get("headers", [])
+                    if k.decode("latin-1").lower() in ("authorization", "x-api-key")]
+    payload = json.dumps(ingest_body).encode("utf-8")
+    inner_scope = {
+        "type": "http", "method": "POST", "path": "/v1/ingest",
+        "headers": auth_headers + [(b"content-type", b"application/json")],
+    }
+    delivered = {"done": False}
+
+    async def inner_receive() -> Json:
+        if not delivered["done"]:
+            delivered["done"] = True
+            return {"type": "http.request", "body": payload, "more_body": False}
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    return await app(inner_scope, inner_receive, send)
+
+
+def _truthy_header(value: Optional[str]) -> bool:
+    return bool(value) and value.strip().lower() in ("1", "true", "yes", "on")
+
+
+# ================================================================================================
 # Direct network path (B): pooled async JSON client to a target base URL
 # ================================================================================================
 class DirectBackendClient:
@@ -933,6 +1111,20 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 if method == "GET":
                     return await _blob_get(send, cfg, key_str, tenant, account)
                 return await _json(send, 405, {"error": "method_not_allowed"})
+            finally:
+                limiter.blob_release()
+
+        # ---- combined upload-and-ingest (auth + concurrent-stream cap, streamed) -------------
+        if path == "/v1/ingest_file":
+            allowed, key, tenant, account = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            if method != "POST":
+                return await _json(send, 405, {"error": "method_not_allowed"})
+            if not limiter.blob_acquire():
+                return await _json(send, 429, {"error": "rate_limited"}, [(b"retry-after", b"1")])
+            try:
+                return await _ingest_file(app, scope, receive, send, cfg, key, tenant, account)
             finally:
                 limiter.blob_release()
 

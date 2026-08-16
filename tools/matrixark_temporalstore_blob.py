@@ -71,6 +71,19 @@ def blob_uri(key: str) -> str:
     return f"{BLOB_URI_SCHEME}://{key}"
 
 
+def _content_addressed_sha(key: str) -> Optional[str]:
+    """Return the embedded sha256 hex when ``key`` is content-addressed, else None.
+
+    A content-addressed key has the shape ``<prefix>/<sha2>/<sha256>`` (see
+    ``content_key``), i.e. the last path segment is a 64-char lowercase hex digest.
+    Keys that don't match (caller-supplied opaque keys) are not integrity-checked.
+    """
+    seg = str(key or "").rstrip("/").rsplit("/", 1)[-1].lower()
+    if len(seg) == 64 and all(c in "0123456789abcdef" for c in seg):
+        return seg
+    return None
+
+
 def resolve_ts_blob_backend(*, blob_url: Optional[str] = None,
                             gateway_url: Optional[str] = None) -> str:
     """Pick the blob backend the way storage_backend.rs picks storage: endpoint > inline.
@@ -193,8 +206,18 @@ class TemporalStoreBlobClient:
             raise FileNotFoundError(f"temporalstore blob not found: {key}")
         if status >= 400:
             raise RuntimeError(f"temporalstore blob GET {key} failed: HTTP {status}: {data[:256]!r}")
+        # Integrity check: when the key is content-addressed, the downloaded bytes MUST
+        # hash back to the sha embedded in the key. A mismatch means a corrupt/partial
+        # upload (or truncated download) -- surface it loudly so the customer re-uploads
+        # and retries, rather than ingesting bad data. We do NOT auto-retry here.
+        expected_sha = _content_addressed_sha(key)
+        actual_sha = content_hash(data)
+        if expected_sha is not None and actual_sha != expected_sha:
+            raise RuntimeError(
+                f"temporalstore blob {key} failed integrity check: sha256 mismatch "
+                f"(corrupt/partial upload) -- re-upload and retry")
         meta: Json = {"content_type": content_type, "size": len(data),
-                      "content_hash": content_hash(data)}
+                      "content_hash": actual_sha}
         if meta_header:
             try:
                 extra = json.loads(meta_header)
