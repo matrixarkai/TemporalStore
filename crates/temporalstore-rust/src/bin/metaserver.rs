@@ -21,7 +21,8 @@ use temporalstore_rust::meta::{
 };
 use temporalstore_rust::raft::{
     ProductionMetaRaftRuntime, ProductionMetaRaftRuntimeOptions, ProductionRaftEngineKind,
-    ProductionRaftNode, RaftClusterStatus, RaftConfig, RaftMembershipChangeReport, RaftNodeId,
+    ProductionRaftNode, RaftClusterStatus, RaftConfig, RaftFailoverReport,
+    RaftMembershipChangeReport, RaftNodeId,
 };
 use temporalstore_rust::rebalance::{
     DeterministicTaskScheduler, MembershipUpdateTaskPlan, RebalanceStep, SchedulerRunReport,
@@ -71,6 +72,32 @@ fn main() {
             }
             MetaBackend::Raft(_) => {
                 warn!("TS_META_AUTO_REBALANCE ignored: raft backend manages placement itself");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    // Raft leader auto-failover: when the failure detector freezes a datanode, the
+    // surviving replicas of any raft group it led are never told their leader is
+    // gone, so raft's own `tick_election` never observes a dead leader and writes
+    // to that group stall. This loop bridges detection->trigger: it POSTs the dead
+    // node's liveness + a native failover request to each surviving replica, which
+    // re-elects through raft's own majority + log-completeness guards (no
+    // split-brain, no committed-write loss — the metaserver never picks a leader).
+    // OFF by default (TS_RAFT_AUTO_FAILOVER) so standalone/single-node behavior is
+    // byte-for-byte unchanged. Only the single-node backend is auto-driven here;
+    // the raft backend fails over through its own timer loop.
+    let _raft_failover = if env_bool("TS_RAFT_AUTO_FAILOVER", false) {
+        match &backend {
+            MetaBackend::Single(meta) => {
+                let interval_ms =
+                    env_u64("TS_RAFT_AUTO_FAILOVER_INTERVAL_MS", detector_interval_ms);
+                info!(interval_ms, "raft auto-failover enabled");
+                Some(start_raft_failover_loop(meta.clone(), interval_ms))
+            }
+            MetaBackend::Raft(_) => {
+                warn!("TS_RAFT_AUTO_FAILOVER ignored: raft backend fails over itself");
                 None
             }
         }
@@ -685,6 +712,168 @@ fn run_auto_rebalance_round(
                 reason = ?plan.reason,
                 "auto-rebalance: shard reassigned"
             );
+        }
+    }
+}
+
+/// Wire body for `POST /raft/admin/liveness` on a datanode (mirrors the private
+/// request struct in `bin/server.rs`; the response carries only a status).
+#[derive(Debug, serde::Serialize)]
+struct RaftAdminLivenessRequest {
+    node_id: RaftNodeId,
+    alive: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct RaftAdminLivenessResponse {
+    status: Status,
+}
+
+/// Wire body for `POST /raft/admin/failover` (the datanode handler ignores the
+/// body); the response echoes the native failover report when one is produced.
+#[derive(Debug, serde::Serialize)]
+struct RaftAdminFailoverRequest {}
+
+#[derive(Debug, serde::Deserialize)]
+struct RaftAdminFailoverResponse {
+    status: Status,
+    #[serde(default)]
+    report: Option<RaftFailoverReport>,
+}
+
+/// Tell a surviving replica that `node_id` is (not) alive so raft's own election
+/// path stops counting it toward quorum. Marking a stale node not-alive is
+/// monotonic and safe — the metaserver only does so after its heartbeat detector
+/// declared the node stale.
+fn post_raft_liveness_or_error(
+    addr: &str,
+    node_id: RaftNodeId,
+    alive: bool,
+    options: HttpRequestOptions,
+) -> Status {
+    post_json_with_options::<_, RaftAdminLivenessResponse>(
+        addr,
+        "/raft/admin/liveness",
+        &RaftAdminLivenessRequest { node_id, alive },
+        options,
+    )
+    .map(|response| response.status)
+    .unwrap_or_else(|err| Status::error("node_request_failed", err.to_string()))
+}
+
+/// Ask a surviving replica to run its native `failover_primary`. Election safety
+/// (live-majority requirement, candidate log-completeness) is enforced by the
+/// datanode's raft `elect_leader`, not here. Returns the reported new leader id
+/// (0 when the request failed or no report was produced).
+fn post_raft_failover_or_error(
+    addr: &str,
+    options: HttpRequestOptions,
+) -> (Status, RaftNodeId) {
+    match post_json_with_options::<_, RaftAdminFailoverResponse>(
+        addr,
+        "/raft/admin/failover",
+        &RaftAdminFailoverRequest {},
+        options,
+    ) {
+        Ok(response) => {
+            let new_leader = response
+                .report
+                .map(|report| report.new_leader_id)
+                .unwrap_or_default();
+            (response.status, new_leader)
+        }
+        Err(err) => (Status::error("node_request_failed", err.to_string()), 0),
+    }
+}
+
+/// Background loop that drives raft leader failover for the single-node backend.
+/// Each tick it reads membership ([`SingleNodeMeta::plan_raft_failover`]) and, for
+/// every frozen datanode, notifies each surviving replica that the node is gone
+/// and asks it to re-elect through raft's own safety-guarded path. Idempotent:
+/// once a healthy leader exists the datanode's `failover_primary` is a no-op, so
+/// each freeze episode is driven until an election is observed and then left
+/// alone (tracked in `driven`).
+fn start_raft_failover_loop(
+    meta: SingleNodeMeta,
+    interval_ms: u64,
+) -> std::thread::JoinHandle<()> {
+    let interval = std::time::Duration::from_millis(interval_ms.max(1));
+    let http_options = HttpRequestOptions {
+        connect_timeout_ms: env_u64("TS_RAFT_AUTO_FAILOVER_CONNECT_TIMEOUT_MS", 500),
+        io_timeout_ms: env_u64("TS_RAFT_AUTO_FAILOVER_IO_TIMEOUT_MS", 2_000),
+        max_retries: 1,
+    };
+    std::thread::spawn(move || {
+        let mut driven: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        loop {
+            run_raft_failover_round(&meta, &mut driven, http_options);
+            std::thread::sleep(interval);
+        }
+    })
+}
+
+fn run_raft_failover_round(
+    meta: &SingleNodeMeta,
+    driven: &mut std::collections::HashSet<u64>,
+    http_options: HttpRequestOptions,
+) {
+    let triggers = meta.plan_raft_failover();
+    // Forget nodes that are no longer frozen so a rejoin-then-refreeze re-drives.
+    let still_frozen: std::collections::HashSet<u64> =
+        triggers.iter().map(|trigger| trigger.dead_node_id).collect();
+    driven.retain(|node_id| still_frozen.contains(node_id));
+
+    for trigger in triggers {
+        if driven.contains(&trigger.dead_node_id) {
+            continue;
+        }
+        let mut elected = false;
+        for target in &trigger.live_targets {
+            // 1. Inform the surviving replica the old leader is gone. This feeds
+            //    raft's own pre-vote-guarded `tick_election` and excludes the dead
+            //    node from the quorum count.
+            let liveness_status = post_raft_liveness_or_error(
+                target,
+                trigger.dead_node_id,
+                false,
+                http_options,
+            );
+            if !liveness_status.ok {
+                // The target isn't a peer of the dead node (NodeNotFound) or local
+                // admin is disabled — nothing to do on this replica.
+                debug!(
+                    target = %target,
+                    dead_node_id = trigger.dead_node_id,
+                    message = %liveness_status.message,
+                    "raft-failover: liveness update skipped"
+                );
+                continue;
+            }
+            // 2. Trigger the native failover. `elect_leader` refuses without a live
+            //    majority (no split-brain) and rejects a lagging candidate (no
+            //    committed-write loss). A new/current leader id that is neither 0
+            //    nor the dead node means leadership is healthy on this group.
+            let (failover_status, new_leader) = post_raft_failover_or_error(target, http_options);
+            if failover_status.ok && new_leader != 0 && new_leader != trigger.dead_node_id {
+                elected = true;
+                info!(
+                    target = %target,
+                    dead_node_id = trigger.dead_node_id,
+                    new_leader_id = new_leader,
+                    "raft-failover: surviving replica re-elected leader"
+                );
+            } else if !failover_status.ok {
+                warn!(
+                    target = %target,
+                    dead_node_id = trigger.dead_node_id,
+                    message = %failover_status.message,
+                    "raft-failover: failover trigger rejected — retrying next round"
+                );
+            }
+        }
+        if elected {
+            // Stop re-driving this freeze episode; further rounds would be no-ops.
+            driven.insert(trigger.dead_node_id);
         }
     }
 }
