@@ -156,10 +156,15 @@ fn main() {
     // Resolve the distributed storage/replication backend for this node:
     // matrixobject shared storage when detected, else a configured shared object
     // store, else raft replication (the default when nothing is configured).
-    let storage_backend = temporalstore_rust::StorageBackendConfig::from_env().resolve();
+    // `auto` (the default) probes a configured TS_MATRIXOBJECT_ENDPOINT and only
+    // selects the shared MatrixObject store when it is reachable, otherwise it
+    // degrades to shared-path/raft — the `reason` records exactly which and why.
+    let storage_decision = temporalstore_rust::StorageBackendConfig::from_env().resolve_decision();
+    let storage_backend = storage_decision.backend.clone();
     info!(
         backend = %storage_backend.describe(),
         replication = ?storage_backend.replication_mode(),
+        reason = %storage_decision.reason,
         "resolved storage backend"
     );
     // Construct the shared object store early so a broken shared-storage config
@@ -1418,6 +1423,14 @@ fn wire_matrixobject_durability(
         _ => return None,
     };
 
+    // TODO(networked-store): when TS_MATRIXOBJECT_ENDPOINT is configured, this
+    // durability path must target the *networked* MatrixObject object-store
+    // service (see the matching TODO in storage_backend::build_shared_object_store)
+    // instead of a node-local on-disk snapshot dir, so shard data follows shards
+    // across nodes on rebalance / node loss. The `auto` resolver already probes
+    // the endpoint and selects matrixobject only when reachable; wiring the
+    // networked ObjectStore impl here (and in build_shared_object_store) is the
+    // remaining piece. Until then this stays node-local.
     let store_dir = std::env::var("TS_MATRIXOBJECT_STORE_DIR")
         .unwrap_or_else(|_| "target/temporalstore-matrixobject".to_string());
 
