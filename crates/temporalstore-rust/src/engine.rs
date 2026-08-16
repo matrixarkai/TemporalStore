@@ -1421,6 +1421,18 @@ impl Drop for WalReplayGuard {
 }
 
 fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
+    atomic_write_bytes_synced(path, bytes, true)
+}
+
+/// Atomic temp-write + rename. When `sync` is true the temp file is `fsync`'d before the
+/// rename (crash-durable). When false, the content + rename are still issued (so the new
+/// bytes are immediately visible to any reader via the page cache), but the durability
+/// barrier is DEFERRED. Deferral is safe ONLY for the served-index checkpoint on the
+/// write/ack path: the WAL (durably synced before ack) is the recovery source of truth
+/// and replay rebuilds the served index from it, so a stale-on-crash index just replays a
+/// longer WAL suffix -- no acked write is lost. Durability-critical writers (dump
+/// manifest, manifest install-on-load) MUST pass sync=true.
+fn atomic_write_bytes_synced(path: &Path, bytes: &[u8], sync: bool) -> Result<(), std::io::Error> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
     let file_name = path
@@ -1435,7 +1447,9 @@ fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
     let write_result = (|| {
         let mut file = File::create(&temp_path)?;
         file.write_all(bytes)?;
-        file.sync_all()?;
+        if sync {
+            file.sync_all()?;
+        }
         drop(file);
         fs::rename(&temp_path, path)
     })();
@@ -1443,6 +1457,20 @@ fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
         let _ = fs::remove_file(&temp_path);
     }
     write_result
+}
+
+/// TS_WAL_ONLY_SYNC: on the write/ack path, only the WAL takes a synchronous durability
+/// barrier; the served-index checkpoint write is issued but its fsync is deferred to the
+/// background flush / OS writeback (reconstructable from the WAL on recovery). Default OFF.
+pub(super) fn wal_only_sync() -> bool {
+    matches!(
+        std::env::var("TS_WAL_ONLY_SYNC")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 fn next_temp_counter() -> u64 {

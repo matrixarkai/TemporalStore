@@ -830,6 +830,20 @@ pub(crate) fn bulk_relaxed_durability() -> bool {
     )
 }
 
+/// TS_WAL_ONLY_SYNC: on the live path, defer the per-record data-page fdatasync and
+/// extent-manifest persist to sync_durable()/slab-seal (WAL replay re-materializes pages
+/// on recovery; the manifest is reconciled from disk on open). Default OFF.
+pub(crate) fn page_wal_only_sync() -> bool {
+    matches!(
+        std::env::var("TS_WAL_ONLY_SYNC")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
 fn roll_slab_inner(
     inner: &mut BlockStoreInner,
 ) -> Result<BlockStoreRollReport, BlockStoreError> {

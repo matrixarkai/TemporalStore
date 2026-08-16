@@ -191,6 +191,22 @@ pub const WRITE_AHEAD_LOG_FORMAT_VERSION: u32 = 1;
 #[derive(Debug, Clone)]
 pub struct LocalWriteAheadLogStore {
     inner: Arc<Mutex<WriteAheadLogInner>>,
+    // Group-commit coordinator: serializes WAL fsyncs so many concurrent writers
+    // share one durability barrier. Consulted ONLY when TS_GROUP_COMMIT is set.
+    // Writers append their bytes under the `inner` lock, RELEASE it, then coalesce
+    // their fsync here -- so a burst of concurrent writes amortizes onto ~1 fsync.
+    sync_coord: Arc<Mutex<HashMap<ShardId, GroupCommitState>>>,
+}
+
+#[derive(Debug, Default)]
+struct GroupCommitState {
+    // Highest WAL sequence proven durable (fdatasync'd) for this shard. A caller
+    // whose sequence is already <= this returns without issuing its own fsync.
+    durable_seq: u64,
+    // The WAL file's parent-directory entry has been fsync'd at least once this
+    // process lifetime. Appends only grow the file (inode), never the directory,
+    // so the per-append dir fsync is redundant after the first.
+    dir_synced: bool,
 }
 
 pub type WalError = WriteAheadLogError;
@@ -216,6 +232,7 @@ impl LocalWriteAheadLogStore {
                 stats: WriteAheadLogStats::default(),
                 last_sequence_by_shard: HashMap::new(),
             })),
+            sync_coord: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -238,32 +255,105 @@ impl LocalWriteAheadLogStore {
         command: Command,
         sync: bool,
     ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
-        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
-        fs::create_dir_all(&inner.root)?;
-        let _append_lock = WalAppendLock::acquire(&inner.root, shard_id)?;
-        let disk_last_sequence = last_wal_sequence_at(&inner.root, shard_id)?;
-        let cached_last_sequence = inner
-            .last_sequence_by_shard
-            .get(&shard_id)
-            .copied()
-            .unwrap_or_default();
-        let last_sequence = cached_last_sequence.max(disk_last_sequence);
-        inner.last_sequence_by_shard.insert(shard_id, last_sequence);
-        let next_sequence = last_sequence.saturating_add(1);
-        let record = WriteAheadLogRecord {
-            shard_id,
-            sequence: next_sequence,
-            metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
-            command,
-        };
-        let report = append_record_locked(&mut inner, &record, sync)?;
-        inner.stats.last_sequence = report.current_sequence;
-        // last_flushed_sequence is advanced by append_record_locked ONLY when the record was
-        // actually fsynced (sync=true). An unconditional overwrite here reported an async /
-        // bulk-mode (unsynced) record as durable -- overstating durability, a latent trap for
-        // any future reclaim/ack gate that reads it. Let the flush-gated path own it.
-        inner.last_sequence_by_shard.insert(shard_id, next_sequence);
+        // In group-commit mode the durable barrier is deferred out of the append
+        // critical section (below), so the byte-append records with sync=false and the
+        // fsync is coalesced across concurrent writers. Default mode keeps the exact
+        // per-append in-lock fsync behavior.
+        let group = sync && group_commit_enabled();
+        let record;
+        let next_sequence;
+        {
+            let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+            fs::create_dir_all(&inner.root)?;
+            let _append_lock = WalAppendLock::acquire(&inner.root, shard_id)?;
+            let disk_last_sequence = last_wal_sequence_at(&inner.root, shard_id)?;
+            let cached_last_sequence = inner
+                .last_sequence_by_shard
+                .get(&shard_id)
+                .copied()
+                .unwrap_or_default();
+            let last_sequence = cached_last_sequence.max(disk_last_sequence);
+            inner.last_sequence_by_shard.insert(shard_id, last_sequence);
+            let seq = last_sequence.saturating_add(1);
+            let rec = WriteAheadLogRecord {
+                shard_id,
+                sequence: seq,
+                metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
+                command,
+            };
+            let report = append_record_locked(&mut inner, &rec, sync && !group)?;
+            inner.stats.last_sequence = report.current_sequence;
+            // last_flushed_sequence is advanced by append_record_locked ONLY when the record was
+            // actually fsynced (sync=true, non-group). An unconditional overwrite here reported an
+            // async / bulk-mode (unsynced) record as durable -- overstating durability, a latent
+            // trap for any future reclaim/ack gate that reads it. The group path advances it below
+            // after the coalesced barrier actually reaches disk.
+            inner.last_sequence_by_shard.insert(shard_id, seq);
+            record = rec;
+            next_sequence = seq;
+            // `inner` and `_append_lock` are released here so a concurrent writer can
+            // append while this writer's group-commit fsync is in flight (the fsync
+            // duration is the natural batching window).
+        }
+        if group {
+            self.group_commit_sync(shard_id, next_sequence)?;
+        }
         Ok(record)
+    }
+
+    /// Coalesced WAL durability barrier (group commit). Ensures every byte appended for
+    /// `shard_id` up to at least `required_sequence` is `fdatasync`'d to disk before
+    /// returning. Concurrent callers serialize on `sync_coord`; the first to run fsyncs
+    /// the file -- which flushes ALL pending appends, not just its own -- records the
+    /// durable watermark, and any caller whose sequence is already covered returns
+    /// without a second barrier. A burst of N concurrent writes therefore shares ~1
+    /// fsync instead of paying N. Correctness: every appender writes its bytes under the
+    /// `inner` lock and releases it before calling here, so the snapshotted high-water
+    /// sequence names only bytes already in the page cache; the fsync makes exactly those
+    /// durable, and the watermark is never advanced past them.
+    fn group_commit_sync(
+        &self,
+        shard_id: ShardId,
+        required_sequence: u64,
+    ) -> Result<(), WriteAheadLogError> {
+        let mut coord = self.sync_coord.lock().expect("wal sync coordinator poisoned");
+        let entry = coord.entry(shard_id).or_default();
+        if entry.durable_seq >= required_sequence {
+            return Ok(());
+        }
+        let (path, snapshot) = {
+            let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+            let path = write_ahead_log_path(&inner.root, shard_id);
+            let snapshot = inner
+                .last_sequence_by_shard
+                .get(&shard_id)
+                .copied()
+                .unwrap_or(required_sequence)
+                .max(required_sequence);
+            (path, snapshot)
+        };
+        if !path.exists() {
+            entry.durable_seq = entry.durable_seq.max(snapshot);
+            return Ok(());
+        }
+        let file = OpenOptions::new().read(true).write(true).open(&path)?;
+        file.sync_data()?;
+        if !entry.dir_synced {
+            // First durable append for this shard this process lifetime: make the
+            // directory entry durable once. Subsequent appends never touch it.
+            sync_parent_dir(&path)?;
+            entry.dir_synced = true;
+        }
+        entry.durable_seq = entry.durable_seq.max(snapshot);
+        {
+            let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+            inner.stats.flushes += 1;
+            inner.stats.syncs += 1;
+            if snapshot > inner.stats.last_flushed_sequence {
+                inner.stats.last_flushed_sequence = snapshot;
+            }
+        }
+        Ok(())
     }
 
     pub fn append_replayed_record(
@@ -594,6 +684,30 @@ fn wal_bulk_relaxed_durability() -> bool {
     )
 }
 
+fn wal_env_flag_on(name: &str) -> bool {
+    matches!(
+        std::env::var(name)
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+/// TS_GROUP_COMMIT: coalesce concurrent WAL fsyncs into shared durability barriers.
+/// The WAL append still records every byte durably before ack; only the fsync is
+/// batched across writers. Default OFF (exact per-append fsync behavior).
+fn group_commit_enabled() -> bool {
+    wal_env_flag_on("TS_GROUP_COMMIT")
+}
+
+/// Whether the redundant per-append WAL parent-dir fsync may be skipped (safe once the
+/// file exists). Enabled by either the WAL-only-sync or group-commit relaxation flag.
+fn wal_relaxed_dir_sync() -> bool {
+    wal_env_flag_on("TS_WAL_ONLY_SYNC") || wal_env_flag_on("TS_GROUP_COMMIT")
+}
+
 fn append_record_locked(
     inner: &mut WriteAheadLogInner,
     record: &WriteAheadLogRecord,
@@ -608,7 +722,13 @@ fn append_record_locked(
     if sync {
         file.flush()?;
         file.sync_data()?;
-        sync_parent_dir(&path)?;
+        // The parent-directory entry for the WAL file only needs a durable barrier when
+        // the file is first created; appends grow the file (inode) without changing the
+        // directory. Under relaxed-sync (TS_WAL_ONLY_SYNC / TS_GROUP_COMMIT) skip the
+        // redundant per-append dir fsync once the file already has content (offset > 0).
+        if offset == 0 || !wal_relaxed_dir_sync() {
+            sync_parent_dir(&path)?;
+        }
         inner.stats.flushes += 1;
         inner.stats.syncs += 1;
         inner.stats.last_flushed_sequence = record.sequence;

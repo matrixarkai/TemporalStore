@@ -295,7 +295,12 @@ impl TemporalEngine {
             return Ok(());
         }
         fs::create_dir_all(&self.index_dir)?;
-        atomic_write_bytes(&self.index_path(shard_id), bytes)
+        // Ack-path served-index checkpoint. Under TS_WAL_ONLY_SYNC the durable barrier is
+        // deferred (content + rename still issued): the WAL is durably synced before ack
+        // and replay-on-load rebuilds the served index from it, so a stale-on-crash index
+        // only costs a longer WAL replay, never an acked write. This is the served-index
+        // fsync removed from the write critical path.
+        atomic_write_bytes_synced(&self.index_path(shard_id), bytes, !wal_only_sync())
     }
 
     /// Unconditional (bulk-gate-bypassing) index write for recovery-critical paths such as
