@@ -831,6 +831,24 @@ fn group_commit_enabled() -> bool {
     }
 }
 
+/// Public read of the `TS_GROUP_COMMIT` (config `[wal] group_commit`) gate so paths outside this
+/// module — notably the shared-store object-store SYNC writer — honor the SAME switch as the local
+/// WAL fsync coalescing. Default ON.
+pub fn group_commit_configured() -> bool {
+    group_commit_enabled()
+}
+
+/// `TS_WAL_COMMIT_DELAY_US` (config `[wal] commit_delay_us`): optional deliberate widening of the
+/// group-commit batch window under extreme load. Default 0 = pure timer-less coalescing (the group
+/// is exactly what accumulates during one durable barrier's in-flight duration).
+pub fn group_commit_delay() -> std::time::Duration {
+    let micros = std::env::var("TS_WAL_COMMIT_DELAY_US")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    std::time::Duration::from_micros(micros)
+}
+
 /// Whether the redundant per-append WAL parent-dir fsync may be skipped (safe once the
 /// file exists). Enabled under the single-barrier default or group-commit; restored to a
 /// per-append dir fsync only under the TS_WAL_LEGACY_RECOVERY escape hatch with group-commit off.
