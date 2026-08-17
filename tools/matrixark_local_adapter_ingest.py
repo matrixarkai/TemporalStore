@@ -156,7 +156,36 @@ except ImportError:
 
 
 class _LocalAdapterIngestMixin:
+    _MEMORY_UPSERT_ARG_KEYS = ("expires_at", "ttl_seconds", "retention_cutoff_ts", "identity_key", "truth_class")
+
     def ingest(self, args: Json, *, hook: Json | None = None) -> Json:
+        """Public ingest entry. Fast-path is byte-identical to the core ingest; when any
+        PurchaseMemory field (expires_at / ttl_seconds / retention_cutoff_ts / identity_key /
+        truth_class) is present it layers per-record TTL stamping, a keyed-upsert truth-rank guard,
+        and a scope-level retention-cutoff marker on top of the unchanged core ingest."""
+        if not any(key in args for key in self._MEMORY_UPSERT_ARG_KEYS):
+            return self._ingest_impl(args, hook=hook)
+        envelope = normalize_envelope(args, default_kind="message")
+        # Pin ingestion_time_ms so the core re-normalization inside _ingest_impl is deterministic
+        # (event_id_hash derives from it); the caller's other fields already round-trip through args.
+        args = {**args, "ingestion_time_ms": envelope["ingestion_time_ms"]}
+        identity_key = str(envelope.get("identity_key") or "")
+        self._push_ingest_stamp(envelope)
+        try:
+            result = self._ingest_impl(args, hook=hook)
+        finally:
+            self._pop_ingest_stamp()
+        if isinstance(result, dict):
+            if identity_key:
+                result = self._apply_identity_upsert(result, identity_key=identity_key, envelope=envelope)
+            if envelope.get("retention_cutoff_ms") is not None:
+                self._write_retention_cutoff(result, envelope)
+            if envelope.get("ephemeral"):
+                # Reclaim space lazily; a no-op unless MATRIXARK_MEMORY_PURGE_THRESHOLD is set.
+                self._maybe_sweep_expired()
+        return result
+
+    def _ingest_impl(self, args: Json, *, hook: Json | None = None) -> Json:
         envelope = normalize_envelope(args, default_kind="message")
         # Guard: a message-ingest scope without tenant_id/user_id silently disables profile
         # long-term memory. Warn (once per identity) so profile_scope_missing is never silent.
@@ -1379,7 +1408,9 @@ class _LocalAdapterIngestMixin:
         )
         with self.write_batch("message_ingest_hot_path"):
             session_key_parts = [str(part) for part in context_node_key(envelope)]
-            if any(session_key_parts):
+            # Ephemeral (TTL) ingests are excluded from rollup/summary generation: they are meant to
+            # vanish, so their text must never be folded into a durable session summary.
+            if any(session_key_parts) and not envelope.get("ephemeral"):
                 session_summary_source = " ".join(
                     [item.get("text", "") for item in prior_context.get("summaries", [])[:2]]
                     + [item.get("text", "") for item in prior_context.get("messages", [])[:2]]

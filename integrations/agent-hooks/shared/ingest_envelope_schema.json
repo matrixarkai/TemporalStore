@@ -58,6 +58,26 @@
       "type": "integer",
       "exclusiveMinimum": 0
     },
+    "expires_at": {
+      "description": "PurchaseMemory per-record TTL (optional). Absolute expiry as unix SECONDS (int/float). Every record produced by this ingestion is stamped ephemeral and stops surfacing from retrieve/get_all once now >= expires_at, is excluded from summaries/rollups, and is lazily purged. Wins over ttl_seconds when both are given. Normalized by apply_memory_envelope_fields into expires_at_ms.",
+      "type": "number"
+    },
+    "ttl_seconds": {
+      "description": "PurchaseMemory relative TTL (optional). expires_at = occurred_at (ingestion_time) + ttl_seconds. Ignored when expires_at is also supplied.",
+      "type": "number"
+    },
+    "retention_cutoff_ts": {
+      "description": "PurchaseMemory scope-level retention cutoff (optional), unix SECONDS. Records in this subject scope whose occurrence time < cutoff are hidden at read-time and reclaimed by the expiry sweep. Persisted as a durable scope marker.",
+      "type": "number"
+    },
+    "identity_key": {
+      "description": "PurchaseMemory keyed-upsert identity (optional). Logical identity of a fact within the scope (e.g. 'user.email', 'subscription.plan'). A later ingest with the same identity_key supersedes or is rank-guarded against the prior value per truth_class.",
+      "type": "string"
+    },
+    "truth_class": {
+      "description": "PurchaseMemory confidence class (optional) for the keyed-upsert rank guard. Mapped to an integer rank via a default table (asserted=3, reported=2, inferred=1, unknown=0), overridable with the MATRIXARK_TRUTH_RANK env JSON. A new write with rank >= the existing keyed record supersedes it; a lower rank is rejected (no-op).",
+      "type": "string"
+    },
     "storage_options": {
       "description": "Storage routing hints (storage_mode, oplog_mode, replication_mode, consistency, route, storage_family/family, write_mode, raft_mode, background_write). Validated and canonicalized into storage_route by normalize_storage_options/canonical_storage_route.",
       "type": "object",
