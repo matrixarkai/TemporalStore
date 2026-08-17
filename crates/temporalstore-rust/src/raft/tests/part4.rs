@@ -2232,4 +2232,130 @@ fn r4_new_leader_withholds_linearizable_read_until_committed_in_term() {
     assert_eq!(response.leader_id, 2);
 }
 
+/// S2: with the state-image gate on, a snapshot carries an opaque engine STATE IMAGE instead of
+/// the full committed entry log, and a far-behind follower reconstructs complete state from that
+/// image alone (O(state)) — no per-entry replay of the whole history.
+#[test]
+fn s2_state_image_snapshot_installs_without_replaying_full_entry_log() {
+    let _guard = EnvFlagGuard::set("TS_RAFT_SNAPSHOT_STATE_IMAGE");
+    let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+    for i in 0..16 {
+        cluster
+            .propose(Command::StringSet {
+                key: format!("k{i}"),
+                value: format!("v{i}").into_bytes(),
+            })
+            .unwrap();
+    }
+
+    let snapshot = cluster.create_snapshot().unwrap();
+    assert!(
+        snapshot.entries.is_empty(),
+        "state-image snapshot must NOT carry the full committed entry log"
+    );
+    let image = snapshot
+        .state_image
+        .as_ref()
+        .expect("state-image snapshot must carry an engine image");
+    assert!(!image.index_bytes.is_empty(), "image must include the served index");
+
+    // Far-behind follower installs from the image and serves every key correctly.
+    cluster.install_snapshot(3, snapshot).unwrap();
+    let inner = cluster.inner.read().expect("raft cluster lock poisoned");
+    let shard_id = inner.shard_id;
+    let node3 = inner.nodes.get(&3).expect("follower 3 exists");
+    for i in 0..16 {
+        assert_eq!(
+            node3
+                .engine
+                .execute(ExecuteRequest {
+                    shard_id,
+                    command: Command::StringGet {
+                        key: format!("k{i}"),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(format!("v{i}").into_bytes())
+            },
+            "follower must reconstruct key k{i} from the state image"
+        );
+    }
+}
+
+/// S2: the state image travels through the chunked install path (it rides chunk 0 of a
+/// single-chunk, empty-entries stream) and the follower installs from it end-to-end.
+#[test]
+fn s2_state_image_snapshot_travels_through_chunk_stream() {
+    let _guard = EnvFlagGuard::set("TS_RAFT_SNAPSHOT_STATE_IMAGE");
+    let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+    for i in 0..8 {
+        cluster
+            .propose(Command::StringSet {
+                key: format!("k{i}"),
+                value: format!("v{i}").into_bytes(),
+            })
+            .unwrap();
+    }
+
+    let chunks = cluster.build_install_snapshot_chunks(3, 4).unwrap();
+    assert_eq!(
+        chunks.len(),
+        1,
+        "an image snapshot has empty entries, so it is a single chunk"
+    );
+    assert!(
+        chunks[0].state_image.is_some(),
+        "the state image must ride the chunk stream"
+    );
+    let response = cluster
+        .receive_install_snapshot_chunk(chunks[0].clone())
+        .unwrap();
+    assert!(response.snapshot_complete, "single-chunk install must complete");
+
+    let inner = cluster.inner.read().expect("raft cluster lock poisoned");
+    let shard_id = inner.shard_id;
+    let node3 = inner.nodes.get(&3).expect("follower 3 exists");
+    for i in 0..8 {
+        assert_eq!(
+            node3
+                .engine
+                .execute(ExecuteRequest {
+                    shard_id,
+                    command: Command::StringGet {
+                        key: format!("k{i}"),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(format!("v{i}").into_bytes())
+            },
+        );
+    }
+}
+
+/// S2 gate OFF (default): the snapshot still carries the committed entry log and no state image,
+/// so behavior is byte-identical to before.
+#[test]
+fn s2_snapshot_gate_off_still_carries_entries_and_no_image() {
+    let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+    for i in 0..4 {
+        cluster
+            .propose(Command::StringSet {
+                key: format!("k{i}"),
+                value: format!("v{i}").into_bytes(),
+            })
+            .unwrap();
+    }
+    let snapshot = cluster.create_snapshot().unwrap();
+    assert!(
+        snapshot.state_image.is_none(),
+        "gate off must not attach a state image"
+    );
+    assert!(
+        !snapshot.entries.is_empty(),
+        "gate off must still carry the committed entry log"
+    );
+}
+
 
