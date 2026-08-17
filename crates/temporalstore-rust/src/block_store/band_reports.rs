@@ -5,6 +5,26 @@
 
 use super::*;
 
+/// Map a band descriptor's lifecycle state to the index-log `ZoneState` (1:1). Kept a free fn
+/// so both directions of the MANIFEST-PARITY FOLD conversion share one mapping.
+fn band_state_to_zone_state(state: BlockStoreBandState) -> crate::index_log::ZoneState {
+    match state {
+        BlockStoreBandState::Active => crate::index_log::ZoneState::Active,
+        BlockStoreBandState::Sealed => crate::index_log::ZoneState::Sealed,
+        BlockStoreBandState::DelayedDestroy => crate::index_log::ZoneState::DelayedDestroy,
+        BlockStoreBandState::Purged => crate::index_log::ZoneState::Purged,
+    }
+}
+
+fn zone_state_to_band_state(state: crate::index_log::ZoneState) -> BlockStoreBandState {
+    match state {
+        crate::index_log::ZoneState::Active => BlockStoreBandState::Active,
+        crate::index_log::ZoneState::Sealed => BlockStoreBandState::Sealed,
+        crate::index_log::ZoneState::DelayedDestroy => BlockStoreBandState::DelayedDestroy,
+        crate::index_log::ZoneState::Purged => BlockStoreBandState::Purged,
+    }
+}
+
 impl LocalBlockStore {
     pub fn band_descriptors(&self) -> Vec<BlockStoreBandDescriptor> {
         self.inner
@@ -14,6 +34,101 @@ impl LocalBlockStore {
             .values()
             .cloned()
             .collect()
+    }
+
+    /// MANIFEST-PARITY FOLD: project the in-memory band catalog into the DURABLE `ZoneInfo`
+    /// subset the reference keeps in `IndexLog.MetaItem.zones`. Only the durable fields ride in
+    /// the fold; the band descriptor's diagnostic fields (readable_prefix / corruption / errors)
+    /// are deliberately dropped -- they are recomputed on load by scanning the slab, exactly as
+    /// the reference does not persist them. `zone_version` stamps every entry so a folded anchor
+    /// carries a monotonically-versioned snapshot.
+    pub fn zone_catalog(&self, zone_version: u64) -> Vec<crate::index_log::ZoneInfo> {
+        self.inner
+            .lock()
+            .expect("block store lock poisoned")
+            .bands
+            .values()
+            .map(|band| crate::index_log::ZoneInfo {
+                page_slab_id: band.page_slab_id,
+                state: band_state_to_zone_state(band.state),
+                physical_bytes: band.physical_bytes,
+                logical_bytes: band.logical_bytes,
+                created_unix_ms: band.created_unix_ms,
+                updated_unix_ms: band.updated_unix_ms,
+                first_page_id: band.first_page_id,
+                last_page_id: band.last_page_id,
+                version: zone_version,
+            })
+            .collect()
+    }
+
+    /// MANIFEST-PARITY FOLD recovery: seed the band catalog from a folded `ZoneInfo` snapshot
+    /// recovered from the index-log MetaItem. Applied on load AFTER the block store has already
+    /// reconciled from durable pages (reconcile stays authoritative for on-disk physical bytes
+    /// and diagnostics), so this only RESTORES the catalog fields a pure disk scan cannot infer:
+    /// the exact lifecycle state, the creation/update timestamps, the logical byte count, and the
+    /// first/last page-id range. It never deletes a band reconcile found on disk and never
+    /// downgrades physical bytes below what the slab actually holds -- so it cannot lose durable
+    /// state; it is a metadata refinement layered on the lossless disk-derived catalog. Persists
+    /// the merged manifest once. Returns whether anything changed.
+    pub fn install_zone_catalog(
+        &self,
+        zones: &[crate::index_log::ZoneInfo],
+    ) -> Result<bool, BlockStoreError> {
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
+        let active = inner.page_slab_id;
+        let mut changed = false;
+        for zone in zones {
+            let state = zone_state_to_band_state(zone.state);
+            match inner.bands.get_mut(&zone.page_slab_id) {
+                Some(band) => {
+                    let before = band.clone();
+                    // Never override the live ACTIVE slab's disk-derived state (it holds the open
+                    // write frontier); for every other slab adopt the folded lifecycle state.
+                    if zone.page_slab_id != active {
+                        band.state = state;
+                    }
+                    band.created_unix_ms = band.created_unix_ms.or(zone.created_unix_ms);
+                    if band.updated_unix_ms.is_none() {
+                        band.updated_unix_ms = zone.updated_unix_ms;
+                    }
+                    if band.logical_bytes == 0 {
+                        band.logical_bytes = zone.logical_bytes;
+                    }
+                    band.first_page_id = band.first_page_id.or(zone.first_page_id);
+                    band.last_page_id = band.last_page_id.or(zone.last_page_id);
+                    changed |= *band != before;
+                }
+                None => {
+                    // A band the disk scan did not surface (e.g. a purged/reclaimed slab with no
+                    // live file): install it from the fold so accounting/GC see the full history.
+                    inner.bands.insert(
+                        zone.page_slab_id,
+                        BlockStoreBandDescriptor {
+                            band_id: band_id_for_slab(zone.page_slab_id),
+                            page_slab_id: zone.page_slab_id,
+                            state,
+                            physical_bytes: zone.physical_bytes,
+                            logical_bytes: zone.logical_bytes,
+                            created_unix_ms: zone.created_unix_ms,
+                            updated_unix_ms: zone.updated_unix_ms,
+                            first_page_id: zone.first_page_id,
+                            last_page_id: zone.last_page_id,
+                            readable_prefix_physical_bytes: zone.physical_bytes,
+                            has_corruption: false,
+                            first_error_offset: None,
+                            first_error: None,
+                        },
+                    );
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            let root = inner.root.clone();
+            persist_band_manifest(&root, &inner.bands)?;
+        }
+        Ok(changed)
     }
 
     pub fn band_summary(&self) -> BlockStoreBandSummary {

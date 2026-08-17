@@ -1264,6 +1264,79 @@ mod tests {
     }
 
     #[test]
+    fn per_append_does_not_reserialize_the_band_manifest_on_the_default_path() {
+        // MANIFEST-PARITY FOLD no-O(n) proof: on the default single-barrier path the per-append
+        // band-manifest full re-serialize (the measured O(n) aging driver -- ~961 B rewritten per
+        // write, growing with the band count) is OFF the write path. Appending many records must
+        // NOT rewrite `page_extent_manifest.json` each time; the catalog is deferred and made
+        // durable in one shot at sync_durable()/seal. Proven by the manifest file bytes staying
+        // byte-identical across a burst of appends, then changing exactly once at sync_durable.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let manifest = band_manifest_path(dir.path());
+        // Land one append so the manifest exists at a known state, then snapshot it.
+        store.append(b"seed").unwrap();
+        store.sync_durable().unwrap();
+        let after_seed = std::fs::read(&manifest).unwrap();
+        // A burst of appends: NONE of them may rewrite the manifest (deferred off the write path).
+        for i in 0..200u32 {
+            store.append(format!("record-{i}").as_bytes()).unwrap();
+        }
+        assert_eq!(
+            std::fs::read(&manifest).unwrap(),
+            after_seed,
+            "the band manifest must NOT be re-serialized per append on the default path"
+        );
+        // The deferred catalog materializes in one shot; now it reflects the burst (bytes grew).
+        store.sync_durable().unwrap();
+        assert_ne!(
+            std::fs::read(&manifest).unwrap(),
+            after_seed,
+            "sync_durable must materialize the deferred catalog exactly once"
+        );
+    }
+
+    #[test]
+    fn zone_catalog_folds_bands_and_install_reconstructs_lifecycle() {
+        // MANIFEST-PARITY FOLD round-trip at the block-store layer: project the band catalog into
+        // the durable ZoneInfo subset, then reconstruct the band lifecycle from that projection
+        // with the band-manifest file deleted -- proving the folded catalog is a lossless source
+        // of the durable band state (diagnostics are recomputed from the slab separately).
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        store.append(b"a").unwrap();
+        // Seal the first band by rolling to a new active slab.
+        store.roll_slab().unwrap();
+        store.append(b"b").unwrap();
+        store.sync_durable().unwrap();
+        let zones = store.zone_catalog(7);
+        // Two bands: the sealed first slab and the active second slab.
+        assert_eq!(zones.len(), 2);
+        assert!(zones.iter().any(|z| z.state == crate::index_log::ZoneState::Sealed));
+        assert!(zones.iter().any(|z| z.state == crate::index_log::ZoneState::Active));
+        assert!(zones.iter().all(|z| z.version == 7));
+        // Delete the band-manifest file so the reopened store has no cached catalog file; it
+        // reconstructs bands from the durable slabs (reconcile-on-open), then we install the
+        // folded catalog on top. The lifecycle states must match the pre-crash projection.
+        let reopened = LocalBlockStore::new(dir.path());
+        std::fs::remove_file(band_manifest_path(dir.path())).ok();
+        let changed = reopened.install_zone_catalog(&zones).unwrap();
+        let recovered = reopened.zone_catalog(0);
+        let state_of = |slab: u64, zs: &[crate::index_log::ZoneInfo]| {
+            zs.iter().find(|z| z.page_slab_id == slab).map(|z| z.state)
+        };
+        for zone in &zones {
+            assert_eq!(
+                state_of(zone.page_slab_id, &recovered),
+                Some(zone.state),
+                "band {} lifecycle must reconstruct from the folded catalog",
+                zone.page_slab_id
+            );
+        }
+        let _ = changed;
+    }
+
+    #[test]
     fn gc_slabs_removes_old_non_current_slabs() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());

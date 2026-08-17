@@ -100,12 +100,60 @@ pub struct IndexItem {
     pub deleted: bool,
 }
 
+/// Band/zone lifecycle state folded into the index-log MetaItem. 1:1 with
+/// `block_store::BlockStoreBandState` and with the reference `IndexLog.ZoneState`
+/// (INIT/CREATED/FROZEN/RECYCLED): Active==CREATED, Sealed==FROZEN, DelayedDestroy/Purged
+/// cover the RECYCLED grace. Serialized snake_case so it round-trips with the band manifest's
+/// own state enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZoneState {
+    Active,
+    Sealed,
+    DelayedDestroy,
+    Purged,
+}
+
+/// One band/zone catalog entry folded into the index-log MetaItem, mirroring the reference
+/// `IndexLog.MetaItem.zones` (`map<uint32,ZoneInfo>`). Carries the DURABLE catalog fields the
+/// band descriptor tracks -- lifecycle state, byte counts, timestamps, page-id range, version.
+/// The band descriptor's DIAGNOSTIC fields (readable_prefix_physical_bytes / has_corruption /
+/// first_error*) are intentionally ABSENT: they are recomputed on load by scanning the slab
+/// (`inspect_slab`, driven by `rebuild_band_manifest_at` / reconcile-on-open), exactly as the
+/// reference does not persist them. So this is the lossless durable projection of a band.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZoneInfo {
+    #[serde(alias = "zone_id")]
+    pub page_slab_id: u64,
+    pub state: ZoneState,
+    #[serde(alias = "total_bytes")]
+    pub physical_bytes: u64,
+    #[serde(default)]
+    pub logical_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_unix_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_unix_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_page_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_page_id: Option<u64>,
+    #[serde(default)]
+    pub version: u64,
+}
+
 /// Compaction anchor for the delta log. `start_wal_sequence` is the lowest WAL sequence
 /// still required to reconstruct the served index on top of the base snapshot: once the
 /// base `shard-{id}.index.json` is rewritten at a compaction point, the anchor advances
 /// and every delta record at or before it can be truncated. Mirrors the reference
 /// MetaItem's `start_oplog_id` role in the native WAL vocabulary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `zones` folds the band/zone catalog into the anchor (reference `MetaItem.zones` parity). It
+/// is populated ONLY at a threshold dump, and ONLY when the `TS_INDEX_CATALOG_FOLD` gate is on;
+/// with the gate off it is always empty and (via `skip_serializing_if`) not serialized, so an
+/// anchor record is byte-identical to the pre-fold record. Legacy anchors without `zones`
+/// deserialize to an empty catalog and replay unchanged.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetaItem {
     #[serde(default)]
     pub version: u64,
@@ -113,6 +161,10 @@ pub struct MetaItem {
     pub start_wal_sequence: u64,
     #[serde(default)]
     pub timestamp_ms: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub zones: Vec<ZoneInfo>,
+    #[serde(default)]
+    pub zone_version: u64,
 }
 
 /// One appended delta record: either a batch of page/object item deltas (PAGE/OBJECT) or
@@ -203,6 +255,12 @@ struct IndexLogInner {
     root: PathBuf,
     stats: IndexLogStats,
     last_sequence_by_shard: HashMap<ShardId, u64>,
+    /// MANIFEST-PARITY FOLD: the index-log byte length recorded at the last catalog dump, per
+    /// shard. `undumped_len_since_dump` subtracts this from the current on-disk length to get the
+    /// undumped gap that drives the threshold-dump cadence (reference `UnDumpLength`). Reset to 0
+    /// on process restart, so the first post-restart cycle may dump once -- harmless (a dump only
+    /// materializes durable state that is already recoverable).
+    last_dumped_len_by_shard: HashMap<ShardId, u64>,
 }
 
 fn indexlog_enabled() -> bool {
@@ -239,7 +297,89 @@ fn indexlog_wal_only_sync() -> bool {
     )
 }
 
+/// MANIFEST-PARITY FOLD gate (default OFF, byte-identical when off). When on, the band/zone
+/// catalog is folded into the index-log `MetaItem.zones` at a threshold dump (reference
+/// `IndexLog.MetaItem.zones` parity) and the per-write band-manifest file stops being the
+/// catalog's source of truth (it is reconstructed on load from the durable pages + the folded
+/// anchor). Off, none of that fold code runs: no `zones` are ever captured (so anchor records
+/// serialize identically), and recovery/persistence take the existing paths unchanged. Ships
+/// dark; flips on after the crash-recovery suite is green.
+pub fn index_catalog_fold_enabled() -> bool {
+    matches!(
+        std::env::var("TS_INDEX_CATALOG_FOLD")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+/// Threshold decision for the background catalog/index dump, mirroring the reference
+/// `storage_dump_index_meta_oplog_gap` gate (`ShouldDelayDumpOplog` compares the undumped
+/// oplog length against the 1 MiB gap). `undumped_bytes` is the served-index-log growth since
+/// the last dumped watermark; when it crosses `gap_bytes` the dump fires. A zero gap disables
+/// the cadence (never dump on threshold) so an operator can pin dumps to compaction/unload only.
+pub fn should_dump_index_catalog(undumped_bytes: u64, gap_bytes: u64) -> bool {
+    gap_bytes > 0 && undumped_bytes >= gap_bytes
+}
+
 impl LocalIndexLogStore {
+    /// On-disk byte length of a shard's index-log file (0 if absent). Used as the "undumped
+    /// length" signal for the threshold-dump cadence: the growth of this file since the last
+    /// dumped watermark is the native analog of the reference `OpLogger::UnDumpLength()`.
+    pub fn log_len_bytes(&self, shard_id: ShardId) -> u64 {
+        let inner = self.inner.lock().expect("index log lock poisoned");
+        index_log_path(&inner.root, shard_id)
+            .metadata()
+            .map(|metadata| metadata.len())
+            .unwrap_or(0)
+    }
+
+    /// Undumped index-log length for a shard: the on-disk byte growth since the last catalog
+    /// dump (`mark_catalog_dumped`). This is the native analog of the reference
+    /// `OpLogger::UnDumpLength()` and is the signal compared against `index_dump_oplog_gap_bytes`
+    /// to decide a threshold dump. A shard never dumped this process (or freshly restarted)
+    /// reports the whole current length.
+    pub fn undumped_len_since_dump(&self, shard_id: ShardId) -> u64 {
+        let inner = self.inner.lock().expect("index log lock poisoned");
+        let current = index_log_path(&inner.root, shard_id)
+            .metadata()
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        let dumped = inner
+            .last_dumped_len_by_shard
+            .get(&shard_id)
+            .copied()
+            .unwrap_or(0);
+        current.saturating_sub(dumped)
+    }
+
+    /// Record that a catalog dump captured the shard's index-log up to its current on-disk
+    /// length, resetting the undumped gap to 0. Called by the engine ONLY after the dump's base
+    /// index + folded anchor are durably written, so the watermark never advances past
+    /// non-durable state (restart-during-dump re-dumps rather than skipping).
+    pub fn mark_catalog_dumped(&self, shard_id: ShardId) {
+        let mut inner = self.inner.lock().expect("index log lock poisoned");
+        let current = index_log_path(&inner.root, shard_id)
+            .metadata()
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        inner.last_dumped_len_by_shard.insert(shard_id, current);
+    }
+
+    /// The most recent `MetaItem` anchor carrying a folded band/zone catalog, or `None` if no
+    /// anchor with a non-empty `zones` list has been written. Used on load (gate on) to seed the
+    /// block-store band catalog from the folded anchor when the band-manifest file is absent.
+    pub fn latest_zone_catalog(&self, shard_id: ShardId) -> Result<Option<MetaItem>, IndexLogError> {
+        let records = self.read_delta_records(shard_id, 0)?;
+        Ok(records
+            .into_iter()
+            .filter_map(|record| record.meta)
+            .filter(|meta| !meta.zones.is_empty())
+            .next_back())
+    }
+
     pub fn new(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
         let _ = fs::create_dir_all(&root);
@@ -248,6 +388,7 @@ impl LocalIndexLogStore {
                 root,
                 stats: IndexLogStats::default(),
                 last_sequence_by_shard: HashMap::new(),
+                last_dumped_len_by_shard: HashMap::new(),
             })),
         }
     }
@@ -865,11 +1006,12 @@ mod tests {
             version: 1,
             start_wal_sequence: 42,
             timestamp_ms: 100,
+            ..MetaItem::default()
         };
         store.append_delta(3, Vec::new(), Vec::new(), None, Some(meta), true).unwrap();
         let records = store.read_delta_records(3, 0).unwrap();
         assert_eq!(records.len(), 2);
-        assert_eq!(records[1].meta.unwrap().start_wal_sequence, 42);
+        assert_eq!(records[1].meta.as_ref().unwrap().start_wal_sequence, 42);
     }
 
     #[test]
@@ -979,6 +1121,138 @@ mod tests {
             Err(IndexLogError::Corruption(_)) => {}
             other => panic!("out-of-order delta sequences must be a Corruption error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn meta_item_without_zones_serializes_byte_identically_to_pre_fold() {
+        // Byte-identical-when-off invariant: an anchor whose `zones` is empty (the only state
+        // reachable with TS_INDEX_CATALOG_FOLD off) must serialize with NO `zones` key and NO
+        // `zone_version` beyond what a pre-fold MetaItem produced. `zone_version` defaults to 0
+        // and is not skipped, so it appears; assert the value carries only the legacy three
+        // fields plus a zero zone_version and no zones array.
+        let meta = MetaItem {
+            version: 7,
+            start_wal_sequence: 11,
+            timestamp_ms: 22,
+            ..MetaItem::default()
+        };
+        let value = serde_json::to_value(&meta).unwrap();
+        let object = value.as_object().unwrap();
+        assert!(!object.contains_key("zones"), "empty zones must be skipped");
+        assert_eq!(object.get("version").unwrap(), 7);
+        assert_eq!(object.get("start_wal_sequence").unwrap(), 11);
+        assert_eq!(object.get("timestamp_ms").unwrap(), 22);
+        assert_eq!(object.get("zone_version").unwrap(), 0);
+        // And it round-trips.
+        let back: MetaItem = serde_json::from_value(value).unwrap();
+        assert_eq!(back, meta);
+    }
+
+    #[test]
+    fn meta_item_zone_catalog_round_trips_through_the_delta_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        let meta = MetaItem {
+            version: 1,
+            start_wal_sequence: 5,
+            timestamp_ms: 100,
+            zone_version: 3,
+            zones: vec![
+                ZoneInfo {
+                    page_slab_id: 0,
+                    state: ZoneState::Sealed,
+                    physical_bytes: 4096,
+                    logical_bytes: 4000,
+                    created_unix_ms: Some(10),
+                    updated_unix_ms: Some(20),
+                    first_page_id: Some(0),
+                    last_page_id: Some(9),
+                    version: 3,
+                },
+                ZoneInfo {
+                    page_slab_id: 1,
+                    state: ZoneState::Active,
+                    physical_bytes: 512,
+                    logical_bytes: 512,
+                    created_unix_ms: Some(30),
+                    updated_unix_ms: Some(30),
+                    first_page_id: Some(10),
+                    last_page_id: Some(10),
+                    version: 3,
+                },
+            ],
+        };
+        store
+            .append_delta(4, Vec::new(), Vec::new(), Some(5), Some(meta.clone()), true)
+            .unwrap();
+        // A reopen reads the folded catalog back exactly, and latest_zone_catalog finds it.
+        let reopened = LocalIndexLogStore::new(dir.path());
+        let recovered = reopened.latest_zone_catalog(4).unwrap().unwrap();
+        assert_eq!(recovered, meta);
+        assert_eq!(recovered.zones.len(), 2);
+        assert_eq!(recovered.zones[0].state, ZoneState::Sealed);
+        assert_eq!(recovered.zones[1].page_slab_id, 1);
+    }
+
+    #[test]
+    fn latest_zone_catalog_prefers_the_newest_anchor_and_ignores_empty_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        let older = MetaItem {
+            version: 1,
+            start_wal_sequence: 1,
+            timestamp_ms: 1,
+            zone_version: 1,
+            zones: vec![ZoneInfo {
+                page_slab_id: 0,
+                state: ZoneState::Active,
+                physical_bytes: 1,
+                logical_bytes: 1,
+                created_unix_ms: None,
+                updated_unix_ms: None,
+                first_page_id: None,
+                last_page_id: None,
+                version: 1,
+            }],
+        };
+        let newer = MetaItem {
+            version: 2,
+            start_wal_sequence: 9,
+            timestamp_ms: 9,
+            zone_version: 2,
+            zones: vec![ZoneInfo {
+                page_slab_id: 0,
+                state: ZoneState::Sealed,
+                physical_bytes: 2,
+                logical_bytes: 2,
+                created_unix_ms: None,
+                updated_unix_ms: None,
+                first_page_id: None,
+                last_page_id: None,
+                version: 2,
+            }],
+        };
+        store
+            .append_delta(6, Vec::new(), Vec::new(), Some(1), Some(older), true)
+            .unwrap();
+        // An anchor with no zones between them must not shadow the folded catalog.
+        store
+            .append_delta(6, Vec::new(), Vec::new(), Some(5), Some(MetaItem::default()), true)
+            .unwrap();
+        store
+            .append_delta(6, Vec::new(), Vec::new(), Some(9), Some(newer.clone()), true)
+            .unwrap();
+        assert_eq!(store.latest_zone_catalog(6).unwrap().unwrap(), newer);
+    }
+
+    #[test]
+    fn should_dump_index_catalog_fires_only_past_the_gap() {
+        assert!(!should_dump_index_catalog(0, 1024));
+        assert!(!should_dump_index_catalog(1023, 1024));
+        assert!(should_dump_index_catalog(1024, 1024));
+        assert!(should_dump_index_catalog(4096, 1024));
+        // A zero gap disables the threshold cadence entirely.
+        assert!(!should_dump_index_catalog(u64::MAX, 0));
     }
 
     #[test]

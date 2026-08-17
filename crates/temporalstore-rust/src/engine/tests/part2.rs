@@ -2043,6 +2043,233 @@ fn reconcile_does_not_resurrect_evicted_feature_points_on_reload() {
     );
 }
 
+/// Sets an env gate for the duration of a test and removes it on drop (even on panic), so a
+/// gated-behavior test never leaks its flag into the rest of the suite.
+struct FoldEnvGuard {
+    names: Vec<&'static str>,
+}
+
+impl FoldEnvGuard {
+    fn set(pairs: &[(&'static str, &str)]) -> Self {
+        let names = pairs.iter().map(|(name, _)| *name).collect();
+        for (name, value) in pairs {
+            std::env::set_var(name, value);
+        }
+        Self { names }
+    }
+}
+
+impl Drop for FoldEnvGuard {
+    fn drop(&mut self) {
+        for name in &self.names {
+            std::env::remove_var(name);
+        }
+    }
+}
+
+fn write_string(engine: &TemporalEngine, key: &str, value: &[u8]) {
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: key.to_string(),
+            value: value.to_vec(),
+        },
+    });
+}
+
+fn read_string(engine: &TemporalEngine, key: &str) -> Option<Vec<u8>> {
+    match engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: key.to_string(),
+            },
+        })
+        .response
+    {
+        CommandResponse::Bytes { value } => value,
+        other => panic!("expected Bytes, got {other:?}"),
+    }
+}
+
+#[test]
+fn manifest_fold_threshold_dump_fires_only_past_the_gap_and_folds_the_catalog() {
+    // MANIFEST-PARITY FOLD cadence: with a tiny oplog gap, a threshold dump fires once the
+    // undumped index-log has grown past it, folding the band/zone catalog into an index-log
+    // MetaItem anchor; below the gap nothing is dumped. Mirrors the reference
+    // storage_dump_index_meta_oplog_gap background cadence -- never a per-write dump.
+    let _guard = FoldEnvGuard::set(&[("TS_INDEX_CATALOG_FOLD", "1")]);
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine =
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &page_dir, &index_dir);
+    engine.load_shard(1);
+    write_string(&engine, "k0", b"v0");
+    // A gap far larger than the current index-log must NOT dump.
+    assert!(
+        !engine.maybe_dump_index_catalog_with_gap_for_test(1, u64::MAX),
+        "no dump below the threshold"
+    );
+    assert!(
+        engine.index_log_store().latest_zone_catalog(1).unwrap().is_none(),
+        "no folded catalog before any dump"
+    );
+    // A gap of 1 byte crosses immediately: exactly one dump fires and folds the catalog.
+    for i in 0..8 {
+        write_string(&engine, &format!("k{i}"), b"value");
+    }
+    assert!(
+        engine.maybe_dump_index_catalog_with_gap_for_test(1, 1),
+        "dump fires once the undumped gap crosses the threshold"
+    );
+    let catalog = engine.index_log_store().latest_zone_catalog(1).unwrap();
+    let catalog = catalog.expect("a folded band/zone catalog must be durable after the dump");
+    assert!(
+        !catalog.zones.is_empty(),
+        "the dump must fold at least the active band into the anchor"
+    );
+    // The watermark advanced: the undumped gap reset, so an immediate re-check does not re-dump.
+    assert!(
+        !engine.maybe_dump_index_catalog_with_gap_for_test(1, u64::MAX),
+        "the dumped watermark advanced; no immediate re-dump"
+    );
+}
+
+#[test]
+fn manifest_fold_reload_reconstructs_catalog_with_band_manifest_deleted() {
+    // MANIFEST-PARITY FOLD round-trip: write, dump (folds the catalog), delete the band-manifest
+    // file, reload -- every acked key must survive AND the band lifecycle must reconstruct from
+    // the folded index-log MetaItem, proving the fold is a lossless catalog source.
+    let _guard = FoldEnvGuard::set(&[("TS_INDEX_CATALOG_FOLD", "1")]);
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine =
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-a"), &page_dir, &index_dir);
+    engine.load_shard(1);
+    for i in 0..50 {
+        write_string(&engine, &format!("key-{i}"), format!("val-{i}").as_bytes());
+    }
+    assert!(engine.dump_index_catalog(1), "explicit dump must complete");
+    let folded = engine
+        .index_log_store()
+        .latest_zone_catalog(1)
+        .unwrap()
+        .expect("catalog folded");
+    drop(engine);
+    // Delete the band-manifest file: the catalog must come back from the index-log fold, not the
+    // per-write file.
+    let manifest = page_dir.join("page_extent_manifest.json");
+    if manifest.exists() {
+        std::fs::remove_file(&manifest).unwrap();
+    }
+    let restarted = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    restarted.load_shard(1);
+    for i in 0..50 {
+        assert_eq!(
+            read_string(&restarted, &format!("key-{i}")),
+            Some(format!("val-{i}").into_bytes()),
+            "every acked key must survive reload after the manifest fold"
+        );
+    }
+    // The folded lifecycle states are present in the reconstructed catalog.
+    let recovered = restarted.block_store().zone_catalog(0);
+    for zone in &folded.zones {
+        assert!(
+            recovered.iter().any(|z| z.page_slab_id == zone.page_slab_id),
+            "band {} must be present after reload from the fold",
+            zone.page_slab_id
+        );
+    }
+}
+
+#[test]
+fn manifest_fold_on_does_not_resurrect_evicted_feature_points_on_reload() {
+    // The #22 resurrection trap must still hold with the fold ON: the fold touches the band
+    // catalog (M1), NOT the per-write served-index delta / key_states nor the WAL config-log, so
+    // config-driven feature_max_size eviction stays durable and does not resurrect on reload.
+    let _guard = FoldEnvGuard::set(&[("TS_INDEX_CATALOG_FOLD", "1")]);
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache-a"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config {
+                    version: 2,
+                    feature_max_size: 3,
+                    ..Config::default()
+                },
+            })
+            .ok
+    );
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureAppend {
+            key: "f".to_string(),
+            points: (1..=5)
+                .map(|i| FeaturePoint {
+                    timestamp_ms: i * 10,
+                    value: vec![i as u8],
+                })
+                .collect(),
+        },
+    });
+    let live_timestamps = |engine: &TemporalEngine| -> Vec<u64> {
+        match engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::FeatureQuery {
+                    key: "f".to_string(),
+                    start_ms: 0,
+                    end_ms: u64::MAX,
+                    count: Some(100),
+                },
+            })
+            .response
+        {
+            CommandResponse::FeaturePoints { points } => {
+                points.iter().map(|point| point.timestamp_ms).collect()
+            }
+            other => panic!("expected FeaturePoints, got {other:?}"),
+        }
+    };
+    // Fold a catalog dump into the mix so the reload exercises the fold recovery path.
+    assert!(engine.dump_index_catalog(1));
+    let before = live_timestamps(&engine);
+    assert!(
+        before.contains(&50) && !before.contains(&10),
+        "trim keeps the newest, drops the oldest: {before:?}"
+    );
+    drop(engine);
+    let restarted = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    restarted.load_shard(1);
+    assert_eq!(
+        live_timestamps(&restarted),
+        before,
+        "the fold must not resurrect config-evicted feature points on reload"
+    );
+}
+
 #[test]
 fn hash_incrby_rejects_non_integer_and_overflow_like_native() {
     let engine = TemporalEngine::default();
