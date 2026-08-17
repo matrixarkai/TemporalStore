@@ -56,7 +56,7 @@ class ForgetDeleteBackendCase(unittest.TestCase):
         return ids
 
     def test_forget_wipes_subject_and_isolates_sibling(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmp) / "events.jsonl")
             server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
             self.addCleanup(server.close, timeout_s=1.0)
@@ -82,7 +82,7 @@ class ForgetDeleteBackendCase(unittest.TestCase):
             self.assertTrue(retrieved.get("insufficient_context", False) or not retrieved.get("groups"))
 
     def test_forget_audit_record_is_hashed_subject_only(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmp) / "events.jsonl")
             server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
             self.addCleanup(server.close, timeout_s=1.0)
@@ -94,7 +94,7 @@ class ForgetDeleteBackendCase(unittest.TestCase):
             self.assertNotIn("alice", json.dumps(audits[0]))
 
     def test_delete_single_memory_leaves_siblings(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmp) / "events.jsonl")
             server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
             self.addCleanup(server.close, timeout_s=1.0)
@@ -110,7 +110,7 @@ class ForgetDeleteBackendCase(unittest.TestCase):
             self.assertNotIn(target, [str(m["id"]) for m in after["memories"]])
 
     def test_get_all_lists_subject_not_sibling(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmp) / "events.jsonl")
             server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
             self.addCleanup(server.close, timeout_s=1.0)
@@ -121,7 +121,7 @@ class ForgetDeleteBackendCase(unittest.TestCase):
             self.assertTrue(all(m["user_id"] == "alice" for m in alice["memories"]))
 
     def test_reset_wipes_tenant(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmp) / "events.jsonl")
             server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
             self.addCleanup(server.close, timeout_s=1.0)
@@ -133,7 +133,7 @@ class ForgetDeleteBackendCase(unittest.TestCase):
             self.assertEqual(0, server.call_tool("matrixark_get_all", {"scope": _scope_for("bob")})["count"])
 
     def test_wrong_confirm_never_deletes(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmp) / "events.jsonl")
             server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
             self.addCleanup(server.close, timeout_s=1.0)
@@ -146,7 +146,7 @@ class ForgetDeleteBackendCase(unittest.TestCase):
             self.assertEqual(2, server.call_tool("matrixark_get_all", {"scope": _scope_for("alice")})["count"])
 
     def test_forget_survives_adapter_reload(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             path = Path(tmp) / "events.jsonl"
             adapter = mcp.MatrixArkLocalAdapter(path)
             server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
@@ -160,7 +160,7 @@ class ForgetDeleteBackendCase(unittest.TestCase):
             self.assertEqual(0, server2.call_tool("matrixark_get_all", {"scope": _scope_for("alice")})["count"])
 
     def test_reingest_after_forget_is_live_again(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmp) / "events.jsonl")
             server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
             self.addCleanup(server.close, timeout_s=1.0)
