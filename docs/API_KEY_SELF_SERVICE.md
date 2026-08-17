@@ -1,10 +1,12 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # API-Key Self-Service & Per-Key Usage Metering
 
-Self-service lifecycle management for MatrixArk API keys (create / list / rotate / revoke) plus a
-lightweight per-key request meter at the `/v1` edge. This is the product-UX "#5" increment: the API
-and metering surface. A customer-facing HTML portal UI is a **future follow-up** (see
-[Deferred](#deferred)).
+Self-service lifecycle management for MatrixArk API keys (create / list / rotate / revoke), a
+customer-facing **HTML portal UI**, a lightweight per-key request **meter** at the `/v1` edge, and
+per-key request **quota enforcement** off that meter. Key crypto and the usage meter are pre-existing
+primitives — the portal and quota are built **on top** of them, additively. **Billing / payment
+integration is a future follow-up** (see [Deferred](#deferred)); the quota here is observe-and-limit,
+never payment processing.
 
 ## 1. Self-service key endpoints
 
@@ -91,7 +93,95 @@ consistent with the rest of the edge). Response:
            "first_used_at_ms":1,"last_used_at_ms":9}]}
 ```
 
-## 3. Environment variables
+## 3. Portal UI (HTML)
+
+A self-contained, single-file HTML portal (inline CSS/JS, no external dependencies) lets an operator
+or customer-admin manage keys and watch usage from a browser. It is committed at
+[`tools/portal/api_key_portal.html`](../tools/portal/api_key_portal.html) and served by the gateway:
+
+```
+GET /v1/admin/portal        ->  200 text/html  (the static page; NO auth to fetch)
+```
+
+Fetching the static page needs no auth, but the page is **inert without a valid admin key**: every
+action button calls one of the admin-gated JSON endpoints above with the admin bearer key the
+operator pastes into the **Connection** panel. That key is held in `sessionStorage` for the tab only
+(never hardcoded, never persisted to disk) and sent as `Authorization: Bearer <key>`.
+
+Features:
+
+- **Create key** — tenant / account / scopes / role / display-name / key-prefix / allowed user IDs,
+  plus **request quota** and **quota window** inputs. Shows the plaintext key **once**.
+- **List keys** — `api_key_id`, tenant, scopes, quota, status, created, last-used, usage-count; an
+  *include revoked* toggle.
+- **Rotate** / **Revoke** — per-row, calling `rotate_api_key` / `revoke_api_key`.
+- **Live edge usage** — the `GET /v1/admin/api_key_usage` snapshot (keys shown hashed).
+
+Endpoint origins are configurable in the Connection panel (blank = same origin): a **key-management
+API base** for the `/api/admin/*` routes (served by the management-portal HTTP facade) and a
+**gateway base** for `/v1/admin/api_key_usage`. When the portal is served from the gateway, leave the
+gateway base blank (same-origin) and point the key-management base at the management-portal server;
+its CORS policy allows the cross-origin admin calls.
+
+## 4. Per-key request quota enforcement
+
+Per-key request quotas are enforced at the `/v1` edge **off the usage counter the meter already
+tracks** — this is observe-and-**limit**, not billing.
+
+### Key record field
+
+`create_api_key` and the provisioner mint an optional `request_quota` (int, max requests in the
+window) and optional `quota_window` (seconds). The gateway carries them to the edge exactly like
+`scopes`, via `_normalize_key_record`:
+
+| Field | Meaning |
+| ----- | ------- |
+| `request_quota` | Max requests per window. Absent / `null` / `0` → **UNLIMITED** (backward compatible). |
+| `quota_window` | Rolling window in seconds. Absent / `0` → a per-process **lifetime** window (never resets). |
+
+A record with no `request_quota` is byte-identical to the pre-quota shape, so legacy keystores and
+un-quota'd keys behave exactly as before.
+
+### Edge check + 429
+
+After metering a request, the gateway compares the key's request count in the current window against
+its `request_quota` (an O(1) read of the in-memory meter counter). The `request_quota`-th request in
+a window is the last allowed; the next one is rejected:
+
+```
+HTTP 429
+Retry-After: <seconds until the window resets>
+X-RateLimit-Quota-Limit: <N>
+X-RateLimit-Quota-Remaining: 0
+X-RateLimit-Quota-Reset: <seconds>
+
+{"error":"quota_exceeded","limit":N,"used":M}
+```
+
+Properties:
+
+- **Enforced-mode only.** Metering (and therefore quota) runs only when a real key authenticated the
+  request. **Dev / anonymous traffic is never limited** — the dev default posture is byte-identical.
+- **Hot-path cheap.** Reuses the meter's in-memory per-key counter; the check is an O(1) compare.
+- **Best-effort.** The whole meter+quota step is wrapped in `try/except` returning "allow": a
+  quota-check bug can **never** wrongly block a legitimate request or crash the hot path.
+- Enforced uniformly across the data routes (`/v1/ingest`, `/v1/retrieve`, `/v1/session/commit`,
+  `/v1/mcp`), the blob proxy, and `/v1/ingest_file`.
+
+### Provisioner flags
+
+```
+python3 matrixark_provision_api_key.py --tenant-id tenantA --account-id acct_a \
+    --scope context:ingest,context:retrieve \
+    --request-quota 1000 --quota-window 60 \
+    --store /opt/temporalstore/gw/keys/api_keys_hashed.jsonl
+```
+
+`--request-quota N` (omit or `0` → unlimited) and `--quota-window S` (omit → lifetime window). The
+fields are written to the hashed record only when a positive quota is given, keeping un-quota'd
+records byte-identical to the previous shape.
+
+## 5. Environment variables
 
 | Var | Default | Meaning |
 | --- | ------- | ------- |
@@ -102,6 +192,9 @@ consistent with the rest of the edge). Response:
 
 ## Deferred
 
-- **Customer-facing HTML portal UI** for self-service key management and a usage dashboard — this
-  pass ships only the API + metering surface.
-- **Billing / quota enforcement** off the usage counters (metering is observe-only here).
+- **Billing / payment integration.** The quota above is observe-and-**limit** only — it counts
+  requests and returns `429` when a key is over its allowance. Turning metered usage into invoices,
+  metered pricing, plan tiers, or a payment processor (e.g. usage-based billing, hard credit caps,
+  proration) is a **future follow-up** and is intentionally out of scope here.
+- **Per-tenant (aggregate) quotas.** Enforcement today is per **key**; rolling a tenant's keys up to
+  a shared tenant-level allowance is a natural next increment on top of the same counter.

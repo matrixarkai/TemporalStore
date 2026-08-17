@@ -93,6 +93,13 @@ def mint(args: argparse.Namespace) -> dict:
         "expires_at_ms": args.expires_at_ms,
         "created_at_ms": _now_ms(),
     }
+    # Per-key request QUOTA (optional). Only written when set, so records for un-quota'd keys stay
+    # byte-identical to the pre-quota shape. The gateway carries these to the edge via
+    # `_normalize_key_record`; request_quota None/0 -> UNLIMITED (backward compatible).
+    if args.request_quota is not None and args.request_quota > 0:
+        record["request_quota"] = int(args.request_quota)
+        if args.quota_window is not None and args.quota_window > 0:
+            record["quota_window"] = float(args.quota_window)
     store = args.store or _default_store()
     os.makedirs(os.path.dirname(store), exist_ok=True)
     with open(store, "a", encoding="utf-8") as handle:
@@ -105,6 +112,8 @@ def mint(args: argparse.Namespace) -> dict:
         "tenant_id": args.tenant_id,
         "account_id": args.account_id,
         "scopes": record["scopes"],
+        "request_quota": record.get("request_quota"),
+        "quota_window": record.get("quota_window"),
         "store": store,
         "warning": "Store api_key now. MatrixArk only persists its hash.",
     }
@@ -130,6 +139,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--allowed-session-id", "--allowed-session-ids", dest="allowed_session_ids", action="append",
         help="restrict the key to these session_ids; repeatable and/or comma-separated",
+    )
+    parser.add_argument(
+        "--request-quota", dest="request_quota", type=int, default=None,
+        help="max requests per window enforced at the gateway edge (omit or 0 -> unlimited)",
+    )
+    parser.add_argument(
+        "--quota-window", dest="quota_window", type=float, default=None,
+        help="rolling quota window in seconds (omit -> per-process lifetime window; only used with --request-quota)",
     )
     parser.add_argument("--store", default="", help="JSONL keystore path (hashed records only)")
     args = parser.parse_args(argv)

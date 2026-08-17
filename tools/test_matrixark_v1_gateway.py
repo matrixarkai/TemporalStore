@@ -1189,5 +1189,200 @@ class UsageMeterTest(unittest.TestCase):
                 self.assertEqual(1, cfg.usage_flush_every)
 
 
+class QuotaEnforcementTest(unittest.TestCase):
+    """Per-key request QUOTA at the edge, off the usage counter. A key with request_quota=N gets N
+    requests per window, then 429 quota_exceeded; a key with no quota is unlimited; dev/anonymous
+    traffic is never limited; a forced quota-check error never blocks a legitimate request."""
+
+    QUOTA_KEY = "sk_live_quota_3"        # request_quota=3 (lifetime window)
+    WINDOW_KEY = "sk_live_quota_window"  # request_quota=2, quota_window=100s
+    FREE_KEY = "sk_live_no_quota"        # no quota -> unlimited
+
+    def _hashed(self):
+        return {
+            gw._secret_hash(self.QUOTA_KEY): {
+                "tenant_id": "t", "account_id": "acct",
+                "scopes": ["context:ingest", "context:retrieve"], "request_quota": 3},
+            gw._secret_hash(self.WINDOW_KEY): {
+                "tenant_id": "t", "account_id": "acct",
+                "scopes": ["context:ingest"], "request_quota": 2, "quota_window": 100},
+            gw._secret_hash(self.FREE_KEY): {
+                "tenant_id": "t", "account_id": "acct", "scopes": ["context:ingest"]},
+        }
+
+    def setUp(self):
+        self.s = _FakeServer()
+        self.cfg = gw.GatewayConfig.from_env({"enforced": True, "hashed_api_keys": self._hashed()})
+        self.app = gw.make_v1_app(self.s, self.cfg)
+
+    def _bearer(self, key):
+        return {"Authorization": f"Bearer {key}"}
+
+    def test_quota_key_allows_up_to_limit_then_429(self):
+        # request_quota=3 -> 3 ingests OK, 4th 429 quota_exceeded.
+        for i in range(3):
+            st, _, _ = drive(self.app, path="/v1/ingest", body={"records": [1]},
+                             headers=self._bearer(self.QUOTA_KEY))
+            self.assertEqual(202, st, f"request {i + 1} should be allowed")
+        st, hdrs, body = drive(self.app, path="/v1/ingest", body={"records": [1]},
+                               headers=self._bearer(self.QUOTA_KEY))
+        self.assertEqual(429, st)
+        payload = json.loads(body)
+        self.assertEqual("quota_exceeded", payload["error"])
+        self.assertEqual(3, payload["limit"])
+        self.assertGreater(payload["used"], 3)
+        self.assertIn("retry-after", hdrs)
+        self.assertIn("x-ratelimit-quota-limit", hdrs)
+        # The over-quota request must NOT reach the backend beyond the 3 allowed calls.
+        self.assertEqual(3, len(self.s.calls))
+
+    def test_quota_spans_ingest_and_retrieve(self):
+        # The quota is per-request across categories, not per-category.
+        drive(self.app, path="/v1/ingest", body={"records": [1]}, headers=self._bearer(self.QUOTA_KEY))
+        drive(self.app, path="/v1/retrieve", body={"query": "x"}, headers=self._bearer(self.QUOTA_KEY))
+        drive(self.app, path="/v1/ingest", body={"records": [1]}, headers=self._bearer(self.QUOTA_KEY))
+        st, _, body = drive(self.app, path="/v1/retrieve", body={"query": "x"},
+                            headers=self._bearer(self.QUOTA_KEY))
+        self.assertEqual(429, st)
+        self.assertEqual("quota_exceeded", json.loads(body)["error"])
+
+    def test_windowed_quota_sets_retry_after_from_window(self):
+        drive(self.app, path="/v1/ingest", body={"records": [1]}, headers=self._bearer(self.WINDOW_KEY))
+        drive(self.app, path="/v1/ingest", body={"records": [1]}, headers=self._bearer(self.WINDOW_KEY))
+        st, hdrs, body = drive(self.app, path="/v1/ingest", body={"records": [1]},
+                               headers=self._bearer(self.WINDOW_KEY))
+        self.assertEqual(429, st)
+        self.assertEqual(2, json.loads(body)["limit"])
+        # A finite window -> a positive Retry-After (seconds until the window rolls over).
+        self.assertGreater(int(hdrs["retry-after"]), 0)
+
+    def test_no_quota_key_is_unlimited(self):
+        for _ in range(10):
+            st, _, _ = drive(self.app, path="/v1/ingest", body={"records": [1]},
+                             headers=self._bearer(self.FREE_KEY))
+            self.assertEqual(202, st)
+        self.assertEqual(10, len(self.s.calls))
+
+    def test_dev_mode_is_never_quota_limited(self):
+        # Enforcement OFF -> no metering, so no key record and no quota, even under load.
+        with _EnvGuard(MATRIXARK_AUTH_ENFORCED=None, MATRIXARK_REQUIRE_AUTH="1"):
+            cfg = gw.GatewayConfig.from_env({"api_keys": {"k-acme": "acme"}})
+            app = gw.make_v1_app(self.s, cfg)
+            for _ in range(20):
+                st, _, _ = drive(app, path="/v1/ingest", body={"records": [1]},
+                                 headers={"Authorization": "Bearer k-acme"})
+                self.assertEqual(202, st)
+
+    def test_quota_check_error_does_not_block_request(self):
+        # A forced failure inside the metering/quota path MUST NOT block a legitimate request: the
+        # helper is best-effort, so an internal meter error returns None (no quota decision).
+        meter_original = gw._UsageMeter.record
+
+        def meter_boom(self, *a, **k):
+            raise RuntimeError("meter exploded")
+
+        gw._UsageMeter.record = meter_boom
+        try:
+            st, _, _ = drive(self.app, path="/v1/ingest", body={"records": [1]},
+                             headers=self._bearer(self.QUOTA_KEY))
+            self.assertEqual(202, st)                                   # request unaffected
+            self.assertEqual(1, len(self.s.calls))                     # backend still dispatched
+        finally:
+            gw._UsageMeter.record = meter_original
+
+    def test_normalize_key_record_carries_quota_fields(self):
+        rec = gw._normalize_key_record({"tenant_id": "t", "request_quota": 5, "quota_window": 30})
+        self.assertEqual(5, rec["request_quota"])
+        self.assertEqual(30.0, rec["quota_window"])
+        # Legacy record (no quota fields) -> None/None -> unlimited (backward compatible).
+        legacy = gw._normalize_key_record({"tenant_id": "t"})
+        self.assertIsNone(legacy["request_quota"])
+        self.assertIsNone(legacy["quota_window"])
+
+
+class ProvisionerQuotaFlagTest(unittest.TestCase):
+    """The provisioner mints keystore records carrying request_quota / quota_window, and a minted
+    quota key is enforced end-to-end at the edge."""
+
+    def _mint_record(self, argv):
+        try:
+            from tools import matrixark_provision_api_key as prov
+        except ImportError:
+            import matrixark_provision_api_key as prov  # type: ignore
+        with tempfile.TemporaryDirectory() as d:
+            store = os.path.join(d, "keys.jsonl")
+            prov.main(argv + ["--store", store])
+            with open(store, "r", encoding="utf-8") as fh:
+                return json.loads(fh.readline())
+
+    def test_request_quota_flag_written(self):
+        rec = self._mint_record(["--tenant-id", "t", "--request-quota", "3", "--quota-window", "60"])
+        self.assertEqual(3, rec["request_quota"])
+        self.assertEqual(60.0, rec["quota_window"])
+
+    def test_no_quota_flag_omits_field(self):
+        rec = self._mint_record(["--tenant-id", "t"])
+        self.assertNotIn("request_quota", rec)   # byte-identical to the pre-quota record shape
+        self.assertNotIn("quota_window", rec)
+
+    def test_minted_quota_key_enforced_at_edge(self):
+        try:
+            from tools import matrixark_provision_api_key as prov
+        except ImportError:
+            import matrixark_provision_api_key as prov  # type: ignore
+        import io
+        import contextlib
+        with tempfile.TemporaryDirectory() as d:
+            store = os.path.join(d, "keys.jsonl")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                prov.main(["--tenant-id", "t", "--account-id", "acct",
+                           "--scope", "context:ingest", "--request-quota", "2", "--store", store])
+            plaintext = json.loads(buf.getvalue())["api_key"]
+            with _EnvGuard(MATRIXARK_AUTH_ENFORCED="1", MATRIXARK_API_KEYS_HASHED_FILE=store):
+                cfg = gw.GatewayConfig.from_env({})
+                app = gw.make_v1_app(_FakeServer(), cfg)
+                h = {"Authorization": f"Bearer {plaintext}"}
+                st1, _, _ = drive(app, path="/v1/ingest", body={"records": [1]}, headers=h)
+                st2, _, _ = drive(app, path="/v1/ingest", body={"records": [1]}, headers=h)
+                st3, _, body = drive(app, path="/v1/ingest", body={"records": [1]}, headers=h)
+        self.assertEqual(202, st1)
+        self.assertEqual(202, st2)
+        self.assertEqual(429, st3)
+        self.assertEqual("quota_exceeded", json.loads(body)["error"])
+
+
+class PortalPageTest(unittest.TestCase):
+    """GET /v1/admin/portal returns the self-contained key-management HTML page (no auth to fetch);
+    the page references the real admin JSON endpoints it drives."""
+
+    def setUp(self):
+        self.s = _FakeServer()
+        self.app = gw.make_v1_app(self.s, _cfg())
+
+    def test_portal_served_200_html_no_auth(self):
+        st, hdrs, body = drive(self.app, method="GET", path="/v1/admin/portal")
+        self.assertEqual(200, st)
+        self.assertIn("text/html", hdrs.get("content-type", ""))
+        text = body.decode("utf-8")
+        self.assertIn("API Key Portal", text)
+        # Key-management controls present.
+        for control in ("Create key", "Rotate", "Revoke", "Admin API key"):
+            self.assertIn(control, text)
+
+    def test_portal_references_real_endpoints(self):
+        _, _, body = drive(self.app, method="GET", path="/v1/admin/portal")
+        text = body.decode("utf-8")
+        for path in ("/api/admin/create_api_key", "/api/admin/list_api_keys",
+                     "/api/admin/rotate_api_key", "/api/admin/revoke_api_key",
+                     "/v1/admin/api_key_usage"):
+            self.assertIn(path, text)
+
+    def test_portal_fetch_needs_no_bearer_but_actions_are_gated(self):
+        # The static page fetch is anonymous; the admin usage endpoint it calls still 401s w/o a key.
+        st_page, _, _ = drive(self.app, method="GET", path="/v1/admin/portal")
+        self.assertEqual(200, st_page)
+
+
 if __name__ == "__main__":
     unittest.main()

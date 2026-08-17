@@ -210,6 +210,37 @@ def _str_list(value: Any) -> list[str]:
     return []
 
 
+def _opt_int(value: Any) -> Optional[int]:
+    """Coerce a keystore field into an ``int`` or ``None`` (absent/invalid -> None).
+
+    ``bool`` is rejected (it is an ``int`` subclass but never a meaningful quota). This is the
+    backward-compatibility hinge for ``request_quota``: a legacy record with no such field yields
+    ``None`` -> UNLIMITED, byte-identical to today."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        return int(value.strip())
+    return None
+
+
+def _opt_float(value: Any) -> Optional[float]:
+    """Coerce a keystore field into a ``float`` or ``None`` (absent/invalid -> None)."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
 def _normalize_key_record(raw: Json, *, default_account: str = "") -> Json:
     """Normalize a keystore value into the canonical EDGE key record shape.
 
@@ -238,6 +269,11 @@ def _normalize_key_record(raw: Json, *, default_account: str = "") -> Json:
         "allowed_user_ids": _str_list(raw.get("allowed_user_ids")),
         "allowed_session_ids": _str_list(raw.get("allowed_session_ids")),
         "role": str(raw.get("role") or ""),
+        # Per-key request QUOTA, carried to the edge like scopes. ``request_quota`` None/<=0 ->
+        # UNLIMITED (backward compatible: a legacy record has no such field). ``quota_window`` is the
+        # rolling window in seconds; None/<=0 -> a per-process lifetime window (never resets).
+        "request_quota": _opt_int(raw.get("request_quota")),
+        "quota_window": _opt_float(raw.get("quota_window")),
     }
 
 
@@ -517,13 +553,24 @@ class _UsageMeter:
         self.flush_interval_s = max(0.0, float(flush_interval_s))
         self._lock = threading.Lock()
         self._counters: dict[str, Json] = {}
+        # Rolling-window state for per-key QUOTA, kept OUT of `_counters` so the JSON snapshot stays
+        # clean: {key_hash -> [window_start_monotonic, count_in_window]}. Only touched when a request
+        # actually carries a positive `window_s`; lifetime-window quotas use `_counters[...]["total"]`.
+        self._windows: dict[str, list] = {}
         self._dirty = 0
         self._last_flush = time.monotonic()
 
     def record(self, key_hash: str, tenant: Optional[str], account: Optional[str],
-               category: str, nbytes: int = 0) -> None:
+               category: str, nbytes: int = 0, *, window_s: float = 0.0) -> Optional[Tuple[int, float]]:
+        """Bump the per-key counter and return ``(window_used, reset_seconds)`` for quota checks.
+
+        ``window_used`` is the request count in the current window AFTER counting this request:
+        the rolling window of ``window_s`` seconds when ``window_s > 0``, else the cumulative
+        ``total`` (a per-process lifetime window). ``reset_seconds`` is the time until the rolling
+        window rolls over (0.0 for the lifetime window). Returns ``None`` only on an empty key or an
+        internal error -- metering (and therefore the quota decision) is always best-effort."""
         if not key_hash:
-            return
+            return None
         try:
             with self._lock:
                 entry = self._counters.get(key_hash)
@@ -551,11 +598,26 @@ class _UsageMeter:
                     entry["tenant_id"] = str(tenant)
                 if account and not entry.get("account_id"):
                     entry["account_id"] = str(account)
+                # Rolling-window bookkeeping for quota (O(1); only when a positive window is given).
+                if window_s and window_s > 0:
+                    now_m = time.monotonic()
+                    window = self._windows.get(key_hash)
+                    if window is None or (now_m - window[0]) >= window_s:
+                        window = [now_m, 0]
+                        self._windows[key_hash] = window
+                    window[1] += 1
+                    window_used = int(window[1])
+                    reset_s = max(0.0, float(window_s) - (now_m - window[0]))
+                else:
+                    window_used = int(entry["total"])
+                    reset_s = 0.0
                 self._dirty += 1
                 if self._should_flush_locked():
                     self._flush_locked()
+                return window_used, reset_s
         except Exception:  # pragma: no cover - metering is best-effort, never fatal
-            pass
+            return None
+        return None
 
     def _should_flush_locked(self) -> bool:
         if not self.path:
@@ -597,14 +659,58 @@ def _meter_active(cfg: GatewayConfig, key: Optional[str]) -> bool:
 
 
 def _meter_safe(meter: _UsageMeter, cfg: GatewayConfig, key: Optional[str],
-                tenant: Optional[str], account: Optional[str], category: str, nbytes: int = 0) -> None:
-    """Record one authenticated request. Wrapped so a metering failure can never break a request."""
+                tenant: Optional[str], account: Optional[str], category: str, nbytes: int = 0,
+                *, window_s: float = 0.0) -> Optional[Tuple[int, float]]:
+    """Record one authenticated request; return ``(window_used, reset_s)`` or ``None`` when the
+    request is not metered (dev/anonymous) or on any error. Wrapped so a metering failure can never
+    break a request."""
     try:
         if not _meter_active(cfg, key):
-            return
-        meter.record(_secret_hash(key), tenant, account, category, nbytes)
+            return None
+        return meter.record(_secret_hash(key), tenant, account, category, nbytes, window_s=window_s)
     except Exception:  # pragma: no cover - defensive: metering must not affect the response
-        pass
+        return None
+
+
+def _meter_and_check_quota(
+    meter: _UsageMeter, cfg: GatewayConfig, key: Optional[str], record: Optional[Json],
+    tenant: Optional[str], account: Optional[str], category: str, nbytes: int = 0,
+) -> Optional[Tuple[Json, list[Tuple[bytes, bytes]]]]:
+    """Meter one authenticated request and, if the key is now OVER its ``request_quota``, return the
+    ``(payload, headers)`` for a 429 ``quota_exceeded`` response; else ``None`` (request proceeds).
+
+    Enforced-mode + a real key only: dev/anonymous traffic is never metered, so ``_meter_safe``
+    returns ``None`` and this returns ``None`` (dev posture byte-identical). A key with no
+    ``request_quota`` (or 0/None) is UNLIMITED. The compare is O(1) against the in-memory counter the
+    meter already maintains. The ``request_quota``-th request in a window is the last allowed; the
+    next one (count > limit) is rejected. Fully best-effort: ANY error returns ``None`` so a
+    quota-check bug can neither crash the hot path nor wrongly block a legitimate request."""
+    try:
+        window_s = 0.0
+        if record is not None:
+            qw = record.get("quota_window")
+            if isinstance(qw, (int, float)) and not isinstance(qw, bool) and qw > 0:
+                window_s = float(qw)
+        metered = _meter_safe(meter, cfg, key, tenant, account, category, nbytes, window_s=window_s)
+        if metered is None or record is None:
+            return None
+        limit = record.get("request_quota")
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            return None
+        used, reset_s = metered
+        if used <= limit:
+            return None
+        retry = int(math.ceil(reset_s)) if reset_s and reset_s > 0 else 0
+        payload: Json = {"error": "quota_exceeded", "limit": limit, "used": used}
+        headers = [
+            (b"retry-after", str(retry).encode()),
+            (b"x-ratelimit-quota-limit", str(limit).encode()),
+            (b"x-ratelimit-quota-remaining", b"0"),
+            (b"x-ratelimit-quota-reset", str(retry).encode()),
+        ]
+        return payload, headers
+    except Exception:  # pragma: no cover - defensive: a quota bug must never block/crash a request
+        return None
 
 
 # The admin scopes that may read per-key usage. Either grants the read (mirrors the backend, where
@@ -846,6 +952,50 @@ async def _json(send: Callable, status: int, payload: Json,
         headers.extend(extra_headers)
     await send({"type": "http.response.start", "status": status, "headers": headers})
     await send({"type": "http.response.body", "body": data})
+
+
+async def _html(send: Callable, status: int, body: bytes,
+                extra_headers: Optional[list[Tuple[bytes, bytes]]] = None) -> None:
+    headers = [(b"content-type", b"text/html; charset=utf-8"),
+               (b"content-length", str(len(body)).encode())]
+    if extra_headers:
+        headers.extend(extra_headers)
+    await send({"type": "http.response.start", "status": status, "headers": headers})
+    await send({"type": "http.response.body", "body": body})
+
+
+# The customer-facing key-management portal page. Served (static, no auth) from GET /v1/admin/portal;
+# every ACTION button on the page calls an admin-gated JSON endpoint, so the page is inert without a
+# valid admin key. The canonical source is the committed file `tools/portal/api_key_portal.html`
+# (single source of truth); the page is read from disk once and cached per process. A tiny fallback
+# keeps the route working (and still pointing operators at the real endpoints) if the file is absent.
+_PORTAL_HTML_CACHE: dict[str, Optional[bytes]] = {"bytes": None}
+_PORTAL_FALLBACK_HTML = (
+    "<!doctype html><meta charset='utf-8'><title>MatrixArk API Key Portal</title>"
+    "<h1>MatrixArk API Key Portal</h1>"
+    "<p>The bundled portal page (<code>tools/portal/api_key_portal.html</code>) was not found on this "
+    "deployment. Key management still works directly against the admin JSON endpoints: "
+    "<code>POST /api/admin/create_api_key</code>, <code>POST /api/admin/list_api_keys</code>, "
+    "<code>POST /api/admin/rotate_api_key</code>, <code>POST /api/admin/revoke_api_key</code>, and "
+    "<code>GET /v1/admin/api_key_usage</code> — each with an admin-scoped "
+    "<code>Authorization: Bearer &lt;key&gt;</code>.</p>"
+)
+
+
+def _portal_html_bytes() -> bytes:
+    """The portal HTML (cached). Reads the committed file next to this module; falls back to a small
+    inline notice page so the route always returns valid HTML."""
+    cached = _PORTAL_HTML_CACHE.get("bytes")
+    if cached is not None:
+        return cached
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portal", "api_key_portal.html")
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except Exception:  # pragma: no cover - fallback for deployments without the file bundled
+        data = _PORTAL_FALLBACK_HTML.encode("utf-8")
+    _PORTAL_HTML_CACHE["bytes"] = data
+    return data
 
 
 async def _read_body_capped(receive: Callable, cap: int) -> Tuple[Optional[bytes], bool]:
@@ -1477,6 +1627,13 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             datanode = "unknown" if probe is None else ("ok" if probe else "unreachable")
             return await _json(send, 200, {"ready": True, "datanode": datanode})
 
+        # ---- key-management portal UI (static HTML, no auth to FETCH) ------------------------
+        # Returns the self-contained portal page. Fetching the static page needs no auth; every
+        # ACTION on it calls an admin-gated JSON endpoint, so the page is inert without a valid
+        # admin key. Kept before the data routes so it never touches auth/metering/quota.
+        if method == "GET" and path == "/v1/admin/portal":
+            return await _html(send, 200, _portal_html_bytes())
+
         # ---- per-key usage read (auth + admin scope) ----------------------------------------
         # Returns the in-process edge counters (per-key totals, ingest/retrieve split, bytes,
         # first/last-used). Gated behind a valid key that carries `admin:api_key`/`admin:audit`
@@ -1499,8 +1656,10 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             denied = _scope_denied(key_record, _required_scope(path, method, None))
             if denied is not None:
                 return await _json(send, 403, denied)
-            _meter_safe(meter, cfg, key, tenant, account,
-                        "retrieve" if method == "GET" else "ingest")
+            quota = _meter_and_check_quota(meter, cfg, key, key_record, tenant, account,
+                                           "retrieve" if method == "GET" else "ingest")
+            if quota is not None:
+                return await _json(send, 429, quota[0], quota[1])
             key_str = path[len("/v1/blob/"):]
             if not key_str:
                 return await _json(send, 404, {"error": "not_found"})
@@ -1527,8 +1686,10 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 return await _json(send, 405, {"error": "method_not_allowed"})
             if not limiter.blob_acquire():
                 return await _json(send, 429, {"error": "rate_limited"}, [(b"retry-after", b"1")])
-            _meter_safe(meter, cfg, key, tenant, account, "ingest")
             try:
+                quota = _meter_and_check_quota(meter, cfg, key, key_record, tenant, account, "ingest")
+                if quota is not None:
+                    return await _json(send, 429, quota[0], quota[1])
                 return await _ingest_file(app, scope, receive, send, cfg, key, tenant, account)
             finally:
                 limiter.blob_release()
@@ -1569,9 +1730,13 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         except (json.JSONDecodeError, ValueError) as exc:
             return await _json(send, 400, {"error": "bad_request", "detail": str(exc)}, rl_headers)
 
-        # Meter the authenticated request (best-effort, off the response path). `cls` is the
-        # ingest/retrieve category; `raw` is the already-buffered body, so bytes are free here.
-        _meter_safe(meter, cfg, key, tenant, account, cls, len(raw or b""))
+        # Meter the authenticated request (best-effort, off the response path) and enforce the key's
+        # request_quota. `cls` is the ingest/retrieve category; `raw` is the already-buffered body,
+        # so bytes are free here. A key with no quota is never limited; enforcement is O(1) against
+        # the meter's counter and best-effort (a quota-check bug can never block/crash the request).
+        quota = _meter_and_check_quota(meter, cfg, key, key_record, tenant, account, cls, len(raw or b""))
+        if quota is not None:
+            return await _json(send, 429, quota[0], rl_headers + quota[1])
 
         # MCP-over-HTTP: dispatch the JSON-RPC message directly (api-key injected downstream).
         if tool == "__mcp__":
