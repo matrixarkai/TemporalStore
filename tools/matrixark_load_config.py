@@ -91,10 +91,9 @@ ENV_MAP: Dict[str, str] = {
     "storage.page_store_compression_min_bytes": "TS_PAGE_STORE_COMPRESSION_MIN_BYTES",
     "storage.cross_shard_reclaim_guard": "TS_CROSS_SHARD_RECLAIM_GUARD",
     # ---- [wal] --------------------------------------------------------------
-    "wal.wal_only_sync": "TS_WAL_ONLY_SYNC",
     "wal.wal_single_barrier": "TS_WAL_SINGLE_BARRIER",
-    "wal.indexlog_defer_sync": "TS_INDEXLOG_DEFER_SYNC",
     "wal.group_commit": "TS_GROUP_COMMIT",
+    "wal.wal_legacy_recovery": "TS_WAL_LEGACY_RECOVERY",
     "wal.raft_wal_dir": "TS_RAFT_WAL_DIR",
     # ---- [replication] ------------------------------------------------------
     "replication.meta_addr": "TS_META_ADDR",

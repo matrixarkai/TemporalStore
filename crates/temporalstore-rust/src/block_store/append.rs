@@ -220,11 +220,11 @@ impl LocalBlockStore {
             addresses.push(address);
         }
         // The batch already amortizes the data barrier across all its records (one
-        // sync_data for the whole batch). Keep that data barrier on the live path (durable
-        // pages); only the extent-manifest persist is deferred under TS_WAL_ONLY_SYNC
-        // (reconciled on open), matching the single-append path. Under the true single-barrier
-        // mode the data-page fdatasync is also deferred; base-only recovery re-derives every
-        // post-dump page by WAL replay, so a never-fsync'd page is rebuilt, never left dangling.
+        // sync_data for the whole batch). Under the single-barrier default both the data-page
+        // fdatasync and the extent-manifest persist are deferred (the manifest is reconciled on
+        // open); base-only recovery re-derives every post-dump page by WAL replay, so a
+        // never-fsync'd page is rebuilt, never left dangling. Under the TS_WAL_LEGACY_RECOVERY
+        // escape hatch both barriers stay synchronous on the live path (delta-fold recovery).
         let defer_data_sync = bulk_relaxed_durability() || page_wal_single_barrier();
         let defer_manifest = bulk_relaxed_durability() || page_wal_only_sync();
         if let Some(mut current) = file {

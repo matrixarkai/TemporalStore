@@ -819,15 +819,23 @@ fn wal_env_flag_on(name: &str) -> bool {
 
 /// TS_GROUP_COMMIT: coalesce concurrent WAL fsyncs into shared durability barriers.
 /// The WAL append still records every byte durably before ack; only the fsync is
-/// batched across writers. Default OFF (exact per-append fsync behavior).
+/// batched across writers. Default ON (set TS_GROUP_COMMIT=0 to force exact per-append
+/// fsync behavior); every acked write is still durable before its ack returns.
 fn group_commit_enabled() -> bool {
-    wal_env_flag_on("TS_GROUP_COMMIT")
+    match std::env::var("TS_GROUP_COMMIT") {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => true,
+    }
 }
 
 /// Whether the redundant per-append WAL parent-dir fsync may be skipped (safe once the
-/// file exists). Enabled by either the WAL-only-sync or group-commit relaxation flag.
+/// file exists). Enabled under the single-barrier default or group-commit; restored to a
+/// per-append dir fsync only under the TS_WAL_LEGACY_RECOVERY escape hatch with group-commit off.
 fn wal_relaxed_dir_sync() -> bool {
-    wal_env_flag_on("TS_WAL_ONLY_SYNC") || wal_env_flag_on("TS_GROUP_COMMIT")
+    !wal_env_flag_on("TS_WAL_LEGACY_RECOVERY") || group_commit_enabled()
 }
 
 fn append_record_locked(
@@ -848,7 +856,7 @@ fn append_record_locked(
         file.sync_data()?;
         // The parent-directory entry for the WAL file only needs a durable barrier when
         // the file is first created; appends grow the file (inode) without changing the
-        // directory. Under relaxed-sync (TS_WAL_ONLY_SYNC / TS_GROUP_COMMIT) skip the
+        // directory. Under relaxed-sync (single-barrier default / TS_GROUP_COMMIT) skip the
         // redundant per-append dir fsync once the file already has content (offset > 0).
         if offset == 0 || !wal_relaxed_dir_sync() {
             sync_parent_dir(&path)?;
