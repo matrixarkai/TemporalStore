@@ -1117,4 +1117,103 @@ TOOLS: list[Json] = [
             "additionalProperties": True,
         },
     },
+    {
+        "name": "matrixark_forget",
+        "description": "Delete ALL memory for a scope (mem0 delete_all). subject = scope.user_id; requires confirm == scope.user_id (exact match).",
+        "inputSchema": {
+            "type": "object",
+            "required": ["confirm"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "confirm": {"type": "string", "description": "Must equal scope.user_id (exact match, no wildcard)."},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_delete",
+        "description": "Delete a single memory by id/hash (mem0 delete). memory_id is the event_id_hash returned by ingest.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["memory_id"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "memory_id": {"type": "string", "description": "The memory id (event_id_hash) to delete."},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_get_all",
+        "description": "List a scope's active memories (mem0 get_all). Excludes forgotten/deleted records.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "limit": {"type": "integer", "description": "Optional cap on the number of memories returned."},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_reset",
+        "description": "Wipe ALL memory for the caller's tenant (mem0 reset). Guarded by confirm == tenant_id or the literal 'RESET'.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["confirm"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "confirm": {"type": "string", "description": "Must equal the resolved tenant_id or the literal 'RESET'."},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_get_memory",
+        "description": "Fetch a single memory by id (mem0 get). memory_id is the event_id_hash returned by ingest; returns {found, memory, text, metadata, derived}.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["memory_id"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "memory_id": {"type": "string", "description": "The memory id (event_id_hash) to fetch."},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_update_memory",
+        "description": "Update a memory's content (mem0 update). Supersede: ingests the new text in the same scope and tombstones the old id.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["memory_id"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "memory_id": {"type": "string", "description": "The memory id (event_id_hash) to update."},
+                "data": {"type": "string", "description": "The new memory content (alias: text)."},
+                "text": {"type": "string", "description": "The new memory content (alias: data)."},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_memory_history",
+        "description": "Return the ordered change history for a memory id (mem0 history): ingest -> update/supersede -> delete, with timestamps.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["memory_id"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "memory_id": {"type": "string", "description": "The memory id (event_id_hash) whose history to return."},
+            },
+            "additionalProperties": True,
+        },
+    },
 ]

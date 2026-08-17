@@ -56,6 +56,89 @@ The shim is stdlib-only (`http.client` + `json`) and reuses
 
 ---
 
+## Memory management: get / update / history / delete / forget / get_all / reset
+
+The shim covers mem0's full memory-management surface. The **subject** is
+`scope.user_id`, so these map onto the same identity kwargs as `add`/`search`.
+
+```python
+m.get_all(user_id="alice")                  # list alice's active memories
+m.get("<memory_id>")                         # fetch a single memory by id
+m.update("<memory_id>", "new content")      # update a memory (supersede)
+m.history("<memory_id>")                     # change history for a memory id
+m.delete("<memory_id>")                      # delete a single memory by id
+m.delete_all(user_id="alice")               # delete ALL of alice's memory
+m.reset()                                    # wipe the caller's whole tenant
+```
+
+| mem0 method                     | MatrixArk endpoint / shim        | Notes                                                                       |
+| ------------------------------- | -------------------------------- | --------------------------------------------------------------------------- |
+| `get(memory_id)`                | `GET /v1/memory/<id>`            | Returns `{found, memory, text, metadata, derived}` for the id; a deleted/forgotten memory returns `{found: false}` (HTTP 404). |
+| `update(memory_id, data)`       | `POST /v1/update`                | **Supersede**: ingests the new `data` in the memory's own scope and tombstones the old id, so `search`/`get_all` return the new version and the old never resurfaces. |
+| `history(memory_id)`            | `GET /v1/memory/<id>/history`    | Ordered event-sourced history for the id: `ingested` → `superseded`/`deleted`, with timestamps; the new version of an update carries a `created` link back to the id it supersedes. |
+| `delete(memory_id)`             | `POST /v1/delete`                | `memory_id` is the id `add`/`get_all` returns (MatrixArk's `event_id_hash`). Provenance-closure aware (see below). |
+| `delete_all(user_id=…)`         | `POST /v1/forget`                | subject = `scope.user_id`; server requires `confirm == user_id` (exact match, no wildcard). The shim sets `confirm` for you. Returns the count removed. |
+| `get_all(user_id=…, limit=…)`   | `GET`/`POST /v1/memories`        | Lists a subject's active memories; forgotten/deleted memories are excluded. |
+| `reset()`                       | `POST /v1/reset`                 | Wipes the caller's tenant. Guarded by an explicit `confirm` — the shim sends the literal `"RESET"`; the server also accepts the resolved `tenant_id`. |
+
+Scope gates (enforced-mode keys): `forget`/`delete`/`reset` require
+`context:forget`; `update` requires `context:ingest`; `get_all`/`get`/`history`
+require `context:retrieve`. Tenant identity is always pinned from the authenticated
+key, so one tenant can never read or delete another's memory. `update` additionally
+refuses to cross tenants (the memory must belong to the caller's tenant).
+
+A "deleted" or "forgotten" memory is excluded from **retrieve** as well as
+`get_all` — it does not come back. Removal is a durable soft-delete (a tombstone in
+the same event log) and survives a reload; `forget` also writes a payload-free,
+hashed-subject audit record (`sha256(user_id)` + count).
+
+**Direct helpers** are available in `matrixark_ingest_client` without the shim:
+`get_memory(memory_id)`, `update_memory(memory_id, data)`,
+`memory_history(memory_id)`, `forget(user_id=…)`, `delete_memory(memory_id)`,
+`get_all(user_id=…)`, `reset_memory()`.
+
+### `search()` return shape (mem0 parity)
+
+`m.search(...)` returns mem0's shape so existing mem0 code that reads
+`res["results"][i]["memory"]` works unchanged:
+
+```json
+{ "results": [ { "id": "...", "memory": "<text>", "score": 0.91, "metadata": { ... } }, ... ] }
+```
+
+Each result is mapped from a MatrixArk ContextPack `selected_ref` (`text` →
+`memory`, a stable `id`, the ref `score` when present, and remaining ref fields as
+`metadata`). Pass `raw=True` (or call `m.search_raw(...)`) to get the full
+ContextPack response instead.
+
+### Delete optimizations (done)
+
+Deletion guarantees **logical exclusion** (a removed memory never resurfaces) AND
+now reclaims space and extends the delete blast-radius:
+
+* **Provenance-closure delete** — deleting a *source event* cascades: derived
+  records built **solely** from it (single-source segments/entities/summaries) are
+  removed by the same tombstone. **Multi-source** derivatives are kept but demoted —
+  the deleted source is trimmed from their `source_event_ids` / `source_refs` /
+  `source_event_hash` evidence (a derivative whose evidence becomes empty is
+  removed). Deleting a leaf record still just tombstones that record (backward
+  compatible).
+* **Physical purge** — a crash-safe compaction pass rewrites the JSONL event log
+  **without** the tombstoned records and their tombstone markers, reclaiming space;
+  the purged log replays to the same logical state. It runs on `reset`, on `forget`
+  (threshold-gated), and whenever the tombstone count crosses
+  `MATRIXARK_MEMORY_PURGE_THRESHOLD` (env-gated; `0` = off). Durability is a
+  temp-write + `fsync` + atomic `os.replace` onto the primary shard.
+
+**Still deferred** (separate parallel workstream): rust-datanode-native delete
+(the engine exposes `StringDelete`/`CommonDelete`/`FeatureDelete`; wiring tombstones
+down to a native delete is owned elsewhere — the local/reference adapter is
+authoritative here), and true **re-derivation** of a demoted multi-source
+entity/summary — the closure delete trims the deleted source from a derivative's
+evidence but does not re-run extraction/summarization to recompute its state.
+
+---
+
 ## kwarg → scope mapping
 
 mem0 passes identity as **top-level kwargs**; MatrixArk stores it under a
@@ -171,7 +254,9 @@ m.add(claude_resp, provider="anthropic")
 | ------------------------------ | ---------------------------------- | --------------------------------------------------------------- |
 | Identity kwargs                | `user_id` / `agent_id` / `run_id`  | same kwargs accepted (folded into `scope`)                      |
 | Message format                 | OpenAI `{role, content}`           | same (also accepts a bare string)                              |
-| `add()` / `search()` API       | ✓                                  | ✓ via `matrixark_mem0_compat.Memory`                            |
+| `add()` / `search()` API       | ✓                                  | ✓ via `matrixark_mem0_compat.Memory` (mem0 `results[]` shape)   |
+| `get` / `update` / `history`   | ✓                                  | ✓ (`update` = supersede; `history` = event-sourced timeline)    |
+| `delete` / `delete_all` / `reset` | ✓                               | ✓ (closure-aware delete + crash-safe physical purge)            |
 | Backing store                  | vector DB + graph (per config)     | TemporalStore (time-aware context tiers, native retrieval)      |
 | Session / run scoping          | `run_id`                           | `session_id` (mapped from `run_id`)                             |
 | Per-agent isolation            | `agent_id`                         | `agent_id` in the scope key + retrieval filter                 |
