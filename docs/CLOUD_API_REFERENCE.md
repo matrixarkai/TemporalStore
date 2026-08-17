@@ -142,7 +142,8 @@ You cannot address another tenant's namespace; `tenant_id` is set from your API 
 |---|---|---|
 | `MATRIXARK_API_KEYS` | — | `key:tenant,key:tenant` per-tenant keys |
 | `MATRIXARK_API_KEYS_FILE` | — | path to JSON `{"key":"tenant"}` (use a secret store) |
-| `MATRIXARK_REQUIRE_AUTH` | `1` | `0` allows anonymous (local/dev only) |
+| `MATRIXARK_REQUIRE_AUTH` | `0` | **dev default: anonymous allowed.** Set `1` in production to require a valid API key (missing/bad → `401`). A one-time startup warning is logged while off |
+| `MATRIXARK_ACCESS_MODE` | `dev` | `enforced` for per-tenant hashed keys + isolation in production |
 | `MATRIXARK_GATEWAY_FORWARD_API_KEY` | `1` | forward the edge key to the backend as its credential |
 
 ### Backend (see the deploy guide)

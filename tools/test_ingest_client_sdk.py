@@ -20,6 +20,32 @@ _BLOBS: dict[str, bytes] = {}
 _INGESTS: list[dict] = []
 _AUTH_SEEN: list[str] = []
 
+_ENV_KEYS = ("MATRIXARK_BASE_URL", "MATRIXARK_GATEWAY_URL", "MATRIXARK_API_KEY")
+
+
+class _EnvGuard:
+    """Set/clear env vars and restore them on exit (None -> unset)."""
+
+    def __init__(self, **values):
+        self._values = values
+        self._saved: dict[str, str | None] = {}
+
+    def __enter__(self):
+        for key, value in self._values.items():
+            self._saved[key] = os.environ.get(key)
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        return self
+
+    def __exit__(self, *exc):
+        for key, prev in self._saved.items():
+            if prev is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = prev
+
 
 class _GatewayHandler(BaseHTTPRequestHandler):
     def log_message(self, *args):  # silence
@@ -192,6 +218,86 @@ class IngestTextTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             sdk.ingest_text("x", base_url="http://127.0.0.1:1", api_key="k",
                             sharing_scope="public")
+
+
+class EnvResolutionTest(unittest.TestCase):
+    """Deliverable 1: base_url / api_key are optional — resolved from env with a
+    localhost default, and anonymous (no Authorization header) when no key is set."""
+
+    def setUp(self):
+        _BLOBS.clear(); _INGESTS.clear(); _AUTH_SEEN.clear()
+
+    def _write(self, body: bytes, suffix=".md") -> str:
+        fd, path = tempfile.mkstemp(prefix="sdk-env-", suffix=suffix)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(body)
+        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
+        return path
+
+    def test_base_url_default_localhost_when_unset(self):
+        with _EnvGuard(**{k: None for k in _ENV_KEYS}):
+            self.assertEqual("http://127.0.0.1:8080", sdk._resolve_base_url(None))
+            self.assertEqual(sdk.DEFAULT_BASE_URL, sdk._resolve_base_url(None))
+
+    def test_base_url_from_env_var(self):
+        with _EnvGuard(MATRIXARK_BASE_URL="http://example.test:9999"):
+            self.assertEqual("http://example.test:9999", sdk._resolve_base_url(None))
+        # Alias MATRIXARK_GATEWAY_URL is also accepted.
+        with _EnvGuard(MATRIXARK_BASE_URL=None,
+                       MATRIXARK_GATEWAY_URL="http://alias.test:1234"):
+            self.assertEqual("http://alias.test:1234", sdk._resolve_base_url(None))
+
+    def test_no_base_url_resolves_from_env_end_to_end(self):
+        path = self._write(b"# env-resolved skill\n")
+        with _Gateway() as gw:
+            with _EnvGuard(MATRIXARK_BASE_URL=gw.url, MATRIXARK_API_KEY=None,
+                           MATRIXARK_GATEWAY_URL=None):
+                result = sdk.ingest_large_file(path)   # no base_url / api_key
+        self.assertEqual(1, len(_INGESTS))
+        self.assertTrue(result["raw_uri"].startswith("temporalstore://"))
+
+    def test_no_auth_header_when_api_key_unset(self):
+        path = self._write(b"# anon skill\n")
+        with _Gateway() as gw:
+            with _EnvGuard(MATRIXARK_BASE_URL=gw.url, MATRIXARK_API_KEY=None,
+                           MATRIXARK_GATEWAY_URL=None):
+                sdk.ingest_large_file(path)
+        # Both hops (PUT blob, POST ingest) sent NO Authorization header (anonymous).
+        self.assertTrue(_AUTH_SEEN)
+        self.assertTrue(all(a == "" for a in _AUTH_SEEN))
+
+    def test_auth_header_from_env_api_key(self):
+        path = self._write(b"# keyed via env\n")
+        with _Gateway() as gw:
+            with _EnvGuard(MATRIXARK_BASE_URL=gw.url, MATRIXARK_API_KEY="k-env",
+                           MATRIXARK_GATEWAY_URL=None):
+                sdk.ingest_large_file(path)
+        self.assertTrue(all(a == "Bearer k-env" for a in _AUTH_SEEN))
+
+    def test_auth_header_when_api_key_passed(self):
+        path = self._write(b"# keyed via arg\n")
+        with _Gateway() as gw:
+            with _EnvGuard(**{k: None for k in _ENV_KEYS}):
+                sdk.ingest_large_file(path, base_url=gw.url, api_key="k-arg")
+        self.assertTrue(all(a == "Bearer k-arg" for a in _AUTH_SEEN))
+
+    def test_explicit_args_win_over_env(self):
+        path = self._write(b"# explicit wins\n")
+        with _Gateway() as gw:
+            # Env points elsewhere / to a different key; explicit args must win.
+            with _EnvGuard(MATRIXARK_BASE_URL="http://wrong.test:1",
+                           MATRIXARK_API_KEY="k-env", MATRIXARK_GATEWAY_URL=None):
+                sdk.ingest_large_file(path, base_url=gw.url, api_key="k-explicit")
+        self.assertEqual(1, len(_INGESTS))                       # reached the real mock server
+        self.assertTrue(all(a == "Bearer k-explicit" for a in _AUTH_SEEN))
+
+    def test_ingest_text_anonymous_and_env_resolved(self):
+        with _Gateway() as gw:
+            with _EnvGuard(MATRIXARK_BASE_URL=gw.url, MATRIXARK_API_KEY=None,
+                           MATRIXARK_GATEWAY_URL=None):
+                sdk.ingest_text("short body")                    # no base_url / api_key
+        self.assertEqual("short body", _INGESTS[0]["text"])
+        self.assertTrue(all(a == "" for a in _AUTH_SEEN))        # anonymous
 
 
 if __name__ == "__main__":

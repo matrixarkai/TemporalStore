@@ -12,12 +12,21 @@ then ingests a tiny pointer (``temporalstore://<key>``). Only ``http.client`` +
 
 Two entry points:
 
-  * ``ingest_large_file(path, *, base_url, api_key, ...)`` — upload a local file to
-    the blob tier, then ingest the pointer. One helper, two round trips (PUT blob,
-    POST ingest). For a single HTTP round trip use the server's ``/v1/ingest_file``
-    endpoint directly (see ``docs/ingest_large_files.md``).
-  * ``ingest_text(text, *, base_url, api_key, ...)`` — post small content inline in
-    the ingest body; no upload.
+  * ``ingest_large_file(path, ...)`` — upload a local file to the blob tier, then
+    ingest the pointer. One helper, two round trips (PUT blob, POST ingest). For a
+    single HTTP round trip use the server's ``/v1/ingest_file`` endpoint directly
+    (see ``docs/ingest_large_files.md``).
+  * ``ingest_text(text, ...)`` — post small content inline in the ingest body; no
+    upload.
+
+Only ``path`` (or ``text``) is required. Everything else is optional:
+
+  * ``base_url`` — defaults to ``$MATRIXARK_BASE_URL`` (or ``$MATRIXARK_GATEWAY_URL``),
+    else ``http://127.0.0.1:8080``. So ``ingest_large_file("skill.md")`` /
+    ``ingest_text("...")`` work with zero config against a local gateway.
+  * ``api_key`` — defaults to ``$MATRIXARK_API_KEY``. When unset/empty NO
+    ``Authorization`` header is sent (anonymous — fine against a dev-mode gateway;
+    an enforced gateway returns 401, surfaced as a clear ``RuntimeError``).
 
 Both entry points accept an optional ``sharing_scope`` (alias ``visibility``) — one of
 ``private_user`` / ``tenant_shared`` / ``global_shared`` — surfaced as the top-level
@@ -50,9 +59,33 @@ except ImportError:  # ... or package path.
 
 Json = dict[str, Any]
 
+# Fallback gateway base URL when neither an explicit arg nor an env var is set.
+DEFAULT_BASE_URL = "http://127.0.0.1:8080"
+
 # Accepted values for the top-level ``sharing_scope`` ingest knob. The server's
 # resource_sharing_scope / registry_access_scope read this off the ingest body.
 VALID_SHARING_SCOPES = ("private_user", "tenant_shared", "global_shared")
+
+
+def _resolve_base_url(base_url: Optional[str]) -> str:
+    """Resolve the gateway base URL. Precedence: explicit ``base_url`` arg >
+    ``MATRIXARK_BASE_URL`` env > ``MATRIXARK_GATEWAY_URL`` env > ``DEFAULT_BASE_URL``
+    (``http://127.0.0.1:8080``). Raises ``ValueError`` naming the env var if it still
+    cannot be resolved (only possible if the default is deliberately blanked)."""
+    resolved = (base_url or os.environ.get("MATRIXARK_BASE_URL")
+                or os.environ.get("MATRIXARK_GATEWAY_URL") or DEFAULT_BASE_URL)
+    if not resolved:
+        raise ValueError(
+            "base_url is not set: pass base_url=... or set the MATRIXARK_BASE_URL "
+            "(or MATRIXARK_GATEWAY_URL) environment variable")
+    return resolved
+
+
+def _resolve_api_key(api_key: Optional[str]) -> Optional[str]:
+    """Resolve the Bearer token. Precedence: explicit ``api_key`` arg >
+    ``MATRIXARK_API_KEY`` env. Returns None when neither is set/non-empty, in which
+    case NO ``Authorization`` header is sent (anonymous)."""
+    return (api_key or os.environ.get("MATRIXARK_API_KEY")) or None
 
 
 def _resolve_sharing_scope(sharing_scope: Optional[str], visibility: Optional[str]) -> Optional[str]:
@@ -104,14 +137,17 @@ def _connect(base_url: str, timeout: float) -> http.client.HTTPConnection:
     return http.client.HTTPConnection(host, port, timeout=timeout)
 
 
-def _put_blob(base_url: str, api_key: str, key: str, data: bytes,
+def _put_blob(base_url: str, api_key: Optional[str], key: str, data: bytes,
               content_type: str, timeout: float) -> Json:
-    """Stream ``PUT {base_url}/v1/blob/<key>`` with a Bearer token. Content-addressed
-    and idempotent: re-PUTting the same key replaces byte-identical content (no dup)."""
+    """Stream ``PUT {base_url}/v1/blob/<key>`` with an optional Bearer token.
+    Content-addressed and idempotent: re-PUTting the same key replaces byte-identical
+    content (no dup). When ``api_key`` is None/empty no ``Authorization`` header is
+    sent (anonymous)."""
     conn = _connect(base_url, timeout)
     try:
         conn.putrequest("PUT", f"/v1/blob/{key.lstrip('/')}")
-        conn.putheader("Authorization", f"Bearer {api_key}")
+        if api_key:
+            conn.putheader("Authorization", f"Bearer {api_key}")
         conn.putheader("Content-Length", str(len(data)))
         conn.putheader("Content-Type", content_type)
         conn.endheaders()
@@ -134,12 +170,13 @@ def _put_blob(base_url: str, api_key: str, key: str, data: bytes,
         return {}
 
 
-def _post_json(base_url: str, api_key: str, path: str, body: Json, timeout: float) -> Json:
+def _post_json(base_url: str, api_key: Optional[str], path: str, body: Json, timeout: float) -> Json:
     data = json.dumps(body).encode("utf-8")
     conn = _connect(base_url, timeout)
     try:
         conn.putrequest("POST", path)
-        conn.putheader("Authorization", f"Bearer {api_key}")
+        if api_key:
+            conn.putheader("Authorization", f"Bearer {api_key}")
         conn.putheader("Content-Type", "application/json")
         conn.putheader("Content-Length", str(len(data)))
         conn.endheaders()
@@ -182,7 +219,8 @@ def _upload_matrixobject(data: bytes, content_type: str, *, kind: str,
     return result.uri
 
 
-def ingest_large_file(path: str, *, base_url: str, api_key: str,
+def ingest_large_file(path: str, *, base_url: Optional[str] = None,
+                      api_key: Optional[str] = None,
                       kind: str = "skill", resource_type: Optional[str] = None,
                       backend: str = "temporalstore", scope: Optional[Json] = None,
                       sharing_scope: Optional[str] = None,
@@ -195,10 +233,16 @@ def ingest_large_file(path: str, *, base_url: str, api_key: str,
     ``matrixobject://<bucket>/<key>``) pointer. Idempotent on the file bytes: retry
     the exact same call on any error (see the module RETRY GUIDANCE).
 
+    Only ``path`` is required; a minimal ``ingest_large_file("skill.md")`` works.
+
     Args:
         path: local path to the file (on the caller's machine).
         base_url: the remote gateway base URL, e.g. ``https://api.example.com``.
-        api_key: Bearer token for ``Authorization``.
+            Defaults to ``$MATRIXARK_BASE_URL`` / ``$MATRIXARK_GATEWAY_URL`` /
+            ``http://127.0.0.1:8080`` when None.
+        api_key: Bearer token for ``Authorization``. Defaults to
+            ``$MATRIXARK_API_KEY``; when None/empty no ``Authorization`` header is
+            sent (anonymous — an enforced gateway then returns 401).
         kind: ``"skill"`` or ``"resource"`` (default ``"skill"``).
         resource_type: ``md``/``pdf``/``txt``/…; inferred from the suffix when None.
         backend: ``"temporalstore"`` (default, uploads over ``base_url``) or
@@ -216,6 +260,8 @@ def ingest_large_file(path: str, *, base_url: str, api_key: str,
         The parsed ingest response JSON (dict).
     """
     effective_sharing_scope = _resolve_sharing_scope(sharing_scope, visibility)
+    base_url = _resolve_base_url(base_url)
+    api_key = _resolve_api_key(api_key)
     with open(path, "rb") as fh:
         data = fh.read()
     rtype = resource_type or _infer_resource_type(path)
@@ -240,7 +286,8 @@ def ingest_large_file(path: str, *, base_url: str, api_key: str,
     return _post_json(base_url, api_key, "/v1/ingest", body, timeout)
 
 
-def ingest_text(text: str, *, base_url: str, api_key: str,
+def ingest_text(text: str, *, base_url: Optional[str] = None,
+                api_key: Optional[str] = None,
                 kind: str = "skill", resource_type: str = "md",
                 scope: Optional[Json] = None,
                 sharing_scope: Optional[str] = None,
@@ -250,10 +297,17 @@ def ingest_text(text: str, *, base_url: str, api_key: str,
     """Ingest small content inline (no upload). Posts ``text`` directly in the ingest
     body — use this for short skills/resources; use ``ingest_large_file`` for files.
 
+    Only ``text`` is required; ``ingest_text("...")`` works with zero config.
+    ``base_url`` defaults to ``$MATRIXARK_BASE_URL`` / ``$MATRIXARK_GATEWAY_URL`` /
+    ``http://127.0.0.1:8080``; ``api_key`` defaults to ``$MATRIXARK_API_KEY`` and no
+    ``Authorization`` header is sent when it is unset/empty (anonymous).
+
     ``sharing_scope`` (alias ``visibility``) is an optional visibility knob — one of
     ``private_user`` / ``tenant_shared`` / ``global_shared`` — sent as the top-level
     ``sharing_scope`` ingest key; omitted (server default) when None."""
     effective_sharing_scope = _resolve_sharing_scope(sharing_scope, visibility)
+    base_url = _resolve_base_url(base_url)
+    api_key = _resolve_api_key(api_key)
     body: Json = {"kind": kind, "text": text, "resource_type": resource_type, "wait": bool(wait)}
     if scope is not None:
         body["scope"] = scope
@@ -265,4 +319,4 @@ def ingest_text(text: str, *, base_url: str, api_key: str,
 
 
 __all__ = ["ingest_large_file", "ingest_text", "content_hash", "content_key",
-           "VALID_SHARING_SCOPES"]
+           "VALID_SHARING_SCOPES", "DEFAULT_BASE_URL"]

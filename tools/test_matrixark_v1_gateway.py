@@ -5,12 +5,37 @@
 quota 413, health probes, blob stream proxy, and `/api/*` back-compat — pure-Python unittest."""
 import asyncio
 import json
+import os
 import unittest
 
 try:
     from tools import matrixark_v1_gateway as gw
 except ImportError:  # run from tools/ dir
     import matrixark_v1_gateway as gw
+
+
+class _EnvGuard:
+    """Set/clear env vars and restore them on exit (None -> unset)."""
+
+    def __init__(self, **values):
+        self._values = values
+        self._saved: dict = {}
+
+    def __enter__(self):
+        for key, value in self._values.items():
+            self._saved[key] = os.environ.get(key)
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        return self
+
+    def __exit__(self, *exc):
+        for key, prev in self._saved.items():
+            if prev is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = prev
 
 
 # ---- stub backend -------------------------------------------------------------------------------
@@ -561,6 +586,55 @@ class EnforcedAuthTest(unittest.TestCase):
         st, _, _ = drive(app, path="/v1/ingest", body={"records": [1]},
                          headers={"Authorization": "Bearer sk_live_demo"})
         self.assertEqual(202, st)
+
+
+class DevDefaultAuthTest(unittest.TestCase):
+    """Dev DEFAULT posture: auth is OFF out of the box (anonymous allowed). Enforcement
+    stays fully opt-in via MATRIXARK_REQUIRE_AUTH=1 (bad/missing key -> 401)."""
+
+    def setUp(self):
+        self.s = _FakeServer()
+
+    def test_default_require_auth_is_false(self):
+        self.assertFalse(gw._DEFAULTS["require_auth"])
+        with _EnvGuard(MATRIXARK_REQUIRE_AUTH=None, MATRIXARK_AUTH_ENFORCED=None):
+            cfg = gw.GatewayConfig.from_env({"api_keys": {"k-acme": "acme"}})
+            self.assertFalse(cfg.require_auth)
+
+    def test_anonymous_allowed_by_default(self):
+        # No require_auth override, env cleared -> new dev default (anonymous allowed).
+        with _EnvGuard(MATRIXARK_REQUIRE_AUTH=None, MATRIXARK_AUTH_ENFORCED=None):
+            cfg = gw.GatewayConfig.from_env({"api_keys": {"k-acme": "acme"}})
+            app = gw.make_v1_app(self.s, cfg)
+            st, _, _ = drive(app, path="/v1/retrieve", body={"query": "x"})   # no Authorization
+        self.assertEqual(200, st)
+        self.assertEqual("matrixark_retrieve", self.s.calls[0][0])
+
+    def test_require_auth_env_opt_in_rejects_anonymous_and_accepts_key(self):
+        # HARD requirement: MATRIXARK_REQUIRE_AUTH=1 restores enforcement as opt-in.
+        with _EnvGuard(MATRIXARK_REQUIRE_AUTH="1", MATRIXARK_AUTH_ENFORCED=None):
+            cfg = gw.GatewayConfig.from_env({"api_keys": {"k-acme": "acme"}})
+            self.assertTrue(cfg.require_auth)
+            app = gw.make_v1_app(self.s, cfg)
+            st_anon, _, body = drive(app, path="/v1/retrieve", body={"query": "x"})
+            self.assertEqual(401, st_anon)
+            self.assertEqual("unauthorized", json.loads(body)["error"])
+            self.assertEqual([], self.s.calls)
+            st_ok, _, _ = drive(app, path="/v1/retrieve", body={"query": "x"},
+                                headers={"Authorization": "Bearer k-acme"})
+            self.assertEqual(200, st_ok)
+            self.assertEqual("matrixark_retrieve", self.s.calls[0][0])
+
+    def test_no_auth_startup_warning_fires_once(self):
+        # Non-blocking one-time warning when auth is effectively off.
+        gw._AUTH_WARNED["done"] = False
+        with _EnvGuard(MATRIXARK_REQUIRE_AUTH=None, MATRIXARK_AUTH_ENFORCED=None):
+            cfg = gw.GatewayConfig.from_env({"api_keys": {"k-acme": "acme"}})
+            with self.assertLogs("matrixark.gateway", level="WARNING") as cap:
+                gw.make_v1_app(self.s, cfg)
+            self.assertTrue(any("WITHOUT authentication" in m for m in cap.output))
+        # Second build in the same process does NOT warn again (once per process).
+        self.assertTrue(gw._AUTH_WARNED["done"])
 
 
 if __name__ == "__main__":

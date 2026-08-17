@@ -31,7 +31,7 @@ so the gateway is a drop-in superset.
 ### Auth
 | Variable | Default | Meaning |
 |---|---|---|
-| `MATRIXARK_REQUIRE_AUTH` | `1` | `0` allows anonymous `/v1` access (local/dev only). |
+| `MATRIXARK_REQUIRE_AUTH` | `0` | **Dev default: anonymous `/v1` access allowed** (a one-time no-auth warning is logged). Set `1` in production to require a valid API key. |
 | `MATRIXARK_API_KEYS` | – | `"key1:tenantA,key2:tenantB"` — per-tenant bearer keys. |
 | `MATRIXARK_API_KEYS_FILE` | – | Path to JSON `{"key":"tenant"}` (takes precedence over the CSV form). |
 
@@ -67,7 +67,7 @@ A storage-quota signal from the backend surfaces as `507 {"error":"storage_quota
 | `MATRIXARK_DATANODE_BLOB_URL` | `http://127.0.0.1:17102` | Datanode base for the streamed `/blob` proxy + `/readyz` probe. |
 | `MATRIXARK_HTTP_HOST` | `0.0.0.0` | Gateway bind host. |
 | `MATRIXARK_HTTP_PORT` | `8080` | Gateway bind port. |
-| `MATRIXARK_ACCESS_MODE` | `enforced` | Backend access model. |
+| `MATRIXARK_ACCESS_MODE` | `dev` | Backend access model. **Dev default allows anonymous;** set `enforced` in production for per-tenant hashed keys + isolation. |
 
 ## Local: `docker compose up`
 

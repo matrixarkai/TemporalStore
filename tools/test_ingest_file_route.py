@@ -207,6 +207,42 @@ class IngestFileRouteTest(unittest.TestCase):
         self.assertEqual("blob_store_failed", json.loads(out)["error"])
         self.assertEqual([], self.s.calls)                       # ingest not invoked on store failure
 
+    def test_sharing_scope_header_forwarded_to_ingest_body(self):
+        st, _, _ = drive(self._app(), raw=b"data",
+                         headers={"Authorization": "Bearer k-acme",
+                                  "X-Sharing-Scope": "tenant_shared"})
+        self.assertEqual(202, st)
+        self.assertEqual("tenant_shared", self.s.calls[0][1]["sharing_scope"])
+
+    def test_visibility_alias_forwarded(self):
+        st, _, _ = drive(self._app(), raw=b"data",
+                         headers={"Authorization": "Bearer k-acme",
+                                  "X-Visibility": "global_shared"})
+        self.assertEqual(202, st)
+        self.assertEqual("global_shared", self.s.calls[0][1]["sharing_scope"])
+
+    def test_sharing_scope_wins_over_visibility_alias(self):
+        st, _, _ = drive(self._app(), raw=b"data",
+                         headers={"Authorization": "Bearer k-acme",
+                                  "X-Sharing-Scope": "private_user",
+                                  "X-Visibility": "global_shared"})
+        self.assertEqual(202, st)
+        self.assertEqual("private_user", self.s.calls[0][1]["sharing_scope"])
+
+    def test_invalid_sharing_scope_400_and_no_ingest(self):
+        st, _, out = drive(self._app(), raw=b"data",
+                           headers={"Authorization": "Bearer k-acme",
+                                    "X-Sharing-Scope": "everyone"})
+        self.assertEqual(400, st)
+        self.assertEqual("invalid_sharing_scope", json.loads(out)["error"])
+        self.assertEqual([], self.s.calls)                       # never reached ingest
+
+    def test_sharing_scope_omitted_key_absent(self):
+        st, _, _ = drive(self._app(), raw=b"data",
+                         headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual(202, st)
+        self.assertNotIn("sharing_scope", self.s.calls[0][1])     # server default applies
+
     def test_existing_ingest_route_unaffected(self):
         # Regression: the plain JSON /v1/ingest still works alongside the new route.
         app = self._app()

@@ -18,9 +18,27 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from tools.matrixark_resource_parser import ParsedResourceChunk, compact_ws, parse_resource, slugify, stable_hash, token_estimate
+    from tools.matrixark_resource_parser import (
+        DEFAULT_MAX_INLINE_TEXT_CHARS,
+        ParsedResourceChunk,
+        compact_ws,
+        parse_resource,
+        resolve_max_inline_text_chars,
+        slugify,
+        stable_hash,
+        token_estimate,
+    )
 except ModuleNotFoundError:
-    from matrixark_resource_parser import ParsedResourceChunk, compact_ws, parse_resource, slugify, stable_hash, token_estimate
+    from matrixark_resource_parser import (
+        DEFAULT_MAX_INLINE_TEXT_CHARS,
+        ParsedResourceChunk,
+        compact_ws,
+        parse_resource,
+        resolve_max_inline_text_chars,
+        slugify,
+        stable_hash,
+        token_estimate,
+    )
 
 
 Json = dict[str, Any]
@@ -31,17 +49,18 @@ VALID_OWNER_SCOPE = {"user", "team", "tenant", "account", "global"}
 SKIP_BUNDLE_DIRS = {".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv", "target", "build", "dist"}
 MAX_BUNDLE_FILES = 200
 
-# The skill-content size cap (bytes on disk, chars inline). Default 2 MiB. It is
-# configurable in three ways, highest precedence first:
+# The skill-content size cap (bytes on disk, chars inline). Skills SHARE the resource
+# inline/text limit (5 MiB) as a single source of truth, so a skill and a resource of
+# the same size are gated IDENTICALLY. The cap is configurable, highest precedence first:
 #   1. an explicit ``max_text_chars=`` argument to ``parse_skill`` (per request);
 #   2. the ``MATRIXARK_MAX_SKILL_BYTES`` environment variable (preferred name);
-#   3. the ``MATRIXARK_SKILL_MAX_TEXT_CHARS`` environment variable (legacy alias).
+#   3. the ``MATRIXARK_SKILL_MAX_TEXT_CHARS`` environment variable (legacy alias);
+#   4. the SHARED resource cap ``resolve_max_inline_text_chars()`` — env
+#      ``MATRIXARK_RESOURCE_MAX_INLINE_TEXT_CHARS`` > ``DEFAULT_MAX_INLINE_TEXT_CHARS``
+#      (5 MiB). This is the default when no skill-specific override is set.
 # Env is read at call time (via ``resolve_max_skill_bytes``) so an override set by the
-# host process takes effect without re-importing. Large content that legitimately
-# exceeds this cap should be ingested as ``kind="resource"`` — resources carry their
-# OWN, higher limit (see ``matrixark_resource_parser.DEFAULT_MAX_FILE_BYTES``, 20 MiB,
-# knob ``MATRIXARK_RESOURCE_MAX_FILE_BYTES``) and are NOT subject to this skill cap.
-DEFAULT_MAX_SKILL_BYTES = 2 * 1024 * 1024
+# host process takes effect without re-importing.
+DEFAULT_MAX_SKILL_BYTES = DEFAULT_MAX_INLINE_TEXT_CHARS  # skills share the resource cap
 # Back-compat module constant (import-time snapshot). Prefer resolve_max_skill_bytes().
 DEFAULT_MAX_SKILL_TEXT_CHARS = int(
     os.environ.get("MATRIXARK_MAX_SKILL_BYTES")
@@ -54,8 +73,11 @@ def resolve_max_skill_bytes(override: int | None = None) -> int:
     """Resolve the effective skill-content cap (bytes/chars).
 
     Precedence: explicit ``override`` arg > ``MATRIXARK_MAX_SKILL_BYTES`` env >
-    ``MATRIXARK_SKILL_MAX_TEXT_CHARS`` env (legacy) > ``DEFAULT_MAX_SKILL_BYTES``
-    (2 MiB). Raises ``ValueError`` on a non-positive override.
+    ``MATRIXARK_SKILL_MAX_TEXT_CHARS`` env (legacy) > the SHARED resource inline/text
+    cap (``resolve_max_inline_text_chars()`` — env
+    ``MATRIXARK_RESOURCE_MAX_INLINE_TEXT_CHARS`` > 5 MiB default). Because the default
+    is the resource cap, a skill and a resource of equal size gate identically. Raises
+    ``ValueError`` on a non-positive override.
     """
     if override is not None:
         value = int(override)
@@ -71,7 +93,8 @@ def resolve_max_skill_bytes(override: int | None = None) -> int:
                 continue
             if value > 0:
                 return value
-    return DEFAULT_MAX_SKILL_BYTES
+    # Fall back to the shared resource inline/text cap (single source of truth).
+    return resolve_max_inline_text_chars()
 
 
 @dataclass(frozen=True)

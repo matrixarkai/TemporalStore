@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import math
 import os
 import tempfile
@@ -63,11 +64,42 @@ except Exception:  # pragma: no cover
 
 Json = dict[str, Any]
 
+_LOG = logging.getLogger("matrixark.gateway")
+
+# Fires the no-auth startup warning at most once per process.
+_AUTH_WARNED = {"done": False}
+
+_NO_AUTH_WARNING = (
+    "MatrixArk gateway is running WITHOUT authentication (dev default). Anyone who "
+    "can reach this address has full anonymous access and there is NO tenant "
+    "isolation. Set MATRIXARK_REQUIRE_AUTH=1 (and MATRIXARK_ACCESS_MODE=enforced) "
+    "to enforce API keys."
+)
+
+
+def _warn_if_auth_disabled(cfg: "GatewayConfig") -> None:
+    """Emit a one-time, NON-BLOCKING warning when auth is effectively off
+    (``require_auth`` False). Never rejects requests or blocks startup — behavior
+    stays fully anonymous-allowed; this only surfaces the posture to the operator."""
+    if getattr(cfg, "require_auth", False):
+        return
+    if _AUTH_WARNED["done"]:
+        return
+    _AUTH_WARNED["done"] = True
+    _LOG.warning("WARNING: %s", _NO_AUTH_WARNING)
+
+
 # ---- defaults (all overridable via env or the `config` dict) -----------------------------------
 _MIB = 1024 * 1024
 _GIB = 1024 * 1024 * 1024
+# DEV DEFAULT: auth is OFF out of the box so the API works anonymously with zero
+# config. This is a deliberate developer-experience default; production MUST opt in
+# to auth with MATRIXARK_REQUIRE_AUTH=1 (and MATRIXARK_ACCESS_MODE=enforced). When
+# require_auth is False the gateway logs a one-time startup warning (see
+# _warn_if_auth_disabled). The enforced path is unchanged: set require_auth True and
+# bad/missing keys -> 401 with tenant/account pinned from the key hash.
 _DEFAULTS = {
-    "require_auth": True,
+    "require_auth": False,
     "enforced": False,
     "ingest_rps": 5000.0,
     "ingest_burst": 10000.0,
@@ -673,6 +705,11 @@ _INGEST_CONTENT_TYPES = {
     "html": "text/html", "csv": "text/csv",
 }
 
+# Accepted values for the sharing/visibility knob on POST /v1/ingest_file. Surfaced as
+# the top-level ``sharing_scope`` key on the synthesized /v1/ingest body (same knob the
+# SDK sends). Mirrors matrixark_ingest_client.VALID_SHARING_SCOPES.
+_VALID_SHARING_SCOPES = ("private_user", "tenant_shared", "global_shared")
+
 
 def _ingest_content_type(resource_type: str) -> str:
     return _INGEST_CONTENT_TYPES.get((resource_type or "").lower(), "application/octet-stream")
@@ -773,6 +810,21 @@ async def _ingest_file(app: Callable, scope: Json, receive: Callable, send: Call
     resource_type = _infer_ingest_resource_type(hmap.get("x-resource-type"), filename)
     content_type = hmap.get("content-type") or _ingest_content_type(resource_type)
 
+    # Optional sharing/visibility level. X-Sharing-Scope (X-Visibility alias) -> the
+    # top-level ``sharing_scope`` ingest key. Validate early (before spooling) so a bad
+    # value fails fast with 400; omitted -> absent (server default applies).
+    sharing_scope = hmap.get("x-sharing-scope") or hmap.get("x-visibility")
+    if sharing_scope:
+        sharing_scope = sharing_scope.strip()
+        if sharing_scope not in _VALID_SHARING_SCOPES:
+            return await _json(send, 400, {
+                "error": "invalid_sharing_scope",
+                "detail": f"unknown sharing_scope {sharing_scope!r} (use one of "
+                          f"{', '.join(_VALID_SHARING_SCOPES)})",
+            })
+    else:
+        sharing_scope = None
+
     cl_raw = hmap.get("content-length")
     declared = int(cl_raw) if cl_raw and cl_raw.isdigit() else None
     if declared is not None and declared > cfg.max_blob_bytes:
@@ -808,6 +860,8 @@ async def _ingest_file(app: Callable, scope: Json, receive: Callable, send: Call
     x_scope = hmap.get("x-scope")
     if x_scope:
         ingest_body["scope"] = x_scope
+    if sharing_scope is not None:
+        ingest_body["sharing_scope"] = sharing_scope
 
     auth_headers = [(k, v) for (k, v) in scope.get("headers", [])
                     if k.decode("latin-1").lower() in ("authorization", "x-api-key")]
@@ -1039,6 +1093,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
     bare `/healthz` keep working unchanged.
     """
     cfg = _coerce_config(config)
+    _warn_if_auth_disabled(cfg)  # one-time, non-blocking; anonymous access still allowed
     legacy = make_asgi_app(server)
     limiter = _RateLimiter(cfg)
     executor_state = {"installed": False}
@@ -1290,7 +1345,9 @@ def _build_server_from_env() -> Any:
 
         ns.event_log = Path(event_log_override)
     adapter = build_mcp_adapter(ns)
-    return MatrixArkMcpServer(adapter, access_mode=os.environ.get("MATRIXARK_ACCESS_MODE", "enforced"))
+    # DEV DEFAULT: access_mode defaults to "dev" (anonymous allowed) so the server
+    # works out of the box; set MATRIXARK_ACCESS_MODE=enforced in production.
+    return MatrixArkMcpServer(adapter, access_mode=os.environ.get("MATRIXARK_ACCESS_MODE", "dev"))
 
 
 def create_v1_app() -> Callable[..., Awaitable[None]]:
