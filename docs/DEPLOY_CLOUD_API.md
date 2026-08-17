@@ -87,8 +87,8 @@ scope/user restriction — backward compatible.
 | `POST /v1/ingest_file` | `context:ingest` |
 | `PUT\|POST /v1/blob/<key>` | `context:ingest` |
 | `POST /v1/retrieve` | `context:retrieve` |
-| `POST /v1/mcp` | `context:retrieve` |
 | `GET /v1/blob/<key>` | `context:retrieve` |
+| `POST /v1/mcp` | **per-tool** via `MATRIXARK_TOOL_SCOPES` (data tools → `context:*`, admin tools → `admin:*`); non-`tools/call` methods need only a valid key |
 
 ### Rate limits (token bucket, per key + route-class)
 | Variable | Default | Meaning |

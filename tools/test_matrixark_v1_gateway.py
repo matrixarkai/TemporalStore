@@ -913,5 +913,155 @@ class ProvisionerScopeFlagsTest(unittest.TestCase):
         self.assertEqual("insufficient_scope", json.loads(body)["error"])
 
 
+class McpPerToolScopeTest(unittest.TestCase):
+    """MATRIXARK_AUTH_ENFORCED=1: `/v1/mcp` is gated PER-TOOL via MATRIXARK_TOOL_SCOPES (the same
+    map the backend enforces), not a blanket `context:retrieve`. A data-only key can call data
+    tools but NOT admin tools; non-`tools/call` methods (tools/list/initialize) need no tool scope;
+    user/session locks apply to the call's `params.arguments.scope`. Legacy/dev keys stay
+    unrestricted; missing/bad keys still 401."""
+
+    RETRIEVE_KEY = "sk_live_mcp_retrieve_only"
+    INGEST_KEY = "sk_live_mcp_ingest_only"
+    DATA_KEY = "sk_live_mcp_data_only"          # all context scopes, NO admin scope
+    USER_KEY = "sk_live_mcp_user_locked"
+
+    _DATA_SCOPES = ["context:ingest", "context:retrieve", "context:feedback", "context:replay"]
+
+    def setUp(self):
+        self.s = _FakeServer()
+        hashed = {
+            gw._secret_hash(self.RETRIEVE_KEY): {
+                "tenant_id": "t", "account_id": "acct", "scopes": ["context:retrieve"]},
+            gw._secret_hash(self.INGEST_KEY): {
+                "tenant_id": "t", "account_id": "acct", "scopes": ["context:ingest"]},
+            gw._secret_hash(self.DATA_KEY): {
+                "tenant_id": "t", "account_id": "acct", "scopes": list(self._DATA_SCOPES)},
+            gw._secret_hash(self.USER_KEY): {
+                "tenant_id": "t", "account_id": "acct",
+                "scopes": list(self._DATA_SCOPES), "allowed_user_ids": ["alice"]},
+        }
+        self.cfg = gw.GatewayConfig.from_env({"enforced": True, "hashed_api_keys": hashed})
+        self.app = gw.make_v1_app(self.s, self.cfg)
+
+    def _bearer(self, key):
+        return {"Authorization": f"Bearer {key}"}
+
+    @staticmethod
+    def _call(name, arguments=None):
+        params = {"name": name}
+        if arguments is not None:
+            params["arguments"] = arguments
+        return {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params}
+
+    def _mcp(self, body, key):
+        return drive(self.app, path="/v1/mcp", body=body, headers=self._bearer(key))
+
+    # ---- per-tool scope ------------------------------------------------------------------------
+    def test_retrieve_only_key_denies_ingest_tool_403(self):
+        st, _, body = self._mcp(self._call("matrixark_ingest", {"records": [1]}), self.RETRIEVE_KEY)
+        self.assertEqual(403, st)
+        payload = json.loads(body)
+        self.assertEqual("insufficient_scope", payload["error"])
+        self.assertEqual(["context:ingest"], payload["required"])
+        self.assertEqual([], self.s.handled)                          # denied before dispatch
+
+    def test_retrieve_only_key_allows_retrieve_tool(self):
+        st, _, _ = self._mcp(self._call("matrixark_retrieve", {"query": "x"}), self.RETRIEVE_KEY)
+        self.assertEqual(200, st)
+        self.assertEqual(1, len(self.s.handled))                      # dispatched
+        self.assertEqual("matrixark_retrieve", self.s.handled[0]["params"]["name"])
+
+    def test_ingest_scope_key_allows_ingest_tool(self):
+        st, _, _ = self._mcp(self._call("matrixark_ingest", {"records": [1]}), self.INGEST_KEY)
+        self.assertEqual(200, st)
+        self.assertEqual(1, len(self.s.handled))
+
+    def test_data_only_key_denies_admin_tool_403(self):
+        # THE point of this change: a data-scoped key can no longer reach an admin tool via /v1/mcp.
+        st, _, body = self._mcp(
+            self._call("matrixark_admin_create_api_key", {"tenant_id": "t"}), self.DATA_KEY)
+        self.assertEqual(403, st)
+        payload = json.loads(body)
+        self.assertEqual("insufficient_scope", payload["error"])
+        self.assertEqual(["admin:api_key"], payload["required"])
+        self.assertEqual([], self.s.handled)
+
+    # ---- non-tools/call methods need no tool scope ---------------------------------------------
+    def test_tools_list_allowed_with_any_valid_key(self):
+        st, _, _ = self._mcp({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, self.RETRIEVE_KEY)
+        self.assertEqual(200, st)
+        self.assertEqual(1, len(self.s.handled))
+
+    def test_initialize_allowed_with_any_valid_key(self):
+        st, _, _ = self._mcp({"jsonrpc": "2.0", "id": 1, "method": "initialize"}, self.INGEST_KEY)
+        self.assertEqual(200, st)
+        self.assertEqual(1, len(self.s.handled))
+
+    # ---- user/session lock on params.arguments.scope -------------------------------------------
+    def test_user_locked_key_denies_other_user_403(self):
+        st, _, body = self._mcp(
+            self._call("matrixark_ingest", {"scope": {"user_id": "bob"}, "records": [1]}),
+            self.USER_KEY)
+        self.assertEqual(403, st)
+        self.assertEqual("user_not_allowed", json.loads(body)["error"])
+        self.assertEqual([], self.s.handled)
+
+    def test_user_locked_key_allows_matching_user(self):
+        st, _, _ = self._mcp(
+            self._call("matrixark_ingest", {"scope": {"user_id": "alice"}, "records": [1]}),
+            self.USER_KEY)
+        self.assertEqual(200, st)
+        self.assertEqual(1, len(self.s.handled))
+
+    def test_user_locked_key_scopeless_call_not_identity_checked(self):
+        # No `scope` object on the call -> nothing to check on the user axis (tools/list-style).
+        st, _, _ = self._mcp(self._call("matrixark_retrieve", {"query": "x"}), self.USER_KEY)
+        self.assertEqual(200, st)
+        self.assertEqual(1, len(self.s.handled))
+
+    # ---- 401 discipline (unchanged) ------------------------------------------------------------
+    def test_missing_key_still_401(self):
+        st, _, _ = drive(self.app, path="/v1/mcp",
+                         body=self._call("matrixark_retrieve", {"query": "x"}))
+        self.assertEqual(401, st)
+        self.assertEqual([], self.s.handled)
+
+    def test_bad_key_still_401(self):
+        st, _, _ = self._mcp(self._call("matrixark_retrieve", {"query": "x"}), "sk_live_nope")
+        self.assertEqual(401, st)
+
+    # ---- backward compatibility ----------------------------------------------------------------
+    def test_legacy_plain_keystore_mcp_unrestricted(self):
+        # Legacy plain {sha256: {tenant_id, account_id}} (scopes=None) -> /v1/mcp UNRESTRICTED:
+        # even an admin tool dispatches, exactly as before per-tool gating existed.
+        legacy_key = "sk_live_mcp_legacy"
+        store = {gw._secret_hash(legacy_key): {"tenant_id": "t", "account_id": "acct"}}
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            json.dump(store, fh)
+            store_path = fh.name
+        try:
+            with _EnvGuard(MATRIXARK_AUTH_ENFORCED="1", MATRIXARK_API_KEYS_HASHED_FILE=store_path):
+                cfg = gw.GatewayConfig.from_env({})
+                app = gw.make_v1_app(self.s, cfg)
+                st, _, _ = drive(app, path="/v1/mcp",
+                                 body=self._call("matrixark_admin_create_api_key", {"tenant_id": "t"}),
+                                 headers=self._bearer(legacy_key))
+            self.assertEqual(200, st)                                  # admin tool allowed (no gate)
+            self.assertEqual(1, len(self.s.handled))
+        finally:
+            os.unlink(store_path)
+
+    def test_dev_mode_mcp_no_scope_enforcement(self):
+        # Enforcement OFF -> plaintext api_keys, no per-key record -> admin tool dispatches.
+        with _EnvGuard(MATRIXARK_AUTH_ENFORCED=None, MATRIXARK_REQUIRE_AUTH="1"):
+            cfg = gw.GatewayConfig.from_env({"api_keys": {"k-acme": "acme"}})
+            app = gw.make_v1_app(self.s, cfg)
+            st, _, _ = drive(app, path="/v1/mcp",
+                             body=self._call("matrixark_admin_create_api_key", {"tenant_id": "t"}),
+                             headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual(200, st)
+        self.assertEqual(1, len(self.s.handled))
+
+
 if __name__ == "__main__":
     unittest.main()

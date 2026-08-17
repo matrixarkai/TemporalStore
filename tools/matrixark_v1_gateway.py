@@ -48,6 +48,19 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_asgi import make_asgi_app, _api_key  # type: ignore
     from matrixark_http import apply_ingest_route_defaults, mcp_http_dispatch  # type: ignore
 
+# Canonical tool -> required-scopes map. The SAME map the backend gates with
+# (matrixark_access.MatrixArkAccessManager.authenticate), so the edge per-tool gate on /v1/mcp
+# mirrors the backend exactly: unmapped tool -> empty set -> no scope requirement. Falls back to an
+# empty map so the gateway keeps importing cleanly where the core module is unavailable (the mcp
+# per-tool gate then degrades to "no tool scope", still behind the valid-key check in _authorize).
+try:  # pragma: no cover - trivial import shim
+    try:
+        from tools.matrixark_mcp_core import MATRIXARK_TOOL_SCOPES  # type: ignore
+    except ImportError:
+        from matrixark_mcp_core import MATRIXARK_TOOL_SCOPES  # type: ignore
+except Exception:  # pragma: no cover
+    MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {}
+
 # Key hashing: reuse the backend's `secret_hash` (sha256 hex) so a key minted by the provisioner /
 # backend credential store verifies identically at the edge. Falls back to a self-contained sha256
 # so the gateway keeps importing cleanly even where the backend identity module is unavailable.
@@ -560,6 +573,53 @@ def _identity_denied(record: Optional[Json], args: Json) -> Optional[Json]:
     allowed_sessions = record.get("allowed_session_ids") or []
     if allowed_sessions and str(scope.get("session_id") or "") not in allowed_sessions:
         return {"error": "session_not_allowed"}
+    return None
+
+
+def _mcp_denied(record: Optional[Json], parsed: Json) -> Optional[Json]:
+    """403 payload for a ``/v1/mcp`` JSON-RPC request the key may not make, else ``None``.
+
+    Replaces the old blanket ``context:retrieve`` gate on ``/v1/mcp`` with the SAME per-tool scope
+    map the backend enforces (``MATRIXARK_TOOL_SCOPES``), so the edge is no longer coarser than the
+    engine: a data-only key can no longer reach ``matrixark_admin_*`` tools (which require ``admin:*``)
+    through the MCP route.
+
+    Semantics (mirroring ``matrixark_access`` + the sibling ``_scope_denied``/``_identity_denied``):
+      * Enforcement runs ONLY for an enforced-mode key with a non-``None`` ``scopes`` list. A dev key
+        (``record is None``) or a legacy plain keystore key (``scopes is None``) is UNRESTRICTED --
+        ``/v1/mcp`` stays byte-identical to today for those.
+      * Only ``tools/call`` carries a tool; ``initialize`` / ``tools/list`` / ``ping`` / notifications
+        require no tool scope (still gated by a valid key via ``_authorize``).
+      * ``required = MATRIXARK_TOOL_SCOPES.get(name, set())``. Non-empty and NOT a subset of the key's
+        scopes -> 403 ``insufficient_scope`` (``required`` sorted for a stable payload). Unmapped tool
+        -> empty required -> allowed (matches the backend's ``.get(tool_name, set())``).
+      * User/session: ``allowed_user_ids``/``allowed_session_ids`` are applied (via ``_identity_denied``)
+        against ``params.arguments.scope`` ONLY when the call actually carries a ``scope`` object --
+        a scopeless ``tools/call`` imposes no user/session restriction (nothing to check).
+      * FALLBACK: a ``tools/call`` with no usable tool name (missing/blank ``params.name``) cannot be
+        mapped, so it falls back to the historical coarse ``context:retrieve`` requirement rather than
+        passing unchecked or crashing.
+    """
+    if record is None:
+        return None
+    if record.get("scopes") is None:  # legacy/unrestricted key
+        return None
+    if not isinstance(parsed, dict) or parsed.get("method") != "tools/call":
+        return None
+    params = parsed.get("params")
+    params = params if isinstance(params, dict) else {}
+    name = params.get("name")
+    if not isinstance(name, str) or not name:
+        # Unparseable / tool-less call -> historical coarse gate, not a free pass.
+        return _scope_denied(record, "context:retrieve")
+    scopes = set(record.get("scopes") or [])
+    required = MATRIXARK_TOOL_SCOPES.get(name, set())
+    if required and not required.issubset(scopes):
+        return {"error": "insufficient_scope", "required": sorted(required)}
+    margs = params.get("arguments")
+    margs = margs if isinstance(margs, dict) else {}
+    if isinstance(margs.get("scope"), dict):
+        return _identity_denied(record, margs)
     return None
 
 
@@ -1309,9 +1369,14 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
         if not allowed:
             return await _json(send, 401, {"error": "unauthorized"})
-        denied = _scope_denied(key_record, _required_scope(path, method, route))
-        if denied is not None:
-            return await _json(send, 403, denied)
+        # /v1/mcp is gated PER-TOOL after the JSON-RPC body is parsed (see the `__mcp__` branch
+        # below), not at this coarse route level -- the route's blanket `context:retrieve` scope
+        # can't distinguish a data `tools/call` from an admin one. Every other data route keeps its
+        # single route->scope gate here.
+        if tool != "__mcp__":
+            denied = _scope_denied(key_record, _required_scope(path, method, route))
+            if denied is not None:
+                return await _json(send, 403, denied)
 
         ok, remaining, reset, retry = limiter.check(key or "anon", cls)
         rl_headers = limiter.headers(cls, remaining, reset)
@@ -1331,6 +1396,14 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
 
         # MCP-over-HTTP: dispatch the JSON-RPC message directly (api-key injected downstream).
         if tool == "__mcp__":
+            # PER-TOOL edge gate: the body is already buffered + parsed ONCE above (`parsed`), so we
+            # inspect `method` / `params.name` / `params.arguments.scope` here and forward the SAME
+            # `parsed` object to mcp_http_dispatch untouched -- the ASGI receive stream is never read
+            # twice. Enforced-mode scoped keys get per-tool scope + user/session checks; dev/legacy
+            # keys are unrestricted (see `_mcp_denied`), so /v1/mcp stays byte-identical for them.
+            denied = _mcp_denied(key_record, parsed)
+            if denied is not None:
+                return await _json(send, 403, denied, rl_headers)
             try:
                 resp = await asyncio.wait_for(
                     asyncio.to_thread(mcp_http_dispatch, server, parsed, api_key=key), cfg.backend_timeout)

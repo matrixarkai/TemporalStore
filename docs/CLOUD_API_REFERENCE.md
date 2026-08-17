@@ -32,10 +32,20 @@ body — a tenant can never read another tenant's data, and two tenants cannot c
 | Route | Required scope |
 |---|---|
 | `POST /v1/ingest`, `/v1/session/commit`, `/v1/ingest_file`, `PUT\|POST /v1/blob/<key>` | `context:ingest` |
-| `POST /v1/retrieve`, `/v1/mcp`, `GET /v1/blob/<key>` | `context:retrieve` |
+| `POST /v1/retrieve`, `GET /v1/blob/<key>` | `context:retrieve` |
+| `POST /v1/mcp` | **per-tool** (see below) |
+
+**`/v1/mcp` is gated per-tool**, not by a single route scope. The scope a `tools/call` needs is the
+one the *called tool* needs — the same `MATRIXARK_TOOL_SCOPES` map the backend enforces — so data
+tools (`matrixark_ingest`, `matrixark_retrieve`, …) require the matching `context:*` scope while admin
+tools (`matrixark_admin_*`) require the matching `admin:*` scope. A data-only key therefore cannot
+reach an admin tool through the MCP route. Non-`tools/call` methods (`initialize`, `tools/list`,
+`ping`, notifications) need no tool scope but still require a valid key; an unmapped tool needs no
+scope (matching the backend).
 
 A key may also be restricted to specific `allowed_user_ids` / `allowed_session_ids`; a request whose
-`scope.user_id` / `scope.session_id` is outside the allow-list is rejected.
+`scope.user_id` / `scope.session_id` is outside the allow-list is rejected (for `/v1/mcp` this is
+checked against the `tools/call` `params.arguments.scope`).
 
 **401 vs 403.**
 
@@ -120,7 +130,12 @@ Synchronous: waits and returns the actual pack. Does **one** query-embedding per
 ---
 
 ### `POST /v1/mcp` — Model Context Protocol over HTTP
-JSON-RPC MCP message in the body → `200` with the MCP result. For MCP-native clients.
+JSON-RPC MCP message in the body → `200` with the MCP result. For MCP-native clients. In enforced
+mode this route is authorized **per-tool** via `MATRIXARK_TOOL_SCOPES` (the same map the backend
+uses): a `tools/call` needs the called tool's scope — data tools require `context:*`, admin tools
+require `admin:*` — so a data-only key is `403 insufficient_scope` on `matrixark_admin_*`, while
+`initialize` / `tools/list` / `ping` need only a valid key. `params.arguments.scope.user_id` /
+`session_id` are also checked against the key's `allowed_user_ids` / `allowed_session_ids`.
 
 ### `GET /v1/healthz` · `GET /v1/readyz` — probes (no auth)
 `/healthz` → `{"status":"ok"}`. `/readyz` → `{"ready":true,"datanode":"ok|unknown|unreachable"}`.
