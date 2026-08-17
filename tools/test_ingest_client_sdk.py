@@ -135,6 +135,32 @@ class IngestLargeFileTest(unittest.TestCase):
         self.assertEqual(1, len(_BLOBS))
         self.assertIn(tsblob.content_key(body), _BLOBS)
 
+    def test_sharing_scope_in_ingest_body(self):
+        path = self._write(b"# team skill\n")
+        with _Gateway() as gw:
+            sdk.ingest_large_file(path, base_url=gw.url, api_key="k",
+                                  kind="skill", sharing_scope="tenant_shared")
+        self.assertEqual("tenant_shared", _INGESTS[0]["sharing_scope"])
+
+    def test_visibility_alias_maps_to_sharing_scope(self):
+        path = self._write(b"# skill via alias\n")
+        with _Gateway() as gw:
+            sdk.ingest_large_file(path, base_url=gw.url, api_key="k",
+                                  visibility="global_shared")
+        self.assertEqual("global_shared", _INGESTS[0]["sharing_scope"])
+
+    def test_sharing_scope_omitted_key_absent(self):
+        path = self._write(b"# no scope\n")
+        with _Gateway() as gw:
+            sdk.ingest_large_file(path, base_url=gw.url, api_key="k")
+        self.assertNotIn("sharing_scope", _INGESTS[0])   # backward compatible
+
+    def test_unknown_sharing_scope_raises(self):
+        path = self._write(b"# bad scope\n")
+        with self.assertRaises(ValueError):
+            sdk.ingest_large_file(path, base_url="http://127.0.0.1:1", api_key="k",
+                                  sharing_scope="everyone")
+
 
 class IngestTextTest(unittest.TestCase):
     def setUp(self):
@@ -148,6 +174,24 @@ class IngestTextTest(unittest.TestCase):
         self.assertEqual("short knowledge body", _INGESTS[0]["text"])
         self.assertEqual("resource", _INGESTS[0]["kind"])
         self.assertEqual("short knowledge body", result["text"])
+        self.assertNotIn("sharing_scope", _INGESTS[0])   # omitted -> absent
+
+    def test_sharing_scope_global_shared_in_body(self):
+        with _Gateway() as gw:
+            sdk.ingest_text("shared body", base_url=gw.url, api_key="k",
+                            kind="resource", sharing_scope="global_shared")
+        self.assertEqual("global_shared", _INGESTS[0]["sharing_scope"])
+
+    def test_visibility_alias(self):
+        with _Gateway() as gw:
+            sdk.ingest_text("private body", base_url=gw.url, api_key="k",
+                            visibility="private_user")
+        self.assertEqual("private_user", _INGESTS[0]["sharing_scope"])
+
+    def test_unknown_sharing_scope_raises(self):
+        with self.assertRaises(ValueError):
+            sdk.ingest_text("x", base_url="http://127.0.0.1:1", api_key="k",
+                            sharing_scope="public")
 
 
 if __name__ == "__main__":

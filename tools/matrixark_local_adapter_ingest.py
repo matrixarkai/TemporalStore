@@ -692,6 +692,7 @@ class _LocalAdapterIngestMixin:
                         parse_uri,
                         text=parse_text,
                         chunk_hash_base=args.get("chunk_hash_base") if isinstance(args.get("chunk_hash_base"), int) else None,
+                        max_text_chars=args.get("max_skill_bytes") if isinstance(args.get("max_skill_bytes"), int) else None,
                     )
                     parsed_skill_chunks = rewrite_chunk_uris(parsed_skill.chunks, parse_uri=parse_uri, stored_raw_uri=raw_uri)
                     skill_hash = stable_hash(f"skill:{raw_uri}:{parsed_skill.name}:{parsed_skill.metadata.get('version', '1')}")

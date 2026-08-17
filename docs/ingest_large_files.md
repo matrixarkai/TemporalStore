@@ -27,10 +27,11 @@ result = ingest_large_file(
     "/path/to/skill.md",
     base_url="https://api.example.com",
     api_key="YOUR_API_KEY",
-    kind="skill",            # or "resource"
-    resource_type=None,      # inferred from the file suffix when omitted
-    scope=None,              # optional; tenant is pinned by your API key
-    wait=False,              # True -> wait for extraction; False -> fast 202 ack
+    kind="skill",              # or "resource"
+    resource_type=None,        # inferred from the file suffix when omitted
+    scope=None,                # optional; tenant is pinned by your API key
+    sharing_scope="tenant_shared",  # visibility; omit for the server default
+    wait=False,                # True -> wait for extraction; False -> fast 202 ack
 )
 print(result)               # the ingest response JSON
 ```
@@ -130,6 +131,52 @@ curl -X POST "$BASE_URL/v1/ingest" \
   -H "Content-Type: application/json" \
   -d '{"kind":"skill","text":"Short skill body.","resource_type":"md"}'
 ```
+
+---
+
+## Sharing scope (visibility)
+
+Both `ingest_large_file(...)` and `ingest_text(...)` take an optional `sharing_scope`
+(alias `visibility`) that controls who can see the ingested skill/resource. It is sent
+as the top-level `sharing_scope` key that the server already consumes; omit it to keep
+the server's default (derived from your scope/deployment).
+
+| `sharing_scope` | Visible to | Typical use |
+| --- | --- | --- |
+| `private_user` | only the ingesting user/session | personal notes, drafts |
+| `tenant_shared` | everyone in your tenant/account | team skills & knowledge |
+| `global_shared` | everyone on the deployment | org-wide / public content |
+
+```python
+from matrixark_ingest_client import ingest_large_file, ingest_text
+
+# a team-wide skill file
+ingest_large_file("/path/to/skill.md", base_url=BASE_URL, api_key=API_KEY,
+                  kind="skill", sharing_scope="tenant_shared")
+
+# short inline content, shared deployment-wide (visibility= is an accepted alias)
+ingest_text("Short knowledge body.", base_url=BASE_URL, api_key=API_KEY,
+            kind="resource", visibility="global_shared")
+```
+
+An unknown value raises `ValueError` locally before any request is sent.
+
+---
+
+## Size limits
+
+Inline/skill content is size-capped so a runaway body can't be ingested by accident:
+
+| Content | Default cap | Env override |
+| --- | --- | --- |
+| `kind="skill"` (file bytes / inline chars) | **2 MiB** | `MATRIXARK_MAX_SKILL_BYTES` (legacy alias: `MATRIXARK_SKILL_MAX_TEXT_CHARS`) |
+| `kind="resource"` file | **20 MiB** | `MATRIXARK_RESOURCE_MAX_FILE_BYTES` |
+| `kind="resource"` inline text | **5 MiB** | `MATRIXARK_RESOURCE_MAX_INLINE_TEXT_CHARS` |
+
+Resources have their **own, higher** limits and are **not** subject to the 2 MiB skill
+cap. For large content, ingest it as `kind="resource"` (or raise the skill cap via the
+env override). An oversized skill fails loudly with the effective limit in the message,
+e.g. `skill file too large: … bytes, max is 2097152`.
 
 ---
 

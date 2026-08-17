@@ -30,7 +30,48 @@ VALID_SKILL_PRECEDENCE = {"low", "normal", "high", "critical"}
 VALID_OWNER_SCOPE = {"user", "team", "tenant", "account", "global"}
 SKIP_BUNDLE_DIRS = {".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv", "target", "build", "dist"}
 MAX_BUNDLE_FILES = 200
-DEFAULT_MAX_SKILL_TEXT_CHARS = int(os.environ.get("MATRIXARK_SKILL_MAX_TEXT_CHARS", str(2 * 1024 * 1024)))
+
+# The skill-content size cap (bytes on disk, chars inline). Default 2 MiB. It is
+# configurable in three ways, highest precedence first:
+#   1. an explicit ``max_text_chars=`` argument to ``parse_skill`` (per request);
+#   2. the ``MATRIXARK_MAX_SKILL_BYTES`` environment variable (preferred name);
+#   3. the ``MATRIXARK_SKILL_MAX_TEXT_CHARS`` environment variable (legacy alias).
+# Env is read at call time (via ``resolve_max_skill_bytes``) so an override set by the
+# host process takes effect without re-importing. Large content that legitimately
+# exceeds this cap should be ingested as ``kind="resource"`` — resources carry their
+# OWN, higher limit (see ``matrixark_resource_parser.DEFAULT_MAX_FILE_BYTES``, 20 MiB,
+# knob ``MATRIXARK_RESOURCE_MAX_FILE_BYTES``) and are NOT subject to this skill cap.
+DEFAULT_MAX_SKILL_BYTES = 2 * 1024 * 1024
+# Back-compat module constant (import-time snapshot). Prefer resolve_max_skill_bytes().
+DEFAULT_MAX_SKILL_TEXT_CHARS = int(
+    os.environ.get("MATRIXARK_MAX_SKILL_BYTES")
+    or os.environ.get("MATRIXARK_SKILL_MAX_TEXT_CHARS")
+    or DEFAULT_MAX_SKILL_BYTES
+)
+
+
+def resolve_max_skill_bytes(override: int | None = None) -> int:
+    """Resolve the effective skill-content cap (bytes/chars).
+
+    Precedence: explicit ``override`` arg > ``MATRIXARK_MAX_SKILL_BYTES`` env >
+    ``MATRIXARK_SKILL_MAX_TEXT_CHARS`` env (legacy) > ``DEFAULT_MAX_SKILL_BYTES``
+    (2 MiB). Raises ``ValueError`` on a non-positive override.
+    """
+    if override is not None:
+        value = int(override)
+        if value <= 0:
+            raise ValueError("max_text_chars must be positive")
+        return value
+    for name in ("MATRIXARK_MAX_SKILL_BYTES", "MATRIXARK_SKILL_MAX_TEXT_CHARS"):
+        raw = os.environ.get(name)
+        if raw:
+            try:
+                value = int(raw)
+            except ValueError:
+                continue
+            if value > 0:
+                return value
+    return DEFAULT_MAX_SKILL_BYTES
 
 
 @dataclass(frozen=True)
@@ -62,10 +103,10 @@ def parse_skill(
     *,
     text: str | None = None,
     chunk_hash_base: int | None = None,
-    max_text_chars: int = DEFAULT_MAX_SKILL_TEXT_CHARS,
+    max_text_chars: int | None = None,
 ) -> ParsedSkill:
-    if max_text_chars <= 0:
-        raise ValueError("max_text_chars must be positive")
+    # Resolve the effective cap at call time: explicit arg > env > 2 MiB default.
+    max_text_chars = resolve_max_skill_bytes(max_text_chars)
     raw_uri_text = str(raw_uri)
     bundle_files: list[str] = []
     bundle_manifest: Json = {}

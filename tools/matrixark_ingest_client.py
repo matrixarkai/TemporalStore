@@ -19,6 +19,10 @@ Two entry points:
   * ``ingest_text(text, *, base_url, api_key, ...)`` — post small content inline in
     the ingest body; no upload.
 
+Both entry points accept an optional ``sharing_scope`` (alias ``visibility``) — one of
+``private_user`` / ``tenant_shared`` / ``global_shared`` — surfaced as the top-level
+``sharing_scope`` key the server already consumes. Omit it to keep the server default.
+
 RETRY GUIDANCE (important)
 --------------------------
 On ANY error — network blip, timeout, 5xx, a partial/corrupt upload — the caller
@@ -45,6 +49,25 @@ except ImportError:  # ... or package path.
     from tools.matrixark_temporalstore_blob import content_hash, content_key, blob_uri  # type: ignore
 
 Json = dict[str, Any]
+
+# Accepted values for the top-level ``sharing_scope`` ingest knob. The server's
+# resource_sharing_scope / registry_access_scope read this off the ingest body.
+VALID_SHARING_SCOPES = ("private_user", "tenant_shared", "global_shared")
+
+
+def _resolve_sharing_scope(sharing_scope: Optional[str], visibility: Optional[str]) -> Optional[str]:
+    """Resolve and validate the sharing scope. ``visibility`` is an alias for
+    ``sharing_scope`` (``sharing_scope`` wins when both are given). Returns the
+    validated value, or None when neither is provided. Raises ``ValueError`` on an
+    unknown non-None value."""
+    value = sharing_scope if sharing_scope is not None else visibility
+    if value is None:
+        return None
+    if value not in VALID_SHARING_SCOPES:
+        raise ValueError(
+            f"unknown sharing_scope {value!r} (use one of {', '.join(VALID_SHARING_SCOPES)})")
+    return value
+
 
 # resource_type -> HTTP content-type for the blob PUT (best-effort; the server does
 # not depend on it for correctness, it re-derives the parser from the suffix).
@@ -162,6 +185,8 @@ def _upload_matrixobject(data: bytes, content_type: str, *, kind: str,
 def ingest_large_file(path: str, *, base_url: str, api_key: str,
                       kind: str = "skill", resource_type: Optional[str] = None,
                       backend: str = "temporalstore", scope: Optional[Json] = None,
+                      sharing_scope: Optional[str] = None,
+                      visibility: Optional[str] = None,
                       wait: bool = False, timeout: float = 60.0) -> dict:
     """Ingest a large local skill/resource file into a remote deployment.
 
@@ -179,6 +204,10 @@ def ingest_large_file(path: str, *, base_url: str, api_key: str,
         backend: ``"temporalstore"`` (default, uploads over ``base_url``) or
             ``"matrixobject"`` (uploads via the object store; needs caller env).
         scope: optional scope object forwarded to ingest (tenant is pinned by auth).
+        sharing_scope: optional visibility knob — one of ``private_user`` /
+            ``tenant_shared`` / ``global_shared``. Sent as the top-level
+            ``sharing_scope`` ingest key; omitted (server default) when None.
+        visibility: alias for ``sharing_scope`` (``sharing_scope`` wins if both set).
         wait: when True, request synchronous extraction (maps to ``finalize``);
             otherwise the server fast-acks (202) and extracts asynchronously.
         timeout: per-request socket timeout in seconds.
@@ -186,6 +215,7 @@ def ingest_large_file(path: str, *, base_url: str, api_key: str,
     Returns:
         The parsed ingest response JSON (dict).
     """
+    effective_sharing_scope = _resolve_sharing_scope(sharing_scope, visibility)
     with open(path, "rb") as fh:
         data = fh.read()
     rtype = resource_type or _infer_resource_type(path)
@@ -203,6 +233,8 @@ def ingest_large_file(path: str, *, base_url: str, api_key: str,
     body: Json = {"kind": kind, "raw_uri": raw_uri, "resource_type": rtype, "wait": bool(wait)}
     if scope is not None:
         body["scope"] = scope
+    if effective_sharing_scope is not None:
+        body["sharing_scope"] = effective_sharing_scope
     if wait:
         body["finalize"] = True  # synchronous extraction via the gateway's finalize path
     return _post_json(base_url, api_key, "/v1/ingest", body, timeout)
@@ -210,16 +242,27 @@ def ingest_large_file(path: str, *, base_url: str, api_key: str,
 
 def ingest_text(text: str, *, base_url: str, api_key: str,
                 kind: str = "skill", resource_type: str = "md",
-                scope: Optional[Json] = None, wait: bool = False,
+                scope: Optional[Json] = None,
+                sharing_scope: Optional[str] = None,
+                visibility: Optional[str] = None,
+                wait: bool = False,
                 timeout: float = 60.0) -> dict:
     """Ingest small content inline (no upload). Posts ``text`` directly in the ingest
-    body — use this for short skills/resources; use ``ingest_large_file`` for files."""
+    body — use this for short skills/resources; use ``ingest_large_file`` for files.
+
+    ``sharing_scope`` (alias ``visibility``) is an optional visibility knob — one of
+    ``private_user`` / ``tenant_shared`` / ``global_shared`` — sent as the top-level
+    ``sharing_scope`` ingest key; omitted (server default) when None."""
+    effective_sharing_scope = _resolve_sharing_scope(sharing_scope, visibility)
     body: Json = {"kind": kind, "text": text, "resource_type": resource_type, "wait": bool(wait)}
     if scope is not None:
         body["scope"] = scope
+    if effective_sharing_scope is not None:
+        body["sharing_scope"] = effective_sharing_scope
     if wait:
         body["finalize"] = True
     return _post_json(base_url, api_key, "/v1/ingest", body, timeout)
 
 
-__all__ = ["ingest_large_file", "ingest_text", "content_hash", "content_key"]
+__all__ = ["ingest_large_file", "ingest_text", "content_hash", "content_key",
+           "VALID_SHARING_SCOPES"]
