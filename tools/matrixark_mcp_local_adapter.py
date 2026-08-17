@@ -2916,6 +2916,35 @@ def apply_memory_tombstones(records: list[Json]) -> list[Json]:
     return live
 
 
+def surviving_source_event_ids(records: list[Json]) -> set[str] | None:
+    """Order-aware set of ``context_event`` ids (as str) that SURVIVE the memory-tombstone sweep.
+
+    Returns ``None`` when the log carries no memory tombstone -- the fast path, signalling the caller
+    to keep every pending event unchanged. When tombstones exist, a ``context_event`` is *surviving*
+    only when no delete/forget tombstone appended AFTER it removes it.
+
+    This is the delete-before-extract forward guard's source of truth: async batch extraction runs at
+    commit time and materializes derivatives (entities / summaries / segments + embeddings + index
+    postings) from the still-PENDING ``session_buffer_event``s. If the source event (or, for a forget,
+    the whole subject scope) was deleted while pending, its ``context_event`` -- and the matching
+    ``session_buffer_event`` -- are killed by the delete/forget tombstone, so they are absent here and
+    the commit path skips extraction, never re-materializing the deleted content after the tombstone.
+    Because the sweep is order-aware (a tombstone only removes records that PRECEDE it), a LATER
+    re-ingest of the same content (a fresh ``event_id_hash``, appended after the tombstone) still
+    survives and materializes normally -- the suppression is per deleted event / tombstone, not a
+    permanent block on the content. Durable + cross-process: the signal is read from the JSONL log, so
+    a delete in one process is honored by a commit run in a freshly reloaded process."""
+    if not _records_contain_memory_tombstone(records):
+        return None
+    surviving: set[str] = set()
+    for record in apply_memory_tombstones(records):
+        if str(record.get("record_type") or "") == "context_event":
+            event_hash = record.get("event_id_hash")
+            if event_hash not in (None, ""):
+                surviving.add(str(event_hash))
+    return surviving
+
+
 def compact_and_apply_tombstones(records: list[Json]) -> list[Json]:
     """The serving pipeline, in the ONE order that is correct for both orphan sweeping AND supersede:
 
