@@ -2834,6 +2834,134 @@ def apply_memory_tombstones(records: list[Json]) -> list[Json]:
     return live
 
 
+# --------------------------------------------------------------------------------------------- #
+# PurchaseMemory Phase 1: per-record TTL / retention-cutoff (expire-only) read-time enforcement.
+#
+# A record carries ``expires_at`` (float unix seconds) + ``expires_at_ms`` (int ms) + ``ephemeral``
+# when it was ingested with a TTL. A scope-level retention cutoff is a durable marker record
+# (``matrixark_retention_cutoff``) carrying the target tenant/user hashes + ``cutoff_ms``. Both are
+# enforced lazily at READ time (records never surface once expired / older than an active cutoff)
+# and reclaimed physically by the existing tombstone-purge path (see ``sweep_expired_memories``).
+# The read filter is applied on every read (never baked into the size/mtime-keyed cache) so a
+# record that expires with no intervening write still disappears on the next read.
+# --------------------------------------------------------------------------------------------- #
+MEMORY_RETENTION_CUTOFF_RECORD_TYPE = "matrixark_retention_cutoff"
+# Ephemeral (TTL) records are stamped on every scoped record of the ingestion EXCEPT summaries,
+# which aggregate across ingestions and must not inherit a single ingest's expiry.
+_MEMORY_SUMMARY_RECORD_TYPES = {"context_summary", "context_summary_dirty"}
+
+
+def _memory_clock_now_ms() -> int:
+    """Current wall-clock in ms for TTL/cutoff checks, with a test override.
+
+    ``MATRIXARK_MEMORY_NOW_MS`` (integer ms) lets tests advance the expiry clock deterministically
+    without monkeypatching every ``now_ms`` call site; unset -> real ``now_ms()``."""
+    override = os.environ.get("MATRIXARK_MEMORY_NOW_MS")
+    if override:
+        try:
+            return int(override)
+        except (TypeError, ValueError):
+            pass
+    return now_ms()
+
+
+def _record_expires_at_ms(record: Json) -> int:
+    try:
+        return int(record.get("expires_at_ms") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _record_is_time_expired(record: Json, now_ms_value: int) -> bool:
+    expires_at_ms = _record_expires_at_ms(record)
+    return expires_at_ms > 0 and expires_at_ms <= now_ms_value
+
+
+def _record_occurred_ms(record: Json) -> int:
+    """The record's occurrence time in ms (``updated_at_ms``, else the ingestion time / event
+    time), used for retention-cutoff comparison. 0 when unknown (never cut by a cutoff)."""
+    for field in ("updated_at_ms", "timestamp_key_ms", "event_time_ms", "created_at_ms"):
+        value = record.get(field)
+        if value not in (None, ""):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+    envelope = record.get("envelope")
+    if isinstance(envelope, dict):
+        try:
+            return int(envelope.get("ingestion_time_ms") or 0)
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def _retention_cutoffs_by_subject(records: list[Json]) -> dict[tuple[int, int], int]:
+    """Highest active cutoff (ms) per ``(tenant_hash, user_hash)`` from cutoff-marker records."""
+    cutoffs: dict[tuple[int, int], int] = {}
+    for record in records:
+        if str(record.get("record_type") or "") != MEMORY_RETENTION_CUTOFF_RECORD_TYPE:
+            continue
+        try:
+            key = (int(record.get("target_tenant_hash") or 0), int(record.get("target_user_hash") or 0))
+            cutoff_ms = int(record.get("cutoff_ms") or 0)
+        except (TypeError, ValueError):
+            continue
+        if cutoff_ms > cutoffs.get(key, 0):
+            cutoffs[key] = cutoff_ms
+    return cutoffs
+
+
+def _record_cut_by_retention(record: Json, cutoffs: dict[tuple[int, int], int]) -> bool:
+    if not cutoffs:
+        return False
+    key = _record_scope_hashes(record)
+    cutoff_ms = cutoffs.get(key, 0)
+    if not cutoff_ms:
+        return False
+    occurred = _record_occurred_ms(record)
+    return occurred > 0 and occurred < cutoff_ms
+
+
+def _memory_records_need_expiry_filter(records: list[Json]) -> bool:
+    for record in records:
+        if record.get("ephemeral") or record.get("expires_at_ms"):
+            return True
+        if str(record.get("record_type") or "") == MEMORY_RETENTION_CUTOFF_RECORD_TYPE:
+            return True
+    return False
+
+
+def filter_live_memory_records(records: list[Json], *, now_ms_value: int | None = None) -> list[Json]:
+    """Drop expired / pre-cutoff records and the internal cutoff markers themselves.
+
+    Fast-path returns the input unchanged when no record carries a TTL or a cutoff marker exists
+    (the overwhelmingly common case). Applied per-read on top of the compacted+tombstoned view."""
+    if not _memory_records_need_expiry_filter(records):
+        return records
+    now = now_ms_value if now_ms_value is not None else _memory_clock_now_ms()
+    cutoffs = _retention_cutoffs_by_subject(records)
+    live: list[Json] = []
+    for record in records:
+        if str(record.get("record_type") or "") == MEMORY_RETENTION_CUTOFF_RECORD_TYPE:
+            continue  # internal marker: never surfaced to callers
+        if _record_is_time_expired(record, now):
+            continue
+        if _record_cut_by_retention(record, cutoffs):
+            continue
+        live.append(record)
+    return live
+
+
+def _drop_time_expired_records(records: list[Json], *, now_ms_value: int | None = None) -> list[Json]:
+    """Lightweight expiry-only re-filter for cache layers below ``read_all`` (retrieval hot-path
+    cache) so a record that expires between writes stops surfacing without a new write."""
+    if not any(record.get("expires_at_ms") for record in records):
+        return records
+    now = now_ms_value if now_ms_value is not None else _memory_clock_now_ms()
+    return [record for record in records if not _record_is_time_expired(record, now)]
+
+
 try:  # mixin
     from tools.matrixark_local_adapter_retrieve import _LocalAdapterRetrieveMixin
 except ImportError:
@@ -2891,6 +3019,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         # it off globally.
         self._local_jsonl_enabled = LOCAL_JSONL_ENABLED and "-unused-" not in self.event_log.name
         self._write_batch_local = threading.local()
+        # Per-ingestion TTL / identity stamp propagated from the envelope to every record produced
+        # during a single ingest() (thread-local so concurrent ingests never bleed into each other).
+        self._ingest_stamp_local = threading.local()
         self._event_log_lock = threading.RLock()
         self._resource_import_worker_count = max(1, int(os.environ.get("MATRIXARK_RESOURCE_IMPORT_WORKERS", "2")))
         self._resource_import_queue_max = max(1, int(os.environ.get("MATRIXARK_RESOURCE_IMPORT_QUEUE_MAX", "64")))
@@ -2936,6 +3067,70 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
     def _current_write_batch(self) -> list[Json] | None:
         stack = self._write_batch_stack()
         return stack[-1] if stack else None
+
+    # ---- Per-ingestion TTL / identity stamp -------------------------------------------------- #
+    def _ingest_stamp_stack(self) -> list[Json]:
+        local = getattr(self, "_ingest_stamp_local", None)
+        if local is None:
+            self._ingest_stamp_local = threading.local()
+            local = self._ingest_stamp_local
+        stack = getattr(local, "stack", None)
+        if stack is None:
+            stack = []
+            local.stack = stack
+        return stack
+
+    def _push_ingest_stamp(self, envelope: Json) -> None:
+        """Capture the envelope's TTL / identity fields for stamping onto this ingestion's records.
+        Always pushes (possibly an empty dict) so pop stays balanced in a try/finally."""
+        stamp: Json = {}
+        if envelope.get("ephemeral"):
+            stamp["expires_at"] = envelope.get("expires_at")
+            stamp["expires_at_ms"] = envelope.get("expires_at_ms")
+            stamp["ephemeral"] = True
+        identity_key = envelope.get("identity_key")
+        if isinstance(identity_key, str) and identity_key:
+            stamp["identity_key"] = identity_key
+            stamp["truth_rank"] = int(envelope.get("truth_rank") or 0)
+            if envelope.get("truth_class"):
+                stamp["truth_class"] = envelope.get("truth_class")
+        self._ingest_stamp_stack().append(stamp)
+
+    def _pop_ingest_stamp(self) -> None:
+        stack = self._ingest_stamp_stack()
+        if stack:
+            stack.pop()
+
+    def _current_ingest_stamp(self) -> Json:
+        stack = self._ingest_stamp_stack()
+        return stack[-1] if stack else {}
+
+    def _stamp_ingest_fields(self, records: list[Json]) -> list[Json]:
+        """Stamp the active per-ingestion TTL / identity fields onto scoped records (in place).
+
+        TTL (expires_at / ephemeral) lands on every scoped record EXCEPT summaries (which aggregate
+        across ingestions). identity_key / truth_rank lands on the ``context_event`` only. No-op when
+        no ingest stamp is active (i.e. every write outside an ephemeral/keyed ingest)."""
+        stamp = self._current_ingest_stamp()
+        if not stamp:
+            return records
+        has_ttl = "expires_at_ms" in stamp
+        has_identity = "identity_key" in stamp
+        for record in records:
+            record_type = str(record.get("record_type") or "")
+            if record_type not in _MEMORY_SCOPED_RECORD_TYPES:
+                continue
+            if has_ttl and record_type not in _MEMORY_SUMMARY_RECORD_TYPES:
+                if stamp.get("expires_at") is not None:
+                    record.setdefault("expires_at", stamp.get("expires_at"))
+                record.setdefault("expires_at_ms", stamp.get("expires_at_ms"))
+                record.setdefault("ephemeral", True)
+            if has_identity and record_type == "context_event":
+                record.setdefault("identity_key", stamp.get("identity_key"))
+                record.setdefault("truth_rank", int(stamp.get("truth_rank") or 0))
+                if stamp.get("truth_class"):
+                    record.setdefault("truth_class", stamp.get("truth_class"))
+        return records
 
     def _queue_batched_records(self, records: list[Json]) -> bool:
         batch = self._current_write_batch()
@@ -3230,7 +3425,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                     self._context_pack_cache.clear()
 
     def append(self, record: Json) -> None:
-        records = materialize_serving_record_batch([record])
+        records = self._stamp_ingest_fields(materialize_serving_record_batch([record]))
         if self._queue_batched_records(records):
             return
         jsonl_records = [self._sanitize_jsonl_record(item) for item in records]
@@ -3246,7 +3441,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         self._update_read_cache_after_append(jsonl_records)
 
     def append_many(self, records: list[Json]) -> None:
-        records = materialize_serving_record_batch(records)
+        records = self._stamp_ingest_fields(materialize_serving_record_batch(records))
         if not records:
             return
         if self._queue_batched_records(records):
@@ -3617,6 +3812,12 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         return records[-limit:] if LOCAL_READ_CACHE_COPY else list(records[-limit:])
 
     def read_all(self) -> list[Json]:
+        """Live view: the compacted, tombstone-filtered log with expired / pre-cutoff records and
+        internal retention-cutoff markers removed. Expiry is enforced on every read (never cached)
+        so a TTL record disappears once its ``expires_at`` passes, even with no intervening write."""
+        return filter_live_memory_records(self._read_all_compacted())
+
+    def _read_all_compacted(self) -> list[Json]:
         cache_key = str(self.event_log.resolve())
         paths = self._retained_jsonl_paths()
         if not paths:
@@ -3879,6 +4080,244 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         demoted["updated_at_ms"] = now_ms()
         demoted["demoted_removed_source_id"] = source_id
         return demoted
+
+    # ============================================================================================
+    # PurchaseMemory Phase 2: keyed-upsert (identity_key) + truth-rank guard, and TTL sweep/purge.
+    # ============================================================================================
+    @staticmethod
+    def _record_scope_key_str(record: Json) -> str:
+        scope = candidate_access_scope(record)
+        if isinstance(scope, dict):
+            scope_key = str(scope.get("scope_key") or "")
+            if scope_key:
+                return scope_key
+            canonical = canonical_scope_key(scope)
+            if canonical:
+                return canonical
+        return ""
+
+    def _apply_identity_upsert(self, result: Json, *, identity_key: str, envelope: Json) -> Json:
+        """Keyed-upsert truth-rank guard for a just-ingested event.
+
+        Finds OTHER live ``context_event``s that share ``identity_key`` within the SAME subject scope
+        and applies the guard against the highest surviving rank:
+
+          * new_rank >= existing_rank -> SUPERSEDE: closure-tombstone every older keyed record
+            (``superseded_by`` = the new id), so recall returns the new value.
+          * new_rank <  existing_rank -> RANK-GUARDED: roll this lower-confidence write back
+            (closure-tombstone the new id) and keep the existing highest-rank fact untouched.
+        """
+        new_id = str(result.get("event_id_hash") or "")
+        if not new_id:
+            return result
+        records = self._read_all_compacted()
+        new_record: Json | None = None
+        for record in records:
+            if str(record.get("record_type") or "") == "context_event" and str(record.get("event_id_hash")) == new_id:
+                new_record = record
+                break
+        if new_record is None:
+            return result
+        subject_scope_key = self._record_scope_key_str(new_record)
+        new_rank = int(new_record.get("truth_rank") or 0)
+        now_value = _memory_clock_now_ms()
+        existing: list[Json] = []
+        for record in records:
+            if str(record.get("record_type") or "") != "context_event":
+                continue
+            if str(record.get("event_id_hash")) == new_id:
+                continue
+            if str(record.get("identity_key") or "") != identity_key:
+                continue
+            if subject_scope_key and self._record_scope_key_str(record) != subject_scope_key:
+                continue
+            if _record_is_time_expired(record, now_value):
+                continue
+            existing.append(record)
+        if not existing:
+            result["identity_key"] = identity_key
+            result["truth_rank"] = new_rank
+            result["identity_upsert"] = "created"
+            result["upsert_outcome"] = "add"
+            return result
+        existing_rank = max(int(record.get("truth_rank") or 0) for record in existing)
+        if new_rank >= existing_rank:
+            tombstones: list[Json] = []
+            superseded_ids: list[str] = []
+            for record in existing:
+                old_id = str(record.get("event_id_hash") or "")
+                if not old_id:
+                    continue
+                superseded_ids.append(old_id)
+                tombstones.append({
+                    "record_type": MEMORY_TOMBSTONE_RECORD_TYPE,
+                    "tombstone_kind": "delete",
+                    "target_memory_id": old_id,
+                    "closure": True,
+                    # "supersede" so mem0 history() labels it a supersede (not a plain delete);
+                    # identity_supersede_kind records that it was a keyed-upsert supersede.
+                    "tombstone_reason": "supersede",
+                    "identity_supersede_kind": "identity_key",
+                    "identity_key": identity_key,
+                    "superseded_by": new_id,
+                    "created_at_ms": now_ms(),
+                })
+            if tombstones:
+                self.append_many(tombstones)
+                self._maybe_auto_purge()
+            result["identity_key"] = identity_key
+            result["truth_rank"] = new_rank
+            result["identity_upsert"] = "superseded"
+            result["upsert_outcome"] = "update"
+            result["superseded_memory_ids"] = superseded_ids
+            return result
+        # RANK-GUARDED: keep the highest-rank / most-recent existing fact; discard the new write.
+        keep = max(existing, key=lambda record: (int(record.get("truth_rank") or 0), _record_occurred_ms(record)))
+        keep_id = str(keep.get("event_id_hash") or "")
+        self.append({
+            "record_type": MEMORY_TOMBSTONE_RECORD_TYPE,
+            "tombstone_kind": "delete",
+            "target_memory_id": new_id,
+            "closure": True,
+            "tombstone_reason": "identity_rank_guarded",
+            "identity_key": identity_key,
+            "superseded_by": keep_id,
+            "created_at_ms": now_ms(),
+        })
+        self._maybe_auto_purge()
+        return {
+            "ingested": False,
+            "rank_guarded": True,
+            "upsert_outcome": "rank_guarded",
+            "identity_key": identity_key,
+            "event_id_hash": keep.get("event_id_hash"),
+            "current_memory_id": keep.get("event_id_hash"),
+            "existing_memory_id": keep.get("event_id_hash"),
+            "existing_rank": existing_rank,
+            "new_rank": new_rank,
+            "rejected_memory_id": new_id,
+            "access": result.get("access", {}),
+        }
+
+    def _write_retention_cutoff(self, result: Json, envelope: Json) -> None:
+        """Persist a durable scope-level retention-cutoff marker; records in the subject scope whose
+        occurrence time < cutoff are hidden at read-time and reclaimed by the expiry sweep."""
+        try:
+            cutoff_ms = int(envelope.get("retention_cutoff_ms") or 0)
+        except (TypeError, ValueError):
+            cutoff_ms = 0
+        if cutoff_ms <= 0:
+            return
+        scope = envelope.get("scope") if isinstance(envelope.get("scope"), dict) else {}
+        tenant_hash, user_hash = self._resolve_subject_hashes(scope)
+        if not tenant_hash or not user_hash:
+            new_id = str(result.get("event_id_hash") or "")
+            for record in self._read_all_compacted():
+                if str(record.get("record_type") or "") == "context_event" and str(record.get("event_id_hash")) == new_id:
+                    resolved_tenant, resolved_user = _record_scope_hashes(record)
+                    tenant_hash = tenant_hash or resolved_tenant
+                    user_hash = user_hash or resolved_user
+                    break
+        if not tenant_hash or not user_hash:
+            return
+        self.append({
+            "record_type": MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+            "target_tenant_hash": tenant_hash,
+            "target_user_hash": user_hash,
+            "cutoff_ms": cutoff_ms,
+            "cutoff_ts": envelope.get("retention_cutoff_ts"),
+            "created_at_ms": now_ms(),
+        })
+
+    def sweep_expired_memories(self, *, now_ms_value: int | None = None, force_purge: bool = False) -> Json:
+        """Lazy expiry reclamation: closure-tombstone expired / pre-cutoff memories, then purge.
+
+        Idempotent and crash-safe -- it reuses the same durable delete-tombstone + ``purge_tombstones``
+        machinery as ``delete``, so a re-run tombstones nothing new and recovery replays to the same
+        state. ``force_purge`` physically rewrites the log immediately; otherwise purge is left to the
+        ``MATRIXARK_MEMORY_PURGE_THRESHOLD`` gate."""
+        now_value = now_ms_value if now_ms_value is not None else _memory_clock_now_ms()
+        records = self._read_all_compacted()
+        cutoffs = _retention_cutoffs_by_subject(records)
+        expired_ids: list[str] = []
+        seen: set[str] = set()
+        for record in records:
+            if str(record.get("record_type") or "") != "context_event":
+                continue
+            if not (_record_is_time_expired(record, now_value) or _record_cut_by_retention(record, cutoffs)):
+                continue
+            event_id = str(record.get("event_id_hash") or "")
+            if not event_id or event_id in seen:
+                continue
+            seen.add(event_id)
+            expired_ids.append(event_id)
+        tombstones = [
+            {
+                "record_type": MEMORY_TOMBSTONE_RECORD_TYPE,
+                "tombstone_kind": "delete",
+                "target_memory_id": event_id,
+                "closure": True,
+                "tombstone_reason": "ttl_expired",
+                "created_at_ms": now_ms(),
+            }
+            for event_id in expired_ids
+        ]
+        purge: Json | None = None
+        if tombstones:
+            self.append_many(tombstones)
+            if force_purge:
+                purge = self.purge_tombstones(force=True)
+            else:
+                purge = self._maybe_auto_purge()
+        return {"swept": len(expired_ids), "expired_memory_ids": expired_ids, "purge": purge}
+
+    def _maybe_sweep_expired(self) -> Json | None:
+        """Auto-sweep expired memories when purge is enabled; never raises into the write path."""
+        if MEMORY_PURGE_THRESHOLD <= 0 or not self._local_jsonl_enabled:
+            return None
+        try:
+            return self.sweep_expired_memories(force_purge=False)
+        except OSError:
+            return None
+
+    def get_memory_by_identity_key(self, args: Json) -> Json:
+        """Recall the single current LIVE keyed value for ``identity_key`` in a scope (Phase 2).
+
+        The highest-``truth_rank`` surviving record wins (ties -> most recent occurrence). Reads
+        through the live view so superseded / expired / forgotten keyed records never surface."""
+        identity_key = str(args.get("identity_key") or "").strip()
+        if not identity_key:
+            raise MatrixArkError("get by key requires identity_key")
+        scope = optional_object(args, "scope")
+        tenant_hash, user_hash = self._resolve_subject_hashes(scope)
+        candidates: list[Json] = []
+        for record in self.read_all():
+            if str(record.get("record_type") or "") != "context_event":
+                continue
+            if str(record.get("identity_key") or "") != identity_key:
+                continue
+            record_tenant, record_user = _record_scope_hashes(record)
+            if tenant_hash and record_tenant != tenant_hash:
+                continue
+            if user_hash and record_user != user_hash:
+                continue
+            candidates.append(record)
+        if not candidates:
+            return {"found": False, "identity_key": identity_key}
+        best = max(candidates, key=lambda record: (int(record.get("truth_rank") or 0), _record_occurred_ms(record)))
+        return {
+            "found": True,
+            "identity_key": identity_key,
+            "id": best.get("event_id_hash"),
+            "memory_id": best.get("event_id_hash"),
+            "memory": best.get("summary_text") or best.get("text") or "",
+            "text": best.get("text") or "",
+            "truth_rank": int(best.get("truth_rank") or 0),
+            "truth_class": best.get("truth_class"),
+            "expires_at": best.get("expires_at"),
+            "scope_key": best.get("scope_key") or canonical_scope_key(scope),
+            "updated_at_ms": best.get("updated_at_ms"),
+        }
 
     def get_all(self, args: Json) -> Json:
         """List a scope's active (non-forgotten, non-deleted) memories (mem0 ``get_all(user_id=...)``).
