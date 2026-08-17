@@ -194,7 +194,8 @@ def _native_scope_with_hashes(scope: Json) -> Json:
     tenant_id = str(scope.get("tenant_id") or defaults.get("tenant_id") or "tenant_local_agent")
     user_id = str(scope.get("user_id") or defaults.get("user_id") or "")
     session_id = str(scope.get("session_id") or defaults.get("session_id") or "")
-    hashes = identity_hashes(account_id, tenant_id, user_id, session_id)
+    agent_id = str(scope.get("agent_id") or "")
+    hashes = identity_hashes(account_id, tenant_id, user_id, session_id, agent_id)
     explicit_scope_keys = {str(key) for key in scope.get("_explicit_scope_keys", []) if isinstance(key, str)}
     explicit_scope_keys.update(str(key) for key in scope.keys())
     enriched = {
@@ -211,6 +212,9 @@ def _native_scope_with_hashes(scope: Json) -> Json:
     if session_id:
         enriched["session_id"] = session_id
         enriched["session_hash"] = hashes["session_hash"]
+    if agent_id:
+        enriched["agent_id"] = agent_id
+        enriched["agent_hash"] = hashes["agent_hash"]
     return enriched
 
 

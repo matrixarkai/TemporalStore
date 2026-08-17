@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -31,6 +32,38 @@ impl MatrixObjectObjectStore {
 
     pub fn with_default_options(bucket: impl Into<String>) -> Result<Self, ObjectStoreError> {
         Self::new(bucket, StoreOptions::default())
+    }
+
+    /// Construct a **durable** store rooted at `dir`.
+    ///
+    /// `StoreOptions::default()` keeps the entire object store in memory, so the
+    /// bytes vanish when the process exits. This constructor points MatrixObject
+    /// at an on-disk snapshot (`<dir>/matrixobject.snapshot`) with
+    /// flush-on-commit enabled: every mutating operation atomically rewrites the
+    /// snapshot, and `MatrixObjectStore::new` reads it back at startup. That is
+    /// what lets a datanode recover shard data from shared storage after its
+    /// local dirs are wiped and it restarts.
+    ///
+    /// The `create_bucket` call in [`Self::new`] is idempotent, so restoring a
+    /// snapshot that already contains `bucket` is safe.
+    pub fn with_persistent_dir(
+        bucket: impl Into<String>,
+        dir: impl AsRef<Path>,
+    ) -> Result<Self, ObjectStoreError> {
+        let dir = dir.as_ref();
+        std::fs::create_dir_all(dir).map_err(|err| {
+            ObjectStoreError::InvalidKey(format!(
+                "failed to create matrixobject store dir {}: {err}",
+                dir.display()
+            ))
+        })?;
+        let snapshot_path = dir.join("matrixobject.snapshot");
+        let options = StoreOptions {
+            persistent_snapshot_path: snapshot_path.to_string_lossy().into_owned(),
+            persistent_snapshot_flush_on_commit: true,
+            ..StoreOptions::default()
+        };
+        Self::new(bucket, options)
     }
 
     pub fn with_content_type(mut self, content_type: impl Into<String>) -> Self {
@@ -66,6 +99,21 @@ impl MatrixObjectObjectStore {
     pub fn inner(&self) -> Arc<Mutex<MatrixObjectStore>> {
         Arc::clone(&self.inner)
     }
+
+    /// Force the durable snapshot to disk after a mutation.
+    ///
+    /// This is a no-op when the store has no `persistent_snapshot_path` (the
+    /// in-memory default), so it is safe to call unconditionally. It exists
+    /// because matrixobjectstore-rs only auto-flushes `flush_on_commit` for
+    /// `append_object`/`create_bucket` — a plain `put_object` (which the
+    /// shared-store WAL, index and page-slab writes all use) mutates in memory
+    /// but never rewrites the snapshot. Without this explicit flush a datanode
+    /// would appear durable yet lose every put on restart.
+    fn flush_snapshot(inner: &MatrixObjectStore) -> Result<(), ObjectStoreError> {
+        inner
+            .flush_persistent_snapshot()
+            .map_err(map_matrixobject_error)
+    }
 }
 
 #[async_trait]
@@ -75,6 +123,7 @@ impl ObjectStore for MatrixObjectObjectStore {
         inner
             .put_object(&self.bucket, key, bytes.to_vec(), self.content_type.clone())
             .map_err(map_matrixobject_error)?;
+        Self::flush_snapshot(&inner)?;
         Ok(())
     }
 
@@ -90,6 +139,9 @@ impl ObjectStore for MatrixObjectObjectStore {
             .map_err(map_matrixobject_error)?;
         let end_offset = metadata.length;
         let start_offset = end_offset.saturating_sub(bytes_written);
+        // append_object already honors flush_on_commit, but flush again so
+        // durability does not depend on how the store was configured.
+        Self::flush_snapshot(&inner)?;
         Ok(AppendBlobReceipt {
             key: key.to_string(),
             start_offset,
@@ -150,9 +202,11 @@ impl ObjectStore for MatrixObjectObjectStore {
     async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
         let mut inner = self.inner.lock().expect("matrixobject lock poisoned");
         match inner.delete_object(&self.bucket, key) {
-            Ok(_) | Err(MatrixObjectError::NotFound(_)) => Ok(()),
-            Err(err) => Err(map_matrixobject_error(err)),
+            Ok(_) | Err(MatrixObjectError::NotFound(_)) => {}
+            Err(err) => return Err(map_matrixobject_error(err)),
         }
+        Self::flush_snapshot(&inner)?;
+        Ok(())
     }
 
     fn uri(&self, key: &str) -> String {

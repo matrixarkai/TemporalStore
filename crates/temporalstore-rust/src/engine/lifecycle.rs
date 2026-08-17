@@ -136,12 +136,12 @@ impl TemporalEngine {
             };
         }
         let (loaded, replay_watermark) = if wal_single_barrier() {
-            // SINGLE-BARRIER RECOVERY TRUST (base-only). The data-page + delta fdatasyncs and
-            // the per-write base rewrite are all deferred, so neither the served-index delta nor
-            // the un-synced base rewrite can be trusted -- they may reference pages that were
-            // never fsync'd. Recover ONLY from durable checkpoints:
-            //  * the base index snapshot, materialized durably (fsync) at the last dump/flush --
-            //    that path fsyncs every page BEFORE advancing its watermark, so every page
+            // SINGLE-BARRIER RECOVERY TRUST (base-only). The data-page + delta fdatasyncs are
+            // deferred, so neither the served-index delta nor the anchor it advances can be
+            // trusted -- they may reference pages that were never fsync'd. Recover ONLY from
+            // durable checkpoints:
+            //  * the base index snapshot, materialized durably (fsync) at the last dump/unload --
+            //    flush_shard_index fsyncs every page BEFORE advancing its watermark, so every page
             //    at/below the base watermark is on disk; and
             //  * the latest durable dump manifest, if newer than the base file.
             // Then replay the WAL tail from that durable watermark, re-deriving every page written
@@ -512,17 +512,8 @@ impl TemporalEngine {
                     None => None,
                 }
             };
-            // Single-barrier mode: DO NOT persist the reconstructed base index here. The pages
-            // this replay just re-derived are not yet fsync'd (the data-page barrier is deferred),
-            // so writing a base index anchored at `replayed_through` would again advance the
-            // durable base watermark past the durable page frontier -- a second crash would then
-            // trust it and drop the un-synced replayed tail. The base index is advanced ONLY by
-            // the durable dump/flush path (which fsyncs pages first); until then every reload
-            // re-derives the tail from the WAL (the documented base-only re-derivation tradeoff).
             if let Some(index_bytes) = index_bytes {
-                if !wal_single_barrier() {
-                    let _ = self.persist_index_bytes(shard_id, &index_bytes);
-                }
+                let _ = self.persist_index_bytes(shard_id, &index_bytes);
             }
         }
         Ok(())
@@ -545,11 +536,12 @@ impl TemporalEngine {
                 status: Status::error("shard_not_found", "shard is not loaded"),
             };
         }
-        // Delta path: the per-write base rewrite is deferred, so materialize the current
+        // The per-write base rewrite is deferred, so unload materializes the current
         // in-memory index to disk before the shard leaves memory. This keeps a later cold
         // load (and any consumer that reads shard-{id}.index.json directly) on a current
-        // base. No-op on the default path, where the base is already current per write.
-        if delta_served_index_enabled() {
+        // base. The index-log is bounded separately by the storage-manager's consumer-aware
+        // index GC, so unload does not truncate it here.
+        {
             let index_bytes = self
                 .shards
                 .read()

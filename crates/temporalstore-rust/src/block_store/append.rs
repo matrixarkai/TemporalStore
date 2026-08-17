@@ -95,9 +95,6 @@ impl LocalBlockStore {
         //    fsync + rename EVERY record -- barriers 5/6) to sync_durable()/slab-seal. SAFE
         //    even with pages kept durable: the manifest is band/GC metadata reconstructed
         //    by reconcile-on-open from the durable page records, never a read dependency.
-        // Under the true single-barrier mode the data-page fdatasync is also deferred;
-        // base-only recovery re-derives every post-dump page by WAL replay, so a never-fsync'd
-        // page is rebuilt from its WAL command rather than left dangling.
         let defer_data_sync = bulk_relaxed_durability() || page_wal_single_barrier();
         let defer_manifest = bulk_relaxed_durability() || page_wal_only_sync();
         if !defer_data_sync {

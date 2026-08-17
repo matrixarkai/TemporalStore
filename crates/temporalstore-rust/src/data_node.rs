@@ -1232,6 +1232,20 @@ impl Drop for StorageManagerRuntime {
     }
 }
 
+/// Durable shared-storage sink for successfully-applied write commands.
+///
+/// When a datanode is configured with a shared-storage backend (e.g.
+/// matrixobject), an implementor is attached to the runtime via
+/// [`DataNodeRuntime::set_shared_wal_sink`]. Every write command that the local
+/// engine accepts is then mirrored to shared storage, so the data survives the
+/// loss of this node's local dirs and can be replayed on restart. The call is
+/// made synchronously after the local write succeeds; implementors decide their
+/// own durability mode (sync publish vs. queued) and error handling.
+pub trait SharedWalSink: std::fmt::Debug + Send + Sync {
+    /// Record a single successfully-applied write `command` for `shard_id`.
+    fn record_write(&self, shard_id: ShardId, command: &Command);
+}
+
 #[derive(Debug)]
 struct DataNodeRuntimeInner {
     engine: TemporalEngine,
@@ -1249,6 +1263,9 @@ struct DataNodeRuntimeInner {
     lifecycle_persistence: Mutex<DataNodeLifecyclePersistenceReport>,
     last_storage_manager_cycle: Mutex<Option<StorageManagerCycleReport>>,
     next_job_id: AtomicU64,
+    /// Optional durable shared-storage sink; when set, accepted writes are
+    /// mirrored to shared storage for cross-restart / local-loss recovery.
+    shared_wal_sink: Mutex<Option<Arc<dyn SharedWalSink>>>,
 }
 
 #[derive(Debug, Default)]
@@ -1549,6 +1566,7 @@ impl DataNodeRuntime {
             lifecycle_snapshot_path,
             last_storage_manager_cycle: Mutex::default(),
             next_job_id: AtomicU64::new(1),
+            shared_wal_sink: Mutex::new(None),
         });
         restore_lifecycle_snapshot_from_path_inner(&inner);
         for _ in 0..inner.options.worker_threads {
@@ -1560,6 +1578,55 @@ impl DataNodeRuntime {
 
     pub fn engine(&self) -> TemporalEngine {
         self.inner.engine.clone()
+    }
+
+    /// Attach a durable shared-storage sink. Once set, every write command the
+    /// local engine accepts is also mirrored to shared storage (see
+    /// [`SharedWalSink`]). Opt-in: with no sink attached the runtime behaves
+    /// exactly as before.
+    pub fn set_shared_wal_sink(&self, sink: Arc<dyn SharedWalSink>) {
+        *self
+            .inner
+            .shared_wal_sink
+            .lock()
+            .expect("shared wal sink lock poisoned") = Some(sink);
+    }
+
+    fn mirror_write(&self, shard_id: ShardId, command: &Command) {
+        if !is_write_command(command) {
+            return;
+        }
+        let sink = self
+            .inner
+            .shared_wal_sink
+            .lock()
+            .expect("shared wal sink lock poisoned")
+            .clone();
+        if let Some(sink) = sink {
+            sink.record_write(shard_id, command);
+        }
+    }
+
+    fn mirror_writes(
+        &self,
+        shard_id: ShardId,
+        commands: &[Command],
+        responses: &[ExecuteResponse],
+    ) {
+        let sink = self
+            .inner
+            .shared_wal_sink
+            .lock()
+            .expect("shared wal sink lock poisoned")
+            .clone();
+        let Some(sink) = sink else {
+            return;
+        };
+        for (command, response) in commands.iter().zip(responses.iter()) {
+            if response.status.ok && is_write_command(command) {
+                sink.record_write(shard_id, command);
+            }
+        }
     }
 
     pub fn last_storage_manager_cycle_report(&self) -> Option<StorageManagerCycleReport> {
@@ -1618,6 +1685,7 @@ impl DataNodeRuntime {
             lifecycle_snapshot_path,
             last_storage_manager_cycle: Mutex::default(),
             next_job_id: AtomicU64::new(1),
+            shared_wal_sink: Mutex::new(None),
         });
         restore_lifecycle_snapshot_from_path_inner(&inner);
         Self { inner }
@@ -1739,6 +1807,7 @@ impl DataNodeRuntime {
                 request.shard_id,
                 command_key(&request.command).as_deref(),
             );
+            self.mirror_write(request.shard_id, &request.command);
         }
         response
     }
@@ -1764,6 +1833,7 @@ impl DataNodeRuntime {
                 request.shard_id,
                 command_key(&request.command).as_deref(),
             );
+            self.mirror_write(request.shard_id, &request.command);
         }
         response
     }
@@ -1786,6 +1856,7 @@ impl DataNodeRuntime {
             &request.commands,
             &response.responses,
         );
+        self.mirror_writes(request.shard_id, &request.commands, &response.responses);
         response
     }
 
@@ -1810,6 +1881,11 @@ impl DataNodeRuntime {
         if response.status.ok {
             mark_dirty_for_successful_commands(
                 &self.inner.dirty,
+                request.shard_id,
+                &request.commands,
+                &response.response.responses,
+            );
+            self.mirror_writes(
                 request.shard_id,
                 &request.commands,
                 &response.response.responses,

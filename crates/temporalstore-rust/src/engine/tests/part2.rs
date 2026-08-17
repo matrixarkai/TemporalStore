@@ -1079,7 +1079,6 @@ fn atomic_batch_is_all_or_nothing_when_commit_marker_lost() {
     }
 }
 
-
 #[test]
 fn durable_execute_overrides_async_storage_for_raft_local_file_path() {
     let dir = tempfile::tempdir().unwrap();
@@ -4040,5 +4039,94 @@ fn engine_reload_shard_updates_metadata_and_rejects_stale_version() {
         },
     });
     assert_eq!(write.status.code, "readonly_shard");
+}
+
+// After a crash that lost the un-synced served-index base + delta (only the WAL + config-log
+// survive), WAL-tail replay must re-derive the feature_max_size trim rather than resurrecting the
+// evicted points. The config-log is now persisted + restored UNCONDITIONALLY (not only under the
+// single-barrier flag), so the trim is re-derived in every barrier mode -- previously, off the
+// flag, config was not durable and the same crash resurrected the evicted points. This test pins
+// the fixed behavior so the config-log's role is explicit.
+#[test]
+fn walonly_recovery_rederives_feature_trim_under_single_barrier() {
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache-a"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config {
+                    version: 2,
+                    feature_max_size: 3,
+                    ..Config::default()
+                },
+            })
+            .ok
+    );
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureAppend {
+            key: "f".to_string(),
+            points: (1..=5)
+                .map(|i| FeaturePoint {
+                    timestamp_ms: i * 10,
+                    value: vec![i as u8],
+                })
+                .collect(),
+        },
+    });
+    let live = |e: &TemporalEngine| -> Vec<u64> {
+        match e
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::FeatureQuery {
+                    key: "f".to_string(),
+                    start_ms: 0,
+                    end_ms: u64::MAX,
+                    count: Some(100),
+                },
+            })
+            .response
+        {
+            CommandResponse::FeaturePoints { points } => {
+                points.iter().map(|p| p.timestamp_ms).collect()
+            }
+            other => panic!("expected FeaturePoints, got {other:?}"),
+        }
+    };
+    let before = live(&engine);
+    assert_eq!(before, vec![30, 40, 50]);
+    drop(engine);
+    // Simulate a WAL-only crash: the served index base + delta were not fsync'd and are
+    // lost; only the WAL and the data pages survive.
+    std::fs::remove_file(index_dir.join("shard-1.index.json")).ok();
+    if let Ok(rd) = std::fs::read_dir(index_dir.join("indexlogs")) {
+        for e in rd.flatten() {
+            std::fs::remove_file(e.path()).ok();
+        }
+    }
+    let restarted = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    restarted.load_shard(1);
+    let after = live(&restarted);
+    // The config-log is durable regardless of barrier mode, so WAL-only replay re-derives the
+    // feature_max_size trim in every mode -- the evicted points stay evicted, no resurrection.
+    assert_eq!(
+        after, before,
+        "WAL-only replay must re-derive the feature trim from the durable config-log (no resurrection)"
+    );
+    assert_eq!(after, vec![30, 40, 50]);
 }
 

@@ -21,7 +21,8 @@ Design constraints honored here (identical to the sibling front):
   * The blob proxy streams request/response bodies chunk-by-chunk (bounded memory) straight to the
     datanode's `POST|PUT|GET /blob/<key>` endpoint using only `http.client` from the stdlib.
 
-Routes: POST /v1/ingest (async fast-ack 202) · POST /v1/session/commit · POST /v1/retrieve ·
+Routes: POST /v1/ingest (async fast-ack 202) · POST /v1/ingest_file (stream file body, store to the
+        blob tier + ingest in one call) · POST /v1/session/commit · POST /v1/retrieve ·
         POST /v1/mcp · PUT|POST|GET /v1/blob/<key> · GET /v1/healthz|/readyz. Everything that is not
         under `/v1` is delegated to the legacy `make_asgi_app(server)` so `/api/*`, `/mcp`, `/healthz`
         keep working unchanged (back-compat).
@@ -29,9 +30,12 @@ Routes: POST /v1/ingest (async fast-ack 202) · POST /v1/session/commit · POST 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import logging
 import math
 import os
+import tempfile
 import threading
 import time
 from typing import Any, Awaitable, Callable, Optional, Tuple
@@ -43,6 +47,19 @@ try:
 except ImportError:  # Direct script execution from tools/.
     from matrixark_asgi import make_asgi_app, _api_key  # type: ignore
     from matrixark_http import apply_ingest_route_defaults, mcp_http_dispatch  # type: ignore
+
+# Canonical tool -> required-scopes map. The SAME map the backend gates with
+# (matrixark_access.MatrixArkAccessManager.authenticate), so the edge per-tool gate on /v1/mcp
+# mirrors the backend exactly: unmapped tool -> empty set -> no scope requirement. Falls back to an
+# empty map so the gateway keeps importing cleanly where the core module is unavailable (the mcp
+# per-tool gate then degrades to "no tool scope", still behind the valid-key check in _authorize).
+try:  # pragma: no cover - trivial import shim
+    try:
+        from tools.matrixark_mcp_core import MATRIXARK_TOOL_SCOPES  # type: ignore
+    except ImportError:
+        from matrixark_mcp_core import MATRIXARK_TOOL_SCOPES  # type: ignore
+except Exception:  # pragma: no cover
+    MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {}
 
 # Key hashing: reuse the backend's `secret_hash` (sha256 hex) so a key minted by the provisioner /
 # backend credential store verifies identically at the edge. Falls back to a self-contained sha256
@@ -60,11 +77,42 @@ except Exception:  # pragma: no cover
 
 Json = dict[str, Any]
 
+_LOG = logging.getLogger("matrixark.gateway")
+
+# Fires the no-auth startup warning at most once per process.
+_AUTH_WARNED = {"done": False}
+
+_NO_AUTH_WARNING = (
+    "MatrixArk gateway is running WITHOUT authentication (dev default). Anyone who "
+    "can reach this address has full anonymous access and there is NO tenant "
+    "isolation. Set MATRIXARK_REQUIRE_AUTH=1 (and MATRIXARK_ACCESS_MODE=enforced) "
+    "to enforce API keys."
+)
+
+
+def _warn_if_auth_disabled(cfg: "GatewayConfig") -> None:
+    """Emit a one-time, NON-BLOCKING warning when auth is effectively off
+    (``require_auth`` False). Never rejects requests or blocks startup — behavior
+    stays fully anonymous-allowed; this only surfaces the posture to the operator."""
+    if getattr(cfg, "require_auth", False):
+        return
+    if _AUTH_WARNED["done"]:
+        return
+    _AUTH_WARNED["done"] = True
+    _LOG.warning("WARNING: %s", _NO_AUTH_WARNING)
+
+
 # ---- defaults (all overridable via env or the `config` dict) -----------------------------------
 _MIB = 1024 * 1024
 _GIB = 1024 * 1024 * 1024
+# DEV DEFAULT: auth is OFF out of the box so the API works anonymously with zero
+# config. This is a deliberate developer-experience default; production MUST opt in
+# to auth with MATRIXARK_REQUIRE_AUTH=1 (and MATRIXARK_ACCESS_MODE=enforced). When
+# require_auth is False the gateway logs a one-time startup warning (see
+# _warn_if_auth_disabled). The enforced path is unchanged: set require_auth True and
+# bad/missing keys -> 401 with tenant/account pinned from the key hash.
 _DEFAULTS = {
-    "require_auth": True,
+    "require_auth": False,
     "enforced": False,
     "ingest_rps": 5000.0,
     "ingest_burst": 10000.0,
@@ -74,6 +122,9 @@ _DEFAULTS = {
     "max_body_bytes": 16 * _MIB,
     "max_batch": 1000,
     "max_blob_bytes": 5 * _GIB,
+    # Directory the /v1/ingest_file route spools the streamed body to before hashing
+    # (keeps memory flat for large files). Empty -> the system temp dir.
+    "ingest_spool_dir": "",
     "datanode_url": "http://127.0.0.1:17102",
     "blob_timeout": 30.0,
     "backend_timeout": 30.0,   # gateway-level cap on a single backend call (s)
@@ -90,6 +141,15 @@ _DEFAULTS = {
     # the ingest becomes retrievable on its own. Must be > 0 (0 would commit inline and
     # defeat the debounce); <= 0 disables scheduling (retrieve-time flush still applies).
     "stream_idle_commit_timeout_ms": 1000,
+    # Per-key usage metering (edge). An in-process counter is bumped after a key is validated on
+    # each AUTHENTICATED request; it is flushed to `usage_file` (JSONL/JSON snapshot) at most every
+    # `usage_flush_every` recorded requests OR `usage_flush_interval_s` seconds, whichever comes
+    # first. Empty `usage_file` keeps the counter fully in-process (snapshot still readable via the
+    # /v1/admin/api_key_usage route). Metering runs ONLY in enforced mode (a real key exists); dev/
+    # anonymous requests are never metered. Best-effort: a metering failure never breaks a request.
+    "usage_file": "",
+    "usage_flush_every": 50,
+    "usage_flush_interval_s": 5.0,
 }
 
 # route -> (tool name, rate-limit class). "__mcp__" is dispatched through mcp_http_dispatch.
@@ -143,8 +203,82 @@ def _parse_api_keys(env: Any, overrides: Json) -> dict[str, str]:
     return keys
 
 
+def _str_list(value: Any) -> list[str]:
+    """Coerce a keystore field into a ``list[str]`` (non-list/absent -> empty list)."""
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return []
+
+
+def _opt_int(value: Any) -> Optional[int]:
+    """Coerce a keystore field into an ``int`` or ``None`` (absent/invalid -> None).
+
+    ``bool`` is rejected (it is an ``int`` subclass but never a meaningful quota). This is the
+    backward-compatibility hinge for ``request_quota``: a legacy record with no such field yields
+    ``None`` -> UNLIMITED, byte-identical to today."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        return int(value.strip())
+    return None
+
+
+def _opt_float(value: Any) -> Optional[float]:
+    """Coerce a keystore field into a ``float`` or ``None`` (absent/invalid -> None)."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _normalize_key_record(raw: Json, *, default_account: str = "") -> Json:
+    """Normalize a keystore value into the canonical EDGE key record shape.
+
+    Carries the authorization fields all the way to the edge so the dispatcher can enforce them:
+    ``tenant_id``/``account_id`` (identity, as before) plus ``scopes``/``allowed_user_ids``/
+    ``allowed_session_ids``/``role``.
+
+    ``scopes`` semantics are the backward-compatibility hinge:
+      * ``None`` (the field is ABSENT from the source, i.e. the LEGACY plain
+        ``{sha256:{tenant_id,account_id}}`` form) means UNRESTRICTED -- no scope enforcement, so a
+        legacy keystore behaves exactly as it did before this change.
+      * a present list (even empty) is authoritative -- the key may only use those scopes.
+    ``allowed_user_ids``/``allowed_session_ids`` default to ``[]`` meaning NO user/session restriction.
+    """
+    scopes_raw = raw.get("scopes")
+    if scopes_raw is None:
+        scopes: Optional[list[str]] = None
+    elif isinstance(scopes_raw, list):
+        scopes = [str(item) for item in scopes_raw]
+    else:  # a bare scalar scope -> single-element list
+        scopes = [str(scopes_raw)]
+    return {
+        "tenant_id": str(raw.get("tenant_id") or ""),
+        "account_id": str(raw.get("account_id") or "") or default_account,
+        "scopes": scopes,
+        "allowed_user_ids": _str_list(raw.get("allowed_user_ids")),
+        "allowed_session_ids": _str_list(raw.get("allowed_session_ids")),
+        "role": str(raw.get("role") or ""),
+        # Per-key request QUOTA, carried to the edge like scopes. ``request_quota`` None/<=0 ->
+        # UNLIMITED (backward compatible: a legacy record has no such field). ``quota_window`` is the
+        # rolling window in seconds; None/<=0 -> a per-process lifetime window (never resets).
+        "request_quota": _opt_int(raw.get("request_quota")),
+        "quota_window": _opt_float(raw.get("quota_window")),
+    }
+
+
 def _parse_hashed_keys(env: Any, overrides: Json) -> dict[str, Json]:
-    """Enforced-mode keystore: ``{api_key_hash -> {"tenant_id", "account_id"}}``.
+    """Enforced-mode keystore: ``{api_key_hash -> record}``.
 
     Keys are stored HASHED, never plaintext. The store is provisioned by
     ``matrixark_provision_api_key.py`` (which reuses the backend ``secret_hash`` and the
@@ -152,30 +286,37 @@ def _parse_hashed_keys(env: Any, overrides: Json) -> dict[str, Json]:
     ``MATRIXARK_API_KEYS_HASHED_FILE``:
 
       * JSONL of ``matrixark_api_key`` records (same fields the backend credential store writes:
-        ``record_type``/``api_key_hash``/``account_id``/``tenant_id``/``status``/``expires_at_ms``).
-      * a plain JSON object ``{"<sha256hex>": {"tenant_id": ..., "account_id": ...}}``.
+        ``record_type``/``api_key_hash``/``account_id``/``tenant_id``/``status``/``expires_at_ms``,
+        plus ``scopes``/``allowed_user_ids``/``allowed_session_ids``/``role``).
+      * a plain JSON object ``{"<sha256hex>": {"tenant_id": ..., "account_id": ...}}`` (LEGACY form,
+        no ``scopes`` -> UNRESTRICTED, backward compatible).
 
-    ``overrides["hashed_api_keys"]`` (a dict) short-circuits for tests. Inactive/expired records are
-    skipped. The last active record for a given hash wins.
+    Each stored value is normalized (see ``_normalize_key_record``) so the edge dispatcher can enforce
+    the key's ``scopes``/``allowed_user_ids``/``allowed_session_ids``. ``overrides["hashed_api_keys"]``
+    (a dict) short-circuits for tests. Inactive/expired records are skipped; the last active record
+    for a given hash wins.
     """
     if isinstance(overrides.get("hashed_api_keys"), dict):
-        return {str(k): dict(v) if isinstance(v, dict) else {"tenant_id": str(v)}
-                for k, v in overrides["hashed_api_keys"].items()}
+        out: dict[str, Json] = {}
+        for k, v in overrides["hashed_api_keys"].items():
+            raw = dict(v) if isinstance(v, dict) else {"tenant_id": str(v)}
+            out[str(k)] = _normalize_key_record(raw)
+        return out
     path = str(env.get("MATRIXARK_API_KEYS_HASHED_FILE", "") or "").strip()
-    out: dict[str, Json] = {}
+    out = {}
     if not path or not os.path.exists(path):
         return out
     now = int(time.time() * 1000)
 
-    def _add(hash_hex: str, tenant_id: str, account_id: str) -> None:
-        if hash_hex and tenant_id:
-            out[hash_hex] = {"tenant_id": tenant_id, "account_id": account_id or "acct_local"}
+    def _add(hash_hex: str, raw: Json) -> None:
+        if hash_hex and str(raw.get("tenant_id") or ""):
+            out[hash_hex] = _normalize_key_record(raw, default_account="acct_local")
 
     with open(path, "r", encoding="utf-8") as handle:
         text = handle.read()
     stripped = text.strip()
     if stripped.startswith("{") and '"api_key_hash"' not in stripped:
-        # plain JSON object form.
+        # plain JSON object form (LEGACY): value is {tenant_id, account_id} or a bare tenant string.
         try:
             data = json.loads(stripped)
         except json.JSONDecodeError:
@@ -183,9 +324,9 @@ def _parse_hashed_keys(env: Any, overrides: Json) -> dict[str, Json]:
         if isinstance(data, dict):
             for hash_hex, value in data.items():
                 if isinstance(value, dict):
-                    _add(str(hash_hex), str(value.get("tenant_id") or ""), str(value.get("account_id") or ""))
+                    _add(str(hash_hex), value)
                 else:
-                    _add(str(hash_hex), str(value), "")
+                    _add(str(hash_hex), {"tenant_id": str(value)})
         return out
     # JSONL of records (append-only credential-store shape).
     for line in text.splitlines():
@@ -204,8 +345,7 @@ def _parse_hashed_keys(env: Any, overrides: Json) -> dict[str, Json]:
         expires_at_ms = record.get("expires_at_ms")
         if isinstance(expires_at_ms, int) and expires_at_ms <= now:
             continue
-        _add(str(record.get("api_key_hash") or ""), str(record.get("tenant_id") or ""),
-             str(record.get("account_id") or ""))
+        _add(str(record.get("api_key_hash") or ""), record)
     return out
 
 
@@ -263,6 +403,11 @@ class GatewayConfig:
             max_body_bytes=num("MATRIXARK_QUOTA_MAX_BODY_BYTES", "max_body_bytes", int),
             max_batch=num("MATRIXARK_QUOTA_MAX_BATCH", "max_batch", int),
             max_blob_bytes=num("MATRIXARK_QUOTA_MAX_BLOB_BYTES", "max_blob_bytes", int),
+            ingest_spool_dir=str(
+                overrides.get("ingest_spool_dir")
+                or env.get("MATRIXARK_INGEST_SPOOL_DIR")
+                or _DEFAULTS["ingest_spool_dir"]
+            ),
             datanode_url=str(
                 overrides.get("datanode_url")
                 or env.get("MATRIXARK_DATANODE_BLOB_URL")
@@ -285,6 +430,15 @@ class GatewayConfig:
             direct_connection_factory=overrides.get("direct_connection_factory"),
             stream_idle_commit_timeout_ms=num(
                 "MATRIXARK_STREAM_IDLE_COMMIT_TIMEOUT_MS", "stream_idle_commit_timeout_ms", int
+            ),
+            usage_file=str(
+                overrides.get("usage_file")
+                or env.get("MATRIXARK_API_KEY_USAGE_FILE")
+                or _DEFAULTS["usage_file"]
+            ),
+            usage_flush_every=num("MATRIXARK_API_KEY_USAGE_FLUSH_EVERY", "usage_flush_every", int),
+            usage_flush_interval_s=num(
+                "MATRIXARK_API_KEY_USAGE_FLUSH_INTERVAL_S", "usage_flush_interval_s", float
             ),
         )
 
@@ -377,19 +531,227 @@ class _RateLimiter:
 
 
 # ================================================================================================
+# Per-key usage metering (edge, in-process, best-effort)
+# ================================================================================================
+class _UsageMeter:
+    """Cheap, thread-safe, per-API-key request counter kept in-process at the edge.
+
+    Bumped once per AUTHENTICATED request AFTER the key is validated. The hot path does only an
+    O(1) dict update under a short lock -- NO disk I/O per request. The in-memory counters are
+    flushed to `path` (an atomic JSON snapshot) at most every `flush_every` recorded requests OR
+    `flush_interval_s` seconds, so disk cost is amortized far off the request path. An empty `path`
+    disables the flush entirely (the snapshot stays purely in memory, still readable by the admin
+    read route). Keys are stored HASHED (sha256), never in plaintext.
+
+    Every method is defensive: a metering failure must NEVER surface to the request, so `record`
+    swallows its own errors and the caller additionally wraps it (belt and suspenders).
+    """
+
+    def __init__(self, path: str = "", *, flush_every: int = 50, flush_interval_s: float = 5.0) -> None:
+        self.path = str(path or "")
+        self.flush_every = max(1, int(flush_every))
+        self.flush_interval_s = max(0.0, float(flush_interval_s))
+        self._lock = threading.Lock()
+        self._counters: dict[str, Json] = {}
+        # Rolling-window state for per-key QUOTA, kept OUT of `_counters` so the JSON snapshot stays
+        # clean: {key_hash -> [window_start_monotonic, count_in_window]}. Only touched when a request
+        # actually carries a positive `window_s`; lifetime-window quotas use `_counters[...]["total"]`.
+        self._windows: dict[str, list] = {}
+        self._dirty = 0
+        self._last_flush = time.monotonic()
+
+    def record(self, key_hash: str, tenant: Optional[str], account: Optional[str],
+               category: str, nbytes: int = 0, *, window_s: float = 0.0) -> Optional[Tuple[int, float]]:
+        """Bump the per-key counter and return ``(window_used, reset_seconds)`` for quota checks.
+
+        ``window_used`` is the request count in the current window AFTER counting this request:
+        the rolling window of ``window_s`` seconds when ``window_s > 0``, else the cumulative
+        ``total`` (a per-process lifetime window). ``reset_seconds`` is the time until the rolling
+        window rolls over (0.0 for the lifetime window). Returns ``None`` only on an empty key or an
+        internal error -- metering (and therefore the quota decision) is always best-effort."""
+        if not key_hash:
+            return None
+        try:
+            with self._lock:
+                entry = self._counters.get(key_hash)
+                now = int(time.time() * 1000)
+                if entry is None:
+                    entry = {
+                        "api_key_hash": key_hash,
+                        "tenant_id": str(tenant or ""),
+                        "account_id": str(account or ""),
+                        "total": 0,
+                        "ingest": 0,
+                        "retrieve": 0,
+                        "other": 0,
+                        "bytes": 0,
+                        "first_used_at_ms": now,
+                        "last_used_at_ms": now,
+                    }
+                    self._counters[key_hash] = entry
+                entry["total"] += 1
+                bucket = category if category in ("ingest", "retrieve") else "other"
+                entry[bucket] += 1
+                entry["bytes"] += max(0, int(nbytes or 0))
+                entry["last_used_at_ms"] = now
+                if tenant and not entry.get("tenant_id"):
+                    entry["tenant_id"] = str(tenant)
+                if account and not entry.get("account_id"):
+                    entry["account_id"] = str(account)
+                # Rolling-window bookkeeping for quota (O(1); only when a positive window is given).
+                if window_s and window_s > 0:
+                    now_m = time.monotonic()
+                    window = self._windows.get(key_hash)
+                    if window is None or (now_m - window[0]) >= window_s:
+                        window = [now_m, 0]
+                        self._windows[key_hash] = window
+                    window[1] += 1
+                    window_used = int(window[1])
+                    reset_s = max(0.0, float(window_s) - (now_m - window[0]))
+                else:
+                    window_used = int(entry["total"])
+                    reset_s = 0.0
+                self._dirty += 1
+                if self._should_flush_locked():
+                    self._flush_locked()
+                return window_used, reset_s
+        except Exception:  # pragma: no cover - metering is best-effort, never fatal
+            return None
+        return None
+
+    def _should_flush_locked(self) -> bool:
+        if not self.path:
+            return False
+        if self._dirty >= self.flush_every:
+            return True
+        return (time.monotonic() - self._last_flush) >= self.flush_interval_s
+
+    def _flush_locked(self) -> None:
+        if not self.path:
+            self._dirty = 0
+            self._last_flush = time.monotonic()
+            return
+        try:
+            snapshot = {
+                "record_type": "matrixark_api_key_usage_snapshot",
+                "updated_at_ms": int(time.time() * 1000),
+                "keys": list(self._counters.values()),
+            }
+            tmp = f"{self.path}.tmp.{os.getpid()}"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(snapshot, handle, sort_keys=True)
+            os.replace(tmp, self.path)
+        except Exception:  # pragma: no cover - flush is best-effort
+            pass
+        finally:
+            self._dirty = 0
+            self._last_flush = time.monotonic()
+
+    def snapshot(self) -> list[Json]:
+        with self._lock:
+            return [dict(entry) for entry in self._counters.values()]
+
+
+def _meter_active(cfg: GatewayConfig, key: Optional[str]) -> bool:
+    """Metering runs only when a REAL key authenticated the request (enforced mode). Dev/anonymous
+    (unenforced) traffic is never metered, so the dev default posture is byte-identical."""
+    return bool(getattr(cfg, "enforced", False) and key)
+
+
+def _meter_safe(meter: _UsageMeter, cfg: GatewayConfig, key: Optional[str],
+                tenant: Optional[str], account: Optional[str], category: str, nbytes: int = 0,
+                *, window_s: float = 0.0) -> Optional[Tuple[int, float]]:
+    """Record one authenticated request; return ``(window_used, reset_s)`` or ``None`` when the
+    request is not metered (dev/anonymous) or on any error. Wrapped so a metering failure can never
+    break a request."""
+    try:
+        if not _meter_active(cfg, key):
+            return None
+        return meter.record(_secret_hash(key), tenant, account, category, nbytes, window_s=window_s)
+    except Exception:  # pragma: no cover - defensive: metering must not affect the response
+        return None
+
+
+def _meter_and_check_quota(
+    meter: _UsageMeter, cfg: GatewayConfig, key: Optional[str], record: Optional[Json],
+    tenant: Optional[str], account: Optional[str], category: str, nbytes: int = 0,
+) -> Optional[Tuple[Json, list[Tuple[bytes, bytes]]]]:
+    """Meter one authenticated request and, if the key is now OVER its ``request_quota``, return the
+    ``(payload, headers)`` for a 429 ``quota_exceeded`` response; else ``None`` (request proceeds).
+
+    Enforced-mode + a real key only: dev/anonymous traffic is never metered, so ``_meter_safe``
+    returns ``None`` and this returns ``None`` (dev posture byte-identical). A key with no
+    ``request_quota`` (or 0/None) is UNLIMITED. The compare is O(1) against the in-memory counter the
+    meter already maintains. The ``request_quota``-th request in a window is the last allowed; the
+    next one (count > limit) is rejected. Fully best-effort: ANY error returns ``None`` so a
+    quota-check bug can neither crash the hot path nor wrongly block a legitimate request."""
+    try:
+        window_s = 0.0
+        if record is not None:
+            qw = record.get("quota_window")
+            if isinstance(qw, (int, float)) and not isinstance(qw, bool) and qw > 0:
+                window_s = float(qw)
+        metered = _meter_safe(meter, cfg, key, tenant, account, category, nbytes, window_s=window_s)
+        if metered is None or record is None:
+            return None
+        limit = record.get("request_quota")
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            return None
+        used, reset_s = metered
+        if used <= limit:
+            return None
+        retry = int(math.ceil(reset_s)) if reset_s and reset_s > 0 else 0
+        payload: Json = {"error": "quota_exceeded", "limit": limit, "used": used}
+        headers = [
+            (b"retry-after", str(retry).encode()),
+            (b"x-ratelimit-quota-limit", str(limit).encode()),
+            (b"x-ratelimit-quota-remaining", b"0"),
+            (b"x-ratelimit-quota-reset", str(retry).encode()),
+        ]
+        return payload, headers
+    except Exception:  # pragma: no cover - defensive: a quota bug must never block/crash a request
+        return None
+
+
+# The admin scopes that may read per-key usage. Either grants the read (mirrors the backend, where
+# `matrixark_admin_*` require `admin:api_key` and audit reads require `admin:audit`).
+_USAGE_READ_SCOPES = {"admin:api_key", "admin:audit"}
+
+
+def _usage_read_denied(record: Optional[Json]) -> Optional[Json]:
+    """403 payload when the key may not read usage, else ``None``.
+
+    Consistent with the rest of the edge: a dev key (``record is None``) or a legacy/unrestricted key
+    (``scopes is None``) is allowed; a scoped enforced-mode key must carry ``admin:api_key`` or
+    ``admin:audit``.
+    """
+    if record is None:
+        return None
+    scopes = record.get("scopes")
+    if scopes is None:  # legacy/unrestricted key
+        return None
+    if _USAGE_READ_SCOPES.intersection(scopes):
+        return None
+    return {"error": "insufficient_scope", "required": sorted(_USAGE_READ_SCOPES)}
+
+
+# ================================================================================================
 # Auth + tenant isolation
 # ================================================================================================
-def _authorize(headers: list[Tuple[bytes, bytes]],
-               cfg: GatewayConfig) -> Tuple[bool, Optional[str], Optional[str], Optional[str]]:
-    """Resolve the Bearer key to a tenant identity.
+def _authorize(headers: list[Tuple[bytes, bytes]], cfg: GatewayConfig) -> Tuple[
+        bool, Optional[str], Optional[str], Optional[str], Optional[Json]]:
+    """Resolve the Bearer key to a tenant identity (and, in enforced mode, its key record).
 
-    Returns ``(allowed, api_key, tenant_id, account_id)``.
+    Returns ``(allowed, api_key, tenant_id, account_id, key_record)``. ``key_record`` is the matched,
+    normalized enforced-mode keystore record (carrying ``scopes``/``allowed_user_ids``/
+    ``allowed_session_ids``/``role``) so the dispatcher can enforce per-key authorization; it is
+    ``None`` in dev/unenforced mode (and for anonymous access), which means NO scope/user enforcement.
 
     ENFORCED mode (``MATRIXARK_AUTH_ENFORCED=1``): EVERY /v1 request must carry a Bearer key whose
     sha256 hash is present in the provisioned hashed keystore. A missing, unknown, or revoked key --
     and the legacy demo key ``sk_live_demo`` (which is never hashed into the enforced store) -- is
-    rejected. The identity ``{tenant_id, account_id}`` is taken from the stored record, NEVER from
-    client-supplied free text, so two tenants cannot collide on a shared scope string.
+    rejected (401). The identity ``{tenant_id, account_id}`` is taken from the stored record, NEVER
+    from client-supplied free text, so two tenants cannot collide on a shared scope string.
 
     DEV/unenforced mode (default): unchanged legacy behavior -- the plaintext ``api_keys`` env map is
     honored and, when ``require_auth`` is off, anonymous requests are allowed. This keeps existing dev
@@ -398,17 +760,126 @@ def _authorize(headers: list[Tuple[bytes, bytes]],
     key = _api_key(headers)
     if cfg.enforced:
         if not key:
-            return False, None, None, None
+            return False, None, None, None, None
         record = cfg.hashed_keys.get(_secret_hash(key))
         if record:
-            return True, key, str(record.get("tenant_id") or ""), str(record.get("account_id") or "") or None
-        return False, None, None, None
+            return (True, key, str(record.get("tenant_id") or ""),
+                    str(record.get("account_id") or "") or None, record)
+        return False, None, None, None, None
     # ---- dev / unenforced (legacy) --------------------------------------------------------------
     if key and key in cfg.api_keys:
-        return True, key, cfg.api_keys[key], None
+        return True, key, cfg.api_keys[key], None, None
     if not cfg.require_auth:  # local/dev: anonymous is allowed.
-        return True, key, (cfg.api_keys.get(key) if key else None) or "anonymous", None
-    return False, None, None, None
+        return True, key, (cfg.api_keys.get(key) if key else None) or "anonymous", None, None
+    return False, None, None, None, None
+
+
+# route -> required MatrixArk scope. The ingest/retrieve rate-limit CLASS from `_DATA_ROUTES` doubles
+# as the scope selector: an ingest-category route needs `context:ingest`, a retrieve-category route
+# needs `context:retrieve`.
+_CATEGORY_SCOPE = {"ingest": "context:ingest", "retrieve": "context:retrieve"}
+
+
+def _required_scope(path: str, method: str, route: Optional[Tuple[str, str]]) -> Optional[str]:
+    """The MatrixArk scope a request to `path`/`method` requires, or ``None`` (no scope needed).
+
+    Blob writes (PUT|POST /v1/blob/<key>) and combined upload-ingest (POST /v1/ingest_file) are
+    ingest; blob reads (GET /v1/blob/<key>) are retrieve. Data routes (/v1/ingest, /v1/retrieve,
+    /v1/session/commit, /v1/mcp) map through their `_DATA_ROUTES` category. Health/readyz => None.
+    """
+    if path.startswith("/v1/blob/"):
+        if method in ("PUT", "POST"):
+            return "context:ingest"
+        if method == "GET":
+            return "context:retrieve"
+        return None
+    if path == "/v1/ingest_file":
+        return "context:ingest"
+    if route is not None:
+        return _CATEGORY_SCOPE.get(route[1])
+    return None
+
+
+def _scope_denied(record: Optional[Json], required_scope: Optional[str]) -> Optional[Json]:
+    """403 payload when the key's ``scopes`` list does not permit ``required_scope``, else ``None``.
+
+    Enforcement runs ONLY when ``record`` is present (enforced mode + a matched key) AND the key has a
+    non-``None`` ``scopes`` list. ``scopes=None`` (legacy keystore) or no required scope => allowed.
+    """
+    if record is None or required_scope is None:
+        return None
+    scopes = record.get("scopes")
+    if scopes is None:  # legacy/unrestricted key
+        return None
+    if required_scope not in scopes:
+        return {"error": "insufficient_scope", "required": required_scope}
+    return None
+
+
+def _identity_denied(record: Optional[Json], args: Json) -> Optional[Json]:
+    """403 payload when the key's ``allowed_user_ids``/``allowed_session_ids`` exclude the request's
+    ``scope.user_id``/``scope.session_id`` (checked AFTER identity is applied), else ``None``.
+
+    An empty allow-list (the default) imposes NO restriction on that axis -- unchanged behavior.
+    """
+    if record is None:
+        return None
+    scope = args.get("scope")
+    scope = scope if isinstance(scope, dict) else {}
+    allowed_users = record.get("allowed_user_ids") or []
+    if allowed_users and str(scope.get("user_id") or "") not in allowed_users:
+        return {"error": "user_not_allowed"}
+    allowed_sessions = record.get("allowed_session_ids") or []
+    if allowed_sessions and str(scope.get("session_id") or "") not in allowed_sessions:
+        return {"error": "session_not_allowed"}
+    return None
+
+
+def _mcp_denied(record: Optional[Json], parsed: Json) -> Optional[Json]:
+    """403 payload for a ``/v1/mcp`` JSON-RPC request the key may not make, else ``None``.
+
+    Replaces the old blanket ``context:retrieve`` gate on ``/v1/mcp`` with the SAME per-tool scope
+    map the backend enforces (``MATRIXARK_TOOL_SCOPES``), so the edge is no longer coarser than the
+    engine: a data-only key can no longer reach ``matrixark_admin_*`` tools (which require ``admin:*``)
+    through the MCP route.
+
+    Semantics (mirroring ``matrixark_access`` + the sibling ``_scope_denied``/``_identity_denied``):
+      * Enforcement runs ONLY for an enforced-mode key with a non-``None`` ``scopes`` list. A dev key
+        (``record is None``) or a legacy plain keystore key (``scopes is None``) is UNRESTRICTED --
+        ``/v1/mcp`` stays byte-identical to today for those.
+      * Only ``tools/call`` carries a tool; ``initialize`` / ``tools/list`` / ``ping`` / notifications
+        require no tool scope (still gated by a valid key via ``_authorize``).
+      * ``required = MATRIXARK_TOOL_SCOPES.get(name, set())``. Non-empty and NOT a subset of the key's
+        scopes -> 403 ``insufficient_scope`` (``required`` sorted for a stable payload). Unmapped tool
+        -> empty required -> allowed (matches the backend's ``.get(tool_name, set())``).
+      * User/session: ``allowed_user_ids``/``allowed_session_ids`` are applied (via ``_identity_denied``)
+        against ``params.arguments.scope`` ONLY when the call actually carries a ``scope`` object --
+        a scopeless ``tools/call`` imposes no user/session restriction (nothing to check).
+      * FALLBACK: a ``tools/call`` with no usable tool name (missing/blank ``params.name``) cannot be
+        mapped, so it falls back to the historical coarse ``context:retrieve`` requirement rather than
+        passing unchecked or crashing.
+    """
+    if record is None:
+        return None
+    if record.get("scopes") is None:  # legacy/unrestricted key
+        return None
+    if not isinstance(parsed, dict) or parsed.get("method") != "tools/call":
+        return None
+    params = parsed.get("params")
+    params = params if isinstance(params, dict) else {}
+    name = params.get("name")
+    if not isinstance(name, str) or not name:
+        # Unparseable / tool-less call -> historical coarse gate, not a free pass.
+        return _scope_denied(record, "context:retrieve")
+    scopes = set(record.get("scopes") or [])
+    required = MATRIXARK_TOOL_SCOPES.get(name, set())
+    if required and not required.issubset(scopes):
+        return {"error": "insufficient_scope", "required": sorted(required)}
+    margs = params.get("arguments")
+    margs = margs if isinstance(margs, dict) else {}
+    if isinstance(margs.get("scope"), dict):
+        return _identity_denied(record, margs)
+    return None
 
 
 def _apply_identity(args: Json, key: Optional[str], tenant: Optional[str],
@@ -481,6 +952,50 @@ async def _json(send: Callable, status: int, payload: Json,
         headers.extend(extra_headers)
     await send({"type": "http.response.start", "status": status, "headers": headers})
     await send({"type": "http.response.body", "body": data})
+
+
+async def _html(send: Callable, status: int, body: bytes,
+                extra_headers: Optional[list[Tuple[bytes, bytes]]] = None) -> None:
+    headers = [(b"content-type", b"text/html; charset=utf-8"),
+               (b"content-length", str(len(body)).encode())]
+    if extra_headers:
+        headers.extend(extra_headers)
+    await send({"type": "http.response.start", "status": status, "headers": headers})
+    await send({"type": "http.response.body", "body": body})
+
+
+# The customer-facing key-management portal page. Served (static, no auth) from GET /v1/admin/portal;
+# every ACTION button on the page calls an admin-gated JSON endpoint, so the page is inert without a
+# valid admin key. The canonical source is the committed file `tools/portal/api_key_portal.html`
+# (single source of truth); the page is read from disk once and cached per process. A tiny fallback
+# keeps the route working (and still pointing operators at the real endpoints) if the file is absent.
+_PORTAL_HTML_CACHE: dict[str, Optional[bytes]] = {"bytes": None}
+_PORTAL_FALLBACK_HTML = (
+    "<!doctype html><meta charset='utf-8'><title>MatrixArk API Key Portal</title>"
+    "<h1>MatrixArk API Key Portal</h1>"
+    "<p>The bundled portal page (<code>tools/portal/api_key_portal.html</code>) was not found on this "
+    "deployment. Key management still works directly against the admin JSON endpoints: "
+    "<code>POST /api/admin/create_api_key</code>, <code>POST /api/admin/list_api_keys</code>, "
+    "<code>POST /api/admin/rotate_api_key</code>, <code>POST /api/admin/revoke_api_key</code>, and "
+    "<code>GET /v1/admin/api_key_usage</code> — each with an admin-scoped "
+    "<code>Authorization: Bearer &lt;key&gt;</code>.</p>"
+)
+
+
+def _portal_html_bytes() -> bytes:
+    """The portal HTML (cached). Reads the committed file next to this module; falls back to a small
+    inline notice page so the route always returns valid HTML."""
+    cached = _PORTAL_HTML_CACHE.get("bytes")
+    if cached is not None:
+        return cached
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portal", "api_key_portal.html")
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except Exception:  # pragma: no cover - fallback for deployments without the file bundled
+        data = _PORTAL_FALLBACK_HTML.encode("utf-8")
+    _PORTAL_HTML_CACHE["bytes"] = data
+    return data
 
 
 async def _read_body_capped(receive: Callable, cap: int) -> Tuple[Optional[bytes], bool]:
@@ -651,6 +1166,195 @@ def _safe_close(conn: Any) -> None:
         conn.close()
     except Exception:
         pass
+
+
+# ================================================================================================
+# Combined upload-and-ingest (POST /v1/ingest_file): stream file body -> blob tier -> ingest.
+# ================================================================================================
+_INGEST_CONTENT_TYPES = {
+    "md": "text/markdown", "markdown": "text/markdown", "txt": "text/plain",
+    "text": "text/plain", "pdf": "application/pdf", "json": "application/json",
+    "html": "text/html", "csv": "text/csv",
+}
+
+# Accepted values for the sharing/visibility knob on POST /v1/ingest_file. Surfaced as
+# the top-level ``sharing_scope`` key on the synthesized /v1/ingest body (same knob the
+# SDK sends). Mirrors matrixark_ingest_client.VALID_SHARING_SCOPES.
+_VALID_SHARING_SCOPES = ("private_user", "tenant_shared", "global_shared")
+
+
+def _ingest_content_type(resource_type: str) -> str:
+    return _INGEST_CONTENT_TYPES.get((resource_type or "").lower(), "application/octet-stream")
+
+
+def _infer_ingest_resource_type(rtype_header: Optional[str], filename: Optional[str]) -> str:
+    """X-Resource-Type wins; else the suffix of X-Filename; else ``md`` (skill default)."""
+    if rtype_header:
+        return rtype_header.strip().lstrip(".").lower()
+    if filename:
+        suffix = os.path.splitext(filename)[1].lstrip(".").lower()
+        if suffix:
+            return suffix
+    return "md"
+
+
+async def _spool_and_hash(receive: Callable, cfg: GatewayConfig) -> Tuple[Optional[str], int, str, bool]:
+    """Stream the request body to a temp file while hashing, bounded memory.
+
+    Returns ``(spool_path, size, sha256_hex, too_big)``. When ``too_big`` is True the
+    partial spool is already removed and ``spool_path`` is None. Reads in native ASGI
+    chunks and writes straight through to disk -- nothing but one chunk is ever held
+    in memory, so a multi-GB file costs flat memory.
+    """
+    spool_dir = cfg.ingest_spool_dir or None
+    fd, path = tempfile.mkstemp(prefix="matrixark-ingest-", suffix=".spool", dir=spool_dir)
+    hasher = hashlib.sha256()
+    total = 0
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            while True:
+                msg = await receive()
+                if msg.get("type") != "http.request":
+                    break
+                body = msg.get("body", b"") or b""
+                if body:
+                    total += len(body)
+                    if total > cfg.max_blob_bytes:
+                        fh.close()
+                        _safe_unlink(path)
+                        return None, total, "", True
+                    hasher.update(body)
+                    await asyncio.to_thread(fh.write, body)
+                if not msg.get("more_body"):
+                    break
+    except Exception:
+        _safe_unlink(path)
+        raise
+    return path, total, hasher.hexdigest(), False
+
+
+async def _stream_spool_to_datanode(cfg: GatewayConfig, spool_path: str, size: int,
+                                    dkey: str, content_type: str) -> Tuple[int, bytes]:
+    """PUT the spooled file to the datanode ``/blob/<dkey>`` using the SAME streamed,
+    bounded-memory approach as ``_blob_put`` (Content-Length known -> raw stream)."""
+    conn = cfg.blob_connection_factory(cfg)
+
+    def _start() -> None:
+        conn.putrequest("PUT", f"/blob/{dkey}")
+        conn.putheader("Content-Length", str(size))
+        conn.putheader("Content-Type", content_type)
+        conn.endheaders()
+
+    await asyncio.to_thread(_start)
+    with open(spool_path, "rb") as fh:
+        while True:
+            chunk = await asyncio.to_thread(fh.read, 65536)
+            if not chunk:
+                break
+            await asyncio.to_thread(conn.send, chunk)
+    resp = await asyncio.to_thread(conn.getresponse)
+    raw = await asyncio.to_thread(resp.read)
+    status = int(getattr(resp, "status", 200) or 200)
+    await asyncio.to_thread(_safe_close, conn)
+    return status, raw
+
+
+def _safe_unlink(path: Optional[str]) -> None:
+    if not path:
+        return
+    try:
+        os.unlink(path)
+    except Exception:
+        pass
+
+
+async def _ingest_file(app: Callable, scope: Json, receive: Callable, send: Callable,
+                       cfg: GatewayConfig, key_str_unused: Optional[str],
+                       tenant: Optional[str], account: Optional[str]) -> None:
+    """Serve ``POST /v1/ingest_file``: stream the raw file body to the blob tier
+    (content-addressed, tenant-isolated, bounded memory), then invoke the SAME
+    ingest handler ``/v1/ingest`` uses by re-dispatching a synthesized JSON request
+    through the app -- so there is no duplicated ingest/finalize/extraction logic.
+    """
+    hmap = _headers_map(scope)
+    filename = hmap.get("x-filename")
+    kind = (hmap.get("x-resource-kind") or "skill").strip().lower() or "skill"
+    resource_type = _infer_ingest_resource_type(hmap.get("x-resource-type"), filename)
+    content_type = hmap.get("content-type") or _ingest_content_type(resource_type)
+
+    # Optional sharing/visibility level. X-Sharing-Scope (X-Visibility alias) -> the
+    # top-level ``sharing_scope`` ingest key. Validate early (before spooling) so a bad
+    # value fails fast with 400; omitted -> absent (server default applies).
+    sharing_scope = hmap.get("x-sharing-scope") or hmap.get("x-visibility")
+    if sharing_scope:
+        sharing_scope = sharing_scope.strip()
+        if sharing_scope not in _VALID_SHARING_SCOPES:
+            return await _json(send, 400, {
+                "error": "invalid_sharing_scope",
+                "detail": f"unknown sharing_scope {sharing_scope!r} (use one of "
+                          f"{', '.join(_VALID_SHARING_SCOPES)})",
+            })
+    else:
+        sharing_scope = None
+
+    cl_raw = hmap.get("content-length")
+    declared = int(cl_raw) if cl_raw and cl_raw.isdigit() else None
+    if declared is not None and declared > cfg.max_blob_bytes:
+        return await _json(send, 413, {"error": "payload_too_large"})
+
+    spool_path, size, sha, too_big = await _spool_and_hash(receive, cfg)
+    if too_big:
+        return await _json(send, 413, {"error": "payload_too_large"})
+    try:
+        # Content-addressed key, server-side: resources/<sha2>/<sha256>. Same bytes ->
+        # same key -> dedup. Tenant-isolate exactly like the /v1/blob route.
+        logical_key = f"resources/{sha[:2]}/{sha}"
+        dkey = _isolate_key(logical_key, tenant, account)
+        status, raw = await _stream_spool_to_datanode(cfg, spool_path, size, dkey, content_type)
+        if status >= 400:
+            detail: Any = None
+            if raw:
+                try:
+                    detail = json.loads(raw)
+                except Exception:
+                    detail = raw[:256].decode("utf-8", "replace")
+            return await _json(send, status if status in (413, 429, 507) else 502,
+                               {"error": "blob_store_failed", "detail": detail})
+    finally:
+        _safe_unlink(spool_path)
+
+    # Re-dispatch through the SAME app as a normal /v1/ingest, carrying the auth header
+    # so identity/scope resolve identically. The body is a tiny pointer, not the bytes.
+    raw_uri = f"temporalstore://{logical_key}"
+    ingest_body: Json = {"kind": kind, "raw_uri": raw_uri, "resource_type": resource_type}
+    if _truthy_header(hmap.get("x-wait")):
+        ingest_body["finalize"] = True
+    x_scope = hmap.get("x-scope")
+    if x_scope:
+        ingest_body["scope"] = x_scope
+    if sharing_scope is not None:
+        ingest_body["sharing_scope"] = sharing_scope
+
+    auth_headers = [(k, v) for (k, v) in scope.get("headers", [])
+                    if k.decode("latin-1").lower() in ("authorization", "x-api-key")]
+    payload = json.dumps(ingest_body).encode("utf-8")
+    inner_scope = {
+        "type": "http", "method": "POST", "path": "/v1/ingest",
+        "headers": auth_headers + [(b"content-type", b"application/json")],
+    }
+    delivered = {"done": False}
+
+    async def inner_receive() -> Json:
+        if not delivered["done"]:
+            delivered["done"] = True
+            return {"type": "http.request", "body": payload, "more_body": False}
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    return await app(inner_scope, inner_receive, send)
+
+
+def _truthy_header(value: Optional[str]) -> bool:
+    return bool(value) and value.strip().lower() in ("1", "true", "yes", "on")
 
 
 # ================================================================================================
@@ -861,8 +1565,14 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
     bare `/healthz` keep working unchanged.
     """
     cfg = _coerce_config(config)
+    _warn_if_auth_disabled(cfg)  # one-time, non-blocking; anonymous access still allowed
     legacy = make_asgi_app(server)
     limiter = _RateLimiter(cfg)
+    meter = _UsageMeter(
+        getattr(cfg, "usage_file", "") or "",
+        flush_every=int(getattr(cfg, "usage_flush_every", 50)),
+        flush_interval_s=float(getattr(cfg, "usage_flush_interval_s", 5.0)),
+    )
     executor_state = {"installed": False}
     executor_lock = threading.Lock()
     # Direct network path (B): one shared pooled client per worker when enabled.
@@ -917,11 +1627,39 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             datanode = "unknown" if probe is None else ("ok" if probe else "unreachable")
             return await _json(send, 200, {"ready": True, "datanode": datanode})
 
-        # ---- blob (auth + concurrent-stream cap, streamed) ----------------------------------
-        if path.startswith("/v1/blob/"):
-            allowed, key, tenant, account = _authorize(scope.get("headers", []), cfg)
+        # ---- key-management portal UI (static HTML, no auth to FETCH) ------------------------
+        # Returns the self-contained portal page. Fetching the static page needs no auth; every
+        # ACTION on it calls an admin-gated JSON endpoint, so the page is inert without a valid
+        # admin key. Kept before the data routes so it never touches auth/metering/quota.
+        if method == "GET" and path == "/v1/admin/portal":
+            return await _html(send, 200, _portal_html_bytes())
+
+        # ---- per-key usage read (auth + admin scope) ----------------------------------------
+        # Returns the in-process edge counters (per-key totals, ingest/retrieve split, bytes,
+        # first/last-used). Gated behind a valid key that carries `admin:api_key`/`admin:audit`
+        # (scoped enforced keys); dev/legacy-unrestricted keys read it unchanged.
+        if method == "GET" and path == "/v1/admin/api_key_usage":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
             if not allowed:
                 return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            usage = meter.snapshot()
+            return await _json(send, 200, {"status": "ok", "usage": usage, "count": len(usage)})
+
+        # ---- blob (auth + concurrent-stream cap, streamed) ----------------------------------
+        if path.startswith("/v1/blob/"):
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _scope_denied(key_record, _required_scope(path, method, None))
+            if denied is not None:
+                return await _json(send, 403, denied)
+            quota = _meter_and_check_quota(meter, cfg, key, key_record, tenant, account,
+                                           "retrieve" if method == "GET" else "ingest")
+            if quota is not None:
+                return await _json(send, 429, quota[0], quota[1])
             key_str = path[len("/v1/blob/"):]
             if not key_str:
                 return await _json(send, 404, {"error": "not_found"})
@@ -936,6 +1674,26 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             finally:
                 limiter.blob_release()
 
+        # ---- combined upload-and-ingest (auth + concurrent-stream cap, streamed) -------------
+        if path == "/v1/ingest_file":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _scope_denied(key_record, _required_scope(path, method, None))
+            if denied is not None:
+                return await _json(send, 403, denied)
+            if method != "POST":
+                return await _json(send, 405, {"error": "method_not_allowed"})
+            if not limiter.blob_acquire():
+                return await _json(send, 429, {"error": "rate_limited"}, [(b"retry-after", b"1")])
+            try:
+                quota = _meter_and_check_quota(meter, cfg, key, key_record, tenant, account, "ingest")
+                if quota is not None:
+                    return await _json(send, 429, quota[0], quota[1])
+                return await _ingest_file(app, scope, receive, send, cfg, key, tenant, account)
+            finally:
+                limiter.blob_release()
+
         # ---- data routes --------------------------------------------------------------------
         route = _DATA_ROUTES.get(path)
         if route is None:
@@ -944,9 +1702,17 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         if method != "POST":
             return await _json(send, 405, {"error": "method_not_allowed"})
 
-        allowed, key, tenant, account = _authorize(scope.get("headers", []), cfg)
+        allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
         if not allowed:
             return await _json(send, 401, {"error": "unauthorized"})
+        # /v1/mcp is gated PER-TOOL after the JSON-RPC body is parsed (see the `__mcp__` branch
+        # below), not at this coarse route level -- the route's blanket `context:retrieve` scope
+        # can't distinguish a data `tools/call` from an admin one. Every other data route keeps its
+        # single route->scope gate here.
+        if tool != "__mcp__":
+            denied = _scope_denied(key_record, _required_scope(path, method, route))
+            if denied is not None:
+                return await _json(send, 403, denied)
 
         ok, remaining, reset, retry = limiter.check(key or "anon", cls)
         rl_headers = limiter.headers(cls, remaining, reset)
@@ -964,8 +1730,24 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         except (json.JSONDecodeError, ValueError) as exc:
             return await _json(send, 400, {"error": "bad_request", "detail": str(exc)}, rl_headers)
 
+        # Meter the authenticated request (best-effort, off the response path) and enforce the key's
+        # request_quota. `cls` is the ingest/retrieve category; `raw` is the already-buffered body,
+        # so bytes are free here. A key with no quota is never limited; enforcement is O(1) against
+        # the meter's counter and best-effort (a quota-check bug can never block/crash the request).
+        quota = _meter_and_check_quota(meter, cfg, key, key_record, tenant, account, cls, len(raw or b""))
+        if quota is not None:
+            return await _json(send, 429, quota[0], rl_headers + quota[1])
+
         # MCP-over-HTTP: dispatch the JSON-RPC message directly (api-key injected downstream).
         if tool == "__mcp__":
+            # PER-TOOL edge gate: the body is already buffered + parsed ONCE above (`parsed`), so we
+            # inspect `method` / `params.name` / `params.arguments.scope` here and forward the SAME
+            # `parsed` object to mcp_http_dispatch untouched -- the ASGI receive stream is never read
+            # twice. Enforced-mode scoped keys get per-tool scope + user/session checks; dev/legacy
+            # keys are unrestricted (see `_mcp_denied`), so /v1/mcp stays byte-identical for them.
+            denied = _mcp_denied(key_record, parsed)
+            if denied is not None:
+                return await _json(send, 403, denied, rl_headers)
             try:
                 resp = await asyncio.wait_for(
                     asyncio.to_thread(mcp_http_dispatch, server, parsed, api_key=key), cfg.backend_timeout)
@@ -996,6 +1778,9 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         if direct_client is not None and tool in (
                 "matrixark_ingest", "matrixark_retrieve", "matrixark_session_commit"):
             _apply_identity(args, key, tenant, account)  # scope object only; proxy does the hashing
+            denied = _identity_denied(key_record, args)
+            if denied is not None:
+                return await _json(send, 403, denied, rl_headers)
             return await _dispatch_direct(
                 direct_client, cfg, tool, parsed, args, send, rl_headers,
                 n_records=n_records, n_messages=n_messages)
@@ -1012,6 +1797,9 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         ):
             args.setdefault("idle_commit_timeout_ms", cfg.stream_idle_commit_timeout_ms)
         _apply_identity(args, key, tenant, account)
+        denied = _identity_denied(key_record, args)
+        if denied is not None:
+            return await _json(send, 403, denied, rl_headers)
 
         try:
             result = await asyncio.wait_for(
@@ -1098,7 +1886,9 @@ def _build_server_from_env() -> Any:
 
         ns.event_log = Path(event_log_override)
     adapter = build_mcp_adapter(ns)
-    return MatrixArkMcpServer(adapter, access_mode=os.environ.get("MATRIXARK_ACCESS_MODE", "enforced"))
+    # DEV DEFAULT: access_mode defaults to "dev" (anonymous allowed) so the server
+    # works out of the box; set MATRIXARK_ACCESS_MODE=enforced in production.
+    return MatrixArkMcpServer(adapter, access_mode=os.environ.get("MATRIXARK_ACCESS_MODE", "dev"))
 
 
 def create_v1_app() -> Callable[..., Awaitable[None]]:

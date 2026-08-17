@@ -33,7 +33,7 @@ try:  # resource-parser helpers (core imports these inside a try/except too)
 except ImportError:
     from matrixark_resource_parser import content_hash, normalize_parse_warnings
 
-__all__ = ['deployment_scope_from_args', 'resource_storage_mode_from_args', 'is_s3_uri', 'parse_s3_uri', '_cloud_resource_bucket', '_cloud_resource_prefix', '_s3_client', '_aws_cli_s3_cp', 'upload_file_to_s3', 'download_s3_to_file', '_resource_object_key', '_archive_directory_for_upload', 'resolve_raw_resource_for_ingest', 'infer_resource_suffix', 'rewrite_chunk_uris', 'cleanup_temp_paths', 'aggregate_parse_warnings_from_chunks']
+__all__ = ['deployment_scope_from_args', 'resource_storage_mode_from_args', 'is_s3_uri', 'parse_s3_uri', 'is_matrixobject_uri', 'parse_matrixobject_uri', 'is_temporalstore_uri', 'parse_temporalstore_uri', '_cloud_resource_bucket', '_cloud_resource_prefix', '_s3_client', '_aws_cli_s3_cp', 'upload_file_to_s3', 'download_s3_to_file', '_resource_object_key', '_archive_directory_for_upload', 'resolve_raw_resource_for_ingest', 'infer_resource_suffix', 'rewrite_chunk_uris', 'cleanup_temp_paths', 'aggregate_parse_warnings_from_chunks']
 
 
 def deployment_scope_from_args(args: Json, envelope: Json) -> str:
@@ -74,6 +74,53 @@ def parse_s3_uri(uri: str) -> tuple[str, str]:
     return bucket, key
 
 
+def is_matrixobject_uri(value: str) -> bool:
+    return bool(value) and value.startswith("matrixobject://")
+
+
+def parse_matrixobject_uri(uri: str) -> tuple[str, str]:
+    """matrixobject://<bucket>/<key> -> (bucket, key). Key may contain slashes
+    (the object client stores content-addressed ``ab/cd/<sha256>`` keys)."""
+    if not is_matrixobject_uri(uri):
+        raise MatrixArkError(f"not a matrixobject uri: {uri}")
+    rest = uri[len("matrixobject://") :]
+    bucket, sep, key = rest.partition("/")
+    if not bucket or not sep or not key:
+        raise MatrixArkError(f"invalid matrixobject uri: {uri}")
+    return bucket, key
+
+
+def is_temporalstore_uri(value: str) -> bool:
+    return bool(value) and value.startswith("temporalstore://")
+
+
+def parse_temporalstore_uri(uri: str) -> str:
+    """temporalstore://<key> -> key. The key may contain slashes (the blob client
+    stores content-addressed ``resources/ab/<sha256>`` keys)."""
+    if not is_temporalstore_uri(uri):
+        raise MatrixArkError(f"not a temporalstore uri: {uri}")
+    key = uri[len("temporalstore://") :]
+    if not key:
+        raise MatrixArkError(f"invalid temporalstore uri: {uri}")
+    return key
+
+
+def _resource_object_backend_choice(args: Json, envelope: Json) -> str:
+    """Select the cloud raw-blob backend: matrixobject | temporalstore | auto.
+
+    'auto' (default): MatrixObject when an object backend is configured, else
+    TemporalStore's own blob tier when a blob endpoint is configured, else fall
+    through to S3. An explicit value forces that backend when it is available.
+    """
+    value = str(
+        args.get("raw_object_backend")
+        or envelope.get("metadata", {}).get("raw_object_backend")
+        or os.environ.get("MATRIXARK_RESOURCE_OBJECT_BACKEND")
+        or "auto"
+    ).strip().lower()
+    return value if value in {"matrixobject", "temporalstore", "auto"} else "auto"
+
+
 def _cloud_resource_bucket(args: Json, envelope: Json) -> str:
     bucket = str(
         args.get("s3_bucket")
@@ -101,6 +148,11 @@ def _cloud_resource_prefix(args: Json, envelope: Json) -> str:
         safe_identifier(str(scope.get("tenant_id") or "tenant"), default="tenant"),
         safe_identifier(str(scope.get("user_id") or "user"), default="user"),
     ]
+    # mem0 agent_id: per-agent raw-blob isolation, appended only when supplied so
+    # existing (agent-less) layouts are byte-identical.
+    agent_id = str(scope.get("agent_id") or "")
+    if agent_id:
+        parts.append(safe_identifier(agent_id, default="agent"))
     session_id = str(scope.get("session_id") or "")
     if session_id:
         parts.append(safe_identifier(session_id, default="session"))
@@ -208,6 +260,60 @@ def resolve_raw_resource_for_ingest(args: Json, envelope: Json, raw_uri: str, re
         "cloud_bucket": "",
         "cloud_key": "",
     }
+
+    # matrixobject:// input -> the raw bytes already live in our object store.
+    # Fetch them via MatrixObjectClient, drop them in a temp file, and let the
+    # parser chunk that file (parse_text=None). Parallel to the s3:// download
+    # branch below; non-breaking for inline/local/s3 inputs.
+    if is_matrixobject_uri(raw_uri):
+        obj_bucket, obj_key = parse_matrixobject_uri(raw_uri)
+        try:  # top-level path (matches the object-upload branch's import style)
+            from matrixark_object_store import MatrixObjectClient as _ObjClient
+        except ImportError:  # package path
+            from tools.matrixark_object_store import MatrixObjectClient as _ObjClient  # type: ignore
+        data, meta = _ObjClient(bucket=obj_bucket).get(obj_key, bucket=obj_bucket)
+        suffix = infer_resource_suffix(resource_type, obj_key)
+        temp_file = Path(tempfile.mkdtemp(prefix="matrixark-object-resource-")) / f"downloaded.{suffix}"
+        temp_file.write_bytes(data if isinstance(data, (bytes, bytearray)) else bytes(data))
+        result["temp_paths"].append(str(temp_file.parent))
+        result["parse_uri"] = str(temp_file)
+        result["parse_text"] = None
+        result["storage_mode"] = "matrixobject"
+        result["stored_raw_uri"] = raw_uri
+        result["raw_storage_policy"] = "object_store"
+        result["raw_bytes_stored"] = True
+        result["cloud_bucket"] = obj_bucket
+        result["cloud_key"] = obj_key
+        if isinstance(meta, dict) and meta.get("content_hash"):
+            result["content_hash"] = meta["content_hash"]
+        return result
+
+    # temporalstore:// input -> the raw bytes already live in TemporalStore's own
+    # blob tier. Fetch them via TemporalStoreBlobClient, drop them in a temp file,
+    # and let the parser chunk that file (parse_text=None). Parallel to the
+    # matrixobject:// branch above; the OSS-safe (no object store) counterpart.
+    if is_temporalstore_uri(raw_uri):
+        ts_key = parse_temporalstore_uri(raw_uri)
+        try:  # top-level path (matches the object-download branch's import style)
+            from matrixark_temporalstore_blob import TemporalStoreBlobClient as _TsBlobClient
+        except ImportError:  # package path
+            from tools.matrixark_temporalstore_blob import TemporalStoreBlobClient as _TsBlobClient  # type: ignore
+        data, meta = _TsBlobClient().get(ts_key)
+        suffix = infer_resource_suffix(resource_type, ts_key)
+        temp_file = Path(tempfile.mkdtemp(prefix="matrixark-tsblob-resource-")) / f"downloaded.{suffix}"
+        temp_file.write_bytes(data if isinstance(data, (bytes, bytearray)) else bytes(data))
+        result["temp_paths"].append(str(temp_file.parent))
+        result["parse_uri"] = str(temp_file)
+        result["parse_text"] = None
+        result["storage_mode"] = "temporalstore"
+        result["stored_raw_uri"] = raw_uri
+        result["raw_storage_policy"] = "temporalstore_blob"
+        result["raw_bytes_stored"] = True
+        result["cloud_key"] = ts_key
+        if isinstance(meta, dict) and meta.get("content_hash"):
+            result["content_hash"] = meta["content_hash"]
+        return result
+
     local_path = Path(raw_uri) if raw_uri != "inline-resource" and not is_s3_uri(raw_uri) else None
     if mode == "local":
         if local_path is not None and local_path.exists():
@@ -219,6 +325,8 @@ def resolve_raw_resource_for_ingest(args: Json, envelope: Json, raw_uri: str, re
     # Uses its own object bucket and does NOT require an S3 bucket. Falls through to S3 below
     # when no object backend is set (backward compatible).
     if not is_s3_uri(raw_uri):
+        backend_choice = _resource_object_backend_choice(args, envelope)
+        # MatrixObject (enterprise object store) availability.
         try:
             from matrixark_object_store import (
                 resolve_object_backend as _obj_backend,
@@ -228,13 +336,35 @@ def resolve_raw_resource_for_ingest(args: Json, envelope: Json, raw_uri: str, re
             )
         except ImportError:
             _obj_backend = None
-        if _obj_backend is not None and _obj_backend() != "inline":
-            obj_bucket = str(
-                args.get("object_bucket")
-                or envelope.get("metadata", {}).get("object_bucket")
-                or _OBJ_DEFAULT_BUCKET
+        # TemporalStore's own blob tier availability (OSS-safe, no object store).
+        try:  # top-level path
+            from matrixark_temporalstore_blob import (
+                resolve_ts_blob_backend as _ts_backend,
+                TemporalStoreBlobClient as _TsBlobClient,
+                ts_blob_storage_resolution as _ts_resolution,
             )
-            result["cloud_bucket"] = obj_bucket
+        except ImportError:
+            try:  # package path
+                from tools.matrixark_temporalstore_blob import (  # type: ignore
+                    resolve_ts_blob_backend as _ts_backend,
+                    TemporalStoreBlobClient as _TsBlobClient,
+                    ts_blob_storage_resolution as _ts_resolution,
+                )
+            except ImportError:
+                _ts_backend = None
+
+        obj_ok = _obj_backend is not None and _obj_backend() != "inline"
+        ts_ok = _ts_backend is not None and _ts_backend() != "inline"
+        if backend_choice == "matrixobject":
+            chosen = "matrixobject" if obj_ok else None
+        elif backend_choice == "temporalstore":
+            chosen = "temporalstore" if ts_ok else None
+        else:  # auto: object store first (dedup/serving), then TemporalStore blob
+            chosen = "matrixobject" if obj_ok else ("temporalstore" if ts_ok else None)
+
+        if chosen is not None:
+            # Build the blob (same local-file / dir-archive / inline-text logic
+            # for both backends).
             if local_path is not None and local_path.exists():
                 if local_path.is_dir():
                     upload_path = _archive_directory_for_upload(local_path)
@@ -249,15 +379,29 @@ def resolve_raw_resource_for_ingest(args: Json, envelope: Json, raw_uri: str, re
             else:
                 blob = (resource_text or "").encode("utf-8")
                 content_type = "text/markdown"
-            obj_res = _obj_resolution(
-                _ObjClient(bucket=obj_bucket), blob, source_uri=raw_uri, content_type=content_type,
-                scope=envelope.get("scope"), kind=str(envelope.get("kind") or resource_type or "resource"),
-                name=str(envelope.get("metadata", {}).get("name") or ""), bucket=obj_bucket,
-            )
+
+            if chosen == "matrixobject":
+                obj_bucket = str(
+                    args.get("object_bucket")
+                    or envelope.get("metadata", {}).get("object_bucket")
+                    or _OBJ_DEFAULT_BUCKET
+                )
+                result["cloud_bucket"] = obj_bucket
+                blob_res = _obj_resolution(
+                    _ObjClient(bucket=obj_bucket), blob, source_uri=raw_uri, content_type=content_type,
+                    scope=envelope.get("scope"), kind=str(envelope.get("kind") or resource_type or "resource"),
+                    name=str(envelope.get("metadata", {}).get("name") or ""), bucket=obj_bucket,
+                )
+            else:  # temporalstore blob tier
+                blob_res = _ts_resolution(
+                    _TsBlobClient(), blob, source_uri=raw_uri, content_type=content_type,
+                    scope=envelope.get("scope"), kind=str(envelope.get("kind") or resource_type or "resource"),
+                    name=str(envelope.get("metadata", {}).get("name") or ""),
+                )
             for _k in ("storage_mode", "stored_raw_uri", "raw_storage_policy", "raw_bytes_stored",
                        "upload_status", "cloud_bucket", "cloud_key"):
-                result[_k] = obj_res[_k]
-            if result.get("parse_text") is None and result.get("parse_uri") in (raw_uri, obj_res["stored_raw_uri"]):
+                result[_k] = blob_res[_k]
+            if result.get("parse_text") is None and result.get("parse_uri") in (raw_uri, blob_res["stored_raw_uri"]):
                 result["parse_text"] = resource_text  # inline path -> parse from the in-hand text
             return result
 

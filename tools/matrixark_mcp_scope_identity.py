@@ -21,7 +21,8 @@ def enrich_scope_with_identity(scope: Json, identity: Json) -> Json:
     tenant_id = str(identity["tenant_id"])
     user_id = str(scope.get("user_id") or identity.get("user_id") or "")
     session_id = str(scope.get("session_id") or identity.get("session_id") or "")
-    hashes = identity_hashes(account_id, tenant_id, user_id, session_id)
+    agent_id = str(scope.get("agent_id") or "")
+    hashes = identity_hashes(account_id, tenant_id, user_id, session_id, agent_id)
     explicit_scope_keys = {str(key) for key in scope.keys()}
     if identity.get("mode") == "api_key":
         if user_id:
@@ -44,4 +45,7 @@ def enrich_scope_with_identity(scope: Json, identity: Json) -> Json:
     if session_id:
         enriched["session_id"] = session_id
         enriched["session_hash"] = hashes["session_hash"]
+    if agent_id:
+        enriched["agent_id"] = agent_id
+        enriched["agent_hash"] = hashes["agent_hash"]
     return enriched

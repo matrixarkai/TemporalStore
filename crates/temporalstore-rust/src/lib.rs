@@ -83,7 +83,7 @@ pub use data_node::{
     CompactionRequest, CompactionResponse, DataNodeLifecycleReport, DataNodePreflightReport,
     DataNodeRuntime, DataNodeRuntimeOptions, DataNodeRuntimeStats, DataNodeShardLifecycleState,
     DataNodeTaskKind, DataNodeTaskOutput, DataNodeTaskStatus, DirtyObjectInfo, DumpShardRequest,
-    DumpShardResponse, GcRequest, GcResponse, RequestController, ShardWorkerInfo,
+    DumpShardResponse, GcRequest, GcResponse, RequestController, SharedWalSink, ShardWorkerInfo,
     StorageLifecycleResponse, StorageLifecycleScheduler,
 };
 pub use e2e::{
@@ -201,7 +201,7 @@ pub use matrixobject_store::MatrixObjectObjectStore;
 pub use shared_store::{
     ReplayReport, SharedStoreCheckpointManifest, SharedStoreFlushReport, SharedStoreGcReport,
     SharedStoreWalEntry, SharedStoreWalObject, SharedStorePageSlab, SharedStoreReplayCursor,
-    SharedPathSlabSource, SharedStoreReplicationError, SharedStoreReplicator,
+    MatrixObjectSlabSource, SharedPathSlabSource, SharedStoreReplicationError, SharedStoreReplicator,
     SharedStoreRetryPolicy, SharedStoreWalAppendMode,
     SharedStoreStorageMode, SharedStoreStorageWriter, SharedStoreWriteReport,
 };

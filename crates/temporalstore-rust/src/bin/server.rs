@@ -19,8 +19,8 @@ use temporalstore_rust::data_node::{DataNodeLifecycleSnapshot, DataNodeTopologyV
 use temporalstore_rust::engine::reports::{StorageManagerCycleReport, StorageManagerCycleRequest};
 use temporalstore_rust::engine::TemporalEngine;
 use temporalstore_rust::http::{
-    json_response, parse_json, post_json, serve_with_stream_handler, HttpRequest, StreamAction,
-    StreamTransfer,
+    get_bytes_with_headers, json_response, parse_json, post_json, serve_with_stream_handler,
+    HttpRequest, HttpRequestOptions, StreamAction, StreamTransfer,
 };
 use std::io::Read as _;
 use temporalstore_rust::ingestion::{FlinkCheckpointStatus, IngestionBatchRequest};
@@ -50,7 +50,7 @@ use temporalstore_rust::{
     BucketDumpManifest, StorageCacheInvalidateBucketRequest, StorageLifecycleRequest,
     StorageProductionReadinessRequest, StreamReadRequest, UnloadShardRequest,
 };
-use temporalstore_snapshot::object_store::ObjectStore;
+use temporalstore_snapshot::object_store::{MatrixObjectHttpStore, ObjectStore};
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
 use bytes::Bytes;
 use tracing::{debug, error, info, warn};
@@ -117,6 +117,15 @@ fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or_default();
+    // Whether this node already holds local shard state on disk, captured
+    // BEFORE the engine constructs/loads (which may create empty dir
+    // scaffolding). Drives matrixobject recovery: absent local state (a fresh
+    // node, or one whose local dirs were wiped) is rebuilt from shared storage,
+    // while intact local state is left untouched so non-idempotent commands are
+    // not double-applied. Used by both the node-local (feature-gated) and the
+    // networked (default-feature) matrixobject durability paths.
+    let local_state_present =
+        local_shard_state_present(&[&cache_dir, &block_store_dir, &index_dir]);
     let block_store_options = block_store_options_from_env();
     let engine = TemporalEngine::with_local_dirs_and_block_store_options(
         cache_memory_bytes,
@@ -131,7 +140,19 @@ fn main() {
     // node (as opposed to a node self-declaring ownership of its TS_SHARD_ID). OFF
     // by default, so normal single-shard startup is unchanged.
     let join_empty = env_bool("TS_SERVER_JOIN_EMPTY", false);
-    if !join_empty {
+    // Networked shared-store cross-node data-follow: a FRESH node (no local state)
+    // configured with a `matrixobject://` shared store restores its on-disk index from
+    // the newest shared checkpoint BEFORE it loads, so the load reads the restored
+    // index into memory and the node auto-serves the followed data with NO manual
+    // `/load`. In that one case the startup load is DEFERRED into the restore wiring
+    // below (`wire_matrixobject_networked_durability`), which installs the index first,
+    // then loads (observing it), then replays the shared WAL tail on top. Every other
+    // startup — no shared URI, or a node with intact local state, or join-empty
+    // placement — loads here exactly as before, so default behavior is unchanged.
+    let networked_uri = matrixobject_networked_uri();
+    let defer_startup_load_to_networked_restore =
+        !join_empty && networked_uri.is_some() && !local_state_present;
+    if !join_empty && !defer_startup_load_to_networked_restore {
         let startup_load = startup_load_shard_request(shard_id, node_id);
         let load_response = engine.load_shard_with(startup_load);
         if !load_response.status.ok {
@@ -141,16 +162,26 @@ fn main() {
                 "startup shard load failed"
             );
         }
-    } else {
+    } else if join_empty {
         info!("join-empty datanode: awaiting metaserver shard placement");
+    } else {
+        info!(
+            shard_id,
+            "fresh node with networked shared store: deferring startup load until shared index is restored"
+        );
     }
     // Resolve the distributed storage/replication backend for this node:
     // matrixobject shared storage when detected, else a configured shared object
     // store, else raft replication (the default when nothing is configured).
-    let storage_backend = temporalstore_rust::StorageBackendConfig::from_env().resolve();
+    // `auto` (the default) probes a configured TS_MATRIXOBJECT_ENDPOINT and only
+    // selects the shared MatrixObject store when it is reachable, otherwise it
+    // degrades to shared-path/raft — the `reason` records exactly which and why.
+    let storage_decision = temporalstore_rust::StorageBackendConfig::from_env().resolve_decision();
+    let storage_backend = storage_decision.backend.clone();
     info!(
         backend = %storage_backend.describe(),
         replication = ?storage_backend.replication_mode(),
+        reason = %storage_decision.reason,
         "resolved storage backend"
     );
     // Construct the shared object store early so a broken shared-storage config
@@ -212,6 +243,39 @@ fn main() {
             run_embed_drainer_loop(&drainer_engine, &drainer_config, || false);
         });
     }
+    // Wire the durable matrixobject shared store into the running node: replay
+    // shard data from shared storage when local state is absent, and mirror
+    // every accepted write to shared storage from here on. Kept alive for the
+    // process lifetime so the durability runtime/sink outlive request handling.
+    // Only active for the matrixobject shared-storage backend; every other
+    // backend (raft/local/shared-path) is completely unchanged.
+    //
+    // Networked cross-node lazy data-follow: when `TS_SHARED_STORE_URI` names a
+    // networked matrixobject object-store service, wire the *networked* durability
+    // path (lazy checkpoint restore + WAL-tail replay + sync write mirroring) so
+    // shard data follows shards across nodes. This path compiles under default
+    // features (`MatrixObjectHttpStore` needs no enterprise crate). Absent the URI
+    // it is a complete no-op and behavior is byte-identical.
+    let _matrixobject_networked_durability = networked_uri.as_ref().and_then(|uri| {
+        wire_matrixobject_networked_durability(
+            uri,
+            &storage_backend,
+            &engine,
+            &runtime,
+            shard_id,
+            node_id,
+            local_state_present,
+            !join_empty,
+        )
+    });
+    #[cfg(feature = "matrixobject")]
+    let _matrixobject_durability_rt = if networked_uri.is_some() {
+        // The networked path owns shard durability; skip the node-local on-disk path
+        // so writes are not mirrored twice.
+        None
+    } else {
+        wire_matrixobject_durability(&storage_backend, &engine, &runtime, shard_id, local_state_present)
+    };
 
     let location = std::env::var("TS_SERVER_LOCATION").unwrap_or_default();
     let binary_version = env!("CARGO_PKG_VERSION").to_string();
@@ -318,6 +382,40 @@ fn main() {
     // feature is optional; a MatrixObject store drops in behind the same trait.
     let blob_store = Arc::new(FileObjectStore::new(PathBuf::from(&blob_store_dir)));
     let blob_chunk_bytes = env_usize("TS_BLOB_CHUNK_BYTES", 1024 * 1024).max(1);
+
+    // Cross-peer blob availability (opt-in, TS_BLOB_PEER_FETCH): on a local
+    // `GET /blob/<key>` MISS, fetch the blob from a raft peer that has it, serve it
+    // to the caller, and cache it locally (read-through). This makes large-file
+    // attachments available cluster-wide in multi-node raft mode WITHOUT full
+    // replication.
+    //
+    // AVAILABILITY, NOT DURABILITY: peer-fetch only lets any node *serve* a blob
+    // that already exists on SOME live peer. It provides no redundancy — if the one
+    // node holding a blob dies before another node has fetched (and thereby cached)
+    // it, the blob is gone. Real durability requires explicit replication or the
+    // enterprise object store; this feature is deliberately scoped to availability.
+    //
+    // The peer address list comes from the raft `peer_map()` (every node's
+    // advertised addr except this one — the same addr each node serves its `/blob`
+    // tier on). `None` when raft is off or the cluster is single-node, so
+    // standalone nodes skip peer-fetch entirely and behavior is byte-identical to
+    // today (404 on local miss).
+    let blob_peer_addrs: Option<Arc<Vec<String>>> = if env_bool("TS_BLOB_PEER_FETCH", false) {
+        raft_state
+            .as_ref()
+            .map(|state| state.runtime.peer_addrs())
+            .filter(|peers| !peers.is_empty())
+            .map(Arc::new)
+    } else {
+        None
+    };
+    if let Some(peers) = &blob_peer_addrs {
+        info!(
+            peers = peers.len(),
+            "cross-peer blob availability enabled (read-through peer-fetch on local miss)"
+        );
+    }
+    let blob_peer_timeout_ms = env_u64("TS_BLOB_PEER_FETCH_TIMEOUT_MS", 5_000);
     let blob_runtime = Arc::new(
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(env_usize("TS_BLOB_RUNTIME_THREADS", 4))
@@ -364,6 +462,8 @@ fn main() {
     // is Declined and falls through to the buffered handler below.
     let stream_blob_store = Arc::clone(&blob_store);
     let stream_blob_runtime = Arc::clone(&blob_runtime);
+    let stream_blob_peer_addrs = blob_peer_addrs.clone();
+    let stream_blob_peer_timeout_ms = blob_peer_timeout_ms;
     let handler_replicator = shard_replicator.clone();
     let handler_block_runtime = Arc::clone(&blob_runtime);
     let stream_chunk_bytes = blob_chunk_bytes;
@@ -376,6 +476,8 @@ fn main() {
                 &stream_blob_store,
                 &stream_blob_runtime,
                 stream_chunk_bytes,
+                stream_blob_peer_addrs.as_deref().map(Vec::as_slice),
+                stream_blob_peer_timeout_ms,
             )
         },
         move |request| {
@@ -596,23 +698,38 @@ fn main() {
             }
             ("POST", "/load") => match parse_json::<LoadShardRequest>(&request.body) {
                 Ok(req) => {
-                    // A shard reassigned here replays its data from shared storage
-                    // (when a shared backend is configured) after the local load.
-                    // Only a foreign shard (no local WAL) replays, so a node's own
-                    // shard is never double-applied.
+                    // A shard reassigned here restores its data from shared storage
+                    // (when a shared backend is configured). Only a foreign shard (no
+                    // local WAL) restores, so a node's own shard is never double-applied.
+                    // Ordering matters: restore the on-disk index from the shared
+                    // checkpoint BEFORE the load so the load reads the restored index
+                    // into memory and the shard serves immediately; then replay the
+                    // shared WAL tail on top AFTER the shard is loaded (the tail applies
+                    // through execute, which needs a loaded shard).
                     let shard_id = req.shard_id;
                     let had_local_wal = engine
                         .write_ahead_log_store()
                         .stats(shard_id)
                         .last_sequence
                         > 0;
-                    let load_response = runtime.load_shard_with(req);
-                    if load_response.status.ok && !had_local_wal {
-                        replay_shard_from_shared(
+                    let restore_after_wal_index = if had_local_wal {
+                        None
+                    } else {
+                        restore_shared_index_before_load(
                             &handler_replicator,
                             &handler_block_runtime,
                             &engine,
                             shard_id,
+                        )
+                    };
+                    let load_response = runtime.load_shard_with(req);
+                    if load_response.status.ok && !had_local_wal {
+                        replay_shared_wal_tail(
+                            &handler_replicator,
+                            &handler_block_runtime,
+                            &engine,
+                            shard_id,
+                            restore_after_wal_index.unwrap_or(0),
                         );
                     }
                     json_response(200, &load_response)
@@ -872,12 +989,22 @@ fn handle_readiness_route(request: &HttpRequest) -> Option<(u16, Vec<u8>)> {
 /// `StreamAction::Handled`); any other path is `Declined` so the buffered handler
 /// runs. On the error / non-blob-method paths it drains the request body first so
 /// the kept-alive connection stays framed.
+///
+/// Cross-peer availability: when `peer_addrs` is `Some` (raft mode +
+/// `TS_BLOB_PEER_FETCH`), a `GET` that misses locally is retried against each peer
+/// in turn; the first peer to return 200 has its bytes streamed back to the caller
+/// AND cached locally via `append_blob` (read-through), so subsequent reads are
+/// local. A request that itself arrives carrying the loop-guard header
+/// (`head.blob_peer_fetch_loop_guard`) is served local-only and NEVER re-forwarded,
+/// which is what stops peers from fetching from each other forever.
 fn handle_blob_stream(
     head: &temporalstore_rust::http::RequestHead,
     transfer: &mut StreamTransfer,
     blob_store: &Arc<FileObjectStore>,
     runtime: &Arc<tokio::runtime::Runtime>,
     chunk_bytes: usize,
+    peer_addrs: Option<&[String]>,
+    peer_timeout_ms: u64,
 ) -> StreamAction {
     let Some(key) = head.path.strip_prefix("/blob/") else {
         return StreamAction::Declined;
@@ -923,11 +1050,38 @@ fn handle_blob_stream(
             }
             match stream_blob_download(transfer, blob_store, chunk_bytes, key) {
                 Ok(true) => {}
-                Ok(false) => write_stream_json(
-                    transfer,
-                    404,
-                    &Status::error("blob_not_found", key.to_string()),
-                ),
+                Ok(false) => {
+                    // Local miss. Try cross-peer fetch unless this request is
+                    // itself a peer-fetch hop (loop guard) or peer-fetch is off.
+                    let peers = if head.blob_peer_fetch_loop_guard {
+                        None
+                    } else {
+                        peer_addrs
+                    };
+                    match peers.and_then(|peers| {
+                        peer_fetch_blob(
+                            transfer,
+                            blob_store,
+                            runtime,
+                            chunk_bytes,
+                            key,
+                            peers,
+                            peer_timeout_ms,
+                        )
+                    }) {
+                        // A peer served the blob (already streamed to the caller).
+                        Some(Ok(())) => {}
+                        // A peer had it but the socket broke mid-stream to the
+                        // caller: head already sent, nothing to recover.
+                        Some(Err(_)) => {}
+                        // No peer had it (or peer-fetch disabled): 404 as today.
+                        None => write_stream_json(
+                            transfer,
+                            404,
+                            &Status::error("blob_not_found", key.to_string()),
+                        ),
+                    }
+                }
                 // A mid-stream socket error: the head is already sent, nothing to
                 // recover; drop the connection.
                 Err(_) => {}
@@ -978,20 +1132,22 @@ struct PublishShardCheckpointResponse {
 /// against double-apply: a node reloading its own shard replays its local WAL
 /// during load, so shared replay runs only for a foreign shard placed here by the
 /// metaserver (which has no local WAL). A missing shared WAL is not an error.
-fn replay_shard_from_shared(
+/// Restore the served INDEX + a lazy slab address map (no slab bytes) from the newest
+/// shared checkpoint onto the on-disk base, so a subsequent `load_shard_with` reads the
+/// restored index into memory and the shard serves the followed data immediately. Old
+/// pages are read lazily through the block store's shared read-through on first access.
+/// Returns the checkpoint's WAL index (the watermark for the post-load tail replay);
+/// `None` when no shared replicator is configured. This MUST run BEFORE the load so the
+/// load observes the restored index — running it after leaves an empty in-memory shard
+/// (the ordering bug this split fixes). With no checkpoint, returns `Some(0)` and the
+/// caller replays the full shared WAL after loading an empty index (WAL-only mirrors).
+fn restore_shared_index_before_load(
     replicator: &Option<Arc<SharedStoreReplicator<FileObjectStore>>>,
     runtime: &Arc<tokio::runtime::Runtime>,
     engine: &TemporalEngine,
     shard_id: ShardId,
-) {
-    let Some(replicator) = replicator else {
-        return;
-    };
-    // Reference-parity lazy recovery: when a shared checkpoint exists, install the served
-    // index + a lazy slab address map (no slab bytes) and replay only the WAL tail
-    // after the checkpoint. Old pages are read lazily through the block store's
-    // shared read-through on first access. With no checkpoint, fall back to the
-    // full WAL replay from 0 (backward compatible with WAL-only mirrors).
+) -> Option<u64> {
+    let replicator = replicator.as_ref()?;
     let after_wal_index =
         match runtime.block_on(replicator.restore_index_and_page_addresses(
             shard_id,
@@ -1004,7 +1160,7 @@ fn replay_shard_from_shared(
                     checkpoint_id = %manifest.checkpoint_id,
                     checkpoint_wal_index = manifest.checkpoint_wal_index,
                     page_slabs = manifest.page_slabs.len(),
-                    "restored shard index and lazy page addresses from shared checkpoint"
+                    "restored shard index and lazy page addresses from shared checkpoint (pre-load)"
                 );
                 manifest.checkpoint_wal_index
             }
@@ -1014,6 +1170,22 @@ fn replay_shard_from_shared(
                 0
             }
         };
+    Some(after_wal_index)
+}
+
+/// Replay the shared WAL tail (records after `after_wal_index`) on top of the already
+/// loaded shard, applying each through `engine.execute` — which is why this runs AFTER
+/// the shard is loaded. No-op when no shared replicator is configured.
+fn replay_shared_wal_tail(
+    replicator: &Option<Arc<SharedStoreReplicator<FileObjectStore>>>,
+    runtime: &Arc<tokio::runtime::Runtime>,
+    engine: &TemporalEngine,
+    shard_id: ShardId,
+    after_wal_index: u64,
+) {
+    let Some(replicator) = replicator else {
+        return;
+    };
     match runtime.block_on(replicator.replay_wal(shard_id, after_wal_index, engine)) {
         Ok(report) => {
             if report.applied > 0 {
@@ -1209,6 +1381,86 @@ fn stream_blob_download(
     Ok(true)
 }
 
+/// Cross-peer blob availability read-through. On a local `GET /blob/<key>` MISS,
+/// query each raft peer in order for `GET /blob/<key>`, tagging the request with the
+/// `X-Ts-Blob-Peer-Fetch: 0` loop-guard header so the queried peer serves local-only
+/// and never re-forwards. The FIRST peer that returns the object wins: its bytes are
+/// cached locally via `append_blob` (read-through, so subsequent reads are local) and
+/// then streamed back to the original caller.
+///
+/// Returns:
+/// - `Some(Ok(()))`  — a peer had the blob; it was cached and streamed to the caller.
+/// - `Some(Err(_))`  — a peer had the blob and the 200 head was sent, but the socket
+///                     to the caller broke mid-stream (unrecoverable; drop the conn).
+/// - `None`          — no peer had the blob; the caller should send a 404 (as today).
+///
+/// Memory note: the peer response is buffered whole before being re-streamed, because
+/// the raw peer HTTP client returns the complete body. For the attachment tier this
+/// bounds peer-fetch memory to one blob per in-flight miss; a fully streamed pass-
+/// through would require a chunked peer client, which the raw client does not provide.
+/// This is an AVAILABILITY mechanism, not a durability one — see the wiring comment in
+/// `main`.
+fn peer_fetch_blob(
+    transfer: &mut StreamTransfer,
+    blob_store: &Arc<FileObjectStore>,
+    runtime: &Arc<tokio::runtime::Runtime>,
+    chunk_bytes: usize,
+    key: &str,
+    peer_addrs: &[String],
+    peer_timeout_ms: u64,
+) -> Option<std::io::Result<()>> {
+    let options = HttpRequestOptions {
+        connect_timeout_ms: 200,
+        io_timeout_ms: peer_timeout_ms.max(1),
+        max_retries: 0,
+    };
+    let path = format!("/blob/{key}");
+    for peer in peer_addrs {
+        // Peer addrs are advertised host:port; tolerate an accidental scheme.
+        let peer = peer
+            .strip_prefix("http://")
+            .or_else(|| peer.strip_prefix("https://"))
+            .unwrap_or(peer.as_str());
+        // Loop guard: the queried peer MUST serve local-only and never re-forward.
+        let bytes =
+            match get_bytes_with_headers(peer, &path, "X-Ts-Blob-Peer-Fetch: 0\r\n", options) {
+                Ok(bytes) => bytes,
+                // This peer missed (404 -> non-200 BadResponse) or was unreachable;
+                // try the next peer.
+                Err(_) => continue,
+            };
+        info!(
+            %key,
+            peer,
+            bytes = bytes.len(),
+            "cross-peer blob fetch hit; caching locally (read-through) and serving"
+        );
+        // Read-through cache: replace any partial then append the fetched bytes so a
+        // subsequent GET is served locally. Best-effort — a cache-write failure still
+        // serves this response (availability is preserved; the blob is simply
+        // re-fetched next time).
+        runtime.block_on(async {
+            let _ = blob_store.delete(key).await;
+            if let Err(err) = blob_store
+                .append_blob(key, Bytes::copy_from_slice(&bytes))
+                .await
+            {
+                warn!(%key, %err, "peer-fetched blob cache write failed; serving without caching");
+            }
+        });
+        // Stream the buffered bytes back to the original caller.
+        let result = (|| -> std::io::Result<()> {
+            transfer.send_head(200, "application/octet-stream", bytes.len())?;
+            for chunk in bytes.chunks(chunk_bytes.max(1)) {
+                transfer.write_chunk(chunk)?;
+            }
+            transfer.flush()
+        })();
+        return Some(result);
+    }
+    None
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct LifecycleSnapshotFileRequest {
     path: PathBuf,
@@ -1294,6 +1546,517 @@ fn ingest_batch_route(engine: &TemporalEngine, body: &[u8]) -> (u16, Vec<u8>) {
         Ok(req) => json_response(200, &engine.ingest_batch(req)),
         Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
     }
+}
+
+/// `true` when any of the local shard dirs already holds on-disk state.
+///
+/// Used to decide matrixobject recovery: an empty/absent set of dirs means a
+/// fresh node or one whose local dirs were wiped, so its shard is rebuilt from
+/// shared storage; a non-empty set means intact local state that must not be
+/// replayed over (some commands are not idempotent).
+fn local_shard_state_present(dirs: &[&str]) -> bool {
+    dirs.iter().any(|dir| match std::fs::read_dir(dir) {
+        Ok(mut entries) => entries.next().is_some(),
+        Err(_) => false,
+    })
+}
+
+/// Durable shared-storage sink backed by a matrixobject WAL writer.
+///
+/// The datanode's request/worker threads are plain OS threads, so blocking on
+/// the dedicated durability runtime is safe. In the default **async** mode
+/// `record_write` only enqueues the entry (cheap — a lock + push) and returns;
+/// a background task on the same runtime drains the queue in batches off the
+/// write critical path. The local WAL+page are already durable before the entry
+/// is enqueued, so acknowledgement no longer waits on the matrixobject append.
+///
+/// With `TS_MATRIXOBJECT_SYNC_FLUSH=1` the writer runs in **sync** mode instead:
+/// every write is published to the durable store before the write is
+/// acknowledged.
+#[cfg(feature = "matrixobject")]
+struct MatrixObjectWalSink {
+    handle: tokio::runtime::Handle,
+    writer: std::sync::Arc<
+        temporalstore_rust::SharedStoreStorageWriter<
+            temporalstore_rust::matrixobject_store::MatrixObjectObjectStore,
+        >,
+    >,
+    /// `false` in sync mode (each write publishes inline); `true` in async mode
+    /// (each write enqueues and the background flusher publishes).
+    async_mode: bool,
+    /// Wake the background flusher when the queue reaches `batch_full`.
+    flush_signal: std::sync::Arc<tokio::sync::Notify>,
+    batch_full: usize,
+}
+
+#[cfg(feature = "matrixobject")]
+impl std::fmt::Debug for MatrixObjectWalSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MatrixObjectWalSink").finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "matrixobject")]
+impl temporalstore_rust::SharedWalSink for MatrixObjectWalSink {
+    fn record_write(&self, shard_id: u64, command: &Command) {
+        let writer = std::sync::Arc::clone(&self.writer);
+        let command = command.clone();
+        // In async mode `write` only locks the queue and pushes (no durable I/O
+        // is awaited), so this returns immediately; in sync mode it publishes to
+        // the durable store before returning.
+        let result = self
+            .handle
+            .block_on(async move { writer.write(shard_id, command).await });
+        if let Err(err) = result {
+            // Durability failure: log loudly. The local write already
+            // succeeded, so the node stays available; shared storage will catch
+            // up on the next successful publish or on the next full replay.
+            eprintln!("matrixobject durable write failed for shard {shard_id}: {err}");
+        }
+        // Threshold flush: if the queue has filled up, wake the flusher now
+        // instead of waiting for the next interval tick.
+        if self.async_mode && self.writer.queued_len() >= self.batch_full {
+            self.flush_signal.notify_one();
+        }
+    }
+}
+
+/// Owns the dedicated durability runtime and the shared-store writer. Its
+/// `Drop` drains any queued (async) writes before the runtime shuts down, so a
+/// clean stop loses nothing.
+#[cfg(feature = "matrixobject")]
+struct MatrixObjectDurability {
+    rt: tokio::runtime::Runtime,
+    writer: std::sync::Arc<
+        temporalstore_rust::SharedStoreStorageWriter<
+            temporalstore_rust::matrixobject_store::MatrixObjectObjectStore,
+        >,
+    >,
+    shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    async_mode: bool,
+    drain_batch: usize,
+}
+
+#[cfg(feature = "matrixobject")]
+impl Drop for MatrixObjectDurability {
+    fn drop(&mut self) {
+        self.shutdown
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        if !self.async_mode {
+            return;
+        }
+        // Graceful drain: publish everything still queued before the runtime
+        // (and the background flusher) go away. `rt` is dropped after this
+        // returns, so the handle is still live here.
+        let writer = std::sync::Arc::clone(&self.writer);
+        let drain_batch = self.drain_batch;
+        let drained = self.rt.handle().block_on(async move {
+            let mut total = 0usize;
+            loop {
+                match writer.flush_pending(drain_batch).await {
+                    Ok(report) => {
+                        total += report.flushed;
+                        if report.remaining == 0 {
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("matrixobject shutdown drain failed: {err}");
+                        break;
+                    }
+                }
+            }
+            total
+        });
+        if drained > 0 {
+            println!("matrixobject durability: drained {drained} queued writes on shutdown");
+        }
+    }
+}
+
+/// Build the durable matrixobject store, replay shard data from it when local
+/// state is absent, and attach a write-mirroring sink to `runtime`. Returns a
+/// guard that must be kept alive for the process lifetime (it owns the
+/// durability runtime and drains queued writes on drop). A no-op (returns
+/// `None`) for any backend other than matrixobject.
+#[cfg(feature = "matrixobject")]
+fn wire_matrixobject_durability(
+    storage_backend: &temporalstore_rust::StorageBackend,
+    engine: &TemporalEngine,
+    runtime: &DataNodeRuntime,
+    shard_id: u64,
+    local_state_present: bool,
+) -> Option<MatrixObjectDurability> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use temporalstore_rust::matrixobject_store::MatrixObjectObjectStore;
+    use temporalstore_rust::{SharedStoreReplicator, SharedStoreStorageMode, StorageBackend};
+
+    let (bucket, cluster_id) = match storage_backend {
+        StorageBackend::MatrixObject { bucket, cluster_id } => (bucket.clone(), cluster_id.clone()),
+        // Other backends (raft/local/shared-path) keep their existing behavior.
+        _ => return None,
+    };
+
+    // TODO(networked-store): when TS_MATRIXOBJECT_ENDPOINT is configured, this
+    // durability path must target the *networked* MatrixObject object-store
+    // service (see the matching TODO in storage_backend::build_shared_object_store)
+    // instead of a node-local on-disk snapshot dir, so shard data follows shards
+    // across nodes on rebalance / node loss. The `auto` resolver already probes
+    // the endpoint and selects matrixobject only when reachable; wiring the
+    // networked ObjectStore impl here (and in build_shared_object_store) is the
+    // remaining piece. Until then this stays node-local.
+    let store_dir = std::env::var("TS_MATRIXOBJECT_STORE_DIR")
+        .unwrap_or_else(|_| "target/temporalstore-matrixobject".to_string());
+
+    // Durable, on-disk matrixobject store: flush-on-commit snapshot that is read
+    // back on construction, so its bytes survive a process restart.
+    let store = match MatrixObjectObjectStore::with_persistent_dir(&bucket, &store_dir) {
+        Ok(store) => store,
+        Err(err) => {
+            eprintln!("matrixobject durable store at {store_dir} is unusable: {err}");
+            std::process::exit(1);
+        }
+    };
+
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(err) => {
+            eprintln!("failed to start matrixobject durability runtime: {err}");
+            std::process::exit(1);
+        }
+    };
+
+    let replicator = SharedStoreReplicator::new(cluster_id, Arc::new(store));
+
+    let latest = match rt.block_on(replicator.latest_persisted_wal_index(shard_id)) {
+        Ok(latest) => latest,
+        Err(err) => {
+            eprintln!("failed to read matrixobject WAL state for shard {shard_id}: {err}");
+            std::process::exit(1);
+        }
+    };
+
+    if !local_state_present && latest > 0 {
+        // TODO(S1 / checkpoint-recovery): this NODE-LOCAL matrixobject durability path still
+        // recovers via full WAL replay from seq 0 (O(all history)) and never publishes a
+        // checkpoint. The lazy checkpoint substrate now exists generically:
+        //   * `SharedStoreReplicator<O>::publish_checkpoint` / `restore_index_and_page_addresses`
+        //     are generic over `O: ObjectStore` (see shared_store.rs), and
+        //   * the NETWORKED path `wire_matrixobject_networked_durability` already does exactly the
+        //     target flow: restore index + lazy slab address map, replay only the WAL tail, and
+        //     publish a checkpoint on start.
+        // To close S1 for this backend: (a) publish a checkpoint on start when `local_state_present`
+        // (mirror wire_matrixobject_networked_durability's publish block), and (b) here, replace
+        // `replay_wal(shard_id, 0, ..)` with
+        //     `replicator.restore_index_and_page_addresses(shard_id, engine, &engine.block_store())`
+        // then `replay_wal(shard_id, manifest.checkpoint_wal_index, ..)`, falling back to a
+        // full replay only on `CheckpointNotFound`. `MatrixObjectObjectStore` implements
+        // `ObjectStore`, so a `SharedSlabSource` over it (analogous to `MatrixObjectSlabSource`)
+        // is all that the generic `restore_index_and_page_addresses_with` needs. Requires the
+        // `matrixobject` feature build (private crate) to land + test end-to-end, so it is
+        // deferred to a dedicated pass; recovery stays correct here today, just O(history).
+        match rt.block_on(replicator.replay_wal(shard_id, 0, engine)) {
+            Ok(report) => println!(
+                "recovered shard {shard_id} from matrixobject shared storage at {store_dir}: {} WAL entries replayed (through index {})",
+                report.applied, report.last_wal_index
+            ),
+            Err(err) => {
+                eprintln!("matrixobject recovery replay failed for shard {shard_id}: {err}");
+                std::process::exit(1);
+            }
+        }
+    } else if local_state_present {
+        println!(
+            "matrixobject durability active for shard {shard_id} at {store_dir}; local state intact, skipping replay (WAL resumes at {})",
+            latest + 1
+        );
+    } else {
+        println!(
+            "matrixobject durability active for shard {shard_id} at {store_dir}; no shared WAL yet (fresh cluster)"
+        );
+    }
+
+    // `TS_MATRIXOBJECT_SYNC_FLUSH=1` forces every write durable before ack;
+    // otherwise writes are batched off the critical path (the default).
+    let sync_flush = env_bool("TS_MATRIXOBJECT_SYNC_FLUSH", false);
+    let mode = SharedStoreStorageMode::from_sync_flag(sync_flush);
+    let async_mode = mode.is_async();
+
+    // Continue publishing at latest + 1 so we never overwrite persisted WAL
+    // entries.
+    let writer = Arc::new(replicator.storage_writer(mode, latest + 1));
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let flush_signal = Arc::new(tokio::sync::Notify::new());
+
+    let flush_interval_ms = env_u64("TS_MATRIXOBJECT_FLUSH_INTERVAL_MS", 100).max(1);
+    let flush_batch = env_usize("TS_MATRIXOBJECT_FLUSH_BATCH", 256).max(1);
+
+    if async_mode {
+        // Background flusher: drains the queue in batches every interval, or as
+        // soon as the queue reaches `flush_batch` (threshold flush). One drain
+        // pass coalesces up to the whole backlog into batched appends.
+        let bg_writer = Arc::clone(&writer);
+        let bg_shutdown = Arc::clone(&shutdown);
+        let bg_signal = Arc::clone(&flush_signal);
+        rt.spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_millis(flush_interval_ms));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {}
+                    _ = bg_signal.notified() => {}
+                }
+                if bg_shutdown.load(Ordering::SeqCst) {
+                    break;
+                }
+                loop {
+                    match bg_writer.flush_pending(flush_batch).await {
+                        Ok(report) => {
+                            if report.remaining == 0 {
+                                break;
+                            }
+                        }
+                        Err(err) => {
+                            eprintln!("matrixobject async flush failed for shard {shard_id}: {err}");
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        println!(
+            "matrixobject durability: async batched flush (interval {flush_interval_ms}ms, batch {flush_batch}); durable local WAL covers process crash"
+        );
+    } else {
+        println!("matrixobject durability: sync flush (every write durable before ack)");
+    }
+
+    runtime.set_shared_wal_sink(Arc::new(MatrixObjectWalSink {
+        handle: rt.handle().clone(),
+        writer: Arc::clone(&writer),
+        async_mode,
+        flush_signal,
+        batch_full: flush_batch,
+    }));
+
+    Some(MatrixObjectDurability {
+        rt,
+        writer,
+        shutdown,
+        async_mode,
+        drain_batch: flush_batch.max(4096),
+    })
+}
+
+/// Networked URI of the shared matrixobject object-store service, if configured.
+/// `TS_SHARED_STORE_URI=matrixobject://host:port` opts a datanode into networked
+/// cross-node lazy data-follow. Absent (or a non-matrixobject scheme) leaves the
+/// datanode on its existing behavior, byte-identical.
+fn matrixobject_networked_uri() -> Option<String> {
+    std::env::var("TS_SHARED_STORE_URI")
+        .ok()
+        .map(|uri| uri.trim().to_string())
+        .filter(|uri| uri.starts_with("matrixobject://"))
+}
+
+/// Durable shared-storage sink backed by a NETWORKED matrixobject WAL writer.
+/// Mirrors every accepted write to the networked object store in sync mode (the
+/// local WAL+page are already durable before this runs, so this rides after the
+/// local commit). Compiles under default features: `MatrixObjectHttpStore` needs
+/// no enterprise crate.
+struct MatrixObjectNetworkedWalSink {
+    handle: tokio::runtime::Handle,
+    writer: Arc<temporalstore_rust::SharedStoreStorageWriter<MatrixObjectHttpStore>>,
+}
+
+impl std::fmt::Debug for MatrixObjectNetworkedWalSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MatrixObjectNetworkedWalSink")
+            .finish_non_exhaustive()
+    }
+}
+
+impl temporalstore_rust::SharedWalSink for MatrixObjectNetworkedWalSink {
+    fn record_write(&self, shard_id: u64, command: &Command) {
+        let writer = Arc::clone(&self.writer);
+        let command = command.clone();
+        let result = self
+            .handle
+            .block_on(async move { writer.write(shard_id, command).await });
+        if let Err(err) = result {
+            // Durability failure: log loudly. The local write already succeeded, so
+            // the node stays available; the networked store catches up on the next
+            // successful publish or on the next full replay.
+            eprintln!("matrixobject networked durable write failed for shard {shard_id}: {err}");
+        }
+    }
+}
+
+/// Owns the networked durability runtime + writer for the process lifetime. The
+/// sink mirrors writes in sync mode, so there is no queued backlog to drain on
+/// drop; keeping the runtime alive is all that is required.
+struct MatrixObjectNetworkedDurability {
+    _rt: tokio::runtime::Runtime,
+    _writer: Arc<temporalstore_rust::SharedStoreStorageWriter<MatrixObjectHttpStore>>,
+}
+
+/// Wire the NETWORKED matrixobject shared store into the running node so shard data
+/// follows shards across nodes. On a fresh node (`!local_state_present`), restore
+/// the served index + a lazy slab address map from the newest networked checkpoint
+/// and replay only the WAL tail — old pages are then fetched on demand over the
+/// network on first access, never eagerly downloaded. When this node already holds
+/// authoritative local state, publish its current state as a networked checkpoint
+/// (index + slabs) so future owners can lazily follow it. Finally, mirror every
+/// accepted write to the networked store from here on. Active only when a
+/// `matrixobject://` URI is configured; returns `None` on a bad URI or runtime
+/// failure so the node still serves from local durability.
+fn wire_matrixobject_networked_durability(
+    uri: &str,
+    storage_backend: &StorageBackend,
+    engine: &TemporalEngine,
+    runtime: &DataNodeRuntime,
+    shard_id: u64,
+    node_id: u64,
+    local_state_present: bool,
+    auto_load: bool,
+) -> Option<MatrixObjectNetworkedDurability> {
+    let store = match MatrixObjectHttpStore::new(uri) {
+        Ok(store) => store,
+        Err(err) => {
+            error!(%err, uri, "invalid TS_SHARED_STORE_URI; networked matrixobject durability disabled");
+            return None;
+        }
+    };
+    let cluster_id = match storage_backend {
+        StorageBackend::MatrixObject { cluster_id, .. } => cluster_id.clone(),
+        _ => std::env::var("TS_CLUSTER_ID").unwrap_or_else(|_| "default".to_string()),
+    };
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(err) => {
+            error!(%err, "failed to start networked matrixobject durability runtime");
+            return None;
+        }
+    };
+    let replicator = Arc::new(SharedStoreReplicator::new(cluster_id, Arc::new(store)));
+
+    // Fresh node: rebuild from the networked store via reference-parity lazy
+    // data-follow (index + address map, then WAL tail; old pages fetched on demand).
+    if !local_state_present {
+        let after_wal_index = match rt.block_on(replicator.restore_index_and_page_addresses(
+            shard_id,
+            engine,
+            &engine.block_store(),
+        )) {
+            Ok(manifest) => {
+                info!(
+                    shard_id,
+                    checkpoint_id = %manifest.checkpoint_id,
+                    checkpoint_wal_index = manifest.checkpoint_wal_index,
+                    page_slabs = manifest.page_slabs.len(),
+                    "restored shard index and lazy page addresses from networked matrixobject checkpoint"
+                );
+                manifest.checkpoint_wal_index
+            }
+            Err(SharedStoreReplicationError::CheckpointNotFound(_)) => 0,
+            Err(err) => {
+                warn!(shard_id, %err, "networked matrixobject checkpoint restore failed; replaying full shared WAL");
+                0
+            }
+        };
+        // Read the just-restored on-disk index into memory so this node auto-serves the
+        // followed data. The process-level startup load was deferred to here precisely
+        // so it observes the index installed by `restore_index_and_page_addresses`
+        // above; the shared WAL-tail replay below then needs a loaded shard (it applies
+        // through `engine.execute`). Join-empty placement instead loads via a later
+        // `/load`, so `auto_load` is false and the load is skipped here (behavior
+        // unchanged for that mode).
+        if auto_load {
+            let load = startup_load_shard_request(shard_id, node_id);
+            let load_response = engine.load_shard_with(load);
+            if !load_response.status.ok {
+                warn!(
+                    shard_id,
+                    message = %load_response.status.message,
+                    "load of restored networked shard index failed"
+                );
+            }
+        }
+        match rt.block_on(replicator.replay_wal(shard_id, after_wal_index, engine)) {
+            Ok(report) => {
+                if report.applied > 0 {
+                    info!(
+                        shard_id,
+                        records = report.applied,
+                        wal_index = report.last_wal_index,
+                        after_wal_index,
+                        "replayed shard WAL tail from networked matrixobject storage"
+                    );
+                }
+            }
+            Err(err) => {
+                warn!(shard_id, %err, "no networked matrixobject data replayed for shard")
+            }
+        }
+    }
+
+    // Resume publishing at latest + 1 so we never clobber persisted WAL entries.
+    let latest = match rt.block_on(replicator.latest_persisted_wal_index(shard_id)) {
+        Ok(latest) => latest,
+        Err(err) => {
+            error!(shard_id, %err, "failed to read networked matrixobject WAL state; durability disabled");
+            return None;
+        }
+    };
+
+    // Publish this node's authoritative state as a networked checkpoint (index +
+    // slabs) so a future owner can lazily follow it. Opt-out via env.
+    if local_state_present && env_bool("TS_MATRIXOBJECT_NETWORKED_CHECKPOINT_ON_START", true) {
+        match rt.block_on(replicator.publish_checkpoint(
+            shard_id,
+            latest,
+            engine,
+            &engine.block_store(),
+        )) {
+            Ok(manifest) => info!(
+                shard_id,
+                checkpoint_id = %manifest.checkpoint_id,
+                page_slabs = manifest.page_slabs.len(),
+                checkpoint_wal_index = manifest.checkpoint_wal_index,
+                "published networked matrixobject checkpoint (index + slabs)"
+            ),
+            Err(err) => {
+                warn!(shard_id, %err, "failed to publish networked matrixobject checkpoint at startup")
+            }
+        }
+    }
+
+    let writer = Arc::new(
+        replicator.storage_writer(temporalstore_rust::SharedStoreStorageMode::Sync, latest + 1),
+    );
+    runtime.set_shared_wal_sink(Arc::new(MatrixObjectNetworkedWalSink {
+        handle: rt.handle().clone(),
+        writer: Arc::clone(&writer),
+    }));
+    info!(
+        shard_id,
+        uri, "networked matrixobject durability active (sync write mirror + lazy cross-node data-follow)"
+    );
+
+    Some(MatrixObjectNetworkedDurability {
+        _rt: rt,
+        _writer: writer,
+    })
 }
 
 fn env_usize(name: &str, default: usize) -> usize {

@@ -176,7 +176,7 @@ fn single_barrier_full_page_loss_no_dump_rebuilds_from_wal() {
     recover_sb_ok(root, "300");
 }
 
-fn populate_feature_sb(root: &str) {
+fn populate_feature(root: &str) {
     let out = Command::new(bin())
         .env("TS_WAL_SINGLE_BARRIER", "1")
         .env("TS_GROUP_COMMIT", "1")
@@ -189,7 +189,7 @@ fn populate_feature_sb(root: &str) {
     );
 }
 
-fn recover_feature_sb_ok(root: &str) {
+fn recover_feature_ok(root: &str) {
     let out = Command::new(bin())
         .env("TS_WAL_SINGLE_BARRIER", "1")
         .args(["--mode", "recover-feature", "--root", root])
@@ -216,9 +216,9 @@ fn single_barrier_evict_then_crash_before_dump_does_not_resurrect() {
     // (no resurrection of the 2 evicted points, no loss of an acked point).
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_str().unwrap();
-    populate_feature_sb(root);
-    powerloss_sb(root, "wipe-nondurable");
-    recover_feature_sb_ok(root);
+    populate_feature(root);
+    powerloss(root, "wipe-nondurable");
+    recover_feature_ok(root);
 }
 
 #[test]
