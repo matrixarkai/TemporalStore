@@ -324,6 +324,13 @@ def dispatch_matrixark_tool(server: Any, name: str, args: Json, hook: Json | Non
         result = server.adapter.get_memory(args)
         server.access.append_audit("context.get", identity, status="ok", details={"found": result.get("found")})
         return {**result, "access": args.get("_matrixark_auth", {})}
+    if name == "matrixark_get_memory_by_key":
+        result = server.adapter.get_memory_by_identity_key(args)
+        server.access.append_audit(
+            "context.get_by_key", identity, status="ok",
+            details={"found": result.get("found"), "identity_key": result.get("identity_key")},
+        )
+        return {**result, "access": args.get("_matrixark_auth", {})}
     if name == "matrixark_update_memory":
         result = server.adapter.update_memory(args, hook=hook)
         server.append_audit_policy(
