@@ -56,6 +56,14 @@ For `resource`/`skill`, `text`/`resource_text` is synthesized into a one-item us
 | `wait`              | boolean             | Client-facing: block until durable/processed instead of async.                                    |
 | `raw_object_backend`| string              | Client-facing: raw object-store backend selector for resource bytes.                              |
 | `max_skill_bytes`   | integer             | Client-facing: cap on skill/resource text bytes.                                                  |
+| `expires_at`        | number (unix secs)  | PurchaseMemory per-record TTL. Absolute expiry in **seconds**. Every record from this ingest is stamped ephemeral, stops surfacing from retrieve/get_all once `now >= expires_at`, is excluded from summaries, and is lazily purged. Wins over `ttl_seconds`. |
+| `ttl_seconds`       | number              | Relative TTL: `expires_at = ingestion_time + ttl_seconds`. Ignored if `expires_at` is also present. |
+| `retention_cutoff_ts` | number (unix secs) | Scope-level cutoff. Records in this subject scope whose occurrence time `< cutoff` are hidden and reclaimed. Persisted as a durable scope marker. |
+| `identity_key`      | string              | Keyed-upsert identity of a fact within the scope (e.g. `user.email`). A later ingest with the same key supersedes / is rank-guarded against the prior value. |
+| `truth_class`       | string              | Confidence class for the keyed-upsert rank guard → integer rank (default `asserted=3, reported=2, inferred=1, unknown=0`; override via `MATRIXARK_TRUTH_RANK` env JSON). New rank `>=` existing supersedes; lower rank is rejected. |
+
+The TTL headers `X-Expires-At` / `X-Ttl-Seconds` on `POST /v1/ingest` are a
+header-form of `expires_at` / `ttl_seconds` (the JSON body wins when both are set).
 
 Passthrough fields copied verbatim by `normalize_envelope` when present:
 `context_pack_id`, `query_id_hash`, `accepted_refs`, `rejected_refs`,
