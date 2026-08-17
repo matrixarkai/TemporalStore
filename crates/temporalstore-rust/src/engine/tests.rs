@@ -76,6 +76,7 @@ fn assert_cache_latency_histograms_observed(stats: matrixcache::CacheStats) {
 
 mod conformance;
 mod concurrent_commit;
+mod phase1_flat;
 mod part1;
 mod part2;
 mod part3;
