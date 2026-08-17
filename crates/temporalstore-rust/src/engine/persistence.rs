@@ -133,6 +133,22 @@ impl TemporalEngine {
     }
 
     pub(super) fn load_index(&self, shard_id: ShardId, warm_cache: bool) -> Option<ShardState> {
+        // Tolerant wrapper for probe/report callers (manifest-anchor probe, recovery reports):
+        // a corrupt index-log delta yields None here. The authoritative load path
+        // (`load_shard_with`) calls `load_index_checked` instead so it can REFUSE the load on
+        // corruption rather than silently serving a base-only prefix.
+        self.load_index_inner(shard_id, warm_cache, delta_served_index_enabled())
+            .ok()
+            .flatten()
+    }
+
+    /// Fold-aware load that surfaces a corrupt served-index delta as `Err` so the caller can
+    /// refuse the load. Used by the authoritative recovery path.
+    pub(super) fn load_index_checked(
+        &self,
+        shard_id: ShardId,
+        warm_cache: bool,
+    ) -> Result<Option<ShardState>, Status> {
         self.load_index_inner(shard_id, warm_cache, delta_served_index_enabled())
     }
 
@@ -149,7 +165,10 @@ impl TemporalEngine {
         shard_id: ShardId,
         warm_cache: bool,
     ) -> Option<ShardState> {
+        // base_only never folds the delta log, so this never fails on delta corruption.
         self.load_index_inner(shard_id, warm_cache, false)
+            .ok()
+            .flatten()
     }
 
     fn load_index_inner(
@@ -157,17 +176,20 @@ impl TemporalEngine {
         shard_id: ShardId,
         warm_cache: bool,
         fold_deltas: bool,
-    ) -> Option<ShardState> {
+    ) -> Result<Option<ShardState>, Status> {
         let read = fs::read(self.index_path(shard_id));
         let base_present = read.is_ok();
         // No fold: a missing base means nothing to load. Fold path: the base is materialized
         // only at compaction/unload, so a crash before the first compaction leaves no base --
         // start empty and rebuild from the index-log deltas below.
         if !base_present && !fold_deltas {
-            return None;
+            return Ok(None);
         }
         let mut shard = match read {
-            Ok(bytes) => serde_json::from_slice::<ShardState>(&bytes).ok()?,
+            Ok(bytes) => match serde_json::from_slice::<ShardState>(&bytes) {
+                Ok(shard) => shard,
+                Err(_) => return Ok(None),
+            },
             Err(_) => ShardState::default(),
         };
         // Thin-layer Sequence fold: a pre-fold on-disk index stored Sequence rows in a
@@ -186,13 +208,13 @@ impl TemporalEngine {
         // WAL -- re-execution would write fresh pages and relocate them to the active slab,
         // doubling physical page counts and losing the recorded slab layout.
         if fold_deltas {
-            self.fold_index_log_deltas(shard_id, &mut shard);
+            self.fold_index_log_deltas(shard_id, &mut shard)?;
             // ON but no base and nothing to fold -> genuinely nothing persisted yet.
             if !base_present
                 && shard.bucket_index.bucket_map.is_empty()
                 && shard.applied_wal_sequence.is_none()
             {
-                return None;
+                return Ok(None);
             }
         }
         // Fold disk->memory cache promotion into reconcile's page reads on a warming
@@ -219,7 +241,7 @@ impl TemporalEngine {
             }
         }
         refresh_bucket_runtime_flags(&mut shard);
-        Some(shard)
+        Ok(Some(shard))
     }
 
     /// Fold the append-only index-log deltas onto a (possibly empty) base `ShardState`,
@@ -230,13 +252,24 @@ impl TemporalEngine {
     /// addresses (authoritative replace per covered key) and its per-key non-page state is
     /// applied, then the reconstructed anchor advances so WAL replay re-executes only the
     /// uncaptured (e.g. async) tail rather than relocating the pages the deltas already pin.
-    fn fold_index_log_deltas(&self, shard_id: ShardId, shard: &mut ShardState) {
+    fn fold_index_log_deltas(&self, shard_id: ShardId, shard: &mut ShardState) -> Result<(), Status> {
+        // Propagate a corrupt/holed delta stream instead of silently folding a prefix. A
+        // silently-skipped delta advances the reconstructed anchor past a removal/eviction that
+        // lives ONLY in the delta (not the WAL), so it is recovered from neither source -- a
+        // silent loss / dangling ref. The caller (load_shard_with) refuses the load on Err.
         let records = match self.index_log_store.read_delta_records(shard_id, 0) {
             Ok(records) => records,
-            Err(_) => return,
+            Err(err) => {
+                return Err(Status::error(
+                    "index_log_delta_corruption",
+                    format!(
+                        "served-index delta log for shard {shard_id} is corrupt; refusing load: {err}"
+                    ),
+                ));
+            }
         };
         if records.is_empty() {
-            return;
+            return Ok(());
         }
         let base_anchor = shard.applied_wal_sequence.unwrap_or(0);
         let mut max_anchor = base_anchor;
@@ -261,6 +294,7 @@ impl TemporalEngine {
             shard.bucket_index.rebuild_object_page_lookup();
             shard.applied_wal_sequence = Some(max_anchor);
         }
+        Ok(())
     }
 
     /// Persist the in-memory shard index to disk once (used by bulk backfill
