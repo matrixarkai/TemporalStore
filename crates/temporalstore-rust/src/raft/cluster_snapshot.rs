@@ -311,6 +311,7 @@ impl RaftCluster {
                 chunk_index: 0,
                 chunk_count: 1,
                 entries: Vec::new(),
+                state_image: snapshot.state_image.clone(),
             });
             return Ok(chunks);
         }
@@ -327,6 +328,7 @@ impl RaftCluster {
                 chunk_index: chunk_index as u64,
                 chunk_count: chunk_count as u64,
                 entries: entries.to_vec(),
+                state_image: None,
             });
         }
         Ok(chunks)
@@ -398,6 +400,7 @@ impl RaftCluster {
                 last_included_term: request.last_included_term,
                 last_included_index: request.last_included_index,
                 chunks: vec![None; request.chunk_count as usize],
+                state_image: None,
             });
         if pending.shard_id != request.shard_id
             || pending.last_included_term != request.last_included_term
@@ -425,6 +428,10 @@ impl RaftCluster {
             ));
         }
         let duplicate_chunk = pending.chunks[request.chunk_index as usize].is_some();
+        // S2: the state image rides on chunk 0; retain it for the reassembled snapshot.
+        if request.state_image.is_some() {
+            pending.state_image = request.state_image.clone();
+        }
         pending.chunks[request.chunk_index as usize] = Some(request.entries);
         let received_chunks = pending
             .chunks
@@ -466,6 +473,7 @@ impl RaftCluster {
             .pending_snapshots
             .remove(&key)
             .expect("complete pending snapshot must exist");
+        let state_image = pending.state_image;
         let entries = pending
             .chunks
             .into_iter()
@@ -480,6 +488,7 @@ impl RaftCluster {
                 last_included_index: request.last_included_index,
                 external_snapshot_ref: None,
                 entries,
+                state_image,
             },
         );
         {
@@ -534,6 +543,55 @@ impl RaftCluster {
             .get(&inner.leader_id)
             .filter(|node| node.alive && node.role == RaftRole::Leader)
             .ok_or(RaftError::LeaderUnavailable)?;
+        // S2: capture an opaque engine STATE IMAGE at the leader's applied index instead of the
+        // full committed entry log, so a far-behind follower installs in O(state). Gated OFF by
+        // default. Any failure to build the image falls through to the classic entry-carrying
+        // snapshot below, so the gate can never make snapshotting worse.
+        if raft_snapshot_state_image_on() && leader.applied_index > 0 {
+            let shard_id = inner.shard_id;
+            let watermark = leader.applied_index;
+            let image = (|| -> Option<RaftSnapshotStateImage> {
+                let index_bytes = leader.engine.export_index_bytes(shard_id).ok()?;
+                let block_store = leader.engine.block_store();
+                let mut slabs = Vec::new();
+                for page_slab_id in block_store.slab_ids().ok()? {
+                    let bytes = block_store.read_slab(page_slab_id).ok()?;
+                    slabs.push(RaftSnapshotStateImageSlab {
+                        page_slab_id,
+                        bytes,
+                    });
+                }
+                Some(RaftSnapshotStateImage {
+                    index_bytes,
+                    next_page_id: block_store.next_page_id(),
+                    slabs,
+                })
+            })();
+            if let Some(image) = image {
+                // Term AT the applied watermark, derived from the log/installed snapshot (entries
+                // are dropped, so it cannot come from entries.last()).
+                let last_included_term = leader
+                    .log
+                    .iter()
+                    .find(|entry| entry.index == watermark)
+                    .map(|entry| entry.term)
+                    .or_else(|| {
+                        leader.installed_snapshot.as_ref().and_then(|snap| {
+                            (snap.last_included_index == watermark)
+                                .then_some(snap.last_included_term)
+                        })
+                    })
+                    .unwrap_or(leader.current_term);
+                return Ok(RaftSnapshot {
+                    shard_id,
+                    last_included_term,
+                    last_included_index: watermark,
+                    external_snapshot_ref: None,
+                    entries: Vec::new(),
+                    state_image: Some(image),
+                });
+            }
+        }
         let mut entries_by_index = BTreeMap::new();
         if let Some(snapshot) = &leader.installed_snapshot {
             for entry in snapshot
@@ -562,6 +620,7 @@ impl RaftCluster {
             last_included_index: leader.commit_index,
             external_snapshot_ref: None,
             entries,
+            state_image: None,
         })
     }
 
@@ -778,12 +837,28 @@ impl RaftCluster {
             }
 
             let engine = TemporalEngine::default();
-            engine.load_shard(shard_id);
-            for entry in &snapshot.entries {
-                engine.execute_durable(ExecuteRequest {
-                    shard_id: entry.shard_id,
-                    command: entry.command.clone(),
-                });
+            if let Some(image) = &snapshot.state_image {
+                // S2: reconstruct state from the opaque image (index + slabs) in O(state) — no
+                // full-history entry replay. Mirrors the shared-store lazy restore: install slabs,
+                // install the served index base, then load the shard so the index is read in.
+                let block_store = engine.block_store();
+                for slab in &image.slabs {
+                    block_store
+                        .install_slab(slab.page_slab_id, &slab.bytes)
+                        .map_err(|err| RaftError::SnapshotEncoding(err.to_string()))?;
+                }
+                engine
+                    .install_index_bytes(shard_id, &image.index_bytes)
+                    .map_err(|err| RaftError::SnapshotEncoding(err.to_string()))?;
+                engine.load_shard(shard_id);
+            } else {
+                engine.load_shard(shard_id);
+                for entry in &snapshot.entries {
+                    engine.execute_durable(ExecuteRequest {
+                        shard_id: entry.shard_id,
+                        command: entry.command.clone(),
+                    });
+                }
             }
 
             node.engine = engine;
@@ -815,8 +890,15 @@ impl RaftCluster {
                     .retain(|entry| entry.index > snapshot.last_included_index);
             }
             node.applied.clear();
-            node.applied
-                .extend(snapshot.entries.iter().map(|entry| entry.index));
+            if snapshot.state_image.is_some() {
+                // The image carries no entries, so seed the applied set from the covered index
+                // range (mirrors the existing snapshot-install applied-set fill in raft.rs), so
+                // `applied_index`-derived accounting stays consistent with the entry-carrying path.
+                node.applied.extend(1..=snapshot.last_included_index);
+            } else {
+                node.applied
+                    .extend(snapshot.entries.iter().map(|entry| entry.index));
+            }
             node.applied_index = snapshot.last_included_index;
             node.max_applied_index = node.max_applied_index.max(snapshot.last_included_index);
             node.installed_snapshot = Some(snapshot);

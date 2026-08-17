@@ -107,6 +107,29 @@ pub struct RaftSnapshot {
     #[serde(default)]
     pub external_snapshot_ref: Option<RaftExternalSnapshotRef>,
     pub entries: Vec<RaftLogEntry>,
+    /// S2: opaque engine state image captured at `last_included_index`. When present, install
+    /// reconstructs state from this image (O(state)) instead of replaying `entries`, and `entries`
+    /// is empty. Absent (default) on the classic entry-carrying snapshot, so older peers and the
+    /// gate-off path deserialize unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_image: Option<RaftSnapshotStateImage>,
+}
+
+/// S2: an opaque engine STATE IMAGE — the exported served index plus every referenced page slab —
+/// that reconstructs a shard's applied state without replaying the committed log. Mirrors the
+/// metadata-checkpoint the shared-store recovery path builds (index bytes + slab bytes +
+/// next-page-id), letting a snapshot install run in O(state) rather than O(total history).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftSnapshotStateImage {
+    pub index_bytes: Vec<u8>,
+    pub next_page_id: u64,
+    pub slabs: Vec<RaftSnapshotStateImageSlab>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftSnapshotStateImageSlab {
+    pub page_slab_id: u64,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -206,6 +229,15 @@ fn raft_leader_ready_barrier_on() -> bool {
 /// majority of granted votes) before promotion, instead of promoting from a local view.
 fn raft_quorum_election_on() -> bool {
     raft_env_flag_on("TS_RAFT_QUORUM_ELECTION")
+}
+
+/// S2: snapshot the engine STATE IMAGE (exported index + page slabs) instead of every committed
+/// log entry. When on, `create_snapshot` captures an opaque image at the leader's applied index
+/// and drops the replayable entries, so a far-behind follower installs in O(state) rather than
+/// replaying O(total history); install reconstructs state from the image. Default OFF -> the
+/// snapshot still carries entries and behavior is byte-identical.
+fn raft_snapshot_state_image_on() -> bool {
+    raft_env_flag_on("TS_RAFT_SNAPSHOT_STATE_IMAGE")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1309,6 +1341,11 @@ pub struct InstallSnapshotChunkRequest {
     pub chunk_index: u64,
     pub chunk_count: u64,
     pub entries: Vec<RaftLogEntry>,
+    /// S2: opaque engine state image, carried on chunk 0 of an image-based snapshot (whose
+    /// `entries` are empty, so it is a single chunk). Default `None` keeps entry-carrying chunks
+    /// and older peers byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_image: Option<RaftSnapshotStateImage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3218,6 +3255,9 @@ struct PendingSnapshotChunks {
     last_included_term: u64,
     last_included_index: u64,
     chunks: Vec<Option<Vec<RaftLogEntry>>>,
+    // S2: opaque engine state image reassembled from the chunk stream (carried on chunk 0 of an
+    // image-based snapshot). `None` for the classic entry-carrying stream.
+    state_image: Option<RaftSnapshotStateImage>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]

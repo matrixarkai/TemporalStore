@@ -1208,6 +1208,7 @@ fn install_snapshot_clears_stale_vote_on_term_raise() {
                         value: b"v".to_vec(),
                     },
                 }],
+                state_image: None,
             },
         )
         .unwrap();
