@@ -2917,19 +2917,34 @@ def apply_memory_tombstones(records: list[Json]) -> list[Json]:
 
 
 def compact_and_apply_tombstones(records: list[Json]) -> list[Json]:
-    """The serving pipeline: apply tombstones to the RAW append-ordered log FIRST, then value/state
-    compaction over the survivors.
+    """The serving pipeline, in the ONE order that is correct for both orphan sweeping AND supersede:
 
-    Order is load-bearing. ``compact_latest_context_state_records`` rebuilds ``context_index`` postings
-    into fresh coalesced rows appended at the TAIL of its output; when tombstones were applied AFTER
-    compaction (the historical order) those rebuilt postings sat positionally *after* a just-appended
-    delete tombstone, so the order-aware ``apply_memory_tombstones`` (a tombstone only removes records
-    that precede it) never reached them -- the deleted event's / derivative's own secondary-index
-    postings survived as orphans. Sweeping on the raw log first removes each posting in its true append
-    position (before its tombstone); compaction then coalesces only survivors (also correct for
-    mixed-ref buckets). A tombstone-free log short-circuits ``apply_memory_tombstones`` unchanged, so
-    this is byte-identical to the pre-change pipeline for the overwhelmingly common no-tombstone case."""
-    return compact_latest_context_state_records(compact_latest_value_records(apply_memory_tombstones(records)))
+        compact_latest_value  ->  apply_memory_tombstones  ->  compact_latest_context_state
+
+    Both boundaries are load-bearing:
+
+    * ``apply_memory_tombstones`` must run BEFORE ``compact_latest_context_state_records`` (which calls
+      ``compact_context_index_postings``): that step rebuilds ``context_index`` postings into fresh
+      coalesced rows appended at the TAIL of its output, so a tombstone applied AFTER it sits
+      positionally *before* those rebuilt rows and the order-aware sweep (a tombstone only removes
+      records that precede it) never reaches them -- the deleted event's / derivative's own postings
+      orphan. Sweeping first removes each posting in its true append position; the rebuild then
+      coalesces only survivors (also correct for mixed-ref buckets).
+
+    * ``apply_memory_tombstones`` must run AFTER ``compact_latest_value_records``: a multi-source
+      derivative is DEMOTED by appending a newer copy with the deleted source trimmed
+      (source_event_ids [A,B] -> [B]); the original [A,B] copy is meant to be hidden by latest-value
+      compaction. If tombstones ran on the raw (un-collapsed) log, a later delete of the remaining
+      source B would match the demoted [B] copy by provenance closure (== {B}) but NOT the still-present
+      original [A,B] copy (!= {B}); compaction would then surface the stale original and the derivative
+      would survive deletion of its own last source. Collapsing duplicate copies to the newest FIRST
+      leaves exactly one copy (the demoted one) for the tombstone to match -- deterministic regardless
+      of read-cache vs full-recompute path or PYTHONHASHSEED.
+
+    A tombstone-free log short-circuits ``apply_memory_tombstones`` unchanged, so the middle step is a
+    no-op for the overwhelmingly common no-tombstone case (and ``compact_latest_value`` then
+    ``compact_latest_context_state`` is exactly the historical composition)."""
+    return compact_latest_context_state_records(apply_memory_tombstones(compact_latest_value_records(records)))
 
 
 # --------------------------------------------------------------------------------------------- #
