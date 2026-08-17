@@ -645,19 +645,46 @@ impl RaftClusterInner {
         Ok(())
     }
 
-    pub(super) fn persist_configured_wal(&self) -> Result<(), RaftError> {
-        let Some(wal) = &self.wal else {
-            return Ok(());
+    pub(super) fn persist_configured_wal(&mut self) -> Result<(), RaftError> {
+        // Clone the WAL handle (cheap -- it shares the cursor cache via an Arc) so `self` is free
+        // to be borrowed mutably below for the coalescing fingerprint map.
+        let wal = match &self.wal {
+            Some(wal) => wal.clone(),
+            None => return Ok(()),
         };
+        let shard_id = self.shard_id;
+        let max_segment_bytes = self.config.max_segment_bytes;
+        let min_keep_segment_num = self.config.min_keep_segment_num as usize;
+        let coalesce = raft_wal_coalesce_on();
         for (node_id, record) in self.wal_records() {
-            wal.persist_node_segmented(
-                self.shard_id,
-                node_id,
-                &record,
-                self.config.max_segment_bytes,
-                self.config.min_keep_segment_num as usize,
-            )
-            .map_err(|err| RaftError::Wal(err.to_string()))?;
+            // P1: when coalescing is enabled, skip the fdatasync for a node whose durability-
+            // relevant state is byte-identical to what we last persisted. A false "changed" only
+            // costs a redundant (safe) fsync; the skip fires ONLY when nothing Raft must persist
+            // has changed, so it can never drop a committed entry or an un-fsynced hard-state.
+            if coalesce {
+                let fingerprint = raft_durable_fingerprint(&record);
+                if self.last_durable_fingerprint.get(&node_id) == Some(&fingerprint) {
+                    continue;
+                }
+                wal.persist_node_segmented(
+                    shard_id,
+                    node_id,
+                    &record,
+                    max_segment_bytes,
+                    min_keep_segment_num,
+                )
+                .map_err(|err| RaftError::Wal(err.to_string()))?;
+                self.last_durable_fingerprint.insert(node_id, fingerprint);
+            } else {
+                wal.persist_node_segmented(
+                    shard_id,
+                    node_id,
+                    &record,
+                    max_segment_bytes,
+                    min_keep_segment_num,
+                )
+                .map_err(|err| RaftError::Wal(err.to_string()))?;
+            }
         }
         Ok(())
     }

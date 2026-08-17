@@ -2358,4 +2358,229 @@ fn s2_snapshot_gate_off_still_carries_entries_and_no_image() {
     );
 }
 
+/// Sum the durable WAL records on disk for one node (each record == one real fdatasync in the
+/// segmented append path), read via a fresh WAL handle so it reflects the on-disk truth.
+fn node_wal_record_count(root: &std::path::Path, shard: ShardId, node: RaftNodeId) -> u64 {
+    LocalRaftWal::new(root)
+        .segment_report(shard, node)
+        .map(|report| report.segments.iter().map(|s| s.record_count).sum())
+        .unwrap_or(0)
+}
+
+/// P1 core: with `TS_RAFT_WAL_COALESCE` on, a burst of read-index calls (which only touch the
+/// volatile `read_safety_state` accounting counters) must NOT append/fsync a single new WAL
+/// record, while a real committed write still does. This is the idle read-index/tick fsync-storm
+/// fix, and the durability barrier of a write is preserved.
+#[test]
+fn raft_wal_coalesce_skips_volatile_only_read_index_persists() {
+    let _guard = EnvFlagGuard::set("TS_RAFT_WAL_COALESCE");
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+
+    let baseline = node_wal_record_count(dir.path(), 1, 1);
+    for _ in 0..25 {
+        cluster.read_index(1).unwrap();
+    }
+    let after_reads = node_wal_record_count(dir.path(), 1, 1);
+    assert_eq!(
+        after_reads, baseline,
+        "read-index (volatile-only) must not fsync a new WAL record when coalescing is on"
+    );
+
+    cluster
+        .propose(Command::StringSet {
+            key: "k".to_string(),
+            value: b"v".to_vec(),
+        })
+        .unwrap();
+    let after_write = node_wal_record_count(dir.path(), 1, 1);
+    assert!(
+        after_write > after_reads,
+        "a committed write must still persist a durable WAL record (coalescing never drops it)"
+    );
+}
+
+/// P1 contrast: with the gate OFF the shipped behavior is byte-identical -- every read-index
+/// persists, so the same burst grows the WAL by one record per call. This pins the win as real.
+#[test]
+fn raft_wal_coalesce_off_persists_every_read_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+
+    let baseline = node_wal_record_count(dir.path(), 1, 1);
+    for _ in 0..25 {
+        cluster.read_index(1).unwrap();
+    }
+    let after_reads = node_wal_record_count(dir.path(), 1, 1);
+    assert!(
+        after_reads >= baseline + 25,
+        "gate-off must persist every read-index (byte-identical legacy behavior): {baseline} -> {after_reads}"
+    );
+}
+
+/// P1 safety: coalescing must never lose a committed entry. Commit three writes with the gate on,
+/// drop the cluster, and recover from the WAL: commit_index and the full log must survive.
+#[test]
+fn raft_wal_coalesce_preserves_committed_entries_across_restart() {
+    let _guard = EnvFlagGuard::set("TS_RAFT_WAL_COALESCE");
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let cluster =
+            RaftCluster::new_single_shard_with_wal(dir.path(), 9, [1, 2, 3], RaftConfig::default())
+                .unwrap();
+        for index in 0..3 {
+            cluster
+                .propose(Command::StringSet {
+                    key: format!("k{index}"),
+                    value: format!("v{index}").into_bytes(),
+                })
+                .unwrap();
+        }
+        assert_eq!(cluster.commit_index(1).unwrap(), 3);
+    }
+
+    let restored =
+        RaftCluster::restore_single_shard_from_wal(dir.path(), 9, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+    assert_eq!(
+        restored.commit_index(1).unwrap(),
+        3,
+        "committed index must survive restart under coalescing"
+    );
+    for index in 0..3 {
+        assert_eq!(
+            restored
+                .read_from_replica(
+                    1,
+                    Command::StringGet {
+                        key: format!("k{index}"),
+                    },
+                )
+                .unwrap(),
+            CommandResponse::Bytes {
+                value: Some(format!("v{index}").into_bytes())
+            },
+            "committed write k{index} must be durable across restart"
+        );
+    }
+}
+
+/// P1 safety: hard-state (term + self-vote) must be fsynced before a RequestVote is advertised,
+/// even with coalescing on -- the fingerprint includes hard_state, so the vote persist is never
+/// coalesced away. Recover from the WAL and confirm the bumped term + vote survived.
+#[test]
+fn raft_wal_coalesce_keeps_hard_state_vote_durable_before_request() {
+    let _coalesce = EnvFlagGuard::set("TS_RAFT_WAL_COALESCE");
+    let _vote = EnvFlagGuard::set("TS_RAFT_PERSIST_VOTE_BEFORE_REQUEST");
+    let dir = tempfile::tempdir().unwrap();
+    let term_before;
+    {
+        let cluster =
+            RaftCluster::new_single_shard_with_wal(dir.path(), 11, [1, 2, 3], RaftConfig::default())
+                .unwrap();
+        term_before = cluster.hard_state(2).unwrap().current_term;
+        // Advertising a vote bumps node 2's term + records a self-vote and must fsync BEFORE
+        // returning the request.
+        cluster.build_vote_request(2, 3).unwrap();
+    }
+
+    let restored = RaftCluster::restore_single_shard_from_wal(
+        dir.path(),
+        11,
+        [1, 2, 3],
+        RaftConfig::default(),
+    )
+    .unwrap();
+    let hs = restored.hard_state(2).unwrap();
+    assert_eq!(
+        hs.current_term,
+        term_before + 1,
+        "the incremented vote term must be durable before the request was advertised"
+    );
+    assert_eq!(
+        hs.voted_for,
+        Some(2),
+        "the self-vote must be durable before the request was advertised"
+    );
+}
+
+/// P2: the replication deadline is configurable (was a hardcoded 5 s). With a low deadline and a
+/// transport where no follower can ack, a propose returns `NoMajority` in ~deadline, NOT 5 s -- so
+/// a lagging/rejecting follower no longer freezes the proposer.
+#[test]
+fn raft_replication_deadline_is_configurable_and_bounds_propose() {
+    let config = RaftConfig {
+        replication_deadline_ms: 300,
+        ..RaftConfig::default()
+    };
+    let cluster = RaftCluster::new_single_shard_with_config(1, [1, 2, 3], config).unwrap();
+    let transport = FlakyTransport {
+        cluster: cluster.clone(),
+        failures_left: Arc::new(Mutex::new(usize::MAX)),
+    };
+
+    let started = Instant::now();
+    let result = cluster.propose_distributed(
+        Command::StringSet {
+            key: "k".to_string(),
+            value: b"v".to_vec(),
+        },
+        &transport,
+    );
+    let elapsed = started.elapsed();
+
+    assert!(
+        matches!(result, Err(RaftError::NoMajority { .. })),
+        "an unreachable follower quorum must fail as NoMajority, got {result:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "propose must return in ~deadline (300ms), not the legacy 5s: {elapsed:?}"
+    );
+    assert!(
+        elapsed >= Duration::from_millis(150),
+        "propose must actually honor the configured deadline before giving up: {elapsed:?}"
+    );
+}
+
+/// P2: the in-order propose serialize gate must not deadlock and must preserve correctness --
+/// concurrent proposers all commit, in sequential log order, and the run completes promptly (not a
+/// pile of full-deadline stalls).
+#[test]
+fn raft_propose_serialize_commits_concurrent_proposals_in_order() {
+    let _guard = EnvFlagGuard::set("TS_RAFT_PROPOSE_SERIALIZE");
+    let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+    let started = Instant::now();
+    let mut handles = Vec::new();
+    for index in 0..6 {
+        let c = cluster.clone();
+        handles.push(std::thread::spawn(move || {
+            c.propose_distributed(
+                Command::StringSet {
+                    key: format!("k{index}"),
+                    value: format!("v{index}").into_bytes(),
+                },
+                &c,
+            )
+        }));
+    }
+    for handle in handles {
+        handle.join().unwrap().unwrap();
+    }
+    let elapsed = started.elapsed();
+    assert_eq!(
+        cluster.commit_index(1).unwrap(),
+        6,
+        "all six serialized proposals must commit with sequential indices"
+    );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "serialized concurrent proposals must not pile up into deadline stalls: {elapsed:?}"
+    );
+}
+
 
