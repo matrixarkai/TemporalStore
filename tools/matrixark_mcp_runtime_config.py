@@ -155,6 +155,15 @@ DEFAULT_MAX_CANDIDATES_PER_NODE = int(os.environ.get("MATRIXARK_MAX_CANDIDATES_P
 DEFAULT_MAX_GLOBAL_CANDIDATES = int(os.environ.get("MATRIXARK_MAX_GLOBAL_CANDIDATES", "2048"))
 DEFAULT_MAX_SELECTED_REFS = int(os.environ.get("MATRIXARK_MAX_SELECTED_REFS", "1000"))
 DEFAULT_BUDGET_FILL_POLICY = os.environ.get("MATRIXARK_BUDGET_FILL_POLICY", "quality_first").strip().lower()
+# Near-duplicate suppression in ref selection. A candidate whose token set has a
+# Jaccard similarity >= this ratio with an already-selected (higher-ranked) ref
+# is dropped before packing, so the richer default packs (top_k 24, cross-session
+# cands 200) do not spend budget on repetitive/near-identical refs. Jaccard (not
+# containment) is used so distinct refs that merely share a common prefix are
+# kept. 1.0 == only token-set-identical collapses; <= 0.0 disables entirely.
+DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD = float(
+    os.environ.get("MATRIXARK_NEAR_DUPLICATE_OVERLAP_THRESHOLD", "0.85")
+)
 
 DEFAULT_CROSS_SESSION_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_BUDGET_RATIO", "0.12"))
 DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO", "0.20"))
