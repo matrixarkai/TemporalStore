@@ -134,6 +134,7 @@ max_candidates_per_node = 1024              # MATRIXARK_MAX_CANDIDATES_PER_NODE 
 max_global_candidates = 2048                # MATRIXARK_MAX_GLOBAL_CANDIDATES  global candidate scan cap
 max_selected_refs = 1000                    # MATRIXARK_MAX_SELECTED_REFS  hard cap on refs in a pack
 budget_fill_policy = "quality_first"        # MATRIXARK_BUDGET_FILL_POLICY  quality_first keeps the pack signal-not-noise
+near_duplicate_overlap_threshold = 0.85     # MATRIXARK_NEAR_DUPLICATE_OVERLAP_THRESHOLD  drop a candidate whose token-set Jaccard similarity with a higher-ranked already-selected ref is >= this (de-noise now that defaults return more). 1.0 = only token-identical collapses; 0 = disabled.
 max_children_scored_per_parent = 100000     # MATRIXARK_MAX_CHILDREN_SCORED_PER_PARENT  fan-out scoring cap
 # --- cross-session lane (breadth across other sessions) ---
 cross_session_budget_ratio = 0.12           # MATRIXARK_CROSS_SESSION_BUDGET_RATIO  fraction of the pack budget for cross-session refs

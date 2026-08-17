@@ -11,6 +11,7 @@ from typing import Any
 try:
     from tools.matrixark_mcp_core import (
         Json,
+        clamp_refs_to_token_budget,
         compact_context_pack_audit_record,
         compact_context_pack_for_serving,
         compact_context_pack_refs,
@@ -25,6 +26,7 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
         Json,
+        clamp_refs_to_token_budget,
         compact_context_pack_audit_record,
         compact_context_pack_for_serving,
         compact_context_pack_refs,
@@ -99,6 +101,27 @@ def try_native_context_pack(
     native_pack.setdefault("remote_context_refs", native_pack.get("selected_refs", []))
     native_pack.setdefault("selected_ref_counts", selected_context_class_counts(native_pack.get("selected_refs", [])))
     selected_refs = native_pack.get("selected_refs", []) if isinstance(native_pack.get("selected_refs"), list) else []
+    # Symmetric budget clamp: the native backend assembles the pack, but a pack
+    # that comes back above max_context_tokens must still be trimmed to the
+    # caller's ceiling (lowest-ranked refs dropped) rather than served over
+    # budget. When the native pack already fits, nothing changes -- and raising
+    # the budget lets the engine return (and this keep) more refs. Ceiling, not
+    # target: an under-budget pack is never padded.
+    selected_refs, over_budget_trimmed_refs, clamped_used_tokens = clamp_refs_to_token_budget(
+        selected_refs, max_context_tokens
+    )
+    if over_budget_trimmed_refs:
+        native_pack["selected_refs"] = selected_refs
+        native_pack["remote_context_refs"] = selected_refs
+        native_pack["selected_ref_counts"] = selected_context_class_counts(selected_refs)
+        native_pack["used_remote_context_tokens"] = clamped_used_tokens
+        native_pack["python_budget_clamp"] = {
+            "applied": True,
+            "max_context_tokens": max_context_tokens,
+            "trimmed_ref_count": len(over_budget_trimmed_refs),
+            "used_remote_context_tokens": clamped_used_tokens,
+            "reason": "native pack exceeded max_context_tokens; trimmed lowest-ranked refs to fit the caller budget",
+        }
     context_pack_id_text = str(native_pack.get("context_pack_id") or stable_hash(f"native:{query}:{selected_refs}:{now_ms()}"))
     native_pack["context_pack_id"] = context_pack_id_text
     if audit_mode == "full" and audit_sample_rate > 0 and (
