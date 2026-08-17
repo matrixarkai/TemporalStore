@@ -2326,6 +2326,230 @@ mod tests {
         );
     }
 
+    // A per-key delete produces a durable WAL tombstone that a fresh engine, replaying the WAL
+    // from scratch on the SAME on-disk pages/index dirs, reconstructs as a MISS -- the delete must
+    // never resurrect on recovery (the failure mode a read-time-only soft-delete would hit).
+    #[test]
+    fn delete_read_miss_survives_wal_replay_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let pages = dir.path().join("pages");
+        let indexes = dir.path().join("indexes");
+
+        let engine =
+            TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-a"), &pages, &indexes);
+        engine.load_shard(1);
+        for (key, value) in [("keep", b"keep-value".to_vec()), ("gone", b"gone-value".to_vec())] {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: key.to_string(),
+                    value,
+                },
+            });
+        }
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::CommonDelete {
+                key: "gone".to_string(),
+            },
+        });
+        // Read-miss immediately after delete.
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "gone".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes { value: None }
+        );
+        engine.unload_shard(1);
+
+        // Fresh engine, same pages/index dirs, different cache -> genuine WAL-replay recovery.
+        let reopened =
+            TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-b"), &pages, &indexes);
+        reopened.load_shard(1);
+        assert_eq!(
+            reopened
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "gone".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes { value: None },
+            "deleted key must not resurrect after WAL replay"
+        );
+        assert_eq!(
+            reopened
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "keep".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"keep-value".to_vec())
+            },
+            "a co-resident key must survive recovery untouched"
+        );
+    }
+
+    // A delete applied BEFORE the checkpoint rides the published served index/pages: a follower
+    // restoring from shared storage sees the key as a miss without ever replaying a WAL tail.
+    #[tokio::test]
+    async fn delete_tombstone_replicates_in_shared_store_base_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        for (key, value) in [("keep", b"keep-value".to_vec()), ("gone", b"gone-value".to_vec())] {
+            primary.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: key.to_string(),
+                    value,
+                },
+            });
+        }
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::CommonDelete {
+                key: "gone".to_string(),
+            },
+        });
+
+        let (_store, replicator) = test_shared_store(dir.path());
+        replicator.publish_index(1, &primary).await.unwrap();
+        replicator
+            .publish_page_slabs(1, &primary.block_store())
+            .await
+            .unwrap();
+
+        let follower = test_engine(dir.path(), "follower");
+        replicator
+            .restore_index_and_pages(1, &follower, &follower.block_store())
+            .await
+            .unwrap();
+        follower.load_shard(1);
+
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "gone".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes { value: None },
+            "the delete tombstone must replicate through the shared-store base index"
+        );
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "keep".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"keep-value".to_vec())
+            }
+        );
+    }
+
+    // A delete published as a WAL-tail entry replicates too: a follower that restored a base where
+    // the key was still live applies the tail delete on replay and then reads it as a miss.
+    #[tokio::test]
+    async fn delete_tombstone_replicates_via_wal_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        for (key, value) in [("keep", b"keep-value".to_vec()), ("gone", b"gone-value".to_vec())] {
+            primary.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: key.to_string(),
+                    value,
+                },
+            });
+        }
+
+        let (_store, replicator) = test_shared_store(dir.path());
+        // Base captures both keys LIVE...
+        replicator.publish_index(1, &primary).await.unwrap();
+        replicator
+            .publish_page_slabs(1, &primary.block_store())
+            .await
+            .unwrap();
+        // ...then the delete arrives as a WAL-tail entry after the base.
+        replicator
+            .publish_wal_entry(SharedStoreWalEntry {
+                shard_id: 1,
+                wal_index: 2,
+                command: Command::CommonDelete {
+                    key: "gone".to_string(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let follower = test_engine(dir.path(), "follower");
+        replicator
+            .restore_index_and_pages(1, &follower, &follower.block_store())
+            .await
+            .unwrap();
+        follower.load_shard(1);
+        // Before replay the follower still has the pre-delete value.
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "gone".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"gone-value".to_vec())
+            }
+        );
+        let report = replicator.replay_wal(1, 1, &follower).await.unwrap();
+        assert_eq!(report.applied, 1);
+        assert_eq!(report.last_wal_index, 2);
+        // After replaying the tail delete, the key is a miss; the untouched key stays live.
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "gone".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes { value: None },
+            "the WAL-tail delete must replicate and remove the key on the follower"
+        );
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "keep".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"keep-value".to_vec())
+            }
+        );
+    }
+
     #[tokio::test]
     async fn shared_store_lazy_restore_reads_old_page_on_demand() {
         // Reference-parity lazy recovery: a fresh node with ONLY shared storage restores the
