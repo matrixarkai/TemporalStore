@@ -85,7 +85,8 @@ cross_shard_reclaim_guard = 1          # TS_CROSS_SHARD_RECLAIM_GUARD  1 = retai
 # -----------------------------------------------------------------------------
 [wal]
 wal_single_barrier = 1                 # TS_WAL_SINGLE_BARRIER  1 = single write-path barrier (WAL-only fsync; base-only recovery). DEFAULT.
-group_commit = 1                       # TS_GROUP_COMMIT        1 = coalesce concurrent WAL fsyncs into shared barriers (sub-ms/write under load). DEFAULT.
+group_commit = 1                       # TS_GROUP_COMMIT        1 = coalesce concurrent WAL fsyncs into shared barriers (sub-ms/write under load); also coalesces the shared-store object-store SYNC publish onto one durable barrier per group. DEFAULT.
+commit_delay_us = 0                     # TS_WAL_COMMIT_DELAY_US  group-commit batch-widening delay in microseconds. 0 = pure timer-less (batch = whatever accrues during one barrier's in-flight duration); >0 deliberately widens batches under extreme load.
 wal_legacy_recovery = 0                # TS_WAL_LEGACY_RECOVERY  1 = emergency fallback to the legacy multi-barrier write path + delta-fold recovery.
 # raft_wal_dir = ""                    # TS_RAFT_WAL_DIR        raft WAL directory (raft/replicated modes)
 
