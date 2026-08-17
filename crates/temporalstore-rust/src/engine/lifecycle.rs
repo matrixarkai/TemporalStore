@@ -214,6 +214,21 @@ impl TemporalEngine {
             };
             (loaded, replay_watermark)
         };
+        // MANIFEST-PARITY FOLD recovery (gate on only): seed the band catalog from the folded
+        // `MetaItem.zones` anchor recovered from the index-log. This is applied AFTER the block
+        // store already reconciled its catalog from the durable pages on open, so it only
+        // RESTORES the catalog fields a pure disk scan cannot infer (exact lifecycle state,
+        // creation/update timestamps, logical byte count, page-id range) and installs bands for
+        // reclaimed slabs with no live file. It never deletes a reconciled band and never lowers
+        // physical bytes below the slab's real size, so it cannot lose durable state -- it is a
+        // metadata refinement over the lossless disk-derived catalog, making the per-write
+        // band-manifest file unnecessary as the catalog's source of truth. Off, this is skipped
+        // entirely (byte-identical).
+        if crate::index_log::index_catalog_fold_enabled() {
+            if let Ok(Some(meta)) = self.index_log_store.latest_zone_catalog(request.shard_id) {
+                let _ = self.page_store.install_zone_catalog(&meta.zones);
+            }
+        }
         let mut state = loaded.unwrap_or_default();
         promote_model_maps_to_bucket_index_authority(
             request.shard_id,

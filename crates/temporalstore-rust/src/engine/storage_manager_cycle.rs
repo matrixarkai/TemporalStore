@@ -947,6 +947,16 @@ impl TemporalEngine {
                 + pressure_signals.raft_snapshot_retention_blockers,
         );
 
+        // MANIFEST-PARITY FOLD threshold dump (gate on only, never on a dry run): if the undumped
+        // index-log gap has crossed `index_dump_oplog_gap_bytes`, materialize the base index +
+        // fold the band/zone catalog into an index-log anchor here, in the background cycle --
+        // mirroring the reference's background `StorageManager` dump-on-oplog-gap cadence, never
+        // per write. No-op with the gate off, so the cycle stays byte-identical when the fold is
+        // not enabled.
+        if !request.dry_run {
+            self.maybe_dump_index_catalog(request.shard_id);
+        }
+
         let production_parity_slice = errors.is_empty()
             && native_stage_order
                 .iter()
