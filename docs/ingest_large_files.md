@@ -256,3 +256,10 @@ Uploads are **content-addressed and idempotent**:
   still hash to the key. A corrupt or partial upload fails **loudly** at ingest time
   (`sha256 mismatch (corrupt/partial upload) — re-upload and retry`) instead of
   silently ingesting bad data — which is your cue to retry.
+
+## Ingest request schema
+
+All non-agent ingestion (`message` / `feedback` / `resource` / `skill` /
+`business_data`) shares one formal request contract — see
+[Canonical ingest envelope schema](./INGEST_SCHEMA.md)
+([`ingest_envelope_schema.json`](../integrations/agent-hooks/shared/ingest_envelope_schema.json)).
