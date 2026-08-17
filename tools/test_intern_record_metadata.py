@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -70,6 +71,39 @@ class _FlagGuard(unittest.TestCase):
             server.call_tool("matrixark_ingest", {
                 "messages": [{"role": "user", "content": f"Turn {i}: {_FACTS[i % len(_FACTS)]} (detail {i})"}],
                 "scope": _scope(user)})
+
+    @staticmethod
+    def _wait_log_frozen(path: Path) -> None:
+        """Block until the event log stops growing. After server.close() the summary / stream-
+        materialize background workers have their stop flags set and exit promptly; this confirms the
+        durable bytes are final before we snapshot, so a reload comparison is deterministic. (A LIVE
+        server's worker would append a fresh -- correctly interned+expanded -- posting after a snapshot;
+        that is a test-timing race, not a codec defect, so we snapshot only a frozen log and read it
+        from a bare, server-less adapter.)"""
+        prev = -1
+        for _ in range(400):  # up to ~20s guard; the log freezes within a couple of samples in practice
+            try:
+                size = path.stat().st_size
+            except FileNotFoundError:
+                size = -1
+            if size == prev:
+                return
+            prev = size
+            time.sleep(0.05)
+
+    @staticmethod
+    def _raw_disk_records(path: Path) -> list[dict]:
+        """Every JSONL record currently on disk (all retained shards), in append order -- the exact
+        durable bytes, decoded but NOT expanded."""
+        records: list[dict] = []
+        for shard in sorted(path.parent.glob(path.name + "*")):
+            if shard.name.endswith(".read-cache.json"):
+                continue
+            for line in shard.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line:
+                    records.append(json.loads(line))
+        return records
 
 
 # ================================================================================================
@@ -159,23 +193,27 @@ class InterningCase(_FlagGuard):
         self.assertNotIn(f'"{A.INTERN_TOKEN_KEY}"', text)
 
     def test_reload_fidelity(self):
-        """A fresh adapter over the durable interned log expands to the same records."""
+        """A fresh, server-less adapter over the frozen durable log reproduces exactly the independent
+        expansion of the on-disk bytes -- proving the reload read path re-expands correctly."""
         A.INTERN_RECORD_METADATA = True
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             path = Path(tmp) / "events.jsonl"
             adapter = mcp.MatrixArkLocalAdapter(path)
             server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
             self._ingest_turns(server, 30)
-            server.close(timeout_s=2.0)  # drain async workers BEFORE snapshotting (deterministic log)
-            before = adapter._read_raw_records()
-            # Fresh adapter, cold caches -> must read + expand purely from the durable log.
-            adapter2 = mcp.MatrixArkLocalAdapter(path)
-            server2 = mcp.MatrixArkMcpServer(adapter2, access_mode="dev")
-            self.addCleanup(server2.close, timeout_s=2.0)
-            after = adapter2._read_raw_records()
-        self.assertEqual(before, after)
-        for r in after:
+            server.close(timeout_s=10.0)  # stop background workers so the durable log freezes
+            self._wait_log_frozen(path)
+            raw = self._raw_disk_records(path)              # exact durable bytes (interned, on disk)
+            expected = A.expand_interned_records(raw)        # independent ground-truth expansion
+            # Fresh cold adapter, no server (=> no worker can append during the read): the reload path
+            # must reproduce the ground-truth expansion byte-for-byte.
+            reloaded = mcp.MatrixArkLocalAdapter(path)._read_raw_records()
+        self.assertTrue(any(r.get("record_type") == A.INTERN_DICT_RECORD_TYPE for r in raw),
+                        "durable log must actually be interned (else the test proves nothing)")
+        self.assertEqual(expected, reloaded)
+        for r in reloaded:
             self.assertNotIn(A.INTERN_TOKEN_KEY, r)
+            self.assertNotEqual(r.get("record_type"), A.INTERN_DICT_RECORD_TYPE)
 
     def test_backward_compat_inline_log_reads_under_flag_on(self):
         """An old log written flag-OFF (inline fields) reads correctly with the flag ON (no-op expand)."""
@@ -185,15 +223,16 @@ class InterningCase(_FlagGuard):
             adapter = mcp.MatrixArkLocalAdapter(path)
             server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
             self._ingest_turns(server, 25)
-            server.close(timeout_s=2.0)  # drain before snapshotting the legacy (inline) log
-            legacy = adapter._read_raw_records()
-            self.assertNotIn(A.INTERN_DICT_RECORD_TYPE, path.read_text(encoding="utf-8"))
-            # Reopen with interning ON: the inline (un-interned) log must read identically.
+            server.close(timeout_s=10.0)  # freeze the legacy (inline) log before snapshotting
+            self._wait_log_frozen(path)
+            raw = self._raw_disk_records(path)  # inline: no dict records, no token key
+            self.assertFalse(any(r.get("record_type") == A.INTERN_DICT_RECORD_TYPE for r in raw))
+            self.assertFalse(any(A.INTERN_TOKEN_KEY in r for r in raw), "inline log must carry no token key")
+            # Reopen with interning ON via a bare adapter: the inline log must read through unchanged
+            # (expansion is a no-op when nothing is interned).
             A.INTERN_RECORD_METADATA = True
-            adapter2 = mcp.MatrixArkLocalAdapter(path)
-            server2 = mcp.MatrixArkMcpServer(adapter2, access_mode="dev")
-            self.addCleanup(server2.close, timeout_s=2.0)
-            self.assertEqual(legacy, adapter2._read_raw_records())
+            reloaded = mcp.MatrixArkLocalAdapter(path)._read_raw_records()
+            self.assertEqual(raw, reloaded)
 
     def test_retrieve_delete_get_all_work_with_interning(self):
         """The mem0 surface behaves identically with interning ON: recall, then delete leaves nothing."""
