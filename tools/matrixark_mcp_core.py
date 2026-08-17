@@ -140,6 +140,54 @@ SECONDARY_INDEX_PRIORITY_PREFIXES = (
     "segment_topic:",
     "keyword:",
 )
+# ------------------------------------------------------------------------------------------------
+# Secondary-index dimension pruning (Lever 2).
+#
+# One message turn emits ~87 context_index postings across ~21 dimensions, but the majority index on
+# CONSTANT internal routing/policy metadata (every record carries the same value) that is not useful
+# for semantic retrieval -- they dominate the posting COUNT without adding recall. Dropping these
+# non-semantic dimensions from posting materialization cuts the posting count ~80% while keeping every
+# semantic dimension used to recall facts (entity_type, entity_name, segment_topic, event_type,
+# classification, status, source_role, source_type, keyword, and skill/resource/topology dims).
+#
+# Gated behind MATRIXARK_PRUNE_INTERNAL_INDEX_DIMENSIONS (default ON). Flag OFF reproduces today's
+# dimensions exactly. Recall is validated by test_prune_internal_index_dimensions (must stay 5/5); any
+# dimension whose removal drops recall must be taken OFF this list and kept.
+PRUNE_INTERNAL_INDEX_DIMENSIONS = os.environ.get("MATRIXARK_PRUNE_INTERNAL_INDEX_DIMENSIONS", "1").strip().lower() in {"1", "true", "yes", "on"}
+INTERNAL_INDEX_DIMENSIONS = frozenset({
+    "memory_selection_policy",
+    "memory_scope",
+    "source_memory_scope",
+    "memory_layer",
+    "source_memory_layer",
+    "session_continuity",
+    "source_session_continuity",
+    "extraction_phase",
+    "profile_promotion_policy",
+    "profile_memory_class",
+    "profile_memory_kind",
+    "profile_entity_current",
+})
+
+
+def prune_internal_index_terms(terms):
+    """Drop non-semantic internal-metadata index dimensions from a term collection when the flag is ON.
+
+    Terms are ``"<dimension>:<value>"``; the dimension is the substring before the first ``:``. Returns
+    a set of the retained terms. No-op (returns the terms as a set) when the flag is OFF."""
+    if not PRUNE_INTERNAL_INDEX_DIMENSIONS:
+        return set(terms)
+    kept = set()
+    for term in terms:
+        if not term:
+            continue
+        dimension = term.split(":", 1)[0]
+        if dimension in INTERNAL_INDEX_DIMENSIONS:
+            continue
+        kept.add(term)
+    return kept
+
+
 MAX_RESOURCE_FACT_CHUNKS = int(os.environ.get("MATRIXARK_MAX_RESOURCE_FACT_CHUNKS", "8"))
 MAX_RESOURCE_FACTS_PER_RESOURCE = int(os.environ.get("MATRIXARK_MAX_RESOURCE_FACTS_PER_RESOURCE", "8"))
 MAX_RESOURCE_FACTS_PER_CHUNK = int(os.environ.get("MATRIXARK_MAX_RESOURCE_FACTS_PER_CHUNK", "2"))
@@ -312,6 +360,7 @@ MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_reset": {"context:forget"},
     "matrixark_get_all": {"context:retrieve"},
     "matrixark_get_memory": {"context:retrieve"},
+    "matrixark_get_memory_by_key": {"context:retrieve"},
     "matrixark_update_memory": {"context:ingest"},
     "matrixark_memory_history": {"context:retrieve"},
     "matrixark_ingestion_dashboard": {"context:replay"},
@@ -2536,6 +2585,99 @@ def resolve_ingest_messages(args: Json, kind: str) -> list[Json]:
     return require_messages(args)
 
 
+# --------------------------------------------------------------------------------------------- #
+# PurchaseMemory primitives: per-record TTL / retention-cutoff + keyed-upsert truth-rank.
+# These are all OPTIONAL ingest fields; an envelope without them is byte-identical to before.
+# --------------------------------------------------------------------------------------------- #
+DEFAULT_TRUTH_RANKS: dict[str, int] = {"asserted": 3, "reported": 2, "inferred": 1}
+
+
+def resolve_truth_rank(truth_class: Any) -> int:
+    """Map a ``truth_class`` string onto an integer rank. Unknown / empty -> 0.
+
+    Default table: asserted=3, reported=2, inferred=1. Overridable at runtime via the
+    ``MATRIXARK_TRUTH_RANK`` env var (a JSON object of ``{class: rank}``); malformed JSON is
+    ignored so a bad override never breaks ingest."""
+    if truth_class in (None, ""):
+        return 0
+    table = dict(DEFAULT_TRUTH_RANKS)
+    override = os.environ.get("MATRIXARK_TRUTH_RANK")
+    if override:
+        try:
+            parsed = json.loads(override)
+            if isinstance(parsed, dict):
+                for key, value in parsed.items():
+                    try:
+                        table[str(key).strip().lower()] = int(value)
+                    except (TypeError, ValueError):
+                        continue
+        except (ValueError, TypeError):
+            pass
+    return int(table.get(str(truth_class).strip().lower(), 0))
+
+
+def _coerce_epoch_seconds(value: Any) -> float | None:
+    """Best-effort coercion of an absolute unix-seconds timestamp (int/float/numeric string).
+
+    Returns ``None`` when the value is absent or not numeric (so an unparseable field is simply
+    ignored rather than breaking ingest)."""
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def apply_memory_envelope_fields(args: Json, envelope: Json) -> Json:
+    """Normalize the optional PurchaseMemory ingest fields onto ``envelope`` (in place).
+
+    Accepts (all optional):
+      * ``expires_at`` -- absolute unix seconds (int/float). Wins over ``ttl_seconds``.
+      * ``ttl_seconds`` -- relative seconds; expires_at = occurred_at (ingestion_time) + ttl.
+      * ``retention_cutoff_ts`` -- scope-level absolute unix seconds; records whose occurrence
+        time < cutoff are hidden/purged.
+      * ``identity_key`` -- logical identity of a fact (keyed-upsert).
+      * ``truth_class`` -- confidence class mapped to an integer ``truth_rank``.
+
+    Stamps ``expires_at`` / ``expires_at_ms`` / ``ephemeral`` when a TTL applies, plus
+    ``retention_cutoff_ts`` / ``retention_cutoff_ms`` / ``identity_key`` / ``truth_class`` /
+    ``truth_rank`` when supplied. ``ingestion_time_ms`` must already be set on ``envelope``."""
+    ingestion_time_ms = int(envelope.get("ingestion_time_ms") or 0)
+    expires_at = _coerce_epoch_seconds(args.get("expires_at"))
+    ttl_seconds = None
+    raw_ttl = args.get("ttl_seconds")
+    if raw_ttl not in (None, ""):
+        try:
+            ttl_seconds = float(raw_ttl)
+        except (TypeError, ValueError):
+            ttl_seconds = None
+    # expires_at wins over ttl_seconds when both are present.
+    if expires_at is None and ttl_seconds is not None and ingestion_time_ms > 0:
+        expires_at = ingestion_time_ms / 1000.0 + ttl_seconds
+    if expires_at is not None:
+        envelope["expires_at"] = float(expires_at)
+        envelope["expires_at_ms"] = int(round(expires_at * 1000.0))
+        envelope["ephemeral"] = True
+    if ttl_seconds is not None:
+        envelope["ttl_seconds"] = float(ttl_seconds)
+    cutoff = _coerce_epoch_seconds(args.get("retention_cutoff_ts"))
+    if cutoff is not None:
+        envelope["retention_cutoff_ts"] = float(cutoff)
+        envelope["retention_cutoff_ms"] = int(round(cutoff * 1000.0))
+    identity_key = args.get("identity_key")
+    if isinstance(identity_key, str) and identity_key.strip():
+        envelope["identity_key"] = identity_key.strip()
+    truth_class = args.get("truth_class")
+    if isinstance(truth_class, str) and truth_class.strip():
+        envelope["truth_class"] = truth_class.strip()
+        envelope["truth_rank"] = resolve_truth_rank(truth_class)
+    elif "identity_key" in envelope:
+        # A keyed write with no explicit class defaults to rank 0 (unknown).
+        envelope["truth_rank"] = int(envelope.get("truth_rank") or 0)
+    return envelope
+
+
 def normalize_envelope(args: Json, *, default_kind: str) -> Json:
     kind = args.get("kind", default_kind)
     if kind not in {"message", "feedback", "resource", "skill", "business_data"}:
@@ -2583,6 +2725,7 @@ def normalize_envelope(args: Json, *, default_kind: str) -> Json:
     ]:
         if field in args:
             envelope[field] = args[field]
+    apply_memory_envelope_fields(args, envelope)
     return envelope
 
 
@@ -3201,7 +3344,7 @@ def candidate_index_terms(
         terms.add(context_index_name("source_type", "skill"))
         terms.add(context_index_name("resource_type", "skill"))
         terms.update(metadata_index_terms(record.get("metadata", {})))
-    return {term for term in terms if term}
+    return prune_internal_index_terms(term for term in terms if term)
 
 
 def ordered_normalized_role_list(raw: Any) -> list[str]:

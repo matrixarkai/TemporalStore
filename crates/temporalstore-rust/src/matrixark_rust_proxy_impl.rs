@@ -1536,6 +1536,166 @@ fn scan_matrixark_candidates(
     Ok(output)
 }
 
+/// Outcome of a native scope-forget: how many records were logically removed and how the
+/// removal decomposed into per-field tombstone-deletes vs partial rewrites.
+#[derive(Debug, Default, Clone, Copy)]
+struct ForgetScopeStats {
+    records_scanned: usize,
+    records_removed: usize,
+    fields_deleted: usize,
+    fields_rewritten: usize,
+    shards_scanned: u64,
+}
+
+/// A forget query must actually CONSTRAIN which subject's records it removes. Because
+/// `scope_matches_record` only enforces an identity field when it is marked explicit (or when a
+/// non-zero `tenant_hash` is present), a bare/empty scope would match EVERY record and silently
+/// wipe the whole store. Refuse anything that does not pin at least one subject dimension, so a
+/// misrouted or under-specified forget fails loudly instead of deleting every scope's memory.
+fn forget_scope_is_specific(scope: &Value) -> bool {
+    if !scope.is_object() {
+        return false;
+    }
+    // Tenant isolation: a real tenant hash always narrows matching to that tenant.
+    if scope.get("tenant_hash").and_then(Value::as_u64).unwrap_or(0) != 0 {
+        return true;
+    }
+    // Otherwise require an explicit, non-empty subject dimension -- the same set of keys
+    // `scope_matches_record` enforces only when they are marked explicit.
+    for key in [
+        "user_id",
+        "session_id",
+        "account_id",
+        "tenant_id",
+        "team",
+        "project",
+        "agent_name",
+    ] {
+        let present = scope
+            .get(key)
+            .and_then(Value::as_str)
+            .map(|value| !value.is_empty())
+            .unwrap_or(false);
+        if present && scope_key_explicit(scope, key) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Re-encode the survivors of a partially-forgotten field, preserving the original on-disk shape:
+/// a `{"record_bundle":[...]}` envelope keeps its sibling metadata and just drops the forgotten
+/// entries; a single-record field that survives is written back verbatim.
+fn encode_forget_survivors(original: &str, survivors: Vec<Value>) -> String {
+    if let Ok(mut decoded) = serde_json::from_str::<Value>(original) {
+        if decoded
+            .get("record_bundle")
+            .and_then(Value::as_array)
+            .is_some()
+        {
+            decoded["record_bundle"] = Value::Array(survivors);
+            return decoded.to_string();
+        }
+    }
+    if survivors.len() == 1 {
+        return survivors.into_iter().next().unwrap().to_string();
+    }
+    json!({ "record_bundle": survivors }).to_string()
+}
+
+/// Native scope-forget: delete every record under a scope prefix as ONE logical, durable,
+/// recovery-safe operation.
+///
+/// Records live in the same shard set as ingest (`{record_hash_key}:{shard:06}`, counted by
+/// `count_key`) with many scopes co-resident; scope isolation is by filter, not by key partition.
+/// So forget enumerates every shard, decodes each hash field's record(s), and removes ONLY the
+/// records that match `scope` (reusing the exact `scope_matches_record` predicate the retrieve
+/// scan uses, so "what retrieve would return for this subject" == "what forget deletes"):
+///   * a field whose records ALL match becomes a `HashDelete` (durable tombstone),
+///   * a field with a mix is rewritten to keep the survivors,
+///   * a field with no match is left untouched.
+/// The commands are applied as a single durable batch (WAL-committed, same path as ingest), so the
+/// removal replicates (rides the WAL / checkpoint index) and survives WAL replay without
+/// resurrecting -- the delete is a first-class WAL mutation, not a read-time filter. Leaving
+/// `count_key` untouched keeps forget idempotent and other scopes intact.
+fn forget_scope_records(
+    engine: &TemporalEngine,
+    record_hash_key: &str,
+    count_key: &str,
+    shard_size: u64,
+    scope: &Value,
+) -> Result<ForgetScopeStats, String> {
+    if !scope.is_object() {
+        return Err("forget requires a scope object".to_string());
+    }
+    if !forget_scope_is_specific(scope) {
+        return Err(
+            "forget scope must constrain a subject (a non-zero tenant_hash, or an explicit \
+             user_id/session_id/account_id/tenant_id/team/project/agent_name); refusing an \
+             under-specified scope that would match every record"
+                .to_string(),
+        );
+    }
+    let shard_size = shard_size.max(1);
+    let count = read_record_count(engine, count_key)?
+        .trim()
+        .parse::<u64>()
+        .unwrap_or(0);
+    let mut stats = ForgetScopeStats::default();
+    if count == 0 {
+        return Ok(stats);
+    }
+    let max_shard = (count - 1) / shard_size;
+    let mut commands = Vec::new();
+    for shard in 0..=max_shard {
+        stats.shards_scanned += 1;
+        let key = format!("{}:{:06}", record_hash_key, shard);
+        for (field, value) in hgetall_map(engine, key.clone())? {
+            let records = decode_matrixark_payload(&value);
+            if records.is_empty() {
+                // Undecodable / non-record field (e.g. a counter): never touch it.
+                continue;
+            }
+            stats.records_scanned += records.len();
+            let mut survivors = Vec::with_capacity(records.len());
+            let mut removed_here = 0_usize;
+            for record in records {
+                if scope_matches_record(&record, Some(scope)) {
+                    removed_here += 1;
+                } else {
+                    survivors.push(record);
+                }
+            }
+            if removed_here == 0 {
+                continue;
+            }
+            stats.records_removed += removed_here;
+            if survivors.is_empty() {
+                commands.push(Command::HashDelete {
+                    key: key.clone(),
+                    field,
+                });
+                stats.fields_deleted += 1;
+            } else {
+                let encoded = encode_forget_survivors(&value, survivors);
+                commands.push(Command::HashSet {
+                    key: key.clone(),
+                    field,
+                    value: encoded.into_bytes(),
+                });
+                stats.fields_rewritten += 1;
+            }
+        }
+    }
+    if !commands.is_empty() {
+        // One durable batch: WAL-committed together, and it clears the process-global scan +
+        // hgetall snapshot caches so a subsequent retrieve/get_all never re-serves a forgotten
+        // record from cache.
+        execute_empty_batch_runtime(engine, commands, true)?;
+    }
+    Ok(stats)
+}
+
 fn candidate_text(record: &Value) -> String {
     for field in [
         "text",
@@ -1971,6 +2131,46 @@ fn execute_record_log_request(
         "matrixark_scan_candidates" => {
             json_output(scan_matrixark_candidates(&engine, &request)?, root)?
         }
+        "matrixark_forget_scope" => {
+            let count_key = required_option(request.count_key.clone(), "count_key")?;
+            let record_hash_key =
+                required_option(request.record_hash_key.clone(), "record_hash_key")?;
+            let shard_size = request.shard_size.unwrap_or(1024).max(1);
+            let scope = request
+                .scope
+                .clone()
+                .ok_or_else(|| "missing scope".to_string())?;
+            let stats =
+                forget_scope_records(&engine, &record_hash_key, &count_key, shard_size, &scope)?;
+            let mut output = empty_output(root);
+            output.status = "forgotten".to_string();
+            output.count = Some(stats.records_removed);
+            output.extra.insert(
+                "matrixark_forget_records_removed".to_string(),
+                json!(stats.records_removed),
+            );
+            output.extra.insert(
+                "matrixark_forget_records_scanned".to_string(),
+                json!(stats.records_scanned),
+            );
+            output.extra.insert(
+                "matrixark_forget_fields_deleted".to_string(),
+                json!(stats.fields_deleted),
+            );
+            output.extra.insert(
+                "matrixark_forget_fields_rewritten".to_string(),
+                json!(stats.fields_rewritten),
+            );
+            output.extra.insert(
+                "matrixark_forget_shards_scanned".to_string(),
+                json!(stats.shards_scanned),
+            );
+            output.extra.insert(
+                "matrixark_forget_scope".to_string(),
+                json!("scope_prefixed_records"),
+            );
+            output
+        }
         "matrixark_retrieve_context_pack" => {
             if matrixark_compact_snapshot_retrieve_enabled() {
                 retrieve_context_pack_output(&engine, &request, root)?
@@ -2008,6 +2208,23 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
                 "record_hash_key",
                 request.record_hash_key.as_deref().unwrap_or(""),
             )
+        }
+        "matrixark_forget_scope" => {
+            require_non_empty("count_key", request.count_key.as_deref().unwrap_or(""))?;
+            require_non_empty(
+                "record_hash_key",
+                request.record_hash_key.as_deref().unwrap_or(""),
+            )?;
+            if request
+                .scope
+                .as_ref()
+                .map(Value::is_object)
+                .unwrap_or(false)
+            {
+                Ok(())
+            } else {
+                Err("forget requires a scope object".to_string())
+            }
         }
         "hset" | "hget" | "hdel" => {
             require_non_empty("key", &request.key)?;
@@ -4663,6 +4880,250 @@ mod tests {
         assert_eq!(
             stable_ref_hash_from_record(&stable_id),
             stable_hash64("summary-record-7")
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Native scope-forget (`matrixark_forget_scope`): delete every record under a scope prefix
+    // as one durable, recovery-safe operation, while leaving co-resident scopes intact.
+    // ---------------------------------------------------------------------------------------
+
+    fn clear_native_caches() {
+        if let Ok(mut cache) = matrixark_scan_cache().lock() {
+            cache.clear();
+        }
+        if let Ok(mut cache) = record_count_cache().lock() {
+            cache.clear();
+        }
+        if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
+            cache.clear();
+        }
+    }
+
+    fn forget_engine(root: &std::path::Path, role: &str) -> TemporalEngine {
+        let engine = TemporalEngine::with_local_dirs(
+            1 << 20,
+            root.join(format!("{role}-cache")),
+            root.join(format!("{role}-pages")),
+            root.join(format!("{role}-index")),
+        );
+        engine.load_shard(DEFAULT_SHARD_ID);
+        engine
+    }
+
+    fn subject_scope(user_id: &str) -> Value {
+        json!({ "user_id": user_id, "_explicit_scope_keys": ["user_id"] })
+    }
+
+    fn memory_record(user_id: &str, text: &str) -> Value {
+        json!({
+            "record_type": "memory",
+            "text": text,
+            "access_scope": { "user_id": user_id },
+        })
+    }
+
+    fn seed_records(engine: &TemporalEngine, hash_key: &str, count_key: &str, fields: &[(&str, Value)]) {
+        let mut commands = Vec::new();
+        commands.push(Command::StringSet {
+            key: count_key.to_string(),
+            value: fields.len().to_string().into_bytes(),
+        });
+        for (field, value) in fields {
+            commands.push(Command::HashSet {
+                key: format!("{hash_key}:000000"),
+                field: field.to_string(),
+                value: value.to_string().into_bytes(),
+            });
+        }
+        execute_empty_batch_runtime(engine, commands, true).expect("seed records");
+    }
+
+    fn shard_fields(engine: &TemporalEngine, hash_key: &str) -> BTreeMap<String, String> {
+        clear_native_caches();
+        hgetall_map(engine, format!("{hash_key}:000000")).expect("hgetall shard 0")
+    }
+
+    #[test]
+    fn native_forget_removes_only_matching_scope_records() {
+        let _guard = env_guard();
+        clear_native_caches();
+        let dir = tempdir().expect("tempdir");
+        let engine = forget_engine(dir.path(), "primary");
+        let hash_key = "matrixark:mcp:fwd_only:records";
+        let count_key = "matrixark:mcp:fwd_only:record_count";
+        seed_records(
+            &engine,
+            hash_key,
+            count_key,
+            &[
+                ("alice-1", memory_record("alice", "a1")),
+                ("alice-2", memory_record("alice", "a2")),
+                ("bob-1", memory_record("bob", "b1")),
+            ],
+        );
+
+        let stats = forget_scope_records(&engine, hash_key, count_key, 1024, &subject_scope("alice"))
+            .expect("forget alice");
+        assert_eq!(stats.records_removed, 2, "both of alice's records removed");
+        assert_eq!(stats.fields_deleted, 2, "each alice field fully tombstoned");
+        assert_eq!(stats.fields_rewritten, 0);
+
+        let remaining = shard_fields(&engine, hash_key);
+        assert!(
+            !remaining.contains_key("alice-1") && !remaining.contains_key("alice-2"),
+            "alice's fields are gone: {remaining:?}"
+        );
+        assert!(
+            remaining.get("bob-1").is_some_and(|value| value.contains("\"b1\"")),
+            "bob's record is untouched: {remaining:?}"
+        );
+
+        // Idempotent: a second forget of the same subject removes nothing and errors nowhere.
+        let again = forget_scope_records(&engine, hash_key, count_key, 1024, &subject_scope("alice"))
+            .expect("second forget alice");
+        assert_eq!(again.records_removed, 0, "nothing left to forget");
+    }
+
+    #[test]
+    fn native_forget_rewrites_partially_matching_record_bundle() {
+        let _guard = env_guard();
+        clear_native_caches();
+        let dir = tempdir().expect("tempdir");
+        let engine = forget_engine(dir.path(), "primary");
+        let hash_key = "matrixark:mcp:bundle:records";
+        let count_key = "matrixark:mcp:bundle:record_count";
+        // One hash field packs a bundle carrying BOTH subjects plus sibling metadata.
+        let bundle = json!({
+            "record_bundle": [memory_record("alice", "a1"), memory_record("bob", "b1")],
+            "bundle_seq": 7,
+        });
+        seed_records(&engine, hash_key, count_key, &[("bundle-0", bundle)]);
+
+        let stats = forget_scope_records(&engine, hash_key, count_key, 1024, &subject_scope("alice"))
+            .expect("forget alice");
+        assert_eq!(stats.records_removed, 1);
+        assert_eq!(stats.fields_deleted, 0, "field survives -- bob remains");
+        assert_eq!(stats.fields_rewritten, 1);
+
+        let remaining = shard_fields(&engine, hash_key);
+        let stored = remaining.get("bundle-0").expect("bundle field survives");
+        let decoded: Value = serde_json::from_str(stored).expect("valid json");
+        let entries = decoded
+            .get("record_bundle")
+            .and_then(Value::as_array)
+            .expect("record_bundle preserved");
+        assert_eq!(entries.len(), 1, "only bob survives in the bundle");
+        assert_eq!(entries[0].pointer("/access_scope/user_id").and_then(Value::as_str), Some("bob"));
+        assert_eq!(
+            decoded.get("bundle_seq").and_then(Value::as_u64),
+            Some(7),
+            "sibling bundle metadata is preserved on rewrite"
+        );
+    }
+
+    #[test]
+    fn native_forget_rejects_underspecified_scope() {
+        let _guard = env_guard();
+        clear_native_caches();
+        let dir = tempdir().expect("tempdir");
+        let engine = forget_engine(dir.path(), "primary");
+        let hash_key = "matrixark:mcp:guard:records";
+        let count_key = "matrixark:mcp:guard:record_count";
+        seed_records(
+            &engine,
+            hash_key,
+            count_key,
+            &[("alice-1", memory_record("alice", "a1"))],
+        );
+
+        // Empty scope -> would match every record -> must be refused, and nothing deleted.
+        let empty = forget_scope_records(&engine, hash_key, count_key, 1024, &json!({}));
+        assert!(empty.is_err(), "empty scope must be refused");
+        // A user_id that is NOT marked explicit does not constrain matching -> also refused.
+        let implicit = forget_scope_records(
+            &engine,
+            hash_key,
+            count_key,
+            1024,
+            &json!({ "user_id": "alice" }),
+        );
+        assert!(implicit.is_err(), "non-explicit subject must be refused");
+
+        let remaining = shard_fields(&engine, hash_key);
+        assert!(
+            remaining.contains_key("alice-1"),
+            "a refused forget deletes nothing: {remaining:?}"
+        );
+    }
+
+    #[test]
+    fn native_forget_tombstones_survive_wal_replay_recovery() {
+        let _guard = env_guard();
+        clear_native_caches();
+        let dir = tempdir().expect("tempdir");
+        let hash_key = "matrixark:mcp:recover:records";
+        let count_key = "matrixark:mcp:recover:record_count";
+
+        // Phase 1: seed + forget on the primary, then shut it down cleanly.
+        {
+            let engine = forget_engine(dir.path(), "recover");
+            seed_records(
+                &engine,
+                hash_key,
+                count_key,
+                &[
+                    ("alice-1", memory_record("alice", "a1")),
+                    ("alice-2", memory_record("alice", "a2")),
+                    ("bob-1", memory_record("bob", "b1")),
+                ],
+            );
+            let stats =
+                forget_scope_records(&engine, hash_key, count_key, 1024, &subject_scope("alice"))
+                    .expect("forget alice");
+            assert_eq!(stats.records_removed, 2);
+            engine.unload_shard(DEFAULT_SHARD_ID);
+        }
+
+        // Phase 2: a fresh engine on the SAME pages/index dirs replays the WAL from scratch. The
+        // forget tombstones must NOT resurrect alice, and bob must remain.
+        clear_native_caches();
+        let reopened = forget_engine(dir.path(), "recover");
+        let remaining = shard_fields(&reopened, hash_key);
+        assert!(
+            !remaining.contains_key("alice-1") && !remaining.contains_key("alice-2"),
+            "forget must survive WAL replay -- alice must not resurrect: {remaining:?}"
+        );
+        assert!(
+            remaining.get("bob-1").is_some_and(|value| value.contains("\"b1\"")),
+            "bob survives recovery: {remaining:?}"
+        );
+
+        // And the native retrieve scan agrees post-recovery: zero alice candidates, one bob.
+        let mut alice_scan = request("matrixark_scan_candidates");
+        alice_scan.count_key = Some(count_key.to_string());
+        alice_scan.record_hash_key = Some(hash_key.to_string());
+        alice_scan.shard_size = Some(1024);
+        alice_scan.scope = Some(subject_scope("alice"));
+        clear_native_caches();
+        let alice_result = scan_matrixark_candidates(&reopened, &alice_scan).expect("scan alice");
+        assert_eq!(
+            alice_result.get("count").and_then(Value::as_u64),
+            Some(0),
+            "no alice candidates after recovery: {alice_result}"
+        );
+
+        let mut bob_scan = request("matrixark_scan_candidates");
+        bob_scan.count_key = Some(count_key.to_string());
+        bob_scan.record_hash_key = Some(hash_key.to_string());
+        bob_scan.shard_size = Some(1024);
+        bob_scan.scope = Some(subject_scope("bob"));
+        clear_native_caches();
+        let bob_result = scan_matrixark_candidates(&reopened, &bob_scan).expect("scan bob");
+        assert_eq!(
+            bob_result.get("count").and_then(Value::as_u64),
+            Some(1),
+            "bob still retrievable after recovery: {bob_result}"
         );
     }
 }
