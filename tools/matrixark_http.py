@@ -250,7 +250,7 @@ def _agent_hook_call(server: Any, body: Json) -> Json:
         retrieve_args: Json = {
             **args_common,
             "query": str(body.get("query") or text or event)[:500],
-            "max_context_tokens": int(body.get("max_context_tokens") or normalized.get("max_context_tokens") or GATEWAY_DEFAULT_MAX_CONTEXT_TOKENS),
+            "max_context_tokens": int(body.get("max_context_tokens") or normalized.get("max_context_tokens") or body.get("budget") or normalized.get("budget") or GATEWAY_DEFAULT_MAX_CONTEXT_TOKENS),
             "audit_mode": str(body.get("audit_mode") or normalized.get("audit_mode") or "telemetry_only"),
             "audit_sample_rate": float(body.get("audit_sample_rate") or normalized.get("audit_sample_rate") or 0.0),
             "metadata": retrieve_metadata,
@@ -750,6 +750,24 @@ def apply_ingest_route_defaults(path: str, args: Json) -> Json:
     return args
 
 
+def apply_retrieve_budget_alias(args: Json) -> Json:
+    """Alias the client-facing ``budget`` knob onto ``max_context_tokens``.
+
+    The documented public retrieve knob is ``budget``, but the gateway and the
+    ``matrixark_retrieve`` tool read ``max_context_tokens`` -- so ``budget`` was
+    silently ignored. Accept either: ``max_context_tokens`` wins when both are
+    supplied, otherwise a non-empty ``budget`` populates it. Pure apart from
+    mutating the passed args dict.
+    """
+    if not isinstance(args, dict):
+        return args
+    if args.get("max_context_tokens") in (None, ""):
+        budget = args.get("budget")
+        if budget not in (None, ""):
+            args["max_context_tokens"] = budget
+    return args
+
+
 def make_matrixark_http_handler(server: "MatrixArkMcpServer", static_root: Path) -> type[SimpleHTTPRequestHandler]:
     static_root = static_root.resolve()
 
@@ -815,6 +833,8 @@ def make_matrixark_http_handler(server: "MatrixArkMcpServer", static_root: Path)
                     self._write_auth_required(tool_name)
                     return
                 _http_api_key(self.headers, args)
+                if tool_name == "matrixark_retrieve":
+                    apply_retrieve_budget_alias(args)
                 result = server.call_tool(tool_name, args)
                 self._write_json(200, {"status": "ok", "tool": tool_name, "result": result})
             except Exception as exc:

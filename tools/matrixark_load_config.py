@@ -126,6 +126,7 @@ ENV_MAP: Dict[str, str] = {
     "retrieval.max_global_candidates": "MATRIXARK_MAX_GLOBAL_CANDIDATES",
     "retrieval.max_selected_refs": "MATRIXARK_MAX_SELECTED_REFS",
     "retrieval.budget_fill_policy": "MATRIXARK_BUDGET_FILL_POLICY",
+    "retrieval.near_duplicate_overlap_threshold": "MATRIXARK_NEAR_DUPLICATE_OVERLAP_THRESHOLD",
     "retrieval.max_children_scored_per_parent": "MATRIXARK_MAX_CHILDREN_SCORED_PER_PARENT",
     "retrieval.cross_session_budget_ratio": "MATRIXARK_CROSS_SESSION_BUDGET_RATIO",
     "retrieval.cross_session_max_candidates": "MATRIXARK_CROSS_SESSION_MAX_CANDIDATES",

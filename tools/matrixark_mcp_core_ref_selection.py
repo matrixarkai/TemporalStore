@@ -11,6 +11,7 @@ try:  # package path (tools.matrixark_mcp_core)
         DEFAULT_BUDGET_FILL_POLICY,
         DEFAULT_MAX_GLOBAL_CANDIDATES,
         DEFAULT_MAX_SELECTED_REFS,
+        DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD,
         DEFAULT_RETRIEVAL_MIN_SCORE,
         Json,
         candidate_memory_layer_name,
@@ -35,6 +36,7 @@ except ImportError:  # top-level path (matrixark_mcp_core)
         DEFAULT_BUDGET_FILL_POLICY,
         DEFAULT_MAX_GLOBAL_CANDIDATES,
         DEFAULT_MAX_SELECTED_REFS,
+        DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD,
         DEFAULT_RETRIEVAL_MIN_SCORE,
         Json,
         candidate_memory_layer_name,
@@ -55,7 +57,75 @@ except ImportError:  # top-level path (matrixark_mcp_core)
         tokens,
     )
 
-__all__ = ['dropped_candidate_audit_ref', 'record_dropped_candidate', 'diversify_for_question_type', 'entity_current_state_key', 'prefer_profile_entities_for_current_state', 'is_stale_or_superseded_candidate', 'suppress_profile_shadowed_session_entity_refs', 'select_token_budgeted_refs']
+__all__ = ['dropped_candidate_audit_ref', 'record_dropped_candidate', 'diversify_for_question_type', 'entity_current_state_key', 'prefer_profile_entities_for_current_state', 'is_stale_or_superseded_candidate', 'suppress_profile_shadowed_session_entity_refs', 'normalized_token_set', 'near_duplicate_overlap_ratio', 'clamp_refs_to_token_budget', 'select_token_budgeted_refs']
+
+
+def normalized_token_set(text: str) -> frozenset[str]:
+    """Lower-cased, de-duplicated token set used for near-duplicate detection."""
+    return frozenset(token.lower() for token in tokens(str(text or "")) if token)
+
+
+def near_duplicate_overlap_ratio(candidate_tokens: frozenset[str], selected_tokens: frozenset[str]) -> float:
+    """Jaccard token-set similarity between two refs (|A ∩ B| / |A ∪ B|).
+
+    Jaccard is the near-duplicate metric here (rather than containment) so a
+    short ref whose few tokens merely happen to be a subset of a longer but
+    genuinely different ref is NOT collapsed: near-duplicate requires the two
+    texts to be substantially the same, in both content and size. Ranges 0.0
+    (disjoint) .. 1.0 (identical token sets).
+    """
+    if not candidate_tokens or not selected_tokens:
+        return 0.0
+    intersection = len(candidate_tokens & selected_tokens)
+    if intersection == 0:
+        return 0.0
+    union = len(candidate_tokens | selected_tokens)
+    if union <= 0:
+        return 0.0
+    return intersection / union
+
+
+def clamp_refs_to_token_budget(
+    refs: list[Json],
+    max_context_tokens: int,
+    *,
+    reserved_tokens: int = 0,
+) -> tuple[list[Json], list[Json], int]:
+    """Enforce the token ceiling on an already ranked list of refs.
+
+    ``refs`` must be ordered best-first. Keeps the highest-ranked prefix whose
+    cumulative token estimate fits within ``max_context_tokens - reserved_tokens``
+    and returns ``(kept, trimmed, used_tokens)``. Ceiling-not-target: a short
+    ranked list that already fits is returned unchanged (never padded). At least
+    the single top ref is kept when the list is non-empty so a relevant pack is
+    never emptied by an unusually tight budget. This is the symmetric partner to
+    the in-loop budget check in ``select_token_budgeted_refs`` and is applied to
+    packs assembled outside that loop (e.g. the native backend pack path), which
+    otherwise could return a pack exceeding the caller's budget.
+    """
+    remote_budget = max(0, int(max_context_tokens) - max(0, int(reserved_tokens)))
+    kept: list[Json] = []
+    trimmed: list[Json] = []
+    used_tokens = 0
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        ref_tokens = ref.get("token_count")
+        if ref_tokens is None:
+            ref_tokens = ref.get("token_estimate")
+        if ref_tokens is None:
+            ref_tokens = token_count(str(ref.get("text", "")))
+        try:
+            ref_tokens = max(1, int(ref_tokens))
+        except (TypeError, ValueError):
+            ref_tokens = max(1, token_count(str(ref.get("text", ""))))
+        # Always keep the top ref so a relevant pack is not zeroed by a tight budget.
+        if kept and (remote_budget <= 0 or used_tokens + ref_tokens > remote_budget):
+            trimmed.append(ref)
+            continue
+        kept.append(ref)
+        used_tokens += ref_tokens
+    return kept, trimmed, used_tokens
 
 
 def dropped_candidate_audit_ref(candidate: Json, *, reason: str, token_estimate: int) -> Json:
@@ -325,6 +395,7 @@ def select_token_budgeted_refs(
     max_global_candidates: int | None = None,
     budget_fill_policy: str = DEFAULT_BUDGET_FILL_POLICY,
     duplicate_text_hashes: set[int] | None = None,
+    near_duplicate_overlap_threshold: float = DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD,
     deadline_exceeded: Callable[[], bool] | None = None,
     deadline_reason: str = "deadline_during_pack",
     cross_session_policy: Json | None = None,
@@ -344,6 +415,15 @@ def select_token_budgeted_refs(
     )
     min_score = max(0.0, min(1.0, float(min_score)))
     budget_fill_policy = (budget_fill_policy or DEFAULT_BUDGET_FILL_POLICY).strip().lower()
+    try:
+        near_duplicate_overlap_threshold = float(near_duplicate_overlap_threshold)
+    except (TypeError, ValueError):
+        near_duplicate_overlap_threshold = DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD
+    # <= 0 disables near-dup suppression; > 1 can never trigger (overlap ratio is
+    # bounded at 1.0), so clamp to a sane [0, 1] operating range.
+    near_duplicate_overlap_threshold = max(0.0, min(1.0, near_duplicate_overlap_threshold))
+    near_duplicate_enabled = near_duplicate_overlap_threshold > 0.0
+    selected_token_sets: list[frozenset[str]] = []
     candidates = merge_ranked_paths(
         primary,
         auxiliary,
@@ -655,6 +735,7 @@ def select_token_budgeted_refs(
         "stale": 0,
         "summary": 0,
         "raw_l2": 0,
+        "near_duplicate": 0,
         "cross_session_budget": 0,
         "cross_session_session_cap": 0,
         "cross_session_candidate_cap": 0,
@@ -670,10 +751,12 @@ def select_token_budgeted_refs(
         "estimated_tokens": {
             "over_budget": 0,
             "duplicate": 0,
+            "near_duplicate": 0,
             "low_score": 0,
             "stale": 0,
             "summary": 0,
             "raw_l2": 0,
+            "near_duplicate": 0,
             "cross_session_budget": 0,
             "cross_session_session_cap": 0,
             "cross_session_candidate_cap": 0,
@@ -690,6 +773,7 @@ def select_token_budgeted_refs(
         "reason_descriptions": {
             "over_budget": "candidate was relevant but exceeded the remaining remote context token budget",
             "duplicate": "candidate duplicated local context or an already selected ref",
+            "near_duplicate": "candidate text near-duplicated a higher-ranked already selected ref (token overlap above the configured threshold)",
             "low_score": "candidate score was below the minimum packing threshold",
             "stale": "candidate was stale or superseded for the query policy",
             "summary": "summary text was dropped in favor of denser raw/evidence refs",
@@ -761,6 +845,21 @@ def select_token_budgeted_refs(
             dropped["estimated_tokens"]["stale"] += ref_tokens
             record_dropped_candidate(dropped, candidate, reason="stale", token_estimate=ref_tokens)
             continue
+        # Near-duplicate suppression: drop a candidate whose normalized token set
+        # overlaps an already-selected (strictly higher-ranked, since selection is
+        # in ranked order) ref above the configured threshold, so repetitive refs
+        # do not dilute precision or spend budget on redundant content. The
+        # highest-ranked instance is the one already in `selected`, so it is kept.
+        if near_duplicate_enabled and selected_token_sets:
+            candidate_token_set = normalized_token_set(candidate.get("text", ""))
+            if candidate_token_set and any(
+                near_duplicate_overlap_ratio(candidate_token_set, selected_tokens) >= near_duplicate_overlap_threshold
+                for selected_tokens in selected_token_sets
+            ):
+                dropped["near_duplicate"] += 1
+                dropped["estimated_tokens"]["near_duplicate"] += ref_tokens
+                record_dropped_candidate(dropped, candidate, reason="near_duplicate", token_estimate=ref_tokens)
+                continue
         if remote_budget <= 0 or (selected and used_tokens + ref_tokens > remote_budget):
             dropped["over_budget"] += 1
             dropped["estimated_tokens"]["over_budget"] += ref_tokens
@@ -1031,6 +1130,8 @@ def select_token_budgeted_refs(
             )
             continue
         seen_text_hashes.add(text_hash)
+        if near_duplicate_enabled:
+            selected_token_sets.append(normalized_token_set(candidate.get("text", "")))
         selected.append(
             {
                 **candidate,
