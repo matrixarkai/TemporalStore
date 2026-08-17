@@ -320,6 +320,26 @@ def dispatch_matrixark_tool(server: Any, name: str, args: Json, hook: Json | Non
         result = server.adapter.get_all(args)
         server.access.append_audit("context.get_all", identity, status="ok", details={"count": result.get("count")})
         return {**result, "access": args.get("_matrixark_auth", {})}
+    if name == "matrixark_get_memory":
+        result = server.adapter.get_memory(args)
+        server.access.append_audit("context.get", identity, status="ok", details={"found": result.get("found")})
+        return {**result, "access": args.get("_matrixark_auth", {})}
+    if name == "matrixark_update_memory":
+        result = server.adapter.update_memory(args, hook=hook)
+        server.append_audit_policy(
+            "context.update",
+            identity,
+            status="ok",
+            details={"memory_id": result.get("memory_id"), "new_memory_id": result.get("new_memory_id")},
+            args=args,
+            hot_path=True,
+        )
+        response = {**result, "access": args.get("_matrixark_auth", {})}
+        return server._finalize_write_response(name, args, identity, hook, response)
+    if name == "matrixark_memory_history":
+        result = server.adapter.history(args)
+        server.access.append_audit("context.history", identity, status="ok", details={"count": result.get("count")})
+        return {**result, "access": args.get("_matrixark_auth", {})}
     if name == "matrixark_reset":
         result = server.adapter.reset(args, hook=hook)
         server.append_audit_policy(

@@ -39,7 +39,7 @@ import tempfile
 import threading
 import time
 from typing import Any, Awaitable, Callable, Optional, Tuple
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 try:
     from tools.matrixark_asgi import make_asgi_app, _api_key
@@ -165,6 +165,10 @@ _DATA_ROUTES: dict[str, Tuple[str, str]] = {
     "/v1/delete": ("matrixark_delete", "forget"),
     "/v1/reset": ("matrixark_reset", "forget"),
     "/v1/memories": ("matrixark_get_all", "retrieve"),
+    # update = supersede (ingest an amended version + tombstone the old id): gates on context:ingest.
+    "/v1/update": ("matrixark_update_memory", "ingest"),
+    # get (GET /v1/memory/<id>) and history (GET /v1/memory/<id>/history) are handled by dedicated
+    # GET branches below (data routes are POST-only), gated on context:retrieve.
 }
 
 # Backend exception class names we translate to specific edge status codes (matched by name to avoid
@@ -1695,6 +1699,42 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             except Exception as exc:
                 return await _json(send, _classify_backend_error(exc),
                                    {"error": "backend_error", "detail": str(exc)})
+            return await _json(send, 200, _ok_body(result))
+
+        # ---- get / history via GET /v1/memory/<id>[/history] (auth + context:retrieve) -------
+        # Single-memory read (mem0 get) and change history (mem0 history). The memory id is in the
+        # path; tenant is pinned from the authenticated key (same isolation as every data route). The
+        # id-scoped tools reconstruct the memory's own scope from its stored record.
+        if method == "GET" and path.startswith("/v1/memory/") and path != "/v1/memories":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _scope_denied(key_record, "context:retrieve")
+            if denied is not None:
+                return await _json(send, 403, denied)
+            remainder = path[len("/v1/memory/"):]
+            if remainder.endswith("/history"):
+                memory_id = remainder[: -len("/history")]
+                tool = "matrixark_memory_history"
+            else:
+                memory_id = remainder
+                tool = "matrixark_get_memory"
+            memory_id = unquote(memory_id).strip("/")
+            if not memory_id:
+                return await _json(send, 404, {"error": "not_found"})
+            args = {"memory_id": memory_id, "scope": {}}
+            _apply_identity(args, key, tenant, account)
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(server.call_tool, tool, args), cfg.backend_timeout)
+            except asyncio.TimeoutError:
+                return await _json(send, 504, {"error": "backend_timeout",
+                                   "detail": f"backend did not respond within {cfg.backend_timeout}s"})
+            except Exception as exc:
+                return await _json(send, _classify_backend_error(exc),
+                                   {"error": "backend_error", "detail": str(exc)})
+            if tool == "matrixark_get_memory" and result.get("found") is False:
+                return await _json(send, 404, _ok_body(result))
             return await _json(send, 200, _ok_body(result))
 
         # ---- blob (auth + concurrent-stream cap, streamed) ----------------------------------

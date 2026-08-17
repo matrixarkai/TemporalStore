@@ -1172,4 +1172,48 @@ TOOLS: list[Json] = [
             "additionalProperties": True,
         },
     },
+    {
+        "name": "matrixark_get_memory",
+        "description": "Fetch a single memory by id (mem0 get). memory_id is the event_id_hash returned by ingest; returns {found, memory, text, metadata, derived}.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["memory_id"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "memory_id": {"type": "string", "description": "The memory id (event_id_hash) to fetch."},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_update_memory",
+        "description": "Update a memory's content (mem0 update). Supersede: ingests the new text in the same scope and tombstones the old id.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["memory_id"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "memory_id": {"type": "string", "description": "The memory id (event_id_hash) to update."},
+                "data": {"type": "string", "description": "The new memory content (alias: text)."},
+                "text": {"type": "string", "description": "The new memory content (alias: data)."},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_memory_history",
+        "description": "Return the ordered change history for a memory id (mem0 history): ingest -> update/supersede -> delete, with timestamps.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["memory_id"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "memory_id": {"type": "string", "description": "The memory id (event_id_hash) whose history to return."},
+            },
+            "additionalProperties": True,
+        },
+    },
 ]
