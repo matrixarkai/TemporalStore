@@ -40,7 +40,13 @@ impl TemporalEngine {
             configs: Arc::default(),
             infos: Arc::default(),
             admissions: Arc::default(),
+            promote_scans: Arc::default(),
         }
+    }
+
+    /// Total per-execute promote reconcile scans this engine has run (see `promote_scans`).
+    pub fn promote_scan_count(&self) -> u64 {
+        self.promote_scans.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn cache(&self) -> MultiLayerCache {
