@@ -2114,6 +2114,24 @@ fn env_bool(name: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+/// Build the datanode's `RaftConfig`, overlaying the write-path tuning knobs from env. Unset ->
+/// `RaftConfig::default()` verbatim (replication_deadline_ms 5000, max_inflights_replicate 128),
+/// so behavior is byte-identical unless an operator opts in.
+fn raft_config_from_env() -> RaftConfig {
+    let defaults = RaftConfig::default();
+    RaftConfig {
+        replication_deadline_ms: env_u64(
+            "TS_RAFT_REPLICATION_DEADLINE_MS",
+            defaults.replication_deadline_ms,
+        ),
+        max_inflights_replicate: env_u64(
+            "TS_RAFT_MAX_INFLIGHTS_REPLICATE",
+            defaults.max_inflights_replicate,
+        ),
+        ..defaults
+    }
+}
+
 fn block_store_options_from_env() -> BlockStoreOptions {
     let defaults = BlockStoreOptions::default();
     BlockStoreOptions {
@@ -2291,13 +2309,18 @@ fn start_server_raft_from_env(
         "local-raft-token",
         env_bool("TS_RAFT_ALLOW_PLAINTEXT", true),
     );
+    // Make the write-path tuning knobs reachable from the datanode entrypoint. Byte-identical
+    // when unset: replication_deadline_ms stays 5000 (the legacy hardcoded deadline) and
+    // max_inflights_replicate stays 128. (This entrypoint is env-only; there is no config-file
+    // loader in scope here, so the `[raft]` file equivalents are not read at this layer.)
+    let raft_config = raft_config_from_env();
     let runtime = ProductionRaftRuntime::start(ProductionRaftRuntimeOptions {
         engine: ProductionRaftEngineKind::TemporalRaft,
         shard_id: raft_shard_id,
         local_node_id,
         nodes,
         wal_dir,
-        config: RaftConfig::default(),
+        config: raft_config,
         rpc: RaftRpcRuntimeOptions {
             max_retries: env_usize("TS_RAFT_RPC_RETRIES", 2),
             deadline_ms: env_u64("TS_RAFT_RPC_DEADLINE_MS", 1_000),
@@ -3559,5 +3582,31 @@ mod tests {
             local_admin_enabled,
             blocked_peers: Arc::new(Mutex::new(BTreeSet::new())),
         }
+    }
+
+    /// The datanode entrypoint must make the write-path tuning knobs reachable: unset -> the
+    /// byte-identical defaults (5000 ms deadline / 128 inflight); set -> honored on the
+    /// `RaftConfig` that starts the runtime.
+    #[test]
+    fn raft_config_from_env_honors_deadline_and_inflight_overrides() {
+        // Unset: byte-identical defaults.
+        std::env::remove_var("TS_RAFT_REPLICATION_DEADLINE_MS");
+        std::env::remove_var("TS_RAFT_MAX_INFLIGHTS_REPLICATE");
+        let defaults = raft_config_from_env();
+        assert_eq!(defaults.replication_deadline_ms, 5000);
+        assert_eq!(defaults.max_inflights_replicate, 128);
+
+        // Set: both overrides flow through to the config the runtime is started with.
+        std::env::set_var("TS_RAFT_REPLICATION_DEADLINE_MS", "300");
+        std::env::set_var("TS_RAFT_MAX_INFLIGHTS_REPLICATE", "1024");
+        let tuned = raft_config_from_env();
+        assert_eq!(tuned.replication_deadline_ms, 300);
+        assert_eq!(tuned.max_inflights_replicate, 1024);
+        // Overriding these two knobs must not disturb the rest of the config.
+        assert_eq!(tuned.max_segment_bytes, defaults.max_segment_bytes);
+        assert_eq!(tuned.min_keep_segment_num, defaults.min_keep_segment_num);
+
+        std::env::remove_var("TS_RAFT_REPLICATION_DEADLINE_MS");
+        std::env::remove_var("TS_RAFT_MAX_INFLIGHTS_REPLICATE");
     }
 }
