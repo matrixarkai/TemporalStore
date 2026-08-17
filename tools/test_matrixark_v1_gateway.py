@@ -1063,5 +1063,131 @@ class McpPerToolScopeTest(unittest.TestCase):
         self.assertEqual(1, len(self.s.handled))
 
 
+class UsageMeterTest(unittest.TestCase):
+    """Per-key edge usage metering: authenticated (enforced) requests bump an in-process counter
+    (total + ingest/retrieve split + bytes + last_used); the /v1/admin/api_key_usage read is admin-
+    scope gated; dev/anonymous traffic is never metered; a metering failure never breaks a request."""
+
+    DATA_KEY = "sk_live_usage_data"          # context scopes only, NO admin scope
+    ADMIN_KEY = "sk_live_usage_admin"        # carries admin:api_key -> may read usage
+
+    _DATA_SCOPES = ["context:ingest", "context:retrieve"]
+
+    def _hashed(self):
+        return {
+            gw._secret_hash(self.DATA_KEY): {
+                "tenant_id": "t", "account_id": "acct", "scopes": list(self._DATA_SCOPES)},
+            gw._secret_hash(self.ADMIN_KEY): {
+                "tenant_id": "t", "account_id": "acct",
+                "scopes": ["admin:api_key", "context:retrieve"]},
+        }
+
+    def setUp(self):
+        self.s = _FakeServer()
+        self.cfg = gw.GatewayConfig.from_env({"enforced": True, "hashed_api_keys": self._hashed()})
+        self.app = gw.make_v1_app(self.s, self.cfg)
+
+    def _bearer(self, key):
+        return {"Authorization": f"Bearer {key}"}
+
+    def _usage(self, key):
+        st, _, body = drive(self.app, method="GET", path="/v1/admin/api_key_usage",
+                            headers=self._bearer(key))
+        return st, (json.loads(body) if body else {})
+
+    def test_authenticated_requests_are_counted_with_category_split(self):
+        # 3 ingests + 2 retrieves under the data key -> total 5, ingest 3, retrieve 2.
+        for _ in range(3):
+            drive(self.app, path="/v1/ingest", body={"records": [1]}, headers=self._bearer(self.DATA_KEY))
+        for _ in range(2):
+            drive(self.app, path="/v1/retrieve", body={"query": "x"}, headers=self._bearer(self.DATA_KEY))
+        st, payload = self._usage(self.ADMIN_KEY)
+        self.assertEqual(200, st)
+        self.assertEqual(1, payload["count"])                          # one distinct key metered
+        entry = payload["usage"][0]
+        self.assertEqual(gw._secret_hash(self.DATA_KEY), entry["api_key_hash"])
+        self.assertEqual(5, entry["total"])
+        self.assertEqual(3, entry["ingest"])
+        self.assertEqual(2, entry["retrieve"])
+        self.assertEqual("t", entry["tenant_id"])
+        self.assertEqual("acct", entry["account_id"])
+        self.assertGreater(entry["bytes"], 0)                          # JSON body bytes captured
+        self.assertGreaterEqual(entry["last_used_at_ms"], entry["first_used_at_ms"])
+
+    def test_key_stored_hashed_not_plaintext(self):
+        drive(self.app, path="/v1/ingest", body={"records": [1]}, headers=self._bearer(self.DATA_KEY))
+        _, payload = self._usage(self.ADMIN_KEY)
+        blob = json.dumps(payload)
+        self.assertNotIn(self.DATA_KEY, blob)                          # never leak the plaintext key
+        self.assertIn(gw._secret_hash(self.DATA_KEY), blob)
+
+    def test_non_admin_key_cannot_read_usage_403(self):
+        st, payload = self._usage(self.DATA_KEY)
+        self.assertEqual(403, st)
+        self.assertEqual("insufficient_scope", payload["error"])
+        self.assertEqual(["admin:api_key", "admin:audit"], payload["required"])
+
+    def test_usage_read_requires_auth_401(self):
+        st, _, body = drive(self.app, method="GET", path="/v1/admin/api_key_usage")
+        self.assertEqual(401, st)
+        self.assertEqual("unauthorized", json.loads(body)["error"])
+
+    def test_dev_mode_requests_are_not_metered(self):
+        # Enforcement OFF -> plaintext api_keys, no metering; the read returns an empty snapshot.
+        with _EnvGuard(MATRIXARK_AUTH_ENFORCED=None, MATRIXARK_REQUIRE_AUTH="1"):
+            cfg = gw.GatewayConfig.from_env({"api_keys": {"k-acme": "acme"}})
+            app = gw.make_v1_app(self.s, cfg)
+            for _ in range(4):
+                st_i, _, _ = drive(app, path="/v1/ingest", body={"records": [1]},
+                                   headers={"Authorization": "Bearer k-acme"})
+                self.assertEqual(202, st_i)                            # request still succeeds
+            st, _, body = drive(app, method="GET", path="/v1/admin/api_key_usage",
+                                headers={"Authorization": "Bearer k-acme"})
+            self.assertEqual(200, st)                                  # dev key unrestricted read
+            self.assertEqual(0, json.loads(body)["count"])            # but nothing was metered
+
+    def test_metering_failure_does_not_break_request(self):
+        # Force the meter to raise: the request MUST still succeed (metering is best-effort).
+        original = gw._UsageMeter.record
+
+        def boom(self, *a, **k):
+            raise RuntimeError("metering exploded")
+
+        gw._UsageMeter.record = boom
+        try:
+            st, _, _ = drive(self.app, path="/v1/ingest", body={"records": [1]},
+                             headers=self._bearer(self.DATA_KEY))
+            self.assertEqual(202, st)                                  # ingest unaffected by meter error
+            self.assertEqual(1, len(self.s.calls))                    # backend still dispatched
+        finally:
+            gw._UsageMeter.record = original
+
+    def test_usage_flushes_to_file(self):
+        # flush_every=1 -> every recorded request snapshots to MATRIXARK_API_KEY_USAGE_FILE.
+        with tempfile.TemporaryDirectory() as d:
+            usage_file = os.path.join(d, "usage.json")
+            cfg = gw.GatewayConfig.from_env({
+                "enforced": True, "hashed_api_keys": self._hashed(),
+                "usage_file": usage_file, "usage_flush_every": 1,
+            })
+            app = gw.make_v1_app(self.s, cfg)
+            drive(app, path="/v1/ingest", body={"records": [1]}, headers=self._bearer(self.DATA_KEY))
+            self.assertTrue(os.path.exists(usage_file))
+            with open(usage_file, "r", encoding="utf-8") as fh:
+                snap = json.load(fh)
+            self.assertEqual("matrixark_api_key_usage_snapshot", snap["record_type"])
+            self.assertEqual(1, len(snap["keys"]))
+            self.assertEqual(1, snap["keys"][0]["ingest"])
+
+    def test_usage_file_env_var_is_read(self):
+        with tempfile.TemporaryDirectory() as d:
+            usage_file = os.path.join(d, "env_usage.json")
+            with _EnvGuard(MATRIXARK_API_KEY_USAGE_FILE=usage_file,
+                           MATRIXARK_API_KEY_USAGE_FLUSH_EVERY="1"):
+                cfg = gw.GatewayConfig.from_env({})
+                self.assertEqual(usage_file, cfg.usage_file)
+                self.assertEqual(1, cfg.usage_flush_every)
+
+
 if __name__ == "__main__":
     unittest.main()

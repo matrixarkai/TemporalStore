@@ -141,6 +141,15 @@ _DEFAULTS = {
     # the ingest becomes retrievable on its own. Must be > 0 (0 would commit inline and
     # defeat the debounce); <= 0 disables scheduling (retrieve-time flush still applies).
     "stream_idle_commit_timeout_ms": 1000,
+    # Per-key usage metering (edge). An in-process counter is bumped after a key is validated on
+    # each AUTHENTICATED request; it is flushed to `usage_file` (JSONL/JSON snapshot) at most every
+    # `usage_flush_every` recorded requests OR `usage_flush_interval_s` seconds, whichever comes
+    # first. Empty `usage_file` keeps the counter fully in-process (snapshot still readable via the
+    # /v1/admin/api_key_usage route). Metering runs ONLY in enforced mode (a real key exists); dev/
+    # anonymous requests are never metered. Best-effort: a metering failure never breaks a request.
+    "usage_file": "",
+    "usage_flush_every": 50,
+    "usage_flush_interval_s": 5.0,
 }
 
 # route -> (tool name, rate-limit class). "__mcp__" is dispatched through mcp_http_dispatch.
@@ -386,6 +395,15 @@ class GatewayConfig:
             stream_idle_commit_timeout_ms=num(
                 "MATRIXARK_STREAM_IDLE_COMMIT_TIMEOUT_MS", "stream_idle_commit_timeout_ms", int
             ),
+            usage_file=str(
+                overrides.get("usage_file")
+                or env.get("MATRIXARK_API_KEY_USAGE_FILE")
+                or _DEFAULTS["usage_file"]
+            ),
+            usage_flush_every=num("MATRIXARK_API_KEY_USAGE_FLUSH_EVERY", "usage_flush_every", int),
+            usage_flush_interval_s=num(
+                "MATRIXARK_API_KEY_USAGE_FLUSH_INTERVAL_S", "usage_flush_interval_s", float
+            ),
         )
 
 
@@ -474,6 +492,141 @@ class _RateLimiter:
                 self._blob_sem.release()
             except ValueError:
                 pass
+
+
+# ================================================================================================
+# Per-key usage metering (edge, in-process, best-effort)
+# ================================================================================================
+class _UsageMeter:
+    """Cheap, thread-safe, per-API-key request counter kept in-process at the edge.
+
+    Bumped once per AUTHENTICATED request AFTER the key is validated. The hot path does only an
+    O(1) dict update under a short lock -- NO disk I/O per request. The in-memory counters are
+    flushed to `path` (an atomic JSON snapshot) at most every `flush_every` recorded requests OR
+    `flush_interval_s` seconds, so disk cost is amortized far off the request path. An empty `path`
+    disables the flush entirely (the snapshot stays purely in memory, still readable by the admin
+    read route). Keys are stored HASHED (sha256), never in plaintext.
+
+    Every method is defensive: a metering failure must NEVER surface to the request, so `record`
+    swallows its own errors and the caller additionally wraps it (belt and suspenders).
+    """
+
+    def __init__(self, path: str = "", *, flush_every: int = 50, flush_interval_s: float = 5.0) -> None:
+        self.path = str(path or "")
+        self.flush_every = max(1, int(flush_every))
+        self.flush_interval_s = max(0.0, float(flush_interval_s))
+        self._lock = threading.Lock()
+        self._counters: dict[str, Json] = {}
+        self._dirty = 0
+        self._last_flush = time.monotonic()
+
+    def record(self, key_hash: str, tenant: Optional[str], account: Optional[str],
+               category: str, nbytes: int = 0) -> None:
+        if not key_hash:
+            return
+        try:
+            with self._lock:
+                entry = self._counters.get(key_hash)
+                now = int(time.time() * 1000)
+                if entry is None:
+                    entry = {
+                        "api_key_hash": key_hash,
+                        "tenant_id": str(tenant or ""),
+                        "account_id": str(account or ""),
+                        "total": 0,
+                        "ingest": 0,
+                        "retrieve": 0,
+                        "other": 0,
+                        "bytes": 0,
+                        "first_used_at_ms": now,
+                        "last_used_at_ms": now,
+                    }
+                    self._counters[key_hash] = entry
+                entry["total"] += 1
+                bucket = category if category in ("ingest", "retrieve") else "other"
+                entry[bucket] += 1
+                entry["bytes"] += max(0, int(nbytes or 0))
+                entry["last_used_at_ms"] = now
+                if tenant and not entry.get("tenant_id"):
+                    entry["tenant_id"] = str(tenant)
+                if account and not entry.get("account_id"):
+                    entry["account_id"] = str(account)
+                self._dirty += 1
+                if self._should_flush_locked():
+                    self._flush_locked()
+        except Exception:  # pragma: no cover - metering is best-effort, never fatal
+            pass
+
+    def _should_flush_locked(self) -> bool:
+        if not self.path:
+            return False
+        if self._dirty >= self.flush_every:
+            return True
+        return (time.monotonic() - self._last_flush) >= self.flush_interval_s
+
+    def _flush_locked(self) -> None:
+        if not self.path:
+            self._dirty = 0
+            self._last_flush = time.monotonic()
+            return
+        try:
+            snapshot = {
+                "record_type": "matrixark_api_key_usage_snapshot",
+                "updated_at_ms": int(time.time() * 1000),
+                "keys": list(self._counters.values()),
+            }
+            tmp = f"{self.path}.tmp.{os.getpid()}"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(snapshot, handle, sort_keys=True)
+            os.replace(tmp, self.path)
+        except Exception:  # pragma: no cover - flush is best-effort
+            pass
+        finally:
+            self._dirty = 0
+            self._last_flush = time.monotonic()
+
+    def snapshot(self) -> list[Json]:
+        with self._lock:
+            return [dict(entry) for entry in self._counters.values()]
+
+
+def _meter_active(cfg: GatewayConfig, key: Optional[str]) -> bool:
+    """Metering runs only when a REAL key authenticated the request (enforced mode). Dev/anonymous
+    (unenforced) traffic is never metered, so the dev default posture is byte-identical."""
+    return bool(getattr(cfg, "enforced", False) and key)
+
+
+def _meter_safe(meter: _UsageMeter, cfg: GatewayConfig, key: Optional[str],
+                tenant: Optional[str], account: Optional[str], category: str, nbytes: int = 0) -> None:
+    """Record one authenticated request. Wrapped so a metering failure can never break a request."""
+    try:
+        if not _meter_active(cfg, key):
+            return
+        meter.record(_secret_hash(key), tenant, account, category, nbytes)
+    except Exception:  # pragma: no cover - defensive: metering must not affect the response
+        pass
+
+
+# The admin scopes that may read per-key usage. Either grants the read (mirrors the backend, where
+# `matrixark_admin_*` require `admin:api_key` and audit reads require `admin:audit`).
+_USAGE_READ_SCOPES = {"admin:api_key", "admin:audit"}
+
+
+def _usage_read_denied(record: Optional[Json]) -> Optional[Json]:
+    """403 payload when the key may not read usage, else ``None``.
+
+    Consistent with the rest of the edge: a dev key (``record is None``) or a legacy/unrestricted key
+    (``scopes is None``) is allowed; a scoped enforced-mode key must carry ``admin:api_key`` or
+    ``admin:audit``.
+    """
+    if record is None:
+        return None
+    scopes = record.get("scopes")
+    if scopes is None:  # legacy/unrestricted key
+        return None
+    if _USAGE_READ_SCOPES.intersection(scopes):
+        return None
+    return {"error": "insufficient_scope", "required": sorted(_USAGE_READ_SCOPES)}
 
 
 # ================================================================================================
@@ -1265,6 +1418,11 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
     _warn_if_auth_disabled(cfg)  # one-time, non-blocking; anonymous access still allowed
     legacy = make_asgi_app(server)
     limiter = _RateLimiter(cfg)
+    meter = _UsageMeter(
+        getattr(cfg, "usage_file", "") or "",
+        flush_every=int(getattr(cfg, "usage_flush_every", 50)),
+        flush_interval_s=float(getattr(cfg, "usage_flush_interval_s", 5.0)),
+    )
     executor_state = {"installed": False}
     executor_lock = threading.Lock()
     # Direct network path (B): one shared pooled client per worker when enabled.
@@ -1319,6 +1477,20 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             datanode = "unknown" if probe is None else ("ok" if probe else "unreachable")
             return await _json(send, 200, {"ready": True, "datanode": datanode})
 
+        # ---- per-key usage read (auth + admin scope) ----------------------------------------
+        # Returns the in-process edge counters (per-key totals, ingest/retrieve split, bytes,
+        # first/last-used). Gated behind a valid key that carries `admin:api_key`/`admin:audit`
+        # (scoped enforced keys); dev/legacy-unrestricted keys read it unchanged.
+        if method == "GET" and path == "/v1/admin/api_key_usage":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            usage = meter.snapshot()
+            return await _json(send, 200, {"status": "ok", "usage": usage, "count": len(usage)})
+
         # ---- blob (auth + concurrent-stream cap, streamed) ----------------------------------
         if path.startswith("/v1/blob/"):
             allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
@@ -1327,6 +1499,8 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             denied = _scope_denied(key_record, _required_scope(path, method, None))
             if denied is not None:
                 return await _json(send, 403, denied)
+            _meter_safe(meter, cfg, key, tenant, account,
+                        "retrieve" if method == "GET" else "ingest")
             key_str = path[len("/v1/blob/"):]
             if not key_str:
                 return await _json(send, 404, {"error": "not_found"})
@@ -1353,6 +1527,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 return await _json(send, 405, {"error": "method_not_allowed"})
             if not limiter.blob_acquire():
                 return await _json(send, 429, {"error": "rate_limited"}, [(b"retry-after", b"1")])
+            _meter_safe(meter, cfg, key, tenant, account, "ingest")
             try:
                 return await _ingest_file(app, scope, receive, send, cfg, key, tenant, account)
             finally:
@@ -1393,6 +1568,10 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 raise ValueError("body must be a JSON object")
         except (json.JSONDecodeError, ValueError) as exc:
             return await _json(send, 400, {"error": "bad_request", "detail": str(exc)}, rl_headers)
+
+        # Meter the authenticated request (best-effort, off the response path). `cls` is the
+        # ingest/retrieve category; `raw` is the already-buffered body, so bytes are free here.
+        _meter_safe(meter, cfg, key, tenant, account, cls, len(raw or b""))
 
         # MCP-over-HTTP: dispatch the JSON-RPC message directly (api-key injected downstream).
         if tool == "__mcp__":
