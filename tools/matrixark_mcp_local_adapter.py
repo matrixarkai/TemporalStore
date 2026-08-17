@@ -316,6 +316,17 @@ LOCAL_JSONL_INCLUDE_BULKY_FIELDS = bool_env("MATRIXARK_LOCAL_JSONL_INCLUDE_BULKY
 LOCAL_JSONL_MAX_BYTES = positive_int_env("MATRIXARK_LOCAL_JSONL_MAX_BYTES", 64 * 1024 * 1024)
 LOCAL_JSONL_RETENTION_COUNT = positive_int_env("MATRIXARK_LOCAL_JSONL_RETENTION_COUNT", 4)
 LOCAL_JSONL_RETENTION_AGE_MS = positive_int_env("MATRIXARK_LOCAL_JSONL_RETENTION_AGE_MS", 7 * 24 * 60 * 60 * 1000)
+
+
+def _memory_purge_threshold() -> int:
+    """Tombstone count that auto-triggers a physical purge after delete/forget. 0 (default) = off."""
+    try:
+        return max(0, int(os.environ.get("MATRIXARK_MEMORY_PURGE_THRESHOLD", "0")))
+    except (TypeError, ValueError):
+        return 0
+
+
+MEMORY_PURGE_THRESHOLD = _memory_purge_threshold()
 LOCAL_JSONL_BULKY_FIELDS = {
     "agent_debug",
     "debug",
@@ -2667,18 +2678,77 @@ def _record_memory_ids(record: Json) -> set[str]:
     """The addressable ids by which a single-record `delete(memory_id)` can match `record`.
 
     A memory's public id is its ``event_id_hash`` (what ``/v1/ingest`` returns). We also match the
-    event's own embedding (``ref_type == 'event'`` + ``ref_hash``) so the deleted memory does not
-    resurface through its vector. Deleting the wider provenance closure (derived entities/summaries)
-    is DEFERRED (see the module note)."""
+    event's own embedding (``ref_type == 'event'`` + ``ref_hash``) and the event's own index/vector
+    postings (``ref_hash == memory_id``) so the deleted memory does not resurface through its vector
+    or a secondary index. Deleting the wider *derived* provenance closure (entities/summaries built
+    FROM the event) is handled separately by the closure-aware delete tombstone (`closure: true`)."""
     ids: set[str] = set()
     event_hash = record.get("event_id_hash")
     if event_hash not in (None, ""):
         ids.add(str(event_hash))
-    if str(record.get("record_type") or "") == "context_embedding" and str(record.get("ref_type") or "") == "event":
+    ref_type = str(record.get("record_type") or "")
+    if ref_type in {"context_embedding", "context_index"} and str(record.get("ref_type") or "") == "event":
         ref_hash = record.get("ref_hash")
         if ref_hash not in (None, ""):
             ids.add(str(ref_hash))
     return ids
+
+
+# Record types that are DERIVED from source events (their content is extracted/summarized from one
+# or more `context_event`s). Closure-aware delete walks these via their provenance so removing a
+# source event also removes the single-source segments/entities/summaries built solely from it.
+_MEMORY_DERIVATIVE_RECORD_TYPES = {
+    "context_entity",
+    "context_summary",
+    "context_segment",
+    "context_summary_dirty",
+}
+
+
+def _record_provenance_source_ids(record: Json) -> set[int] | None:
+    """The set of source-event ids a DERIVED record was built from, or ``None`` when `record` is not
+    a provenance-carrying derivative.
+
+    A derivative points back at its sources through ``source_event_ids`` (list), ``source_refs``
+    (list of stringified event ids), and/or ``source_event_hash`` (a single id). Returns a set of the
+    resolved integer ids; ``None`` signals "not a derivative" so callers can leave leaf records (the
+    event itself, audit/index/embedding rows) to the plain-id match path."""
+    if str(record.get("record_type") or "") not in _MEMORY_DERIVATIVE_RECORD_TYPES:
+        return None
+    ids: set[int] = set()
+    found = False
+    values = record.get("source_event_ids")
+    if isinstance(values, list):
+        for value in values:
+            try:
+                ids.add(int(value))
+                found = True
+            except (TypeError, ValueError):
+                continue
+    refs = record.get("source_refs")
+    if isinstance(refs, list):
+        for value in refs:
+            try:
+                ids.add(int(value))
+                found = True
+            except (TypeError, ValueError):
+                continue
+    single = record.get("source_event_hash")
+    if single not in (None, ""):
+        try:
+            ids.add(int(single))
+            found = True
+        except (TypeError, ValueError):
+            pass
+    return ids if found else None
+
+
+def _safe_int(value: Any) -> int | None:
+    """Best-effort ``int`` coercion (accepts numeric strings); ``None`` on failure."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _record_scope_hashes(record: Json) -> tuple[int, int]:
@@ -2707,7 +2777,23 @@ def _tombstone_kills_record(tombstone: Json, record: Json) -> bool:
     kind = str(tombstone.get("tombstone_kind") or "")
     if kind == "delete":
         target = str(tombstone.get("target_memory_id") or "")
-        return bool(target) and target in _record_memory_ids(record)
+        if not target:
+            return False
+        if target in _record_memory_ids(record):
+            return True
+        # Provenance closure (opt-in per tombstone): when the deleted id is a source EVENT, also
+        # remove derived records built SOLELY from it (single-source segments/entities/summaries).
+        # Multi-source derivatives are NOT matched here -- delete_memory rewrites those in place with
+        # the source dropped, so their surviving copy no longer lists `target`.
+        if tombstone.get("closure"):
+            try:
+                target_int = int(target)
+            except (TypeError, ValueError):
+                return False
+            provenance = _record_provenance_source_ids(record)
+            if provenance is not None and provenance == {target_int}:
+                return True
+        return False
     record_type = str(record.get("record_type") or "")
     if record_type not in _MEMORY_SCOPED_RECORD_TYPES:
         return False
@@ -3622,10 +3708,15 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
     # These implement the mem0 memory-management surface against the local JSONL store via durable
     # tombstones (see `apply_memory_tombstones`). subject = `scope.user_id`. A tombstone is appended
     # to the same event log, so a "deleted"/"forgotten" memory never resurfaces from retrieve /
-    # get_all / caches and the removal survives reload. DEFERRED (out of scope for this pass, left as
-    # follow-ons): deleting the wider provenance closure (derived entities/summaries re-derivation),
-    # rust-datanode-native StringDelete/CommonDelete/FeatureDelete wiring, and physical vector/index
-    # purge -- these only reclaim space; logical exclusion is already complete here.
+    # get_all / caches and the removal survives reload.
+    #
+    # This pass ALSO adds: get/update(=supersede)/history (mem0 read/update parity), provenance-
+    # closure delete (a source-event delete cascades to its single-source derivatives, and demotes
+    # multi-source derivatives by trimming the deleted source from their evidence), and a crash-safe
+    # physical PURGE that rewrites the JSONL log without tombstoned records + markers to reclaim space
+    # (the purged log replays to the same logical state). DEFERRED (separate parallel workstream):
+    # rust-datanode-native StringDelete/CommonDelete/FeatureDelete wiring, and true re-derivation
+    # (re-extraction) of a demoted multi-source entity/summary -- we trim evidence, not re-summarize.
     def _resolve_subject_hashes(self, scope: Json) -> tuple[int, int]:
         """Return ``(tenant_hash, user_hash)`` for an already-identity-enriched request scope,
         resolving each from an explicit hash field or by parsing the scope_key."""
@@ -3686,32 +3777,108 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             "created_at_ms": created_at_ms,
         }
         self.append_many([tombstone, forget_audit])
-        return {
+        result = {
             "forgotten": True,
             "subject_sha256": subject_sha256,
             "removed_count": removed,
             "scope_key": scope_key,
         }
+        purge = self._maybe_auto_purge()
+        if purge is not None:
+            result["purge"] = purge
+        return result
 
     def delete_memory(self, args: Json, hook: Json | None = None) -> Json:
-        """Delete a single memory by id/hash (mem0 ``delete``). The id is the ``event_id_hash`` that
-        ``/v1/ingest`` returns. Removes the addressed record (and its own event embedding) so it never
-        resurfaces from retrieve; deleting the full provenance closure is DEFERRED (see module note)."""
+        """Delete a single memory by id/hash (mem0 ``delete``), with provenance-closure cascade.
+
+        The id is the ``event_id_hash`` that ``/v1/ingest`` returns. A durable delete tombstone always
+        removes the addressed record (and its own event embedding / index postings). When the id is a
+        source EVENT, the delete is closure-aware:
+
+          * derived records built SOLELY from it (single-source segments / entities / summaries) are
+            cascaded out by the SAME tombstone (``closure: true``);
+          * MULTI-source derivatives are NOT hard-deleted -- instead their surviving copy is rewritten
+            with the deleted source trimmed from ``source_event_ids`` / ``source_refs`` /
+            ``source_event_hash`` (best-effort demote). A derivative whose evidence becomes empty after
+            trimming is tombstoned outright.
+
+        Deleting a leaf record (a bare event, or a non-derivative) still just tombstones that record --
+        backward compatible with the pre-closure behavior."""
         memory_id = str(args.get("memory_id") or args.get("id") or "").strip()
         if not memory_id:
             raise MatrixArkError("delete requires a memory_id")
-        removed = 0
-        for record in self.read_all():
-            if memory_id in _record_memory_ids(record):
-                removed += 1
+        records = self.read_all()
+        try:
+            memory_id_int: int | None = int(memory_id)
+        except (TypeError, ValueError):
+            memory_id_int = None
+        is_source_event = any(
+            str(record.get("record_type") or "") == "context_event"
+            and str(record.get("event_id_hash")) == memory_id
+            for record in records
+        )
+        closure = bool(is_source_event and memory_id_int is not None)
+        superseded: list[Json] = []
+        if closure:
+            for record in records:
+                provenance = _record_provenance_source_ids(record)
+                if provenance is None or memory_id_int not in provenance:
+                    continue
+                if provenance == {memory_id_int}:
+                    continue  # single-source -> the closure tombstone removes it (no rewrite needed)
+                demoted = self._demote_derivative_source(record, memory_id_int)
+                if demoted is not None:
+                    superseded.append(demoted)
         tombstone = {
             "record_type": MEMORY_TOMBSTONE_RECORD_TYPE,
             "tombstone_kind": "delete",
             "target_memory_id": memory_id,
+            "closure": closure,
             "created_at_ms": now_ms(),
         }
-        self.append(tombstone)
-        return {"deleted": removed > 0, "memory_id": memory_id, "removed_count": removed}
+        removed = sum(1 for record in records if _tombstone_kills_record(tombstone, record))
+        if superseded:
+            self.append_many(superseded + [tombstone])
+        else:
+            self.append(tombstone)
+        result = {
+            "deleted": removed > 0,
+            "memory_id": memory_id,
+            "removed_count": removed,
+            "closure": closure,
+            "superseded_count": len(superseded),
+        }
+        self._maybe_auto_purge()
+        return result
+
+    def _demote_derivative_source(self, record: Json, source_id: int) -> Json | None:
+        """Return a superseding copy of a MULTI-source derivative with ``source_id`` trimmed from its
+        provenance/evidence, or ``None`` when nothing changed. The copy keeps the record's identity
+        (entity_hash / summary_hash / ...) and bumps ``updated_at_ms`` so it wins latest-value
+        compaction; the deleted source no longer appears in its lineage."""
+        demoted = dict(record)
+        changed = False
+        values = demoted.get("source_event_ids")
+        if isinstance(values, list):
+            trimmed = [value for value in values if _safe_int(value) != source_id]
+            if len(trimmed) != len(values):
+                demoted["source_event_ids"] = trimmed
+                changed = True
+        refs = demoted.get("source_refs")
+        if isinstance(refs, list):
+            trimmed_refs = [value for value in refs if _safe_int(value) != source_id]
+            if len(trimmed_refs) != len(refs):
+                demoted["source_refs"] = trimmed_refs
+                changed = True
+        if _safe_int(demoted.get("source_event_hash")) == source_id:
+            remaining = demoted.get("source_event_ids") if isinstance(demoted.get("source_event_ids"), list) else []
+            demoted["source_event_hash"] = int(remaining[0]) if remaining else 0
+            changed = True
+        if not changed:
+            return None
+        demoted["updated_at_ms"] = now_ms()
+        demoted["demoted_removed_source_id"] = source_id
+        return demoted
 
     def get_all(self, args: Json) -> Json:
         """List a scope's active (non-forgotten, non-deleted) memories (mem0 ``get_all(user_id=...)``).
@@ -3773,7 +3940,273 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             "created_at_ms": now_ms(),
         }
         self.append(tombstone)
-        return {"reset": True, "tenant_hash": tenant_hash, "removed_count": removed}
+        # Reset is a bulk wipe -- reclaim space immediately by physically compacting the tombstoned
+        # records + markers out of the log (crash-safe; the purged log replays to the same state).
+        purge = self.purge_tombstones(force=True)
+        return {"reset": True, "tenant_hash": tenant_hash, "removed_count": removed, "purge": purge}
+
+    def get_memory(self, args: Json) -> Json:
+        """Fetch a single memory by id (mem0 ``get``). Returns the live ``context_event`` for
+        ``memory_id`` projected to ``{id, memory, text, metadata, ...}`` plus the derived records
+        (entities/summaries/embeddings) whose provenance points at it. Reads through ``read_all`` so a
+        forgotten/deleted memory returns ``{found: false}``."""
+        memory_id = str(args.get("memory_id") or args.get("id") or "").strip()
+        if not memory_id:
+            raise MatrixArkError("get requires a memory_id")
+        memory_id_int = _safe_int(memory_id)
+        event: Json | None = None
+        derived: list[Json] = []
+        for record in self.read_all():
+            record_type = str(record.get("record_type") or "")
+            if record_type == "context_event" and str(record.get("event_id_hash")) == memory_id:
+                event = record
+                continue
+            if memory_id_int is not None:
+                provenance = _record_provenance_source_ids(record)
+                if provenance is not None and memory_id_int in provenance:
+                    derived.append({
+                        "record_type": record_type,
+                        "entity_hash": record.get("entity_hash"),
+                        "entity_name": record.get("entity_name"),
+                        "summary_hash": record.get("summary_hash"),
+                        "summary_type": record.get("summary_type"),
+                        "text": record.get("summary_text") or record.get("text"),
+                    })
+        if event is None:
+            return {"found": False, "memory_id": memory_id}
+        metadata = {
+            field: event.get(field)
+            for field in ("event_type", "memory_scope", "memory_layer", "session_continuity",
+                          "node_path", "classification", "profile_memory_class", "profile_memory_kind")
+            if event.get(field) not in (None, "", [], {})
+        }
+        return {
+            "found": True,
+            "id": event.get("event_id_hash"),
+            "memory_id": memory_id,
+            "memory": event.get("summary_text") or event.get("text") or "",
+            "text": event.get("text") or "",
+            "metadata": metadata,
+            "scope_key": event.get("scope_key"),
+            "created_at_ms": event.get("timestamp_key_ms") or event.get("event_time_ms"),
+            "updated_at_ms": event.get("updated_at_ms"),
+            "derived": derived,
+            "derived_count": len(derived),
+        }
+
+    def update_memory(self, args: Json, hook: Json | None = None) -> Json:
+        """Update a memory's content (mem0 ``update``), implemented as a SUPERSEDE: the new text is
+        ingested as a fresh memory in the SAME scope as the old one, then the old id is tombstoned, so
+        retrieve / get_all return the new version and the old never resurfaces.
+
+        ``memory_id`` addresses the existing ``context_event``; ``data`` / ``text`` / ``content`` is
+        the new content. The re-ingest scope is reconstructed from the old record's ``scope_key`` (its
+        tenant/user/session hashes), so mem0's scope-less ``update(memory_id, data)`` lands in the
+        right subject. When the request carries a tenant, it must match the old record's tenant
+        (cross-tenant update is refused)."""
+        memory_id = str(args.get("memory_id") or args.get("id") or "").strip()
+        if not memory_id:
+            raise MatrixArkError("update requires a memory_id")
+        new_text = args.get("data")
+        if new_text in (None, ""):
+            new_text = args.get("text")
+        if new_text in (None, ""):
+            new_text = args.get("content")
+        if not isinstance(new_text, str) or not new_text.strip():
+            raise MatrixArkError("update requires new content (data / text)")
+        old: Json | None = None
+        for record in self.read_all():
+            if str(record.get("record_type") or "") == "context_event" and str(record.get("event_id_hash")) == memory_id:
+                old = record
+                break
+        if old is None:
+            raise MatrixArkError("update target memory not found (already deleted, or not a memory id)")
+        old_scope_key = str(old.get("scope_key") or "")
+        parts = parse_scope_key(old_scope_key)
+        # Tenant isolation: an authenticated request scope pins tenant_hash; refuse cross-tenant edits.
+        request_scope = optional_object(args, "scope")
+        request_tenant, _ = self._resolve_subject_hashes(request_scope) if request_scope else (0, 0)
+        if request_tenant and int(parts.get("t") or 0) and request_tenant != int(parts.get("t") or 0):
+            raise MatrixArkError("update refused: memory belongs to a different tenant")
+        explicit_keys = [name for name, part in (("user_id", "u"), ("session_id", "s"), ("agent_id", "a")) if parts.get(part)]
+        reingest_scope: Json = {"scope_key": old_scope_key or None}
+        if parts.get("t"):
+            reingest_scope["tenant_hash"] = int(parts["t"])
+        if parts.get("u"):
+            reingest_scope["user_hash"] = int(parts["u"])
+        if parts.get("s"):
+            reingest_scope["session_hash"] = int(parts["s"])
+        if parts.get("a"):
+            reingest_scope["agent_hash"] = int(parts["a"])
+        reingest_scope["_explicit_scope_keys"] = explicit_keys
+        ingested = self.ingest(
+            {
+                "messages": [{"role": "user", "content": new_text}],
+                "scope": {key: value for key, value in reingest_scope.items() if value is not None},
+                "finalize": True,
+            },
+            hook=hook,
+        )
+        new_memory_id = ingested.get("event_id_hash")
+        tombstone = {
+            "record_type": MEMORY_TOMBSTONE_RECORD_TYPE,
+            "tombstone_kind": "delete",
+            "target_memory_id": memory_id,
+            "closure": True,
+            "tombstone_reason": "supersede",
+            "superseded_by": new_memory_id,
+            "created_at_ms": now_ms(),
+        }
+        self.append(tombstone)
+        return {
+            "updated": True,
+            "memory_id": memory_id,
+            "new_memory_id": new_memory_id,
+            "superseded": True,
+            "text": new_text,
+        }
+
+    def history(self, args: Json) -> Json:
+        """Return the ordered change history for a memory id (mem0 ``history``). Because the store is
+        event-sourced, this is the RAW (un-compacted, un-tombstoned) event log filtered to the id:
+        each ingest of the id, any supersede/delete tombstone that targets it, and the supersede link
+        when the id is the NEW version produced by an update. Ordered oldest-first by log position."""
+        memory_id = str(args.get("memory_id") or args.get("id") or "").strip()
+        if not memory_id:
+            raise MatrixArkError("history requires a memory_id")
+        events: list[Json] = []
+        seen_ingested = False
+        for record in self._read_raw_records():
+            record_type = str(record.get("record_type") or "")
+            ts = record.get("updated_at_ms") or record.get("timestamp_key_ms") or record.get("event_time_ms") or record.get("created_at_ms")
+            if record_type == "context_event" and str(record.get("event_id_hash")) == memory_id:
+                # The ingest pipeline may persist the event row more than once (pending + committed);
+                # collapse to a single "ingested" entry so the history reads as one create per id.
+                if seen_ingested:
+                    continue
+                seen_ingested = True
+                events.append({"event": "ingested", "record_type": record_type,
+                               "memory_id": memory_id, "created_at_ms": ts,
+                               "text": record.get("text") or record.get("summary_text") or ""})
+            elif record_type == MEMORY_TOMBSTONE_RECORD_TYPE and str(record.get("tombstone_kind") or "") == "delete":
+                if str(record.get("target_memory_id") or "") == memory_id:
+                    op = "superseded" if str(record.get("tombstone_reason") or "") == "supersede" else "deleted"
+                    entry = {"event": op, "record_type": record_type, "memory_id": memory_id, "created_at_ms": ts}
+                    if record.get("superseded_by") is not None:
+                        entry["superseded_by"] = record.get("superseded_by")
+                    events.append(entry)
+                elif str(record.get("superseded_by")) == memory_id:
+                    events.append({"event": "created", "record_type": record_type, "memory_id": memory_id,
+                                   "created_at_ms": ts, "supersedes_memory_id": record.get("target_memory_id")})
+        return {"memory_id": memory_id, "history": events, "count": len(events)}
+
+    # --------------------------------------------------------------------------------------------
+    # Physical purge: reclaim space by rewriting the JSONL log without tombstoned records + markers.
+    # The purged log replays (via read_all) to the SAME logical state -- value/state compaction is
+    # left to read_all, so purge only removes what a tombstone already hides. Crash-safe: survivors
+    # are written to a temp file, fsync'd, then atomically os.replace'd onto the primary log (the same
+    # durability the durable read-cache uses); rotated shards are folded in and removed afterward.
+    # --------------------------------------------------------------------------------------------
+    def _read_raw_records(self) -> list[Json]:
+        """All records across the retained JSONL shards in append order -- NOT compacted and NOT
+        tombstone-filtered (the durable event history). Empty when the local JSONL is disabled."""
+        raw: list[Json] = []
+        if not self._local_jsonl_enabled:
+            return raw
+        with self._event_log_lock:
+            for path in self._retained_jsonl_paths():
+                with path.open("r", encoding="utf-8") as handle:
+                    for line in handle:
+                        line = line.strip()
+                        if line:
+                            raw.append(json.loads(line))
+        return raw
+
+    def _count_raw_tombstones(self) -> int:
+        return sum(
+            1 for record in self._read_raw_records()
+            if str(record.get("record_type") or "") == MEMORY_TOMBSTONE_RECORD_TYPE
+        )
+
+    def _maybe_auto_purge(self) -> Json | None:
+        """Purge when the raw tombstone count crosses ``MATRIXARK_MEMORY_PURGE_THRESHOLD`` (>0 to
+        enable; default 0 = off). Best-effort: never raises into the caller's write path."""
+        if MEMORY_PURGE_THRESHOLD <= 0 or not self._local_jsonl_enabled:
+            return None
+        try:
+            if self._count_raw_tombstones() < MEMORY_PURGE_THRESHOLD:
+                return None
+            return self.purge_tombstones(force=True)
+        except OSError:
+            return None
+
+    def purge_tombstones(self, *, force: bool = False) -> Json:
+        """Physically rewrite the JSONL event log without tombstoned records or tombstone markers,
+        reclaiming space. No-op (``purged: false``) when the local JSONL is disabled or the log holds
+        no tombstone (and ``force`` only controls the threshold gate, not correctness). Crash-safe via
+        temp-write + fsync + atomic ``os.replace`` onto the primary shard."""
+        if not self._local_jsonl_enabled:
+            return {"purged": False, "reason": "jsonl_disabled"}
+        with self._event_log_lock:
+            paths = self._retained_jsonl_paths()
+            if not paths:
+                return {"purged": False, "reason": "empty"}
+            raw: list[Json] = []
+            for path in paths:
+                with path.open("r", encoding="utf-8") as handle:
+                    for line in handle:
+                        line = line.strip()
+                        if line:
+                            raw.append(json.loads(line))
+            tombstone_count = sum(
+                1 for record in raw
+                if str(record.get("record_type") or "") == MEMORY_TOMBSTONE_RECORD_TYPE
+            )
+            if tombstone_count == 0:
+                return {"purged": False, "reason": "no_tombstones", "records": len(raw)}
+            survivors = apply_memory_tombstones(raw)
+            bytes_before = sum(path.stat().st_size for path in paths if path.exists())
+            tmp_path = self.event_log.with_name(f"{self.event_log.name}.purge.{os.getpid()}.{threading.get_ident()}.tmp")
+            lines = [json.dumps(self._sanitize_jsonl_record(record), separators=(",", ":")) + "\n" for record in survivors]
+            with tmp_path.open("w", encoding="utf-8") as handle:
+                for line in lines:
+                    handle.write(line)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, self.event_log)  # atomic commit point
+            # Fold rotated shards into the (now consolidated) primary: remove them post-commit.
+            for path in paths:
+                if path != self.event_log and path.exists():
+                    try:
+                        path.unlink()
+                    except OSError:
+                        pass
+            bytes_after = self.event_log.stat().st_size
+        self._clear_jsonl_read_caches()
+        self._reset_derived_caches()
+        return {
+            "purged": True,
+            "removed_tombstones": tombstone_count,
+            "records_before": len(raw),
+            "records_after": len(survivors),
+            "bytes_before": bytes_before,
+            "bytes_after": bytes_after,
+        }
+
+    def _reset_derived_caches(self) -> None:
+        """Invalidate the in-memory derived caches so the next read rebuilds them from the purged log."""
+        self._entity_cache_loaded = False
+        self._latest_entity_by_hash = {}
+        self._context_node_cache_loaded = False
+        self._context_node_hashes = set()
+        self._context_child_ref_hashes = set()
+        if hasattr(self, "_context_event_by_hash"):
+            self._context_event_by_hash = {}
+        with self._retrieval_records_cache_lock:
+            self._retrieval_records_cache_generation += 1
+            self._retrieval_records_cache.clear()
+        with self._context_pack_cache_lock:
+            self._context_pack_cache.clear()
 
 
 
