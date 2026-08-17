@@ -39,6 +39,7 @@ from typing import Any, Optional
 
 try:  # top-level (run from tools/) ...
     from matrixark_ingest_client import (
+        _get_json,
         _post_json,
         _resolve_api_key,
         _resolve_base_url,
@@ -46,15 +47,113 @@ try:  # top-level (run from tools/) ...
     from matrixark_model_adapters import to_messages
 except ImportError:  # ... or package path.
     from tools.matrixark_ingest_client import (  # type: ignore
+        _get_json,
         _post_json,
         _resolve_api_key,
         _resolve_base_url,
     )
     from tools.matrixark_model_adapters import to_messages  # type: ignore
 
+from urllib.parse import quote
+
 Json = dict[str, Any]
 
 __all__ = ["Memory"]
+
+
+def _reshape_search_results(res: Json) -> Json:
+    """Map a MatrixArk ContextPack response to mem0's ``search`` shape.
+
+    mem0 callers read ``res["results"][i]["memory"]`` (the text), plus ``id`` / ``score`` /
+    ``metadata``. MatrixArk returns ``selected_refs`` (compacted ContextPack refs). Each ref becomes
+    ``{"id", "memory": <text>, "score", "metadata"}``; ``memory`` is the ref's text/citation, ``id``
+    is a stable identifier derived from the ref (``source_ref`` / ``ref_hash`` / a hash of the text)
+    and ``metadata`` carries the remaining ref fields. Unknown shapes yield ``{"results": []}``."""
+    refs = res.get("selected_refs")
+    if not isinstance(refs, list):
+        result = res.get("result")
+        refs = result.get("selected_refs") if isinstance(result, dict) else None
+    results: list[Json] = []
+    for index, ref in enumerate(refs or []):
+        if not isinstance(ref, dict):
+            continue
+        memory = ref.get("text") or ref.get("text_preview") or ref.get("citation") or ""
+        stable_id = (
+            ref.get("id")
+            or ref.get("ref_id")
+            or ref.get("source_ref")
+            or ref.get("ref_hash")
+            or ref.get("event_id_hash")
+        )
+        if stable_id in (None, ""):
+            stable_id = f"ref-{index}-{abs(hash(memory)) & 0xFFFFFFFF:08x}"
+        metadata = {
+            key: value
+            for key, value in ref.items()
+            if key not in {"text", "text_preview", "citation", "score", "id", "ref_id"}
+            and value not in (None, "", [], {})
+        }
+        results.append({
+            "id": stable_id,
+            "memory": memory,
+            "score": ref.get("score"),
+            "metadata": metadata,
+        })
+    return {"results": results}
+
+
+def _add_memory_text(messages: Any) -> str:
+    """Best-effort human text for a mem0 ``add`` results entry: the last user turn's content, else
+    the last turn's content, else empty."""
+    if not isinstance(messages, list):
+        return ""
+    last = ""
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, str) or not content:
+            continue
+        last = content
+        if str(message.get("role") or "").lower() == "user":
+            last = content
+    return last
+
+
+def _with_mem0_add_results(response: Json, messages: Any) -> Json:
+    """Augment a MatrixArk ``/v1/ingest`` response with mem0's ``add`` return shape.
+
+    Real mem0 ``add`` returns ``{"results": [{"id", "memory", "event"}]}`` and strict callers read
+    ``result["results"][0]["id"]``. We keep every existing top-level field (``event_id_hash``,
+    ``status``, ...) for backward compatibility AND add a single anchor ``results`` entry so both
+    ``result["event_id_hash"]`` and ``result["results"][0]["id"]`` work.
+
+    The ``event`` maps our keyed-upsert outcome: ``"ADD"`` (new / normal ingest), ``"UPDATE"`` (a
+    keyed-upsert that superseded a prior record), ``"NONE"`` (a keyed-upsert rejected by the rank
+    guard -- ``id`` is then the surviving existing record)."""
+    if not isinstance(response, dict):
+        return response
+    # The gateway wraps the ingest result under {"accepted","scope","result": {...}}; a direct call
+    # returns the flat ingest dict. Read the id/outcome from whichever carries event_id_hash.
+    inner = response.get("result")
+    payload = inner if isinstance(inner, dict) and inner.get("event_id_hash") is not None else response
+    outcome = str(payload.get("upsert_outcome") or "").lower()
+    event = {"add": "ADD", "update": "UPDATE", "rank_guarded": "NONE"}.get(outcome, "ADD")
+    # For a rank-guarded write event_id_hash already carries the surviving record's id.
+    anchor_id = payload.get("event_id_hash")
+    if anchor_id in (None, ""):
+        anchor_id = payload.get("current_memory_id") or payload.get("existing_memory_id")
+    # Surface event_id_hash at the top level so result["event_id_hash"] works as a literal drop-in,
+    # without dropping the gateway wrapper fields (accepted / scope / result / finalized / ...).
+    if response.get("event_id_hash") in (None, "") and anchor_id not in (None, ""):
+        response["event_id_hash"] = anchor_id
+    if "results" not in response:
+        response["results"] = [{
+            "id": str(anchor_id) if anchor_id not in (None, "") else "",
+            "memory": _add_memory_text(messages),
+            "event": event,
+        }]
+    return response
 
 
 def _already_normalized(messages: list) -> bool:
@@ -131,6 +230,8 @@ class Memory:
     def add(self, messages: Any, *, user_id: Optional[str] = None,
             agent_id: Optional[str] = None, run_id: Optional[str] = None,
             metadata: Optional[Json] = None, provider: Optional[str] = None,
+            expires_at: Optional[float] = None, ttl: Optional[float] = None,
+            identity_key: Optional[str] = None, truth_class: Optional[str] = None,
             **kw: Any) -> Json:
         """Ingest ``messages`` (mem0 ``add``). Maps ``run_id`` -> ``session_id``
         and ``agent_id`` -> ``scope.agent_id``; accepts a bare string.
@@ -140,25 +241,54 @@ class Memory:
         the default (``None`` / ``"auto"``) auto-sniffs provider-shaped input
         (an OpenAI ``choices`` response, an Anthropic content-block message,
         etc.) via ``matrixark_model_adapters.to_messages``. Already-normalized
-        ``[{role, content}]`` lists are passed through unchanged. Extra kwargs
-        are ignored for mem0 signature compatibility. Returns the parsed
-        ``/v1/ingest`` response."""
-        body: Json = {"kind": "message",
-                      "messages": _normalize_messages(messages, provider)}
+        ``[{role, content}]`` lists are passed through unchanged.
+
+        PurchaseMemory (additive, all optional): ``expires_at`` (absolute unix
+        seconds) or ``ttl`` (relative seconds) make the memory ephemeral --
+        auto-expired at read time and excluded from summaries; ``identity_key``
+        + ``truth_class`` drive the keyed-upsert truth-rank guard (a higher/equal
+        rank supersedes the prior value for that key; a lower rank is rejected).
+        Extra kwargs are ignored for mem0 signature compatibility. Returns the
+        parsed ``/v1/ingest`` response."""
+        normalized = _normalize_messages(messages, provider)
+        body: Json = {"kind": "message", "messages": normalized}
         scope = _scope_from_identity(user_id, agent_id, run_id)
         if scope:
             body["scope"] = scope
         if metadata:
             body["metadata"] = metadata
-        return _post_json(self._base_url, self._api_key, "/v1/ingest", body, self._timeout)
+        if expires_at is not None:
+            body["expires_at"] = expires_at
+        if ttl is not None:
+            body["ttl_seconds"] = ttl
+        if identity_key:
+            body["identity_key"] = identity_key
+        if truth_class:
+            body["truth_class"] = truth_class
+        response = _post_json(self._base_url, self._api_key, "/v1/ingest", body, self._timeout)
+        return _with_mem0_add_results(response, normalized)
 
     def search(self, query: str, *, user_id: Optional[str] = None,
                agent_id: Optional[str] = None, run_id: Optional[str] = None,
-               limit: Optional[int] = None, **kw: Any) -> Json:
+               limit: Optional[int] = None, raw: bool = False, **kw: Any) -> Json:
         """Retrieve context for ``query`` (mem0 ``search``). Maps identity kwargs
         to ``scope`` and ``limit`` to ``ranking.max_selected_refs`` (the number of
-        selected refs MatrixArk returns). Extra kwargs are ignored. Returns the
-        parsed ``/v1/retrieve`` response."""
+        selected refs MatrixArk returns). Extra kwargs are ignored.
+
+        By default returns mem0's shape -- ``{"results": [{"id", "memory", "score",
+        "metadata"}, ...]}`` -- so an existing mem0 codebase reading
+        ``res["results"][i]["memory"]`` works unchanged. Pass ``raw=True`` (or call
+        :meth:`search_raw`) to get the full MatrixArk ContextPack response instead."""
+        pack = self.search_raw(query, user_id=user_id, agent_id=agent_id, run_id=run_id, limit=limit)
+        if raw:
+            return pack
+        return _reshape_search_results(pack)
+
+    def search_raw(self, query: str, *, user_id: Optional[str] = None,
+                   agent_id: Optional[str] = None, run_id: Optional[str] = None,
+                   limit: Optional[int] = None, **kw: Any) -> Json:
+        """Like :meth:`search` but always returns the full MatrixArk ContextPack response
+        (the raw parsed ``/v1/retrieve`` body), without the mem0 reshape."""
         body: Json = {"query": query}
         scope = _scope_from_identity(user_id, agent_id, run_id)
         if scope:
@@ -166,3 +296,59 @@ class Memory:
         if limit is not None:
             body["ranking"] = {"max_selected_refs": int(limit)}
         return _post_json(self._base_url, self._api_key, "/v1/retrieve", body, self._timeout)
+
+    def get(self, memory_id: str, **kw: Any) -> Json:
+        """Fetch a single memory by id (mem0 ``get``). ``memory_id`` is the id returned by
+        ``add`` / ``get_all`` (MatrixArk's ``event_id_hash``). GETs ``/v1/memory/<id>``; a
+        deleted/forgotten memory returns ``{"found": false}``."""
+        return _get_json(self._base_url, self._api_key,
+                         f"/v1/memory/{quote(str(memory_id), safe='')}", self._timeout)
+
+    def update(self, memory_id: str, data: str, **kw: Any) -> Json:
+        """Update a memory's content (mem0 ``update``). Implemented server-side as a supersede: the
+        new ``data`` is ingested in the memory's own scope and the old id is tombstoned, so a later
+        ``search`` / ``get_all`` returns the new version. POSTs ``/v1/update``."""
+        body: Json = {"memory_id": str(memory_id), "data": data}
+        return _post_json(self._base_url, self._api_key, "/v1/update", body, self._timeout)
+
+    def history(self, memory_id: str, **kw: Any) -> Json:
+        """Return the ordered change history for a memory id (mem0 ``history``): ingest ->
+        update/supersede -> delete, with timestamps. GETs ``/v1/memory/<id>/history``."""
+        return _get_json(self._base_url, self._api_key,
+                         f"/v1/memory/{quote(str(memory_id), safe='')}/history", self._timeout)
+
+    def delete(self, memory_id: str, **kw: Any) -> Json:
+        """Delete a single memory by id (mem0 ``delete``). ``memory_id`` is the id returned by
+        ``add``/``get_all`` (MatrixArk's ``event_id_hash``). Posts to ``/v1/delete``. The addressed
+        memory stops resurfacing from ``search``; provenance-closure deletion is deferred server-side."""
+        body: Json = {"memory_id": str(memory_id)}
+        return _post_json(self._base_url, self._api_key, "/v1/delete", body, self._timeout)
+
+    def delete_all(self, *, user_id: Optional[str] = None, agent_id: Optional[str] = None,
+                   run_id: Optional[str] = None, **kw: Any) -> Json:
+        """Delete ALL memory for a subject (mem0 ``delete_all(user_id=...)``). Maps identity kwargs to
+        ``scope`` and posts to ``/v1/forget`` with ``confirm == user_id`` (the server requires an exact
+        match; there is no wildcard). Requires ``user_id``."""
+        if not user_id:
+            raise ValueError("delete_all requires user_id (the subject to forget)")
+        scope = _scope_from_identity(user_id, agent_id, run_id)
+        body: Json = {"scope": scope, "confirm": user_id}
+        return _post_json(self._base_url, self._api_key, "/v1/forget", body, self._timeout)
+
+    def get_all(self, *, user_id: Optional[str] = None, agent_id: Optional[str] = None,
+                run_id: Optional[str] = None, limit: Optional[int] = None, **kw: Any) -> Json:
+        """List a subject's active memories (mem0 ``get_all(user_id=...)``). Maps identity kwargs to
+        ``scope`` and posts to ``/v1/memories``. Forgotten/deleted memories are excluded server-side."""
+        scope = _scope_from_identity(user_id, agent_id, run_id)
+        body: Json = {}
+        if scope:
+            body["scope"] = scope
+        if limit is not None:
+            body["limit"] = int(limit)
+        return _post_json(self._base_url, self._api_key, "/v1/memories", body, self._timeout)
+
+    def reset(self, *, confirm: str = "RESET", **kw: Any) -> Json:
+        """Wipe ALL memory for the caller's tenant (mem0 ``reset``). Posts to ``/v1/reset`` with an
+        explicit ``confirm`` (defaults to the literal ``"RESET"`` sentinel the server accepts)."""
+        body: Json = {"confirm": str(confirm)}
+        return _post_json(self._base_url, self._api_key, "/v1/reset", body, self._timeout)

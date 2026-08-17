@@ -39,7 +39,7 @@ import tempfile
 import threading
 import time
 from typing import Any, Awaitable, Callable, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 try:
     from tools.matrixark_asgi import make_asgi_app, _api_key
@@ -158,6 +158,17 @@ _DATA_ROUTES: dict[str, Tuple[str, str]] = {
     "/v1/session/commit": ("matrixark_session_commit", "ingest"),
     "/v1/retrieve": ("matrixark_retrieve", "retrieve"),
     "/v1/mcp": ("__mcp__", "retrieve"),
+    # Memory management (mem0 parity). forget/delete/reset gate on `context:forget` (see
+    # _CATEGORY_SCOPE); get_all (POST /v1/memories) gates on `context:retrieve`. GET /v1/memories is
+    # handled by a dedicated branch below (data routes are POST-only).
+    "/v1/forget": ("matrixark_forget", "forget"),
+    "/v1/delete": ("matrixark_delete", "forget"),
+    "/v1/reset": ("matrixark_reset", "forget"),
+    "/v1/memories": ("matrixark_get_all", "retrieve"),
+    # update = supersede (ingest an amended version + tombstone the old id): gates on context:ingest.
+    "/v1/update": ("matrixark_update_memory", "ingest"),
+    # get (GET /v1/memory/<id>) and history (GET /v1/memory/<id>/history) are handled by dedicated
+    # GET branches below (data routes are POST-only), gated on context:retrieve.
 }
 
 # Backend exception class names we translate to specific edge status codes (matched by name to avoid
@@ -777,7 +788,7 @@ def _authorize(headers: list[Tuple[bytes, bytes]], cfg: GatewayConfig) -> Tuple[
 # route -> required MatrixArk scope. The ingest/retrieve rate-limit CLASS from `_DATA_ROUTES` doubles
 # as the scope selector: an ingest-category route needs `context:ingest`, a retrieve-category route
 # needs `context:retrieve`.
-_CATEGORY_SCOPE = {"ingest": "context:ingest", "retrieve": "context:retrieve"}
+_CATEGORY_SCOPE = {"ingest": "context:ingest", "retrieve": "context:retrieve", "forget": "context:forget"}
 
 
 def _required_scope(path: str, method: str, route: Optional[Tuple[str, str]]) -> Optional[str]:
@@ -1648,6 +1659,126 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             usage = meter.snapshot()
             return await _json(send, 200, {"status": "ok", "usage": usage, "count": len(usage)})
 
+        # ---- get_all via GET /v1/memories (auth + context:retrieve) -------------------------
+        # Convenience read: list a scope's active memories. Scope identity comes from the query
+        # string (user_id/agent_id/session_id); tenant is pinned from the authenticated key via
+        # _apply_identity (same isolation as every other data route). POST /v1/memories with a JSON
+        # body is also supported through the data-route dispatch below.
+        if method == "GET" and path == "/v1/memories":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _scope_denied(key_record, "context:retrieve")
+            if denied is not None:
+                return await _json(send, 403, denied)
+            params = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+
+            def _q(name: str) -> Optional[str]:
+                values = params.get(name)
+                return values[0] if values else None
+
+            query_scope: Json = {}
+            for field in ("user_id", "agent_id", "session_id"):
+                value = _q(field)
+                if value:
+                    query_scope[field] = value
+            args: Json = {"scope": query_scope}
+            limit = _q("limit")
+            if limit and limit.strip().lstrip("-").isdigit():
+                args["limit"] = int(limit)
+            _apply_identity(args, key, tenant, account)
+            denied = _identity_denied(key_record, args)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(server.call_tool, "matrixark_get_all", args), cfg.backend_timeout)
+            except asyncio.TimeoutError:
+                return await _json(send, 504, {"error": "backend_timeout",
+                                   "detail": f"backend did not respond within {cfg.backend_timeout}s"})
+            except Exception as exc:
+                return await _json(send, _classify_backend_error(exc),
+                                   {"error": "backend_error", "detail": str(exc)})
+            return await _json(send, 200, _ok_body(result))
+
+        # ---- keyed recall via GET /v1/memory/by-key?identity_key=... (auth + context:retrieve) --
+        # PurchaseMemory keyed-upsert recall: the single current live value for an identity_key in a
+        # scope. Must precede the /v1/memory/<id> branch below so "by-key" is not treated as an id.
+        if method == "GET" and path == "/v1/memory/by-key":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _scope_denied(key_record, "context:retrieve")
+            if denied is not None:
+                return await _json(send, 403, denied)
+            params = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+
+            def _qk(name: str) -> Optional[str]:
+                values = params.get(name)
+                return values[0] if values else None
+
+            identity_key = _qk("identity_key")
+            if not identity_key:
+                return await _json(send, 400, {"error": "bad_request", "detail": "identity_key query param is required"})
+            query_scope: Json = {}
+            for field in ("user_id", "agent_id", "session_id"):
+                value = _qk(field)
+                if value:
+                    query_scope[field] = value
+            args = {"identity_key": identity_key, "scope": query_scope}
+            _apply_identity(args, key, tenant, account)
+            denied = _identity_denied(key_record, args)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(server.call_tool, "matrixark_get_memory_by_key", args), cfg.backend_timeout)
+            except asyncio.TimeoutError:
+                return await _json(send, 504, {"error": "backend_timeout",
+                                   "detail": f"backend did not respond within {cfg.backend_timeout}s"})
+            except Exception as exc:
+                return await _json(send, _classify_backend_error(exc),
+                                   {"error": "backend_error", "detail": str(exc)})
+            if result.get("found") is False:
+                return await _json(send, 404, _ok_body(result))
+            return await _json(send, 200, _ok_body(result))
+
+        # ---- get / history via GET /v1/memory/<id>[/history] (auth + context:retrieve) -------
+        # Single-memory read (mem0 get) and change history (mem0 history). The memory id is in the
+        # path; tenant is pinned from the authenticated key (same isolation as every data route). The
+        # id-scoped tools reconstruct the memory's own scope from its stored record.
+        if method == "GET" and path.startswith("/v1/memory/") and path != "/v1/memories":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _scope_denied(key_record, "context:retrieve")
+            if denied is not None:
+                return await _json(send, 403, denied)
+            remainder = path[len("/v1/memory/"):]
+            if remainder.endswith("/history"):
+                memory_id = remainder[: -len("/history")]
+                tool = "matrixark_memory_history"
+            else:
+                memory_id = remainder
+                tool = "matrixark_get_memory"
+            memory_id = unquote(memory_id).strip("/")
+            if not memory_id:
+                return await _json(send, 404, {"error": "not_found"})
+            args = {"memory_id": memory_id, "scope": {}}
+            _apply_identity(args, key, tenant, account)
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(server.call_tool, tool, args), cfg.backend_timeout)
+            except asyncio.TimeoutError:
+                return await _json(send, 504, {"error": "backend_timeout",
+                                   "detail": f"backend did not respond within {cfg.backend_timeout}s"})
+            except Exception as exc:
+                return await _json(send, _classify_backend_error(exc),
+                                   {"error": "backend_error", "detail": str(exc)})
+            if tool == "matrixark_get_memory" and result.get("found") is False:
+                return await _json(send, 404, _ok_body(result))
+            return await _json(send, 200, _ok_body(result))
+
         # ---- blob (auth + concurrent-stream cap, streamed) ----------------------------------
         if path.startswith("/v1/blob/"):
             allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
@@ -1762,6 +1893,24 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         args = parsed.get("arguments") if isinstance(parsed.get("arguments"), dict) else parsed
         if not isinstance(args, dict):
             args = {}
+
+        # ---- optional PurchaseMemory TTL headers on /v1/ingest -------------------------------
+        # X-Expires-At (absolute unix seconds) / X-Ttl-Seconds (relative) are a header-form of the
+        # JSON body fields; the JSON body always wins when both are present.
+        if tool == "matrixark_ingest":
+            hmap = _headers_map(scope)
+            header_expires_at = hmap.get("x-expires-at")
+            if header_expires_at and "expires_at" not in args:
+                try:
+                    args["expires_at"] = float(header_expires_at)
+                except (TypeError, ValueError):
+                    pass
+            header_ttl = hmap.get("x-ttl-seconds")
+            if header_ttl and "ttl_seconds" not in args:
+                try:
+                    args["ttl_seconds"] = float(header_ttl)
+                except (TypeError, ValueError):
+                    pass
 
         records = args.get("records")
         messages = args.get("messages")

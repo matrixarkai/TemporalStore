@@ -218,6 +218,11 @@ TOOLS: list[Json] = [
                     "default": False,
                     "description": "For message/business_data/feedback ingest, return after auth and lightweight ContextEvent/session-buffer write; extraction, summaries, compression, and embeddings run through async/session commit paths.",
                 },
+                "expires_at": {"type": "number", "description": "PurchaseMemory per-record TTL: absolute expiry in unix SECONDS. The ingest closure becomes ephemeral (hidden from retrieve/get_all after expiry, excluded from summaries, lazily purged). Wins over ttl_seconds."},
+                "ttl_seconds": {"type": "number", "description": "PurchaseMemory relative TTL: expires_at = ingestion_time + ttl_seconds. Ignored if expires_at is set."},
+                "retention_cutoff_ts": {"type": "number", "description": "PurchaseMemory scope-level retention cutoff (unix seconds): records in the subject scope older than this are hidden and reclaimed."},
+                "identity_key": {"type": "string", "description": "PurchaseMemory keyed-upsert identity of a fact within the scope (e.g. user.email). A later ingest with the same key supersedes or is rank-guarded per truth_class."},
+                "truth_class": {"type": "string", "description": "PurchaseMemory confidence class for the keyed-upsert rank guard (asserted=3, reported=2, inferred=1, unknown=0; override via MATRIXARK_TRUTH_RANK)."},
                 "raw_uri": {"type": "string", "description": "Optional resource URI/path when kind=resource."},
                 "resource_type": {"type": "string", "description": "Optional resource type such as md, txt, pdf, url."},
                 "wait": {"type": "boolean", "default": True, "description": "For resource/skill imports, wait for parsing and record writes in the local runtime. wait=false records a queued ResourceImportTask."},
@@ -1113,6 +1118,119 @@ TOOLS: list[Json] = [
                 "tenant_id": {"type": "string"},
                 "scope": SCOPE_SCHEMA,
                 "limit": {"type": "integer", "default": 100},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_forget",
+        "description": "Delete ALL memory for a scope (mem0 delete_all). subject = scope.user_id; requires confirm == scope.user_id (exact match).",
+        "inputSchema": {
+            "type": "object",
+            "required": ["confirm"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "confirm": {"type": "string", "description": "Must equal scope.user_id (exact match, no wildcard)."},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_delete",
+        "description": "Delete a single memory by id/hash (mem0 delete). memory_id is the event_id_hash returned by ingest.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["memory_id"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "memory_id": {"type": "string", "description": "The memory id (event_id_hash) to delete."},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_get_all",
+        "description": "List a scope's active memories (mem0 get_all). Excludes forgotten/deleted records.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "limit": {"type": "integer", "description": "Optional cap on the number of memories returned."},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_reset",
+        "description": "Wipe ALL memory for the caller's tenant (mem0 reset). Guarded by confirm == tenant_id or the literal 'RESET'.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["confirm"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "confirm": {"type": "string", "description": "Must equal the resolved tenant_id or the literal 'RESET'."},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_get_memory",
+        "description": "Fetch a single memory by id (mem0 get). memory_id is the event_id_hash returned by ingest; returns {found, memory, text, metadata, derived}.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["memory_id"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "memory_id": {"type": "string", "description": "The memory id (event_id_hash) to fetch."},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_get_memory_by_key",
+        "description": "Recall the single current LIVE keyed value for an identity_key in a scope (PurchaseMemory keyed-upsert). Returns the highest-truth-rank surviving record.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["identity_key"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "identity_key": {"type": "string", "description": "The logical identity of the fact to recall (e.g. 'user.email', 'subscription.plan')."},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_update_memory",
+        "description": "Update a memory's content (mem0 update). Supersede: ingests the new text in the same scope and tombstones the old id.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["memory_id"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "memory_id": {"type": "string", "description": "The memory id (event_id_hash) to update."},
+                "data": {"type": "string", "description": "The new memory content (alias: text)."},
+                "text": {"type": "string", "description": "The new memory content (alias: data)."},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_memory_history",
+        "description": "Return the ordered change history for a memory id (mem0 history): ingest -> update/supersede -> delete, with timestamps.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["memory_id"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "memory_id": {"type": "string", "description": "The memory id (event_id_hash) whose history to return."},
             },
             "additionalProperties": True,
         },
