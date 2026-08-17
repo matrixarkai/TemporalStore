@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import copy as _copy
+import hashlib as _hashlib
 import queue as thread_queue
 from typing import Any
 
@@ -347,6 +349,139 @@ LOCAL_JSONL_BULKY_FIELDS = {
 }
 PROFILE_PROMOTION_POLICY_ALWAYS = "always_when_profile_scope_available"
 PROFILE_PROMOTION_SCOPE_MISSING_BLOCKER = "profile_scope_missing"
+
+# ------------------------------------------------------------------------------------------------
+# Record-metadata interning codec (write-side compress / read-side expand).
+#
+# The backend routing/placement config (``storage_route``, ``storage_options``, ``placement_key``,
+# ``placement_hash``, ``posting_policy``) is near-constant per store yet re-stamped on every record;
+# measured at ~61% of on-disk memory across a 50-turn workload with only a handful of DISTINCT values
+# each. The codec replaces each per-record value with a short content-hash token and writes the full
+# value ONCE as a durable ``matrixark_intern_dict`` sidecar record in the same log. Every read choke
+# point re-expands the tokens so downstream consumers see byte-identical, fully-expanded records --
+# this is purely a storage-representation change.
+#
+# Design properties:
+#   * Crash-safe: a value's dict record is emitted in the SAME append batch, on lines that PRECEDE the
+#     first data record referencing it (sequential writes under the event-log lock), so a persisted
+#     data record's token table is always already persisted. Duplicate dict records (across process
+#     restarts) are harmless -- they map the same token to the same value (content-addressed).
+#   * Reload-safe: a fresh adapter rebuilds the token->value map purely from the durable log.
+#   * Multi-writer-safe: tokens are content hashes, so two writers never assign the same token to
+#     different values (no sequential-counter collision).
+#   * Backward-compatible: an old log (inline fields, no dict records / no token key) expands as a
+#     no-op. Expansion ALWAYS runs regardless of the flag; only WRITE-side interning is gated, so a
+#     log written while the flag was ON still reads correctly if the flag is later turned OFF.
+#   * Flag OFF => byte-identical to today (no dict records, no token key emitted).
+INTERN_RECORD_METADATA = bool_env("MATRIXARK_INTERN_RECORD_METADATA", True)
+INTERN_METADATA_FIELDS = (
+    "storage_route",
+    "storage_options",
+    "placement_key",
+    "placement_hash",
+    "posting_policy",
+)
+INTERN_DICT_RECORD_TYPE = "matrixark_intern_dict"
+INTERN_TOKEN_KEY = "_im"  # per-record map {field_name: token}
+
+
+def _intern_token_for_value(value: Any) -> str:
+    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return _hashlib.blake2b(canonical.encode("utf-8"), digest_size=6).hexdigest()
+
+
+def encode_interned_records(records: list[Json], emitted_tokens: set[tuple[str, str]]) -> list[Json]:
+    """Compress the interned metadata fields on ``records`` for the durable log.
+
+    Returns new ``matrixark_intern_dict`` sidecar records (for any token first seen this call) FOLLOWED
+    by the encoded data records; the dict records are emitted first so they precede -- and are durably
+    written before -- any data record that references their token. ``emitted_tokens`` tracks the
+    ``(field, token)`` pairs already written by this adapter instance and is mutated in place. When the
+    flag is OFF the input is returned unchanged (byte-identical to the pre-codec behaviour).
+    """
+    if not INTERN_RECORD_METADATA:
+        return list(records)
+    dict_records: list[Json] = []
+    encoded_records: list[Json] = []
+    for record in records:
+        if not isinstance(record, dict) or str(record.get("record_type") or "") == INTERN_DICT_RECORD_TYPE:
+            encoded_records.append(record)
+            continue
+        token_map: dict[str, str] = {}
+        encoded: Json | None = None
+        for field in INTERN_METADATA_FIELDS:
+            if field not in record:
+                continue
+            value = record[field]
+            token = _intern_token_for_value(value)
+            token_map[field] = token
+            key = (field, token)
+            if key not in emitted_tokens:
+                emitted_tokens.add(key)
+                dict_records.append({
+                    "record_type": INTERN_DICT_RECORD_TYPE,
+                    "im_field": field,
+                    "im_token": token,
+                    "im_value": value,
+                })
+            if encoded is None:
+                encoded = dict(record)
+            encoded.pop(field, None)
+        if token_map:
+            if encoded is None:
+                encoded = dict(record)
+            existing = encoded.get(INTERN_TOKEN_KEY)
+            merged = dict(existing) if isinstance(existing, dict) else {}
+            merged.update(token_map)
+            encoded[INTERN_TOKEN_KEY] = merged
+            encoded_records.append(encoded)
+        else:
+            encoded_records.append(record)
+    return dict_records + encoded_records
+
+
+def expand_interned_records(records: list[Json]) -> list[Json]:
+    """Re-expand interned metadata tokens to full values and drop the ``matrixark_intern_dict`` sidecar
+    records. This is the single read-side inverse of :func:`encode_interned_records` and is applied at
+    every raw-read choke point so no downstream consumer ever sees a token. A no-op (other than
+    stripping any dict records) when nothing is interned, so old inline-field logs pass through
+    unchanged."""
+    dict_map: dict[tuple[str, str], Any] = {}
+    saw_token = False
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("record_type") or "") == INTERN_DICT_RECORD_TYPE:
+            field = record.get("im_field")
+            token = record.get("im_token")
+            if isinstance(field, str) and isinstance(token, str):
+                dict_map[(field, token)] = record.get("im_value")
+        elif isinstance(record.get(INTERN_TOKEN_KEY), dict):
+            saw_token = True
+    if not dict_map and not saw_token:
+        # Fast path: nothing interned. Still drop any stray dict records (none here) and return as-is.
+        return list(records)
+    expanded_out: list[Json] = []
+    for record in records:
+        if not isinstance(record, dict):
+            expanded_out.append(record)
+            continue
+        if str(record.get("record_type") or "") == INTERN_DICT_RECORD_TYPE:
+            continue
+        token_map = record.get(INTERN_TOKEN_KEY)
+        if not isinstance(token_map, dict):
+            expanded_out.append(record)
+            continue
+        expanded = dict(record)
+        expanded.pop(INTERN_TOKEN_KEY, None)
+        for field, token in token_map.items():
+            key = (str(field), str(token))
+            if key in dict_map:
+                # Deep-copy: downstream mutates storage_route/placement in place; records sharing a
+                # token must not alias one dict object.
+                expanded[str(field)] = _copy.deepcopy(dict_map[key])
+        expanded_out.append(expanded)
+    return expanded_out
 
 _LOCAL_READ_CACHE_LOCK = threading.RLock()
 _LOCAL_READ_CACHE: dict[str, tuple[int, int, list[Json]]] = {}
@@ -3165,6 +3300,10 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         # during a single ingest() (thread-local so concurrent ingests never bleed into each other).
         self._ingest_stamp_local = threading.local()
         self._event_log_lock = threading.RLock()
+        # Metadata-interning: (field, token) pairs whose durable dict record this instance has already
+        # emitted, so a value's dict record is written once. Lazily seeded from the log on first write.
+        self._intern_emitted_tokens: set[tuple[str, str]] = set()
+        self._intern_tokens_seeded = False
         self._resource_import_worker_count = max(1, int(os.environ.get("MATRIXARK_RESOURCE_IMPORT_WORKERS", "2")))
         self._resource_import_queue_max = max(1, int(os.environ.get("MATRIXARK_RESOURCE_IMPORT_QUEUE_MAX", "64")))
         self._resource_import_queue: thread_queue.Queue[Json] = thread_queue.Queue(maxsize=self._resource_import_queue_max)
@@ -3376,7 +3515,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         records = payload.get("records")
         if not isinstance(records, list):
             return None
-        return [record for record in records if isinstance(record, dict)]
+        # The durable cache stores the already-expanded view; expand defensively in case an older
+        # cache captured an interned snapshot (a no-op otherwise).
+        return expand_interned_records([record for record in records if isinstance(record, dict)])
 
     def _write_durable_read_cache(self, records: list[Json], signature: Json, *, force: bool = False) -> None:
         if not self._local_jsonl_enabled or not LOCAL_DURABLE_READ_CACHE_ENABLED:
@@ -3572,21 +3713,63 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 with self._context_pack_cache_lock:
                     self._context_pack_cache.clear()
 
+    def _seed_intern_tokens_locked(self) -> None:
+        """Seed ``_intern_emitted_tokens`` from the durable log so a fresh adapter appending to an
+        existing interned log does not re-emit dict records already present. Best-effort: duplicate
+        dict records are harmless (content-addressed), so any read error just leaves the set empty."""
+        if self._intern_tokens_seeded or not INTERN_RECORD_METADATA:
+            self._intern_tokens_seeded = True
+            return
+        self._intern_tokens_seeded = True
+        if not self._local_jsonl_enabled:
+            return
+        try:
+            for path in self._retained_jsonl_paths():
+                with path.open("r", encoding="utf-8") as handle:
+                    for line in handle:
+                        line = line.strip()
+                        if not line or INTERN_DICT_RECORD_TYPE not in line:
+                            continue
+                        try:
+                            record = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(record, dict) and str(record.get("record_type") or "") == INTERN_DICT_RECORD_TYPE:
+                            field = record.get("im_field")
+                            token = record.get("im_token")
+                            if isinstance(field, str) and isinstance(token, str):
+                                self._intern_emitted_tokens.add((field, token))
+        except OSError:
+            pass
+
+    def _encode_records_for_log(self, sanitized: list[Json]) -> list[Json]:
+        """Intern the metadata fields for durable storage. ``sanitized`` records are already
+        bulky-field-stripped; the returned list interleaves any new ``matrixark_intern_dict`` sidecar
+        records (first) ahead of the encoded data records. No-op when the flag is OFF."""
+        if not INTERN_RECORD_METADATA:
+            return sanitized
+        if not self._intern_tokens_seeded:
+            self._seed_intern_tokens_locked()
+        return encode_interned_records(sanitized, self._intern_emitted_tokens)
+
     def append(self, record: Json) -> None:
         records = self._stamp_ingest_fields(materialize_serving_record_batch([record]))
         if self._queue_batched_records(records):
             return
-        jsonl_records = [self._sanitize_jsonl_record(item) for item in records]
-        jsonl_lines = [json.dumps(item, separators=(",", ":")) + "\n" for item in jsonl_records]
+        sanitized = [self._sanitize_jsonl_record(item) for item in records]
         if self._local_jsonl_enabled:
             with self._event_log_lock:
+                jsonl_records = self._encode_records_for_log(sanitized)
+                jsonl_lines = [json.dumps(item, separators=(",", ":")) + "\n" for item in jsonl_records]
                 self._rotate_jsonl_if_needed_locked(sum(len(line.encode("utf-8")) for line in jsonl_lines))
                 with self.event_log.open("a", encoding="utf-8") as handle:
                     for line in jsonl_lines:
                         handle.write(line)
                 self._prune_jsonl_retention_locked()
         self._update_latest_entity_cache(records)
-        self._update_read_cache_after_append(jsonl_records)
+        # The read caches hold the fully-expanded (interning-free) view, so serve the sanitized
+        # records -- expansion of the on-disk interned form yields exactly these.
+        self._update_read_cache_after_append(sanitized)
         self._maintain_event_membership_after_append(records)
 
     def append_many(self, records: list[Json]) -> None:
@@ -3595,17 +3778,18 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             return
         if self._queue_batched_records(records):
             return
-        jsonl_records = [self._sanitize_jsonl_record(record) for record in records]
-        jsonl_lines = [json.dumps(record, separators=(",", ":")) + "\n" for record in jsonl_records]
+        sanitized = [self._sanitize_jsonl_record(record) for record in records]
         if self._local_jsonl_enabled:
             with self._event_log_lock:
+                jsonl_records = self._encode_records_for_log(sanitized)
+                jsonl_lines = [json.dumps(record, separators=(",", ":")) + "\n" for record in jsonl_records]
                 self._rotate_jsonl_if_needed_locked(sum(len(line.encode("utf-8")) for line in jsonl_lines))
                 with self.event_log.open("a", encoding="utf-8") as handle:
                     for line in jsonl_lines:
                         handle.write(line)
                 self._prune_jsonl_retention_locked()
         self._update_latest_entity_cache(records)
-        self._update_read_cache_after_append(jsonl_records)
+        self._update_read_cache_after_append(sanitized)
 
     def _update_latest_entity_cache(self, records: list[Json]) -> None:
         if not hasattr(self, "_session_buffer_cache_lock"):
@@ -4030,6 +4214,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                         line = line.strip()
                         if line:
                             records.append(json.loads(line))
+        # Expand interned metadata BEFORE compaction/caching so the read cache, durable cache, and
+        # every downstream consumer see fully-expanded, token-free records.
+        records = expand_interned_records(records)
         records = compact_and_apply_tombstones(records)
         with self._read_cache_lock:
             cache_changed = (
@@ -4843,7 +5030,11 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
     # --------------------------------------------------------------------------------------------
     def _read_raw_records(self) -> list[Json]:
         """All records across the retained JSONL shards in append order -- NOT compacted and NOT
-        tombstone-filtered (the durable event history). Empty when the local JSONL is disabled."""
+        tombstone-filtered (the durable event history). Empty when the local JSONL is disabled.
+
+        Interned metadata is expanded and the ``matrixark_intern_dict`` sidecar records are stripped,
+        so callers see the same fully-expanded logical history as ``read_all`` (the dict records are a
+        storage-representation detail, not part of the event history)."""
         raw: list[Json] = []
         if not self._local_jsonl_enabled:
             return raw
@@ -4854,7 +5045,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                         line = line.strip()
                         if line:
                             raw.append(json.loads(line))
-        return raw
+        return expand_interned_records(raw)
 
     def _count_raw_tombstones(self) -> int:
         return sum(
