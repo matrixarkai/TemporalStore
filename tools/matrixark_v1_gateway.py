@@ -39,7 +39,7 @@ import tempfile
 import threading
 import time
 from typing import Any, Awaitable, Callable, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 try:
     from tools.matrixark_asgi import make_asgi_app, _api_key
@@ -158,6 +158,13 @@ _DATA_ROUTES: dict[str, Tuple[str, str]] = {
     "/v1/session/commit": ("matrixark_session_commit", "ingest"),
     "/v1/retrieve": ("matrixark_retrieve", "retrieve"),
     "/v1/mcp": ("__mcp__", "retrieve"),
+    # Memory management (mem0 parity). forget/delete/reset gate on `context:forget` (see
+    # _CATEGORY_SCOPE); get_all (POST /v1/memories) gates on `context:retrieve`. GET /v1/memories is
+    # handled by a dedicated branch below (data routes are POST-only).
+    "/v1/forget": ("matrixark_forget", "forget"),
+    "/v1/delete": ("matrixark_delete", "forget"),
+    "/v1/reset": ("matrixark_reset", "forget"),
+    "/v1/memories": ("matrixark_get_all", "retrieve"),
 }
 
 # Backend exception class names we translate to specific edge status codes (matched by name to avoid
@@ -777,7 +784,7 @@ def _authorize(headers: list[Tuple[bytes, bytes]], cfg: GatewayConfig) -> Tuple[
 # route -> required MatrixArk scope. The ingest/retrieve rate-limit CLASS from `_DATA_ROUTES` doubles
 # as the scope selector: an ingest-category route needs `context:ingest`, a retrieve-category route
 # needs `context:retrieve`.
-_CATEGORY_SCOPE = {"ingest": "context:ingest", "retrieve": "context:retrieve"}
+_CATEGORY_SCOPE = {"ingest": "context:ingest", "retrieve": "context:retrieve", "forget": "context:forget"}
 
 
 def _required_scope(path: str, method: str, route: Optional[Tuple[str, str]]) -> Optional[str]:
@@ -1647,6 +1654,48 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 return await _json(send, 403, denied)
             usage = meter.snapshot()
             return await _json(send, 200, {"status": "ok", "usage": usage, "count": len(usage)})
+
+        # ---- get_all via GET /v1/memories (auth + context:retrieve) -------------------------
+        # Convenience read: list a scope's active memories. Scope identity comes from the query
+        # string (user_id/agent_id/session_id); tenant is pinned from the authenticated key via
+        # _apply_identity (same isolation as every other data route). POST /v1/memories with a JSON
+        # body is also supported through the data-route dispatch below.
+        if method == "GET" and path == "/v1/memories":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _scope_denied(key_record, "context:retrieve")
+            if denied is not None:
+                return await _json(send, 403, denied)
+            params = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+
+            def _q(name: str) -> Optional[str]:
+                values = params.get(name)
+                return values[0] if values else None
+
+            query_scope: Json = {}
+            for field in ("user_id", "agent_id", "session_id"):
+                value = _q(field)
+                if value:
+                    query_scope[field] = value
+            args: Json = {"scope": query_scope}
+            limit = _q("limit")
+            if limit and limit.strip().lstrip("-").isdigit():
+                args["limit"] = int(limit)
+            _apply_identity(args, key, tenant, account)
+            denied = _identity_denied(key_record, args)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(server.call_tool, "matrixark_get_all", args), cfg.backend_timeout)
+            except asyncio.TimeoutError:
+                return await _json(send, 504, {"error": "backend_timeout",
+                                   "detail": f"backend did not respond within {cfg.backend_timeout}s"})
+            except Exception as exc:
+                return await _json(send, _classify_backend_error(exc),
+                                   {"error": "backend_error", "detail": str(exc)})
+            return await _json(send, 200, _ok_body(result))
 
         # ---- blob (auth + concurrent-stream cap, streamed) ----------------------------------
         if path.startswith("/v1/blob/"):

@@ -357,5 +357,67 @@ def ingest_messages(messages: Any, *, provider: str = "auto",
     return _post_json(base_url, api_key, "/v1/ingest", body, timeout)
 
 
+def forget(*, user_id: str, agent_id: Optional[str] = None, session_id: Optional[str] = None,
+           base_url: Optional[str] = None, api_key: Optional[str] = None,
+           timeout: float = 60.0) -> dict:
+    """Delete ALL memory for a subject (mem0 ``delete_all``). ``subject = scope.user_id``; the server
+    requires ``confirm == user_id`` (exact match, no wildcard). POSTs ``/v1/forget``."""
+    if not user_id:
+        raise ValueError("forget requires user_id (the subject to forget)")
+    base_url = _resolve_base_url(base_url)
+    api_key = _resolve_api_key(api_key)
+    scope: Json = {"user_id": user_id}
+    if agent_id:
+        scope["agent_id"] = agent_id
+    if session_id:
+        scope["session_id"] = session_id
+    body: Json = {"scope": scope, "confirm": user_id}
+    return _post_json(base_url, api_key, "/v1/forget", body, timeout)
+
+
+def delete_memory(memory_id: str, *, base_url: Optional[str] = None,
+                  api_key: Optional[str] = None, timeout: float = 60.0) -> dict:
+    """Delete a single memory by id (mem0 ``delete``). ``memory_id`` is the ``event_id_hash`` returned
+    by ingest. POSTs ``/v1/delete``."""
+    if not memory_id:
+        raise ValueError("delete_memory requires a memory_id")
+    base_url = _resolve_base_url(base_url)
+    api_key = _resolve_api_key(api_key)
+    return _post_json(base_url, api_key, "/v1/delete", {"memory_id": str(memory_id)}, timeout)
+
+
+def get_all(*, user_id: Optional[str] = None, agent_id: Optional[str] = None,
+            session_id: Optional[str] = None, limit: Optional[int] = None,
+            base_url: Optional[str] = None, api_key: Optional[str] = None,
+            timeout: float = 60.0) -> dict:
+    """List a subject's active memories (mem0 ``get_all``). POSTs ``/v1/memories``. Forgotten/deleted
+    memories are excluded server-side."""
+    base_url = _resolve_base_url(base_url)
+    api_key = _resolve_api_key(api_key)
+    scope: Json = {}
+    if user_id:
+        scope["user_id"] = user_id
+    if agent_id:
+        scope["agent_id"] = agent_id
+    if session_id:
+        scope["session_id"] = session_id
+    body: Json = {}
+    if scope:
+        body["scope"] = scope
+    if limit is not None:
+        body["limit"] = int(limit)
+    return _post_json(base_url, api_key, "/v1/memories", body, timeout)
+
+
+def reset_memory(*, confirm: str = "RESET", base_url: Optional[str] = None,
+                 api_key: Optional[str] = None, timeout: float = 60.0) -> dict:
+    """Wipe ALL memory for the caller's tenant (mem0 ``reset``). POSTs ``/v1/reset`` with an explicit
+    ``confirm`` (defaults to the literal ``"RESET"`` sentinel the server accepts)."""
+    base_url = _resolve_base_url(base_url)
+    api_key = _resolve_api_key(api_key)
+    return _post_json(base_url, api_key, "/v1/reset", {"confirm": str(confirm)}, timeout)
+
+
 __all__ = ["ingest_large_file", "ingest_text", "ingest_messages", "content_hash",
-           "content_key", "VALID_SHARING_SCOPES", "DEFAULT_BASE_URL"]
+           "content_key", "VALID_SHARING_SCOPES", "DEFAULT_BASE_URL",
+           "forget", "delete_memory", "get_all", "reset_memory"]

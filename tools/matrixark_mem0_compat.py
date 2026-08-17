@@ -166,3 +166,39 @@ class Memory:
         if limit is not None:
             body["ranking"] = {"max_selected_refs": int(limit)}
         return _post_json(self._base_url, self._api_key, "/v1/retrieve", body, self._timeout)
+
+    def delete(self, memory_id: str, **kw: Any) -> Json:
+        """Delete a single memory by id (mem0 ``delete``). ``memory_id`` is the id returned by
+        ``add``/``get_all`` (MatrixArk's ``event_id_hash``). Posts to ``/v1/delete``. The addressed
+        memory stops resurfacing from ``search``; provenance-closure deletion is deferred server-side."""
+        body: Json = {"memory_id": str(memory_id)}
+        return _post_json(self._base_url, self._api_key, "/v1/delete", body, self._timeout)
+
+    def delete_all(self, *, user_id: Optional[str] = None, agent_id: Optional[str] = None,
+                   run_id: Optional[str] = None, **kw: Any) -> Json:
+        """Delete ALL memory for a subject (mem0 ``delete_all(user_id=...)``). Maps identity kwargs to
+        ``scope`` and posts to ``/v1/forget`` with ``confirm == user_id`` (the server requires an exact
+        match; there is no wildcard). Requires ``user_id``."""
+        if not user_id:
+            raise ValueError("delete_all requires user_id (the subject to forget)")
+        scope = _scope_from_identity(user_id, agent_id, run_id)
+        body: Json = {"scope": scope, "confirm": user_id}
+        return _post_json(self._base_url, self._api_key, "/v1/forget", body, self._timeout)
+
+    def get_all(self, *, user_id: Optional[str] = None, agent_id: Optional[str] = None,
+                run_id: Optional[str] = None, limit: Optional[int] = None, **kw: Any) -> Json:
+        """List a subject's active memories (mem0 ``get_all(user_id=...)``). Maps identity kwargs to
+        ``scope`` and posts to ``/v1/memories``. Forgotten/deleted memories are excluded server-side."""
+        scope = _scope_from_identity(user_id, agent_id, run_id)
+        body: Json = {}
+        if scope:
+            body["scope"] = scope
+        if limit is not None:
+            body["limit"] = int(limit)
+        return _post_json(self._base_url, self._api_key, "/v1/memories", body, self._timeout)
+
+    def reset(self, *, confirm: str = "RESET", **kw: Any) -> Json:
+        """Wipe ALL memory for the caller's tenant (mem0 ``reset``). Posts to ``/v1/reset`` with an
+        explicit ``confirm`` (defaults to the literal ``"RESET"`` sentinel the server accepts)."""
+        body: Json = {"confirm": str(confirm)}
+        return _post_json(self._base_url, self._api_key, "/v1/reset", body, self._timeout)

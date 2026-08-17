@@ -1117,4 +1117,59 @@ TOOLS: list[Json] = [
             "additionalProperties": True,
         },
     },
+    {
+        "name": "matrixark_forget",
+        "description": "Delete ALL memory for a scope (mem0 delete_all). subject = scope.user_id; requires confirm == scope.user_id (exact match).",
+        "inputSchema": {
+            "type": "object",
+            "required": ["confirm"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "confirm": {"type": "string", "description": "Must equal scope.user_id (exact match, no wildcard)."},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_delete",
+        "description": "Delete a single memory by id/hash (mem0 delete). memory_id is the event_id_hash returned by ingest.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["memory_id"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "memory_id": {"type": "string", "description": "The memory id (event_id_hash) to delete."},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_get_all",
+        "description": "List a scope's active memories (mem0 get_all). Excludes forgotten/deleted records.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "limit": {"type": "integer", "description": "Optional cap on the number of memories returned."},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_reset",
+        "description": "Wipe ALL memory for the caller's tenant (mem0 reset). Guarded by confirm == tenant_id or the literal 'RESET'.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["confirm"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "confirm": {"type": "string", "description": "Must equal the resolved tenant_id or the literal 'RESET'."},
+            },
+            "additionalProperties": True,
+        },
+    },
 ]

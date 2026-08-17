@@ -56,6 +56,55 @@ The shim is stdlib-only (`http.client` + `json`) and reuses
 
 ---
 
+## Memory management: delete / forget / get_all / reset
+
+The shim also covers mem0's memory-management surface. The **subject** is
+`scope.user_id`, so these map onto the same identity kwargs as `add`/`search`.
+
+```python
+m.get_all(user_id="alice")                 # list alice's active memories
+m.delete("<memory_id>")                     # delete a single memory by id
+m.delete_all(user_id="alice")               # delete ALL of alice's memory
+m.reset()                                   # wipe the caller's whole tenant
+```
+
+| mem0 method                     | MatrixArk endpoint / shim        | Notes                                                                       |
+| ------------------------------- | -------------------------------- | --------------------------------------------------------------------------- |
+| `delete(memory_id)`             | `POST /v1/delete`                | `memory_id` is the id `add`/`get_all` returns (MatrixArk's `event_id_hash`). |
+| `delete_all(user_id=…)`         | `POST /v1/forget`                | subject = `scope.user_id`; server requires `confirm == user_id` (exact match, no wildcard). The shim sets `confirm` for you. Returns the count removed. |
+| `get_all(user_id=…, limit=…)`   | `GET`/`POST /v1/memories`        | Lists a subject's active memories; forgotten/deleted memories are excluded. |
+| `reset()`                       | `POST /v1/reset`                 | Wipes the caller's tenant. Guarded by an explicit `confirm` — the shim sends the literal `"RESET"`; the server also accepts the resolved `tenant_id`. |
+
+Scope gates (enforced-mode keys): `forget`/`delete`/`reset` require
+`context:forget`; `get_all` requires `context:retrieve`. Tenant identity is always
+pinned from the authenticated key, so one tenant can never delete another's memory.
+
+A "deleted" or "forgotten" memory is excluded from **retrieve** as well as
+`get_all` — it does not come back. Removal is a durable soft-delete (a tombstone in
+the same event log) and survives a reload; `forget` also writes a payload-free,
+hashed-subject audit record (`sha256(user_id)` + count).
+
+**Direct helpers** are available in `matrixark_ingest_client` without the shim:
+`forget(user_id=…)`, `delete_memory(memory_id)`, `get_all(user_id=…)`,
+`reset_memory()`.
+
+### Deferred optimizations
+
+For this pass, deletion guarantees **logical exclusion** (a removed memory never
+resurfaces). The following are follow-ons that only reclaim space or extend the
+delete blast-radius — they do not change what a caller can observe:
+
+* **Provenance-closure delete** — `delete(memory_id)` removes the addressed record
+  (and its own event embedding) but does not yet re-derive multi-source
+  summaries/entities that cited it.
+* **Rust-datanode-native delete** — the engine already exposes
+  `StringDelete`/`CommonDelete`/`FeatureDelete`; wiring the tombstones down to a
+  native delete is not done here (the local/reference adapter is authoritative).
+* **Physical vector/index purge** — tombstoned rows are filtered at read time, not
+  yet compacted out of the underlying vector/index storage.
+
+---
+
 ## kwarg → scope mapping
 
 mem0 passes identity as **top-level kwargs**; MatrixArk stores it under a

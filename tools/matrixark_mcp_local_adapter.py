@@ -2632,6 +2632,122 @@ def compact_latest_value_records(records: list[Json]) -> list[Json]:
     return output
 
 
+# ================================================================================================
+# Memory delete / forget: tombstone (soft-delete) machinery
+# ------------------------------------------------------------------------------------------------
+# Delete/forget are recorded as durable tombstone records appended to the SAME JSONL event log, so
+# they survive reload with the rest of the store (no separate index to keep in sync). A tombstone is
+# applied by `apply_memory_tombstones` -- called at the single read choke point `read_all()` -- which
+# drops the matching records so nothing deleted can resurface in retrieve, get_all, entity caches, or
+# summaries. Tombstones are order-aware: a tombstone only removes records that appear BEFORE it in the
+# append log, so re-ingesting for a subject AFTER a forget produces fresh, live memories again.
+MEMORY_TOMBSTONE_RECORD_TYPE = "matrixark_memory_tombstone"
+
+# Record types a scope-level forget / tenant reset wipes (the user-visible "memory" of a subject).
+# Access/identity/audit/idempotency records are intentionally excluded -- forget removes context data,
+# not the tenant's control plane.
+_MEMORY_SCOPED_RECORD_TYPES = {
+    "context_event",
+    "context_entity",
+    "context_summary",
+    "context_segment",
+    "context_embedding",
+    "context_compression_event",
+    "context_index",
+    "context_node",
+    "context_child_ref",
+    "context_batch_commit",
+    "session_buffer_event",
+    "context_summary_dirty",
+    "matrixark_async_pipeline_task",
+}
+
+
+def _record_memory_ids(record: Json) -> set[str]:
+    """The addressable ids by which a single-record `delete(memory_id)` can match `record`.
+
+    A memory's public id is its ``event_id_hash`` (what ``/v1/ingest`` returns). We also match the
+    event's own embedding (``ref_type == 'event'`` + ``ref_hash``) so the deleted memory does not
+    resurface through its vector. Deleting the wider provenance closure (derived entities/summaries)
+    is DEFERRED (see the module note)."""
+    ids: set[str] = set()
+    event_hash = record.get("event_id_hash")
+    if event_hash not in (None, ""):
+        ids.add(str(event_hash))
+    if str(record.get("record_type") or "") == "context_embedding" and str(record.get("ref_type") or "") == "event":
+        ref_hash = record.get("ref_hash")
+        if ref_hash not in (None, ""):
+            ids.add(str(ref_hash))
+    return ids
+
+
+def _record_scope_hashes(record: Json) -> tuple[int, int]:
+    """Return ``(tenant_hash, user_hash)`` for `record` from its access scope, resolving each either
+    from an explicit hash field or by parsing the record's ``scope_key``. Missing -> 0."""
+    scope = candidate_access_scope(record)
+    if not isinstance(scope, dict):
+        return 0, 0
+    try:
+        tenant_hash = int(scope.get("tenant_hash") or 0)
+    except (TypeError, ValueError):
+        tenant_hash = 0
+    try:
+        user_hash = int(scope.get("user_hash") or 0)
+    except (TypeError, ValueError):
+        user_hash = 0
+    if not tenant_hash or not user_hash:
+        parts = parse_scope_key(str(scope.get("scope_key") or ""))
+        tenant_hash = tenant_hash or int(parts.get("t") or 0)
+        user_hash = user_hash or int(parts.get("u") or 0)
+    return tenant_hash, user_hash
+
+
+def _tombstone_kills_record(tombstone: Json, record: Json) -> bool:
+    """True when `tombstone` (appended after `record`) removes `record`."""
+    kind = str(tombstone.get("tombstone_kind") or "")
+    if kind == "delete":
+        target = str(tombstone.get("target_memory_id") or "")
+        return bool(target) and target in _record_memory_ids(record)
+    record_type = str(record.get("record_type") or "")
+    if record_type not in _MEMORY_SCOPED_RECORD_TYPES:
+        return False
+    rec_tenant_hash, rec_user_hash = _record_scope_hashes(record)
+    if kind == "forget":
+        target_tenant = int(tombstone.get("target_tenant_hash") or 0)
+        target_user = int(tombstone.get("target_user_hash") or 0)
+        if not target_tenant or not target_user:
+            return False
+        return rec_tenant_hash == target_tenant and rec_user_hash == target_user
+    if kind == "reset":
+        target_tenant = int(tombstone.get("target_tenant_hash") or 0)
+        return bool(target_tenant) and rec_tenant_hash == target_tenant
+    return False
+
+
+def _records_contain_memory_tombstone(records: list[Json]) -> bool:
+    for record in records:
+        if str(record.get("record_type") or "") == MEMORY_TOMBSTONE_RECORD_TYPE:
+            return True
+    return False
+
+
+def apply_memory_tombstones(records: list[Json]) -> list[Json]:
+    """Drop records removed by any memory tombstone, and strip the tombstone markers themselves.
+
+    Order-aware single pass: a tombstone only removes matching records that precede it in the log, so
+    re-ingesting for a forgotten subject after the forget yields live memories again. Fast-path
+    returns the input unchanged when the log carries no tombstone (the overwhelmingly common case)."""
+    if not _records_contain_memory_tombstone(records):
+        return records
+    live: list[Json] = []
+    for record in records:
+        if str(record.get("record_type") or "") == MEMORY_TOMBSTONE_RECORD_TYPE:
+            live = [kept for kept in live if not _tombstone_kills_record(record, kept)]
+            continue
+        live.append(record)
+    return live
+
+
 try:  # mixin
     from tools.matrixark_local_adapter_retrieve import _LocalAdapterRetrieveMixin
 except ImportError:
@@ -2989,9 +3105,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         with self._read_cache_lock:
             if self._read_cache_records is not None:
                 self._read_cache_records.extend(records)
-                self._read_cache_records = compact_latest_context_state_records(
+                self._read_cache_records = apply_memory_tombstones(compact_latest_context_state_records(
                     compact_latest_value_records(self._read_cache_records)
-                )
+                ))
             if size >= 0:
                 self._read_cache_size = size
                 self._read_cache_mtime_ns = mtime_ns
@@ -3006,9 +3122,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             cached = _LOCAL_READ_CACHE.get(cache_key)
             if cached is not None:
                 _, _, cached_records = cached
-                cached_records = compact_latest_context_state_records(
+                cached_records = apply_memory_tombstones(compact_latest_context_state_records(
                     compact_latest_value_records(list(cached_records) + list(records))
-                )
+                ))
                 _LOCAL_READ_CACHE[cache_key] = (self._read_cache_size, self._read_cache_mtime_ns, cached_records)
                 if durable_records is None:
                     durable_records = list(cached_records)
@@ -3016,7 +3132,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 _LOCAL_READ_CACHE[cache_key] = (
                     self._read_cache_size,
                     self._read_cache_mtime_ns,
-                    compact_latest_context_state_records(compact_latest_value_records(list(self._read_cache_records))),
+                    apply_memory_tombstones(compact_latest_context_state_records(compact_latest_value_records(list(self._read_cache_records)))),
                 )
         if durable_records is not None:
             self._write_durable_read_cache(durable_records, signature)
@@ -3478,7 +3594,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                         line = line.strip()
                         if line:
                             records.append(json.loads(line))
-        records = compact_latest_context_state_records(compact_latest_value_records(records))
+        records = apply_memory_tombstones(compact_latest_context_state_records(compact_latest_value_records(records)))
         with self._read_cache_lock:
             cache_changed = (
                 self._read_cache_records is None
@@ -3499,6 +3615,165 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             with self._context_pack_cache_lock:
                 self._context_pack_cache.clear()
         return list(records)
+
+    # ============================================================================================
+    # Memory management: forget (delete_all) / delete / get_all / reset  (mem0 parity)
+    # --------------------------------------------------------------------------------------------
+    # These implement the mem0 memory-management surface against the local JSONL store via durable
+    # tombstones (see `apply_memory_tombstones`). subject = `scope.user_id`. A tombstone is appended
+    # to the same event log, so a "deleted"/"forgotten" memory never resurfaces from retrieve /
+    # get_all / caches and the removal survives reload. DEFERRED (out of scope for this pass, left as
+    # follow-ons): deleting the wider provenance closure (derived entities/summaries re-derivation),
+    # rust-datanode-native StringDelete/CommonDelete/FeatureDelete wiring, and physical vector/index
+    # purge -- these only reclaim space; logical exclusion is already complete here.
+    def _resolve_subject_hashes(self, scope: Json) -> tuple[int, int]:
+        """Return ``(tenant_hash, user_hash)`` for an already-identity-enriched request scope,
+        resolving each from an explicit hash field or by parsing the scope_key."""
+        try:
+            tenant_hash = int(scope.get("tenant_hash") or 0)
+        except (TypeError, ValueError):
+            tenant_hash = 0
+        try:
+            user_hash = int(scope.get("user_hash") or 0)
+        except (TypeError, ValueError):
+            user_hash = 0
+        if not tenant_hash or not user_hash:
+            parts = parse_scope_key(str(scope.get("scope_key") or canonical_scope_key(scope)))
+            tenant_hash = tenant_hash or int(parts.get("t") or 0)
+            user_hash = user_hash or int(parts.get("u") or 0)
+        return tenant_hash, user_hash
+
+    def forget(self, args: Json, hook: Json | None = None) -> Json:
+        """Delete ALL memory for a scope (mem0 ``delete_all(user_id=...)``) -- the primary, complete
+        deletion primitive. subject = ``scope.user_id``; requires ``confirm == scope.user_id`` (exact
+        match, no wildcard). Records a durable forget tombstone plus a payload-free, hashed-subject
+        audit entry. Returns the count of live memories removed."""
+        scope = optional_object(args, "scope")
+        user_id = str(scope.get("user_id") or "").strip()
+        confirm = str(args.get("confirm") or "").strip()
+        if not user_id:
+            raise MatrixArkError("forget requires scope.user_id (the subject to forget)")
+        if confirm != user_id:
+            raise MatrixArkError("forget requires confirm to equal scope.user_id (exact match, no wildcard)")
+        tenant_hash, user_hash = self._resolve_subject_hashes(scope)
+        if not tenant_hash or not user_hash:
+            raise MatrixArkError("forget could not resolve the subject scope (tenant_hash/user_hash)")
+        removed = 0
+        for record in self.read_all():
+            if str(record.get("record_type") or "") not in _MEMORY_SCOPED_RECORD_TYPES:
+                continue
+            rec_tenant, rec_user = _record_scope_hashes(record)
+            if rec_tenant == tenant_hash and rec_user == user_hash:
+                removed += 1
+        subject_sha256 = hashlib.sha256(user_id.encode("utf-8")).hexdigest()
+        scope_key = canonical_scope_key(scope)
+        created_at_ms = now_ms()
+        tombstone = {
+            "record_type": MEMORY_TOMBSTONE_RECORD_TYPE,
+            "tombstone_kind": "forget",
+            "target_tenant_hash": tenant_hash,
+            "target_user_hash": user_hash,
+            "target_scope_key": scope_key,
+            "subject_sha256": subject_sha256,
+            "removed_count": removed,
+            "created_at_ms": created_at_ms,
+        }
+        forget_audit = {
+            "record_type": "matrixark_memory_forget_audit",
+            "subject_sha256": subject_sha256,
+            "target_scope_key": scope_key,
+            "removed_count": removed,
+            "created_at_ms": created_at_ms,
+        }
+        self.append_many([tombstone, forget_audit])
+        return {
+            "forgotten": True,
+            "subject_sha256": subject_sha256,
+            "removed_count": removed,
+            "scope_key": scope_key,
+        }
+
+    def delete_memory(self, args: Json, hook: Json | None = None) -> Json:
+        """Delete a single memory by id/hash (mem0 ``delete``). The id is the ``event_id_hash`` that
+        ``/v1/ingest`` returns. Removes the addressed record (and its own event embedding) so it never
+        resurfaces from retrieve; deleting the full provenance closure is DEFERRED (see module note)."""
+        memory_id = str(args.get("memory_id") or args.get("id") or "").strip()
+        if not memory_id:
+            raise MatrixArkError("delete requires a memory_id")
+        removed = 0
+        for record in self.read_all():
+            if memory_id in _record_memory_ids(record):
+                removed += 1
+        tombstone = {
+            "record_type": MEMORY_TOMBSTONE_RECORD_TYPE,
+            "tombstone_kind": "delete",
+            "target_memory_id": memory_id,
+            "created_at_ms": now_ms(),
+        }
+        self.append(tombstone)
+        return {"deleted": removed > 0, "memory_id": memory_id, "removed_count": removed}
+
+    def get_all(self, args: Json) -> Json:
+        """List a scope's active (non-forgotten, non-deleted) memories (mem0 ``get_all(user_id=...)``).
+        Projects live ``context_event`` records for the subject scope to ``{id, memory, ...}``. Because
+        it reads through ``read_all`` (tombstone-filtered), forgotten/deleted memories are excluded."""
+        scope = optional_object(args, "scope")
+        tenant_hash, user_hash = self._resolve_subject_hashes(scope)
+        try:
+            limit = int(args.get("limit") or 0)
+        except (TypeError, ValueError):
+            raise MatrixArkError("limit must be an integer")
+        memories: list[Json] = []
+        for record in self.read_all():
+            if str(record.get("record_type") or "") != "context_event":
+                continue
+            rec_tenant, rec_user = _record_scope_hashes(record)
+            if tenant_hash and rec_tenant != tenant_hash:
+                continue
+            if user_hash and rec_user != user_hash:
+                continue
+            memories.append({
+                "id": record.get("event_id_hash"),
+                "memory": record.get("summary_text") or record.get("text") or "",
+                "text": record.get("text") or "",
+                "user_id": scope.get("user_id"),
+                "scope_key": record.get("scope_key") or canonical_scope_key(scope),
+                "created_at_ms": record.get("updated_at_ms") or record.get("timestamp_key_ms"),
+            })
+        memories.sort(key=lambda item: int(item.get("created_at_ms") or 0))
+        if limit > 0:
+            memories = memories[:limit]
+        return {"memories": memories, "count": len(memories)}
+
+    def reset(self, args: Json, hook: Json | None = None) -> Json:
+        """Wipe ALL memory for the caller's tenant (mem0 ``reset``). Guarded by an explicit
+        ``confirm`` that must equal the resolved ``tenant_id`` or the literal ``"RESET"`` sentinel."""
+        scope = optional_object(args, "scope")
+        tenant_id = str(scope.get("tenant_id") or "").strip()
+        confirm = str(args.get("confirm") or "").strip()
+        if not confirm:
+            raise MatrixArkError("reset requires an explicit confirm (the tenant_id or 'RESET')")
+        if confirm != "RESET" and (not tenant_id or confirm != tenant_id):
+            raise MatrixArkError("reset requires confirm to equal the tenant_id or the literal 'RESET'")
+        tenant_hash, _ = self._resolve_subject_hashes(scope)
+        if not tenant_hash:
+            raise MatrixArkError("reset could not resolve the caller's tenant scope")
+        removed = 0
+        for record in self.read_all():
+            if str(record.get("record_type") or "") not in _MEMORY_SCOPED_RECORD_TYPES:
+                continue
+            rec_tenant, _ = _record_scope_hashes(record)
+            if rec_tenant == tenant_hash:
+                removed += 1
+        tombstone = {
+            "record_type": MEMORY_TOMBSTONE_RECORD_TYPE,
+            "tombstone_kind": "reset",
+            "target_tenant_hash": tenant_hash,
+            "removed_count": removed,
+            "created_at_ms": now_ms(),
+        }
+        self.append(tombstone)
+        return {"reset": True, "tenant_hash": tenant_hash, "removed_count": removed}
 
 
 
