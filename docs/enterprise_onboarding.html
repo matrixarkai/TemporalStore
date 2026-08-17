@@ -1,0 +1,598 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MatrixArk — Enterprise Onboarding</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#1a1c20; --muted:#5b6370; --line:#e6e8ec; --card:#f7f8fa;
+    --accent:#3b5bdb; --accent-weak:#eaefff; --code-bg:#0f1220; --code-fg:#e7ebf3;
+    --ok:#1f9d55; --warn:#b7791f; --warn-bg:#fff8e6;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{--bg:#0c0e12;--fg:#e7ebf3;--muted:#9aa3b2;--line:#232833;--card:#141821;
+      --accent:#8ea2ff;--accent-weak:#171d2e;--code-bg:#05070d;--warn-bg:#2a220c;}
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);line-height:1.6;font-size:16px}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 24px}
+  header.hero{border-bottom:1px solid var(--line);padding:56px 0 40px}
+  .kicker{color:var(--accent);font-weight:700;letter-spacing:.08em;text-transform:uppercase;font-size:12px}
+  h1{font-size:40px;line-height:1.15;margin:.3em 0 .2em;letter-spacing:-.02em}
+  h2{font-size:26px;margin:2.4em 0 .4em;letter-spacing:-.01em;scroll-margin-top:76px}
+  h3{font-size:18px;margin:1.6em 0 .3em}
+  p.lead{font-size:19px;color:var(--muted);max-width:70ch}
+  nav.toc{position:sticky;top:0;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);
+    border-bottom:1px solid var(--line);z-index:5;display:flex;gap:18px;flex-wrap:wrap;padding:12px 24px;font-size:14px}
+  nav.toc a{color:var(--muted);text-decoration:none;white-space:nowrap}
+  nav.toc a:hover{color:var(--accent)}
+  a{color:var(--accent)}
+  code{font-family:var(--mono);font-size:.9em;background:var(--accent-weak);color:inherit;padding:.1em .35em;border-radius:5px}
+  pre{background:var(--code-bg);color:var(--code-fg);padding:16px 18px;border-radius:12px;overflow:auto;font-family:var(--mono);font-size:13.5px;line-height:1.55}
+  pre code{background:none;padding:0;color:inherit}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px 22px;margin:18px 0}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:760px){.grid2{grid-template-columns:1fr}}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14.5px}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+  th{background:var(--card);font-weight:650}
+  .pill{display:inline-block;font-size:12px;font-weight:700;padding:2px 9px;border-radius:999px;background:var(--accent-weak);color:var(--accent)}
+  .req{color:#c0392b;font-weight:700}
+  @media (prefers-color-scheme:dark){.req{color:#ff8080}}
+  .opt{color:var(--muted)}
+  .note{border-left:4px solid var(--accent);background:var(--accent-weak);padding:12px 16px;border-radius:0 10px 10px 0;margin:16px 0}
+  .warn{border-left:4px solid var(--warn);background:var(--warn-bg);padding:12px 16px;border-radius:0 10px 10px 0;margin:16px 0}
+  .ok{color:var(--ok);font-weight:700}
+  .muted{color:var(--muted)}
+  footer{border-top:1px solid var(--line);margin-top:56px;padding:28px 0;color:var(--muted);font-size:13px}
+  h2 .anchor{opacity:0;text-decoration:none;color:var(--muted);font-weight:400;margin-left:.35em}
+  h2:hover .anchor{opacity:1}
+</style>
+</head>
+<body>
+<nav class="toc">
+  <a href="#start">Quickstart</a>
+  <a href="#scope">Identity &amp; scope</a>
+  <a href="#schema">Schema</a>
+  <a href="#turn">Remember a turn</a>
+  <a href="#ingest">Ingest</a>
+  <a href="#retrieve">Retrieve</a>
+  <a href="#files">Large files &amp; skills</a>
+  <a href="#visibility">Visibility</a>
+  <a href="#auth">Auth</a>
+  <a href="#sdk">Python vs HTTP</a>
+  <a href="#reliability">Reliability</a>
+  <a href="#apiref">API reference</a>
+  <a href="#fields">Field reference</a>
+  <a href="#mem0">vs mem0 / migrate</a>
+</nav>
+
+<header class="hero"><div class="wrap">
+  <div class="kicker">MatrixArk · Enterprise Onboarding</div>
+  <h1>Give your app long-term memory in one API call.</h1>
+  <p class="lead">Two HTTP endpoints — <code>/v1/ingest</code> to remember, <code>/v1/retrieve</code> to recall.
+  Works from any language. No API key required to start. You control exactly whose memory it is.</p>
+</div></header>
+
+<main class="wrap">
+
+<h2 id="start">Quickstart <a class="anchor" href="#start">#</a></h2>
+<p>Point at your gateway (<code>base_url</code> = its origin, default port <code>8080</code>). In the current default (dev) mode you don't need an API key — just send JSON.</p>
+<div class="grid2">
+  <div>
+    <h3>1 · Remember something</h3>
+<pre><code>curl -X POST http://saparo.ai:8080/v1/ingest \
+ -H "Content-Type: application/json" \
+ -d '{
+   "kind": "message",
+   "messages": [
+     {"role":"user","content":"I prefer dark roast coffee"}
+   ],
+   "scope": {"tenant_id":"saparo","user_id":"alice","session_id":"s-42"}
+ }'</code></pre>
+  </div>
+  <div>
+    <h3>2 · Recall it</h3>
+<pre><code>curl -X POST http://saparo.ai:8080/v1/retrieve \
+ -H "Content-Type: application/json" \
+ -d '{
+   "query": "what coffee does alice like?",
+   "scope": {"tenant_id":"saparo","user_id":"alice","session_id":"s-42"}
+ }'
+# → context pack containing "dark roast coffee"</code></pre>
+  </div>
+</div>
+<p class="muted">That's the whole loop. Everything below is detail on how memory is routed, how to ingest large files/skills, and how to lock it down for production.</p>
+
+<h2 id="scope">The one concept: <code>scope</code> = identity &amp; routing <a class="anchor" href="#scope">#</a></h2>
+<p>Memory is partitioned by a structured <code>scope</code> object — <strong>not</strong> parsed from the message text. The message <code>content</code> is what gets extracted (facts, entities, summaries, embeddings); <em>who</em> it belongs to is always explicit:</p>
+<pre><code>"scope": {
+  "account_id": "acct_saparo",   // billing/org
+  "tenant_id":  "saparo",        // your customer / workspace
+  "user_id":    "alice",         // the end-user
+  "session_id": "s-42"           // the conversation/session
+}</code></pre>
+<table>
+  <tr><th>Field</th><th>Meaning</th><th>Where it comes from</th></tr>
+  <tr><td><code>account_id</code> / <code>tenant_id</code></td><td>Billing org / workspace — the hard isolation boundary</td><td><b>Enforced mode:</b> pinned from the API key (un-spoofable). <b>Dev mode:</b> you assert it in <code>scope</code>.</td></tr>
+  <tr><td><code>user_id</code> / <code>session_id</code></td><td>The end-user &amp; conversation — the per-user memory axis</td><td>Always from your request <code>scope</code> (your app vouches for it). Optional — omit for tenant-level memory.</td></tr>
+</table>
+<p><strong>Same <code>scope</code> in → same memory out.</strong> To store memory for a given user/session, pass that scope on ingest; to read it back, pass the same scope on retrieve.</p>
+
+<h2 id="schema">Message &amp; scope schema <a class="anchor" href="#schema">#</a></h2>
+<p>An ingest call = <strong>one <code>scope</code></strong> (one user + session) + <strong>N <code>messages</code></strong> (each with its own role). <b>Identity is per-call; role is per-message.</b></p>
+<pre><code>{
+  "kind": "message",              // message | resource | skill | feedback | business_data
+
+  "scope": {                      // ── PER-CALL identity (applies to the whole batch) ──
+    "account_id": "acct_saparo",  //   optional · pinned from the API key in enforced mode
+    "tenant_id":  "saparo",       //   optional · pinned from the API key in enforced mode
+    "user_id":    "alice",        //   optional · the end-user
+    "session_id": "s-42"          //   optional · the conversation/session this batch belongs to
+  },
+
+  "messages": [                   // ── PER-MESSAGE role + content ──
+    {"role": "user",      "content": "I prefer dark roast"},   // role ∈ {user,assistant,tool,system}
+    {"role": "assistant", "content": "Noted."}                  // content = non-empty string
+  ],
+
+  "sharing_scope": "private_user",       // optional · private_user | tenant_shared | global_shared
+  "ingestion_time_ms": 1699999999999      // optional · defaults to now
+}</code></pre>
+<h3>Validation (server-enforced — bad input → <code>400</code>, never silent)</h3>
+<table>
+  <tr><th>Field</th><th>Rule</th></tr>
+  <tr><td><code>messages[]</code></td><td>Non-empty list; each entry an object.</td></tr>
+  <tr><td><code>messages[].role</code></td><td>Must be one of <code>user</code>, <code>assistant</code>, <code>tool</code>, <code>system</code>.</td></tr>
+  <tr><td><code>messages[].content</code></td><td>Non-empty string.</td></tr>
+  <tr><td><code>scope</code></td><td>Must be an object (dict). Fields read individually; <code>tenant_id</code>/<code>account_id</code> overridden from the API key in enforced mode.</td></tr>
+</table>
+<h3>The minimum you must send</h3>
+<p>Only <b>two</b> fields are truly required — a message's <code>role</code> and <code>content</code>. Everything else has a default.</p>
+<table>
+  <tr><th>Field</th><th>Required?</th><th>If omitted →</th></tr>
+  <tr><td><code>messages[].role</code></td><td class="req">required</td><td>— must be user/assistant/tool/system</td></tr>
+  <tr><td><code>messages[].content</code></td><td class="req">required</td><td>— non-empty string</td></tr>
+  <tr><td><code>scope.session_id</code></td><td>⭐ recommended</td><td>memory not grouped by conversation</td></tr>
+  <tr><td><code>scope.user_id</code></td><td>⭐ recommended</td><td>tenant-level, not per end-user</td></tr>
+  <tr><td><code>scope.tenant_id</code></td><td>dev: recommended</td><td>enforced mode: pinned from the API key</td></tr>
+  <tr><td><code>kind</code></td><td class="opt">optional</td><td><code>"message"</code></td></tr>
+  <tr><td><code>sharing_scope</code></td><td class="opt">optional</td><td><code>private_user</code> (if user set) else tenant/global</td></tr>
+  <tr><td><code>ingestion_time_ms</code></td><td class="opt">optional</td><td>now</td></tr>
+</table>
+<div class="grid2">
+  <div><b>Smallest valid call</b>
+<pre><code>{"messages":[
+  {"role":"user","content":"I like dark roast"}
+]}</code></pre></div>
+  <div><b>Smallest useful call</b> <span class="muted">(recommended)</span>
+<pre><code>{"messages":[
+   {"role":"user","content":"I like dark roast"}],
+ "scope":{"user_id":"alice","session_id":"s-42"}}</code></pre></div>
+</div>
+<div class="note"><b>One call = one session.</b> <code>session_id</code> lives in <code>scope</code>, so it applies to the <em>whole batch</em> — every message in a single call must belong to the SAME conversation/user (extraction runs across the set). To ingest turns from different sessions or users, make a separate call per session. There is <b>no per-message session field</b> — this matches mem0 (<code>run_id</code> per <code>add()</code>) and Zep (<code>session_id</code> per <code>add()</code>).</div>
+<p class="muted">Resources/skills replace <code>messages</code> with <code>text</code> (inline) or <code>raw_uri</code> (a stored blob) + <code>resource_type</code>; <code>scope</code> works the same way.</p>
+<div class="note"><b>One schema for everything you ingest.</b> This same envelope is the single, canonical schema for <em>all</em> ingestion kinds — <code>message</code>, <code>feedback</code>, <code>resource</code>, <code>skill</code>, <code>business_data</code> — across every entry point (<code>/v1/ingest</code>, <code>/v1/ingest_file</code>, and the SDK). The only separate format is the <b>agent hook</b> capture schema (Claude Code / Codex), which normalizes into this exact envelope before storage — so hook memory and API memory are stored identically.</div>
+
+<h2 id="turn">Worked example: remember a chat turn <a class="anchor" href="#turn">#</a></h2>
+<p>Your app already has the pieces — you just wrap them. Nothing is parsed out of the text: <b>content</b> comes from the prompt/output, <b>identity</b> comes from your session.</p>
+<pre><code># 1 · What your app already has (from YOUR runtime — NOT parsed from text)
+tenant   = "saparo"     # your workspace   (or pinned from your API key in enforced mode)
+user_id  = "alice"      # your end-user    (from your auth/session)
+session  = "s-42"       # your conversation id
+
+user_prompt      = "Set me up a monthly dark-roast subscription."     # what the user typed
+assistant_output = "Done — monthly dark-roast subscription active."   # what your model replied
+
+# 2 · Assemble the schema'd message:  text -> {role, content};  identity -> scope
+payload = {
+  "kind": "message",
+  "scope": {"tenant_id": tenant, "user_id": user_id, "session_id": session},
+  "messages": [
+    {"role": "user",      "content": user_prompt},        # the PROMPT  -> user turn
+    {"role": "assistant", "content": assistant_output},   # the OUTPUT  -> assistant turn
+    # {"role": "tool",    "content": tool_result},        # (optional) tool output -> tool turn
+  ],
+}
+
+# 3 · Ingest it (fire-and-forget; returns 202)
+import requests
+requests.post("http://saparo.ai:8080/v1/ingest", json=payload)</code></pre>
+<h3>The full loop — recall before, remember after</h3>
+<pre><code>S = {"tenant_id":"saparo","user_id":"alice","session_id":"s-42"}
+
+# BEFORE generating the next reply, recall relevant memory:
+pack = requests.post("http://saparo.ai:8080/v1/retrieve",
+        json={"query": new_prompt, "scope": S}).json()
+#   → inject pack["selected_refs"] into your model's context, generate `reply`, then:
+
+requests.post("http://saparo.ai:8080/v1/ingest", json={
+  "kind":"message", "scope":S,
+  "messages":[{"role":"user","content":new_prompt},
+              {"role":"assistant","content":reply}]})</code></pre>
+<table>
+  <tr><th>You have…</th><th>Maps to…</th></tr>
+  <tr><td>the user's prompt</td><td><code>{"role":"user","content": prompt}</code></td></tr>
+  <tr><td>the model's output</td><td><code>{"role":"assistant","content": output}</code></td></tr>
+  <tr><td>a tool/function result</td><td><code>{"role":"tool","content": result}</code></td></tr>
+  <tr><td>your session &amp; end-user</td><td><code>scope.session_id</code> / <code>scope.user_id</code> (from your app, not the text)</td></tr>
+</table>
+<p class="muted">Ingest one turn or a whole batch of turns from the same conversation in one call (one call = one session). No SDK needed — it's a plain JSON POST; <code>ingest_text()</code>/<code>ingest_large_file()</code> are just sugar over this.</p>
+
+<h2 id="ingest">Ingest API <a class="anchor" href="#ingest">#</a></h2>
+<p><code>POST /v1/ingest</code> — JSON body. Fast-acks <span class="pill">202</span>; extraction runs asynchronously.</p>
+<table>
+  <tr><th>Field</th><th>Req?</th><th>Notes</th></tr>
+  <tr><td><code>kind</code></td><td class="opt">optional</td><td><code>message</code> (default) · <code>resource</code> · <code>skill</code> · <code>feedback</code> · <code>business_data</code></td></tr>
+  <tr><td><code>messages</code></td><td class="req">one of these</td><td><code>[{"role":"user|assistant|system|tool","content":"…"}]</code> — the content to remember</td></tr>
+  <tr><td><code>text</code></td><td class="req">one of these</td><td>Inline content (for <code>resource</code>/<code>skill</code>) instead of <code>messages</code></td></tr>
+  <tr><td><code>raw_uri</code></td><td class="req">one of these</td><td>A stored blob to ingest, e.g. <code>temporalstore://…</code> (for large files — see below)</td></tr>
+  <tr><td><code>scope</code></td><td class="opt">optional*</td><td>Identity/routing (above). *Optional but you almost always want it.</td></tr>
+  <tr><td><code>sharing_scope</code></td><td class="opt">optional</td><td>Visibility — <code>private_user</code> / <code>tenant_shared</code> / <code>global_shared</code> (see below). Sensible default if omitted.</td></tr>
+  <tr><td><code>resource_type</code></td><td class="opt">optional</td><td><code>md</code>/<code>pdf</code>/<code>txt</code>… (inferred from filename when omitted)</td></tr>
+  <tr><td><code>wait</code></td><td class="opt">optional</td><td><code>false</code> (default, async 202) or <code>true</code> (block until extraction finishes)</td></tr>
+</table>
+<p><strong>Minimum ingest:</strong> <code>{"messages":[{"role":"user","content":"…"}], "scope":{"user_id":"alice","session_id":"s-42"}}</code></p>
+
+<h2 id="retrieve">Retrieve API <a class="anchor" href="#retrieve">#</a></h2>
+<p><code>POST /v1/retrieve</code> — returns a ranked context pack scoped to the caller.</p>
+<table>
+  <tr><th>Field</th><th>Req?</th><th>Notes</th></tr>
+  <tr><td><code>query</code></td><td class="req">required</td><td>What you're recalling</td></tr>
+  <tr><td><code>scope</code></td><td class="opt">optional*</td><td>Same identity you ingested under; widened by <code>sharing_scope</code> (tenant/global). *Pass it to read the right memory.</td></tr>
+</table>
+<p><strong>Minimum retrieve:</strong> <code>{"query":"…", "scope":{"user_id":"alice","session_id":"s-42"}}</code></p>
+
+<h2 id="files">Large files &amp; skills <a class="anchor" href="#files">#</a></h2>
+<p>A file on <em>your</em> machine must be pushed to the cluster (the server can't read your disk). Three ways — all idempotent (content-addressed by SHA-256):</p>
+<h3>A · One SDK call (Python)</h3>
+<pre><code>from matrixark_ingest_client import ingest_large_file
+ingest_large_file("onboarding_skill.md",
+                  kind="skill", sharing_scope="tenant_shared")
+# base_url / api_key default from env (MATRIXARK_BASE_URL / MATRIXARK_API_KEY)</code></pre>
+<h3>B · One HTTP call — stream the file body</h3>
+<pre><code>curl -X POST http://saparo.ai:8080/v1/ingest_file \
+ -H "X-Resource-Kind: skill" -H "X-Resource-Type: md" \
+ -H "X-Filename: onboarding_skill.md" \
+ -H "X-Sharing-Scope: tenant_shared" \
+ --data-binary @onboarding_skill.md</code></pre>
+<h3>C · Two steps (max control)</h3>
+<pre><code># 1) upload → content-addressed key       2) ingest by reference
+PUT  /v1/blob/resources/&lt;sha2&gt;/&lt;sha256&gt;      POST /v1/ingest
+     --data-binary @file                        {"kind":"skill",
+                                                  "raw_uri":"temporalstore://resources/&lt;sha2&gt;/&lt;sha256&gt;",
+                                                  "resource_type":"md"}</code></pre>
+<div class="note"><b>temporalstore vs matrixobject.</b> By default files land in TemporalStore's own blob tier (<code>temporalstore://…</code>) — works in Raft mode with no external object store. Enterprise deployments can target the MatrixObject store (<code>matrixobject://…</code>) via <code>backend="matrixobject"</code>. Skills and resources share the same size limit; small content can be sent inline as <code>text</code>.</div>
+
+<h2 id="visibility">Visibility (<code>sharing_scope</code>) <a class="anchor" href="#visibility">#</a></h2>
+<p>Controls who can retrieve what you ingest. Optional — omit and the server picks a sensible default.</p>
+<table>
+  <tr><th><code>sharing_scope</code></th><th>Who can see it</th></tr>
+  <tr><td><code>private_user</code></td><td>Only that <code>user_id</code> (the default when a user is set)</td></tr>
+  <tr><td><code>tenant_shared</code></td><td>All users in the tenant</td></tr>
+  <tr><td><code>global_shared</code></td><td>Everyone</td></tr>
+</table>
+<p class="muted">Cross-<em>tenant</em> access is impossible in enforced mode (the tenant is pinned from the key). Per-<em>user</em> separation relies on your app passing truthful <code>user_id</code>s.</p>
+
+<h2 id="auth">Authentication &amp; API keys <a class="anchor" href="#auth">#</a></h2>
+<div class="warn"><b>Default is open (dev mode).</b> Out of the box the gateway accepts anonymous requests — great for trials, but <b>no tenant isolation</b> (a one-time warning is logged). Turn on enforcement for production.</div>
+<h3>1 · Mint a key</h3>
+<pre><code>python3 tools/matrixark_provision_api_key.py \
+  --tenant-id saparo --account-id acct_saparo \
+  --prefix mk_live --store /etc/matrixark/keystore.json
+# prints the plaintext key ONCE (e.g. mk_live_xxxxx); stores only its sha256 hash
+# restrict a key:  --scopes context:retrieve   --allowed-user-ids alice,bob</code></pre>
+<h3>2 · Turn on enforcement</h3>
+<pre><code>MATRIXARK_REQUIRE_AUTH=1  MATRIXARK_AUTH_ENFORCED=1 \
+MATRIXARK_API_KEYS_HASHED_FILE=/etc/matrixark/keystore.json \
+  uvicorn matrixark_v1_gateway:application --host 0.0.0.0 --port 8080</code></pre>
+<p class="muted"><code>MATRIXARK_AUTH_ENFORCED</code> is the edge gate — <em>not</em> <code>MATRIXARK_ACCESS_MODE</code> (that only affects the backend). Only the key <b>hash</b> lives at the edge; plaintext keys never sit on the gateway.</p>
+<h3>3 · Clients send the key</h3>
+<pre><code>curl -H "Authorization: Bearer mk_live_xxxxx" … /v1/ingest
+# tenant_id + account_id are pinned FROM the key — drop them from scope; still pass user_id/session_id</code></pre>
+<h3>What a key carries &amp; enforces</h3>
+<table>
+  <tr><th>Field</th><th>Enforced</th><th>Meaning</th></tr>
+  <tr><td><code>tenant_id</code> / <code>account_id</code></td><td>✅ pinned</td><td>isolation boundary — from the key, un-spoofable</td></tr>
+  <tr><td><code>status</code> / <code>expires_at_ms</code></td><td>✅</td><td>revoked / expired key → <b>401</b></td></tr>
+  <tr><td><code>scopes</code></td><td>✅ per route</td><td><code>context:ingest</code> · <code>retrieve</code> · <code>feedback</code> · <code>replay</code> — wrong scope → <b>403</b></td></tr>
+  <tr><td><code>allowed_user_ids</code> / <code>allowed_session_ids</code></td><td>✅ if set</td><td>lock a key to specific users/sessions → else <b>403</b></td></tr>
+</table>
+<p><b>401</b> = missing / invalid / expired key · <b>403</b> = valid key, wrong scope or user. Verified end-to-end: no-key→401, valid→202 (tenant pinned), spoofed tenant blocked, retrieve isolated across tenants, expired→401.</p>
+
+<h2 id="sdk">Python SDK vs raw HTTP <a class="anchor" href="#sdk">#</a></h2>
+<div class="grid2">
+  <div class="card"><h3>Raw HTTP — any language</h3>
+  <p>No install. JSON POSTs to <code>/v1/*</code> from <code>requests</code>, <code>fetch</code>, Go, curl…</p>
+<pre><code>import requests
+BASE="http://saparo.ai:8080"
+S={"tenant_id":"saparo","user_id":"alice","session_id":"s-42"}
+requests.post(f"{BASE}/v1/ingest",
+  json={"kind":"message",
+        "messages":[{"role":"user","content":"likes dark roast"}],
+        "scope":S})
+requests.post(f"{BASE}/v1/retrieve",
+  json={"query":"coffee?","scope":S}).json()</code></pre>
+  </div>
+  <div class="card"><h3>Python SDK — sugar over HTTP</h3>
+  <p>Stdlib-only helpers. Only the file/text is required; the rest defaults from env.</p>
+<pre><code>from matrixark_ingest_client import (
+    ingest_large_file, ingest_text)
+ingest_text("Alice likes dark roast",
+            kind="message")
+ingest_large_file("skill.md",
+            sharing_scope="tenant_shared")</code></pre>
+  </div>
+</div>
+
+<h2 id="reliability">Reliability &amp; retries <a class="anchor" href="#reliability">#</a></h2>
+<ul>
+  <li><b>Idempotent uploads.</b> Files are content-addressed (SHA-256) — re-sending the same bytes dedups, never duplicates. On any error, just retry the same call.</li>
+  <li><b>Integrity-checked on fetch.</b> A corrupt/partial upload fails loudly (hash mismatch) instead of ingesting bad data — your cue to retry.</li>
+  <li><b>Bounded memory.</b> <code>/v1/ingest_file</code> streams the body to disk in chunks; multi-GB files cost flat memory.</li>
+  <li><b>No half-writes.</b> Extraction only runs after a successful upload — a failed upload leaves zero partial records.</li>
+</ul>
+
+<h2 id="apiref">API reference <a class="anchor" href="#apiref">#</a></h2>
+<p>All endpoints live under the gateway <code>base_url</code> (default <code>http://&lt;host&gt;:8080</code>). Bodies are JSON unless noted. In dev mode no auth header is needed; in enforced mode add <code>Authorization: Bearer &lt;key&gt;</code>.</p>
+<table>
+  <tr><th>Method &amp; path</th><th>Purpose</th></tr>
+  <tr><td><code>POST /v1/ingest</code></td><td>Ingest a message / resource / skill (JSON)</td></tr>
+  <tr><td><code>POST /v1/ingest_file</code></td><td>Stream a file body + ingest in one call</td></tr>
+  <tr><td><code>POST /v1/retrieve</code></td><td>Recall relevant memory (context pack)</td></tr>
+  <tr><td><code>PUT|POST|GET /v1/blob/&lt;key&gt;</code></td><td>Upload / download a raw blob</td></tr>
+  <tr><td><code>POST /v1/session/commit</code></td><td>Finalize a session's buffered writes</td></tr>
+  <tr><td><code>GET /v1/healthz</code> · <code>/v1/readyz</code></td><td>Liveness / readiness</td></tr>
+</table>
+
+<h3><span class="pill">POST</span> /v1/ingest</h3>
+<div class="grid2">
+  <div><b>Request</b>
+<pre><code>{
+  "kind": "message",
+  "messages": [
+    {"role":"user","content":"I prefer dark roast coffee"},
+    {"role":"assistant","content":"Got it — dark roast."}
+  ],
+  "scope": {"tenant_id":"saparo","user_id":"alice","session_id":"s-42"},
+  "sharing_scope": "private_user",   // optional
+  "wait": false                       // optional
+}</code></pre></div>
+  <div><b>Response</b> <span class="muted">— 202 Accepted</span>
+<pre><code>{
+  "accepted": 2,                      // records/messages taken
+  "scope": {"tenant_id":"saparo","user_id":"alice","session_id":"s-42"},
+  "result": { ... },
+  "finalized": true                   // present only when wait:true
+}</code></pre></div>
+</div>
+
+<h3><span class="pill">POST</span> /v1/ingest_file <span class="muted">— one-call large file</span></h3>
+<div class="grid2">
+  <div><b>Request</b> <span class="muted">— raw body, metadata in headers</span>
+<pre><code>POST /v1/ingest_file
+X-Resource-Kind:  skill            # or resource
+X-Resource-Type:  md               # inferred from X-Filename if omitted
+X-Filename:       onboarding.md
+X-Sharing-Scope:  tenant_shared    # optional (alias: X-Visibility)
+X-Wait:           true             # optional (sync extraction)
+Content-Type:     application/octet-stream
+
+&lt;raw file bytes, streamed&gt;</code></pre></div>
+  <div><b>Response</b> <span class="muted">— 202 (same shape as /v1/ingest)</span>
+<pre><code>{ "accepted": 1, "scope": {...}, "result": {...} }
+
+// errors:
+// 400 invalid_sharing_scope
+// 413 payload_too_large
+// 429 rate_limited
+// 502 blob_store_failed</code></pre></div>
+</div>
+
+<h3><span class="pill">POST</span> /v1/retrieve</h3>
+<div class="grid2">
+  <div><b>Request</b>
+<pre><code>{
+  "query": "what coffee does alice like?",
+  "scope": {"tenant_id":"saparo","user_id":"alice","session_id":"s-42"}
+}</code></pre></div>
+  <div><b>Response</b> <span class="muted">— 200, a context pack</span>
+<pre><code>{
+  "context_pack_id": "cp_…",
+  "selected_refs": [
+    {"ref_type":"summary","text":"Alice prefers dark roast coffee","score":0.94},
+    {"ref_type":"event","text":"user: I prefer dark roast coffee","score":0.88}
+  ]
+}</code></pre></div>
+</div>
+<p class="muted"><code>selected_refs</code> are the ranked memories (types: <code>event</code>, <code>entity</code>, <code>segment</code>, <code>summary</code>) scoped to the caller and widened by <code>sharing_scope</code>.</p>
+
+<h3><span class="pill">PUT</span> /v1/blob/&lt;key&gt; <span class="muted">· <span class="pill">GET</span> /v1/blob/&lt;key&gt;</span></h3>
+<div class="grid2">
+  <div><b>PUT — upload</b> <span class="muted">(content-addressed key = <code>resources/&lt;sha2&gt;/&lt;sha256&gt;</code>)</span>
+<pre><code>PUT /v1/blob/resources/2e/2e983aa6…
+--data-binary @bigfile.pdf
+→ { "key":"resources/2e/2e983aa6…",
+    "bytes_written": 5242880,
+    "object_length": 5242880,
+    "chunks": 5 }</code></pre></div>
+  <div><b>GET — download</b>
+<pre><code>GET /v1/blob/resources/2e/2e983aa6…
+→ 200, raw bytes (integrity-checked
+        against the key on fetch)
+→ 404 blob_not_found</code></pre></div>
+</div>
+
+<h3><span class="pill">GET</span> /v1/healthz · /v1/readyz</h3>
+<pre><code>GET /v1/healthz  → 200 {"status":"ok"}</code></pre>
+
+<h3>End-to-end examples</h3>
+<div class="grid2">
+  <div><b>Ingest a resource inline (Python)</b>
+<pre><code>import requests
+BASE="http://saparo.ai:8080"
+requests.post(f"{BASE}/v1/ingest", json={
+  "kind":"resource","resource_type":"md",
+  "text":"# Runbook\nRotate the API key every 90 days.",
+  "scope":{"tenant_id":"saparo"},
+  "sharing_scope":"tenant_shared"})   # visible to all saparo users</code></pre></div>
+  <div><b>Ingest a skill file (SDK)</b>
+<pre><code>from matrixark_ingest_client import ingest_large_file
+ingest_large_file("skills/triage.md",
+  kind="skill", sharing_scope="global_shared")
+# base_url/api_key from env; content-addressed + idempotent</code></pre></div>
+  <div><b>Retrieve for one user/session</b>
+<pre><code>requests.post(f"{BASE}/v1/retrieve", json={
+  "query":"how do we rotate keys?",
+  "scope":{"tenant_id":"saparo","user_id":"alice",
+           "session_id":"s-42"}}).json()</code></pre></div>
+  <div><b>One-call large file (curl)</b>
+<pre><code>curl -X POST http://saparo.ai:8080/v1/ingest_file \
+  -H "X-Resource-Kind: resource" -H "X-Resource-Type: pdf" \
+  -H "X-Filename: q4.pdf" -H "X-Wait: true" \
+  --data-binary @q4.pdf</code></pre></div>
+</div>
+<p class="muted">Enforced mode: add <code>-H "Authorization: Bearer sk_live_…"</code> and drop <code>tenant_id</code>/<code>account_id</code> from <code>scope</code> (pinned from the key).</p>
+
+<h2 id="fields">Field reference — every field &amp; its values <a class="anchor" href="#fields">#</a></h2>
+
+<h3>Ingest envelope (top level)</h3>
+<table>
+  <tr><th>Field</th><th>Type</th><th>Allowed / example values</th><th>Req?</th><th>Default</th></tr>
+  <tr><td><code>kind</code></td><td>string enum</td><td><code>message</code> · <code>feedback</code> · <code>resource</code> · <code>skill</code> · <code>business_data</code></td><td class="opt">optional</td><td><code>message</code></td></tr>
+  <tr><td><code>messages</code></td><td>array&lt;object&gt;</td><td><code>[{"role":"user","content":"I prefer dark roast"}]</code></td><td class="req">req (message kinds)</td><td>—</td></tr>
+  <tr><td><code>text</code></td><td>string</td><td><code>"# Runbook\nRotate keys every 90 days."</code></td><td>alt to messages</td><td>—</td></tr>
+  <tr><td><code>raw_uri</code></td><td>string (URI)</td><td><code>temporalstore://resources/2e/2e98…</code> · <code>matrixobject://bucket/key</code> · <code>s3://bucket/key</code> · <code>file:///path</code></td><td>alt to messages</td><td>—</td></tr>
+  <tr><td><code>resource_type</code></td><td>string</td><td><code>md</code> · <code>pdf</code> · <code>txt</code> · <code>json</code> · <code>html</code> · <code>csv</code></td><td class="opt">optional</td><td>inferred from filename</td></tr>
+  <tr><td><code>scope</code></td><td>object</td><td><code>{"tenant_id":"saparo","user_id":"alice","session_id":"s-42"}</code> (see below)</td><td>⭐ recommended</td><td><code>{}</code></td></tr>
+  <tr><td><code>sharing_scope</code></td><td>string enum</td><td><code>private_user</code> · <code>tenant_shared</code> · <code>global_shared</code></td><td class="opt">optional</td><td><code>private_user</code> (if user set)</td></tr>
+  <tr><td><code>wait</code></td><td>boolean</td><td><code>false</code> (async 202) · <code>true</code> (sync extraction)</td><td class="opt">optional</td><td><code>false</code></td></tr>
+  <tr><td><code>ingestion_time_ms</code></td><td>integer</td><td><code>1699999999999</code> (unix ms)</td><td class="opt">optional</td><td>now</td></tr>
+  <tr><td><code>metadata</code></td><td>object</td><td><code>{"source":"webapp","name":"onboarding-v2"}</code></td><td class="opt">optional</td><td><code>{}</code></td></tr>
+</table>
+
+<h3><code>messages[]</code> item</h3>
+<table>
+  <tr><th>Field</th><th>Type</th><th>Allowed / example values</th><th>Req?</th></tr>
+  <tr><td><code>role</code></td><td>string enum</td><td><code>user</code> · <code>assistant</code> · <code>tool</code> · <code>system</code> &nbsp;<span class="muted">(aliases: human→user; agent/ai/llm/model→assistant; function/tool_result→tool)</span></td><td class="req">required</td></tr>
+  <tr><td><code>content</code></td><td>string</td><td><code>"I prefer dark roast coffee"</code> (non-empty)</td><td class="req">required</td></tr>
+</table>
+
+<h3><code>scope</code> object</h3>
+<table>
+  <tr><th>Field</th><th>Type</th><th>Example value</th><th>Notes</th></tr>
+  <tr><td><code>account_id</code></td><td>string</td><td><code>acct_saparo</code></td><td>billing/org · <b>enforced mode: from the API key</b></td></tr>
+  <tr><td><code>tenant_id</code></td><td>string</td><td><code>saparo</code></td><td>workspace · <b>enforced mode: from the API key</b></td></tr>
+  <tr><td><code>user_id</code></td><td>string</td><td><code>alice</code></td><td>the end-user · you supply it</td></tr>
+  <tr><td><code>session_id</code></td><td>string</td><td><code>s-42</code></td><td>the conversation · you supply it (one per call)</td></tr>
+  <tr><td><code>team</code></td><td>string</td><td><code>support</code></td><td>optional grouping</td></tr>
+</table>
+
+<h3>Retrieve (<code>POST /v1/retrieve</code>)</h3>
+<table>
+  <tr><th>Field</th><th>Type</th><th>Example value</th><th>Req?</th></tr>
+  <tr><td><code>query</code></td><td>string</td><td><code>"what coffee does alice like?"</code></td><td class="req">required</td></tr>
+  <tr><td><code>scope</code></td><td>object</td><td><code>{"tenant_id":"saparo","user_id":"alice","session_id":"s-42"}</code></td><td>⭐ recommended</td></tr>
+</table>
+
+<h3><code>POST /v1/ingest_file</code> headers</h3>
+<table>
+  <tr><th>Header</th><th>Example value</th><th>Req?</th></tr>
+  <tr><td><code>Authorization</code></td><td><code>Bearer mk_live_xxxx…</code></td><td>enforced mode only</td></tr>
+  <tr><td><code>X-Resource-Kind</code></td><td><code>skill</code> · <code>resource</code></td><td class="opt">optional (default skill)</td></tr>
+  <tr><td><code>X-Resource-Type</code></td><td><code>md</code> · <code>pdf</code> · <code>txt</code></td><td class="opt">optional (inferred)</td></tr>
+  <tr><td><code>X-Filename</code></td><td><code>onboarding.md</code></td><td class="opt">optional</td></tr>
+  <tr><td><code>X-Sharing-Scope</code></td><td><code>private_user</code> · <code>tenant_shared</code> · <code>global_shared</code> (alias <code>X-Visibility</code>)</td><td class="opt">optional</td></tr>
+  <tr><td><code>X-Wait</code></td><td><code>true</code> · <code>false</code></td><td class="opt">optional</td></tr>
+  <tr><td><code>X-Scope</code></td><td><code>{"user_id":"alice","session_id":"s-42"}</code> (JSON string)</td><td class="opt">optional</td></tr>
+</table>
+
+<h3>SDK parameters (<code>ingest_large_file</code> / <code>ingest_text</code>)</h3>
+<table>
+  <tr><th>Param</th><th>Example value</th><th>Req?</th><th>Default</th></tr>
+  <tr><td><code>path</code> / <code>text</code></td><td><code>"skills/triage.md"</code> / <code>"Alice likes dark roast"</code></td><td class="req">required</td><td>—</td></tr>
+  <tr><td><code>base_url</code></td><td><code>"https://saparo.ai:8080"</code></td><td class="opt">optional</td><td>env <code>MATRIXARK_BASE_URL</code> → <code>http://127.0.0.1:8080</code></td></tr>
+  <tr><td><code>api_key</code></td><td><code>"mk_live_xxxxx"</code></td><td class="opt">optional</td><td>env <code>MATRIXARK_API_KEY</code> → anonymous</td></tr>
+  <tr><td><code>kind</code></td><td><code>"skill"</code> · <code>"resource"</code></td><td class="opt">optional</td><td><code>skill</code></td></tr>
+  <tr><td><code>resource_type</code></td><td><code>"md"</code></td><td class="opt">optional</td><td>inferred from suffix</td></tr>
+  <tr><td><code>backend</code></td><td><code>"temporalstore"</code> · <code>"matrixobject"</code></td><td class="opt">optional</td><td><code>temporalstore</code></td></tr>
+  <tr><td><code>scope</code></td><td><code>{"user_id":"alice","session_id":"s-42"}</code></td><td class="opt">optional</td><td>—</td></tr>
+  <tr><td><code>sharing_scope</code> / <code>visibility</code></td><td><code>"tenant_shared"</code></td><td class="opt">optional</td><td>server default</td></tr>
+  <tr><td><code>wait</code></td><td><code>True</code> · <code>False</code></td><td class="opt">optional</td><td><code>False</code></td></tr>
+</table>
+
+<h3>Fully-populated ingest example (every field with a value)</h3>
+<pre><code>{
+  "kind": "message",
+  "scope": {
+    "account_id": "acct_saparo",
+    "tenant_id":  "saparo",
+    "user_id":    "alice",
+    "session_id": "s-42",
+    "team":       "support"
+  },
+  "messages": [
+    {"role": "user",      "content": "I prefer dark roast coffee"},
+    {"role": "assistant", "content": "Noted — dark roast it is."}
+  ],
+  "sharing_scope": "private_user",
+  "wait": false,
+  "ingestion_time_ms": 1699999999999,
+  "metadata": {"source": "webapp", "name": "onboarding-v2"}
+}</code></pre>
+
+<h2 id="mem0">vs mem0 &amp; migrating <a class="anchor" href="#mem0">#</a></h2>
+<p>Our message format <em>is</em> mem0's (OpenAI <code>{role, content}</code>), and we accept mem0's identity kwargs — so migration is close to a drop-in. The differences are additive: multi-tenant isolation and visibility levels that mem0's SDK doesn't have.</p>
+<table>
+  <tr><th>Concept</th><th>mem0</th><th>MatrixArk</th></tr>
+  <tr><td>Add memory</td><td><code>m.add(messages, user_id, agent_id, run_id, metadata)</code></td><td><code>POST /v1/ingest {messages, scope, …}</code> (or the drop-in shim below)</td></tr>
+  <tr><td>Message format</td><td><code>{role, content}</code> (OpenAI)</td><td><code>{role, content}</code> — <b>identical</b></td></tr>
+  <tr><td>End-user</td><td><code>user_id</code></td><td><code>scope.user_id</code> (top-level <code>user_id</code> also accepted)</td></tr>
+  <tr><td>Session / run</td><td><code>run_id</code></td><td><code>scope.session_id</code> (top-level <code>run_id</code> → session_id)</td></tr>
+  <tr><td>Agent</td><td><code>agent_id</code></td><td><code>scope.agent_id</code> (top-level <code>agent_id</code> accepted)</td></tr>
+  <tr><td>Metadata</td><td><code>metadata</code></td><td><code>metadata</code> — same</td></tr>
+  <tr><td>Search / recall</td><td><code>m.search(query, user_id=…)</code></td><td><code>POST /v1/retrieve {query, scope}</code></td></tr>
+  <tr><td>Multi-tenant isolation</td><td>—</td><td><b>✓</b> <code>tenant_id</code>/<code>account_id</code> pinned from the API key</td></tr>
+  <tr><td>Visibility levels</td><td>—</td><td><b>✓</b> <code>sharing_scope</code> (private / tenant / global)</td></tr>
+  <tr><td>Self-hosted / OSS</td><td>✓</td><td>✓</td></tr>
+</table>
+
+<h3>Migrating from mem0 — drop-in shim</h3>
+<div class="grid2">
+  <div><b>mem0</b>
+<pre><code>from mem0 import Memory
+m = Memory()
+m.add(messages, user_id="alice", run_id="s-42")
+m.search("coffee?", user_id="alice")</code></pre></div>
+  <div><b>MatrixArk (same signatures)</b>
+<pre><code>from matrixark_mem0_compat import Memory
+m = Memory(base_url="https://saparo.ai:8080")  # api_key optional
+m.add(messages, user_id="alice", run_id="s-42") # run_id -> session_id
+m.search("coffee?", user_id="alice")</code></pre></div>
+</div>
+<p>Prefer raw HTTP? We also accept mem0's kwargs at the <b>top level</b> of <code>/v1/ingest</code> and fold them into <code>scope</code>, so a mem0-shaped body maps cleanly with no nesting:</p>
+<pre><code>POST /v1/ingest
+{ "messages":[{"role":"user","content":"I like dark roast"}],
+  "user_id":"alice", "run_id":"s-42", "agent_id":"barista-bot" }
+   ↑ user_id→scope.user_id · run_id→scope.session_id · agent_id→scope.agent_id</code></pre>
+<table>
+  <tr><th>mem0 kwarg</th><th>→ MatrixArk</th></tr>
+  <tr><td><code>user_id</code></td><td><code>scope.user_id</code></td></tr>
+  <tr><td><code>run_id</code></td><td><code>scope.session_id</code></td></tr>
+  <tr><td><code>agent_id</code></td><td><code>scope.agent_id</code></td></tr>
+  <tr><td><code>metadata</code></td><td><code>metadata</code></td></tr>
+  <tr><td><code>messages</code></td><td><code>messages</code> (unchanged)</td></tr>
+</table>
+<p class="muted">Multi-tenant isolation is the one addition to make: mem0 is single-tenant, so add an API key (enforced mode) and <code>tenant_id</code>/<code>account_id</code> come from it automatically — nothing else in your calls changes.</p>
+
+</main>
+<footer><div class="wrap">
+  MatrixArk memory platform · onboarding quickstart. Endpoints: <code>/v1/ingest</code>, <code>/v1/ingest_file</code>, <code>/v1/retrieve</code>, <code>/v1/blob/&lt;key&gt;</code>.
+  Enterprise MatrixObject object store available for large-scale durable attachments.
+</div></footer>
+</body>
+</html>

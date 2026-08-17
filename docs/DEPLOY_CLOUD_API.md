@@ -10,6 +10,10 @@ MatrixArk backend as the rest of `tools/`. It adds the four things an enterprise
 the internal API: **per-tenant bearer auth, token-bucket rate limiting, request/blob quotas, and a
 streamed `/v1/blob/<key>` proxy** to the datanode.
 
+## Enterprise onboarding
+
+After you deploy the Cloud API, hand customers the **[Enterprise Onboarding](./enterprise_onboarding.html)** page. It is the single self-contained walkthrough of the ingest/retrieve API, the tenant/user/session **scope model**, **large-file ingestion** (the `/v1/blob/<key>` stream), **auth & API-keys**, and **mem0 migration** — everything a new team needs to go from a fresh deployment to live context.
+
 ## Endpoints
 
 | Method | Path | Purpose | Success |
