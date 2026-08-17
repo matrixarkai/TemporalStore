@@ -57,6 +57,11 @@ try:  # top-level (run from tools/) ...
 except ImportError:  # ... or package path.
     from tools.matrixark_temporalstore_blob import content_hash, content_key, blob_uri  # type: ignore
 
+try:  # message-format adapters (OpenAI / Anthropic -> MatrixArk messages).
+    from matrixark_model_adapters import to_messages
+except ImportError:  # ... or package path.
+    from tools.matrixark_model_adapters import to_messages  # type: ignore
+
 Json = dict[str, Any]
 
 # Fallback gateway base URL when neither an explicit arg nor an env var is set.
@@ -318,5 +323,39 @@ def ingest_text(text: str, *, base_url: Optional[str] = None,
     return _post_json(base_url, api_key, "/v1/ingest", body, timeout)
 
 
-__all__ = ["ingest_large_file", "ingest_text", "content_hash", "content_key",
-           "VALID_SHARING_SCOPES", "DEFAULT_BASE_URL"]
+def ingest_messages(messages: Any, *, provider: str = "auto",
+                    base_url: Optional[str] = None, api_key: Optional[str] = None,
+                    scope: Optional[Json] = None,
+                    metadata: Optional[Json] = None,
+                    sharing_scope: Optional[str] = None,
+                    visibility: Optional[str] = None,
+                    wait: bool = False, timeout: float = 60.0) -> dict:
+    """Ingest conversation ``messages`` — accepting provider-shaped SDK output.
+
+    ``messages`` may be MatrixArk-native ``[{role, content}, ...]`` OR the object
+    your model SDK produced/consumed (an OpenAI chat request/response, an
+    Anthropic messages request/response, a single message, or a bare string). It
+    is normalized to MatrixArk's ``[{role, content}]`` shape via
+    ``matrixark_model_adapters.to_messages`` before posting.
+
+    ``provider``: ``"auto"`` (default; sniff the shape), ``"openai"``,
+    ``"anthropic"``, or ``"matrixark"`` (already normalized). Other args mirror
+    ``ingest_text``. Returns the parsed ``/v1/ingest`` response."""
+    effective_sharing_scope = _resolve_sharing_scope(sharing_scope, visibility)
+    base_url = _resolve_base_url(base_url)
+    api_key = _resolve_api_key(api_key)
+    normalized = to_messages(messages, provider=provider)
+    body: Json = {"kind": "message", "messages": normalized, "wait": bool(wait)}
+    if scope is not None:
+        body["scope"] = scope
+    if metadata is not None:
+        body["metadata"] = metadata
+    if effective_sharing_scope is not None:
+        body["sharing_scope"] = effective_sharing_scope
+    if wait:
+        body["finalize"] = True
+    return _post_json(base_url, api_key, "/v1/ingest", body, timeout)
+
+
+__all__ = ["ingest_large_file", "ingest_text", "ingest_messages", "content_hash",
+           "content_key", "VALID_SHARING_SCOPES", "DEFAULT_BASE_URL"]

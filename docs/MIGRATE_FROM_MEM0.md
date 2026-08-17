@@ -137,6 +137,34 @@ scope key (so memories are isolable per agent) and in retrieval matching:
 
 ---
 
+## Ingesting from OpenAI / Anthropic output
+
+Already holding the object your model SDK produced or consumed? Normalize it into
+MatrixArk `messages` with `tools/matrixark_model_adapters.py` (stdlib only — it
+does **not** import the `openai` / `anthropic` SDKs; pass plain dicts or the SDK
+response object):
+
+```python
+from matrixark_model_adapters import from_openai, from_anthropic
+from matrixark_ingest_client import ingest_messages
+
+ingest_messages(from_openai(openai_resp), scope={"user_id": "alice"})   # OpenAI chat request OR response
+ingest_messages(from_anthropic(claude_resp))                            # Anthropic request OR Messages response
+```
+
+`from_openai` accepts a chat-completions request (`{"messages":[...]}`), a
+response (`{"choices":[{"message":{...}}]}`), a single message, or a raw list;
+`function` role → `tool`. `from_anthropic` accepts a messages request or a
+Messages response, flattening `content` blocks and mapping a `tool_result`
+user-turn → `tool`. Both flatten list-shaped content to a string, skip empty
+turns, and return `[]` for empty/None. `to_messages(obj, provider="auto")` sniffs
+the shape for you. The `Memory` shim also takes provider-shaped input directly:
+
+```python
+m.add(openai_resp)                    # auto-sniffed
+m.add(claude_resp, provider="anthropic")
+```
+
 ## MatrixArk vs mem0 at a glance
 
 | Capability                     | mem0                               | MatrixArk                                                        |

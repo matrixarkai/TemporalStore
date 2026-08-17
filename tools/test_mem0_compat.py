@@ -165,6 +165,33 @@ class MemoryAddTest(unittest.TestCase):
             m.add(MESSAGES, agent_id="assistant")  # only agent_id
         self.assertEqual({"agent_id": "assistant"}, _POSTS[0]["body"]["scope"])
 
+    def test_add_openai_response_auto_sniffed(self):
+        # Provider-shaped input flows through matrixark_model_adapters.to_messages.
+        resp = {"choices": [{"message": {"role": "assistant", "content": "auto"}}]}
+        with _Gateway() as gw:
+            m = mem0.Memory(base_url=gw.url, api_key="k")
+            m.add(resp, user_id="u1")
+        self.assertEqual([{"role": "assistant", "content": "auto"}],
+                         _POSTS[0]["body"]["messages"])
+
+    def test_add_openai_content_parts_flattened_via_provider(self):
+        req = {"messages": [{"role": "user", "content": [
+            {"type": "text", "text": "a"}, {"type": "text", "text": "b"}]}]}
+        with _Gateway() as gw:
+            m = mem0.Memory(base_url=gw.url, api_key="k")
+            m.add(req, provider="openai")
+        self.assertEqual([{"role": "user", "content": "a\nb"}],
+                         _POSTS[0]["body"]["messages"])
+
+    def test_add_anthropic_blocks_via_provider(self):
+        resp = {"type": "message", "role": "assistant",
+                "content": [{"type": "text", "text": "claude reply"}]}
+        with _Gateway() as gw:
+            m = mem0.Memory(base_url=gw.url, api_key="k")
+            m.add(resp, provider="anthropic")
+        self.assertEqual([{"role": "assistant", "content": "claude reply"}],
+                         _POSTS[0]["body"]["messages"])
+
 
 class MemorySearchTest(unittest.TestCase):
     def setUp(self):

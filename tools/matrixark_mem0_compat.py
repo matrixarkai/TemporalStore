@@ -43,26 +43,58 @@ try:  # top-level (run from tools/) ...
         _resolve_api_key,
         _resolve_base_url,
     )
+    from matrixark_model_adapters import to_messages
 except ImportError:  # ... or package path.
     from tools.matrixark_ingest_client import (  # type: ignore
         _post_json,
         _resolve_api_key,
         _resolve_base_url,
     )
+    from tools.matrixark_model_adapters import to_messages  # type: ignore
 
 Json = dict[str, Any]
 
 __all__ = ["Memory"]
 
 
-def _normalize_messages(messages: Any) -> list[Json]:
-    """Accept mem0's flexible ``messages``: a bare string (wrapped as a single
-    user turn) or an OpenAI-style ``[{role, content}, ...]`` list (used as-is)."""
+def _already_normalized(messages: list) -> bool:
+    """True when ``messages`` is already MatrixArk-shaped: every element is a
+    ``{role, content}`` mapping whose ``content`` is a plain string (not a list
+    of provider content-parts). Such input is passed through byte-identically so
+    existing callers are completely unaffected."""
+    for msg in messages:
+        if not isinstance(msg, dict):
+            return False
+        content = msg.get("content")
+        if content is not None and not isinstance(content, str):
+            return False
+    return True
+
+
+def _normalize_messages(messages: Any, provider: Optional[str] = None) -> list[Json]:
+    """Normalize mem0's flexible ``messages`` into MatrixArk turns.
+
+    * A bare **string** is wrapped as a single user turn.
+    * An already-normalized ``[{role, content}, ...]`` list (string content) is
+      used **as-is** — unchanged existing behavior.
+    * An explicit ``provider`` (``"openai"`` / ``"anthropic"``), or any other
+      shape (a provider request/response dict/object, or a list carrying
+      content-part blocks), is routed through
+      ``matrixark_model_adapters.to_messages`` so customers can pass their model
+      SDK's output directly."""
     if isinstance(messages, str):
         return [{"role": "user", "content": messages}]
+    # Explicit provider always routes through the adapter.
+    if provider is not None and str(provider).lower() != "auto":
+        return to_messages(messages, provider=provider)
     if isinstance(messages, list):
-        return messages
-    raise TypeError("messages must be a string or a list of {role, content} objects")
+        if _already_normalized(messages):
+            return messages
+        return to_messages(messages, provider="auto")
+    if messages is None:
+        return []
+    # A provider request/response object (dict or SDK model) — sniff + adapt.
+    return to_messages(messages, provider="auto")
 
 
 def _scope_from_identity(user_id: Optional[str], agent_id: Optional[str], run_id: Optional[str]) -> Json:
@@ -98,12 +130,21 @@ class Memory:
 
     def add(self, messages: Any, *, user_id: Optional[str] = None,
             agent_id: Optional[str] = None, run_id: Optional[str] = None,
-            metadata: Optional[Json] = None, **kw: Any) -> Json:
+            metadata: Optional[Json] = None, provider: Optional[str] = None,
+            **kw: Any) -> Json:
         """Ingest ``messages`` (mem0 ``add``). Maps ``run_id`` -> ``session_id``
-        and ``agent_id`` -> ``scope.agent_id``; accepts a bare string. Extra
-        kwargs are ignored for mem0 signature compatibility. Returns the parsed
+        and ``agent_id`` -> ``scope.agent_id``; accepts a bare string.
+
+        ``provider`` (optional, additive) lets a caller pass their model SDK's
+        output directly: ``"openai"`` / ``"anthropic"`` force that adapter, and
+        the default (``None`` / ``"auto"``) auto-sniffs provider-shaped input
+        (an OpenAI ``choices`` response, an Anthropic content-block message,
+        etc.) via ``matrixark_model_adapters.to_messages``. Already-normalized
+        ``[{role, content}]`` lists are passed through unchanged. Extra kwargs
+        are ignored for mem0 signature compatibility. Returns the parsed
         ``/v1/ingest`` response."""
-        body: Json = {"kind": "message", "messages": _normalize_messages(messages)}
+        body: Json = {"kind": "message",
+                      "messages": _normalize_messages(messages, provider)}
         scope = _scope_from_identity(user_id, agent_id, run_id)
         if scope:
             body["scope"] = scope
