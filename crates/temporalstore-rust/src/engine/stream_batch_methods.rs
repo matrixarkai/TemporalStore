@@ -284,9 +284,7 @@ impl TemporalEngine {
             if outcome.mutated {
                 mutated_any = true;
                 let object_keys = command_object_keys(&command_for_post_write);
-                if delta_served_index_enabled() {
-                    delta_command_keys.extend(object_keys.iter().cloned());
-                }
+                delta_command_keys.extend(object_keys.iter().cloned());
                 if object_keys.is_empty() {
                     rebuild_bucket_page_ownership(
                         request.shard_id,
@@ -367,32 +365,25 @@ impl TemporalEngine {
                 // single-command path) so shard load replays only records after it.
                 shard.applied_wal_sequence =
                     Some(self.wal_store.stats(request.shard_id).last_sequence);
-                if delta_served_index_enabled() {
-                    // Delta path: append the pages this batch changed (O(delta)) to the
-                    // index-log (advances the sequence + populates the delta stream); defer
-                    // the whole-index base rewrite to the next compaction point (see the
-                    // single-command execute path).
-                    let items = collect_command_index_items(
-                        shard,
-                        &delta_command_keys,
-                        start_routing_bucket,
-                        end_routing_bucket,
-                    );
-                    let key_states = capture_key_states(shard, &delta_command_keys);
-                    let _ = self.index_log_store.append_delta(
-                        request.shard_id,
-                        items,
-                        key_states,
-                        shard.applied_wal_sequence,
-                        None,
-                    );
-                } else {
-                    let index_bytes = serialize_index(shard);
-                    let _ = self
-                        .index_log_store
-                        .append_json(request.shard_id, &index_bytes);
-                    let _ = self.persist_index_bytes(request.shard_id, &index_bytes);
-                }
+                // Append the pages this batch changed (O(delta)) to the index-log (advances
+                // the sequence + populates the delta stream). The whole-index base rewrite is
+                // deferred to the next compaction point (see the single-command execute path).
+                let items = collect_command_index_items(
+                    shard,
+                    &delta_command_keys,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                );
+                let key_states = capture_key_states(shard, &delta_command_keys);
+                let _ = self.index_log_store.append_delta(
+                    request.shard_id,
+                    items,
+                    key_states,
+                    shard.applied_wal_sequence,
+                    None,
+                    // Non-blocking on the raft apply path (raft log is the durability source).
+                    !raft_applying(),
+                );
             }
         }
         BatchExecuteResponse {

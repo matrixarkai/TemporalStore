@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://matrixark.ai/schemas/ingest_envelope.schema.json",
+  "title": "MatrixArk Ingest Envelope",
+  "description": "Canonical request schema for ALL non-agent ingestion into MatrixArk / TemporalStore. Every non-agent ingest call (kind in {message, feedback, resource, skill, business_data}) is normalized by tools/matrixark_mcp_core.py::normalize_envelope (via resolve_ingest_messages + the require_messages/optional_object helpers in tools/matrixark_mcp_core_identity.py, which matrixark_mcp_core re-exports), and this schema DESCRIBES that normalizer's accepted input contract. normalize_envelope is the source of truth; this schema must never impose a rule the code does not. The agent-capture path (integrations/agent-hooks/shared/agent_event_schema.json) is a SEPARATE capture format that agent hooks normalize INTO this same envelope; it is not this schema. NOTE (documented code leniencies not fully expressed here): message roles are matched case-insensitively after trimming and non-canonical aliases (see message.role) are normalized to the four canonical roles; ingestion_time_ms is also accepted by the code as a numeric string or float (coerced via int()); scope/metadata accept null (treated as {}); for resource/skill a raw_uri whose value is exactly \"inline-resource\" is NOT treated as a source (text or messages must then be supplied). additionalProperties is true because normalize_envelope copies through passthrough fields; the known ones are documented under properties.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "kind": {
+      "description": "Ingestion kind. Optional in a raw call (the gateway supplies a per-endpoint default_kind), but when present must be one of the enum. Drives the content requirement below.",
+      "type": "string",
+      "enum": ["message", "feedback", "resource", "skill", "business_data"]
+    },
+    "messages": {
+      "description": "Conversation/content turns. Required and non-empty for kind in {message, feedback, business_data}; for {resource, skill} it is one acceptable content source among messages|text|raw_uri.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/message" }
+    },
+    "text": {
+      "description": "Client-facing single-call content for resource/skill ingest (alias: resource_text). Synthesized into a one-item user messages list by resolve_ingest_messages.",
+      "type": "string"
+    },
+    "resource_text": {
+      "description": "Alias of text accepted for resource/skill single-call ingest.",
+      "type": "string"
+    },
+    "raw_uri": {
+      "description": "Local-file path or URI source for resource/skill ingest (passthrough for other kinds). The literal value \"inline-resource\" is a placeholder and is NOT treated as a real source.",
+      "type": "string"
+    },
+    "resource_type": {
+      "description": "Free-form resource classifier (passthrough).",
+      "type": "string"
+    },
+    "scope": {
+      "description": "Access/ownership scope. Optional; null is treated as an empty object. All subfields are optional strings.",
+      "type": ["object", "null"],
+      "additionalProperties": true,
+      "properties": {
+        "account_id": { "type": "string" },
+        "tenant_id": { "type": "string" },
+        "team": { "type": "string" },
+        "user_id": { "type": "string" },
+        "session_id": { "type": "string" },
+        "sharing_scope": { "$ref": "#/$defs/sharing_scope" }
+      }
+    },
+    "sharing_scope": {
+      "description": "Sharing visibility. Read from scope.sharing_scope (or top-level); defaults to private_user.",
+      "$ref": "#/$defs/sharing_scope"
+    },
+    "metadata": {
+      "description": "Free-form metadata object. Optional; null is treated as an empty object. May carry ingestion_time_ms and storage_options overrides.",
+      "type": ["object", "null"]
+    },
+    "ingestion_time_ms": {
+      "description": "Ingestion timestamp in epoch milliseconds. Optional; defaults to now. Must be a positive integer (the code also accepts a numeric string/float, coerced via int()).",
+      "type": "integer",
+      "exclusiveMinimum": 0
+    },
+    "storage_options": {
+      "description": "Storage routing hints (storage_mode, oplog_mode, replication_mode, consistency, route, storage_family/family, write_mode, raft_mode, background_write). Validated and canonicalized into storage_route by normalize_storage_options/canonical_storage_route.",
+      "type": "object",
+      "additionalProperties": true
+    },
+    "wait": {
+      "description": "Client-facing flag: block until durable/processed instead of async.",
+      "type": "boolean"
+    },
+    "raw_object_backend": {
+      "description": "Client-facing hint selecting the raw object-store backend for resource bytes.",
+      "type": "string"
+    },
+    "max_skill_bytes": {
+      "description": "Client-facing cap on skill/resource text bytes to ingest.",
+      "type": "integer"
+    },
+    "context_pack_id": { "description": "Passthrough field copied verbatim by normalize_envelope.", "type": "string" },
+    "query_id_hash": { "description": "Passthrough field copied verbatim by normalize_envelope." },
+    "accepted_refs": { "description": "Passthrough field copied verbatim by normalize_envelope." },
+    "rejected_refs": { "description": "Passthrough field copied verbatim by normalize_envelope." },
+    "source_event_ids": { "description": "Passthrough field copied verbatim by normalize_envelope." },
+    "segment_provider": { "description": "Passthrough segmentation control copied verbatim." },
+    "segment_model": { "description": "Passthrough segmentation control copied verbatim." },
+    "segment_model_path": { "description": "Passthrough segmentation control copied verbatim." },
+    "segment_max_new_tokens": { "description": "Passthrough segmentation control copied verbatim." },
+    "segment_provider_fallback": { "description": "Passthrough segmentation control copied verbatim." },
+    "understanding_provider": { "description": "Passthrough provider selector copied verbatim." },
+    "extraction_provider": { "description": "Passthrough provider selector copied verbatim." }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "message" } }, "required": ["kind"] },
+      "then": { "required": ["messages"], "properties": { "messages": { "minItems": 1 } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "feedback" } }, "required": ["kind"] },
+      "then": { "required": ["messages"], "properties": { "messages": { "minItems": 1 } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "business_data" } }, "required": ["kind"] },
+      "then": { "required": ["messages"], "properties": { "messages": { "minItems": 1 } } }
+    },
+    {
+      "if": { "properties": { "kind": { "enum": ["resource", "skill"] } }, "required": ["kind"] },
+      "then": {
+        "anyOf": [
+          { "required": ["messages"], "properties": { "messages": { "minItems": 1 } } },
+          { "required": ["text"], "properties": { "text": { "minLength": 1 } } },
+          { "required": ["resource_text"], "properties": { "resource_text": { "minLength": 1 } } },
+          { "required": ["raw_uri"], "properties": { "raw_uri": { "minLength": 1 } } }
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "message": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["role", "content"],
+      "properties": {
+        "role": {
+          "description": "Turn author role. Canonical values are user, assistant, tool, system. The normalizer (normalize_message_role) also accepts documented aliases that collapse to a canonical role: human/prompt -> user; agent/ai/bot/llm/model/assistant_response -> assistant; function/function_call_output/custom_tool_call_output/tool_call_output/tool_result/tool_output/tool-output/tooloutput -> tool. Matching is case-insensitive after trimming.",
+          "type": "string",
+          "enum": [
+            "user",
+            "assistant",
+            "tool",
+            "system",
+            "human",
+            "prompt",
+            "assistant_response",
+            "agent",
+            "ai",
+            "bot",
+            "llm",
+            "model",
+            "tool_result",
+            "tool-output",
+            "tooloutput",
+            "tool_output",
+            "function",
+            "function_call_output",
+            "custom_tool_call_output",
+            "tool_call_output"
+          ]
+        },
+        "content": {
+          "description": "Non-empty turn content.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "sharing_scope": {
+      "type": "string",
+      "enum": ["private_user", "tenant_shared", "global_shared"]
+    }
+  }
+}

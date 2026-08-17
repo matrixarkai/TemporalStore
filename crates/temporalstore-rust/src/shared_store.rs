@@ -11,7 +11,7 @@ use prost::Message;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use temporalstore_snapshot::object_store::{
-    AppendBlobReceipt, FileObjectStore, ObjectStore, ObjectStoreError,
+    AppendBlobReceipt, FileObjectStore, MatrixObjectHttpStore, ObjectStore, ObjectStoreError,
 };
 use thiserror::Error;
 
@@ -734,10 +734,10 @@ where
         // superseded stale owner must be rejected here just as on a WAL append.
         self.enforce_fence(shard_id).await?;
         // Durability barrier: fsync any bulk-deferred page bytes and persist the band manifest
-        // BEFORE capturing the slab set, mirroring the local dump path which fsyncs pages+WAL
-        // before recording slab ids. Without this a relaxed (bulk) writer could enumerate a slab
-        // whose tail bytes are not yet on disk, uploading a torn page or racing a not-yet-durable
-        // slab into the checkpoint.
+        // BEFORE capturing the slab set, mirroring the local dump path
+        // (bucket_dump_manifest_methods) which fsyncs pages+WAL before recording slab ids. Without
+        // this a relaxed (bulk) writer could enumerate a slab whose tail bytes are not yet on disk,
+        // uploading a torn page or racing a not-yet-durable slab into the checkpoint.
         block_store.sync_durable()?;
         let checkpoint_id = uuid::Uuid::new_v4().to_string();
         let prefix = self.checkpoint_prefix(shard_id, &checkpoint_id);
@@ -748,7 +748,7 @@ where
             .await?;
 
         // Snapshot the local band descriptors so each uploaded slab carries its sealed-band
-        // metadata (logical bytes + page-id range) into the manifest for restore-time install.
+        // metadata (logical bytes + page-id range) into the manifest for S3 restore-time install.
         let band_by_slab: BTreeMap<u64, _> = block_store
             .band_descriptors()
             .into_iter()
@@ -1352,6 +1352,23 @@ where
         Ok(serde_json::from_slice(bytes)?)
     }
 
+    /// The highest WAL index currently persisted in shared storage for
+    /// `shard_id`, or `0` when no WAL exists yet. A restarting node uses this to
+    /// resume publishing WAL entries at `latest + 1` without clobbering
+    /// already-persisted entries. Works for both WAL append encodings (the
+    /// protobuf offset index and the per-key JSON objects).
+    pub async fn latest_persisted_wal_index(
+        &self,
+        shard_id: ShardId,
+    ) -> Result<u64, SharedStoreReplicationError> {
+        let offset_metadata = self.load_wal_offset_metadata(shard_id).await?;
+        if let Some(max) = offset_metadata.keys().max().copied() {
+            return Ok(max);
+        }
+        let entries = self.load_wal_entries(shard_id).await?;
+        Ok(entries.keys().max().copied().unwrap_or(0))
+    }
+
     async fn load_wal_entries(
         &self,
         shard_id: ShardId,
@@ -1520,20 +1537,90 @@ impl SharedSlabSource for SharedPathSlabSource {
     }
 }
 
-impl SharedStoreReplicator<FileObjectStore> {
-    /// Reference-parity LAZY restore for the shared-filesystem backend: install the served
-    /// INDEX and a per-slab shared address map WITHOUT downloading any slab bytes.
-    /// Old (pre-checkpoint) pages are then read lazily through [`SharedPathSlabSource`]
-    /// on the first read that needs them. The caller replays only the WAL tail after
-    /// `manifest.checkpoint_wal_index`, so recovery cost is O(index + recent WAL),
-    /// not O(full history + all slabs). Returns `CheckpointNotFound` when no
-    /// checkpoint exists so the caller can fall back to a full WAL replay.
-    pub async fn restore_index_and_page_addresses(
+/// Lazy read-through source backing reference-parity recovery on the *networked*
+/// matrixobject (`MatrixObjectHttpStore`) backend. Same contract as
+/// [`SharedPathSlabSource`], but resolves each slab to a synchronous networked
+/// GET ([`MatrixObjectHttpStore::get_blocking`]) of the shared object instead of a
+/// local filesystem read, verifying the checkpoint checksum before the block store
+/// caches it. Old (pre-checkpoint) pages therefore *follow the shard across
+/// nodes*: fetched on demand, over the network, at most once each, only when a
+/// read actually needs them — never eagerly at recovery time.
+#[derive(Debug)]
+pub struct MatrixObjectSlabSource {
+    object_store: Arc<MatrixObjectHttpStore>,
+    slabs: BTreeMap<u64, SharedSlabAddress>,
+}
+
+impl MatrixObjectSlabSource {
+    fn new(object_store: Arc<MatrixObjectHttpStore>, slabs: BTreeMap<u64, SharedSlabAddress>) -> Self {
+        Self {
+            object_store,
+            slabs,
+        }
+    }
+
+    /// Number of slabs this source can serve lazily (the checkpoint's slab count).
+    /// Useful for asserting that recovery installed an address map, not bytes.
+    pub fn slab_count(&self) -> usize {
+        self.slabs.len()
+    }
+}
+
+impl SharedSlabSource for MatrixObjectSlabSource {
+    fn fetch_slab(&self, page_slab_id: u64) -> Result<Option<Vec<u8>>, BlockStoreError> {
+        let Some(address) = self.slabs.get(&page_slab_id) else {
+            return Ok(None);
+        };
+        let bytes = self
+            .object_store
+            .get_blocking(&address.key)
+            .map_err(|err| {
+                BlockStoreError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    err.to_string(),
+                ))
+            })?
+            .to_vec();
+        // Parity with restore_checkpoint: reject a corrupt shared slab before caching it.
+        let actual = sha256_hex(&bytes);
+        if bytes.len() as u64 != address.byte_size || actual != address.sha256 {
+            return Err(BlockStoreError::ChecksumMismatch {
+                page_slab_id,
+                offset: 0,
+                length: address.byte_size,
+                expected: address.sha256.clone(),
+                actual,
+            });
+        }
+        Ok(Some(bytes))
+    }
+}
+
+impl<O> SharedStoreReplicator<O>
+where
+    O: ObjectStore + 'static,
+{
+    /// Shared body of the reference-parity LAZY restore, parameterized over the
+    /// slab-source constructor so every shared-storage backend reuses the identical
+    /// index-install + address-map + lazy-range-reserve logic; only the per-slab
+    /// fetch transport differs (a local filesystem read vs a networked GET). Install
+    /// the served INDEX and a per-slab shared address map WITHOUT downloading any
+    /// slab bytes; `make_source` builds the backend-specific lazy read-through the
+    /// block store consults on the first read that misses a slab. The caller replays
+    /// only the WAL tail after `manifest.checkpoint_wal_index`, so recovery cost is
+    /// O(index + recent WAL), not O(full history + all slabs). Returns
+    /// `CheckpointNotFound` when no checkpoint exists so the caller can fall back to
+    /// a full WAL replay.
+    async fn restore_index_and_page_addresses_with<F>(
         &self,
         shard_id: ShardId,
         engine: &TemporalEngine,
         block_store: &LocalBlockStore,
-    ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
+        make_source: F,
+    ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError>
+    where
+        F: FnOnce(Arc<O>, BTreeMap<u64, SharedSlabAddress>) -> Arc<dyn SharedSlabSource>,
+    {
         let manifest = self
             .list_checkpoints(shard_id)
             .await?
@@ -1561,16 +1648,13 @@ impl SharedStoreReplicator<FileObjectStore> {
                 },
             );
         }
-        let source = Arc::new(SharedPathSlabSource::new(
-            Arc::clone(&self.object_store),
-            slabs,
-        ));
+        let source = make_source(Arc::clone(&self.object_store), slabs);
         block_store.attach_shared_slab_source(source);
         // Roll local appends past the checkpoint's slab/page-id range so replayed WAL-tail
         // and new writes never overwrite a slab still served lazily from shared storage.
         if !manifest.page_slabs.is_empty() {
             block_store.reserve_lazy_checkpoint_range(max_slab_id, manifest.next_page_id)?;
-            // Install SEALED band descriptors for the lazily-backed checkpoint slabs so
+            // S3: install SEALED band descriptors for the lazily-backed checkpoint slabs so
             // GC/compaction accounting is complete immediately after restore, before the first
             // on-demand fetch materializes any slab locally. Runs AFTER the reserve so the freshly
             // reserved slab stays the active band and every checkpoint slab is sealed.
@@ -1590,6 +1674,47 @@ impl SharedStoreReplicator<FileObjectStore> {
             block_store.install_lazy_checkpoint_bands(&lazy_bands)?;
         }
         Ok(manifest)
+    }
+}
+
+impl SharedStoreReplicator<FileObjectStore> {
+    /// Reference-parity LAZY restore for the shared-filesystem backend: install the served
+    /// INDEX and a per-slab shared address map WITHOUT downloading any slab bytes.
+    /// Old (pre-checkpoint) pages are then read lazily through [`SharedPathSlabSource`]
+    /// on the first read that needs them. See
+    /// [`restore_index_and_page_addresses_with`](Self::restore_index_and_page_addresses_with)
+    /// for the shared logic.
+    pub async fn restore_index_and_page_addresses(
+        &self,
+        shard_id: ShardId,
+        engine: &TemporalEngine,
+        block_store: &LocalBlockStore,
+    ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
+        self.restore_index_and_page_addresses_with(shard_id, engine, block_store, |store, slabs| {
+            Arc::new(SharedPathSlabSource::new(store, slabs)) as Arc<dyn SharedSlabSource>
+        })
+        .await
+    }
+}
+
+impl SharedStoreReplicator<MatrixObjectHttpStore> {
+    /// Reference-parity LAZY restore for the *networked* matrixobject backend: install
+    /// the served INDEX and a per-slab shared address map WITHOUT downloading any slab
+    /// bytes. Old (pre-checkpoint) pages are then fetched lazily over the network
+    /// through [`MatrixObjectSlabSource`] on the first read that needs them, so shard
+    /// data follows the shard across nodes without an eager full download. See
+    /// [`restore_index_and_page_addresses_with`](Self::restore_index_and_page_addresses_with)
+    /// for the shared logic.
+    pub async fn restore_index_and_page_addresses(
+        &self,
+        shard_id: ShardId,
+        engine: &TemporalEngine,
+        block_store: &LocalBlockStore,
+    ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
+        self.restore_index_and_page_addresses_with(shard_id, engine, block_store, |store, slabs| {
+            Arc::new(MatrixObjectSlabSource::new(store, slabs)) as Arc<dyn SharedSlabSource>
+        })
+        .await
     }
 }
 
@@ -2429,6 +2554,7 @@ mod tests {
             .publish_checkpoint(1, 1, &primary, &primary.block_store())
             .await
             .unwrap();
+        // The manifest carries the per-slab band metadata.
         let slab0 = manifest
             .page_slabs
             .iter()
@@ -2442,11 +2568,13 @@ mod tests {
             .await
             .unwrap();
 
+        // No slab has been fetched yet...
         assert_eq!(follower.block_store().stats().shared_slab_fetches, 0);
         assert!(
             !follower.block_store().slab_ids().unwrap().contains(&0),
             "checkpoint slab 0 must not be materialized locally yet"
         );
+        // ...but the sealed band descriptor for slab 0 is already present and complete.
         let follower_band = follower
             .block_store()
             .band_descriptors()
@@ -2456,11 +2584,118 @@ mod tests {
         assert_eq!(follower_band.state, crate::block_store::BlockStoreBandState::Sealed);
         assert_eq!(follower_band.logical_bytes, primary_band.logical_bytes);
         assert_eq!(follower_band.physical_bytes, slab0.byte_size);
+        // The band summary counts the sealed shared band immediately (accounting is complete).
         assert!(
             follower.block_store().zone_summary().sealed_bands >= 1,
             "sealed shared band must be counted before any lazy fetch"
         );
         assert_eq!(follower.block_store().stats().shared_slab_fetches, 0);
+    }
+
+    #[tokio::test]
+    async fn shared_store_restore_before_load_auto_serves_but_load_before_restore_does_not() {
+        // Regression for the fresh-node startup ordering bug: on a fresh node the shared
+        // restore installs the served index onto the on-disk BASE only; the in-memory
+        // shard is populated from that base by `load_shard`. So the ORDER matters:
+        //   * restore THEN load  -> load reads the restored index -> node auto-serves.
+        //   * load THEN restore  -> load reads an EMPTY index -> reads return null even
+        //                           though the restore later wrote the real index to disk.
+        // A default fresh node (no join-empty, no manual /load) must use the first order.
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "before".to_string(),
+                value: b"snapshot-value".to_vec(),
+            },
+        });
+
+        let (_store, replicator) = test_shared_store(dir.path());
+        let manifest = replicator
+            .publish_checkpoint(1, 1, &primary, &primary.block_store())
+            .await
+            .unwrap();
+        assert_eq!(manifest.checkpoint_wal_index, 1);
+        // One post-checkpoint tail record so we also cover WAL-tail replay ordering.
+        replicator
+            .publish_wal_entry(SharedStoreWalEntry {
+                shard_id: 1,
+                wal_index: 2,
+                command: Command::StringSet {
+                    key: "after".to_string(),
+                    value: b"wal-value".to_vec(),
+                },
+            })
+            .await
+            .unwrap();
+
+        // BUGGY order (load BEFORE restore): reproduces the old default-startup path.
+        let buggy = test_engine(dir.path(), "buggy");
+        buggy.load_shard(1); // reads an empty on-disk index into memory
+        replicator
+            .restore_index_and_page_addresses(1, &buggy, &buggy.block_store())
+            .await
+            .unwrap(); // writes the real index to DISK, but the in-memory shard is already loaded empty
+        replicator
+            .replay_wal(1, manifest.checkpoint_wal_index, &buggy)
+            .await
+            .unwrap();
+        assert_eq!(
+            buggy
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "before".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes { value: None },
+            "load-before-restore leaves the checkpoint data unreadable in memory (the bug)"
+        );
+
+        // FIXED order (restore BEFORE load): what the fixed server startup + /load now do.
+        let fixed = test_engine(dir.path(), "fixed");
+        replicator
+            .restore_index_and_page_addresses(1, &fixed, &fixed.block_store())
+            .await
+            .unwrap(); // installs the served index onto the on-disk base first
+        fixed.load_shard(1); // load now reads the restored index into memory
+        replicator
+            .replay_wal(1, manifest.checkpoint_wal_index, &fixed)
+            .await
+            .unwrap();
+        // The pre-checkpoint value is served (fetched lazily from shared storage)...
+        assert_eq!(
+            fixed
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "before".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"snapshot-value".to_vec()),
+            },
+            "restore-before-load must auto-serve the restored checkpoint data"
+        );
+        // ...and so is the post-checkpoint WAL-tail value.
+        assert_eq!(
+            fixed
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "after".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"wal-value".to_vec()),
+            },
+            "restore-before-load must also serve the replayed WAL tail"
+        );
     }
 
     #[tokio::test]
@@ -2542,6 +2777,425 @@ mod tests {
             (1u64, "a", b"1".to_vec()),
             (2, "b", b"2".to_vec()),
         ] {
+            replicator
+                .publish_wal_entry(SharedStoreWalEntry {
+                    shard_id: 1,
+                    wal_index,
+                    command: Command::StringSet {
+                        key: key.to_string(),
+                        value,
+                    },
+                })
+                .await
+                .unwrap();
+        }
+
+        let follower = test_engine(dir.path(), "follower");
+        follower.load_shard(1);
+        let after = match replicator
+            .restore_index_and_page_addresses(1, &follower, &follower.block_store())
+            .await
+        {
+            Err(SharedStoreReplicationError::CheckpointNotFound(_)) => 0,
+            other => panic!("expected CheckpointNotFound, got {other:?}"),
+        };
+        assert!(!follower.block_store().has_shared_slab_source());
+        let report = replicator.replay_wal(1, after, &follower).await.unwrap();
+        assert_eq!(report.applied, 2);
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "a".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"1".to_vec())
+            }
+        );
+    }
+
+    // ---- Networked matrixobject lazy data-follow ----
+    // Faithful in-process loopback server speaking the SAME `MORP1` TcpStream
+    // request/response frames MatrixObjectHttpStore speaks, so the networked
+    // lazy-recovery path is exercised end to end over real sockets (no enterprise
+    // crate needed). Each connection is served on its own thread and loops over
+    // pooled/keep-alive requests until the client drops it.
+    const MOCK_RPC_MAGIC: &[u8; 5] = b"MORP1";
+
+    fn spawn_mock_matrixobject_store() -> String {
+        use std::collections::BTreeMap;
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let uri = format!("matrixobject://{addr}");
+        let store: Arc<Mutex<BTreeMap<String, Vec<u8>>>> = Arc::default();
+
+        fn serve_conn(mut stream: TcpStream, store: Arc<Mutex<BTreeMap<String, Vec<u8>>>>) {
+            loop {
+                let mut header = [0u8; 18];
+                if stream.read_exact(&mut header).is_err() {
+                    return; // client dropped the pooled connection
+                }
+                if &header[..5] != MOCK_RPC_MAGIC {
+                    return;
+                }
+                let op = header[5];
+                let key_len = u32::from_le_bytes(header[6..10].try_into().unwrap()) as usize;
+                let value_len = u64::from_le_bytes(header[10..18].try_into().unwrap()) as usize;
+                let mut key_bytes = vec![0u8; key_len];
+                if stream.read_exact(&mut key_bytes).is_err() {
+                    return;
+                }
+                let mut value = vec![0u8; value_len];
+                if stream.read_exact(&mut value).is_err() {
+                    return;
+                }
+                let key = String::from_utf8_lossy(&key_bytes).to_string();
+                let (status, body) = {
+                    let mut map = store.lock().unwrap();
+                    match op {
+                        1 => {
+                            // PUT
+                            map.insert(key, value);
+                            (0u8, Vec::new())
+                        }
+                        2 => match map.get(&key) {
+                            // GET
+                            Some(bytes) => (0u8, bytes.clone()),
+                            None => (1u8, key.into_bytes()),
+                        },
+                        3 => {
+                            // DELETE
+                            map.remove(&key);
+                            (0u8, Vec::new())
+                        }
+                        4 => {
+                            // LIST prefix
+                            let mut keys: Vec<String> =
+                                map.keys().filter(|k| k.starts_with(&key)).cloned().collect();
+                            keys.sort();
+                            (0u8, keys.join("\n").into_bytes())
+                        }
+                        5 => {
+                            // LIST_AFTER prefix=key, after=value
+                            let after = String::from_utf8_lossy(&value).to_string();
+                            let mut keys: Vec<String> = map
+                                .keys()
+                                .filter(|k| k.starts_with(&key) && k.as_str() > after.as_str())
+                                .cloned()
+                                .collect();
+                            keys.sort();
+                            (0u8, keys.join("\n").into_bytes())
+                        }
+                        6 => {
+                            // GET_MANY: value = keys joined by '\n'
+                            let mut out = Vec::new();
+                            let mut entries = Vec::new();
+                            for k in String::from_utf8_lossy(&value)
+                                .split('\n')
+                                .filter(|k| !k.is_empty())
+                            {
+                                if let Some(bytes) = map.get(k) {
+                                    entries.push((k.to_string(), bytes.clone()));
+                                }
+                            }
+                            out.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+                            for (k, v) in entries {
+                                out.extend_from_slice(&(k.len() as u32).to_le_bytes());
+                                out.extend_from_slice(&(v.len() as u64).to_le_bytes());
+                                out.extend_from_slice(k.as_bytes());
+                                out.extend_from_slice(&v);
+                            }
+                            (0u8, out)
+                        }
+                        7 => {
+                            // PUT_MANY: value = count u32 + [key_len u32, value_len u64, key, value]*
+                            if value.len() >= 4 {
+                                let count =
+                                    u32::from_le_bytes(value[0..4].try_into().unwrap()) as usize;
+                                let mut off = 4usize;
+                                for _ in 0..count {
+                                    let kl = u32::from_le_bytes(
+                                        value[off..off + 4].try_into().unwrap(),
+                                    ) as usize;
+                                    off += 4;
+                                    let vl = u64::from_le_bytes(
+                                        value[off..off + 8].try_into().unwrap(),
+                                    ) as usize;
+                                    off += 8;
+                                    let k =
+                                        String::from_utf8_lossy(&value[off..off + kl]).to_string();
+                                    off += kl;
+                                    let v = value[off..off + vl].to_vec();
+                                    off += vl;
+                                    map.insert(k, v);
+                                }
+                            }
+                            (0u8, Vec::new())
+                        }
+                        _ => (2u8, b"unknown op".to_vec()),
+                    }
+                };
+                let mut resp = Vec::with_capacity(14 + body.len());
+                resp.extend_from_slice(MOCK_RPC_MAGIC);
+                resp.push(status);
+                resp.extend_from_slice(&(body.len() as u64).to_le_bytes());
+                resp.extend_from_slice(&body);
+                if stream.write_all(&resp).is_err() {
+                    return;
+                }
+                let _ = stream.flush();
+            }
+        }
+
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                match conn {
+                    Ok(stream) => {
+                        let store = Arc::clone(&store);
+                        std::thread::spawn(move || serve_conn(stream, store));
+                    }
+                    Err(_) => return,
+                }
+            }
+        });
+        uri
+    }
+
+    fn networked_replicator(
+        uri: &str,
+    ) -> (
+        Arc<MatrixObjectHttpStore>,
+        SharedStoreReplicator<MatrixObjectHttpStore>,
+    ) {
+        let store = Arc::new(MatrixObjectHttpStore::new(uri).unwrap());
+        let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone());
+        (store, replicator)
+    }
+
+    #[tokio::test]
+    async fn matrixobject_get_blocking_round_trips_over_the_socket() {
+        // The sync accessor the lazy slab source relies on must round-trip a real
+        // object across the networked MORP1 wire, and surface NotFound for absent keys.
+        let uri = spawn_mock_matrixobject_store();
+        let store = MatrixObjectHttpStore::new(&uri).unwrap();
+        store
+            .put("k/one", Bytes::from_static(b"hello-networked"))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get_blocking("k/one").unwrap(),
+            Bytes::from_static(b"hello-networked")
+        );
+        assert!(matches!(
+            store.get_blocking("k/missing"),
+            Err(ObjectStoreError::NotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn matrixobject_networked_lazy_restore_reads_old_page_on_demand() {
+        // Reference-parity lazy data-follow over the NETWORK: a fresh node with only
+        // the networked matrixobject store restores the served index + a slab ADDRESS
+        // map (no slab bytes), replays the WAL tail, and fetches an old (pre-checkpoint)
+        // slab ON DEMAND over the socket the first time a read needs it.
+        let uri = spawn_mock_matrixobject_store();
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "before".to_string(),
+                value: b"snapshot-value".to_vec(),
+            },
+        });
+
+        let (_store, replicator) = networked_replicator(&uri);
+        let manifest = replicator
+            .publish_checkpoint(1, 1, &primary, &primary.block_store())
+            .await
+            .unwrap();
+        assert!(
+            !manifest.page_slabs.is_empty(),
+            "checkpoint must upload the slab bytes so a lazy owner can fetch them"
+        );
+        replicator
+            .publish_wal_entry(SharedStoreWalEntry {
+                shard_id: 1,
+                wal_index: 2,
+                command: Command::StringSet {
+                    key: "after".to_string(),
+                    value: b"wal-value".to_vec(),
+                },
+            })
+            .await
+            .unwrap();
+
+        // Fresh owner: no local slabs at all.
+        let follower = test_engine(dir.path(), "follower");
+        assert!(follower.block_store().slab_ids().unwrap().is_empty());
+
+        // Lazy restore: index + address map only, NO slab bytes installed up front.
+        let restored = replicator
+            .restore_index_and_page_addresses(1, &follower, &follower.block_store())
+            .await
+            .unwrap();
+        assert_eq!(restored.checkpoint_wal_index, 1);
+        assert!(
+            follower.block_store().has_shared_slab_source(),
+            "restore must attach a networked shared read-through source"
+        );
+        assert!(
+            !follower.block_store().slab_ids().unwrap().contains(&0),
+            "checkpoint slab 0 must not be installed eagerly"
+        );
+        assert_eq!(follower.block_store().stats().shared_slab_fetches, 0);
+
+        follower.load_shard(1);
+        let report = replicator
+            .replay_wal(1, restored.checkpoint_wal_index, &follower)
+            .await
+            .unwrap();
+        assert_eq!(report.applied, 1);
+        assert_eq!(report.last_wal_index, 2);
+        assert_eq!(follower.block_store().stats().shared_slab_fetches, 0);
+
+        // Reading the OLD key triggers exactly ONE on-demand networked slab fetch.
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "before".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"snapshot-value".to_vec())
+            }
+        );
+        assert_eq!(
+            follower.block_store().stats().shared_slab_fetches,
+            1,
+            "reading one old key must fetch exactly one slab over the network (not all slabs)"
+        );
+
+        // Cached now: a second read does NOT re-fetch across the network.
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "before".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"snapshot-value".to_vec())
+            }
+        );
+        assert_eq!(follower.block_store().stats().shared_slab_fetches, 1);
+
+        // The WAL-tail value is served from the reserved local slab.
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "after".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"wal-value".to_vec())
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn matrixobject_networked_lazy_restore_replays_only_wal_tail() {
+        // Networked WAL-tail replay is O(recent): applied == post-checkpoint records.
+        let uri = spawn_mock_matrixobject_store();
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "before".to_string(),
+                value: b"snapshot-value".to_vec(),
+            },
+        });
+
+        let (_store, replicator) = networked_replicator(&uri);
+        let manifest = replicator
+            .publish_checkpoint(1, 1, &primary, &primary.block_store())
+            .await
+            .unwrap();
+        assert_eq!(manifest.checkpoint_wal_index, 1);
+
+        for (wal_index, key) in [(2u64, "k2"), (3, "k3"), (4, "k4")] {
+            replicator
+                .publish_wal_entry(SharedStoreWalEntry {
+                    shard_id: 1,
+                    wal_index,
+                    command: Command::StringSet {
+                        key: key.to_string(),
+                        value: key.as_bytes().to_vec(),
+                    },
+                })
+                .await
+                .unwrap();
+        }
+
+        let follower = test_engine(dir.path(), "follower");
+        let restored = replicator
+            .restore_index_and_page_addresses(1, &follower, &follower.block_store())
+            .await
+            .unwrap();
+        follower.load_shard(1);
+        let report = replicator
+            .replay_wal(1, restored.checkpoint_wal_index, &follower)
+            .await
+            .unwrap();
+        assert_eq!(
+            report.applied, 3,
+            "replay applies only the 3 post-checkpoint records, not the full history"
+        );
+        assert_eq!(report.last_wal_index, 4);
+        for key in ["k2", "k3", "k4"] {
+            assert_eq!(
+                follower
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringGet {
+                            key: key.to_string()
+                        },
+                    })
+                    .response,
+                CommandResponse::Bytes {
+                    value: Some(key.as_bytes().to_vec())
+                }
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn matrixobject_networked_lazy_restore_no_checkpoint_falls_back_to_full_replay() {
+        // Backward compatible over the network: with no checkpoint published, the lazy
+        // restore reports CheckpointNotFound and the caller replays the full shared WAL.
+        let uri = spawn_mock_matrixobject_store();
+        let dir = tempfile::tempdir().unwrap();
+        let (_store, replicator) = networked_replicator(&uri);
+        for (wal_index, key, value) in
+            [(1u64, "a", b"1".to_vec()), (2, "b", b"2".to_vec())]
+        {
             replicator
                 .publish_wal_entry(SharedStoreWalEntry {
                     shard_id: 1,

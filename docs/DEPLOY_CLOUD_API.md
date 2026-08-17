@@ -10,6 +10,10 @@ MatrixArk backend as the rest of `tools/`. It adds the four things an enterprise
 the internal API: **per-tenant bearer auth, token-bucket rate limiting, request/blob quotas, and a
 streamed `/v1/blob/<key>` proxy** to the datanode.
 
+## Enterprise onboarding
+
+After you deploy the Cloud API, hand customers the **[Enterprise Onboarding](./enterprise_onboarding.html)** page. It is the single self-contained walkthrough of the ingest/retrieve API, the tenant/user/session **scope model**, **large-file ingestion** (the `/v1/blob/<key>` stream), **auth & API-keys**, and **mem0 migration** — everything a new team needs to go from a fresh deployment to live context.
+
 ## Endpoints
 
 | Method | Path | Purpose | Success |
@@ -29,16 +33,66 @@ so the gateway is a drop-in superset.
 ## Configuration (environment variables)
 
 ### Auth
+
+The gateway has two auth postures. The **dev default** is anonymous (zero config, a one-time no-auth
+warning is logged). **Production** enables the enforced hashed-keystore model below.
+
 | Variable | Default | Meaning |
 |---|---|---|
-| `MATRIXARK_REQUIRE_AUTH` | `1` | `0` allows anonymous `/v1` access (local/dev only). |
-| `MATRIXARK_API_KEYS` | – | `"key1:tenantA,key2:tenantB"` — per-tenant bearer keys. |
-| `MATRIXARK_API_KEYS_FILE` | – | Path to JSON `{"key":"tenant"}` (takes precedence over the CSV form). |
+| `MATRIXARK_REQUIRE_AUTH` | `0` | Set `1` to require a valid bearer key on every `/v1` request (rejects anonymous). |
+| `MATRIXARK_AUTH_ENFORCED` | `0` | Set `1` to turn on the **edge** hashed-keystore gate: identity, per-key **scopes**, and **allowed_user_ids/allowed_session_ids** are all enforced at the gateway. Production sets `MATRIXARK_REQUIRE_AUTH=1` **and** `MATRIXARK_AUTH_ENFORCED=1`. |
+| `MATRIXARK_API_KEYS_HASHED_FILE` | – | Path to the hashed keystore (only sha256 **hashes** live here — plaintext keys are never present at the edge). JSONL of `matrixark_api_key` records, or a plain `{"<sha256hex>":{"tenant_id","account_id"}}` object. Loaded when `MATRIXARK_AUTH_ENFORCED=1`. |
+| `MATRIXARK_API_KEYS` | – | **Legacy/back-compat fallback** (unenforced mode only): `"key1:tenantA,key2:tenantB"` plaintext per-tenant keys. |
+| `MATRIXARK_API_KEYS_FILE` | – | **Legacy/back-compat fallback**: JSON `{"key":"tenant"}` (takes precedence over the CSV form). |
 
-A request presents its key as `Authorization: Bearer <key>` or `X-API-Key: <key>`. On success the
-gateway injects `api_key`/`tenant` into the tool call and **namespace-isolates** the request: `scope`
-is prefixed with `"<tenant>/"` (or set to `"<tenant>"` when absent), guarding against double-prefix.
-An unknown/missing key on a `/v1` data route returns `401 {"error":"unauthorized"}`.
+> `MATRIXARK_ACCESS_MODE` (below) is a **separate backend** knob, not the edge gate. The gateway's
+> scope/user enforcement is driven by `MATRIXARK_AUTH_ENFORCED`; set `MATRIXARK_ACCESS_MODE=enforced`
+> as well so the backend applies its own tenant isolation defense-in-depth.
+
+A request presents its key as `Authorization: Bearer <key>` or `X-API-Key: <key>`. In enforced mode
+the key's sha256 hash is resolved in the keystore; the `tenant_id`/`account_id` are pinned **from the
+stored record** (never from client-supplied text), so two tenants cannot collide on a shared `scope`
+string. `user_id`/`session_id` are preserved from the client `scope` (the tenant's own end-user axis).
+
+**Minting keys.** Use the provisioner — the plaintext key is printed **once** (only its hash is
+stored):
+
+```bash
+python3 tools/matrixark_provision_api_key.py \
+  --tenant-id tenantA --account-id acct_a --prefix mk_live \
+  --store /opt/temporalstore/gw/keys/api_keys_hashed.jsonl
+# restricted keys:
+#   --scope context:retrieve                 # retrieve-only key (repeatable and/or comma-separated)
+#   --allowed-user-id alice,bob              # lock the key to these scope.user_id values
+#   --allowed-session-id sess-1              # lock the key to these scope.session_id values
+```
+
+Default scopes (when `--scope` is omitted) are all four:
+`context:ingest,context:retrieve,context:feedback,context:replay`. Revoke by re-appending a record
+with the same `api_key_hash` and `--status revoked` (the gateway keeps the last active record per
+hash); expired records (`expires_at_ms` in the past) are ignored.
+
+**401 vs 403.** `401 {"error":"unauthorized"}` = missing / invalid / revoked / **expired** key.
+`403` = a **valid** key that is not authorized for this request:
+
+- `403 {"error":"insufficient_scope","required":"<scope>"}` — the route needs a scope the key lacks.
+- `403 {"error":"user_not_allowed"}` — key has `allowed_user_ids` and the request `scope.user_id` is not in it.
+- `403 {"error":"session_not_allowed"}` — same for `allowed_session_ids` vs `scope.session_id`.
+
+A key with `scopes=None` (a legacy plain keystore entry) or empty allow-lists imposes **no**
+scope/user restriction — backward compatible.
+
+**Route → required scope** (health/readyz need none):
+
+| Route | Required scope |
+|---|---|
+| `POST /v1/ingest` | `context:ingest` |
+| `POST /v1/session/commit` | `context:ingest` |
+| `POST /v1/ingest_file` | `context:ingest` |
+| `PUT\|POST /v1/blob/<key>` | `context:ingest` |
+| `POST /v1/retrieve` | `context:retrieve` |
+| `GET /v1/blob/<key>` | `context:retrieve` |
+| `POST /v1/mcp` | **per-tool** via `MATRIXARK_TOOL_SCOPES` (data tools → `context:*`, admin tools → `admin:*`); non-`tools/call` methods need only a valid key |
 
 ### Rate limits (token bucket, per key + route-class)
 | Variable | Default | Meaning |
@@ -67,7 +121,7 @@ A storage-quota signal from the backend surfaces as `507 {"error":"storage_quota
 | `MATRIXARK_DATANODE_BLOB_URL` | `http://127.0.0.1:17102` | Datanode base for the streamed `/blob` proxy + `/readyz` probe. |
 | `MATRIXARK_HTTP_HOST` | `0.0.0.0` | Gateway bind host. |
 | `MATRIXARK_HTTP_PORT` | `8080` | Gateway bind port. |
-| `MATRIXARK_ACCESS_MODE` | `enforced` | Backend access model. |
+| `MATRIXARK_ACCESS_MODE` | `dev` | Backend access model. **Dev default allows anonymous;** set `enforced` in production for per-tenant hashed keys + isolation. |
 
 ## Local: `docker compose up`
 
@@ -76,11 +130,12 @@ docker compose -f docker-compose.cloud-api.yml up --build
 # gateway on :8080, datanode on :17102, metaserver on :17101, proxy on :17100
 
 curl -s http://127.0.0.1:8080/v1/healthz
+# $MK is the plaintext key the provisioner printed once (enforced mode); dev mode needs no key.
 curl -s http://127.0.0.1:8080/v1/ingest \
-  -H 'authorization: Bearer sk_live_demo' -H 'content-type: application/json' \
+  -H "authorization: Bearer $MK" -H 'content-type: application/json' \
   -d '{"scope":"agent-7","records":[{"type":"resource_chunk","text":"hello"}]}'   # -> 202
 curl -s -X PUT --data-binary @report.pdf \
-  -H 'authorization: Bearer sk_live_demo' http://127.0.0.1:8080/v1/blob/report.pdf
+  -H "authorization: Bearer $MK" http://127.0.0.1:8080/v1/blob/report.pdf
 ```
 
 Run the tests (pure Python, seconds):
@@ -113,15 +168,18 @@ Route53  api.temporalstore.ai ──► ALB (:443, ACM TLS) ──► Target Gro
    ~5,000 sustained ops/s and set ECS target-tracking autoscaling on CPU ~60% (or ALB
    `RequestCountPerTarget`). Two tasks across AZs is the HA floor; scale out horizontally from there.
    The storage tier (datanode/metaserver/proxy) scales independently.
-5. **API-key management.** Keys are minted/rotated/revoked from the portal and delivered to the
-   gateway as `MATRIXARK_API_KEYS_FILE` (a JSON `{"key":"tenant"}` map) mounted from Secrets Manager,
-   or as the `MATRIXARK_API_KEYS` CSV. Rotate by publishing a new secret version and rolling the
-   service (workers reload config on restart). Keep tenant metadata (accounts, scopes) in TemporalStore
-   KV or the optional MatrixKV transactional plane.
+5. **API-key management.** Mint keys with `tools/matrixark_provision_api_key.py` (hash-only keystore;
+   plaintext printed once) and deliver the JSONL keystore to the gateway as
+   `MATRIXARK_API_KEYS_HASHED_FILE` mounted from Secrets Manager, with `MATRIXARK_REQUIRE_AUTH=1` +
+   `MATRIXARK_AUTH_ENFORCED=1`. Per-key `scopes` / `allowed_user_ids` / `allowed_session_ids` are set
+   at mint time (`--scope` / `--allowed-user-id` / `--allowed-session-id`) and enforced at the edge.
+   Rotate by appending a new record and revoke by appending a `--status revoked` record for the same
+   `api_key_hash`, then roll the service (workers reload config on restart). The legacy plaintext
+   `MATRIXARK_API_KEYS_FILE` / `MATRIXARK_API_KEYS` remain as an unenforced-mode fallback.
 
 ## 5-line deploy checklist
 1. Build/push the gateway image from `docker/Dockerfile.cloud-api`.
-2. Put API keys in Secrets Manager; wire `MATRIXARK_API_KEYS_FILE` + `MATRIXARK_DATANODE_BLOB_URL`.
+2. Mint keys (`matrixark_provision_api_key.py`) into the hashed keystore in Secrets Manager; wire `MATRIXARK_REQUIRE_AUTH=1` + `MATRIXARK_AUTH_ENFORCED=1` + `MATRIXARK_API_KEYS_HASHED_FILE` + `MATRIXARK_DATANODE_BLOB_URL`.
 3. ACM cert + Route53 `api.temporalstore.ai` → ALB HTTPS listener → target group `:8080`.
 4. ECS service: 8 vCPU/16 GB tasks, `--workers 4`, health check `GET /v1/healthz`, CPU autoscaling.
 5. Smoke-test `POST /v1/ingest` (expect `202`) and `GET /v1/readyz` before shifting traffic.

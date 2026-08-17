@@ -206,18 +206,12 @@ struct IndexLogInner {
 }
 
 fn indexlog_enabled() -> bool {
-    // Replay-only index-log is opt-in at runtime (default off) so it can't grow
-    // unbounded and fill the disk; always on under test so checkpoint/manifest
-    // logic and the low-level unit tests keep exercising it.
-    cfg!(test)
-        || matches!(
-            std::env::var("MATRIXARK_ENABLE_INDEXLOG")
-                .unwrap_or_default()
-                .trim()
-                .to_ascii_lowercase()
-                .as_str(),
-            "1" | "true" | "yes" | "on"
-        )
+    // The index-log is the delta served-index's durable per-write delta stream: the
+    // load-time fold reconstructs the served index (at the original page addresses) from
+    // these records, so it must be written in ALL builds, not just tests. It is kept
+    // bounded by GC-at-compaction, which truncates every delta already folded into the
+    // durably-rewritten base snapshot (retain-from-anchor). Always on.
+    true
 }
 
 fn bulk_ingest_mode() -> bool {
@@ -235,24 +229,6 @@ fn bulk_ingest_mode() -> bool {
 /// single-barrier default; restored to a synchronous fsync only under the TS_WAL_LEGACY_RECOVERY
 /// escape hatch (whose delta-fold recovery trusts the durable delta).
 fn indexlog_wal_only_sync() -> bool {
-    !matches!(
-        std::env::var("TS_WAL_LEGACY_RECOVERY")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
-}
-
-/// Drop the served-index delta-log fdatasync from the synchronous write/ack path. The delta
-/// record is still APPENDED (so the served-index stream and every consumer of it -- gc / reclaim /
-/// manifest / reconcile / cold reload -- are unchanged); only its fdatasync is deferred. This is
-/// the single-barrier default: base-only recovery re-derives state from the durable base +
-/// WAL-tail (+ config-log, which makes config-driven eviction WAL-reconstructable), so the delta
-/// is never a recovery source and its fsync leaves the ack path. Restored to a synchronous delta
-/// fsync only under the TS_WAL_LEGACY_RECOVERY escape hatch (whose delta-fold recovery trusts it).
-fn indexlog_defer_sync() -> bool {
     !matches!(
         std::env::var("TS_WAL_LEGACY_RECOVERY")
             .unwrap_or_default()
@@ -315,7 +291,7 @@ impl LocalIndexLogStore {
             .open(index_log_path(&inner.root, shard_id))?;
         file.write_all(&bytes)?;
         file.flush()?;
-        // Ack-path index-log append. Under the single-barrier default defer this fsync (bytes are
+        // Ack-path index-log append. Under the single-barrier default defer this fsync (bytes
         // still written): the WAL is the durable recovery source and replay rebuilds the
         // served index, so the replay-log checkpoint need not be crash-durable per write.
         if !indexlog_wal_only_sync() {
@@ -365,7 +341,7 @@ impl LocalIndexLogStore {
             .open(index_log_path(&inner.root, shard_id))?;
         file.write_all(&bytes)?;
         file.flush()?;
-        // Ack-path index-log append. Under the single-barrier default defer this fsync (bytes are
+        // Ack-path index-log append. Under the single-barrier default defer this fsync (bytes
         // still written): the WAL is the durable recovery source and replay rebuilds the
         // served index, so the replay-log checkpoint need not be crash-durable per write.
         if !indexlog_wal_only_sync() {
@@ -383,6 +359,13 @@ impl LocalIndexLogStore {
     /// serializes the whole index -- the appended bytes are proportional to the change,
     /// which is what turns the per-write served-index persist cost from O(store) into
     /// O(delta). Returns the assigned monotonic sequence.
+    ///
+    /// `durable` controls the fsync: the normal (single-node / shared-store) path passes
+    /// `true` (the record is fsync'd before returning). The raft apply path passes `false` --
+    /// the record is written + flushed to the OS but NOT fsync'd, because there the raft log
+    /// is the durability + reconstruction source and a lost non-fsync'd tail is rebuilt by
+    /// raft-log replay on restart. The consumer-aware GC never truncates such a tail (it
+    /// retains from the durable dump/cursor/snapshot frontier).
     pub fn append_delta(
         &self,
         shard_id: ShardId,
@@ -390,6 +373,7 @@ impl LocalIndexLogStore {
         key_states: Vec<serde_json::Value>,
         applied_wal_sequence: Option<u64>,
         meta: Option<MetaItem>,
+        durable: bool,
     ) -> Result<u64, IndexLogError> {
         if bulk_ingest_mode() || !indexlog_enabled() {
             return Ok(0);
@@ -423,11 +407,7 @@ impl LocalIndexLogStore {
             .open(index_log_path(&inner.root, shard_id))?;
         file.write_all(&bytes)?;
         file.flush()?;
-        // Ack-path delta append. Under the single-barrier default the record is written but its
-        // fdatasync is deferred: the WAL + data pages are still durable per write, so the lost
-        // delta tail is rebuilt by WAL replay and no page reference dangles. This drops the
-        // index-log fdatasync from the write critical path (three barriers -> two).
-        if !indexlog_defer_sync() {
+        if durable {
             file.sync_data()?;
         }
         inner.stats.writes += 1;
@@ -818,11 +798,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
         let seq1 = store
-            .append_delta(7, vec![page_item(1, "a", false)], Vec::new(), None, None)
+            .append_delta(7, vec![page_item(1, "a", false)], Vec::new(), None, None, true)
             .unwrap();
         assert_eq!(seq1, 1);
         let seq2 = store
-            .append_delta(7, vec![page_item(1, "b", false)], Vec::new(), None, None)
+            .append_delta(7, vec![page_item(1, "b", false)], Vec::new(), None, None, true)
             .unwrap();
         assert_eq!(seq2, 2);
         // The two single-item deltas together are far smaller than a whole-index blob
@@ -860,10 +840,10 @@ mod tests {
         // A legacy whole-index record and a delta record share the log file.
         store.append_json(9, b"{\"value\":1}").unwrap();
         let anchor_seq = store
-            .append_delta(9, vec![page_item(1, "a", false)], Vec::new(), None, None)
+            .append_delta(9, vec![page_item(1, "a", false)], Vec::new(), None, None, true)
             .unwrap();
         store
-            .append_delta(9, vec![page_item(1, "b", false)], Vec::new(), None, None)
+            .append_delta(9, vec![page_item(1, "b", false)], Vec::new(), None, None, true)
             .unwrap();
         // Only delta records are returned; the whole-index line is ignored.
         let all = store.read_delta_records(9, 0).unwrap();
@@ -879,14 +859,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
         store
-            .append_delta(3, vec![page_item(1, "a", false)], Vec::new(), None, None)
+            .append_delta(3, vec![page_item(1, "a", false)], Vec::new(), None, None, true)
             .unwrap();
         let meta = MetaItem {
             version: 1,
             start_wal_sequence: 42,
             timestamp_ms: 100,
         };
-        store.append_delta(3, Vec::new(), Vec::new(), None, Some(meta)).unwrap();
+        store.append_delta(3, Vec::new(), Vec::new(), None, Some(meta), true).unwrap();
         let records = store.read_delta_records(3, 0).unwrap();
         assert_eq!(records.len(), 2);
         assert_eq!(records[1].meta.unwrap().start_wal_sequence, 42);
@@ -930,7 +910,7 @@ mod tests {
         let store = LocalIndexLogStore::new(dir.path());
         for key in ["a", "b", "c"] {
             store
-                .append_delta(5, vec![page_item(1, key, false)], Vec::new(), Some(1), None)
+                .append_delta(5, vec![page_item(1, key, false)], Vec::new(), Some(1), None, true)
                 .unwrap();
         }
         drop(store);
@@ -972,6 +952,7 @@ mod tests {
                     Vec::new(),
                     Some(index as u64 + 1),
                     None,
+                    true,
                 )
                 .unwrap();
         }

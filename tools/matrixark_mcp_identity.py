@@ -203,24 +203,32 @@ def canonical_tenant_id(value: str) -> str:
     return value or "tenant_local_agent"
 
 
-def identity_hashes(account_id: str, tenant_id: str, user_id: str = "", session_id: str = "") -> Json:
+def identity_hashes(account_id: str, tenant_id: str, user_id: str = "", session_id: str = "", agent_id: str = "") -> Json:
     tenant_hash = stable_hash(f"{account_id}:{tenant_id}")
     user_hash = stable_hash(f"{tenant_hash}:user:{user_id}") if user_id else 0
     session_hash = stable_hash(f"{tenant_hash}:session:{session_id}") if session_id else 0
-    return {
+    # agent_id (mem0 identity dimension): only participates when supplied, so the
+    # returned dict and scope_key are byte-identical for callers without an agent.
+    agent_hash = stable_hash(f"{tenant_hash}:agent:{agent_id}") if agent_id else 0
+    hashes: Json = {
         "tenant_hash": tenant_hash,
         "user_hash": user_hash,
         "session_hash": session_hash,
-        "scope_key": scope_key_from_hashes(tenant_hash, user_hash, session_hash),
+        "scope_key": scope_key_from_hashes(tenant_hash, user_hash, session_hash, agent_hash),
     }
+    if agent_hash:
+        hashes["agent_hash"] = agent_hash
+    return hashes
 
 
-def scope_key_from_hashes(tenant_hash: int, user_hash: int = 0, session_hash: int = 0) -> str:
+def scope_key_from_hashes(tenant_hash: int, user_hash: int = 0, session_hash: int = 0, agent_hash: int = 0) -> str:
     parts = [f"t={int(tenant_hash)}"]
     if user_hash:
         parts.append(f"u={int(user_hash)}")
     if session_hash:
         parts.append(f"s={int(session_hash)}")
+    if agent_hash:
+        parts.append(f"a={int(agent_hash)}")
     return "|".join(parts) + "|"
 
 
@@ -231,7 +239,8 @@ def scope_key_prefix_for_query(query_scope: Json) -> str:
         return ""
     user_hash = int(query_scope.get("user_hash") or 0) if "user_id" in explicit_keys or query_scope.get("user_hash") else 0
     session_hash = int(query_scope.get("session_hash") or 0) if "session_id" in explicit_keys or query_scope.get("session_hash") else 0
-    return scope_key_from_hashes(tenant_hash, user_hash, session_hash)
+    agent_hash = int(query_scope.get("agent_hash") or 0) if "agent_id" in explicit_keys or query_scope.get("agent_hash") else 0
+    return scope_key_from_hashes(tenant_hash, user_hash, session_hash, agent_hash)
 
 
 def parse_scope_key(scope_key: str) -> dict[str, int]:
@@ -268,6 +277,12 @@ def scope_key_matches_query(record_scope_key: str, query_scope: Json, explicit_k
     if "user_id" in explicit_keys or "user_hash" in explicit_keys or user_hash:
         if user_hash and record_parts.get("u") != user_hash:
             return False
+    # agent_id isolation (mem0 dimension): enforced only when the QUERY carries an
+    # agent, mirroring user/session. No agent in the query -> no agent filtering.
+    agent_hash = int(query_scope.get("agent_hash") or 0)
+    if "agent_id" in explicit_keys or "agent_hash" in explicit_keys or agent_hash:
+        if agent_hash and record_parts.get("a") != agent_hash:
+            return False
     session_hash = int(query_scope.get("session_hash") or 0)
     if "session_id" in explicit_keys or "session_hash" in explicit_keys or session_hash:
         if session_hash and record_parts.get("s") != session_hash:
@@ -286,6 +301,7 @@ def canonical_scope_key(scope: Json) -> str:
         tenant_hash,
         int(scope.get("user_hash") or 0),
         int(scope.get("session_hash") or 0),
+        int(scope.get("agent_hash") or 0),
     )
 
 

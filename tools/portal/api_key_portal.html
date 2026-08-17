@@ -1,0 +1,470 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright 2026 MatrixArkAI -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MatrixArk — API Key Portal</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#1a1c20; --muted:#5b6370; --line:#e6e8ec; --card:#f7f8fa;
+    --accent:#3b5bdb; --accent-weak:#eaefff; --code-bg:#0f1220; --code-fg:#e7ebf3;
+    --ok:#1f9d55; --warn:#b7791f; --warn-bg:#fff8e6; --danger:#c0392b; --danger-bg:#fdece9;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{--bg:#0c0e12;--fg:#e7ebf3;--muted:#9aa3b2;--line:#232833;--card:#141821;
+      --accent:#8ea2ff;--accent-weak:#171d2e;--code-bg:#05070d;--warn-bg:#2a220c;
+      --danger:#ff8080;--danger-bg:#2a1512;}
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);line-height:1.55;font-size:15px}
+  .wrap{max-width:1100px;margin:0 auto;padding:0 22px}
+  header.hero{border-bottom:1px solid var(--line);padding:34px 0 22px}
+  .kicker{color:var(--accent);font-weight:700;letter-spacing:.08em;text-transform:uppercase;font-size:12px}
+  h1{font-size:30px;line-height:1.15;margin:.25em 0 .15em;letter-spacing:-.02em}
+  h2{font-size:20px;margin:0 0 .2em;letter-spacing:-.01em}
+  p.lead{font-size:16px;color:var(--muted);max-width:74ch;margin:.3em 0 0}
+  a{color:var(--accent)}
+  code{font-family:var(--mono);font-size:.9em;background:var(--accent-weak);color:inherit;padding:.1em .35em;border-radius:5px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:18px 0}
+  .card > h2 + .hint{margin-top:.25em}
+  .hint{color:var(--muted);font-size:13.5px;margin:.2em 0 .8em}
+  label{display:block;font-size:13px;font-weight:650;margin:10px 0 4px;color:var(--fg)}
+  label .opt{font-weight:400;color:var(--muted)}
+  input,select,textarea{width:100%;font-family:var(--sans);font-size:14px;padding:8px 10px;border:1px solid var(--line);
+    border-radius:9px;background:var(--bg);color:var(--fg)}
+  input[type=checkbox]{width:auto;margin-right:6px;vertical-align:middle}
+  textarea{min-height:52px;resize:vertical;font-family:var(--mono);font-size:13px}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+  @media(max-width:720px){.row,.row3{grid-template-columns:1fr}}
+  button{font-family:var(--sans);font-size:14px;font-weight:650;padding:9px 16px;border-radius:9px;border:1px solid var(--accent);
+    background:var(--accent);color:#fff;cursor:pointer}
+  button.secondary{background:transparent;color:var(--accent)}
+  button.mini{padding:4px 10px;font-size:12.5px;border-radius:7px}
+  button.danger{background:transparent;color:var(--danger);border-color:var(--danger)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;align-items:center}
+  table{border-collapse:collapse;width:100%;margin:8px 0;font-size:13px}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:var(--bg);font-weight:650;position:sticky;top:0}
+  .tablewrap{overflow-x:auto;max-width:100%}
+  .pill{display:inline-block;font-size:11.5px;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--accent-weak);color:var(--accent)}
+  .pill.active{background:#e6f6ec;color:var(--ok)}
+  .pill.revoked{background:var(--danger-bg);color:var(--danger)}
+  .pill.expired{background:var(--warn-bg);color:var(--warn)}
+  @media (prefers-color-scheme:dark){.pill.active{background:#132a1c}}
+  .mono{font-family:var(--mono);font-size:12.5px;word-break:break-all}
+  .msg{margin:12px 0;padding:11px 14px;border-radius:10px;font-size:13.5px;display:none}
+  .msg.show{display:block}
+  .msg.ok{background:#e6f6ec;color:#0f6a34;border:1px solid #b7e3c6}
+  .msg.err{background:var(--danger-bg);color:var(--danger);border:1px solid #f2c4bc}
+  @media (prefers-color-scheme:dark){.msg.ok{background:#102a1a;color:#7fdca3;border-color:#1f4a30}}
+  .keyout{background:var(--code-bg);color:var(--code-fg);padding:12px 14px;border-radius:10px;font-family:var(--mono);
+    font-size:13px;word-break:break-all;margin-top:10px;display:none}
+  .keyout.show{display:block}
+  .keyout .warn-line{color:#ffd479;font-size:12px;margin-top:8px}
+  .statusdot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--danger);margin-right:6px}
+  .statusdot.on{background:var(--ok)}
+  footer{border-top:1px solid var(--line);margin-top:40px;padding:22px 0;color:var(--muted);font-size:12.5px}
+  details summary{cursor:pointer;color:var(--accent);font-size:13px;margin-top:6px}
+</style>
+</head>
+<body>
+<header class="hero"><div class="wrap">
+  <div class="kicker">MatrixArk · Cloud API</div>
+  <h1>API Key Portal</h1>
+  <p class="lead">Self-service management for MatrixArk Cloud API keys — create, list, rotate, and revoke keys,
+  and watch live per-key usage. Every action calls the real admin JSON endpoints with the admin key you paste
+  below; the page is inert until you provide a valid admin-scoped key.</p>
+</div></header>
+
+<main class="wrap">
+
+  <!-- ============================ Connection ============================ -->
+  <section class="card">
+    <h2><span id="connDot" class="statusdot"></span>Connection</h2>
+    <p class="hint">The admin key is held in <code>sessionStorage</code> for this tab only and is sent as
+      <code>Authorization: Bearer &lt;key&gt;</code>. It is never written into the page source or persisted to disk.
+      It must carry the <code>admin:api_key</code> scope (usage reads also accept <code>admin:audit</code>).</p>
+    <label>Admin API key <span class="opt">(bearer — held in sessionStorage)</span></label>
+    <input id="adminKey" type="password" placeholder="sk_live_… / mk_… admin-scoped key" autocomplete="off">
+    <div class="row">
+      <div>
+        <label>Key-management API base <span class="opt">(serves <code>/api/admin/*</code>; blank = same origin)</span></label>
+        <input id="mgmtBase" type="text" placeholder="https://portal-host:8080" autocomplete="off">
+      </div>
+      <div>
+        <label>Gateway base <span class="opt">(serves <code>/v1/admin/api_key_usage</code>; blank = same origin)</span></label>
+        <input id="gwBase" type="text" placeholder="https://gateway-host:8080" autocomplete="off">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>Account ID <span class="opt">(scopes the list/create views)</span></label>
+        <input id="ctxAccount" type="text" placeholder="acct_local" autocomplete="off">
+      </div>
+      <div>
+        <label>Tenant ID <span class="opt">(scopes the list/create views)</span></label>
+        <input id="ctxTenant" type="text" placeholder="tenantA" autocomplete="off">
+      </div>
+    </div>
+    <div class="actions">
+      <button id="saveConn" class="secondary">Save connection</button>
+      <button id="clearKey" class="secondary">Clear key</button>
+      <span id="connMsg" class="hint" style="margin:0"></span>
+    </div>
+  </section>
+
+  <!-- ============================ Create ============================ -->
+  <section class="card">
+    <h2>Create a key</h2>
+    <p class="hint">Calls <code>POST /api/admin/create_api_key</code> (tool
+      <code>matrixark_admin_create_api_key</code>). The plaintext key is returned <strong>once</strong> —
+      MatrixArk stores only its hash.</p>
+    <div class="row">
+      <div>
+        <label>Tenant ID <span class="opt">(defaults to the connection tenant)</span></label>
+        <input id="ckTenant" type="text" placeholder="tenantA">
+      </div>
+      <div>
+        <label>Account ID <span class="opt">(defaults to the connection account)</span></label>
+        <input id="ckAccount" type="text" placeholder="acct_local">
+      </div>
+    </div>
+    <label>Scopes <span class="opt">(comma-separated)</span></label>
+    <input id="ckScopes" type="text" value="context:ingest,context:retrieve,context:feedback,context:replay">
+    <div class="row3">
+      <div>
+        <label>Role <span class="opt"></span></label>
+        <input id="ckRole" type="text" value="service">
+      </div>
+      <div>
+        <label>Display name <span class="opt"></span></label>
+        <input id="ckDisplay" type="text" placeholder="team ingest key">
+      </div>
+      <div>
+        <label>Key prefix <span class="opt"></span></label>
+        <input id="ckPrefix" type="text" value="sk_live">
+      </div>
+    </div>
+    <label>Allowed user IDs <span class="opt">(comma-separated; blank = no per-user restriction)</span></label>
+    <input id="ckUsers" type="text" placeholder="alice,bob">
+    <div class="row">
+      <div>
+        <label>Request quota <span class="opt">(max requests per window; blank/0 = unlimited)</span></label>
+        <input id="ckQuota" type="number" min="0" placeholder="unlimited">
+      </div>
+      <div>
+        <label>Quota window seconds <span class="opt">(blank = per-process lifetime window)</span></label>
+        <input id="ckWindow" type="number" min="0" step="1" placeholder="e.g. 60">
+      </div>
+    </div>
+    <div class="actions">
+      <button id="createBtn">Create key</button>
+    </div>
+    <div id="createKeyOut" class="keyout"></div>
+    <div id="createMsg" class="msg"></div>
+  </section>
+
+  <!-- ============================ Keys list ============================ -->
+  <section class="card">
+    <h2>Keys</h2>
+    <p class="hint">Calls <code>POST /api/admin/list_api_keys</code>. Rotate mints a replacement carrying the
+      same scopes/identity (<code>/api/admin/rotate_api_key</code>); revoke marks a key inactive
+      (<code>/api/admin/revoke_api_key</code>).</p>
+    <div class="actions">
+      <button id="listBtn" class="secondary">Refresh list</button>
+      <label style="display:inline-flex;align-items:center;margin:0;font-weight:400">
+        <input id="inclRevoked" type="checkbox"> include revoked
+      </label>
+    </div>
+    <div id="listMsg" class="msg"></div>
+    <div class="tablewrap">
+      <table id="keysTable" style="display:none">
+        <thead><tr>
+          <th>api_key_id</th><th>tenant</th><th>scopes</th><th>quota</th><th>status</th>
+          <th>created</th><th>last used</th><th>usage</th><th>actions</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============================ Usage ============================ -->
+  <section class="card">
+    <h2>Live edge usage</h2>
+    <p class="hint">Calls <code>GET /v1/admin/api_key_usage</code> on the gateway — the in-process per-key
+      counter (keys shown hashed). Populated only in enforced mode.</p>
+    <div class="actions">
+      <button id="usageBtn" class="secondary">Refresh usage</button>
+    </div>
+    <div id="usageMsg" class="msg"></div>
+    <div class="tablewrap">
+      <table id="usageTable" style="display:none">
+        <thead><tr>
+          <th>api_key_hash</th><th>tenant</th><th>account</th><th>total</th>
+          <th>ingest</th><th>retrieve</th><th>other</th><th>bytes</th><th>last used</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>
+    MatrixArk API Key Portal · served at <code>GET /v1/admin/portal</code>. Endpoints used:
+    <code>/api/admin/create_api_key</code>, <code>/api/admin/list_api_keys</code>,
+    <code>/api/admin/rotate_api_key</code>, <code>/api/admin/revoke_api_key</code>,
+    <code>/v1/admin/api_key_usage</code>. Key crypto and the usage meter are unchanged backend primitives.
+  </footer>
+</main>
+
+<script>
+"use strict";
+(function () {
+  var SS = window.sessionStorage;
+  var LS = window.localStorage;
+  var $ = function (id) { return document.getElementById(id); };
+
+  // ---- connection state (key in sessionStorage; non-secret config in localStorage) -------------
+  function loadConn() {
+    $("adminKey").value = SS.getItem("mtx_admin_key") || "";
+    $("mgmtBase").value = LS.getItem("mtx_mgmt_base") || "";
+    $("gwBase").value = LS.getItem("mtx_gw_base") || "";
+    $("ctxAccount").value = LS.getItem("mtx_ctx_account") || "";
+    $("ctxTenant").value = LS.getItem("mtx_ctx_tenant") || "";
+    reflectStatus();
+  }
+  function saveConn() {
+    SS.setItem("mtx_admin_key", $("adminKey").value.trim());
+    LS.setItem("mtx_mgmt_base", $("mgmtBase").value.trim().replace(/\/+$/, ""));
+    LS.setItem("mtx_gw_base", $("gwBase").value.trim().replace(/\/+$/, ""));
+    LS.setItem("mtx_ctx_account", $("ctxAccount").value.trim());
+    LS.setItem("mtx_ctx_tenant", $("ctxTenant").value.trim());
+    reflectStatus();
+    setInlineMsg("connMsg", "Saved.");
+  }
+  function setInlineMsg(id, text) {
+    var el = $(id); el.textContent = text;
+    setTimeout(function () { if (el.textContent === text) el.textContent = ""; }, 2500);
+  }
+  function reflectStatus() {
+    var has = !!(SS.getItem("mtx_admin_key") || "").trim();
+    $("connDot").className = "statusdot" + (has ? " on" : "");
+  }
+  function adminKey() { return (SS.getItem("mtx_admin_key") || "").trim(); }
+  function mgmtBase() { return LS.getItem("mtx_mgmt_base") || ""; }
+  function gwBase() { return LS.getItem("mtx_gw_base") || ""; }
+  function ctxAccount() { return (LS.getItem("mtx_ctx_account") || "").trim(); }
+  function ctxTenant() { return (LS.getItem("mtx_ctx_tenant") || "").trim(); }
+
+  function showMsg(id, kind, text) {
+    var el = $(id);
+    el.className = "msg show " + kind;
+    el.textContent = text;
+  }
+  function hideMsg(id) { var el = $(id); el.className = "msg"; el.textContent = ""; }
+
+  function fmtTime(ms) {
+    ms = Number(ms || 0);
+    if (!ms) return "—";
+    try { return new Date(ms).toISOString().replace("T", " ").replace(".000Z", "Z"); }
+    catch (e) { return String(ms); }
+  }
+
+  // ---- HTTP: always sends the admin bearer; returns parsed JSON or throws ----------------------
+  function apiFetch(base, path, method, body) {
+    var key = adminKey();
+    if (!key) return Promise.reject(new Error("Paste an admin API key in the Connection panel first."));
+    var headers = { "Authorization": "Bearer " + key };
+    var opts = { method: method, headers: headers };
+    if (body !== undefined && body !== null) {
+      headers["Content-Type"] = "application/json";
+      opts.body = JSON.stringify(body);
+    }
+    return fetch((base || "") + path, opts).then(function (resp) {
+      return resp.text().then(function (txt) {
+        var data = {};
+        try { data = txt ? JSON.parse(txt) : {}; } catch (e) { data = { raw: txt }; }
+        if (!resp.ok) {
+          var detail = data.error || data.detail || ("HTTP " + resp.status);
+          var err = new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+          err.status = resp.status; err.data = data;
+          throw err;
+        }
+        return data;
+      });
+    });
+  }
+  // /api/admin/* tool routes wrap the tool output as {status, tool, result}.
+  function unwrap(data) { return (data && data.result !== undefined) ? data.result : data; }
+
+  function splitList(s) {
+    return (s || "").split(",").map(function (x) { return x.trim(); }).filter(Boolean);
+  }
+
+  // ---- create ----------------------------------------------------------------------------------
+  function createKey() {
+    hideMsg("createMsg");
+    var out = $("createKeyOut"); out.className = "keyout"; out.textContent = "";
+    var scopes = splitList($("ckScopes").value);
+    if (!scopes.length) { showMsg("createMsg", "err", "At least one scope is required."); return; }
+    var args = {
+      tenant_id: $("ckTenant").value.trim() || ctxTenant(),
+      account_id: $("ckAccount").value.trim() || ctxAccount(),
+      scopes: scopes,
+      role: $("ckRole").value.trim() || "service",
+      key_prefix: $("ckPrefix").value.trim() || "sk_live"
+    };
+    var display = $("ckDisplay").value.trim(); if (display) args.display_name = display;
+    var users = splitList($("ckUsers").value); if (users.length) args.allowed_user_ids = users;
+    var quota = parseInt($("ckQuota").value, 10);
+    if (!isNaN(quota) && quota > 0) args.request_quota = quota;
+    var win = parseInt($("ckWindow").value, 10);
+    if (!isNaN(win) && win > 0) args.quota_window = win;
+    if (!args.tenant_id) { showMsg("createMsg", "err", "Tenant ID is required (set one here or in Connection)."); return; }
+
+    var btn = $("createBtn"); btn.disabled = true;
+    apiFetch(mgmtBase(), "/api/admin/create_api_key", "POST", args)
+      .then(function (data) {
+        var r = unwrap(data);
+        out.className = "keyout show";
+        out.innerHTML = "<div>api_key_id: <strong>" + escapeHtml(r.api_key_id || "") + "</strong></div>" +
+          "<div style='margin-top:6px'>api_key: " + escapeHtml(r.api_key || "(not returned)") + "</div>" +
+          "<div class='warn-line'>Copy this key now — it is shown only once. MatrixArk stores only its hash.</div>";
+        showMsg("createMsg", "ok", "Created " + (r.api_key_id || "key") + ".");
+        listKeys();
+      })
+      .catch(function (e) { showMsg("createMsg", "err", "Create failed: " + e.message); })
+      .then(function () { btn.disabled = false; });
+  }
+
+  // ---- list ------------------------------------------------------------------------------------
+  function listKeys() {
+    hideMsg("listMsg");
+    var args = {
+      account_id: ctxAccount() || undefined,
+      tenant_id: ctxTenant() || undefined,
+      include_revoked: $("inclRevoked").checked,
+      limit: 100
+    };
+    apiFetch(mgmtBase(), "/api/admin/list_api_keys", "POST", args)
+      .then(function (data) {
+        var r = unwrap(data);
+        var keys = (r && r.api_keys) || [];
+        renderKeys(keys);
+        if (!keys.length) showMsg("listMsg", "ok", "No keys for this account/tenant.");
+      })
+      .catch(function (e) { showMsg("listMsg", "err", "List failed: " + e.message); });
+  }
+
+  function renderKeys(keys) {
+    var tb = $("keysTable").querySelector("tbody");
+    tb.innerHTML = "";
+    keys.forEach(function (k) {
+      var tr = document.createElement("tr");
+      var status = k.status || "";
+      var quota = (k.request_quota ? k.request_quota : "∞") +
+        (k.quota_window ? (" / " + k.quota_window + "s") : "");
+      tr.innerHTML =
+        "<td class='mono'>" + escapeHtml(k.api_key_id || "") + "</td>" +
+        "<td>" + escapeHtml(k.tenant_id || ctxTenant() || "") + "</td>" +
+        "<td>" + escapeHtml((k.scopes || []).join(", ")) + "</td>" +
+        "<td>" + escapeHtml(quota) + "</td>" +
+        "<td><span class='pill " + escapeHtml(status) + "'>" + escapeHtml(status) + "</span></td>" +
+        "<td>" + fmtTime(k.created_at_ms) + "</td>" +
+        "<td>" + fmtTime(k.last_used_at_ms) + "</td>" +
+        "<td>" + (k.usage_count || 0) + "</td>" +
+        "<td></td>";
+      var actions = tr.lastChild;
+      if (status === "active") {
+        var rot = mkBtn("Rotate", "mini secondary", function () { rotateKey(k.api_key_id); });
+        var rev = mkBtn("Revoke", "mini danger", function () { revokeKey(k.api_key_id); });
+        actions.appendChild(rot); actions.appendChild(document.createTextNode(" ")); actions.appendChild(rev);
+      } else {
+        actions.textContent = "—";
+      }
+      tb.appendChild(tr);
+    });
+    $("keysTable").style.display = keys.length ? "" : "none";
+  }
+
+  function rotateKey(id) {
+    if (!id) return;
+    apiFetch(mgmtBase(), "/api/admin/rotate_api_key", "POST", { api_key_id: id })
+      .then(function (data) {
+        var r = unwrap(data);
+        var out = $("createKeyOut");
+        out.className = "keyout show";
+        out.innerHTML = "<div>Rotated " + escapeHtml(id) + " → <strong>" + escapeHtml(r.api_key_id || "") + "</strong></div>" +
+          "<div style='margin-top:6px'>new api_key: " + escapeHtml(r.api_key || "(not returned)") + "</div>" +
+          "<div class='warn-line'>Copy the new key now — shown only once.</div>";
+        showMsg("listMsg", "ok", "Rotated " + id + ".");
+        listKeys();
+      })
+      .catch(function (e) { showMsg("listMsg", "err", "Rotate failed: " + e.message); });
+  }
+
+  function revokeKey(id) {
+    if (!id) return;
+    if (!window.confirm("Revoke " + id + "? Requests using it will be rejected.")) return;
+    apiFetch(mgmtBase(), "/api/admin/revoke_api_key", "POST", { api_key_id: id })
+      .then(function () { showMsg("listMsg", "ok", "Revoked " + id + "."); listKeys(); })
+      .catch(function (e) { showMsg("listMsg", "err", "Revoke failed: " + e.message); });
+  }
+
+  // ---- usage -----------------------------------------------------------------------------------
+  function loadUsage() {
+    hideMsg("usageMsg");
+    apiFetch(gwBase(), "/v1/admin/api_key_usage", "GET")
+      .then(function (data) {
+        var usage = (data && data.usage) || [];
+        var tb = $("usageTable").querySelector("tbody");
+        tb.innerHTML = "";
+        usage.forEach(function (u) {
+          var tr = document.createElement("tr");
+          tr.innerHTML =
+            "<td class='mono'>" + escapeHtml(u.api_key_hash || "") + "</td>" +
+            "<td>" + escapeHtml(u.tenant_id || "") + "</td>" +
+            "<td>" + escapeHtml(u.account_id || "") + "</td>" +
+            "<td>" + (u.total || 0) + "</td>" +
+            "<td>" + (u.ingest || 0) + "</td>" +
+            "<td>" + (u.retrieve || 0) + "</td>" +
+            "<td>" + (u.other || 0) + "</td>" +
+            "<td>" + (u.bytes || 0) + "</td>" +
+            "<td>" + fmtTime(u.last_used_at_ms) + "</td>";
+          tb.appendChild(tr);
+        });
+        $("usageTable").style.display = usage.length ? "" : "none";
+        if (!usage.length) showMsg("usageMsg", "ok", "No usage recorded yet (enforced mode only).");
+      })
+      .catch(function (e) { showMsg("usageMsg", "err", "Usage read failed: " + e.message); });
+  }
+
+  // ---- helpers ---------------------------------------------------------------------------------
+  function mkBtn(text, cls, onclick) {
+    var b = document.createElement("button");
+    b.textContent = text; b.className = cls; b.onclick = onclick; return b;
+  }
+  function escapeHtml(s) {
+    return String(s === undefined || s === null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
+  // ---- wire up ---------------------------------------------------------------------------------
+  $("saveConn").onclick = saveConn;
+  $("clearKey").onclick = function () { SS.removeItem("mtx_admin_key"); $("adminKey").value = ""; reflectStatus(); setInlineMsg("connMsg", "Key cleared."); };
+  $("adminKey").addEventListener("change", function () { SS.setItem("mtx_admin_key", $("adminKey").value.trim()); reflectStatus(); });
+  $("createBtn").onclick = createKey;
+  $("listBtn").onclick = listKeys;
+  $("inclRevoked").onchange = listKeys;
+  $("usageBtn").onclick = loadUsage;
+  loadConn();
+})();
+</script>
+</body>
+</html>

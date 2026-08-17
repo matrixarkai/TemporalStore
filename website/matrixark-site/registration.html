@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Register for MatrixArk | API keys and access management</title>
+    <meta
+      name="description"
+      content="Register a MatrixArk account, request API keys, and understand account, user, session, tenant, and access-management controls for LLM context infrastructure."
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./index.html" aria-label="MatrixArk home">
+        <span class="brand-mark" aria-hidden="true">M</span>
+        <span>MatrixArk</span>
+      </a>
+      <nav class="nav" aria-label="Registration navigation">
+        <div class="nav-product-menu">
+          <button class="nav-product-trigger" type="button" aria-expanded="false">Products</button>
+          <div class="nav-product-panel" aria-label="Product pages">
+            <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Time-aware LLM context and temporal serving</span></a>
+            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Optional serving and offline analysis complement</span></a>
+            <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Optional transactional metadata complement</span></a>
+          </div>
+        </div>
+        <a href="./index.html#architecture">Platform</a>
+        <a href="./blogs.html">Blogs</a>
+        <a href="./management-portal.html">Portal</a>
+        <a href="./registration.html">Register</a>
+      </nav>
+      <a class="header-action" href="./management-portal.html">Open portal</a>
+    </header>
+
+    <main>
+      <section class="product-hero access-hero">
+        <div class="hero-copy narrow">
+          <p class="eyebrow">Access Management</p>
+          <h1>Register an account, request API keys, and control LLM context access.</h1>
+          <p class="hero-subcopy">
+            MatrixArk treats account, tenant, user, session, and API key as first-class boundaries. Start with a cloud account or local deployment, then issue scoped keys for Codex/Cursor hooks, MCP servers, batch ingestion, and admin automation.
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="#account-access">Sign in or register</a>
+            <a class="button secondary" href="#api-key-request">API key request</a>
+          </div>
+        </div>
+      </section>
+
+      <section id="account-access" class="section key-request-section">
+        <div class="section-heading compact">
+          <p class="eyebrow">Sign in / Register</p>
+          <h2>Continue with Gmail, or create an account with email and password.</h2>
+          <p>Verified Gmail/Google and GitHub identities map to a MatrixArk user; email accounts store a salted PBKDF2 hash. Identity and API-key hashes persist in MatrixKV SQL or MySQL — never a raw token or password.</p>
+        </div>
+        <div class="key-request-layout">
+          <div class="auth-card">
+            <div class="auth-tabs" role="tablist" aria-label="Sign in or register">
+              <button class="auth-tab is-on" type="button" data-auth-mode="signin" aria-selected="true">Sign in</button>
+              <button class="auth-tab" type="button" data-auth-mode="register" aria-selected="false">Create account</button>
+            </div>
+            <div class="provider-buttons">
+              <button class="provider-btn" type="button" data-auth-provider="google">
+                <svg viewBox="0 0 18 18" width="18" height="18" aria-hidden="true"><path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.71-1.57 2.68-3.88 2.68-6.62z"/><path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.83.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.97 10.72a5.4 5.4 0 0 1 0-3.44V4.95H.96a9 9 0 0 0 0 8.1l3.01-2.33z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58C13.47.9 11.43 0 9 0A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z"/></svg>
+                Continue with Google <span>Gmail auto-login</span>
+              </button>
+              <button class="provider-btn github" type="button" data-auth-provider="github">
+                <svg viewBox="0 0 16 16" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.03 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+                Continue with GitHub <span>SSO callback</span>
+              </button>
+            </div>
+            <div class="auth-divider"><span>or use email</span></div>
+            <form class="access-form" id="auth-form" aria-label="Email sign in or registration">
+              <label class="auth-register-only">
+                Full name
+                <input id="auth-name" value="Alice Chen" autocomplete="name" />
+              </label>
+              <label>
+                Work email
+                <input id="auth-email" type="email" value="alice@gmail.com" autocomplete="email" />
+              </label>
+              <div class="auth-register-only auth-2col">
+                <label>Account ID<input id="auth-account" value="acct_acme" /></label>
+                <label>Tenant ID<input id="auth-tenant" value="tenant_prod" /></label>
+              </div>
+              <label>
+                Password
+                <input id="auth-password" type="password" value="use-a-strong-passphrase" autocomplete="current-password" />
+              </label>
+              <button class="button primary" id="auth-submit" type="submit">Sign in</button>
+            </form>
+          </div>
+          <aside class="access-preview">
+            <div class="panel-head compact">
+              <h2 id="auth-payload-title">Request MatrixArk runs</h2>
+            </div>
+            <pre id="auth-payload" aria-live="polite"></pre>
+            <div class="access-note-grid">
+              <div><strong>Gmail/Google</strong><span>id_token verified in-process (RS256)</span></div>
+              <div><strong>Email account</strong><span>PBKDF2-SHA256 hash only</span></div>
+              <div><strong>Store</strong><span>MatrixKV SQL or MySQL</span></div>
+              <div><strong>Never stored</strong><span>raw token or password</span></div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="registration-flow" class="section access-section">
+        <div class="section-heading">
+          <p class="eyebrow">Registration</p>
+          <h2>Simple for users, strict for production.</h2>
+          <p>
+            End users can subscribe to MatrixArk Cloud. Enterprise teams can run local or on-prem deployments for free/open-source TemporalStore and use MatrixArk Cloud services later. The identity model stays the same in both cases.
+          </p>
+        </div>
+        <div class="access-flow-grid">
+          <article>
+            <span class="number">01</span>
+            <h3>Create account</h3>
+            <p>Account is the commercial and governance boundary. Use one account per company, team, or controlled business unit.</p>
+            <code>account_id = acct_acme</code>
+          </article>
+          <article>
+            <span class="number">02</span>
+            <h3>Create tenant</h3>
+            <p>Tenant is the workspace boundary. Use tenants for prod, staging, departments, regulated data, or customer environments.</p>
+            <code>tenant_id = tenant_prod</code>
+          </article>
+          <article>
+            <span class="number">03</span>
+            <h3>Register users</h3>
+            <p>User ids come from the app, hook, or SSO provider. MatrixArk maps them to stable hashes before context is stored.</p>
+            <code>user_id = alice</code>
+          </article>
+          <article>
+            <span class="number">04</span>
+            <h3>Issue keys</h3>
+            <p>Issue different keys for hooks, MCP tools, batch ingestion, feedback, and admin automation. Keys can be user/session scoped.</p>
+            <code>scope = context:retrieve</code>
+          </article>
+        </div>
+      </section>
+
+      <section id="api-key-request" class="section key-request-section">
+        <div class="section-heading compact">
+          <p class="eyebrow">Apply For API Key</p>
+          <h2>Generate the exact request your admin or MatrixArk Cloud should approve.</h2>
+        </div>
+        <div class="key-request-layout">
+          <form class="access-form" aria-label="API key request form">
+            <label>
+              Account ID
+              <input id="request-account" value="acct_acme" autocomplete="organization" />
+            </label>
+            <label>
+              Tenant ID
+              <input id="request-tenant" value="tenant_prod" />
+            </label>
+            <label>
+              User ID
+              <input id="request-user" value="alice" autocomplete="username" />
+            </label>
+            <label>
+              Session ID allow-list
+              <input id="request-session" value="codex-thread-123" />
+            </label>
+            <label>
+              Integration role
+              <select id="request-role">
+                <option value="agent_service">Agent service</option>
+                <option value="mcp_server">MCP server</option>
+                <option value="agent_hook">Agent hook</option>
+                <option value="session_batch_extractor">Session batch extractor</option>
+                <option value="resource_skill_ingestor">Resource / skill ingestor</option>
+                <option value="batch_ingestor">Batch ingestor</option>
+                <option value="tenant_admin">Tenant admin</option>
+              </select>
+            </label>
+            <fieldset>
+              <legend>Scopes</legend>
+              <label><input type="checkbox" value="context:ingest" checked /> context:ingest</label>
+              <label><input type="checkbox" value="context:retrieve" checked /> context:retrieve</label>
+              <label><input type="checkbox" value="context:feedback" checked /> context:feedback</label>
+              <label><input type="checkbox" value="context:replay" /> context:replay</label>
+              <label><input type="checkbox" value="admin:api_key" /> admin:api_key</label>
+            </fieldset>
+          </form>
+          <aside class="access-preview">
+            <div class="panel-head compact">
+              <h2>Request payload</h2>
+            </div>
+            <pre id="api-key-payload" aria-live="polite"></pre>
+            <div class="access-note-grid">
+              <div><strong>Raw key</strong><span>returned once only</span></div>
+              <div><strong>Stored key</strong><span>hash only</span></div>
+              <div><strong>Isolation</strong><span>account, tenant, user, session</span></div>
+              <div><strong>Offboarding</strong><span>disable user or revoke key</span></div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="section access-section reference-section">
+        <div class="section-heading">
+          <p class="eyebrow">Agent memory lessons</p>
+          <h2>Registration is designed for agent context systems, not only ordinary API access.</h2>
+          <p>Modern coding agents need organized memories, resources, and skills instead of flat chunks — and long-running applications need session batches, event/entity memory, operators, temporal compression, and time-aware recall. MatrixArk delivers this on an open, self-hostable stack: it keeps the caller surface simple while adding account, user, session, and API-key governance, backed by your own MatrixKV SQL or MySQL.</p>
+        </div>
+        <div class="access-reference-grid">
+          <article>
+            <h3>Agent hook keys</h3>
+            <p>Issue scoped keys for Codex/Cursor hooks that send one message at a time, retrieve ContextPacks before the LLM call, and ingest assistant/tool output after the call.</p>
+          </article>
+          <article>
+            <h3>Session batch keys</h3>
+            <p>Issue batch-ingestion keys for session windows, rolling commits, idle-time commits, and one-pass extraction across 20-message logical batches.</p>
+          </article>
+          <article>
+            <h3>Resource and skill keys</h3>
+            <p>Issue resource-ingestion keys for files, runbooks, skills, and operational knowledge, then let MatrixArk attach L0/L1 summaries and TemporalStore indexes.</p>
+          </article>
+          <article>
+            <h3>Governance keys</h3>
+            <p>Issue admin keys separately for account status, user lifecycle, key rotation, SSO mapping, audit replay, and emergency tenant disablement.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section access-section soft-band">
+        <div class="section-heading">
+          <p class="eyebrow">Access Management</p>
+          <h2>What admins control after registration.</h2>
+        </div>
+        <div class="access-admin-grid">
+          <article>
+            <h3>Account and tenant status</h3>
+            <p>Disable one tenant for an isolation incident or disable the whole account for a customer suspension without deleting historical context.</p>
+          </article>
+          <article>
+            <h3>User lifecycle</h3>
+            <p>Register, list, enable, or disable users. Disabled users are blocked for API-key-authenticated context calls.</p>
+          </article>
+          <article>
+            <h3>API key lifecycle</h3>
+            <p>Create, list redacted metadata, rotate, revoke, and expire keys. Raw keys and hashes are never returned by inventory APIs.</p>
+          </article>
+          <article>
+            <h3>Audit and usage</h3>
+            <p>Every context and admin operation records account, tenant, role, key id, user id, session id, and timestamp for replayable governance.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section contact-section">
+        <div>
+          <p class="eyebrow">MatrixArk Cloud</p>
+          <h2>Ready to register?</h2>
+          <p>Send your preferred account id, tenant id, integration type, and expected context volume. We will issue scoped keys for the right deployment mode.</p>
+        </div>
+        <div class="contact-panel">
+          <strong>Apply now</strong>
+          <p>Cloud subscription for end users and teams. Local/open-source TemporalStore setup for developers and on-prem enterprise pilots. API-key roles map cleanly to each flow: hook, retrieval, resource ingestion, session batch extraction, feedback, replay, and admin governance.</p>
+          <a class="button primary" href="mailto:founders@matrixark.ai?subject=MatrixArk%20API%20key%20request">founders@matrixark.ai</a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>MatrixArk</span>
+      <span>Register. Apply. Govern.</span>
+    </footer>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

@@ -31,6 +31,14 @@ class _AccessApiKeyMixin:
         if expires_at_ms is not None:
             if not isinstance(expires_at_ms, int) or expires_at_ms <= now_ms():
                 raise MatrixArkError("expires_at_ms must be a future unix timestamp in milliseconds")
+        # Optional per-key request QUOTA enforced at the gateway edge (observe + limit; not billing).
+        # None/absent -> UNLIMITED (backward compatible; record shape unchanged for un-quota'd keys).
+        request_quota = args.get("request_quota")
+        if request_quota is not None and (not isinstance(request_quota, int) or isinstance(request_quota, bool) or request_quota < 0):
+            raise MatrixArkError("request_quota must be a non-negative integer (requests per window)")
+        quota_window = args.get("quota_window")
+        if quota_window is not None and (not isinstance(quota_window, (int, float)) or isinstance(quota_window, bool) or quota_window < 0):
+            raise MatrixArkError("quota_window must be a non-negative number of seconds")
         key_prefix = optional_string(args, "key_prefix", "mk_test")
         api_key = make_api_key(key_prefix)
         api_key_id = f"key_{stable_hash(api_key)}"
@@ -51,6 +59,10 @@ class _AccessApiKeyMixin:
             "created_by_api_key_id": identity.get("api_key_id", ""),
             "created_at_ms": now_ms(),
         }
+        if request_quota is not None and request_quota > 0:
+            record["request_quota"] = int(request_quota)
+            if quota_window is not None and quota_window > 0:
+                record["quota_window"] = float(quota_window)
         self.metadata.append(record)
         self.append_audit(
             "admin.create_api_key",
@@ -76,6 +88,8 @@ class _AccessApiKeyMixin:
             "allowed_user_ids": allowed_user_ids,
             "allowed_session_ids": allowed_session_ids,
             "expires_at_ms": expires_at_ms,
+            "request_quota": record.get("request_quota"),
+            "quota_window": record.get("quota_window"),
             "warning": "Store api_key now. MatrixArk only stores its hash.",
         }
 
@@ -316,6 +330,8 @@ class _AccessApiKeyMixin:
                 "allowed_user_ids": list(old_record.get("allowed_user_ids", [])),
                 "allowed_session_ids": list(old_record.get("allowed_session_ids", [])),
                 "expires_at_ms": old_record.get("expires_at_ms"),
+                "request_quota": old_record.get("request_quota"),
+                "quota_window": old_record.get("quota_window"),
                 "key_prefix": optional_string(args, "key_prefix", "mk_test"),
             },
             identity,
@@ -371,6 +387,8 @@ class _AccessApiKeyMixin:
                 "scopes": record.get("scopes", []),
                 "allowed_user_ids": record.get("allowed_user_ids", []),
                 "allowed_session_ids": record.get("allowed_session_ids", []),
+                "request_quota": record.get("request_quota"),
+                "quota_window": record.get("quota_window"),
                 "expires_at_ms": expires_at_ms,
                 "created_at_ms": record.get("created_at_ms", 0),
                 "revoked_at_ms": record.get("revoked_at_ms", 0),

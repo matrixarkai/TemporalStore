@@ -46,6 +46,30 @@ class ResourceParserError(RuntimeError):
     pass
 
 
+def resolve_max_inline_text_chars(override: int | None = None) -> int:
+    """Resolve the effective inline/text cap (chars) for resources — the single source
+    of truth skills also reuse (see ``matrixark_skill_parser.resolve_max_skill_bytes``).
+
+    Precedence: explicit ``override`` arg > ``MATRIXARK_RESOURCE_MAX_INLINE_TEXT_CHARS``
+    env > ``DEFAULT_MAX_INLINE_TEXT_CHARS`` (5 MiB). Read at call time so a host-set env
+    override takes effect without re-importing. Raises ``ResourceParserError`` on a
+    non-positive override."""
+    if override is not None:
+        value = int(override)
+        if value <= 0:
+            raise ResourceParserError("max_inline_text_chars must be positive")
+        return value
+    raw = os.environ.get("MATRIXARK_RESOURCE_MAX_INLINE_TEXT_CHARS")
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return DEFAULT_MAX_INLINE_TEXT_CHARS
+
+
 @dataclass(frozen=True)
 class ParsedResourceChunk:
     chunk_hash: int
@@ -246,14 +270,19 @@ def parse_resource(
     max_directory_files: int = DEFAULT_MAX_DIRECTORY_FILES,
     max_directory_depth: int = DEFAULT_MAX_DIRECTORY_DEPTH,
     max_total_chunks: int = DEFAULT_MAX_TOTAL_CHUNKS,
-    max_inline_text_chars: int = DEFAULT_MAX_INLINE_TEXT_CHARS,
+    max_inline_text_chars: int | None = None,
 ) -> list[ParsedResourceChunk]:
     """Parse supported resources into bounded serving chunks.
 
     Supported local/inline resource types: md, txt, pdf, html, csv, tsv, json,
     jsonl, docx, pptx, xlsx, image OCR/VLM, and skill. Unsupported binary files fail loudly instead of
     silently storing useless bytes.
+
+    ``max_inline_text_chars`` defaults (None) to ``resolve_max_inline_text_chars()`` —
+    the shared inline/text cap (5 MiB, knob ``MATRIXARK_RESOURCE_MAX_INLINE_TEXT_CHARS``)
+    that skills reuse too, so a skill and a resource of equal size gate identically.
     """
+    max_inline_text_chars = resolve_max_inline_text_chars(max_inline_text_chars)
     if max_chunk_chars < 256:
         raise ResourceParserError("max_chunk_chars must be >= 256")
     if overlap_chars < 0 or overlap_chars >= max_chunk_chars:

@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Delta / incremental served-index path (`MATRIXARK_DELTA_SERVED_INDEX`).
+//! Delta / incremental served-index path (now the only served-index mechanism).
 //!
-//! On the delta path a write no longer rewrites the whole `shard-{id}.index.json`
-//! (O(store) per write); the base snapshot is materialized only at compaction points
-//! (dump / flush / gc / unload-via-WAL). Between compactions the in-memory shard is the
-//! authoritative served index, which every reader reaches through the served-index funnel
-//! (`export_index_bytes` / `read_stream(Index)`), and a cold reload reconstructs current
-//! state by replaying the WAL suffix beyond the last materialized anchor.
-//!
-//! Runs in its own integration-test process, so toggling the process-wide
-//! `MATRIXARK_DELTA_SERVED_INDEX` env var cannot race the single-process library unit tests.
+//! A write no longer rewrites the whole `shard-{id}.index.json` (O(store) per write); the
+//! base snapshot is materialized only at compaction points (dump / flush / gc / unload).
+//! Between compactions the in-memory shard is the authoritative served index, which every
+//! reader reaches through the served-index funnel (`export_index_bytes` /
+//! `read_stream(Index)`), and a cold reload reconstructs current state by folding the base
+//! with the index-log deltas beyond the last materialized anchor.
 
 use std::path::PathBuf;
 
@@ -65,16 +62,7 @@ fn get(engine: &TemporalEngine, key: &str) -> Option<Vec<u8>> {
 
 #[test]
 fn delta_path_defers_base_write_but_funnel_and_reload_see_current_state() {
-    std::env::set_var("MATRIXARK_DELTA_SERVED_INDEX", "1");
-    // Guard so a panic does not leak the env var into any later test in this process.
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            std::env::remove_var("MATRIXARK_DELTA_SERVED_INDEX");
-        }
-    }
-    let _reset = Reset;
-
+    // The delta served-index is now the only path (no flag) -- this validates its contract.
     let root = root("roundtrip");
     let (engine, index_dir) = build_engine(&root);
     let index_path = index_dir.join(format!("shard-{SHARD_ID}.index.json"));

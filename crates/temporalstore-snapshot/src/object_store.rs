@@ -292,6 +292,15 @@ const RPC_RESPONSE_HEADER_LEN: usize = 14;
 const RPC_POOL_MAX_IDLE: usize = 32;
 
 impl MatrixObjectHttpStore {
+    /// Synchronous single-object GET for callers outside an async runtime — the
+    /// networked analogue of a plain `std::fs::read`. A sync lazy slab source can
+    /// resolve a checkpoint slab by address without bridging into an executor,
+    /// mirroring how the shared-filesystem lazy source reads the file directly.
+    pub fn get_blocking(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
+        let response = self.rpc_request(RPC_GET, key, &[])?;
+        Ok(Bytes::from(response))
+    }
+
     fn rpc_request(&self, op: u8, key: &str, value: &[u8]) -> Result<Vec<u8>, ObjectStoreError> {
         let mut stream = self.take_rpc_stream()?;
         match rpc_request_on_stream(&mut stream, op, key, value) {

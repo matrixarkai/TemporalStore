@@ -13,7 +13,9 @@ with a per-tenant API key over TLS. Base URL (production): `https://api.temporal
 
 ## Authentication
 
-Every data route requires a per-tenant bearer key.
+Every data route requires a per-tenant bearer key (an `mk_live_…` token issued by MatrixArk). The
+gateway's dev default is anonymous (no key needed); production runs in enforced mode where the key is
+resolved by hash and its authorization is checked on every request.
 
 | Header | Value | Notes |
 |---|---|---|
@@ -21,9 +23,42 @@ Every data route requires a per-tenant bearer key.
 | `X-API-Key` | `<api_key>` | alternative |
 | `Idempotency-Key` | `<uuid>` | optional — safe retries; dedup is backend-side |
 
-Missing/unknown key on a `/v1` data route → **`401`** `{"error":"unauthorized"}`. Health routes need no
-auth. The tenant is derived from the key and injected as `scope.tenant_id`; a tenant can never read
-another tenant's data. Keys are configured via `MATRIXARK_API_KEYS` / `MATRIXARK_API_KEYS_FILE`.
+**Identity.** The `tenant_id` and `account_id` are pinned **from your key**, never from the request
+body — a tenant can never read another tenant's data, and two tenants cannot collide on a shared
+`scope` string. `user_id`/`session_id` are taken from your `scope` (your own end-user axis).
+
+**Scopes (per route).** Each key carries a set of `scopes`; a route requires one:
+
+| Route | Required scope |
+|---|---|
+| `POST /v1/ingest`, `/v1/session/commit`, `/v1/ingest_file`, `PUT\|POST /v1/blob/<key>` | `context:ingest` |
+| `POST /v1/retrieve`, `GET /v1/blob/<key>` | `context:retrieve` |
+| `POST /v1/mcp` | **per-tool** (see below) |
+
+**`/v1/mcp` is gated per-tool**, not by a single route scope. The scope a `tools/call` needs is the
+one the *called tool* needs — the same `MATRIXARK_TOOL_SCOPES` map the backend enforces — so data
+tools (`matrixark_ingest`, `matrixark_retrieve`, …) require the matching `context:*` scope while admin
+tools (`matrixark_admin_*`) require the matching `admin:*` scope. A data-only key therefore cannot
+reach an admin tool through the MCP route. Non-`tools/call` methods (`initialize`, `tools/list`,
+`ping`, notifications) need no tool scope but still require a valid key; an unmapped tool needs no
+scope (matching the backend).
+
+A key may also be restricted to specific `allowed_user_ids` / `allowed_session_ids`; a request whose
+`scope.user_id` / `scope.session_id` is outside the allow-list is rejected (for `/v1/mcp` this is
+checked against the `tools/call` `params.arguments.scope`).
+
+**401 vs 403.**
+
+| Status | Body | Meaning |
+|---|---|---|
+| `401` | `{"error":"unauthorized"}` | missing / invalid / revoked / **expired** key |
+| `403` | `{"error":"insufficient_scope","required":"<scope>"}` | valid key, but it lacks the route's scope |
+| `403` | `{"error":"user_not_allowed"}` | valid key, but `scope.user_id` is not in the key's allow-list |
+| `403` | `{"error":"session_not_allowed"}` | valid key, but `scope.session_id` is not in the key's allow-list |
+
+Health routes (`/v1/healthz`, `/v1/readyz`) need no auth. Operators mint keys with
+`tools/matrixark_provision_api_key.py` into a hash-only keystore (`MATRIXARK_API_KEYS_HASHED_FILE`);
+see the deploy guide.
 
 ---
 
@@ -95,7 +130,12 @@ Synchronous: waits and returns the actual pack. Does **one** query-embedding per
 ---
 
 ### `POST /v1/mcp` — Model Context Protocol over HTTP
-JSON-RPC MCP message in the body → `200` with the MCP result. For MCP-native clients.
+JSON-RPC MCP message in the body → `200` with the MCP result. For MCP-native clients. In enforced
+mode this route is authorized **per-tool** via `MATRIXARK_TOOL_SCOPES` (the same map the backend
+uses): a `tools/call` needs the called tool's scope — data tools require `context:*`, admin tools
+require `admin:*` — so a data-only key is `403 insufficient_scope` on `matrixark_admin_*`, while
+`initialize` / `tools/list` / `ping` need only a valid key. `params.arguments.scope.user_id` /
+`session_id` are also checked against the key's `allowed_user_ids` / `allowed_session_ids`.
 
 ### `GET /v1/healthz` · `GET /v1/readyz` — probes (no auth)
 `/healthz` → `{"status":"ok"}`. `/readyz` → `{"ready":true,"datanode":"ok|unknown|unreachable"}`.
@@ -121,7 +161,8 @@ You cannot address another tenant's namespace; `tenant_id` is set from your API 
 | `202` | Ingest accepted (durably stored; extraction async unless finalized) |
 | `200` | Retrieve / commit / mcp / blob OK |
 | `400` | Malformed JSON body |
-| `401` | Missing/unknown API key |
+| `401` | Missing / invalid / revoked / expired API key |
+| `403` | Valid key, not authorized: `insufficient_scope` (wrong scope) · `user_not_allowed` / `session_not_allowed` |
 | `404` | Unknown path / missing blob key |
 | `405` | Wrong method for the route |
 | `413` | Payload too large (body, batch, or blob) |
@@ -140,9 +181,12 @@ You cannot address another tenant's namespace; `tenant_id` is set from your API 
 ### Auth
 | Env | Default | Purpose |
 |---|---|---|
-| `MATRIXARK_API_KEYS` | — | `key:tenant,key:tenant` per-tenant keys |
-| `MATRIXARK_API_KEYS_FILE` | — | path to JSON `{"key":"tenant"}` (use a secret store) |
-| `MATRIXARK_REQUIRE_AUTH` | `1` | `0` allows anonymous (local/dev only) |
+| `MATRIXARK_REQUIRE_AUTH` | `0` | **dev default: anonymous allowed.** Set `1` in production to require a valid key (missing/bad → `401`). A one-time startup warning is logged while off |
+| `MATRIXARK_AUTH_ENFORCED` | `0` | Set `1` for the edge hashed-keystore gate: identity + per-key `scopes` + `allowed_user_ids`/`allowed_session_ids` enforced (403 on failure) |
+| `MATRIXARK_API_KEYS_HASHED_FILE` | — | hash-only keystore (JSONL records or `{"<sha256>":{"tenant_id","account_id"}}`); loaded when enforced. Mint with `tools/matrixark_provision_api_key.py` |
+| `MATRIXARK_API_KEYS` | — | **legacy fallback** (unenforced): `key:tenant,key:tenant` plaintext keys |
+| `MATRIXARK_API_KEYS_FILE` | — | **legacy fallback**: path to JSON `{"key":"tenant"}` |
+| `MATRIXARK_ACCESS_MODE` | `dev` | separate **backend** knob; set `enforced` for backend-side isolation (defense in depth) |
 | `MATRIXARK_GATEWAY_FORWARD_API_KEY` | `1` | forward the edge key to the backend as its credential |
 
 ### Backend (see the deploy guide)
@@ -184,7 +228,7 @@ You cannot address another tenant's namespace; `tenant_id` is set from your API 
 
 ## curl quickstart
 ```bash
-BASE=http://localhost:8080/v1; KEY=sk_live_demo
+BASE=http://localhost:8080/v1; KEY=mk_live_...   # plaintext printed once at mint time
 # ingest a streaming message (buffers)
 curl -sS $BASE/ingest -H "authorization: Bearer $KEY" -H 'content-type: application/json' \
   -d '{"scope":"agent-7","messages":[{"role":"user","content":"hi"}]}'

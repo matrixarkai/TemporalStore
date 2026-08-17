@@ -1,0 +1,392 @@
+﻿<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>MatrixArk | Temporal decision state, serving-query KV, and transactional KV</title>
+    <meta
+      name="description"
+      content="MatrixArk builds focused online-state engines: TemporalStore for temporal decision features, MatrixDB for eventually consistent high-throughput KV serving and offline query, and MatrixKV for strongly consistent transactional KV."
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="MatrixArk home">
+        <span class="brand-mark" aria-hidden="true">M</span>
+        <span>MatrixArk</span>
+      </a>
+      <nav class="nav" aria-label="Primary navigation">
+        <div class="nav-product-menu">
+          <button class="nav-product-trigger" type="button" aria-expanded="false">Products</button>
+          <div class="nav-product-panel" aria-label="Product pages">
+            <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Time-window features, sequences, risk and agent context</span></a>
+            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Eventually consistent KV for serving and offline query</span></a>
+            <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Strongly consistent transactional KV for metadata</span></a>
+          </div>
+        </div>
+        <a href="#architecture">Platform</a>
+        <a href="#use-cases">Use cases</a>
+        <a href="#operations">Operations</a>
+        <a href="./blogs.html">Blogs</a>
+        <a href="./management-portal.html">Portal</a>
+        <a href="./registration.html">Register</a>
+      </nav>
+      <a class="header-action" href="./management-portal.html">Open portal</a>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="hero-visual" aria-hidden="true">
+          <div class="mesh">
+            <span></span><span></span><span></span><span></span>
+            <span></span><span></span><span></span><span></span>
+            <span></span><span></span><span></span><span></span>
+          </div>
+          <div class="signal-card signal-a">
+            <span>TemporalStore</span>
+            <strong>time-window features and event state for live decisions</strong>
+          </div>
+          <div class="signal-card signal-b">
+            <span>MatrixDB</span>
+            <strong>eventually consistent KV for serving, profiles, and offline query</strong>
+          </div>
+          <div class="signal-card signal-c">
+            <span>MatrixKV</span>
+            <strong>strongly consistent transactions for metadata and ownership</strong>
+          </div>
+        </div>
+
+        <div class="hero-copy">
+          <p class="eyebrow">matrixark.ai</p>
+          <h1>Real-time state engines for products that cannot wait for batch.</h1>
+          <p class="hero-subcopy">
+            MatrixArk gives product and infrastructure teams three focused engines for fresh
+            temporal decision state, eventually consistent KV serving and offline query, and strongly consistent
+            metadata. Keep the hot path simple while the data model matches the job.
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="#products">Explore the engines</a>
+            <a class="button secondary" href="#architecture">See the platform</a>
+          </div>
+          <div class="proof-strip" aria-label="Platform highlights">
+            <span>Temporal decision features</span>
+            <span>High-cardinality entity state</span>
+            <span>Serving and offline-query KV</span>
+            <span>Committed metadata state</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="section thesis-section">
+        <div class="section-heading">
+          <p class="eyebrow">Product Thesis</p>
+          <h2>One platform for the three online-state problems teams keep rebuilding.</h2>
+          <p>
+            Real-time products usually stitch together streams, caches, online stores, feature
+            services, and metadata databases. MatrixArk turns that sprawl into three focused
+            products that share deployment, observability, and operations while staying honest
+            about which engine owns which state.
+          </p>
+        </div>
+        <div class="thesis-grid">
+          <article>
+            <span class="number">01</span>
+            <h3>TemporalStore</h3>
+            <p>
+              TemporalStore is the temporal decision-state engine: rolling windows, filtered
+              aggregates, distinct counts, long behavior sequences, frequency caps, and structured
+              AI or agent context are stored and queried as first-class online models.
+            </p>
+            <ul class="thesis-points">
+              <li>Launch new risk, ads, recommendation, and agent policies without a new stream job for every window.</li>
+              <li>Keep temporal computation in the serving layer, close to the entity state being queried.</li>
+              <li>Serve both fresh answers and replayable persisted state, not only latest-value lookups.</li>
+            </ul>
+          </article>
+          <article>
+            <span class="number">02</span>
+            <h3>MatrixDB</h3>
+            <p>
+              MatrixDB is the eventually consistent, high-throughput KV database for serving and
+              offline access: user profiles, item attributes, account state, hashes, strings,
+              service state, cache-plus-storage workloads, scans, exports, and nearline query paths
+              that need familiar access and managed capacity.
+            </p>
+            <ul class="thesis-points">
+              <li>Give many teams and tenants a familiar eventual-consistency access path while gaining a managed serving and query plane.</li>
+              <li>Keep plain KV and profile reads simple while persisted data remains available for offline jobs.</li>
+              <li>Scale customer-facing serving and offline-queryable state where tenant isolation, capacity, rollout, and visibility matter.</li>
+            </ul>
+          </article>
+          <article>
+            <span class="number">03</span>
+            <h3>MatrixKV</h3>
+            <p>
+              MatrixKV is the strongly consistent transactional KV engine: metadata, leases,
+              routing records, table state, timestamps, ownership, and coordination records that
+              cannot be treated like ordinary cache entries.
+            </p>
+            <ul class="thesis-points">
+              <li>Protect ownership and routing with strong consistency rather than cache freshness assumptions.</li>
+              <li>Give failover, placement, and table operations a clear consistency boundary.</li>
+              <li>Support TemporalStore and MatrixDB with a dedicated control-plane foundation.</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section id="products" class="section products-section">
+        <div class="section-heading compact">
+          <p class="eyebrow">Products</p>
+          <h2>Choose the right engine for the workload, then operate them together.</h2>
+        </div>
+
+        <div class="product-grid">
+          <article class="product-card temporal-card">
+            <div class="product-topline">
+              <span class="product-mark">T</span>
+              <span class="status-pill">Decision state</span>
+            </div>
+            <h3><a href="./temporalstore.html">TemporalStore</a></h3>
+            <p>
+              Serve event-time features, recent behavior, and structured context directly in the
+              request path, with storage models shaped for windows, filters, distinct state,
+              sequences, and risk policies.
+            </p>
+            <dl>
+              <div><dt>Buyer pain</dt><dd>too many one-off stream jobs, cache keys, and stale feature paths</dd></div>
+              <div><dt>Product edge</dt><dd>native temporal models for windows, filters, unique counts, long sequences, and context</dd></div>
+              <div><dt>Business value</dt><dd>faster policy iteration for risk, fraud, ads, recommendations, and agent experiences</dd></div>
+            </dl>
+            <a class="text-link" href="./temporalstore.html">Open TemporalStore page</a>
+          </article>
+
+          <article class="product-card matrixdb-card">
+            <div class="product-topline">
+              <span class="product-mark">D</span>
+              <span class="status-pill">Serving + query KV</span>
+            </div>
+            <h3><a href="./matrixdb.html">MatrixDB</a></h3>
+            <p>
+              Serve profiles, attributes, hashes, strings, and general product state through a
+              multi-tenant KV database layer that keeps online serving fast while persisted data
+              remains available for offline or nearline query.
+            </p>
+            <dl>
+              <div><dt>Buyer pain</dt><dd>many teams sharing profile stores and caches that are hard to isolate and hard to query offline</dd></div>
+              <div><dt>Product edge</dt><dd>tenant-aware distributed KV for online serving plus persisted scans, exports, and nearline query paths</dd></div>
+              <div><dt>Business value</dt><dd>scale profile and KV workloads across serving and offline access without rewriting every application at once</dd></div>
+            </dl>
+            <a class="text-link" href="./matrixdb.html">Open MatrixDB page</a>
+          </article>
+
+          <article class="product-card matrixkv-card">
+            <div class="product-topline">
+              <span class="product-mark">K</span>
+              <span class="status-pill">Transactional KV</span>
+            </div>
+            <h3><a href="./matrixkv.html">MatrixKV</a></h3>
+            <p>
+              Keep routing, placement, ownership, leases, timestamps, metadata, and platform
+              records in a transactional KV layer built for strong consistency and correctness.
+            </p>
+            <dl>
+              <div><dt>Buyer pain</dt><dd>critical state spread across fragile control code and cache-like stores</dd></div>
+              <div><dt>Product edge</dt><dd>transactional KV semantics, leader ownership, and strong consistency for records that must be correct</dd></div>
+              <div><dt>Business value</dt><dd>safer operations for distributed serving products, metadata, and managed infrastructure</dd></div>
+            </dl>
+            <a class="text-link" href="./matrixkv.html">Open MatrixKV page</a>
+          </article>
+        </div>
+      </section>
+
+      <section id="architecture" class="section architecture-section">
+        <div class="section-heading">
+          <p class="eyebrow">Platform</p>
+          <h2>A cleaner operating model for online state.</h2>
+          <p>
+            MatrixArk separates the engines by workload, then unifies the customer experience:
+            one product family, one deployment vocabulary, one observability surface, and clear
+            ownership of every kind of online state.
+          </p>
+        </div>
+
+        <div class="architecture-board">
+          <div class="arch-lane">
+            <h3>Customer workloads</h3>
+            <span>fraud and risk decisions</span>
+            <span>ads and frequency policies</span>
+            <span>recommendation inference</span>
+            <span>agent and LLM context</span>
+          </div>
+          <div class="arch-lane engine-lane">
+            <h3>Product engines</h3>
+            <div class="engine-row temporal-row"><strong>TemporalStore</strong><small>windows, filters, aggregates, distinct sets, sequences, context</small></div>
+            <div class="engine-row matrixdb-row"><strong>MatrixDB</strong><small>eventually consistent KV for serving, profiles, hashes, strings, scans, and offline query</small></div>
+            <div class="engine-row matrixkv-row"><strong>MatrixKV</strong><small>transactions, strong consistency, leases, routes, ownership, metadata</small></div>
+          </div>
+          <div class="arch-lane">
+            <h3>Operating surface</h3>
+            <span>deployment and configuration</span>
+            <span>cache and storage policy</span>
+            <span>health and recovery state</span>
+            <span>metrics and product UI</span>
+          </div>
+        </div>
+
+        <div class="workflow-grid">
+          <article>
+            <h3>What the platform gives customers</h3>
+            <ol>
+              <li>Applications choose the right product API without rebuilding the storage stack.</li>
+              <li>Teams see product health, storage behavior, and serving readiness in one place.</li>
+              <li>Infrastructure owners keep routing, ownership, and metadata separate from hot data paths.</li>
+              <li>Customers can start with one engine and add the others as their online state grows.</li>
+            </ol>
+          </article>
+        </div>
+      </section>
+
+      <section id="use-cases" class="section use-case-section">
+        <div class="section-heading">
+          <p class="eyebrow">Use Cases</p>
+          <h2>Use cases where specialized online state creates real product leverage.</h2>
+        </div>
+        <div class="use-case-grid">
+          <article>
+            <h3>Fraud and risk</h3>
+            <p>Detect suspicious behavior from fresh entity windows: failed logins by country, unique merchants by card, chargeback velocity, and IP-account signup attempts.</p>
+            <code>TemporalAggregate + TemporalDistinct</code>
+          </article>
+          <article>
+            <h3>Ads frequency cap</h3>
+            <p>Serve campaign-user exposure history and conversion suppression directly, so business rules can change without rebuilding every aggregation path.</p>
+            <code>TemporalCounter + Sequence</code>
+          </article>
+          <article>
+            <h3>Recommendation freshness</h3>
+            <p>Combine recent behavior sequences with profile attributes so ranking systems can react to fresh engagement, not only yesterday's materialized features.</p>
+            <code>Sequence + Hash/Profile</code>
+          </article>
+          <article>
+            <h3>LLM and agent context</h3>
+            <p>Store structured session memory, tool events, safety counters, and retrieval metadata beside vector search for more controlled context assembly.</p>
+            <code>Temporal context store</code>
+          </article>
+          <article>
+            <h3>Redis modernization</h3>
+            <p>Move profile and service-state workloads into a scalable multi-tenant KV layer that supports both low-latency serving and offline or nearline query access.</p>
+            <code>MatrixDB</code>
+          </article>
+          <article>
+            <h3>Control-plane metadata</h3>
+            <p>Keep cluster state, table metadata, routing, leases, and ownership records in a transactional KV foundation designed for strong consistency.</p>
+            <code>MatrixKV</code>
+          </article>
+        </div>
+      </section>
+
+      <section id="operations" class="section cloud-section">
+        <div class="section-heading">
+          <p class="eyebrow">Operations</p>
+          <h2>Built to feel like a product, not a pile of storage projects.</h2>
+        </div>
+        <div class="ops-grid">
+          <article>
+            <span>01</span>
+            <h3>Fast customer onboarding</h3>
+            <p>Clear product boundaries, predictable node roles, service configuration, and repeatable infrastructure scripts reduce the work needed to evaluate and run MatrixArk.</p>
+          </article>
+          <article>
+            <span>02</span>
+            <h3>Operational confidence</h3>
+            <p>Health checks, metrics, product UI, request mix, storage status, cache behavior, and data-node visibility help teams diagnose issues quickly through a dedicated console instead of mixing operations into the public website.</p>
+          </article>
+          <article>
+            <span>03</span>
+            <h3>Reliability controls</h3>
+            <p>Ownership metadata, recovery workflows, durable logs, persistence policy, and operational checks make online serving behavior easier to reason about.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section positioning-section">
+        <div class="section-heading">
+          <p class="eyebrow">Why MatrixArk</p>
+          <h2>Feature-platform usability with storage-engine depth.</h2>
+        </div>
+        <div class="positioning-grid">
+          <article>
+            <h3>Versus feature stores</h3>
+            <p>Feature stores organize definitions and materialization. MatrixArk supplies the online temporal serving body for fresh windows, sequences, and entity state.</p>
+          </article>
+          <article>
+            <h3>Versus Redis Enterprise</h3>
+            <p>Generic caches are excellent for simple values. MatrixArk adds product-specific engines for temporal decision state, eventually consistent serving-query KV, and transactional KV with strong consistency.</p>
+          </article>
+          <article>
+            <h3>Versus generic KV</h3>
+            <p>General KV systems store values. MatrixArk separates eventually consistent serving-query KV, temporal decision state, and strongly consistent transactional KV into purpose-built products.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="blogs" class="section blog-preview-section">
+        <div class="section-heading">
+          <p class="eyebrow">Blogs</p>
+          <h2>Notes from building the MatrixArk engine matrix.</h2>
+          <p>
+            Product essays and practical guides for temporal serving, distributed online data,
+            and transactional KV with strong consistency.
+          </p>
+        </div>
+        <div class="blog-grid">
+          <article>
+            <span>Architecture</span>
+            <h3>Why temporal features need a serving engine, not just another cache</h3>
+            <p>How high-cardinality windows, filtered state, long sequences, observability, and cloud-native operations change the shape of the online store.</p>
+          </article>
+          <article>
+            <span>Product</span>
+            <h3>The MatrixArk product matrix: TemporalStore, MatrixDB, MatrixKV</h3>
+            <p>How the three engines separate workload fit while sharing one product operating surface.</p>
+          </article>
+          <article>
+            <span>Operations</span>
+            <h3>Designing an AWS-ready rollout for online state systems</h3>
+            <p>Lessons from deploying meta services, data nodes, monitoring, cache volumes, and public product pages.</p>
+          </article>
+        </div>
+        <div class="section-action">
+          <a class="button primary" href="./blogs.html">Open blogs</a>
+        </div>
+      </section>
+
+      <section id="contact" class="section contact-section">
+        <div>
+          <p class="eyebrow">MatrixArk.ai</p>
+          <h2>Build the online state layer for AI-era applications.</h2>
+          <p>
+            MatrixArk is for teams that need fresh decisions, reliable profile serving, and
+            strongly consistent transactional KV without maintaining separate bespoke systems for each one.
+          </p>
+        </div>
+        <div class="contact-panel">
+          <strong>Best first users</strong>
+          <p>Fraud, ads, recommendation, feature platform, infrastructure, and AI agent teams that need fresher online state with less pipeline sprawl.</p>
+          <a class="button primary" href="./registration.html">Register and apply</a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>MatrixArk</span>
+      <span>TemporalStore. MatrixDB. MatrixKV.</span>
+    </footer>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
+
+

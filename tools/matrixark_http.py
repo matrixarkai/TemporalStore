@@ -18,10 +18,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import _mcp_debug_log, adapter_ensure_backend_ready
 
 # Gateway default ceiling for the retrieve token budget when a caller omits
-# max_context_tokens. Historically hardcoded to 10000 (far below the backend
+# max_context_tokens. Historically hardcoded to 10000 (50x below the backend
 # DEFAULT_MAX_CONTEXT_TOKENS=500000), which silently under-returned on deep/
-# broad queries. Now env-tunable and defaulted to the backend default. This is
-# a CEILING, not a target: the pack still fills only to relevant refs.
+# broad queries. Now env-tunable and defaulted to the backend default so the
+# gateway default == backend default. This is a CEILING, not a target: the
+# pack still fills only to relevant refs (min_score-gated).
 try:
     from tools.matrixark_mcp_runtime_config import DEFAULT_MAX_CONTEXT_TOKENS as _BACKEND_DEFAULT_MAX_CONTEXT_TOKENS
 except ModuleNotFoundError:  # Direct script execution from tools/.

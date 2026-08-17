@@ -14,13 +14,6 @@ token-budgeted **ContextPack** retrieval, exact serving-time **feature aggregate
 **control state** (caps, quotas, pacing) — all from one temporal index. It runs locally with
 one Docker command and scales out to a replicated, shared-storage cluster.
 
-**Three open Apache-2.0 repositories — free for anyone to use.**
-[TemporalStore](https://github.com/matrixarkai/TemporalStore) (this repo — the engine) ·
-[MatrixCache](https://github.com/matrixarkai/MatrixCache) (multi-layer cache) ·
-[MatrixRaft](https://github.com/matrixarkai/MatrixRaft) (Rust Raft consensus).
-Depend on them as **Rust crates**, run the server with one Docker command, or talk to it
-over RESP / gRPC / HTTP / MCP — see [Use it as a Rust library](#use-it-as-a-rust-library).
-
 ---
 
 ## What you get
@@ -91,51 +84,6 @@ native (non-Docker) builds are covered step by step in the [Install Guide](docs/
 
 ---
 
-## Use it as a Rust library
-
-All three components are Apache-2.0 **Rust crates you can depend on directly** — TemporalStore
-(the engine), plus [MatrixCache](https://github.com/matrixarkai/MatrixCache) (multi-layer cache)
-and [MatrixRaft](https://github.com/matrixarkai/MatrixRaft) (Rust Raft consensus). Nothing is
-gated: the engine, typed client, proxy, context pipeline, and the RESP / gRPC / MCP / HTTP
-surfaces all live in these open repos. (The only enterprise piece is the hosted **web management
-console** — a separate product, not in this repo.)
-
-Add the crates to your `Cargo.toml` (pin a tag or rev for production):
-
-```toml
-[dependencies]
-temporalstore-rust = { git = "https://github.com/matrixarkai/TemporalStore.git" }
-matrixcache        = { git = "https://github.com/matrixarkai/MatrixCache.git" }
-matrixraft         = { git = "https://github.com/matrixarkai/MatrixRaft.git" }
-```
-
-Talk to a running node with the typed client (start one with the Docker quick start above, or run
-the `server`/`proxy` bins):
-
-```rust
-use temporalstore_rust::{TemporalStoreClient, TableOptions};
-
-// in a fn returning Result<(), temporalstore_rust::ClientError>
-let client = TemporalStoreClient::new("127.0.0.1:17000"); // proxy address
-let table = client.open_table("acme", "sessions", TableOptions::default());
-
-table.set("hello", b"world".to_vec())?;
-let value = table.get("hello")?;                 // Option<Vec<u8>>
-assert_eq!(value.as_deref(), Some(&b"world"[..]));
-```
-
-The public surface is organized by module: `engine` (temporal storage engine), `client`
-(strings / hashes / sets / control verbs), `context_workflow` (ingest -> extract -> retrieve a
-ranked ContextPack), `proxy`, `redis` (RESP), `sdk` (tonic/gRPC), and `raft`. Runnable
-end-to-end examples ship as bins/harnesses:
-
-```bash
-cargo run -p temporalstore-rust --bin context_workflow_harness
-cargo run -p temporalstore-rust --bin readiness_gate -- --service-reports
-```
-
----
-
 ## Use it with your agent
 
 TemporalStore installs as a memory layer for coding agents — automatic ingest/inject on every
@@ -144,7 +92,7 @@ turn, plus recall/remember tools.
 ### Claude Code (marketplace plugin)
 
 ```text
-/plugin marketplace add matrixarkai/TemporalStore
+/plugin marketplace add bjmeetsfo/TemporalStore
 /plugin install matrixark-memory@temporalstore
 ```
 
@@ -163,12 +111,7 @@ MCP-capable client.
 
 ---
 
-## Cloud API (ingest & retrieve at scale)
-
-> **Open vs enterprise.** The `/v1` HTTP API, the proxy, and every engine surface in this
-> repo are open — self-host and use them freely. The only enterprise pieces are the *managed
-> hosting* of this endpoint and the *web management console* (a separate product, not in this
-> repo).
+## Enterprise Cloud API (ingest & retrieve at scale)
 
 For teams that ingest their own resources and skills programmatically — through **APIs rather than
 agent hooks** — TemporalStore Cloud exposes a managed, multi-tenant HTTPS endpoint. Every route is
@@ -325,8 +268,8 @@ python3 tools/run_temporalstore_unified_tests.py --validate-only
 
 ## Status & evidence
 
-Apache-2.0. The project's production-readiness claims should be read from passing readiness
-reports, not this README alone:
+Apache-2.0. The project's production-readiness claims should be read from passing readiness reports, not this
+README alone:
 
 - [Benchmarks: token & quality vs full local replay](docs/benchmarks/README.md)
 - [Context Management on TemporalStore](docs/context_management_on_temporalstore.md) ·
@@ -337,9 +280,9 @@ Out of scope unless separately re-added: alternate wire-protocol compatibility (
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). Contributions target the
-`rust-main` branch. New product-behavior tests should reference a shared corpus case with
-`shared-corpus: <case_id>`; Rust-only implementation tests should be marked `rust-internal: <reason>`.
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). Contributions target the `rust-main` branch. New product-behavior tests
+should reference a shared corpus case with `shared-corpus: <case_id>`; Rust-only implementation
+tests should be marked `rust-internal: <reason>`.
 
 ## License
 

@@ -11,21 +11,20 @@ impl TemporalEngine {
 
     /// The single funnel through which every consumer reads the COMPLETE served index for
     /// a shard. It always returns a full, current `serialize_index`-shaped byte image of
-    /// the `ShardState`, so callers never see a partial or stale index regardless of the
-    /// delta path.
+    /// the `ShardState`, so callers never see a partial or stale index.
     ///
-    /// - Delta path ON, shard loaded, not bulk: serialize the LIVE in-memory shard. This
-    ///   is the authoritative current state and is what makes deferring the per-write base
-    ///   rewrite safe -- readers reconstruct from memory rather than from the on-disk base.
-    /// - Otherwise: read the on-disk base `shard-{id}.index.json`. This is the established
-    ///   behavior (default OFF) and is also the correct source in bulk mode, where the base
-    ///   is deliberately frozen at the last flush anchor while the WAL tail races ahead
-    ///   (serving the live tail there would over-advance the manifest replay watermark).
+    /// - Shard loaded, not bulk: serialize the LIVE in-memory shard. This is the
+    ///   authoritative current state and is what makes deferring the per-write base rewrite
+    ///   safe -- readers reconstruct from memory rather than from the on-disk base.
+    /// - Otherwise: read the on-disk base `shard-{id}.index.json`. This is the correct source
+    ///   in bulk mode, where the base is deliberately frozen at the last flush anchor while
+    ///   the WAL tail races ahead (serving the live tail would over-advance the manifest
+    ///   replay watermark), and for a shard not currently loaded.
     pub(super) fn load_served_index_bytes(
         &self,
         shard_id: ShardId,
     ) -> Result<Vec<u8>, std::io::Error> {
-        if delta_served_index_enabled() && !bulk_ingest_mode() {
+        if !bulk_ingest_mode() {
             if let Some(shard) = self
                 .shards
                 .read()
@@ -137,9 +136,7 @@ impl TemporalEngine {
         // a corrupt index-log delta yields None here. The authoritative load path
         // (`load_shard_with`) calls `load_index_checked` instead so it can REFUSE the load on
         // corruption rather than silently serving a base-only prefix.
-        self.load_index_inner(shard_id, warm_cache, delta_served_index_enabled())
-            .ok()
-            .flatten()
+        self.load_index_inner(shard_id, warm_cache, true).ok().flatten()
     }
 
     /// Fold-aware load that surfaces a corrupt served-index delta as `Err` so the caller can
@@ -149,17 +146,16 @@ impl TemporalEngine {
         shard_id: ShardId,
         warm_cache: bool,
     ) -> Result<Option<ShardState>, Status> {
-        self.load_index_inner(shard_id, warm_cache, delta_served_index_enabled())
+        self.load_index_inner(shard_id, warm_cache, true)
     }
 
-    /// Load ONLY the durable base snapshot, WITHOUT folding the served-index delta. Used by
-    /// single-barrier recovery: under the flag the delta-log fdatasync and the per-write base
-    /// rewrite are deferred, so neither the served-index delta nor the un-synced base rewrite can
-    /// be trusted -- they may reference pages that were never fsync'd. The base index file is
-    /// materialized ONLY by the durable dump/flush path (which fsyncs every page before advancing
-    /// its watermark), so it is a durable checkpoint at its own watermark; the WAL tail beyond it
-    /// is re-derived by replaying each record exactly once (no delta fold means no double-apply of
-    /// non-idempotent commands).
+    /// Load ONLY the durable base snapshot (materialized at the last dump/unload), WITHOUT
+    /// folding the served-index delta. Used by single-barrier recovery: the delta-log fdatasync
+    /// is deferred, so the delta tail (and the anchor it advances) may reference pages that were
+    /// never fsync'd -- trusting it could skip WAL replay and leave dangling references. The base
+    /// is a durable checkpoint at its own watermark (flush_shard_index fsyncs every page before
+    /// advancing that watermark); the WAL tail beyond it is re-derived by replaying each record
+    /// exactly once (no delta fold means no double-apply of non-idempotent commands).
     pub(super) fn load_index_base_only(
         &self,
         shard_id: ShardId,
@@ -179,12 +175,9 @@ impl TemporalEngine {
     ) -> Result<Option<ShardState>, Status> {
         let read = fs::read(self.index_path(shard_id));
         let base_present = read.is_ok();
-        // No fold: a missing base means nothing to load. Fold path: the base is materialized
-        // only at compaction/unload, so a crash before the first compaction leaves no base --
-        // start empty and rebuild from the index-log deltas below.
-        if !base_present && !fold_deltas {
-            return Ok(None);
-        }
+        // The base snapshot is materialized only at compaction/unload, so a crash before the
+        // first compaction leaves no base -- start empty and rebuild from the index-log
+        // deltas below.
         let mut shard = match read {
             Ok(bytes) => match serde_json::from_slice::<ShardState>(&bytes) {
                 Ok(shard) => shard,
@@ -201,21 +194,21 @@ impl TemporalEngine {
                 shard.features.entry(key).or_default().extend(series);
             }
         }
-        // Delta path: fold the index-log deltas beyond the base snapshot's anchor into the
-        // bucket index (reconstructing the exact on-disk page layout at the ORIGINAL
-        // addresses) and apply the captured per-key non-page state, BEFORE reconcile. This
-        // is what lets a crash reload reconstruct the served index WITHOUT re-executing the
-        // WAL -- re-execution would write fresh pages and relocate them to the active slab,
-        // doubling physical page counts and losing the recorded slab layout.
+        // Fold the index-log deltas beyond the base snapshot's anchor into the bucket index
+        // (reconstructing the exact on-disk page layout at the ORIGINAL addresses) and apply
+        // the captured per-key non-page state, BEFORE reconcile. This is what lets a crash
+        // reload reconstruct the served index WITHOUT re-executing the WAL -- re-execution
+        // would write fresh pages and relocate them to the active slab, doubling physical
+        // page counts and losing the recorded slab layout.
         if fold_deltas {
             self.fold_index_log_deltas(shard_id, &mut shard)?;
-            // ON but no base and nothing to fold -> genuinely nothing persisted yet.
-            if !base_present
-                && shard.bucket_index.bucket_map.is_empty()
-                && shard.applied_wal_sequence.is_none()
-            {
-                return Ok(None);
-            }
+        }
+        // No base and nothing to fold -> genuinely nothing persisted yet.
+        if !base_present
+            && shard.bucket_index.bucket_map.is_empty()
+            && shard.applied_wal_sequence.is_none()
+        {
+            return Ok(None);
         }
         // Fold disk->memory cache promotion into reconcile's page reads on a warming
         // load (normal restart): the pages reconcile reads to rebuild the secondary
@@ -353,8 +346,8 @@ impl TemporalEngine {
             return Ok(());
         }
         fs::create_dir_all(&self.index_dir)?;
-        // Ack-path served-index checkpoint. Under the single-barrier default the durable barrier is
-        // deferred (content + rename still issued): the WAL is durably synced before ack
+        // Ack-path served-index checkpoint. Under the single-barrier default the durable barrier
+        // is deferred (content + rename still issued): the WAL is durably synced before ack
         // and replay-on-load rebuilds the served index from it, so a stale-on-crash index
         // only costs a longer WAL replay, never an acked write. This is the served-index
         // fsync removed from the write critical path.

@@ -48,6 +48,20 @@ _DEFAULT_SCOPES = [
 ]
 
 
+def _flatten_csv(values: list[str] | None) -> list[str]:
+    """Flatten repeated + comma-separated flag values into a de-duplicated sorted list.
+
+    So both ``--scope context:ingest --scope context:retrieve`` and the comma form
+    ``--scope context:ingest,context:retrieve`` yield the same two scopes."""
+    out: list[str] = []
+    for chunk in values or []:
+        for item in str(chunk).split(","):
+            item = item.strip()
+            if item:
+                out.append(item)
+    return sorted(set(out))
+
+
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -63,20 +77,29 @@ def mint(args: argparse.Namespace) -> dict:
     api_key = make_api_key(args.prefix)
     api_key_hash = secret_hash(api_key)
     api_key_id = f"key_{api_key_hash[:24]}"
+    scopes = _flatten_csv(args.scopes) or sorted(set(_DEFAULT_SCOPES))
     record = {
         "record_type": "matrixark_api_key",
         "api_key_id": api_key_id,
         "api_key_hash": api_key_hash,
         "account_id": args.account_id,
         "tenant_id": args.tenant_id,
-        "scopes": sorted(set(args.scopes or _DEFAULT_SCOPES)),
+        "scopes": scopes,
         "role": args.role,
         "display_name": args.display_name or f"{args.tenant_id} key",
-        "allowed_user_ids": sorted(set(args.allowed_user_ids or [])),
+        "allowed_user_ids": _flatten_csv(args.allowed_user_ids),
+        "allowed_session_ids": _flatten_csv(args.allowed_session_ids),
         "status": args.status,
         "expires_at_ms": args.expires_at_ms,
         "created_at_ms": _now_ms(),
     }
+    # Per-key request QUOTA (optional). Only written when set, so records for un-quota'd keys stay
+    # byte-identical to the pre-quota shape. The gateway carries these to the edge via
+    # `_normalize_key_record`; request_quota None/0 -> UNLIMITED (backward compatible).
+    if args.request_quota is not None and args.request_quota > 0:
+        record["request_quota"] = int(args.request_quota)
+        if args.quota_window is not None and args.quota_window > 0:
+            record["quota_window"] = float(args.quota_window)
     store = args.store or _default_store()
     os.makedirs(os.path.dirname(store), exist_ok=True)
     with open(store, "a", encoding="utf-8") as handle:
@@ -89,6 +112,8 @@ def mint(args: argparse.Namespace) -> dict:
         "tenant_id": args.tenant_id,
         "account_id": args.account_id,
         "scopes": record["scopes"],
+        "request_quota": record.get("request_quota"),
+        "quota_window": record.get("quota_window"),
         "store": store,
         "warning": "Store api_key now. MatrixArk only persists its hash.",
     }
@@ -103,10 +128,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--display-name", dest="display_name", default="")
     parser.add_argument("--status", default="active", choices=["active", "revoked"])
     parser.add_argument("--expires-at-ms", dest="expires_at_ms", type=int, default=None)
-    parser.add_argument("--scope", dest="scopes", action="append", help="repeatable MatrixArk scope")
     parser.add_argument(
-        "--allowed-user-id", dest="allowed_user_ids", action="append",
-        help="repeatable; restrict the key to these user_ids",
+        "--scope", "--scopes", dest="scopes", action="append",
+        help="MatrixArk scope; repeatable and/or comma-separated (default: all four context scopes)",
+    )
+    parser.add_argument(
+        "--allowed-user-id", "--allowed-user-ids", dest="allowed_user_ids", action="append",
+        help="restrict the key to these user_ids; repeatable and/or comma-separated",
+    )
+    parser.add_argument(
+        "--allowed-session-id", "--allowed-session-ids", dest="allowed_session_ids", action="append",
+        help="restrict the key to these session_ids; repeatable and/or comma-separated",
+    )
+    parser.add_argument(
+        "--request-quota", dest="request_quota", type=int, default=None,
+        help="max requests per window enforced at the gateway edge (omit or 0 -> unlimited)",
+    )
+    parser.add_argument(
+        "--quota-window", dest="quota_window", type=float, default=None,
+        help="rolling quota window in seconds (omit -> per-process lifetime window; only used with --request-quota)",
     )
     parser.add_argument("--store", default="", help="JSONL keystore path (hashed records only)")
     args = parser.parse_args(argv)

@@ -114,6 +114,17 @@ impl TemporalEngine {
         self.execute_with_storage_override(request, Some(false))
     }
 
+    /// Apply a committed raft entry to the state machine, durably (fsync'd WAL) but with a
+    /// NON-BLOCKING index-log append: on the raft path the raft log is the durability +
+    /// reconstruction source, so the per-apply index-log fsync is redundant. Removing it off
+    /// the critical replication path shortens apply latency (which otherwise widens the
+    /// snapshot-transfer / backpressure window). A crash that loses the non-fsync'd index-log
+    /// tail is safe -- raft-log replay on restart re-applies and rebuilds the served index.
+    pub fn execute_raft_apply(&self, request: ExecuteRequest) -> ExecuteResponse {
+        let _guard = RaftApplyGuard::enter();
+        self.execute_with_storage_override(request, Some(false))
+    }
+
     pub fn execute_replicated(&self, request: ReplicatedExecuteRequest) -> ExecuteResponse {
         let replication_mode = request.replication_mode;
         let request = ExecuteRequest {
@@ -328,11 +339,7 @@ impl TemporalEngine {
             let object_keys = command_object_keys(&command);
             // Capture this write's touched keys for the O(delta) index-log append below
             // (the command is moved into the WAL append before we reach that point).
-            let delta_command_keys = if delta_served_index_enabled() {
-                object_keys.clone()
-            } else {
-                Vec::new()
-            };
+            let delta_command_keys = object_keys.clone();
             if object_keys.is_empty() {
                 rebuild_bucket_page_ownership(
                     request.shard_id,
@@ -441,48 +448,40 @@ impl TemporalEngine {
                 }
             }
             if !config.async_storage && !bulk_ingest_mode() && !replaying_wal() {
-                // Anchor the served index to the WAL sequence it now reflects, so a
+                // Anchor the (in-memory) served index to the WAL sequence it now reflects, so a
                 // later load replays only records written after this point (the
                 // dumped-log-id anchor read back on load).
                 shard.applied_wal_sequence =
                     Some(self.wal_store.stats(request.shard_id).last_sequence);
-                if delta_served_index_enabled() {
-                    // Delta path: append ONLY the pages this write changed (O(delta)) to the
-                    // index-log, advancing the index-log sequence and populating the
-                    // served-index delta stream. DO NOT rewrite the whole base index
-                    // (O(store)); the base is materialized at compaction/unload, the funnel
-                    // serves the live in-memory shard between them, and cold reload replays
-                    // the WAL suffix beyond the last materialized anchor.
-                    let items = collect_command_index_items(
-                        shard,
-                        &delta_command_keys,
-                        start_routing_bucket,
-                        end_routing_bucket,
-                    );
-                    let key_states = capture_key_states(shard, &delta_command_keys);
-                    let _ = self.index_log_store.append_delta(
-                        request.shard_id,
-                        items,
-                        key_states,
-                        shard.applied_wal_sequence,
-                        None,
-                    );
-                } else if !wal_single_barrier() {
-                    let index_bytes = serialize_index(shard);
-                    let _ = self
-                        .index_log_store
-                        .append_json(request.shard_id, &index_bytes);
-                    let _ = self.persist_index_bytes(request.shard_id, &index_bytes);
-                }
-                // Single-barrier mode (base-only recovery): the per-write base-index rewrite
-                // above is DEFERRED. It would otherwise advance the on-disk base watermark (and
-                // its page references) to the latest write while the data-page fdatasync is
-                // deferred, so a crash would leave the durable base pointing past the durable
-                // page frontier -- recovery would then trust a watermark whose pages were never
-                // synced and silently drop them. Instead the base index is materialized ONLY by
-                // the durable dump/flush path (which fsyncs every page BEFORE advancing its
-                // watermark), so base-only recovery never trusts a watermark or page reference
-                // beyond the durable frontier; the WAL (already synced above) re-derives the tail.
+                // Append ONLY the pages this write changed (O(delta)) to the index-log,
+                // advancing the index-log sequence and populating the served-index delta
+                // stream. The whole base index is NOT rewritten per write (that O(store) path
+                // is gone); the base is materialized at compaction/unload, the funnel serves
+                // the live in-memory shard between them, and cold reload folds base + deltas.
+                let items = collect_command_index_items(
+                    shard,
+                    &delta_command_keys,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                );
+                let key_states = capture_key_states(shard, &delta_command_keys);
+                // `durable` fsyncs the delta record before returning. Deferred on the raft
+                // apply path (raft log is the durability source) and, under the single-barrier
+                // default, on the single-node path too: the record is still written (so the
+                // served-index stream is unchanged), but the durable WAL barrier already
+                // committed above makes the lost delta tail recoverable by base-only WAL replay,
+                // so its fdatasync leaves the ack critical path. Restored to a synchronous
+                // barrier only under the TS_WAL_LEGACY_RECOVERY escape hatch (wal_single_barrier
+                // false -> delta-fold recovery, which trusts the durable delta).
+                let index_log_durable = !raft_applying() && !wal_single_barrier();
+                let _ = self.index_log_store.append_delta(
+                    request.shard_id,
+                    items,
+                    key_states,
+                    shard.applied_wal_sequence,
+                    None,
+                    index_log_durable,
+                );
             }
         }
         ExecuteResponse {
@@ -1204,23 +1203,6 @@ fn bulk_ingest_mode() -> bool {
     )
 }
 
-/// Whether the delta / incremental served-index path is enabled. When ON, a write no
-/// longer rewrites the whole `shard-{id}.index.json` (O(store)); the full base snapshot is
-/// materialized only at compaction points (flush / dump / gc / unload) and the in-memory
-/// shard is the authoritative served index, which every reader reaches through
-/// `load_served_index_bytes`. Defaults OFF: the funnel then reads the base file, i.e. the
-/// established per-write-persist behavior, so this gate is behavior-preserving until set.
-pub(super) fn delta_served_index_enabled() -> bool {
-    matches!(
-        std::env::var("MATRIXARK_DELTA_SERVED_INDEX")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
-}
-
 /// Whether the per-command model-map -> bucket-index promotion and first-index
 /// rebuild should be DEFERRED to a single reconstruct pass. True during bulk
 /// backfill (MATRIXARK_BULK_INGEST) and during WAL replay on load: both re-drive
@@ -1480,6 +1462,37 @@ fn replaying_wal() -> bool {
 }
 
 thread_local! {
+    // Set while applying a committed raft entry to the state machine. On this path the raft
+    // log is the durability source (quorum-replicated + fsync'd), and a node reconstructs on
+    // restart by loading the base and REPLAYING the raft log from the snapshot/base anchor --
+    // which re-executes the commands and rebuilds the served index. The per-apply index-log
+    // fsync is therefore redundant on the critical replication path (it only slows apply and
+    // widens the snapshot-transfer window), so the index-log delta is appended NON-BLOCKING
+    // (buffered, no fsync). Losing a non-fsync'd index-log tail on crash is safe: raft replay
+    // rebuilds it. Thread-local because raft apply runs synchronously on the apply thread.
+    static RAFT_APPLYING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn raft_applying() -> bool {
+    RAFT_APPLYING.with(|cell| cell.get())
+}
+
+struct RaftApplyGuard;
+
+impl RaftApplyGuard {
+    fn enter() -> Self {
+        RAFT_APPLYING.with(|cell| cell.set(true));
+        RaftApplyGuard
+    }
+}
+
+impl Drop for RaftApplyGuard {
+    fn drop(&mut self) {
+        RAFT_APPLYING.with(|cell| cell.set(false));
+    }
+}
+
+thread_local! {
     // During a replayed command, the leader's wall-clock timestamp captured in the
     // replayed record's metadata. Time-dependent resolution (TTL deadlines, context
     // event time) reads this instead of the live clock so a re-executed command
@@ -1609,13 +1622,12 @@ pub(super) fn wal_only_sync() -> bool {
 ///  - expiry (TTL) resolves against the leader timestamp captured in each WAL record (replay
 ///    clock) and applies lazily; compaction is background + non-destructive to logical
 ///    membership -- both already WAL-re-derivable.
-///  - the durable dump/flush path fsyncs every data page BEFORE it materializes the base index
-///    and advances its watermark, so every page at/below the base watermark is durable. Recovery
-///    is BASE-ONLY: it trusts only that durable base/manifest checkpoint (never the un-synced
-///    per-write base rewrite or served-index delta, which may reference pages that were never
-///    fsync'd), then replays the WAL tail from the watermark, re-deriving every post-dump page
-///    EXACTLY ONCE. A page written but never fsync'd is rebuilt from its WAL command rather than
-///    left dangling -- no page loss, no double-apply.
+///  - `flush_shard_index` fsyncs every data page (and the WAL) BEFORE advancing the dump
+///    watermark, so every page at/below the watermark is durable. Recovery is BASE-ONLY: it
+///    trusts only the durable base/manifest checkpoint (never the un-synced delta or the anchor
+///    it advances), then replays the WAL tail from the watermark, re-deriving every post-dump
+///    page EXACTLY ONCE. A page written but never fsync'd is rebuilt from its WAL command rather
+///    than left dangling -- no page loss, no double-apply.
 /// Default ON (the productionized write/recovery path). Set TS_WAL_LEGACY_RECOVERY=1 to fall
 /// back to the legacy multi-barrier write path + delta-fold recovery.
 pub(super) fn wal_single_barrier() -> bool {

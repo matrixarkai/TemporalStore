@@ -48,6 +48,56 @@ def optional_object(data: Json, field: str) -> Json:
     return value
 
 
+def _nonempty(value: Any) -> bool:
+    """True when ``value`` carries a meaningful identity token (non-blank)."""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return bool(str(value).strip())
+
+
+def fold_mem0_scope_aliases(args: Json, scope: Json) -> Json:
+    """Fold mem0-style top-level identity kwargs into a canonical MatrixArk scope.
+
+    mem0 (``from mem0 import Memory``) passes memory identity as TOP-LEVEL kwargs
+    on ``add()`` / ``search()`` (``user_id`` / ``agent_id`` / ``run_id``) rather
+    than nested under a scope object. This folds those aliases onto the canonical
+    scope fields so a mem0 caller needs no rewrite:
+
+      * top-level ``user_id``                      -> ``scope.user_id``
+      * top-level ``run_id`` / ``scope.run_id``    -> ``scope.session_id``
+      * top-level ``agent_id`` / ``scope.agent_id`` -> ``scope.agent_id``
+
+    Precedence: the CANONICAL scope field ALWAYS wins when BOTH it and an alias
+    are supplied (e.g. an explicit ``scope.session_id`` beats ``run_id``). A
+    nested ``scope.run_id`` is preferred over a top-level ``run_id`` alias.
+
+    Returns a NEW scope dict; ``scope`` is never mutated. Existing callers that
+    pass a full canonical scope and no aliases get a byte-identical scope back,
+    so this is purely additive.
+    """
+    if scope is None:
+        scope = {}
+    if not isinstance(scope, dict):
+        raise MatrixArkError("scope must be an object")
+    folded = dict(scope)
+    # user_id: canonical scope.user_id wins over the top-level user_id alias.
+    if not _nonempty(folded.get("user_id")) and _nonempty(args.get("user_id")):
+        folded["user_id"] = args["user_id"]
+    # run_id -> session_id: canonical scope.session_id wins; then scope.run_id,
+    # then the top-level run_id alias.
+    if not _nonempty(folded.get("session_id")):
+        if _nonempty(folded.get("run_id")):
+            folded["session_id"] = folded["run_id"]
+        elif _nonempty(args.get("run_id")):
+            folded["session_id"] = args["run_id"]
+    # agent_id: canonical scope.agent_id wins over the top-level agent_id alias.
+    if not _nonempty(folded.get("agent_id")) and _nonempty(args.get("agent_id")):
+        folded["agent_id"] = args["agent_id"]
+    return folded
+
+
 def optional_string(data: Json, field: str, default: str = "") -> str:
     value = data.get(field, default)
     if value is None:

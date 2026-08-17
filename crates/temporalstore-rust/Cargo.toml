@@ -5,8 +5,8 @@ edition.workspace = true
 license.workspace = true
 description = "Rust-native TemporalStore engine, storage, client/proxy, and production Raft readiness surfaces."
 readme = "README.md"
-repository = "https://github.com/matrixarkai/TemporalStore"
-homepage = "https://github.com/matrixarkai/TemporalStore"
+repository = "https://github.com/bjmeetsfo/TemporalStore"
+homepage = "https://github.com/bjmeetsfo/TemporalStore"
 keywords = ["temporalstore", "database", "storage", "raft", "memory"]
 categories = ["database-implementations", "data-structures"]
 
