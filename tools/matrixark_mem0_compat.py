@@ -102,60 +102,6 @@ def _reshape_search_results(res: Json) -> Json:
     return {"results": results}
 
 
-def _add_memory_text(messages: Any) -> str:
-    """Best-effort human text for a mem0 ``add`` results entry: the last user turn's content, else
-    the last turn's content, else empty."""
-    if not isinstance(messages, list):
-        return ""
-    last = ""
-    for message in messages:
-        if not isinstance(message, dict):
-            continue
-        content = message.get("content")
-        if not isinstance(content, str) or not content:
-            continue
-        last = content
-        if str(message.get("role") or "").lower() == "user":
-            last = content
-    return last
-
-
-def _with_mem0_add_results(response: Json, messages: Any) -> Json:
-    """Augment a MatrixArk ``/v1/ingest`` response with mem0's ``add`` return shape.
-
-    Real mem0 ``add`` returns ``{"results": [{"id", "memory", "event"}]}`` and strict callers read
-    ``result["results"][0]["id"]``. We keep every existing top-level field (``event_id_hash``,
-    ``status``, ...) for backward compatibility AND add a single anchor ``results`` entry so both
-    ``result["event_id_hash"]`` and ``result["results"][0]["id"]`` work.
-
-    The ``event`` maps our keyed-upsert outcome: ``"ADD"`` (new / normal ingest), ``"UPDATE"`` (a
-    keyed-upsert that superseded a prior record), ``"NONE"`` (a keyed-upsert rejected by the rank
-    guard -- ``id`` is then the surviving existing record)."""
-    if not isinstance(response, dict):
-        return response
-    # The gateway wraps the ingest result under {"accepted","scope","result": {...}}; a direct call
-    # returns the flat ingest dict. Read the id/outcome from whichever carries event_id_hash.
-    inner = response.get("result")
-    payload = inner if isinstance(inner, dict) and inner.get("event_id_hash") is not None else response
-    outcome = str(payload.get("upsert_outcome") or "").lower()
-    event = {"add": "ADD", "update": "UPDATE", "rank_guarded": "NONE"}.get(outcome, "ADD")
-    # For a rank-guarded write event_id_hash already carries the surviving record's id.
-    anchor_id = payload.get("event_id_hash")
-    if anchor_id in (None, ""):
-        anchor_id = payload.get("current_memory_id") or payload.get("existing_memory_id")
-    # Surface event_id_hash at the top level so result["event_id_hash"] works as a literal drop-in,
-    # without dropping the gateway wrapper fields (accepted / scope / result / finalized / ...).
-    if response.get("event_id_hash") in (None, "") and anchor_id not in (None, ""):
-        response["event_id_hash"] = anchor_id
-    if "results" not in response:
-        response["results"] = [{
-            "id": str(anchor_id) if anchor_id not in (None, "") else "",
-            "memory": _add_memory_text(messages),
-            "event": event,
-        }]
-    return response
-
-
 def _already_normalized(messages: list) -> bool:
     """True when ``messages`` is already MatrixArk-shaped: every element is a
     ``{role, content}`` mapping whose ``content`` is a plain string (not a list
@@ -230,8 +176,6 @@ class Memory:
     def add(self, messages: Any, *, user_id: Optional[str] = None,
             agent_id: Optional[str] = None, run_id: Optional[str] = None,
             metadata: Optional[Json] = None, provider: Optional[str] = None,
-            expires_at: Optional[float] = None, ttl: Optional[float] = None,
-            identity_key: Optional[str] = None, truth_class: Optional[str] = None,
             **kw: Any) -> Json:
         """Ingest ``messages`` (mem0 ``add``). Maps ``run_id`` -> ``session_id``
         and ``agent_id`` -> ``scope.agent_id``; accepts a bare string.
@@ -241,32 +185,17 @@ class Memory:
         the default (``None`` / ``"auto"``) auto-sniffs provider-shaped input
         (an OpenAI ``choices`` response, an Anthropic content-block message,
         etc.) via ``matrixark_model_adapters.to_messages``. Already-normalized
-        ``[{role, content}]`` lists are passed through unchanged.
-
-        PurchaseMemory (additive, all optional): ``expires_at`` (absolute unix
-        seconds) or ``ttl`` (relative seconds) make the memory ephemeral --
-        auto-expired at read time and excluded from summaries; ``identity_key``
-        + ``truth_class`` drive the keyed-upsert truth-rank guard (a higher/equal
-        rank supersedes the prior value for that key; a lower rank is rejected).
-        Extra kwargs are ignored for mem0 signature compatibility. Returns the
-        parsed ``/v1/ingest`` response."""
-        normalized = _normalize_messages(messages, provider)
-        body: Json = {"kind": "message", "messages": normalized}
+        ``[{role, content}]`` lists are passed through unchanged. Extra kwargs
+        are ignored for mem0 signature compatibility. Returns the parsed
+        ``/v1/ingest`` response."""
+        body: Json = {"kind": "message",
+                      "messages": _normalize_messages(messages, provider)}
         scope = _scope_from_identity(user_id, agent_id, run_id)
         if scope:
             body["scope"] = scope
         if metadata:
             body["metadata"] = metadata
-        if expires_at is not None:
-            body["expires_at"] = expires_at
-        if ttl is not None:
-            body["ttl_seconds"] = ttl
-        if identity_key:
-            body["identity_key"] = identity_key
-        if truth_class:
-            body["truth_class"] = truth_class
-        response = _post_json(self._base_url, self._api_key, "/v1/ingest", body, self._timeout)
-        return _with_mem0_add_results(response, normalized)
+        return _post_json(self._base_url, self._api_key, "/v1/ingest", body, self._timeout)
 
     def search(self, query: str, *, user_id: Optional[str] = None,
                agent_id: Optional[str] = None, run_id: Optional[str] = None,

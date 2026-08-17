@@ -71,21 +71,7 @@ def normalize_envelope(args: Json, *, default_kind: str) -> Json:
         "segment_provider_fallback",
         "understanding_provider",
         "extraction_provider",
-        # PurchaseMemory optional fields (per-record TTL / retention-cutoff + keyed-upsert).
-        # The canonical normalization + rank/expiry computation lives in
-        # matrixark_mcp_core.apply_memory_envelope_fields (this module is a legacy twin kept in
-        # sync so the raw fields survive if this path is ever exercised).
-        "expires_at",
-        "ttl_seconds",
-        "retention_cutoff_ts",
-        "identity_key",
-        "truth_class",
     ]:
         if field in args:
             envelope[field] = args[field]
-    try:  # canonical computed normalization (rank table + ttl -> expires_at)
-        from tools.matrixark_mcp_core import apply_memory_envelope_fields
-    except ModuleNotFoundError:
-        from matrixark_mcp_core import apply_memory_envelope_fields
-    apply_memory_envelope_fields(args, envelope)
     return envelope

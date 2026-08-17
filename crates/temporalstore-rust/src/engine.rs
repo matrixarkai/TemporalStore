@@ -335,10 +335,6 @@ impl TemporalEngine {
                 shard.bucket_recency.insert(recency_bucket, now);
             }
         }
-        // Set to the reserved WAL sequence when the concurrent-commit path defers this
-        // write's durable barrier out of the `shards` lock (TS_ENGINE_CONCURRENT_COMMIT).
-        // The barrier is awaited AFTER the lock is released, just before the ack.
-        let mut pending_barrier_seq: Option<u64> = None;
         if outcome.mutated {
             let object_keys = command_object_keys(&command);
             // Capture this write's touched keys for the O(delta) index-log append below
@@ -412,32 +408,10 @@ impl TemporalEngine {
             // commit). Page/index materialization stays deferred to dump.
             if write_command && !replaying_wal() {
                 let sync = !config.async_storage && !bulk_ingest_mode();
-                // Concurrent-commit path (gated, default OFF): for a synchronous write, only
-                // RESERVE the WAL sequence + append the bytes here (under the `shards` lock);
-                // the durable fdatasync barrier is deferred to `commit_barrier` AFTER the lock
-                // is released, so concurrent same-shard writers reach the group-commit queue in
-                // parallel and coalesce their fsyncs (see wal.rs::group_commit_sync). WAL
-                // sequence order still equals in-memory apply order because the reservation +
-                // byte-append stay under this same lock, exactly as append_with_sync did; only
-                // the order-independent fsync moves out. Off -> byte-identical append_with_sync.
-                let concurrent_commit = sync && engine_concurrent_commit();
-                let append_result = if concurrent_commit {
-                    self.wal_store
-                        .append_for_group_commit(request.shard_id, command)
-                        .map(|record| Some(record.sequence))
-                } else {
+                if let Err(err) =
                     self.wal_store
                         .append_with_sync(request.shard_id, command, sync)
-                        .map(|_| None)
-                };
-                match append_result {
-                    Ok(deferred_seq) => {
-                        // In concurrent-commit mode remember the reserved sequence; its durable
-                        // barrier is awaited after the `shards` lock is dropped (below). The ack
-                        // is returned strictly AFTER that barrier succeeds -- never before.
-                        pending_barrier_seq = deferred_seq;
-                    }
-                    Err(err) => {
+                {
                     if sync {
                         // A synchronous write whose durable WAL commit failed is NOT durable: the
                         // WAL is the recovery source of truth (replayed on load), so returning ok
@@ -470,7 +444,6 @@ impl TemporalEngine {
                             "async WAL append failed: write acked to the client is NOT durable \
                              and will be lost on a crash before the next flush"
                         );
-                    }
                     }
                 }
             }
@@ -509,29 +482,6 @@ impl TemporalEngine {
                     None,
                     index_log_durable,
                 );
-            }
-        }
-        // Release the `shards` write lock BEFORE the durable barrier. A concurrent same-shard
-        // writer can now acquire it, mutate + reserve its own WAL sequence, and enter the
-        // group-commit queue WHILE this writer's fdatasync is in flight -- the coalescing window
-        // that makes group commit engage (fewer fsyncs than writes). The in-memory mutation and
-        // WAL sequence reservation already completed under the lock above, so WAL order == apply
-        // order holds regardless of how the (order-independent) barriers interleave. When the
-        // concurrent-commit gate is OFF, `pending_barrier_seq` is None and the barrier below is a
-        // no-op, so this is byte-identical to the prior in-lock append_with_sync path.
-        drop(shards);
-        if let Some(barrier_seq) = pending_barrier_seq {
-            if let Err(err) = self.wal_store.commit_barrier(request.shard_id, barrier_seq) {
-                // The coalesced durable barrier failed: this synchronous write is NOT durable, so
-                // surface the failure instead of acking (mirrors the append_with_sync sync-failure
-                // path -- the ack is returned strictly after a successful barrier, never before).
-                return ExecuteResponse {
-                    status: Status::error(
-                        "wal_commit_failed",
-                        format!("durable WAL commit barrier failed: {err}"),
-                    ),
-                    response: CommandResponse::Empty,
-                };
             }
         }
         ExecuteResponse {
@@ -1682,18 +1632,6 @@ pub(super) fn wal_only_sync() -> bool {
 /// back to the legacy multi-barrier write path + delta-fold recovery.
 pub(super) fn wal_single_barrier() -> bool {
     !wal_legacy_recovery()
-}
-
-/// TS_ENGINE_CONCURRENT_COMMIT: run the WAL durability barrier OUTSIDE the global `shards`
-/// write lock. When ON, a synchronous write reserves its WAL sequence and appends its record
-/// UNDER the `shards` lock (preserving WAL-order == apply-order), then RELEASES the lock and
-/// awaits the durable barrier (`commit_barrier`). This lets concurrent same-shard writers reach
-/// the group-commit queue while a peer's fdatasync is in flight, so #45's fsync coalescing
-/// actually engages (fewer fsyncs than writes; QPS scales with concurrency). Default OFF ->
-/// byte-identical to the legacy in-lock `append_with_sync` barrier. The ack is always returned
-/// strictly AFTER the covering barrier succeeds, so durability is never weakened.
-fn engine_concurrent_commit() -> bool {
-    env_flag_on("TS_ENGINE_CONCURRENT_COMMIT")
 }
 
 fn env_flag_on(name: &str) -> bool {

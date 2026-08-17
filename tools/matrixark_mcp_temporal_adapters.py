@@ -48,11 +48,6 @@ try:
     from tools.matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
     from tools.matrixark_mcp_local_adapter import materialize_serving_record_batch
     from tools.matrixark_mcp_local_adapter import (
-        _MEMORY_DERIVATIVE_RECORD_TYPES as MEMORY_DERIVATIVE_RECORD_TYPES,
-        _record_provenance_source_ids as record_provenance_source_ids,
-        _record_derivative_identity_ids as record_derivative_identity_ids,
-    )
-    from tools.matrixark_mcp_local_adapter import (
         auto_extraction_phase_budget_tokens,
         auto_memory_layer_budget_tokens,
         auto_memory_selection_policy_budget_tokens,
@@ -67,11 +62,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
     from matrixark_mcp_local_adapter import materialize_serving_record_batch
-    from matrixark_mcp_local_adapter import (
-        _MEMORY_DERIVATIVE_RECORD_TYPES as MEMORY_DERIVATIVE_RECORD_TYPES,
-        _record_provenance_source_ids as record_provenance_source_ids,
-        _record_derivative_identity_ids as record_derivative_identity_ids,
-    )
     from matrixark_mcp_local_adapter import (
         auto_extraction_phase_budget_tokens,
         auto_memory_layer_budget_tokens,
@@ -402,85 +392,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         if route_to_backend:
             append_backend(materialized, allow_queue=False)
             self._update_latest_entity_cache(materialized)
-            self._maintain_event_membership_after_append(materialized)
             return
         super().append_many(records)
-
-    # ------------------------------------------------------------------------------------------------
-    # Event-membership index -- durable engine backing (``{prefix}:event_members`` hash).
-    # field = event_id_hash, value = json(sorted member identity hashes). hset on append (write-through
-    # the batch's additions), hget on delete (O(1) member lookup, no rescan), soft-clear on delete.
-    # This overrides the LOCAL adapter's in-memory-only seam so a delete on the engine never scans; the
-    # in-memory index + scan fallback remain as correctness backstops. Best-effort: a backend hiccup
-    # never breaks the write/delete path (the in-memory rebuild-from-live-view still yields a complete
-    # member set). A native ``event_members`` secondary index in the engine is future crates work.
-    # ------------------------------------------------------------------------------------------------
-    def _event_members_hash_key(self) -> str:
-        prefix = str(getattr(self, "_storage_prefix", "matrixark:mcp")).rstrip(":")
-        return f"{prefix}:event_members"
-
-    def _lookup_persisted_event_members(self, event_id: str) -> set[str] | None:
-        try:
-            raw = self._client.hget(self._event_members_hash_key(), str(event_id))
-        except Exception:  # noqa: BLE001 - never let a backend read break delete; fall back to in-memory
-            return None
-        if not raw:
-            return None
-        try:
-            values = json.loads(raw)
-        except (ValueError, TypeError):
-            return None
-        if not isinstance(values, list):
-            return None
-        return {str(v) for v in values}
-
-    def _persist_event_members(self, event_id: str, member_ids: set[str]) -> None:
-        try:
-            self._hset_with_backoff(
-                self._event_members_hash_key(),
-                str(event_id),
-                json.dumps(sorted(str(m) for m in member_ids), separators=(",", ":")),
-            )
-        except Exception:  # noqa: BLE001 - best-effort; in-memory index remains authoritative
-            return None
-
-    def _forget_persisted_event_members(self, event_id: str) -> None:
-        # No hdel primitive on the client; an empty value reads back as "absent" (see _lookup).
-        try:
-            self._hset_with_backoff(self._event_members_hash_key(), str(event_id), "")
-        except Exception:  # noqa: BLE001
-            return None
-
-    def _maintain_event_membership_after_append(self, records: list[Json]) -> None:
-        # Keep the in-memory index coherent (base behavior) AND write-through the durable hash so a
-        # later delete on a fresh process still gets O(1) membership. Additions from THIS batch are
-        # unioned into any existing persisted set (membership is cumulative across the async pipeline:
-        # the event lands first, its derivatives + embeddings/postings arrive at extraction/commit).
-        super()._maintain_event_membership_after_append(records)
-        if not records:
-            return
-        additions: dict[str, set[str]] = {}
-        for record in records:
-            record_type = str(record.get("record_type") or "")
-            if record_type == "context_event":
-                event_hash = record.get("event_id_hash")
-                if event_hash not in (None, ""):
-                    additions.setdefault(str(event_hash), set()).add(str(event_hash))
-                continue
-            if record_type in MEMORY_DERIVATIVE_RECORD_TYPES:
-                provenance = record_provenance_source_ids(record)
-                if not provenance:
-                    continue
-                identity_ids = record_derivative_identity_ids(record)
-                if not identity_ids:
-                    continue
-                for source_id in provenance:
-                    additions.setdefault(str(source_id), set()).update(identity_ids)
-        for event_id, new_members in additions.items():
-            existing = self._lookup_persisted_event_members(event_id) or set()
-            merged = existing | new_members
-            if merged != existing:
-                self._persist_event_members(event_id, merged)
 
     def __init__(
         self,
