@@ -338,62 +338,6 @@ impl LocalWriteAheadLogStore {
         Ok(record)
     }
 
-    /// Phase 1 of a two-phase durable commit: append the record bytes and RESERVE its WAL
-    /// sequence WITHOUT taking the durable barrier. The record is written with sync=false
-    /// (bytes buffered, sequence assigned + `last_sequence_by_shard` advanced) and the
-    /// returned `WriteAheadLogRecord.sequence` is then passed to `commit_barrier` AFTER the
-    /// caller has released its own state lock, so the fsync coalesces across concurrent
-    /// writers (see `group_commit_sync`). Mirrors the byte-append half of
-    /// `append_with_sync`'s group branch, minus the in-line barrier call. The caller MUST
-    /// await `commit_barrier(shard_id, record.sequence)` before acking a synchronous write.
-    pub fn append_for_group_commit(
-        &self,
-        shard_id: ShardId,
-        command: Command,
-    ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
-        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
-        fs::create_dir_all(&inner.root)?;
-        let _append_lock = WalAppendLock::acquire(&inner.root, shard_id)?;
-        let disk_last_sequence = last_wal_sequence_at(&inner.root, shard_id)?;
-        let cached_last_sequence = inner
-            .last_sequence_by_shard
-            .get(&shard_id)
-            .copied()
-            .unwrap_or_default();
-        let last_sequence = cached_last_sequence.max(disk_last_sequence);
-        inner.last_sequence_by_shard.insert(shard_id, last_sequence);
-        let seq = last_sequence.saturating_add(1);
-        let rec = WriteAheadLogRecord {
-            shard_id,
-            sequence: seq,
-            metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
-            command,
-        };
-        // sync=false: write the bytes, defer the fdatasync to `commit_barrier`. Same as the
-        // group branch of append_with_sync. `last_flushed_sequence` is NOT advanced here (the
-        // record is not yet durable); the coalesced barrier advances it once it reaches disk.
-        let report = append_record_locked(&mut inner, &rec, false)?;
-        inner.stats.last_sequence = report.current_sequence;
-        inner.last_sequence_by_shard.insert(shard_id, seq);
-        // `inner` + `_append_lock` drop here so a concurrent writer can append while this
-        // writer's (later, lock-released) group-commit fsync is in flight.
-        Ok(rec)
-    }
-
-    /// Phase 2 of a two-phase durable commit: the coalesced durable barrier for a sequence
-    /// reserved by `append_for_group_commit`. Returns once every record up to
-    /// `required_sequence` is fdatasync'd (issuing at most one shared fsync per group; returns
-    /// immediately if an earlier writer's barrier already covered `required_sequence`). Public
-    /// wrapper over `group_commit_sync` so the engine can run the barrier AFTER releasing its
-    /// `shards` write lock.
-    pub fn commit_barrier(
-        &self,
-        shard_id: ShardId,
-        required_sequence: u64,
-    ) -> Result<(), WriteAheadLogError> {
-        self.group_commit_sync(shard_id, required_sequence)
-    }
-
     /// Append a group of commands as ONE crash-atomic batch: N contiguously-sequenced records
     /// sharing a single `batch_id`, buffered, then made durable by a SINGLE barrier after the
     /// last record (the commit marker). Either the whole batch is durable (barrier completed) or,
@@ -885,24 +829,6 @@ fn group_commit_enabled() -> bool {
         ),
         Err(_) => true,
     }
-}
-
-/// Public read of the `TS_GROUP_COMMIT` (config `[wal] group_commit`) gate so paths outside this
-/// module — notably the shared-store object-store SYNC writer — honor the SAME switch as the local
-/// WAL fsync coalescing. Default ON.
-pub fn group_commit_configured() -> bool {
-    group_commit_enabled()
-}
-
-/// `TS_WAL_COMMIT_DELAY_US` (config `[wal] commit_delay_us`): optional deliberate widening of the
-/// group-commit batch window under extreme load. Default 0 = pure timer-less coalescing (the group
-/// is exactly what accumulates during one durable barrier's in-flight duration).
-pub fn group_commit_delay() -> std::time::Duration {
-    let micros = std::env::var("TS_WAL_COMMIT_DELAY_US")
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .unwrap_or(0);
-    std::time::Duration::from_micros(micros)
 }
 
 /// Whether the redundant per-append WAL parent-dir fsync may be skipped (safe once the

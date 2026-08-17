@@ -2743,72 +2743,6 @@ def _record_provenance_source_ids(record: Json) -> set[int] | None:
     return ids if found else None
 
 
-# A derivative's OWN addressable identity hashes -- the ids that its embeddings (``context_embedding``
-# ref_hash) and secondary-index postings (``context_index`` ref_hash / ref_hashes) point at. These
-# are what must be swept when the derivative itself is closure-deleted so no orphan embedding / index
-# posting survives referencing a removed entity / summary / segment.
-_MEMORY_DERIVATIVE_IDENTITY_FIELDS = ("entity_hash", "summary_hash", "segment_hash")
-
-
-def _record_derivative_identity_ids(record: Json) -> set[str]:
-    """The identity hashes (entity_hash / summary_hash / segment_hash) a DERIVED record is addressed
-    by. Its embeddings + index postings reference these, so tombstoning the derivative must also sweep
-    any posting/embedding whose ref target is one of them."""
-    ids: set[str] = set()
-    for field in _MEMORY_DERIVATIVE_IDENTITY_FIELDS:
-        value = record.get(field)
-        if value not in (None, ""):
-            ids.add(str(value))
-    return ids
-
-
-def _record_own_identity_id(record: Json) -> str | None:
-    """The single addressable id `record` is a *member* under, for the event-membership index:
-    an event's ``event_id_hash`` or a derivative's identity hash. Embeddings / index postings are
-    members *by reference* (their ref target is one of these ids), so they carry no own member id."""
-    event_hash = record.get("event_id_hash")
-    record_type = str(record.get("record_type") or "")
-    if record_type == "context_event" and event_hash not in (None, ""):
-        return str(event_hash)
-    if record_type in _MEMORY_DERIVATIVE_RECORD_TYPES:
-        for field in _MEMORY_DERIVATIVE_IDENTITY_FIELDS:
-            value = record.get(field)
-            if value not in (None, ""):
-                return str(value)
-    return None
-
-
-def build_event_member_index(records: list[Json]) -> dict[str, set[str]]:
-    """Build the durable event-membership map ``event_id_hash -> {member identity hashes}`` from the
-    live record set.
-
-    A member of an event is: the ``context_event`` itself (member id = its own ``event_id_hash``) plus
-    every derivative (entity / summary / segment / summary_dirty) built from it (member id = the
-    derivative's identity hash). The event's and the derivatives' OWN embeddings + secondary-index
-    postings are members *by reference*: their ref target is one of these member ids, so a delete that
-    tombstones every member id (matching embeddings / postings by ref_hash ∈ member set) reclaims them
-    too -- this is why the member set is precisely the closure identity set to sweep on delete."""
-    index: dict[str, set[str]] = {}
-    for record in records:
-        record_type = str(record.get("record_type") or "")
-        if record_type == "context_event":
-            event_hash = record.get("event_id_hash")
-            if event_hash not in (None, ""):
-                index.setdefault(str(event_hash), set()).add(str(event_hash))
-            continue
-        if record_type in _MEMORY_DERIVATIVE_RECORD_TYPES:
-            provenance = _record_provenance_source_ids(record)
-            if not provenance:
-                continue
-            identity_ids = _record_derivative_identity_ids(record)
-            if not identity_ids:
-                continue
-            for source_id in provenance:
-                bucket = index.setdefault(str(source_id), set())
-                bucket.update(identity_ids)
-    return index
-
-
 def _safe_int(value: Any) -> int | None:
     """Best-effort ``int`` coercion (accepts numeric strings); ``None`` on failure."""
     try:
@@ -2852,22 +2786,6 @@ def _tombstone_kills_record(tombstone: Json, record: Json) -> bool:
         # Multi-source derivatives are NOT matched here -- delete_memory rewrites those in place with
         # the source dropped, so their surviving copy no longer lists `target`.
         if tombstone.get("closure"):
-            # Secondary-posting sweep (event-membership closure): the deleted event AND its
-            # single-source derivatives' OWN embeddings / secondary-index postings orphan otherwise,
-            # because they are matched by neither the plain-id path (they are not ref_type=="event")
-            # nor the provenance path (embeddings/postings carry no source_event_ids). ``closure_ref_ids``
-            # is the closure identity set (anchor event_id_hash + each killed derivative's identity
-            # hash); a posting/embedding whose ref target is in it is a member being deleted, regardless
-            # of ref_type. Shared parent nodes (ref_type=="node") are never in the set, so they survive.
-            ref_ids = tombstone.get("closure_ref_ids")
-            if ref_ids and str(record.get("record_type") or "") in {"context_embedding", "context_index"}:
-                closure_ids = ref_ids if isinstance(ref_ids, (set, frozenset)) else set(str(x) for x in ref_ids)
-                ref_hash = record.get("ref_hash")
-                if ref_hash not in (None, "") and str(ref_hash) in closure_ids:
-                    return True
-                ref_hashes = record.get("ref_hashes")
-                if isinstance(ref_hashes, list) and any(str(x) in closure_ids for x in ref_hashes):
-                    return True
             try:
                 target_int = int(target)
             except (TypeError, ValueError):
@@ -2914,194 +2832,6 @@ def apply_memory_tombstones(records: list[Json]) -> list[Json]:
             continue
         live.append(record)
     return live
-
-
-def surviving_source_event_ids(records: list[Json]) -> set[str] | None:
-    """Order-aware set of ``context_event`` ids (as str) that SURVIVE the memory-tombstone sweep.
-
-    Returns ``None`` when the log carries no memory tombstone -- the fast path, signalling the caller
-    to keep every pending event unchanged. When tombstones exist, a ``context_event`` is *surviving*
-    only when no delete/forget tombstone appended AFTER it removes it.
-
-    This is the delete-before-extract forward guard's source of truth: async batch extraction runs at
-    commit time and materializes derivatives (entities / summaries / segments + embeddings + index
-    postings) from the still-PENDING ``session_buffer_event``s. If the source event (or, for a forget,
-    the whole subject scope) was deleted while pending, its ``context_event`` -- and the matching
-    ``session_buffer_event`` -- are killed by the delete/forget tombstone, so they are absent here and
-    the commit path skips extraction, never re-materializing the deleted content after the tombstone.
-    Because the sweep is order-aware (a tombstone only removes records that PRECEDE it), a LATER
-    re-ingest of the same content (a fresh ``event_id_hash``, appended after the tombstone) still
-    survives and materializes normally -- the suppression is per deleted event / tombstone, not a
-    permanent block on the content. Durable + cross-process: the signal is read from the JSONL log, so
-    a delete in one process is honored by a commit run in a freshly reloaded process."""
-    if not _records_contain_memory_tombstone(records):
-        return None
-    surviving: set[str] = set()
-    for record in apply_memory_tombstones(records):
-        if str(record.get("record_type") or "") == "context_event":
-            event_hash = record.get("event_id_hash")
-            if event_hash not in (None, ""):
-                surviving.add(str(event_hash))
-    return surviving
-
-
-def compact_and_apply_tombstones(records: list[Json]) -> list[Json]:
-    """The serving pipeline, in the ONE order that is correct for both orphan sweeping AND supersede:
-
-        compact_latest_value  ->  apply_memory_tombstones  ->  compact_latest_context_state
-
-    Both boundaries are load-bearing:
-
-    * ``apply_memory_tombstones`` must run BEFORE ``compact_latest_context_state_records`` (which calls
-      ``compact_context_index_postings``): that step rebuilds ``context_index`` postings into fresh
-      coalesced rows appended at the TAIL of its output, so a tombstone applied AFTER it sits
-      positionally *before* those rebuilt rows and the order-aware sweep (a tombstone only removes
-      records that precede it) never reaches them -- the deleted event's / derivative's own postings
-      orphan. Sweeping first removes each posting in its true append position; the rebuild then
-      coalesces only survivors (also correct for mixed-ref buckets).
-
-    * ``apply_memory_tombstones`` must run AFTER ``compact_latest_value_records``: a multi-source
-      derivative is DEMOTED by appending a newer copy with the deleted source trimmed
-      (source_event_ids [A,B] -> [B]); the original [A,B] copy is meant to be hidden by latest-value
-      compaction. If tombstones ran on the raw (un-collapsed) log, a later delete of the remaining
-      source B would match the demoted [B] copy by provenance closure (== {B}) but NOT the still-present
-      original [A,B] copy (!= {B}); compaction would then surface the stale original and the derivative
-      would survive deletion of its own last source. Collapsing duplicate copies to the newest FIRST
-      leaves exactly one copy (the demoted one) for the tombstone to match -- deterministic regardless
-      of read-cache vs full-recompute path or PYTHONHASHSEED.
-
-    A tombstone-free log short-circuits ``apply_memory_tombstones`` unchanged, so the middle step is a
-    no-op for the overwhelmingly common no-tombstone case (and ``compact_latest_value`` then
-    ``compact_latest_context_state`` is exactly the historical composition)."""
-    return compact_latest_context_state_records(apply_memory_tombstones(compact_latest_value_records(records)))
-
-
-# --------------------------------------------------------------------------------------------- #
-# PurchaseMemory Phase 1: per-record TTL / retention-cutoff (expire-only) read-time enforcement.
-#
-# A record carries ``expires_at`` (float unix seconds) + ``expires_at_ms`` (int ms) + ``ephemeral``
-# when it was ingested with a TTL. A scope-level retention cutoff is a durable marker record
-# (``matrixark_retention_cutoff``) carrying the target tenant/user hashes + ``cutoff_ms``. Both are
-# enforced lazily at READ time (records never surface once expired / older than an active cutoff)
-# and reclaimed physically by the existing tombstone-purge path (see ``sweep_expired_memories``).
-# The read filter is applied on every read (never baked into the size/mtime-keyed cache) so a
-# record that expires with no intervening write still disappears on the next read.
-# --------------------------------------------------------------------------------------------- #
-MEMORY_RETENTION_CUTOFF_RECORD_TYPE = "matrixark_retention_cutoff"
-# Ephemeral (TTL) records are stamped on every scoped record of the ingestion EXCEPT summaries,
-# which aggregate across ingestions and must not inherit a single ingest's expiry.
-_MEMORY_SUMMARY_RECORD_TYPES = {"context_summary", "context_summary_dirty"}
-
-
-def _memory_clock_now_ms() -> int:
-    """Current wall-clock in ms for TTL/cutoff checks, with a test override.
-
-    ``MATRIXARK_MEMORY_NOW_MS`` (integer ms) lets tests advance the expiry clock deterministically
-    without monkeypatching every ``now_ms`` call site; unset -> real ``now_ms()``."""
-    override = os.environ.get("MATRIXARK_MEMORY_NOW_MS")
-    if override:
-        try:
-            return int(override)
-        except (TypeError, ValueError):
-            pass
-    return now_ms()
-
-
-def _record_expires_at_ms(record: Json) -> int:
-    try:
-        return int(record.get("expires_at_ms") or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _record_is_time_expired(record: Json, now_ms_value: int) -> bool:
-    expires_at_ms = _record_expires_at_ms(record)
-    return expires_at_ms > 0 and expires_at_ms <= now_ms_value
-
-
-def _record_occurred_ms(record: Json) -> int:
-    """The record's occurrence time in ms (``updated_at_ms``, else the ingestion time / event
-    time), used for retention-cutoff comparison. 0 when unknown (never cut by a cutoff)."""
-    for field in ("updated_at_ms", "timestamp_key_ms", "event_time_ms", "created_at_ms"):
-        value = record.get(field)
-        if value not in (None, ""):
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                continue
-    envelope = record.get("envelope")
-    if isinstance(envelope, dict):
-        try:
-            return int(envelope.get("ingestion_time_ms") or 0)
-        except (TypeError, ValueError):
-            return 0
-    return 0
-
-
-def _retention_cutoffs_by_subject(records: list[Json]) -> dict[tuple[int, int], int]:
-    """Highest active cutoff (ms) per ``(tenant_hash, user_hash)`` from cutoff-marker records."""
-    cutoffs: dict[tuple[int, int], int] = {}
-    for record in records:
-        if str(record.get("record_type") or "") != MEMORY_RETENTION_CUTOFF_RECORD_TYPE:
-            continue
-        try:
-            key = (int(record.get("target_tenant_hash") or 0), int(record.get("target_user_hash") or 0))
-            cutoff_ms = int(record.get("cutoff_ms") or 0)
-        except (TypeError, ValueError):
-            continue
-        if cutoff_ms > cutoffs.get(key, 0):
-            cutoffs[key] = cutoff_ms
-    return cutoffs
-
-
-def _record_cut_by_retention(record: Json, cutoffs: dict[tuple[int, int], int]) -> bool:
-    if not cutoffs:
-        return False
-    key = _record_scope_hashes(record)
-    cutoff_ms = cutoffs.get(key, 0)
-    if not cutoff_ms:
-        return False
-    occurred = _record_occurred_ms(record)
-    return occurred > 0 and occurred < cutoff_ms
-
-
-def _memory_records_need_expiry_filter(records: list[Json]) -> bool:
-    for record in records:
-        if record.get("ephemeral") or record.get("expires_at_ms"):
-            return True
-        if str(record.get("record_type") or "") == MEMORY_RETENTION_CUTOFF_RECORD_TYPE:
-            return True
-    return False
-
-
-def filter_live_memory_records(records: list[Json], *, now_ms_value: int | None = None) -> list[Json]:
-    """Drop expired / pre-cutoff records and the internal cutoff markers themselves.
-
-    Fast-path returns the input unchanged when no record carries a TTL or a cutoff marker exists
-    (the overwhelmingly common case). Applied per-read on top of the compacted+tombstoned view."""
-    if not _memory_records_need_expiry_filter(records):
-        return records
-    now = now_ms_value if now_ms_value is not None else _memory_clock_now_ms()
-    cutoffs = _retention_cutoffs_by_subject(records)
-    live: list[Json] = []
-    for record in records:
-        if str(record.get("record_type") or "") == MEMORY_RETENTION_CUTOFF_RECORD_TYPE:
-            continue  # internal marker: never surfaced to callers
-        if _record_is_time_expired(record, now):
-            continue
-        if _record_cut_by_retention(record, cutoffs):
-            continue
-        live.append(record)
-    return live
-
-
-def _drop_time_expired_records(records: list[Json], *, now_ms_value: int | None = None) -> list[Json]:
-    """Lightweight expiry-only re-filter for cache layers below ``read_all`` (retrieval hot-path
-    cache) so a record that expires between writes stops surfacing without a new write."""
-    if not any(record.get("expires_at_ms") for record in records):
-        return records
-    now = now_ms_value if now_ms_value is not None else _memory_clock_now_ms()
-    return [record for record in records if not _record_is_time_expired(record, now)]
 
 
 try:  # mixin
@@ -3161,9 +2891,6 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         # it off globally.
         self._local_jsonl_enabled = LOCAL_JSONL_ENABLED and "-unused-" not in self.event_log.name
         self._write_batch_local = threading.local()
-        # Per-ingestion TTL / identity stamp propagated from the envelope to every record produced
-        # during a single ingest() (thread-local so concurrent ingests never bleed into each other).
-        self._ingest_stamp_local = threading.local()
         self._event_log_lock = threading.RLock()
         self._resource_import_worker_count = max(1, int(os.environ.get("MATRIXARK_RESOURCE_IMPORT_WORKERS", "2")))
         self._resource_import_queue_max = max(1, int(os.environ.get("MATRIXARK_RESOURCE_IMPORT_QUEUE_MAX", "64")))
@@ -3194,16 +2921,6 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         self._context_pack_cache: dict[tuple[Any, ...], tuple[float, Json]] = {}
         self._context_pack_cache_max_entries = max(0, int(os.environ.get("MATRIXARK_CONTEXT_PACK_CACHE_MAX_ENTRIES", "256")))
         self._context_pack_cache_ttl_s = max(0.0, float(os.environ.get("MATRIXARK_CONTEXT_PACK_CACHE_TTL_S", "30")))
-        # Event-membership index: event_id_hash -> {member identity hashes} (see
-        # `build_event_member_index`). The authoritative O(1) enumeration of what a delete/update must
-        # sweep; rebuilt lazily from the live view and invalidated whenever the read caches clear. An
-        # engine-backed adapter also persists it as a durable hash so delete never needs a rescan.
-        self._event_member_index: dict[str, set[str]] | None = None
-        self._event_member_index_lock = threading.RLock()
-        # Instrumentation (tests assert the fast path is taken): counts index-served vs scan-fallback
-        # member lookups on delete/update.
-        self._event_member_index_hits = 0
-        self._event_member_index_misses = 0
 
     def _write_batch_stack(self) -> list[list[Json]]:
         local = getattr(self, "_write_batch_local", None)
@@ -3219,70 +2936,6 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
     def _current_write_batch(self) -> list[Json] | None:
         stack = self._write_batch_stack()
         return stack[-1] if stack else None
-
-    # ---- Per-ingestion TTL / identity stamp -------------------------------------------------- #
-    def _ingest_stamp_stack(self) -> list[Json]:
-        local = getattr(self, "_ingest_stamp_local", None)
-        if local is None:
-            self._ingest_stamp_local = threading.local()
-            local = self._ingest_stamp_local
-        stack = getattr(local, "stack", None)
-        if stack is None:
-            stack = []
-            local.stack = stack
-        return stack
-
-    def _push_ingest_stamp(self, envelope: Json) -> None:
-        """Capture the envelope's TTL / identity fields for stamping onto this ingestion's records.
-        Always pushes (possibly an empty dict) so pop stays balanced in a try/finally."""
-        stamp: Json = {}
-        if envelope.get("ephemeral"):
-            stamp["expires_at"] = envelope.get("expires_at")
-            stamp["expires_at_ms"] = envelope.get("expires_at_ms")
-            stamp["ephemeral"] = True
-        identity_key = envelope.get("identity_key")
-        if isinstance(identity_key, str) and identity_key:
-            stamp["identity_key"] = identity_key
-            stamp["truth_rank"] = int(envelope.get("truth_rank") or 0)
-            if envelope.get("truth_class"):
-                stamp["truth_class"] = envelope.get("truth_class")
-        self._ingest_stamp_stack().append(stamp)
-
-    def _pop_ingest_stamp(self) -> None:
-        stack = self._ingest_stamp_stack()
-        if stack:
-            stack.pop()
-
-    def _current_ingest_stamp(self) -> Json:
-        stack = self._ingest_stamp_stack()
-        return stack[-1] if stack else {}
-
-    def _stamp_ingest_fields(self, records: list[Json]) -> list[Json]:
-        """Stamp the active per-ingestion TTL / identity fields onto scoped records (in place).
-
-        TTL (expires_at / ephemeral) lands on every scoped record EXCEPT summaries (which aggregate
-        across ingestions). identity_key / truth_rank lands on the ``context_event`` only. No-op when
-        no ingest stamp is active (i.e. every write outside an ephemeral/keyed ingest)."""
-        stamp = self._current_ingest_stamp()
-        if not stamp:
-            return records
-        has_ttl = "expires_at_ms" in stamp
-        has_identity = "identity_key" in stamp
-        for record in records:
-            record_type = str(record.get("record_type") or "")
-            if record_type not in _MEMORY_SCOPED_RECORD_TYPES:
-                continue
-            if has_ttl and record_type not in _MEMORY_SUMMARY_RECORD_TYPES:
-                if stamp.get("expires_at") is not None:
-                    record.setdefault("expires_at", stamp.get("expires_at"))
-                record.setdefault("expires_at_ms", stamp.get("expires_at_ms"))
-                record.setdefault("ephemeral", True)
-            if has_identity and record_type == "context_event":
-                record.setdefault("identity_key", stamp.get("identity_key"))
-                record.setdefault("truth_rank", int(stamp.get("truth_rank") or 0))
-                if stamp.get("truth_class"):
-                    record.setdefault("truth_class", stamp.get("truth_class"))
-        return records
 
     def _queue_batched_records(self, records: list[Json]) -> bool:
         batch = self._current_write_batch()
@@ -3538,7 +3191,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         with self._read_cache_lock:
             if self._read_cache_records is not None:
                 self._read_cache_records.extend(records)
-                self._read_cache_records = compact_and_apply_tombstones(self._read_cache_records)
+                self._read_cache_records = apply_memory_tombstones(compact_latest_context_state_records(
+                    compact_latest_value_records(self._read_cache_records)
+                ))
             if size >= 0:
                 self._read_cache_size = size
                 self._read_cache_mtime_ns = mtime_ns
@@ -3553,7 +3208,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             cached = _LOCAL_READ_CACHE.get(cache_key)
             if cached is not None:
                 _, _, cached_records = cached
-                cached_records = compact_and_apply_tombstones(list(cached_records) + list(records))
+                cached_records = apply_memory_tombstones(compact_latest_context_state_records(
+                    compact_latest_value_records(list(cached_records) + list(records))
+                ))
                 _LOCAL_READ_CACHE[cache_key] = (self._read_cache_size, self._read_cache_mtime_ns, cached_records)
                 if durable_records is None:
                     durable_records = list(cached_records)
@@ -3561,7 +3218,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 _LOCAL_READ_CACHE[cache_key] = (
                     self._read_cache_size,
                     self._read_cache_mtime_ns,
-                    compact_and_apply_tombstones(list(self._read_cache_records)),
+                    apply_memory_tombstones(compact_latest_context_state_records(compact_latest_value_records(list(self._read_cache_records)))),
                 )
         if durable_records is not None:
             self._write_durable_read_cache(durable_records, signature)
@@ -3573,7 +3230,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                     self._context_pack_cache.clear()
 
     def append(self, record: Json) -> None:
-        records = self._stamp_ingest_fields(materialize_serving_record_batch([record]))
+        records = materialize_serving_record_batch([record])
         if self._queue_batched_records(records):
             return
         jsonl_records = [self._sanitize_jsonl_record(item) for item in records]
@@ -3587,10 +3244,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 self._prune_jsonl_retention_locked()
         self._update_latest_entity_cache(records)
         self._update_read_cache_after_append(jsonl_records)
-        self._maintain_event_membership_after_append(records)
 
     def append_many(self, records: list[Json]) -> None:
-        records = self._stamp_ingest_fields(materialize_serving_record_batch(records))
+        records = materialize_serving_record_batch(records)
         if not records:
             return
         if self._queue_batched_records(records):
@@ -3961,12 +3617,6 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         return records[-limit:] if LOCAL_READ_CACHE_COPY else list(records[-limit:])
 
     def read_all(self) -> list[Json]:
-        """Live view: the compacted, tombstone-filtered log with expired / pre-cutoff records and
-        internal retention-cutoff markers removed. Expiry is enforced on every read (never cached)
-        so a TTL record disappears once its ``expires_at`` passes, even with no intervening write."""
-        return filter_live_memory_records(self._read_all_compacted())
-
-    def _read_all_compacted(self) -> list[Json]:
         cache_key = str(self.event_log.resolve())
         paths = self._retained_jsonl_paths()
         if not paths:
@@ -4030,7 +3680,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                         line = line.strip()
                         if line:
                             records.append(json.loads(line))
-        records = compact_and_apply_tombstones(records)
+        records = apply_memory_tombstones(compact_latest_context_state_records(compact_latest_value_records(records)))
         with self._read_cache_lock:
             cache_changed = (
                 self._read_cache_records is None
@@ -4083,101 +3733,6 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             tenant_hash = tenant_hash or int(parts.get("t") or 0)
             user_hash = user_hash or int(parts.get("u") or 0)
         return tenant_hash, user_hash
-
-    # ============================================================================================
-    # Event-membership index (event_id_hash -> {member identity hashes}).
-    # --------------------------------------------------------------------------------------------
-    # The authoritative, O(1)-lookup enumeration of everything a delete/update of a source event must
-    # sweep: the event, its derivatives (entity/summary/segment/summary_dirty), and -- by reference --
-    # the embeddings + secondary-index postings of the event AND each derivative (matched on
-    # ref_hash / ref_hashes ∈ member set). The member set IS the closure identity set carried on the
-    # delete tombstone (``closure_ref_ids``), so a complete membership => zero orphans by construction.
-    #
-    # LOCAL adapter: an in-memory dict rebuilt lazily from the live view and invalidated on every
-    # append (so it always reflects committed derivatives, including async-extracted ones, at the time
-    # a delete runs). ENGINE adapter: additionally persisted as a durable ``{prefix}:event_members``
-    # hash (hset on append, hget on delete, hdel after) for a true O(1) lookup with no rescan.
-    def _ensure_event_member_index(self) -> dict[str, set[str]]:
-        with self._event_member_index_lock:
-            if self._event_member_index is None:
-                self._event_member_index = build_event_member_index(self.read_all())
-            return self._event_member_index
-
-    def _invalidate_event_member_index(self) -> None:
-        index = getattr(self, "_event_member_index", None)
-        lock = getattr(self, "_event_member_index_lock", None)
-        if lock is None:
-            self._event_member_index = None
-            return
-        with lock:
-            self._event_member_index = None
-
-    def _maintain_event_membership_after_append(self, records: list[Json]) -> None:
-        """Keep the membership index coherent after a batch lands. Base (LOCAL) behavior: invalidate
-        the in-memory index so the next delete rebuilds it from the current live view -- correct even
-        under async extraction, since the rebuild sees whatever derivatives have committed by then.
-        The engine adapter overrides this to also write-through the durable ``event_members`` hash."""
-        if not records:
-            return
-        for record in records:
-            record_type = str(record.get("record_type") or "")
-            if record_type in ("context_event", MEMORY_TOMBSTONE_RECORD_TYPE) or record_type in _MEMORY_DERIVATIVE_RECORD_TYPES:
-                self._invalidate_event_member_index()
-                return
-
-    # --- Durable-persistence seam (engine adapter overrides these; LOCAL is in-memory only) --------
-    def _lookup_persisted_event_members(self, event_id: str) -> set[str] | None:
-        """Engine O(1) member fetch (``hget {prefix}:event_members event_id``); LOCAL -> None so the
-        in-memory index is used."""
-        return None
-
-    def _persist_event_members(self, event_id: str, member_ids: set[str]) -> None:
-        """Engine write-through of an event's member set; LOCAL is a no-op (in-memory index is truth)."""
-        return None
-
-    def _forget_persisted_event_members(self, event_id: str) -> None:
-        """Engine hdel of an event's member set after delete; LOCAL is a no-op."""
-        return None
-
-    def _resolve_event_members(self, event_id: str, records: list[Json]) -> tuple[set[str], str]:
-        """The member identity-hash set for a source event, plus which path served it. Fast path first:
-        the durable engine hash (O(1)), then the in-memory index (O(1) after an amortized build); a
-        scan of ``records`` is the correctness fallback used only when the index has no entry (e.g. a
-        pre-index log on first upgrade)."""
-        persisted = self._lookup_persisted_event_members(event_id)
-        if persisted is not None:
-            self._event_member_index_hits += 1
-            return set(str(x) for x in persisted), "index_persisted"
-        members = self._ensure_event_member_index().get(str(event_id))
-        if members is not None:
-            self._event_member_index_hits += 1
-            return set(members), "index_memory"
-        self._event_member_index_misses += 1
-        scanned = build_event_member_index(records).get(str(event_id), set())
-        return set(scanned), "scan_fallback"
-
-    def _closure_ref_ids_for_event(self, records: list[Json], event_id_str: str, event_id_int: int) -> list[str]:
-        """The closure identity set to sweep when a source EVENT is closure-removed WITHOUT demotion
-        (keyed-upsert supersede, TTL expiry, update): the event id + every SINGLE-source derivative's
-        identity hash. Multi-source derivatives survive (their provenance no longer equals just this
-        event under the closure tombstone), so their identities are excluded and their embeddings /
-        postings are preserved. Uses the membership index for enumeration; the provenance walk splits
-        single- vs multi-source and is the fallback when the index has no entry."""
-        member_hashes, _src = self._resolve_event_members(event_id_str, records)
-        single_source_ids: set[str] = set()
-        multi_source_ids: set[str] = set()
-        for record in records:
-            provenance = _record_provenance_source_ids(record)
-            if provenance is None or event_id_int not in provenance:
-                continue
-            identity_ids = _record_derivative_identity_ids(record)
-            if provenance == {event_id_int}:
-                single_source_ids |= identity_ids
-            else:
-                multi_source_ids |= identity_ids
-        ref_ids = {str(event_id_str)} | single_source_ids | (member_hashes - multi_source_ids)
-        ref_ids -= multi_source_ids
-        return sorted(ref_ids)
 
     def forget(self, args: Json, hook: Json | None = None) -> Json:
         """Delete ALL memory for a scope (mem0 ``delete_all(user_id=...)``) -- the primary, complete
@@ -4264,36 +3819,16 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         )
         closure = bool(is_source_event and memory_id_int is not None)
         superseded: list[Json] = []
-        member_source = "n/a"
-        # Closure identity set = the event-membership member set to sweep (event_id + each SINGLE-source
-        # derivative's identity hash). Multi-source derivatives are DEMOTED (survive with this source
-        # trimmed), so their identities are excluded and their embeddings/postings are preserved.
-        closure_ref_ids: set[str] = set()
         if closure:
-            closure_ref_ids.add(memory_id)
-            member_hashes, member_source = self._resolve_event_members(memory_id, records)
-            demoted_identity_ids: set[str] = set()
-            single_source_ids: set[str] = set()
             for record in records:
                 provenance = _record_provenance_source_ids(record)
                 if provenance is None or memory_id_int not in provenance:
                     continue
-                identity_ids = _record_derivative_identity_ids(record)
                 if provenance == {memory_id_int}:
-                    # single-source -> the closure tombstone removes it; sweep its own embeddings/postings.
-                    single_source_ids |= identity_ids
-                    continue
+                    continue  # single-source -> the closure tombstone removes it (no rewrite needed)
                 demoted = self._demote_derivative_source(record, memory_id_int)
                 if demoted is not None:
                     superseded.append(demoted)
-                    demoted_identity_ids |= _record_derivative_identity_ids(demoted)
-            # The index (authoritative member enumeration) minus the demoted-survivor identities is the
-            # single-source kill set; union with the provenance-walk result so a stale/missing index
-            # entry can never UNDER-sweep (the scan is the safety net) and a shared identity is never
-            # OVER-swept (demoted ids are excluded).
-            closure_ref_ids |= single_source_ids
-            closure_ref_ids |= (member_hashes - demoted_identity_ids - {memory_id})
-            closure_ref_ids -= demoted_identity_ids
         tombstone = {
             "record_type": MEMORY_TOMBSTONE_RECORD_TYPE,
             "tombstone_kind": "delete",
@@ -4301,24 +3836,17 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             "closure": closure,
             "created_at_ms": now_ms(),
         }
-        if closure_ref_ids:
-            tombstone["closure_ref_ids"] = sorted(closure_ref_ids)
         removed = sum(1 for record in records if _tombstone_kills_record(tombstone, record))
         if superseded:
             self.append_many(superseded + [tombstone])
         else:
             self.append(tombstone)
-        if closure:
-            self._forget_persisted_event_members(memory_id)
-            self._invalidate_event_member_index()
         result = {
             "deleted": removed > 0,
             "memory_id": memory_id,
             "removed_count": removed,
             "closure": closure,
             "superseded_count": len(superseded),
-            "member_count": len(closure_ref_ids),
-            "member_source": member_source,
         }
         self._maybe_auto_purge()
         return result
@@ -4351,261 +3879,6 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         demoted["updated_at_ms"] = now_ms()
         demoted["demoted_removed_source_id"] = source_id
         return demoted
-
-    # ============================================================================================
-    # PurchaseMemory Phase 2: keyed-upsert (identity_key) + truth-rank guard, and TTL sweep/purge.
-    # ============================================================================================
-    @staticmethod
-    def _record_scope_key_str(record: Json) -> str:
-        scope = candidate_access_scope(record)
-        if isinstance(scope, dict):
-            scope_key = str(scope.get("scope_key") or "")
-            if scope_key:
-                return scope_key
-            canonical = canonical_scope_key(scope)
-            if canonical:
-                return canonical
-        return ""
-
-    def _apply_identity_upsert(self, result: Json, *, identity_key: str, envelope: Json) -> Json:
-        """Keyed-upsert truth-rank guard for a just-ingested event.
-
-        Finds OTHER live ``context_event``s that share ``identity_key`` within the SAME subject scope
-        and applies the guard against the highest surviving rank:
-
-          * new_rank >= existing_rank -> SUPERSEDE: closure-tombstone every older keyed record
-            (``superseded_by`` = the new id), so recall returns the new value.
-          * new_rank <  existing_rank -> RANK-GUARDED: roll this lower-confidence write back
-            (closure-tombstone the new id) and keep the existing highest-rank fact untouched.
-        """
-        new_id = str(result.get("event_id_hash") or "")
-        if not new_id:
-            return result
-        records = self._read_all_compacted()
-        new_record: Json | None = None
-        for record in records:
-            if str(record.get("record_type") or "") == "context_event" and str(record.get("event_id_hash")) == new_id:
-                new_record = record
-                break
-        if new_record is None:
-            return result
-        subject_scope_key = self._record_scope_key_str(new_record)
-        new_rank = int(new_record.get("truth_rank") or 0)
-        now_value = _memory_clock_now_ms()
-        existing: list[Json] = []
-        for record in records:
-            if str(record.get("record_type") or "") != "context_event":
-                continue
-            if str(record.get("event_id_hash")) == new_id:
-                continue
-            if str(record.get("identity_key") or "") != identity_key:
-                continue
-            if subject_scope_key and self._record_scope_key_str(record) != subject_scope_key:
-                continue
-            if _record_is_time_expired(record, now_value):
-                continue
-            existing.append(record)
-        if not existing:
-            result["identity_key"] = identity_key
-            result["truth_rank"] = new_rank
-            result["identity_upsert"] = "created"
-            result["upsert_outcome"] = "add"
-            return result
-        existing_rank = max(int(record.get("truth_rank") or 0) for record in existing)
-        if new_rank >= existing_rank:
-            tombstones: list[Json] = []
-            superseded_ids: list[str] = []
-            for record in existing:
-                old_id = str(record.get("event_id_hash") or "")
-                if not old_id:
-                    continue
-                superseded_ids.append(old_id)
-                old_tombstone = {
-                    "record_type": MEMORY_TOMBSTONE_RECORD_TYPE,
-                    "tombstone_kind": "delete",
-                    "target_memory_id": old_id,
-                    "closure": True,
-                    # "supersede" so mem0 history() labels it a supersede (not a plain delete);
-                    # identity_supersede_kind records that it was a keyed-upsert supersede.
-                    "tombstone_reason": "supersede",
-                    "identity_supersede_kind": "identity_key",
-                    "identity_key": identity_key,
-                    "superseded_by": new_id,
-                    "created_at_ms": now_ms(),
-                }
-                old_id_int = _safe_int(old_id)
-                if old_id_int is not None:
-                    old_tombstone["closure_ref_ids"] = self._closure_ref_ids_for_event(records, old_id, old_id_int)
-                    self._forget_persisted_event_members(old_id)
-                tombstones.append(old_tombstone)
-            if tombstones:
-                self._invalidate_event_member_index()
-                self.append_many(tombstones)
-                self._maybe_auto_purge()
-            result["identity_key"] = identity_key
-            result["truth_rank"] = new_rank
-            result["identity_upsert"] = "superseded"
-            result["upsert_outcome"] = "update"
-            result["superseded_memory_ids"] = superseded_ids
-            return result
-        # RANK-GUARDED: keep the highest-rank / most-recent existing fact; discard the new write.
-        keep = max(existing, key=lambda record: (int(record.get("truth_rank") or 0), _record_occurred_ms(record)))
-        keep_id = str(keep.get("event_id_hash") or "")
-        rank_guard_tombstone = {
-            "record_type": MEMORY_TOMBSTONE_RECORD_TYPE,
-            "tombstone_kind": "delete",
-            "target_memory_id": new_id,
-            "closure": True,
-            "tombstone_reason": "identity_rank_guarded",
-            "identity_key": identity_key,
-            "superseded_by": keep_id,
-            "created_at_ms": now_ms(),
-        }
-        new_id_int = _safe_int(new_id)
-        if new_id_int is not None:
-            rank_guard_tombstone["closure_ref_ids"] = self._closure_ref_ids_for_event(records, new_id, new_id_int)
-            self._forget_persisted_event_members(new_id)
-            self._invalidate_event_member_index()
-        self.append(rank_guard_tombstone)
-        self._maybe_auto_purge()
-        return {
-            "ingested": False,
-            "rank_guarded": True,
-            "upsert_outcome": "rank_guarded",
-            "identity_key": identity_key,
-            "event_id_hash": keep.get("event_id_hash"),
-            "current_memory_id": keep.get("event_id_hash"),
-            "existing_memory_id": keep.get("event_id_hash"),
-            "existing_rank": existing_rank,
-            "new_rank": new_rank,
-            "rejected_memory_id": new_id,
-            "access": result.get("access", {}),
-        }
-
-    def _write_retention_cutoff(self, result: Json, envelope: Json) -> None:
-        """Persist a durable scope-level retention-cutoff marker; records in the subject scope whose
-        occurrence time < cutoff are hidden at read-time and reclaimed by the expiry sweep."""
-        try:
-            cutoff_ms = int(envelope.get("retention_cutoff_ms") or 0)
-        except (TypeError, ValueError):
-            cutoff_ms = 0
-        if cutoff_ms <= 0:
-            return
-        scope = envelope.get("scope") if isinstance(envelope.get("scope"), dict) else {}
-        tenant_hash, user_hash = self._resolve_subject_hashes(scope)
-        if not tenant_hash or not user_hash:
-            new_id = str(result.get("event_id_hash") or "")
-            for record in self._read_all_compacted():
-                if str(record.get("record_type") or "") == "context_event" and str(record.get("event_id_hash")) == new_id:
-                    resolved_tenant, resolved_user = _record_scope_hashes(record)
-                    tenant_hash = tenant_hash or resolved_tenant
-                    user_hash = user_hash or resolved_user
-                    break
-        if not tenant_hash or not user_hash:
-            return
-        self.append({
-            "record_type": MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
-            "target_tenant_hash": tenant_hash,
-            "target_user_hash": user_hash,
-            "cutoff_ms": cutoff_ms,
-            "cutoff_ts": envelope.get("retention_cutoff_ts"),
-            "created_at_ms": now_ms(),
-        })
-
-    def sweep_expired_memories(self, *, now_ms_value: int | None = None, force_purge: bool = False) -> Json:
-        """Lazy expiry reclamation: closure-tombstone expired / pre-cutoff memories, then purge.
-
-        Idempotent and crash-safe -- it reuses the same durable delete-tombstone + ``purge_tombstones``
-        machinery as ``delete``, so a re-run tombstones nothing new and recovery replays to the same
-        state. ``force_purge`` physically rewrites the log immediately; otherwise purge is left to the
-        ``MATRIXARK_MEMORY_PURGE_THRESHOLD`` gate."""
-        now_value = now_ms_value if now_ms_value is not None else _memory_clock_now_ms()
-        records = self._read_all_compacted()
-        cutoffs = _retention_cutoffs_by_subject(records)
-        expired_ids: list[str] = []
-        seen: set[str] = set()
-        for record in records:
-            if str(record.get("record_type") or "") != "context_event":
-                continue
-            if not (_record_is_time_expired(record, now_value) or _record_cut_by_retention(record, cutoffs)):
-                continue
-            event_id = str(record.get("event_id_hash") or "")
-            if not event_id or event_id in seen:
-                continue
-            seen.add(event_id)
-            expired_ids.append(event_id)
-        tombstones = []
-        for event_id in expired_ids:
-            ttl_tombstone = {
-                "record_type": MEMORY_TOMBSTONE_RECORD_TYPE,
-                "tombstone_kind": "delete",
-                "target_memory_id": event_id,
-                "closure": True,
-                "tombstone_reason": "ttl_expired",
-                "created_at_ms": now_ms(),
-            }
-            event_id_int = _safe_int(event_id)
-            if event_id_int is not None:
-                ttl_tombstone["closure_ref_ids"] = self._closure_ref_ids_for_event(records, event_id, event_id_int)
-                self._forget_persisted_event_members(event_id)
-            tombstones.append(ttl_tombstone)
-        purge: Json | None = None
-        if tombstones:
-            self._invalidate_event_member_index()
-            self.append_many(tombstones)
-            if force_purge:
-                purge = self.purge_tombstones(force=True)
-            else:
-                purge = self._maybe_auto_purge()
-        return {"swept": len(expired_ids), "expired_memory_ids": expired_ids, "purge": purge}
-
-    def _maybe_sweep_expired(self) -> Json | None:
-        """Auto-sweep expired memories when purge is enabled; never raises into the write path."""
-        if MEMORY_PURGE_THRESHOLD <= 0 or not self._local_jsonl_enabled:
-            return None
-        try:
-            return self.sweep_expired_memories(force_purge=False)
-        except OSError:
-            return None
-
-    def get_memory_by_identity_key(self, args: Json) -> Json:
-        """Recall the single current LIVE keyed value for ``identity_key`` in a scope (Phase 2).
-
-        The highest-``truth_rank`` surviving record wins (ties -> most recent occurrence). Reads
-        through the live view so superseded / expired / forgotten keyed records never surface."""
-        identity_key = str(args.get("identity_key") or "").strip()
-        if not identity_key:
-            raise MatrixArkError("get by key requires identity_key")
-        scope = optional_object(args, "scope")
-        tenant_hash, user_hash = self._resolve_subject_hashes(scope)
-        candidates: list[Json] = []
-        for record in self.read_all():
-            if str(record.get("record_type") or "") != "context_event":
-                continue
-            if str(record.get("identity_key") or "") != identity_key:
-                continue
-            record_tenant, record_user = _record_scope_hashes(record)
-            if tenant_hash and record_tenant != tenant_hash:
-                continue
-            if user_hash and record_user != user_hash:
-                continue
-            candidates.append(record)
-        if not candidates:
-            return {"found": False, "identity_key": identity_key}
-        best = max(candidates, key=lambda record: (int(record.get("truth_rank") or 0), _record_occurred_ms(record)))
-        return {
-            "found": True,
-            "identity_key": identity_key,
-            "id": best.get("event_id_hash"),
-            "memory_id": best.get("event_id_hash"),
-            "memory": best.get("summary_text") or best.get("text") or "",
-            "text": best.get("text") or "",
-            "truth_rank": int(best.get("truth_rank") or 0),
-            "truth_class": best.get("truth_class"),
-            "expires_at": best.get("expires_at"),
-            "scope_key": best.get("scope_key") or canonical_scope_key(scope),
-            "updated_at_ms": best.get("updated_at_ms"),
-        }
 
     def get_all(self, args: Json) -> Json:
         """List a scope's active (non-forgotten, non-deleted) memories (mem0 ``get_all(user_id=...)``).
@@ -4784,13 +4057,6 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             "superseded_by": new_memory_id,
             "created_at_ms": now_ms(),
         }
-        memory_id_int = _safe_int(memory_id)
-        if memory_id_int is not None:
-            # Sweep the superseded version's own embeddings / index postings so the old text can't leak
-            # via retrieval after the update (same closure identity set as delete).
-            tombstone["closure_ref_ids"] = self._closure_ref_ids_for_event(self.read_all(), memory_id, memory_id_int)
-            self._forget_persisted_event_members(memory_id)
-            self._invalidate_event_member_index()
         self.append(tombstone)
         return {
             "updated": True,

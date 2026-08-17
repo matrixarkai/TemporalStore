@@ -13,14 +13,12 @@ try:  # names owned by the parent module
     session_event_message_count,
     session_events_by_message_limit,
     source_event_lineage_summary,
-    surviving_source_event_ids,
 )
 except ImportError:
     from matrixark_mcp_local_adapter import (
     session_event_message_count,
     session_events_by_message_limit,
     source_event_lineage_summary,
-    surviving_source_event_ids,
 )
 
 try:  # gate flags only (runtime_config is a leaf; symbols do not star-propagate).
@@ -88,31 +86,6 @@ class _LocalAdapterSessionCommitMixin:
         if max_messages is not None and (not isinstance(max_messages, int) or max_messages <= 0):
             raise MatrixArkError("max_messages must be a positive integer")
         pending_all_unfiltered = self.pending_session_events(scope)
-        # Delete-before-extract forward guard (load-bearing): a pending source event can be deleted (or
-        # its subject forgotten) BEFORE this async commit materializes its derivatives. The delete/forget
-        # tombstone already kills the source ``context_event`` + its ``session_buffer_event``, but the
-        # buffer/commit path reads the raw log, so without this filter the extractor would re-materialize
-        # entities/summaries/segments with fresh ids appended AFTER the tombstone -- resurrecting the
-        # deleted content (the order-aware ``apply_memory_tombstones`` only removes records that precede
-        # the tombstone). We consult the durable, order-aware tombstone sweep and drop any pending event
-        # whose source no longer survives, so NO derivative is ever produced for a deleted source. This
-        # runs for EVERY commit trigger (manual/force, threshold, idle-timeout, session-boundary/finalize,
-        # auto_batch_extract) because they all funnel through session_commit, and it is durable +
-        # cross-process because the signal is read fresh from the JSONL log on each commit.
-        # Use the RAW (un-compacted, tombstone-bearing) log: ``read_all()`` is already tombstone-filtered
-        # so it would show no tombstones, and ``pending_session_events`` can serve the deleted event from
-        # its in-memory buffer cache (populated at ingest, not invalidated by a later delete) -- so the
-        # guard must consult the durable append history to detect the delete.
-        # TODO(engine): the Rust engine-side batch-extraction/commit path (crates/**) needs the same
-        # forward guard against delete-before-extract resurrection; this fix wires only the Python local
-        # adapter. Not edited here per scope (crates are out of scope for this change).
-        _surviving_event_ids = surviving_source_event_ids(self._read_raw_records())
-        if _surviving_event_ids is not None:
-            pending_all_unfiltered = [
-                record
-                for record in pending_all_unfiltered
-                if str(record.get("event_id_hash")) in _surviving_event_ids
-            ]
         commit_before_ms = args.get("commit_before_ms")
         if commit_before_ms is None:
             commit_before_ms = args.get("idle_commit_cutoff_ms")

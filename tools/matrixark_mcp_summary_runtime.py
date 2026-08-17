@@ -128,9 +128,6 @@ def node_summary_source_records(
     for record in reversed(records):
         if not scope_matches(candidate_access_scope(record), scope):
             continue
-        # Ephemeral (TTL) records are excluded from rollups (they are meant to vanish).
-        if record.get("ephemeral") or record.get("expires_at_ms"):
-            continue
         record_type = str(record.get("record_type") or "")
         try:
             record_node_hash = int(record.get("node_hash") or 0)

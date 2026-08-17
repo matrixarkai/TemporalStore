@@ -312,7 +312,6 @@ MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_reset": {"context:forget"},
     "matrixark_get_all": {"context:retrieve"},
     "matrixark_get_memory": {"context:retrieve"},
-    "matrixark_get_memory_by_key": {"context:retrieve"},
     "matrixark_update_memory": {"context:ingest"},
     "matrixark_memory_history": {"context:retrieve"},
     "matrixark_ingestion_dashboard": {"context:replay"},
@@ -2537,99 +2536,6 @@ def resolve_ingest_messages(args: Json, kind: str) -> list[Json]:
     return require_messages(args)
 
 
-# --------------------------------------------------------------------------------------------- #
-# PurchaseMemory primitives: per-record TTL / retention-cutoff + keyed-upsert truth-rank.
-# These are all OPTIONAL ingest fields; an envelope without them is byte-identical to before.
-# --------------------------------------------------------------------------------------------- #
-DEFAULT_TRUTH_RANKS: dict[str, int] = {"asserted": 3, "reported": 2, "inferred": 1}
-
-
-def resolve_truth_rank(truth_class: Any) -> int:
-    """Map a ``truth_class`` string onto an integer rank. Unknown / empty -> 0.
-
-    Default table: asserted=3, reported=2, inferred=1. Overridable at runtime via the
-    ``MATRIXARK_TRUTH_RANK`` env var (a JSON object of ``{class: rank}``); malformed JSON is
-    ignored so a bad override never breaks ingest."""
-    if truth_class in (None, ""):
-        return 0
-    table = dict(DEFAULT_TRUTH_RANKS)
-    override = os.environ.get("MATRIXARK_TRUTH_RANK")
-    if override:
-        try:
-            parsed = json.loads(override)
-            if isinstance(parsed, dict):
-                for key, value in parsed.items():
-                    try:
-                        table[str(key).strip().lower()] = int(value)
-                    except (TypeError, ValueError):
-                        continue
-        except (ValueError, TypeError):
-            pass
-    return int(table.get(str(truth_class).strip().lower(), 0))
-
-
-def _coerce_epoch_seconds(value: Any) -> float | None:
-    """Best-effort coercion of an absolute unix-seconds timestamp (int/float/numeric string).
-
-    Returns ``None`` when the value is absent or not numeric (so an unparseable field is simply
-    ignored rather than breaking ingest)."""
-    if value in (None, ""):
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def apply_memory_envelope_fields(args: Json, envelope: Json) -> Json:
-    """Normalize the optional PurchaseMemory ingest fields onto ``envelope`` (in place).
-
-    Accepts (all optional):
-      * ``expires_at`` -- absolute unix seconds (int/float). Wins over ``ttl_seconds``.
-      * ``ttl_seconds`` -- relative seconds; expires_at = occurred_at (ingestion_time) + ttl.
-      * ``retention_cutoff_ts`` -- scope-level absolute unix seconds; records whose occurrence
-        time < cutoff are hidden/purged.
-      * ``identity_key`` -- logical identity of a fact (keyed-upsert).
-      * ``truth_class`` -- confidence class mapped to an integer ``truth_rank``.
-
-    Stamps ``expires_at`` / ``expires_at_ms`` / ``ephemeral`` when a TTL applies, plus
-    ``retention_cutoff_ts`` / ``retention_cutoff_ms`` / ``identity_key`` / ``truth_class`` /
-    ``truth_rank`` when supplied. ``ingestion_time_ms`` must already be set on ``envelope``."""
-    ingestion_time_ms = int(envelope.get("ingestion_time_ms") or 0)
-    expires_at = _coerce_epoch_seconds(args.get("expires_at"))
-    ttl_seconds = None
-    raw_ttl = args.get("ttl_seconds")
-    if raw_ttl not in (None, ""):
-        try:
-            ttl_seconds = float(raw_ttl)
-        except (TypeError, ValueError):
-            ttl_seconds = None
-    # expires_at wins over ttl_seconds when both are present.
-    if expires_at is None and ttl_seconds is not None and ingestion_time_ms > 0:
-        expires_at = ingestion_time_ms / 1000.0 + ttl_seconds
-    if expires_at is not None:
-        envelope["expires_at"] = float(expires_at)
-        envelope["expires_at_ms"] = int(round(expires_at * 1000.0))
-        envelope["ephemeral"] = True
-    if ttl_seconds is not None:
-        envelope["ttl_seconds"] = float(ttl_seconds)
-    cutoff = _coerce_epoch_seconds(args.get("retention_cutoff_ts"))
-    if cutoff is not None:
-        envelope["retention_cutoff_ts"] = float(cutoff)
-        envelope["retention_cutoff_ms"] = int(round(cutoff * 1000.0))
-    identity_key = args.get("identity_key")
-    if isinstance(identity_key, str) and identity_key.strip():
-        envelope["identity_key"] = identity_key.strip()
-    truth_class = args.get("truth_class")
-    if isinstance(truth_class, str) and truth_class.strip():
-        envelope["truth_class"] = truth_class.strip()
-        envelope["truth_rank"] = resolve_truth_rank(truth_class)
-    elif "identity_key" in envelope:
-        # A keyed write with no explicit class defaults to rank 0 (unknown).
-        envelope["truth_rank"] = int(envelope.get("truth_rank") or 0)
-    return envelope
-
-
 def normalize_envelope(args: Json, *, default_kind: str) -> Json:
     kind = args.get("kind", default_kind)
     if kind not in {"message", "feedback", "resource", "skill", "business_data"}:
@@ -2677,7 +2583,6 @@ def normalize_envelope(args: Json, *, default_kind: str) -> Json:
     ]:
         if field in args:
             envelope[field] = args[field]
-    apply_memory_envelope_fields(args, envelope)
     return envelope
 
 

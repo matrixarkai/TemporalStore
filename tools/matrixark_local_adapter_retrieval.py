@@ -12,7 +12,6 @@ try:  # names owned by the parent module
     from tools.matrixark_mcp_local_adapter import (
     Any,
     RETRIEVAL_HOT_RECORD_TYPES,
-    _drop_time_expired_records,
     context_source_lineage,
     source_event_lineage_summary,
 )
@@ -20,7 +19,6 @@ except ImportError:
     from matrixark_mcp_local_adapter import (
     Any,
     RETRIEVAL_HOT_RECORD_TYPES,
-    _drop_time_expired_records,
     context_source_lineage,
     source_event_lineage_summary,
 )
@@ -107,9 +105,7 @@ class _LocalAdapterRetrievalMixin:
             if cached is not None:
                 scan_stats = dict(cached.get("scan_stats", {}))
                 scan_stats["cache_hit"] = True
-                # Re-check TTL on every cache hit so a record that expired since the cache was
-                # built (with no intervening write) stops surfacing from retrieve.
-                return {"records": _drop_time_expired_records(cached.get("records", [])), "scan_stats": scan_stats}
+                return {"records": cached.get("records", []), "scan_stats": scan_stats}
         raw_records = self.read_all()
         node_scope_by_hash: dict[int, Json] = {}
         embedding_scope_by_ref: dict[tuple[str, Any], Json] = {}
@@ -533,7 +529,7 @@ class _LocalAdapterRetrievalMixin:
         }
         with self._retrieval_records_cache_lock:
             self._retrieval_records_cache[cache_key] = result
-        return {"records": _drop_time_expired_records(result["records"]), "scan_stats": result["scan_stats"]}
+        return result
 
     def find_latest_entity(self, *, node_hash: int, entity_type: str, entity_name: str) -> Json | None:
         entity_hash = stable_hash(f"{node_hash}:{entity_type}:{entity_name}")

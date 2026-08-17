@@ -102,34 +102,6 @@ never per-message. The caller declares granularity; the gateway never guesses.
 On extraction failure the durable ingest is **not** lost — you get `"finalized": false` +
 `"extraction_error"`. Quotas: > `max_batch` records or > `max_body_bytes` → **`413`**.
 
-**PurchaseMemory fields (optional, additive)** — per-record TTL and keyed-upsert:
-| Field | Type | Effect |
-|---|---|---|
-| `expires_at` | number (unix **seconds**) | Absolute expiry. The whole ingest closure is stamped ephemeral: it stops surfacing from retrieve / `get_all` once `now >= expires_at`, is **excluded from summaries/rollups**, and is lazily purged (durable, crash-safe). Wins over `ttl_seconds`. |
-| `ttl_seconds` | number | Relative TTL → `expires_at = ingestion_time + ttl_seconds`. |
-| `retention_cutoff_ts` | number (unix seconds) | Scope-level cutoff: records in the subject scope older than this are hidden and reclaimed. |
-| `identity_key` | string | Logical identity of a fact (e.g. `user.email`). A later ingest with the same key + a **>=** `truth_class` rank supersedes the prior value (closure-tombstoned); a **lower** rank is rejected (`rank_guarded`, no write). |
-| `truth_class` | string | Confidence class → rank (`asserted=3, reported=2, inferred=1, unknown=0`; override via `MATRIXARK_TRUTH_RANK`). |
-
-`expires_at` / `ttl_seconds` may also be sent as the headers `X-Expires-At` / `X-Ttl-Seconds`
-(the JSON body wins when both are present). The `202` `result` carries `upsert_outcome`
-(`add` / `update` / `rank_guarded`) when `identity_key` was used.
-
-> NOTE: TTL is enforced at the application layer (read-time filter + lazy tombstone-purge), which is
-> correct for every backend. Native engine-level key-expiry (`ttl_ms`) wiring on the Rust temporal
-> backend is a documented TODO; records DO carry `expires_at_ms`, which the temporal read path
-> already honors via its retention filter.
-
-### `GET /v1/memory/by-key?identity_key=…` — recall the current keyed value (`context:retrieve`)
-Returns the single **current live** value for an `identity_key` in a scope (highest `truth_rank`
-surviving record). Optional `user_id` / `agent_id` / `session_id` query params scope it (tenant is
-pinned from the API key). `404` with `{"found": false}` when no live keyed value exists.
-```json
-// GET /v1/memory/by-key?identity_key=user.email&user_id=u1  →  200
-{ "found": true, "identity_key": "user.email", "id": "…", "memory": "…", "text": "…",
-  "truth_rank": 3, "truth_class": "asserted" }
-```
-
 ---
 
 ### `POST /v1/session/commit` — close a window, extract now

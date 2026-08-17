@@ -1691,9 +1691,7 @@ fn wire_matrixobject_durability(
     use std::sync::Arc;
     use std::time::Duration;
     use temporalstore_rust::matrixobject_store::MatrixObjectObjectStore;
-    use temporalstore_rust::{
-        SharedStoreReplicator, SharedStoreStorageMode, SharedStoreWalAppendMode, StorageBackend,
-    };
+    use temporalstore_rust::{SharedStoreReplicator, SharedStoreStorageMode, StorageBackend};
 
     let (bucket, cluster_id) = match storage_backend {
         StorageBackend::MatrixObject { bucket, cluster_id } => (bucket.clone(), cluster_id.clone()),
@@ -1734,19 +1732,7 @@ fn wire_matrixobject_durability(
         }
     };
 
-    // `TS_MATRIXOBJECT_SYNC_FLUSH=1` forces every write durable before ack; group commit (the
-    // `[wal] group_commit` / `TS_GROUP_COMMIT` gate, default ON) then coalesces concurrent sync
-    // writers onto a shared durable barrier. Coalescing requires the single-appendable-log
-    // (ProtobufAppendBlob) WAL layout, so select it here when group commit is active on the sync
-    // path. `latest_persisted_wal_index` / replay read BOTH layouts (union by WAL index), so a shard
-    // that previously wrote the per-key layout continues monotonically with no migration.
-    let sync_flush = env_bool("TS_MATRIXOBJECT_SYNC_FLUSH", false);
-    let group_commit = sync_flush && temporalstore_rust::wal::group_commit_configured();
-    let commit_delay = temporalstore_rust::wal::group_commit_delay();
-    let mut replicator = SharedStoreReplicator::new(cluster_id, Arc::new(store));
-    if group_commit {
-        replicator = replicator.with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
-    }
+    let replicator = SharedStoreReplicator::new(cluster_id, Arc::new(store));
 
     let latest = match rt.block_on(replicator.latest_persisted_wal_index(shard_id)) {
         Ok(latest) => latest,
@@ -1796,16 +1782,15 @@ fn wire_matrixobject_durability(
         );
     }
 
+    // `TS_MATRIXOBJECT_SYNC_FLUSH=1` forces every write durable before ack;
+    // otherwise writes are batched off the critical path (the default).
+    let sync_flush = env_bool("TS_MATRIXOBJECT_SYNC_FLUSH", false);
     let mode = SharedStoreStorageMode::from_sync_flag(sync_flush);
     let async_mode = mode.is_async();
 
     // Continue publishing at latest + 1 so we never overwrite persisted WAL
     // entries.
-    let writer = Arc::new(
-        replicator
-            .storage_writer(mode, latest + 1)
-            .with_group_commit(group_commit, commit_delay),
-    );
+    let writer = Arc::new(replicator.storage_writer(mode, latest + 1));
     let shutdown = Arc::new(AtomicBool::new(false));
     let flush_signal = Arc::new(tokio::sync::Notify::new());
 
@@ -1847,11 +1832,6 @@ fn wire_matrixobject_durability(
         });
         println!(
             "matrixobject durability: async batched flush (interval {flush_interval_ms}ms, batch {flush_batch}); durable local WAL covers process crash"
-        );
-    } else if group_commit {
-        println!(
-            "matrixobject durability: sync flush with timer-less group commit (concurrent writers coalesce onto a shared durable barrier; commit_delay {}us)",
-            commit_delay.as_micros()
         );
     } else {
         println!("matrixobject durability: sync flush (every write durable before ack)");
