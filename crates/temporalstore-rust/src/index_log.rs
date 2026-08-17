@@ -225,19 +225,18 @@ fn bulk_ingest_mode() -> bool {
     )
 }
 
-/// TS_WAL_ONLY_SYNC: defer the ack-path index-log fsync (WAL replay is the durable
-/// recovery source). Default OFF.
+/// Defer the ack-path index-log fsync (WAL replay is the durable recovery source). This is the
+/// single-barrier default; restored to a synchronous fsync only under the TS_WAL_LEGACY_RECOVERY
+/// escape hatch (whose delta-fold recovery trusts the durable delta).
 fn indexlog_wal_only_sync() -> bool {
-    ["TS_WAL_ONLY_SYNC", "TS_WAL_SINGLE_BARRIER"].iter().any(|name| {
-        matches!(
-            std::env::var(name)
-                .unwrap_or_default()
-                .trim()
-                .to_ascii_lowercase()
-                .as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
+    !matches!(
+        std::env::var("TS_WAL_LEGACY_RECOVERY")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 impl LocalIndexLogStore {
@@ -292,7 +291,7 @@ impl LocalIndexLogStore {
             .open(index_log_path(&inner.root, shard_id))?;
         file.write_all(&bytes)?;
         file.flush()?;
-        // Ack-path index-log append. Under TS_WAL_ONLY_SYNC defer this fsync (bytes are
+        // Ack-path index-log append. Under the single-barrier default defer this fsync (bytes
         // still written): the WAL is the durable recovery source and replay rebuilds the
         // served index, so the replay-log checkpoint need not be crash-durable per write.
         if !indexlog_wal_only_sync() {
@@ -342,7 +341,7 @@ impl LocalIndexLogStore {
             .open(index_log_path(&inner.root, shard_id))?;
         file.write_all(&bytes)?;
         file.flush()?;
-        // Ack-path index-log append. Under TS_WAL_ONLY_SYNC defer this fsync (bytes are
+        // Ack-path index-log append. Under the single-barrier default defer this fsync (bytes
         // still written): the WAL is the durable recovery source and replay rebuilds the
         // served index, so the replay-log checkpoint need not be crash-durable per write.
         if !indexlog_wal_only_sync() {

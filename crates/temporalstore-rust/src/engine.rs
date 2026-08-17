@@ -466,13 +466,14 @@ impl TemporalEngine {
                 );
                 let key_states = capture_key_states(shard, &delta_command_keys);
                 // `durable` fsyncs the delta record before returning. Deferred on the raft
-                // apply path (raft log is the durability source) and, under
-                // TS_INDEXLOG_DEFER_SYNC, on the single-node path too: the record is still
-                // written (so the served-index stream is unchanged), but the durable WAL +
-                // data-page barriers already committed above make the lost delta tail
-                // recoverable by WAL replay, so its fdatasync leaves the ack critical path.
-                let index_log_durable =
-                    !raft_applying() && !indexlog_defer_sync() && !wal_single_barrier();
+                // apply path (raft log is the durability source) and, under the single-barrier
+                // default, on the single-node path too: the record is still written (so the
+                // served-index stream is unchanged), but the durable WAL barrier already
+                // committed above makes the lost delta tail recoverable by base-only WAL replay,
+                // so its fdatasync leaves the ack critical path. Restored to a synchronous
+                // barrier only under the TS_WAL_LEGACY_RECOVERY escape hatch (wal_single_barrier
+                // false -> delta-fold recovery, which trusts the durable delta).
+                let index_log_durable = !raft_applying() && !wal_single_barrier();
                 let _ = self.index_log_store.append_delta(
                     request.shard_id,
                     items,
@@ -1592,11 +1593,21 @@ fn sync_parent_dir(path: &Path) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-/// TS_WAL_ONLY_SYNC: on the write/ack path, only the WAL takes a synchronous durability
-/// barrier; the served-index checkpoint write is issued but its fsync is deferred to the
-/// background flush / OS writeback (reconstructable from the WAL on recovery). Default OFF.
+/// TS_WAL_LEGACY_RECOVERY: emergency escape hatch. When set, the engine falls back to the
+/// legacy multi-barrier write path (WAL + data-page + served-index delta all fsync'd on the ack
+/// path) AND delta-fold recovery. Default OFF -> the single write-path durability barrier
+/// (WAL-only fsync) + base-only recovery is the DEFAULT. This exists solely so an operator can
+/// revert the default in the field without a rebuild; steady state runs single-barrier.
+pub(super) fn wal_legacy_recovery() -> bool {
+    env_flag_on("TS_WAL_LEGACY_RECOVERY")
+}
+
+/// On the write/ack path only the WAL takes a synchronous durability barrier; the served-index
+/// checkpoint write is issued but its fsync is deferred to the background flush / OS writeback
+/// (reconstructable from the WAL on recovery). Implied by the single-barrier default; disabled
+/// only by the TS_WAL_LEGACY_RECOVERY escape hatch.
 pub(super) fn wal_only_sync() -> bool {
-    env_flag_on("TS_WAL_ONLY_SYNC") || wal_single_barrier()
+    wal_single_barrier()
 }
 
 /// TS_WAL_SINGLE_BARRIER: the true SINGLE write-path durability barrier. Only the WAL takes a
@@ -1617,9 +1628,10 @@ pub(super) fn wal_only_sync() -> bool {
 ///    it advances), then replays the WAL tail from the watermark, re-deriving every post-dump
 ///    page EXACTLY ONCE. A page written but never fsync'd is rebuilt from its WAL command rather
 ///    than left dangling -- no page loss, no double-apply.
-/// Default OFF; when off the write and load paths are byte-for-byte unchanged.
+/// Default ON (the productionized write/recovery path). Set TS_WAL_LEGACY_RECOVERY=1 to fall
+/// back to the legacy multi-barrier write path + delta-fold recovery.
 pub(super) fn wal_single_barrier() -> bool {
-    env_flag_on("TS_WAL_SINGLE_BARRIER")
+    !wal_legacy_recovery()
 }
 
 fn env_flag_on(name: &str) -> bool {
@@ -1642,34 +1654,6 @@ fn env_flag_on(name: &str) -> bool {
 pub(super) struct ConfigLogEntry {
     pub after_seq: u64,
     pub config: Config,
-}
-
-/// TS_INDEXLOG_DEFER_SYNC: drop the served-index delta-log fdatasync from the synchronous
-/// write/ack path. The delta record is still APPENDED per write (so the served-index stream,
-/// its record counts, and every consumer of it -- gc / reclaim / manifest / reconcile / cold
-/// reload -- are byte-for-byte unchanged); only its fdatasync is deferred. Combined with
-/// TS_WAL_ONLY_SYNC this takes the ack path from three synchronous barriers (WAL + data-page +
-/// index-log) down to two (WAL + data-page): the WAL and the data pages stay durable per
-/// write, so no index reference can ever dangle at an un-synced page, and the durably-synced
-/// WAL rebuilds any lost index-log delta tail on replay. Default OFF; when off the write path
-/// is byte-for-byte unchanged.
-///
-/// NOTE (why not a full single barrier / dropping the data-page + served-index sync too):
-/// eviction / expiry / compaction decisions are recorded ONLY in the served-index delta, not
-/// in the WAL, so a pure WAL replay resurrects points that a background op had removed (proven
-/// by engine::tests::part2::reconcile_does_not_resurrect_evicted_feature_points_on_reload).
-/// Reaching one barrier therefore requires those served-index-only mutations to become
-/// WAL-reconstructable first; that is a separate, larger change and is intentionally NOT done
-/// here.
-pub(super) fn indexlog_defer_sync() -> bool {
-    matches!(
-        std::env::var("TS_INDEXLOG_DEFER_SYNC")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
 }
 
 fn next_temp_counter() -> u64 {

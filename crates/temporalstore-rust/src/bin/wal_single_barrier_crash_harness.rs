@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! WAL-replay recovery harness. Exercises the relaxed-durability write path (run with
-//! TS_INDEXLOG_DEFER_SYNC=1 + TS_WAL_ONLY_SYNC=1, where the served-index delta fdatasync is
-//! dropped from the ack path while the WAL + data pages stay durable per write) and, as a
-//! stronger stress, proves the WAL alone is self-sufficient: the WAL record embeds the full
-//! command payload, so startup replay from the last durable watermark rebuilds the served index
-//! and the page state.
+//! WAL-replay recovery harness. Exercises the single write-path durability barrier (the DEFAULT:
+//! only the WAL takes a synchronous fdatasync per write; the data-page fdatasync and the
+//! served-index delta fdatasync are both deferred, and recovery is base-only) and proves the WAL
+//! alone is self-sufficient: the WAL record embeds the full command payload, so startup replay
+//! from the last durable watermark rebuilds the served index and the page state. Set
+//! TS_WAL_LEGACY_RECOVERY=1 to exercise the legacy multi-barrier write path + delta-fold recovery.
 //!
 //! A plain SIGKILL / process::abort preserves the OS page cache, so un-fsync'd bytes survive it
 //! and would not exercise recovery. To faithfully model real power loss this harness also drops
