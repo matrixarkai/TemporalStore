@@ -353,7 +353,7 @@ impl TemporalEngine {
             return Ok(());
         }
         fs::create_dir_all(&self.index_dir)?;
-        // Ack-path served-index checkpoint. Under TS_WAL_ONLY_SYNC the durable barrier is
+        // Ack-path served-index checkpoint. Under the single-barrier default the durable barrier is
         // deferred (content + rename still issued): the WAL is durably synced before ack
         // and replay-on-load rebuilds the served index from it, so a stale-on-crash index
         // only costs a longer WAL replay, never an acked write. This is the served-index

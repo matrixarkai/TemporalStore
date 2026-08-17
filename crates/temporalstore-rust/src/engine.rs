@@ -1580,11 +1580,21 @@ fn sync_parent_dir(path: &Path) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-/// TS_WAL_ONLY_SYNC: on the write/ack path, only the WAL takes a synchronous durability
-/// barrier; the served-index checkpoint write is issued but its fsync is deferred to the
-/// background flush / OS writeback (reconstructable from the WAL on recovery). Default OFF.
+/// TS_WAL_LEGACY_RECOVERY: emergency escape hatch. When set, the engine falls back to the
+/// legacy multi-barrier write path (WAL + data-page + served-index delta all fsync'd on the ack
+/// path) AND delta-fold recovery. Default OFF -> the single write-path durability barrier
+/// (WAL-only fsync) + base-only recovery is the DEFAULT. This exists solely so an operator can
+/// revert the default in the field without a rebuild; steady state runs single-barrier.
+pub(super) fn wal_legacy_recovery() -> bool {
+    env_flag_on("TS_WAL_LEGACY_RECOVERY")
+}
+
+/// On the write/ack path only the WAL takes a synchronous durability barrier; the served-index
+/// checkpoint write is issued but its fsync is deferred to the background flush / OS writeback
+/// (reconstructable from the WAL on recovery). Implied by the single-barrier default; disabled
+/// only by the TS_WAL_LEGACY_RECOVERY escape hatch.
 pub(super) fn wal_only_sync() -> bool {
-    env_flag_on("TS_WAL_ONLY_SYNC") || wal_single_barrier()
+    wal_single_barrier()
 }
 
 /// TS_WAL_SINGLE_BARRIER: the true SINGLE write-path durability barrier. Only the WAL takes a
@@ -1606,9 +1616,10 @@ pub(super) fn wal_only_sync() -> bool {
 ///    fsync'd), then replays the WAL tail from the watermark, re-deriving every post-dump page
 ///    EXACTLY ONCE. A page written but never fsync'd is rebuilt from its WAL command rather than
 ///    left dangling -- no page loss, no double-apply.
-/// Default OFF; when off the write and load paths are byte-for-byte unchanged.
+/// Default ON (the productionized write/recovery path). Set TS_WAL_LEGACY_RECOVERY=1 to fall
+/// back to the legacy multi-barrier write path + delta-fold recovery.
 pub(super) fn wal_single_barrier() -> bool {
-    env_flag_on("TS_WAL_SINGLE_BARRIER")
+    !wal_legacy_recovery()
 }
 
 fn env_flag_on(name: &str) -> bool {

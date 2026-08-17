@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! WAL-replay recovery under TS_INDEXLOG_DEFER_SYNC (the index-log delta fdatasync is dropped
-//! from the ack path; the WAL + data pages stay durable per write). After a crash, EVERY acked
-//! write must be reconstructed -- the WAL is self-sufficient (it embeds the full command
-//! payload), so even if the deferred-fsync index-log tail AND, as a stronger stress, the pages
-//! are lost to a simulated power cut, replay rebuilds every key. Each phase runs in its own
-//! subprocess so the durability-mode env var never leaks into the rest of the suite.
+//! WAL-replay recovery under the single write-path durability barrier -- now the DEFAULT (only the
+//! WAL takes a synchronous fdatasync per write; the data-page fdatasync and the served-index delta
+//! fdatasync are both deferred, and recovery is base-only). After a crash, EVERY acked write must
+//! be reconstructed -- the WAL is self-sufficient (it embeds the full command payload), so even if
+//! the deferred-fsync index-log tail AND, as a stronger stress, the pages are lost to a simulated
+//! power cut, replay rebuilds every key. A final phase exercises the TS_WAL_LEGACY_RECOVERY escape
+//! hatch (legacy multi-barrier write + delta-fold recovery) so the fallback stays covered. Each
+//! phase runs in its own subprocess so any mode env var never leaks into the rest of the suite.
 
 use std::process::Command;
 
@@ -14,12 +16,11 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_wal_single_barrier_crash_harness")
 }
 
+// Default-path helpers (single-barrier + group-commit are the DEFAULT, so no mode env is set).
+// These focus on losing the deferred served-index delta log (its `drop-indexlog` kill point).
 fn populate(root: &str, keys: &str, flush_at: Option<&str>) {
     let mut cmd = Command::new(bin());
-    cmd.env("TS_INDEXLOG_DEFER_SYNC", "1")
-        .env("TS_WAL_ONLY_SYNC", "1")
-        .env("TS_GROUP_COMMIT", "1")
-        .args(["--mode", "populate", "--root", root, "--keys", keys]);
+    cmd.args(["--mode", "populate", "--root", root, "--keys", keys]);
     if let Some(f) = flush_at {
         cmd.args(["--flush-at", f]);
     }
@@ -32,7 +33,6 @@ fn populate(root: &str, keys: &str, flush_at: Option<&str>) {
 
 fn powerloss(root: &str, scope: &str) {
     let out = Command::new(bin())
-        .env("TS_INDEXLOG_DEFER_SYNC", "1")
         .args(["--mode", "powerloss", "--root", root, "--scope", scope])
         .output()
         .expect("powerloss should run");
@@ -45,8 +45,6 @@ fn powerloss(root: &str, scope: &str) {
 
 fn recover_ok(root: &str, keys: &str) {
     let out = Command::new(bin())
-        .env("TS_INDEXLOG_DEFER_SYNC", "1")
-        .env("TS_WAL_ONLY_SYNC", "1")
         .args(["--mode", "recover", "--root", root, "--keys", keys])
         .output()
         .expect("recover should run");
@@ -66,9 +64,9 @@ fn recover_ok(root: &str, keys: &str) {
     );
 }
 
-// TS_WAL_SINGLE_BARRIER helpers: the TRUE single barrier (per-write data-page fdatasync also
-// deferred) with base-only recovery. Each phase runs in its own subprocess so the mode env never
-// leaks into the rest of the suite.
+// Single-barrier helpers: the TRUE single barrier (per-write data-page fdatasync also deferred)
+// with base-only recovery -- now the DEFAULT. TS_WAL_SINGLE_BARRIER=1 is left set as an explicit
+// intent marker (it resolves to the same default behavior). Each phase runs in its own subprocess.
 fn populate_sb(root: &str, keys: &str, flush_at: Option<&str>) {
     let mut cmd = Command::new(bin());
     cmd.env("TS_WAL_SINGLE_BARRIER", "1")
@@ -257,4 +255,52 @@ fn wal_is_self_sufficient_when_all_non_wal_state_is_wiped() {
     populate(root, "300", None);
     powerloss(root, "wipe-nondurable");
     recover_ok(root, "300");
+}
+
+// Legacy escape-hatch helpers: TS_WAL_LEGACY_RECOVERY=1 restores the legacy multi-barrier write
+// path (WAL + data-page + delta all fsync'd per write) + delta-fold recovery. Kept covered so the
+// operator fallback does not rot.
+fn populate_legacy(root: &str, keys: &str, flush_at: Option<&str>) {
+    let mut cmd = Command::new(bin());
+    cmd.env("TS_WAL_LEGACY_RECOVERY", "1")
+        .args(["--mode", "populate", "--root", root, "--keys", keys]);
+    if let Some(f) = flush_at {
+        cmd.args(["--flush-at", f]);
+    }
+    let out = cmd.output().expect("populate_legacy should run");
+    assert!(
+        !out.status.success(),
+        "populate_legacy must end in an abrupt abort (crash simulation)"
+    );
+}
+
+fn recover_legacy_ok(root: &str, keys: &str) {
+    let out = Command::new(bin())
+        .env("TS_WAL_LEGACY_RECOVERY", "1")
+        .args(["--mode", "recover", "--root", root, "--keys", keys])
+        .output()
+        .expect("recover_legacy should run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("\"ok\":true"),
+        "legacy delta-fold recover reported data loss: stdout={stdout} stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("\"missing\":[]") && stdout.contains("\"mismatched\":[]"),
+        "legacy delta-fold recover lost or corrupted an acked write: {stdout}"
+    );
+}
+
+#[test]
+fn legacy_recovery_escape_hatch_delta_fold_recovers_every_ack() {
+    // The TS_WAL_LEGACY_RECOVERY fallback. A dump anchors a durable base at key 150 (pages fsync'd
+    // per write in legacy mode); the served-index delta is then lost. Delta-fold recovery folds the
+    // durable base and replays the WAL tail 151..300, so every acked write is restored -- proving
+    // the operator escape hatch still recovers cleanly.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    populate_legacy(root, "300", Some("150"));
+    powerloss(root, "drop-indexlog");
+    recover_legacy_ok(root, "300");
 }
