@@ -1701,6 +1701,48 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                                    {"error": "backend_error", "detail": str(exc)})
             return await _json(send, 200, _ok_body(result))
 
+        # ---- keyed recall via GET /v1/memory/by-key?identity_key=... (auth + context:retrieve) --
+        # PurchaseMemory keyed-upsert recall: the single current live value for an identity_key in a
+        # scope. Must precede the /v1/memory/<id> branch below so "by-key" is not treated as an id.
+        if method == "GET" and path == "/v1/memory/by-key":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _scope_denied(key_record, "context:retrieve")
+            if denied is not None:
+                return await _json(send, 403, denied)
+            params = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+
+            def _qk(name: str) -> Optional[str]:
+                values = params.get(name)
+                return values[0] if values else None
+
+            identity_key = _qk("identity_key")
+            if not identity_key:
+                return await _json(send, 400, {"error": "bad_request", "detail": "identity_key query param is required"})
+            query_scope: Json = {}
+            for field in ("user_id", "agent_id", "session_id"):
+                value = _qk(field)
+                if value:
+                    query_scope[field] = value
+            args = {"identity_key": identity_key, "scope": query_scope}
+            _apply_identity(args, key, tenant, account)
+            denied = _identity_denied(key_record, args)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(server.call_tool, "matrixark_get_memory_by_key", args), cfg.backend_timeout)
+            except asyncio.TimeoutError:
+                return await _json(send, 504, {"error": "backend_timeout",
+                                   "detail": f"backend did not respond within {cfg.backend_timeout}s"})
+            except Exception as exc:
+                return await _json(send, _classify_backend_error(exc),
+                                   {"error": "backend_error", "detail": str(exc)})
+            if result.get("found") is False:
+                return await _json(send, 404, _ok_body(result))
+            return await _json(send, 200, _ok_body(result))
+
         # ---- get / history via GET /v1/memory/<id>[/history] (auth + context:retrieve) -------
         # Single-memory read (mem0 get) and change history (mem0 history). The memory id is in the
         # path; tenant is pinned from the authenticated key (same isolation as every data route). The
@@ -1851,6 +1893,24 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         args = parsed.get("arguments") if isinstance(parsed.get("arguments"), dict) else parsed
         if not isinstance(args, dict):
             args = {}
+
+        # ---- optional PurchaseMemory TTL headers on /v1/ingest -------------------------------
+        # X-Expires-At (absolute unix seconds) / X-Ttl-Seconds (relative) are a header-form of the
+        # JSON body fields; the JSON body always wins when both are present.
+        if tool == "matrixark_ingest":
+            hmap = _headers_map(scope)
+            header_expires_at = hmap.get("x-expires-at")
+            if header_expires_at and "expires_at" not in args:
+                try:
+                    args["expires_at"] = float(header_expires_at)
+                except (TypeError, ValueError):
+                    pass
+            header_ttl = hmap.get("x-ttl-seconds")
+            if header_ttl and "ttl_seconds" not in args:
+                try:
+                    args["ttl_seconds"] = float(header_ttl)
+                except (TypeError, ValueError):
+                    pass
 
         records = args.get("records")
         messages = args.get("messages")
