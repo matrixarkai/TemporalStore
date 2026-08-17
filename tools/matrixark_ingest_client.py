@@ -50,7 +50,7 @@ import http.client
 import json
 import os
 from typing import Any, Optional
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 try:  # top-level (run from tools/) ...
     from matrixark_temporalstore_blob import content_hash, content_key, blob_uri
@@ -198,6 +198,31 @@ def _post_json(base_url: str, api_key: Optional[str], path: str, body: Json, tim
         raise RuntimeError(
             f"ingest POST {path} failed: HTTP {status}: {raw[:256]!r} "
             f"(content-addressed + idempotent — safe to retry the same call)")
+    try:
+        return json.loads(raw) if raw else {}
+    except (json.JSONDecodeError, ValueError):
+        return {"raw": raw.decode("utf-8", "replace")}
+
+
+def _get_json(base_url: str, api_key: Optional[str], path: str, timeout: float) -> Json:
+    """GET ``{base_url}{path}`` with an optional Bearer token; parse the JSON response. A 404 returns
+    the parsed body (callers inspect ``found``); other >=400 statuses raise."""
+    conn = _connect(base_url, timeout)
+    try:
+        conn.putrequest("GET", path)
+        if api_key:
+            conn.putheader("Authorization", f"Bearer {api_key}")
+        conn.endheaders()
+        resp = conn.getresponse()
+        raw = resp.read()
+        status = int(getattr(resp, "status", 0) or 0)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    if status >= 400 and status != 404:
+        raise RuntimeError(f"GET {path} failed: HTTP {status}: {raw[:256]!r}")
     try:
         return json.loads(raw) if raw else {}
     except (json.JSONDecodeError, ValueError):
@@ -357,5 +382,103 @@ def ingest_messages(messages: Any, *, provider: str = "auto",
     return _post_json(base_url, api_key, "/v1/ingest", body, timeout)
 
 
+def forget(*, user_id: str, agent_id: Optional[str] = None, session_id: Optional[str] = None,
+           base_url: Optional[str] = None, api_key: Optional[str] = None,
+           timeout: float = 60.0) -> dict:
+    """Delete ALL memory for a subject (mem0 ``delete_all``). ``subject = scope.user_id``; the server
+    requires ``confirm == user_id`` (exact match, no wildcard). POSTs ``/v1/forget``."""
+    if not user_id:
+        raise ValueError("forget requires user_id (the subject to forget)")
+    base_url = _resolve_base_url(base_url)
+    api_key = _resolve_api_key(api_key)
+    scope: Json = {"user_id": user_id}
+    if agent_id:
+        scope["agent_id"] = agent_id
+    if session_id:
+        scope["session_id"] = session_id
+    body: Json = {"scope": scope, "confirm": user_id}
+    return _post_json(base_url, api_key, "/v1/forget", body, timeout)
+
+
+def delete_memory(memory_id: str, *, base_url: Optional[str] = None,
+                  api_key: Optional[str] = None, timeout: float = 60.0) -> dict:
+    """Delete a single memory by id (mem0 ``delete``). ``memory_id`` is the ``event_id_hash`` returned
+    by ingest. POSTs ``/v1/delete``."""
+    if not memory_id:
+        raise ValueError("delete_memory requires a memory_id")
+    base_url = _resolve_base_url(base_url)
+    api_key = _resolve_api_key(api_key)
+    return _post_json(base_url, api_key, "/v1/delete", {"memory_id": str(memory_id)}, timeout)
+
+
+def get_all(*, user_id: Optional[str] = None, agent_id: Optional[str] = None,
+            session_id: Optional[str] = None, limit: Optional[int] = None,
+            base_url: Optional[str] = None, api_key: Optional[str] = None,
+            timeout: float = 60.0) -> dict:
+    """List a subject's active memories (mem0 ``get_all``). POSTs ``/v1/memories``. Forgotten/deleted
+    memories are excluded server-side."""
+    base_url = _resolve_base_url(base_url)
+    api_key = _resolve_api_key(api_key)
+    scope: Json = {}
+    if user_id:
+        scope["user_id"] = user_id
+    if agent_id:
+        scope["agent_id"] = agent_id
+    if session_id:
+        scope["session_id"] = session_id
+    body: Json = {}
+    if scope:
+        body["scope"] = scope
+    if limit is not None:
+        body["limit"] = int(limit)
+    return _post_json(base_url, api_key, "/v1/memories", body, timeout)
+
+
+def reset_memory(*, confirm: str = "RESET", base_url: Optional[str] = None,
+                 api_key: Optional[str] = None, timeout: float = 60.0) -> dict:
+    """Wipe ALL memory for the caller's tenant (mem0 ``reset``). POSTs ``/v1/reset`` with an explicit
+    ``confirm`` (defaults to the literal ``"RESET"`` sentinel the server accepts)."""
+    base_url = _resolve_base_url(base_url)
+    api_key = _resolve_api_key(api_key)
+    return _post_json(base_url, api_key, "/v1/reset", {"confirm": str(confirm)}, timeout)
+
+
+def get_memory(memory_id: str, *, base_url: Optional[str] = None,
+               api_key: Optional[str] = None, timeout: float = 60.0) -> dict:
+    """Fetch a single memory by id (mem0 ``get``). ``memory_id`` is the ``event_id_hash`` returned by
+    ingest. GETs ``/v1/memory/<id>``. A deleted/forgotten memory returns ``{found: false}``."""
+    if not memory_id:
+        raise ValueError("get_memory requires a memory_id")
+    base_url = _resolve_base_url(base_url)
+    api_key = _resolve_api_key(api_key)
+    return _get_json(base_url, api_key, f"/v1/memory/{quote(str(memory_id), safe='')}", timeout)
+
+
+def update_memory(memory_id: str, data: str, *, base_url: Optional[str] = None,
+                  api_key: Optional[str] = None, timeout: float = 60.0) -> dict:
+    """Update a memory's content (mem0 ``update``). Supersede: the new ``data`` is ingested in the
+    memory's own scope and the old id is tombstoned. POSTs ``/v1/update``."""
+    if not memory_id:
+        raise ValueError("update_memory requires a memory_id")
+    if not isinstance(data, str) or not data.strip():
+        raise ValueError("update_memory requires non-empty data")
+    base_url = _resolve_base_url(base_url)
+    api_key = _resolve_api_key(api_key)
+    return _post_json(base_url, api_key, "/v1/update", {"memory_id": str(memory_id), "data": data}, timeout)
+
+
+def memory_history(memory_id: str, *, base_url: Optional[str] = None,
+                   api_key: Optional[str] = None, timeout: float = 60.0) -> dict:
+    """Return the ordered change history for a memory id (mem0 ``history``): ingest -> update/supersede
+    -> delete, with timestamps. GETs ``/v1/memory/<id>/history``."""
+    if not memory_id:
+        raise ValueError("memory_history requires a memory_id")
+    base_url = _resolve_base_url(base_url)
+    api_key = _resolve_api_key(api_key)
+    return _get_json(base_url, api_key, f"/v1/memory/{quote(str(memory_id), safe='')}/history", timeout)
+
+
 __all__ = ["ingest_large_file", "ingest_text", "ingest_messages", "content_hash",
-           "content_key", "VALID_SHARING_SCOPES", "DEFAULT_BASE_URL"]
+           "content_key", "VALID_SHARING_SCOPES", "DEFAULT_BASE_URL",
+           "forget", "delete_memory", "get_all", "reset_memory",
+           "get_memory", "update_memory", "memory_history"]
