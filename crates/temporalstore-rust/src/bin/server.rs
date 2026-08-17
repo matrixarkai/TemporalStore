@@ -1743,6 +1743,24 @@ fn wire_matrixobject_durability(
     };
 
     if !local_state_present && latest > 0 {
+        // TODO(S1 / checkpoint-recovery): this NODE-LOCAL matrixobject durability path still
+        // recovers via full WAL replay from seq 0 (O(all history)) and never publishes a
+        // checkpoint. The lazy checkpoint substrate now exists generically:
+        //   * `SharedStoreReplicator<O>::publish_checkpoint` / `restore_index_and_page_addresses`
+        //     are generic over `O: ObjectStore` (see shared_store.rs), and
+        //   * the NETWORKED path `wire_matrixobject_networked_durability` already does exactly the
+        //     target flow: restore index + lazy slab address map, replay only the WAL tail, and
+        //     publish a checkpoint on start.
+        // To close S1 for this backend: (a) publish a checkpoint on start when `local_state_present`
+        // (mirror wire_matrixobject_networked_durability's publish block), and (b) here, replace
+        // `replay_wal(shard_id, 0, ..)` with
+        //     `replicator.restore_index_and_page_addresses(shard_id, engine, &engine.block_store())`
+        // then `replay_wal(shard_id, manifest.checkpoint_wal_index, ..)`, falling back to a
+        // full replay only on `CheckpointNotFound`. `MatrixObjectObjectStore` implements
+        // `ObjectStore`, so a `SharedSlabSource` over it (analogous to `MatrixObjectSlabSource`)
+        // is all that the generic `restore_index_and_page_addresses_with` needs. Requires the
+        // `matrixobject` feature build (private crate) to land + test end-to-end, so it is
+        // deferred to a dedicated pass; recovery stays correct here today, just O(history).
         match rt.block_on(replicator.replay_wal(shard_id, 0, engine)) {
             Ok(report) => println!(
                 "recovered shard {shard_id} from matrixobject shared storage at {store_dir}: {} WAL entries replayed (through index {})",

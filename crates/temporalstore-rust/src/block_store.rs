@@ -315,6 +315,20 @@ pub enum BlockStoreBandState {
     Purged,
 }
 
+/// Metadata for a SEALED band whose bytes live in shared storage and are restored lazily.
+/// Passed to [`LocalBlockStore::install_lazy_checkpoint_bands`] so a lazy-restore installs
+/// complete band descriptors before the first on-demand slab fetch.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LazyCheckpointBand {
+    pub page_slab_id: u64,
+    pub physical_bytes: u64,
+    pub logical_bytes: u64,
+    pub first_page_id: Option<u64>,
+    pub last_page_id: Option<u64>,
+    pub created_unix_ms: Option<u64>,
+    pub updated_unix_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreBandDescriptor {
     #[serde(alias = "extent_id", alias = "zone_id")]
@@ -775,6 +789,64 @@ impl LocalBlockStore {
             },
         );
         persist_band_manifest(&inner.root, &inner.bands)?;
+        Ok(())
+    }
+
+    /// Install SEALED band descriptors for the slabs a lazy checkpoint restore backs from shared
+    /// storage. The slab bytes are NOT local yet (they are fetched on demand through the attached
+    /// shared read-through), but a GC/compaction cycle running between restore and the first fetch
+    /// must still see these sealed bands, or it accounts on an incomplete picture and could
+    /// reclaim prematurely. Recording them here makes `band_summary()`/`band_descriptors()`
+    /// complete immediately after restore. Any slab id that is the current active slab, or already
+    /// has a descriptor (e.g. it was fetched or is local), is left untouched. Call AFTER
+    /// [`reserve_lazy_checkpoint_range`] so the reserved slab is the active one and every
+    /// checkpoint slab is correctly sealed.
+    pub fn install_lazy_checkpoint_bands(
+        &self,
+        bands: &[LazyCheckpointBand],
+    ) -> Result<(), BlockStoreError> {
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
+        let root = inner.root.clone();
+        let active = inner.page_slab_id;
+        let mut changed = false;
+        for band in bands {
+            // Never touch the active (reserved) slab — it holds live local writes.
+            if band.page_slab_id == active {
+                continue;
+            }
+            // If the slab is materialized locally (already fetched / a real local slab), its
+            // existing descriptor reflects real on-disk bytes and is authoritative — leave it.
+            if slab_path(&root, band.page_slab_id).exists() {
+                continue;
+            }
+            // Lazily-backed checkpoint slab: install (or replace a fresh-store placeholder — a
+            // freshly opened block store seeds an empty Active descriptor for slab 0, which
+            // `reserve_lazy_checkpoint_range` then seals; that stale empty descriptor must be
+            // overwritten with the checkpoint's real band metadata, not skipped) a complete
+            // SEALED descriptor so accounting is correct before any fetch.
+            let descriptor = BlockStoreBandDescriptor {
+                band_id: band_id_for_slab(band.page_slab_id),
+                page_slab_id: band.page_slab_id,
+                state: BlockStoreBandState::Sealed,
+                physical_bytes: band.physical_bytes,
+                logical_bytes: band.logical_bytes,
+                created_unix_ms: band.created_unix_ms,
+                updated_unix_ms: band.updated_unix_ms,
+                first_page_id: band.first_page_id,
+                last_page_id: band.last_page_id,
+                readable_prefix_physical_bytes: band.physical_bytes,
+                has_corruption: false,
+                first_error_offset: None,
+                first_error: None,
+            };
+            if inner.bands.get(&band.page_slab_id) != Some(&descriptor) {
+                inner.bands.insert(band.page_slab_id, descriptor);
+                changed = true;
+            }
+        }
+        if changed {
+            persist_band_manifest(&inner.root, &inner.bands)?;
+        }
         Ok(())
     }
 

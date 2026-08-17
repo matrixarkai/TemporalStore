@@ -15,7 +15,7 @@ use temporalstore_snapshot::object_store::{
 };
 use thiserror::Error;
 
-use crate::block_store::{BlockStoreError, LocalBlockStore, SharedSlabSource};
+use crate::block_store::{BlockStoreError, LazyCheckpointBand, LocalBlockStore, SharedSlabSource};
 use crate::engine::TemporalEngine;
 use crate::sdk::{self, v1};
 use crate::types::{Command, ExecuteRequest, ShardId, Status};
@@ -40,6 +40,13 @@ pub enum SharedStoreReplicationError {
     },
     #[error("no shared-store checkpoint found for shard {0}")]
     CheckpointNotFound(ShardId),
+    #[error(
+        "checkpoint for shard {shard_id} references live slab {page_slab_id} that was not uploaded; refusing to publish a manifest that would lose durable pages"
+    )]
+    CheckpointSlabNotDurable {
+        shard_id: ShardId,
+        page_slab_id: u64,
+    },
     #[error("replicated command failed at WAL index {wal_index}: {status:?}")]
     ApplyFailed { wal_index: u64, status: Status },
     /// The durable single-writer fence rejected this operation: a newer owner (higher
@@ -124,6 +131,21 @@ pub struct SharedStorePageSlab {
     pub key: String,
     pub byte_size: u64,
     pub sha256: String,
+    // Per-slab SEALED-band metadata carried so a lazy restore can install complete band
+    // descriptors (physical/logical bytes + page-id range) BEFORE the first on-demand slab
+    // fetch, keeping GC/compaction accounting from under-counting sealed shared bands between
+    // restore and first fetch. All default so older manifests (without these fields) still load;
+    // `byte_size` above is the slab's physical byte size.
+    #[serde(default)]
+    pub logical_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_page_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_page_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_unix_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_unix_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -711,6 +733,12 @@ where
         // R2 single-writer fence: a checkpoint publish is a durable-frontier advance, so a
         // superseded stale owner must be rejected here just as on a WAL append.
         self.enforce_fence(shard_id).await?;
+        // Durability barrier: fsync any bulk-deferred page bytes and persist the band manifest
+        // BEFORE capturing the slab set, mirroring the local dump path
+        // (bucket_dump_manifest_methods) which fsyncs pages+WAL before recording slab ids. Without
+        // this a relaxed (bulk) writer could enumerate a slab whose tail bytes are not yet on disk,
+        // uploading a torn page or racing a not-yet-durable slab into the checkpoint.
+        block_store.sync_durable()?;
         let checkpoint_id = uuid::Uuid::new_v4().to_string();
         let prefix = self.checkpoint_prefix(shard_id, &checkpoint_id);
         let index_key = format!("{prefix}index/shard.index.json");
@@ -719,19 +747,51 @@ where
             .put(&index_key, Bytes::from(index.clone()))
             .await?;
 
+        // Snapshot the local band descriptors so each uploaded slab carries its sealed-band
+        // metadata (logical bytes + page-id range) into the manifest for S3 restore-time install.
+        let band_by_slab: BTreeMap<u64, _> = block_store
+            .band_descriptors()
+            .into_iter()
+            .map(|band| (band.page_slab_id, band))
+            .collect();
         let mut page_slabs = Vec::new();
+        let mut uploaded_slab_ids = std::collections::BTreeSet::new();
         for page_slab_id in block_store.slab_ids()? {
             let bytes = block_store.read_slab(page_slab_id)?;
             let key = format!("{prefix}page_segments/page_segment_{page_slab_id:020}.seg");
             self.object_store
                 .put(&key, Bytes::from(bytes.clone()))
                 .await?;
+            uploaded_slab_ids.insert(page_slab_id);
+            let band = band_by_slab.get(&page_slab_id);
             page_slabs.push(SharedStorePageSlab {
                 page_slab_id,
                 key,
                 byte_size: bytes.len() as u64,
                 sha256: sha256_hex(&bytes),
+                logical_bytes: band.map(|band| band.logical_bytes).unwrap_or(0),
+                first_page_id: band.and_then(|band| band.first_page_id),
+                last_page_id: band.and_then(|band| band.last_page_id),
+                created_unix_ms: band.and_then(|band| band.created_unix_ms),
+                updated_unix_ms: band.and_then(|band| band.updated_unix_ms),
             });
+        }
+
+        // Completeness barrier: every slab the served index actually references must be covered by
+        // an uploaded slab before the manifest is written, so a restore never resolves a live page
+        // to a slab that is absent from the checkpoint. The synthetic in-memory hot-page slab
+        // (u64::MAX) is folded into the exported index, not a durable slab, so it is excluded.
+        const HOT_PAGE_SLAB_ID: u64 = u64::MAX;
+        for referenced in engine.live_page_slab_ids(shard_id) {
+            if referenced == HOT_PAGE_SLAB_ID {
+                continue;
+            }
+            if !uploaded_slab_ids.contains(&referenced) {
+                return Err(SharedStoreReplicationError::CheckpointSlabNotDurable {
+                    shard_id,
+                    page_slab_id: referenced,
+                });
+            }
         }
 
         let manifest = SharedStoreCheckpointManifest {
@@ -1594,6 +1654,24 @@ where
         // and new writes never overwrite a slab still served lazily from shared storage.
         if !manifest.page_slabs.is_empty() {
             block_store.reserve_lazy_checkpoint_range(max_slab_id, manifest.next_page_id)?;
+            // S3: install SEALED band descriptors for the lazily-backed checkpoint slabs so
+            // GC/compaction accounting is complete immediately after restore, before the first
+            // on-demand fetch materializes any slab locally. Runs AFTER the reserve so the freshly
+            // reserved slab stays the active band and every checkpoint slab is sealed.
+            let lazy_bands: Vec<LazyCheckpointBand> = manifest
+                .page_slabs
+                .iter()
+                .map(|slab| LazyCheckpointBand {
+                    page_slab_id: slab.page_slab_id,
+                    physical_bytes: slab.byte_size,
+                    logical_bytes: slab.logical_bytes,
+                    first_page_id: slab.first_page_id,
+                    last_page_id: slab.last_page_id,
+                    created_unix_ms: slab.created_unix_ms,
+                    updated_unix_ms: slab.updated_unix_ms,
+                })
+                .collect();
+            block_store.install_lazy_checkpoint_bands(&lazy_bands)?;
         }
         Ok(manifest)
     }
@@ -2369,6 +2447,149 @@ mod tests {
                 value: Some(b"wal-value".to_vec())
             }
         );
+    }
+
+    #[tokio::test]
+    async fn s4_publish_checkpoint_covers_every_index_referenced_slab() {
+        // S4 completeness barrier: every slab the served index references must be uploaded and
+        // recorded in the manifest before it is written, so a restore never resolves a live page
+        // to a slab absent from the checkpoint.
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        for i in 0..8 {
+            primary.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("k{i}"),
+                    value: vec![b'v'; 512],
+                },
+            });
+        }
+        let (_store, replicator) = test_shared_store(dir.path());
+        let manifest = replicator
+            .publish_checkpoint(1, 1, &primary, &primary.block_store())
+            .await
+            .unwrap();
+        let manifest_slab_ids: std::collections::BTreeSet<u64> =
+            manifest.page_slabs.iter().map(|s| s.page_slab_id).collect();
+        for referenced in primary.live_page_slab_ids(1) {
+            if referenced == u64::MAX {
+                continue;
+            }
+            assert!(
+                manifest_slab_ids.contains(&referenced),
+                "index-referenced slab {referenced} must be covered by the checkpoint manifest"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn s4_publish_checkpoint_rejects_referenced_slab_not_durable() {
+        // S4: if the served index references a slab that is NOT present as a durable/uploaded
+        // slab, publish must FAIL rather than write a manifest that would lose those pages.
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "before".to_string(),
+                value: b"snapshot-value".to_vec(),
+            },
+        });
+        // The write landed in on-disk slab 0 and the index references it.
+        assert!(primary.live_page_slab_ids(1).contains(&0));
+        // Simulate a lost/never-durable slab: remove slab 0 from disk so slab_ids() no longer
+        // enumerates it while the in-memory index still references it.
+        let slab0 = dir
+            .path()
+            .join("primary-pages")
+            .join("page_segment_00000000000000000000.seg");
+        std::fs::remove_file(&slab0).unwrap();
+        assert!(!primary.block_store().slab_ids().unwrap().contains(&0));
+
+        let (_store, replicator) = test_shared_store(dir.path());
+        let err = replicator
+            .publish_checkpoint(1, 1, &primary, &primary.block_store())
+            .await
+            .expect_err("publish must reject a checkpoint that would drop a referenced slab");
+        assert!(
+            matches!(
+                err,
+                SharedStoreReplicationError::CheckpointSlabNotDurable {
+                    shard_id: 1,
+                    page_slab_id: 0
+                }
+            ),
+            "expected CheckpointSlabNotDurable, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn s3_lazy_restore_installs_complete_sealed_band_descriptors_before_any_fetch() {
+        // S3: after a lazy metadata restore, the sealed-band descriptors for the checkpoint's
+        // lazily-backed slabs are installed immediately, so GC/compaction accounting is complete
+        // BEFORE the first on-demand slab fetch (previously they under-counted until a fetch).
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "before".to_string(),
+                value: b"snapshot-value".to_vec(),
+            },
+        });
+        let primary_band = primary
+            .block_store()
+            .band_descriptors()
+            .into_iter()
+            .find(|b| b.page_slab_id == 0)
+            .expect("primary must have a band for slab 0");
+        assert!(primary_band.logical_bytes > 0);
+
+        let (_store, replicator) = test_shared_store(dir.path());
+        let manifest = replicator
+            .publish_checkpoint(1, 1, &primary, &primary.block_store())
+            .await
+            .unwrap();
+        // The manifest carries the per-slab band metadata.
+        let slab0 = manifest
+            .page_slabs
+            .iter()
+            .find(|s| s.page_slab_id == 0)
+            .expect("manifest must record slab 0");
+        assert_eq!(slab0.logical_bytes, primary_band.logical_bytes);
+
+        let follower = test_engine(dir.path(), "follower");
+        replicator
+            .restore_index_and_page_addresses(1, &follower, &follower.block_store())
+            .await
+            .unwrap();
+
+        // No slab has been fetched yet...
+        assert_eq!(follower.block_store().stats().shared_slab_fetches, 0);
+        assert!(
+            !follower.block_store().slab_ids().unwrap().contains(&0),
+            "checkpoint slab 0 must not be materialized locally yet"
+        );
+        // ...but the sealed band descriptor for slab 0 is already present and complete.
+        let follower_band = follower
+            .block_store()
+            .band_descriptors()
+            .into_iter()
+            .find(|b| b.page_slab_id == 0)
+            .expect("restore must install a band descriptor for the lazily-backed slab 0");
+        assert_eq!(follower_band.state, crate::block_store::BlockStoreBandState::Sealed);
+        assert_eq!(follower_band.logical_bytes, primary_band.logical_bytes);
+        assert_eq!(follower_band.physical_bytes, slab0.byte_size);
+        // The band summary counts the sealed shared band immediately (accounting is complete).
+        assert!(
+            follower.block_store().zone_summary().sealed_bands >= 1,
+            "sealed shared band must be counted before any lazy fetch"
+        );
+        assert_eq!(follower.block_store().stats().shared_slab_fetches, 0);
     }
 
     #[tokio::test]
