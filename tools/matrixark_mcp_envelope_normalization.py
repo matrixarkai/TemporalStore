@@ -16,7 +16,7 @@ try:
         normalize_record_storage_options,
         normalize_storage_options,
     )
-    from tools.matrixark_mcp_validation import optional_object, require_messages
+    from tools.matrixark_mcp_validation import fold_mem0_scope_aliases, optional_object, require_messages
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_errors import MatrixArkError
     from matrixark_mcp_identity import now_ms
@@ -26,7 +26,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         normalize_record_storage_options,
         normalize_storage_options,
     )
-    from matrixark_mcp_validation import optional_object, require_messages
+    from matrixark_mcp_validation import fold_mem0_scope_aliases, optional_object, require_messages
 
 
 Json = dict[str, Any]
@@ -34,7 +34,7 @@ Json = dict[str, Any]
 
 def normalize_envelope(args: Json, *, default_kind: str) -> Json:
     messages = require_messages(args)
-    scope = optional_object(args, "scope")
+    scope = fold_mem0_scope_aliases(args, optional_object(args, "scope"))
     metadata = optional_object(args, "metadata")
     kind = args.get("kind", default_kind)
     if kind not in {"message", "feedback", "resource", "skill", "business_data"}:

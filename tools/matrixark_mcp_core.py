@@ -2533,6 +2533,10 @@ def normalize_envelope(args: Json, *, default_kind: str) -> Json:
         raise MatrixArkError("kind is invalid")
     messages = resolve_ingest_messages(args, kind)
     scope = optional_object(args, "scope")
+    # Fold mem0-style top-level identity kwargs (user_id / agent_id / run_id)
+    # into the canonical scope BEFORE anything reads it. Canonical scope fields
+    # win over aliases; byte-identical for callers that pass a full scope.
+    scope = fold_mem0_scope_aliases(args, scope)
     metadata = optional_object(args, "metadata")
     ingestion_time_ms = args.get("ingestion_time_ms", metadata.get("ingestion_time_ms"))
     if ingestion_time_ms in (None, ""):

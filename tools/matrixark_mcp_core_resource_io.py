@@ -148,6 +148,11 @@ def _cloud_resource_prefix(args: Json, envelope: Json) -> str:
         safe_identifier(str(scope.get("tenant_id") or "tenant"), default="tenant"),
         safe_identifier(str(scope.get("user_id") or "user"), default="user"),
     ]
+    # mem0 agent_id: per-agent raw-blob isolation, appended only when supplied so
+    # existing (agent-less) layouts are byte-identical.
+    agent_id = str(scope.get("agent_id") or "")
+    if agent_id:
+        parts.append(safe_identifier(agent_id, default="agent"))
     session_id = str(scope.get("session_id") or "")
     if session_id:
         parts.append(safe_identifier(session_id, default="session"))

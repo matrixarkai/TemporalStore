@@ -160,18 +160,22 @@ def registry_access_scope(scope: Json, *, sharing_scope: str = "private_user") -
         "tenant_id": str(scope.get("tenant_id") or ""),
         "team": str(scope.get("team") or ""),
         "user_id": str(scope.get("user_id") or ""),
+        "agent_id": str(scope.get("agent_id") or ""),
         "session_id": str(scope.get("session_id") or ""),
         "account_hash": scope.get("account_hash", 0),
         "tenant_hash": scope.get("tenant_hash", 0),
         "user_hash": scope.get("user_hash", 0),
+        "agent_hash": scope.get("agent_hash", 0),
         "session_hash": scope.get("session_hash", 0),
         "scope_key": scope.get("scope_key", ""),
         "sharing_scope": sharing_scope,
     }
     if sharing_scope == "tenant_shared":
         access["user_id"] = ""
+        access["agent_id"] = ""
         access["session_id"] = ""
         access["user_hash"] = 0
+        access["agent_hash"] = 0
         access["session_hash"] = 0
         tenant_hash = int(access.get("tenant_hash") or 0)
         access["scope_key"] = scope_key_from_hashes(tenant_hash) if tenant_hash else ""
@@ -179,9 +183,11 @@ def registry_access_scope(scope: Json, *, sharing_scope: str = "private_user") -
         access["tenant_id"] = ""
         access["team"] = ""
         access["user_id"] = ""
+        access["agent_id"] = ""
         access["session_id"] = ""
         access["tenant_hash"] = 0
         access["user_hash"] = 0
+        access["agent_hash"] = 0
         access["session_hash"] = 0
         access["scope_key"] = "global|shared|"
     return access
