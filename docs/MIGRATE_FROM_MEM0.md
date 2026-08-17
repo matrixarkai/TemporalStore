@@ -54,6 +54,56 @@ ingest client:
 The shim is stdlib-only (`http.client` + `json`) and reuses
 `matrixark_ingest_client`'s connection helpers.
 
+### `add()` returns the mem0 `results` envelope (literal drop-in)
+
+`add()` returns the mem0-shaped result **and** keeps MatrixArk's fields, so both accessors work:
+
+```python
+r = m.add("I prefer dark mode", user_id="alice")
+r["results"][0]["id"]       # "<event_id_hash>"   (strict mem0 callers)
+r["results"][0]["event"]    # "ADD" | "UPDATE" | "NONE"
+r["results"][0]["memory"]   # the ingested text
+r["event_id_hash"]          # still present (backward compatible)
+```
+
+The `event` maps the keyed-upsert outcome (see below): `ADD` for a new memory, `UPDATE` when a
+keyed write superseded a prior value, `NONE` when a keyed write was rejected by the rank guard
+(`id` is then the surviving record).
+
+---
+
+## PurchaseMemory: TTL + keyed-upsert (the PurchaseMemory migration story)
+
+Two mem0-adjacent primitives that map onto `add()` kwargs (all optional and additive):
+
+```python
+# Per-record TTL — an ephemeral memory that auto-expires and is NEVER summarized:
+m.add("one-time passcode 4821", user_id="alice", ttl=300)          # expires in 300s
+m.add("promo valid this week", user_id="alice", expires_at=1_786_000_000)  # absolute unix seconds
+
+# Keyed-upsert with a truth-rank guard — a single current value per logical fact:
+m.add("email is a@x.com", user_id="alice", identity_key="user.email", truth_class="reported")
+m.add("email is b@x.com", user_id="alice", identity_key="user.email", truth_class="asserted")
+#   → supersedes (asserted 3 >= reported 2); recall now returns b@x.com. event == "UPDATE"
+m.add("email might be c@x.com", user_id="alice", identity_key="user.email", truth_class="inferred")
+#   → rank-guarded (inferred 1 < asserted 3): NO write; b@x.com survives. event == "NONE"
+```
+
+| Behavior | How |
+|---|---|
+| **TTL / expiry** | `ttl` (relative seconds) or `expires_at` (absolute unix seconds). The whole ingest closure is stamped ephemeral: it stops surfacing from `search` / `get_all` once expired, is **excluded from summaries/rollups**, and is lazily tombstoned + purged (durable, crash-safe, survives reload). |
+| **retention cutoff** | Send `retention_cutoff_ts` on the raw `/v1/ingest` body to hide/reclaim records in the subject scope older than a cutoff. |
+| **keyed-upsert** | `identity_key` + `truth_class`. A new write with rank `>=` the existing keyed value supersedes it (old closure-tombstoned, `superseded_by` set); a lower rank is rejected (no-op). |
+| **recall by key** | `GET /v1/memory/by-key?identity_key=…` returns the single current live keyed value. |
+
+Truth-rank table (override via `MATRIXARK_TRUTH_RANK` env JSON): `asserted=3, reported=2,
+inferred=1, unknown=0`.
+
+> NOTE: expiry is enforced at the application layer (read-time filter + lazy tombstone-purge),
+> correct for every backend. Native engine-level key-expiry (`ttl_ms`) wiring on the Rust temporal
+> backend is a documented TODO — records already carry `expires_at_ms`, which the temporal read
+> path honors via its retention filter.
+
 ---
 
 ## Memory management: get / update / history / delete / forget / get_all / reset
@@ -153,13 +203,15 @@ canonical `scope` object. The mapping is:
 
 Empty identity fields are omitted from the request body.
 
-`add()` posts:
+`add()` posts (PurchaseMemory kwargs — `expires_at` / `ttl` → `ttl_seconds` / `identity_key` /
+`truth_class` — are added to the body only when supplied):
 
 ```json
 { "kind": "message",
   "messages": [ ... ],
   "scope": { "user_id": "...", "agent_id": "...", "session_id": "<run_id>" },
-  "metadata": { ... } }
+  "metadata": { ... },
+  "expires_at": 1786000000, "identity_key": "user.email", "truth_class": "asserted" }
 ```
 
 `search()` posts to `POST /v1/retrieve`:
