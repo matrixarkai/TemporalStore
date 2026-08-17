@@ -140,6 +140,54 @@ SECONDARY_INDEX_PRIORITY_PREFIXES = (
     "segment_topic:",
     "keyword:",
 )
+# ------------------------------------------------------------------------------------------------
+# Secondary-index dimension pruning (Lever 2).
+#
+# One message turn emits ~87 context_index postings across ~21 dimensions, but the majority index on
+# CONSTANT internal routing/policy metadata (every record carries the same value) that is not useful
+# for semantic retrieval -- they dominate the posting COUNT without adding recall. Dropping these
+# non-semantic dimensions from posting materialization cuts the posting count ~80% while keeping every
+# semantic dimension used to recall facts (entity_type, entity_name, segment_topic, event_type,
+# classification, status, source_role, source_type, keyword, and skill/resource/topology dims).
+#
+# Gated behind MATRIXARK_PRUNE_INTERNAL_INDEX_DIMENSIONS (default ON). Flag OFF reproduces today's
+# dimensions exactly. Recall is validated by test_prune_internal_index_dimensions (must stay 5/5); any
+# dimension whose removal drops recall must be taken OFF this list and kept.
+PRUNE_INTERNAL_INDEX_DIMENSIONS = os.environ.get("MATRIXARK_PRUNE_INTERNAL_INDEX_DIMENSIONS", "1").strip().lower() in {"1", "true", "yes", "on"}
+INTERNAL_INDEX_DIMENSIONS = frozenset({
+    "memory_selection_policy",
+    "memory_scope",
+    "source_memory_scope",
+    "memory_layer",
+    "source_memory_layer",
+    "session_continuity",
+    "source_session_continuity",
+    "extraction_phase",
+    "profile_promotion_policy",
+    "profile_memory_class",
+    "profile_memory_kind",
+    "profile_entity_current",
+})
+
+
+def prune_internal_index_terms(terms):
+    """Drop non-semantic internal-metadata index dimensions from a term collection when the flag is ON.
+
+    Terms are ``"<dimension>:<value>"``; the dimension is the substring before the first ``:``. Returns
+    a set of the retained terms. No-op (returns the terms as a set) when the flag is OFF."""
+    if not PRUNE_INTERNAL_INDEX_DIMENSIONS:
+        return set(terms)
+    kept = set()
+    for term in terms:
+        if not term:
+            continue
+        dimension = term.split(":", 1)[0]
+        if dimension in INTERNAL_INDEX_DIMENSIONS:
+            continue
+        kept.add(term)
+    return kept
+
+
 MAX_RESOURCE_FACT_CHUNKS = int(os.environ.get("MATRIXARK_MAX_RESOURCE_FACT_CHUNKS", "8"))
 MAX_RESOURCE_FACTS_PER_RESOURCE = int(os.environ.get("MATRIXARK_MAX_RESOURCE_FACTS_PER_RESOURCE", "8"))
 MAX_RESOURCE_FACTS_PER_CHUNK = int(os.environ.get("MATRIXARK_MAX_RESOURCE_FACTS_PER_CHUNK", "2"))
@@ -3296,7 +3344,7 @@ def candidate_index_terms(
         terms.add(context_index_name("source_type", "skill"))
         terms.add(context_index_name("resource_type", "skill"))
         terms.update(metadata_index_terms(record.get("metadata", {})))
-    return {term for term in terms if term}
+    return prune_internal_index_terms(term for term in terms if term)
 
 
 def ordered_normalized_role_list(raw: Any) -> list[str]:

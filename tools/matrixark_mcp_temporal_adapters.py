@@ -370,6 +370,16 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         self.append_many([record])
 
     def append_many(self, records: list[Json]) -> None:
+        # TODO(engine): record-metadata interning (see encode_interned_records in
+        # matrixark_mcp_local_adapter) is intentionally NOT applied on the backend write path. Unlike
+        # the pure-local JSONL log -- where the codec sits entirely at the Python (de)serialization
+        # boundary and every read choke point re-expands -- the native backend consumes storage_route /
+        # placement_key for real routing and placement decisions, so replacing those with interned
+        # tokens here would hide routing metadata from the engine, and the inverse expansion would have
+        # to live inside the native layer (out of scope; do not touch crates). Lever 2 (index-dimension
+        # pruning) DOES apply to the backend because it prunes shared candidate_index_terms upstream of
+        # this writer, so fewer postings are materialized into the engine as well.
+        #
         # Persist serving records to the durable TemporalStore backend.
         #
         # MatrixArkLocalAdapter.append/append_many only mirror records into a
