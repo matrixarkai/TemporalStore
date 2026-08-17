@@ -48,6 +48,20 @@ _DEFAULT_SCOPES = [
 ]
 
 
+def _flatten_csv(values: list[str] | None) -> list[str]:
+    """Flatten repeated + comma-separated flag values into a de-duplicated sorted list.
+
+    So both ``--scope context:ingest --scope context:retrieve`` and the comma form
+    ``--scope context:ingest,context:retrieve`` yield the same two scopes."""
+    out: list[str] = []
+    for chunk in values or []:
+        for item in str(chunk).split(","):
+            item = item.strip()
+            if item:
+                out.append(item)
+    return sorted(set(out))
+
+
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -63,16 +77,18 @@ def mint(args: argparse.Namespace) -> dict:
     api_key = make_api_key(args.prefix)
     api_key_hash = secret_hash(api_key)
     api_key_id = f"key_{api_key_hash[:24]}"
+    scopes = _flatten_csv(args.scopes) or sorted(set(_DEFAULT_SCOPES))
     record = {
         "record_type": "matrixark_api_key",
         "api_key_id": api_key_id,
         "api_key_hash": api_key_hash,
         "account_id": args.account_id,
         "tenant_id": args.tenant_id,
-        "scopes": sorted(set(args.scopes or _DEFAULT_SCOPES)),
+        "scopes": scopes,
         "role": args.role,
         "display_name": args.display_name or f"{args.tenant_id} key",
-        "allowed_user_ids": sorted(set(args.allowed_user_ids or [])),
+        "allowed_user_ids": _flatten_csv(args.allowed_user_ids),
+        "allowed_session_ids": _flatten_csv(args.allowed_session_ids),
         "status": args.status,
         "expires_at_ms": args.expires_at_ms,
         "created_at_ms": _now_ms(),
@@ -103,10 +119,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--display-name", dest="display_name", default="")
     parser.add_argument("--status", default="active", choices=["active", "revoked"])
     parser.add_argument("--expires-at-ms", dest="expires_at_ms", type=int, default=None)
-    parser.add_argument("--scope", dest="scopes", action="append", help="repeatable MatrixArk scope")
     parser.add_argument(
-        "--allowed-user-id", dest="allowed_user_ids", action="append",
-        help="repeatable; restrict the key to these user_ids",
+        "--scope", "--scopes", dest="scopes", action="append",
+        help="MatrixArk scope; repeatable and/or comma-separated (default: all four context scopes)",
+    )
+    parser.add_argument(
+        "--allowed-user-id", "--allowed-user-ids", dest="allowed_user_ids", action="append",
+        help="restrict the key to these user_ids; repeatable and/or comma-separated",
+    )
+    parser.add_argument(
+        "--allowed-session-id", "--allowed-session-ids", dest="allowed_session_ids", action="append",
+        help="restrict the key to these session_ids; repeatable and/or comma-separated",
     )
     parser.add_argument("--store", default="", help="JSONL keystore path (hashed records only)")
     args = parser.parse_args(argv)

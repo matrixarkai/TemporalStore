@@ -6,6 +6,8 @@ quota 413, health probes, blob stream proxy, and `/api/*` back-compat — pure-P
 import asyncio
 import json
 import os
+import tempfile
+import time
 import unittest
 
 try:
@@ -635,6 +637,280 @@ class DevDefaultAuthTest(unittest.TestCase):
             self.assertTrue(any("WITHOUT authentication" in m for m in cap.output))
         # Second build in the same process does NOT warn again (once per process).
         self.assertTrue(gw._AUTH_WARNED["done"])
+
+
+class EnforcedScopeEnforcementTest(unittest.TestCase):
+    """MATRIXARK_AUTH_ENFORCED=1: per-key `scopes` + `allowed_user_ids`/`allowed_session_ids`
+    enforced at the edge. 401 = missing/invalid/expired key; 403 = valid key, wrong scope/user."""
+
+    RETRIEVE_KEY = "sk_live_retrieve_only"
+    INGEST_KEY = "sk_live_ingest_only"
+    FULL_KEY = "sk_live_full_scopes"
+    USER_KEY = "sk_live_user_locked"
+    SESSION_KEY = "sk_live_session_locked"
+
+    _ALL_SCOPES = ["context:ingest", "context:retrieve", "context:feedback", "context:replay"]
+
+    def setUp(self):
+        self.s = _FakeServer()
+        hashed = {
+            gw._secret_hash(self.RETRIEVE_KEY): {
+                "tenant_id": "t", "account_id": "acct", "scopes": ["context:retrieve"]},
+            gw._secret_hash(self.INGEST_KEY): {
+                "tenant_id": "t", "account_id": "acct", "scopes": ["context:ingest"]},
+            gw._secret_hash(self.FULL_KEY): {
+                "tenant_id": "t", "account_id": "acct", "scopes": list(self._ALL_SCOPES)},
+            gw._secret_hash(self.USER_KEY): {
+                "tenant_id": "t", "account_id": "acct",
+                "scopes": ["context:ingest", "context:retrieve"], "allowed_user_ids": ["alice"]},
+            gw._secret_hash(self.SESSION_KEY): {
+                "tenant_id": "t", "account_id": "acct",
+                "scopes": ["context:ingest"], "allowed_session_ids": ["sess-1"]},
+        }
+        self.cfg = gw.GatewayConfig.from_env({"enforced": True, "hashed_api_keys": hashed})
+        self.app = gw.make_v1_app(self.s, self.cfg)
+
+    def _bearer(self, key):
+        return {"Authorization": f"Bearer {key}"}
+
+    # ---- scope enforcement ---------------------------------------------------------------------
+    def test_retrieve_only_key_allows_retrieve(self):
+        st, _, _ = drive(self.app, path="/v1/retrieve", body={"query": "x"},
+                         headers=self._bearer(self.RETRIEVE_KEY))
+        self.assertEqual(200, st)
+        self.assertEqual("matrixark_retrieve", self.s.calls[0][0])
+
+    def test_retrieve_only_key_denies_ingest_403(self):
+        st, _, body = drive(self.app, path="/v1/ingest", body={"records": [1]},
+                            headers=self._bearer(self.RETRIEVE_KEY))
+        self.assertEqual(403, st)
+        payload = json.loads(body)
+        self.assertEqual("insufficient_scope", payload["error"])
+        self.assertEqual("context:ingest", payload["required"])
+        self.assertEqual([], self.s.calls)                            # denied before backend dispatch
+
+    def test_ingest_only_key_allows_ingest(self):
+        st, _, _ = drive(self.app, path="/v1/ingest", body={"records": [1]},
+                         headers=self._bearer(self.INGEST_KEY))
+        self.assertEqual(202, st)
+        self.assertEqual("matrixark_ingest", self.s.calls[0][0])
+
+    def test_ingest_only_key_denies_retrieve_403(self):
+        st, _, body = drive(self.app, path="/v1/retrieve", body={"query": "x"},
+                            headers=self._bearer(self.INGEST_KEY))
+        self.assertEqual(403, st)
+        payload = json.loads(body)
+        self.assertEqual("insufficient_scope", payload["error"])
+        self.assertEqual("context:retrieve", payload["required"])
+        self.assertEqual([], self.s.calls)
+
+    def test_full_scope_key_allows_both(self):
+        st_i, _, _ = drive(self.app, path="/v1/ingest", body={"records": [1]},
+                           headers=self._bearer(self.FULL_KEY))
+        st_r, _, _ = drive(self.app, path="/v1/retrieve", body={"query": "x"},
+                           headers=self._bearer(self.FULL_KEY))
+        self.assertEqual(202, st_i)
+        self.assertEqual(200, st_r)
+        self.assertEqual(["matrixark_ingest", "matrixark_retrieve"], [c[0] for c in self.s.calls])
+
+    def test_session_commit_needs_ingest_scope(self):
+        # /v1/session/commit is an ingest-category route -> needs context:ingest.
+        st_ok, _, _ = drive(self.app, path="/v1/session/commit", body={"force": True},
+                            headers=self._bearer(self.INGEST_KEY))
+        self.assertEqual(200, st_ok)
+        st_deny, _, body = drive(self.app, path="/v1/session/commit", body={"force": True},
+                                 headers=self._bearer(self.RETRIEVE_KEY))
+        self.assertEqual(403, st_deny)
+        self.assertEqual("context:ingest", json.loads(body)["required"])
+
+    def test_blob_put_needs_ingest_scope(self):
+        resp = _FakeResponse(200, body=json.dumps({"stored": True}).encode())
+        cfg = gw.GatewayConfig.from_env({
+            "enforced": True,
+            "hashed_api_keys": {
+                gw._secret_hash(self.RETRIEVE_KEY): {
+                    "tenant_id": "t", "account_id": "acct", "scopes": ["context:retrieve"]},
+                gw._secret_hash(self.INGEST_KEY): {
+                    "tenant_id": "t", "account_id": "acct", "scopes": ["context:ingest"]},
+            },
+            "blob_connection_factory": _factory_for(resp),
+        })
+        app = gw.make_v1_app(self.s, cfg)
+        # retrieve-only key cannot PUT a blob (write == ingest).
+        st_deny, _, body = drive(app, method="PUT", path="/v1/blob/x.bin", raw=b"data",
+                                 headers=self._bearer(self.RETRIEVE_KEY))
+        self.assertEqual(403, st_deny)
+        self.assertEqual("context:ingest", json.loads(body)["required"])
+        # retrieve-only key CAN GET a blob (read == retrieve).
+        st_get, _, _ = drive(app, method="GET", path="/v1/blob/x.bin",
+                             headers=self._bearer(self.RETRIEVE_KEY))
+        self.assertEqual(200, st_get)
+
+    # ---- user / session enforcement ------------------------------------------------------------
+    def test_allowed_user_id_allows_matching_user(self):
+        st, _, _ = drive(self.app, path="/v1/ingest",
+                         body={"scope": {"user_id": "alice"}, "records": [1]},
+                         headers=self._bearer(self.USER_KEY))
+        self.assertEqual(202, st)
+        self.assertEqual("alice", self.s.calls[0][1]["scope"]["user_id"])
+
+    def test_allowed_user_id_denies_other_user_403(self):
+        st, _, body = drive(self.app, path="/v1/ingest",
+                            body={"scope": {"user_id": "bob"}, "records": [1]},
+                            headers=self._bearer(self.USER_KEY))
+        self.assertEqual(403, st)
+        self.assertEqual("user_not_allowed", json.loads(body)["error"])
+        self.assertEqual([], self.s.calls)                            # denied before backend dispatch
+
+    def test_allowed_session_id_enforced(self):
+        st_ok, _, _ = drive(self.app, path="/v1/ingest",
+                            body={"scope": {"session_id": "sess-1"}, "records": [1]},
+                            headers=self._bearer(self.SESSION_KEY))
+        self.assertEqual(202, st_ok)
+        st_deny, _, body = drive(self.app, path="/v1/ingest",
+                                 body={"scope": {"session_id": "sess-9"}, "records": [1]},
+                                 headers=self._bearer(self.SESSION_KEY))
+        self.assertEqual(403, st_deny)
+        self.assertEqual("session_not_allowed", json.loads(body)["error"])
+
+    # ---- 401 discipline (missing/invalid/expired) ----------------------------------------------
+    def test_missing_key_still_401(self):
+        st, _, body = drive(self.app, path="/v1/ingest", body={"records": [1]})
+        self.assertEqual(401, st)
+        self.assertEqual("unauthorized", json.loads(body)["error"])
+
+    def test_bad_key_still_401(self):
+        st, _, _ = drive(self.app, path="/v1/ingest", body={"records": [1]},
+                         headers=self._bearer("sk_live_nope"))
+        self.assertEqual(401, st)
+
+    def test_expired_key_still_401(self):
+        # A JSONL keystore record whose expires_at_ms is in the past is skipped -> 401 (not 403).
+        expired_key = "sk_live_expired"
+        record = {
+            "record_type": "matrixark_api_key",
+            "api_key_hash": gw._secret_hash(expired_key),
+            "tenant_id": "t", "account_id": "acct",
+            "scopes": ["context:ingest"],
+            "status": "active",
+            "expires_at_ms": int(time.time() * 1000) - 60_000,
+        }
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as fh:
+            fh.write(json.dumps(record) + "\n")
+            store_path = fh.name
+        try:
+            with _EnvGuard(MATRIXARK_AUTH_ENFORCED="1", MATRIXARK_API_KEYS_HASHED_FILE=store_path):
+                cfg = gw.GatewayConfig.from_env({})
+                app = gw.make_v1_app(self.s, cfg)
+                st, _, body = drive(app, path="/v1/ingest", body={"records": [1]},
+                                    headers=self._bearer(expired_key))
+            self.assertEqual(401, st)
+            self.assertEqual("unauthorized", json.loads(body)["error"])
+        finally:
+            os.unlink(store_path)
+
+    # ---- backward compatibility: legacy plain keystore (no scopes) -----------------------------
+    def test_legacy_plain_keystore_is_unrestricted(self):
+        # Plain {sha256: {tenant_id, account_id}} form (no `scopes`) -> UNRESTRICTED: every route
+        # allowed, exactly as before per-key scopes existed.
+        legacy_key = "sk_live_legacy_plain"
+        store = {gw._secret_hash(legacy_key): {"tenant_id": "t", "account_id": "acct"}}
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            json.dump(store, fh)
+            store_path = fh.name
+        try:
+            with _EnvGuard(MATRIXARK_AUTH_ENFORCED="1", MATRIXARK_API_KEYS_HASHED_FILE=store_path):
+                cfg = gw.GatewayConfig.from_env({})
+                self.assertIsNone(cfg.hashed_keys[gw._secret_hash(legacy_key)]["scopes"])
+                app = gw.make_v1_app(self.s, cfg)
+                st_i, _, _ = drive(app, path="/v1/ingest", body={"records": [1]},
+                                   headers=self._bearer(legacy_key))
+                st_r, _, _ = drive(app, path="/v1/retrieve", body={"query": "x"},
+                                   headers=self._bearer(legacy_key))
+            self.assertEqual(202, st_i)                               # ingest allowed (no scope gate)
+            self.assertEqual(200, st_r)                               # retrieve allowed (no scope gate)
+        finally:
+            os.unlink(store_path)
+
+    # ---- dev mode (enforcement OFF): no scope checks -------------------------------------------
+    def test_dev_mode_ignores_scopes(self):
+        # MATRIXARK_AUTH_ENFORCED unset -> plaintext api_keys, no per-key record, no scope gate.
+        with _EnvGuard(MATRIXARK_AUTH_ENFORCED=None, MATRIXARK_REQUIRE_AUTH="1"):
+            cfg = gw.GatewayConfig.from_env({"api_keys": {"k-acme": "acme"}})
+            app = gw.make_v1_app(self.s, cfg)
+            st_i, _, _ = drive(app, path="/v1/ingest", body={"records": [1]},
+                               headers={"Authorization": "Bearer k-acme"})
+            st_r, _, _ = drive(app, path="/v1/retrieve", body={"query": "x"},
+                               headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual(202, st_i)
+        self.assertEqual(200, st_r)
+
+
+class ProvisionerScopeFlagsTest(unittest.TestCase):
+    """The provisioner mints keystore records carrying scopes / allowed_user_ids /
+    allowed_session_ids so restricted keys are actually issuable end-to-end."""
+
+    def _mint(self, argv):
+        try:
+            from tools import matrixark_provision_api_key as prov
+        except ImportError:
+            import matrixark_provision_api_key as prov  # type: ignore
+        with tempfile.TemporaryDirectory() as d:
+            store = os.path.join(d, "keys.jsonl")
+            prov.main(argv + ["--store", store])
+            with open(store, "r", encoding="utf-8") as fh:
+                return json.loads(fh.readline())
+
+    def test_default_scopes_are_all_four(self):
+        rec = self._mint(["--tenant-id", "t", "--account-id", "acct"])
+        self.assertEqual(
+            ["context:feedback", "context:ingest", "context:replay", "context:retrieve"],
+            rec["scopes"])
+        self.assertEqual([], rec["allowed_user_ids"])
+        self.assertEqual([], rec["allowed_session_ids"])
+
+    def test_retrieve_only_scope_flag(self):
+        rec = self._mint(["--tenant-id", "t", "--scope", "context:retrieve"])
+        self.assertEqual(["context:retrieve"], rec["scopes"])
+
+    def test_comma_separated_and_repeated_flags(self):
+        rec = self._mint([
+            "--tenant-id", "t",
+            "--scope", "context:ingest,context:retrieve",
+            "--allowed-user-id", "alice,bob",
+            "--allowed-session-id", "sess-1",
+        ])
+        self.assertEqual(["context:ingest", "context:retrieve"], rec["scopes"])
+        self.assertEqual(["alice", "bob"], rec["allowed_user_ids"])
+        self.assertEqual(["sess-1"], rec["allowed_session_ids"])
+
+    def test_minted_key_verifies_at_edge(self):
+        # End-to-end: mint a retrieve-only key, load its record shape at the edge, deny ingest.
+        try:
+            from tools import matrixark_provision_api_key as prov
+        except ImportError:
+            import matrixark_provision_api_key as prov  # type: ignore
+        with tempfile.TemporaryDirectory() as d:
+            store = os.path.join(d, "keys.jsonl")
+            # Capture the plaintext key the provisioner prints once.
+            import io
+            import contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                prov.main(["--tenant-id", "t", "--account-id", "acct",
+                           "--scope", "context:retrieve", "--store", store])
+            minted = json.loads(buf.getvalue())
+            plaintext = minted["api_key"]
+            with _EnvGuard(MATRIXARK_AUTH_ENFORCED="1", MATRIXARK_API_KEYS_HASHED_FILE=store):
+                cfg = gw.GatewayConfig.from_env({})
+                app = gw.make_v1_app(_FakeServer(), cfg)
+                st_ok, _, _ = drive(app, path="/v1/retrieve", body={"query": "x"},
+                                    headers={"Authorization": f"Bearer {plaintext}"})
+                st_deny, _, body = drive(app, path="/v1/ingest", body={"records": [1]},
+                                         headers={"Authorization": f"Bearer {plaintext}"})
+        self.assertEqual(200, st_ok)
+        self.assertEqual(403, st_deny)
+        self.assertEqual("insufficient_scope", json.loads(body)["error"])
 
 
 if __name__ == "__main__":

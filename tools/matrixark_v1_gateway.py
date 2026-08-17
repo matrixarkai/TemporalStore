@@ -181,8 +181,46 @@ def _parse_api_keys(env: Any, overrides: Json) -> dict[str, str]:
     return keys
 
 
+def _str_list(value: Any) -> list[str]:
+    """Coerce a keystore field into a ``list[str]`` (non-list/absent -> empty list)."""
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return []
+
+
+def _normalize_key_record(raw: Json, *, default_account: str = "") -> Json:
+    """Normalize a keystore value into the canonical EDGE key record shape.
+
+    Carries the authorization fields all the way to the edge so the dispatcher can enforce them:
+    ``tenant_id``/``account_id`` (identity, as before) plus ``scopes``/``allowed_user_ids``/
+    ``allowed_session_ids``/``role``.
+
+    ``scopes`` semantics are the backward-compatibility hinge:
+      * ``None`` (the field is ABSENT from the source, i.e. the LEGACY plain
+        ``{sha256:{tenant_id,account_id}}`` form) means UNRESTRICTED -- no scope enforcement, so a
+        legacy keystore behaves exactly as it did before this change.
+      * a present list (even empty) is authoritative -- the key may only use those scopes.
+    ``allowed_user_ids``/``allowed_session_ids`` default to ``[]`` meaning NO user/session restriction.
+    """
+    scopes_raw = raw.get("scopes")
+    if scopes_raw is None:
+        scopes: Optional[list[str]] = None
+    elif isinstance(scopes_raw, list):
+        scopes = [str(item) for item in scopes_raw]
+    else:  # a bare scalar scope -> single-element list
+        scopes = [str(scopes_raw)]
+    return {
+        "tenant_id": str(raw.get("tenant_id") or ""),
+        "account_id": str(raw.get("account_id") or "") or default_account,
+        "scopes": scopes,
+        "allowed_user_ids": _str_list(raw.get("allowed_user_ids")),
+        "allowed_session_ids": _str_list(raw.get("allowed_session_ids")),
+        "role": str(raw.get("role") or ""),
+    }
+
+
 def _parse_hashed_keys(env: Any, overrides: Json) -> dict[str, Json]:
-    """Enforced-mode keystore: ``{api_key_hash -> {"tenant_id", "account_id"}}``.
+    """Enforced-mode keystore: ``{api_key_hash -> record}``.
 
     Keys are stored HASHED, never plaintext. The store is provisioned by
     ``matrixark_provision_api_key.py`` (which reuses the backend ``secret_hash`` and the
@@ -190,30 +228,37 @@ def _parse_hashed_keys(env: Any, overrides: Json) -> dict[str, Json]:
     ``MATRIXARK_API_KEYS_HASHED_FILE``:
 
       * JSONL of ``matrixark_api_key`` records (same fields the backend credential store writes:
-        ``record_type``/``api_key_hash``/``account_id``/``tenant_id``/``status``/``expires_at_ms``).
-      * a plain JSON object ``{"<sha256hex>": {"tenant_id": ..., "account_id": ...}}``.
+        ``record_type``/``api_key_hash``/``account_id``/``tenant_id``/``status``/``expires_at_ms``,
+        plus ``scopes``/``allowed_user_ids``/``allowed_session_ids``/``role``).
+      * a plain JSON object ``{"<sha256hex>": {"tenant_id": ..., "account_id": ...}}`` (LEGACY form,
+        no ``scopes`` -> UNRESTRICTED, backward compatible).
 
-    ``overrides["hashed_api_keys"]`` (a dict) short-circuits for tests. Inactive/expired records are
-    skipped. The last active record for a given hash wins.
+    Each stored value is normalized (see ``_normalize_key_record``) so the edge dispatcher can enforce
+    the key's ``scopes``/``allowed_user_ids``/``allowed_session_ids``. ``overrides["hashed_api_keys"]``
+    (a dict) short-circuits for tests. Inactive/expired records are skipped; the last active record
+    for a given hash wins.
     """
     if isinstance(overrides.get("hashed_api_keys"), dict):
-        return {str(k): dict(v) if isinstance(v, dict) else {"tenant_id": str(v)}
-                for k, v in overrides["hashed_api_keys"].items()}
+        out: dict[str, Json] = {}
+        for k, v in overrides["hashed_api_keys"].items():
+            raw = dict(v) if isinstance(v, dict) else {"tenant_id": str(v)}
+            out[str(k)] = _normalize_key_record(raw)
+        return out
     path = str(env.get("MATRIXARK_API_KEYS_HASHED_FILE", "") or "").strip()
-    out: dict[str, Json] = {}
+    out = {}
     if not path or not os.path.exists(path):
         return out
     now = int(time.time() * 1000)
 
-    def _add(hash_hex: str, tenant_id: str, account_id: str) -> None:
-        if hash_hex and tenant_id:
-            out[hash_hex] = {"tenant_id": tenant_id, "account_id": account_id or "acct_local"}
+    def _add(hash_hex: str, raw: Json) -> None:
+        if hash_hex and str(raw.get("tenant_id") or ""):
+            out[hash_hex] = _normalize_key_record(raw, default_account="acct_local")
 
     with open(path, "r", encoding="utf-8") as handle:
         text = handle.read()
     stripped = text.strip()
     if stripped.startswith("{") and '"api_key_hash"' not in stripped:
-        # plain JSON object form.
+        # plain JSON object form (LEGACY): value is {tenant_id, account_id} or a bare tenant string.
         try:
             data = json.loads(stripped)
         except json.JSONDecodeError:
@@ -221,9 +266,9 @@ def _parse_hashed_keys(env: Any, overrides: Json) -> dict[str, Json]:
         if isinstance(data, dict):
             for hash_hex, value in data.items():
                 if isinstance(value, dict):
-                    _add(str(hash_hex), str(value.get("tenant_id") or ""), str(value.get("account_id") or ""))
+                    _add(str(hash_hex), value)
                 else:
-                    _add(str(hash_hex), str(value), "")
+                    _add(str(hash_hex), {"tenant_id": str(value)})
         return out
     # JSONL of records (append-only credential-store shape).
     for line in text.splitlines():
@@ -242,8 +287,7 @@ def _parse_hashed_keys(env: Any, overrides: Json) -> dict[str, Json]:
         expires_at_ms = record.get("expires_at_ms")
         if isinstance(expires_at_ms, int) and expires_at_ms <= now:
             continue
-        _add(str(record.get("api_key_hash") or ""), str(record.get("tenant_id") or ""),
-             str(record.get("account_id") or ""))
+        _add(str(record.get("api_key_hash") or ""), record)
     return out
 
 
@@ -422,17 +466,20 @@ class _RateLimiter:
 # ================================================================================================
 # Auth + tenant isolation
 # ================================================================================================
-def _authorize(headers: list[Tuple[bytes, bytes]],
-               cfg: GatewayConfig) -> Tuple[bool, Optional[str], Optional[str], Optional[str]]:
-    """Resolve the Bearer key to a tenant identity.
+def _authorize(headers: list[Tuple[bytes, bytes]], cfg: GatewayConfig) -> Tuple[
+        bool, Optional[str], Optional[str], Optional[str], Optional[Json]]:
+    """Resolve the Bearer key to a tenant identity (and, in enforced mode, its key record).
 
-    Returns ``(allowed, api_key, tenant_id, account_id)``.
+    Returns ``(allowed, api_key, tenant_id, account_id, key_record)``. ``key_record`` is the matched,
+    normalized enforced-mode keystore record (carrying ``scopes``/``allowed_user_ids``/
+    ``allowed_session_ids``/``role``) so the dispatcher can enforce per-key authorization; it is
+    ``None`` in dev/unenforced mode (and for anonymous access), which means NO scope/user enforcement.
 
     ENFORCED mode (``MATRIXARK_AUTH_ENFORCED=1``): EVERY /v1 request must carry a Bearer key whose
     sha256 hash is present in the provisioned hashed keystore. A missing, unknown, or revoked key --
     and the legacy demo key ``sk_live_demo`` (which is never hashed into the enforced store) -- is
-    rejected. The identity ``{tenant_id, account_id}`` is taken from the stored record, NEVER from
-    client-supplied free text, so two tenants cannot collide on a shared scope string.
+    rejected (401). The identity ``{tenant_id, account_id}`` is taken from the stored record, NEVER
+    from client-supplied free text, so two tenants cannot collide on a shared scope string.
 
     DEV/unenforced mode (default): unchanged legacy behavior -- the plaintext ``api_keys`` env map is
     honored and, when ``require_auth`` is off, anonymous requests are allowed. This keeps existing dev
@@ -441,17 +488,79 @@ def _authorize(headers: list[Tuple[bytes, bytes]],
     key = _api_key(headers)
     if cfg.enforced:
         if not key:
-            return False, None, None, None
+            return False, None, None, None, None
         record = cfg.hashed_keys.get(_secret_hash(key))
         if record:
-            return True, key, str(record.get("tenant_id") or ""), str(record.get("account_id") or "") or None
-        return False, None, None, None
+            return (True, key, str(record.get("tenant_id") or ""),
+                    str(record.get("account_id") or "") or None, record)
+        return False, None, None, None, None
     # ---- dev / unenforced (legacy) --------------------------------------------------------------
     if key and key in cfg.api_keys:
-        return True, key, cfg.api_keys[key], None
+        return True, key, cfg.api_keys[key], None, None
     if not cfg.require_auth:  # local/dev: anonymous is allowed.
-        return True, key, (cfg.api_keys.get(key) if key else None) or "anonymous", None
-    return False, None, None, None
+        return True, key, (cfg.api_keys.get(key) if key else None) or "anonymous", None, None
+    return False, None, None, None, None
+
+
+# route -> required MatrixArk scope. The ingest/retrieve rate-limit CLASS from `_DATA_ROUTES` doubles
+# as the scope selector: an ingest-category route needs `context:ingest`, a retrieve-category route
+# needs `context:retrieve`.
+_CATEGORY_SCOPE = {"ingest": "context:ingest", "retrieve": "context:retrieve"}
+
+
+def _required_scope(path: str, method: str, route: Optional[Tuple[str, str]]) -> Optional[str]:
+    """The MatrixArk scope a request to `path`/`method` requires, or ``None`` (no scope needed).
+
+    Blob writes (PUT|POST /v1/blob/<key>) and combined upload-ingest (POST /v1/ingest_file) are
+    ingest; blob reads (GET /v1/blob/<key>) are retrieve. Data routes (/v1/ingest, /v1/retrieve,
+    /v1/session/commit, /v1/mcp) map through their `_DATA_ROUTES` category. Health/readyz => None.
+    """
+    if path.startswith("/v1/blob/"):
+        if method in ("PUT", "POST"):
+            return "context:ingest"
+        if method == "GET":
+            return "context:retrieve"
+        return None
+    if path == "/v1/ingest_file":
+        return "context:ingest"
+    if route is not None:
+        return _CATEGORY_SCOPE.get(route[1])
+    return None
+
+
+def _scope_denied(record: Optional[Json], required_scope: Optional[str]) -> Optional[Json]:
+    """403 payload when the key's ``scopes`` list does not permit ``required_scope``, else ``None``.
+
+    Enforcement runs ONLY when ``record`` is present (enforced mode + a matched key) AND the key has a
+    non-``None`` ``scopes`` list. ``scopes=None`` (legacy keystore) or no required scope => allowed.
+    """
+    if record is None or required_scope is None:
+        return None
+    scopes = record.get("scopes")
+    if scopes is None:  # legacy/unrestricted key
+        return None
+    if required_scope not in scopes:
+        return {"error": "insufficient_scope", "required": required_scope}
+    return None
+
+
+def _identity_denied(record: Optional[Json], args: Json) -> Optional[Json]:
+    """403 payload when the key's ``allowed_user_ids``/``allowed_session_ids`` exclude the request's
+    ``scope.user_id``/``scope.session_id`` (checked AFTER identity is applied), else ``None``.
+
+    An empty allow-list (the default) imposes NO restriction on that axis -- unchanged behavior.
+    """
+    if record is None:
+        return None
+    scope = args.get("scope")
+    scope = scope if isinstance(scope, dict) else {}
+    allowed_users = record.get("allowed_user_ids") or []
+    if allowed_users and str(scope.get("user_id") or "") not in allowed_users:
+        return {"error": "user_not_allowed"}
+    allowed_sessions = record.get("allowed_session_ids") or []
+    if allowed_sessions and str(scope.get("session_id") or "") not in allowed_sessions:
+        return {"error": "session_not_allowed"}
+    return None
 
 
 def _apply_identity(args: Json, key: Optional[str], tenant: Optional[str],
@@ -1152,9 +1261,12 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
 
         # ---- blob (auth + concurrent-stream cap, streamed) ----------------------------------
         if path.startswith("/v1/blob/"):
-            allowed, key, tenant, account = _authorize(scope.get("headers", []), cfg)
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
             if not allowed:
                 return await _json(send, 401, {"error": "unauthorized"})
+            denied = _scope_denied(key_record, _required_scope(path, method, None))
+            if denied is not None:
+                return await _json(send, 403, denied)
             key_str = path[len("/v1/blob/"):]
             if not key_str:
                 return await _json(send, 404, {"error": "not_found"})
@@ -1171,9 +1283,12 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
 
         # ---- combined upload-and-ingest (auth + concurrent-stream cap, streamed) -------------
         if path == "/v1/ingest_file":
-            allowed, key, tenant, account = _authorize(scope.get("headers", []), cfg)
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
             if not allowed:
                 return await _json(send, 401, {"error": "unauthorized"})
+            denied = _scope_denied(key_record, _required_scope(path, method, None))
+            if denied is not None:
+                return await _json(send, 403, denied)
             if method != "POST":
                 return await _json(send, 405, {"error": "method_not_allowed"})
             if not limiter.blob_acquire():
@@ -1191,9 +1306,12 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         if method != "POST":
             return await _json(send, 405, {"error": "method_not_allowed"})
 
-        allowed, key, tenant, account = _authorize(scope.get("headers", []), cfg)
+        allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
         if not allowed:
             return await _json(send, 401, {"error": "unauthorized"})
+        denied = _scope_denied(key_record, _required_scope(path, method, route))
+        if denied is not None:
+            return await _json(send, 403, denied)
 
         ok, remaining, reset, retry = limiter.check(key or "anon", cls)
         rl_headers = limiter.headers(cls, remaining, reset)
@@ -1243,6 +1361,9 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         if direct_client is not None and tool in (
                 "matrixark_ingest", "matrixark_retrieve", "matrixark_session_commit"):
             _apply_identity(args, key, tenant, account)  # scope object only; proxy does the hashing
+            denied = _identity_denied(key_record, args)
+            if denied is not None:
+                return await _json(send, 403, denied, rl_headers)
             return await _dispatch_direct(
                 direct_client, cfg, tool, parsed, args, send, rl_headers,
                 n_records=n_records, n_messages=n_messages)
@@ -1259,6 +1380,9 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         ):
             args.setdefault("idle_commit_timeout_ms", cfg.stream_idle_commit_timeout_ms)
         _apply_identity(args, key, tenant, account)
+        denied = _identity_denied(key_record, args)
+        if denied is not None:
+            return await _json(send, 403, denied, rl_headers)
 
         try:
             result = await asyncio.wait_for(
