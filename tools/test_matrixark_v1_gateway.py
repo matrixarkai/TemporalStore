@@ -1300,7 +1300,7 @@ class QuotaEnforcementTest(unittest.TestCase):
         self.assertIsNone(legacy["quota_window"])
 
 
-class ProvisionerQuotaFlagTest(unittest.TestCase):
+class ProvisionerQuotaFlagCase(unittest.TestCase):
     """The provisioner mints keystore records carrying request_quota / quota_window, and a minted
     quota key is enforced end-to-end at the edge."""
 
