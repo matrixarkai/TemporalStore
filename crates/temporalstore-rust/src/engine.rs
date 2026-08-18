@@ -131,6 +131,53 @@ impl TemporalEngine {
         self.execute_with_storage_override(request, Some(false))
     }
 
+    /// Apply a batch of committed raft entries to the state machine. Under
+    /// `TS_RAFT_APPLY_COALESCE` the per-entry engine-WAL fdatasync is coalesced into ONE barrier
+    /// for the whole batch (an AppendEntries batch on a follower, a recovery replay, or a
+    /// pipelined-propose group): every entry appends its WAL bytes with sync=false and RESERVES its
+    /// sequence, then a single `commit_barrier` makes the whole batch durable. The raft log stays
+    /// the durability + reconstruction source, and the coalesced barrier still completes here --
+    /// inside apply -- BEFORE the raft runtime advances the durable `applied_index`
+    /// (persist_configured_wal runs after apply), so `applied => engine-WAL-durable` holds exactly
+    /// as with the per-entry path; a crash before the barrier leaves applied_index below the batch
+    /// so raft replay re-applies it. Gate OFF (or a single-entry batch) -> a plain per-entry
+    /// `execute_raft_apply` loop (byte-identical).
+    pub fn execute_raft_apply_batch(&self, requests: Vec<ExecuteRequest>) -> Vec<ExecuteResponse> {
+        if !raft_apply_coalesce() || requests.len() <= 1 {
+            return requests
+                .into_iter()
+                .map(|request| self.execute_raft_apply(request))
+                .collect();
+        }
+        let _apply_guard = RaftApplyGuard::enter();
+        let batch_guard = RaftApplyBatchGuard::enter();
+        let mut responses = Vec::with_capacity(requests.len());
+        for request in requests {
+            responses.push(self.execute_with_storage_override(request, Some(false)));
+        }
+        let barrier = batch_guard.take_barrier();
+        drop(batch_guard);
+        if let Some((shard_id, sequence)) = barrier {
+            if let Err(err) = self.wal_store.commit_barrier(shard_id, sequence) {
+                // The coalesced batch barrier failed: none of these writes are durable. Fail every
+                // otherwise-ok response so raft apply surfaces the durability failure instead of
+                // acking (mirrors the single-write commit_barrier failure path).
+                for response in responses.iter_mut() {
+                    if response.status.ok {
+                        *response = ExecuteResponse {
+                            status: Status::error(
+                                "wal_commit_failed",
+                                format!("durable WAL commit barrier failed: {err}"),
+                            ),
+                            response: CommandResponse::Empty,
+                        };
+                    }
+                }
+            }
+        }
+        responses
+    }
+
     pub fn execute_replicated(&self, request: ReplicatedExecuteRequest) -> ExecuteResponse {
         let replication_mode = request.replication_mode;
         let request = ExecuteRequest {
@@ -442,7 +489,13 @@ impl TemporalEngine {
                 // sequence order still equals in-memory apply order because the reservation +
                 // byte-append stay under this same lock, exactly as append_with_sync did; only
                 // the order-independent fsync moves out. Off -> byte-identical append_with_sync.
-                let concurrent_commit = sync && engine_concurrent_commit();
+                // In a raft apply batch (TS_RAFT_APPLY_COALESCE) reuse the same reserve-only
+                // append: each committed entry appends its bytes with sync=false and RESERVES its
+                // WAL sequence here; the single coalesced fdatasync is issued once for the whole
+                // batch in `execute_raft_apply_batch` (see `raft_apply_batch_active`). WAL order
+                // still equals apply order (reservation + byte-append stay under this lock).
+                let concurrent_commit =
+                    sync && (engine_concurrent_commit() || raft_apply_batch_active());
                 let append_result = if concurrent_commit {
                     self.wal_store
                         .append_for_group_commit(request.shard_id, command)
@@ -504,7 +557,7 @@ impl TemporalEngine {
                 // under this lock (stack-sampling shows it dominates a warm ingest). Under
                 // TS_PHASE1_FLAT anchor off the O(1) cached last sequence (authoritative right after
                 // this write's append) instead; gate OFF keeps the exact `stats()` value.
-                shard.applied_wal_sequence = Some(if phase1_flat_enabled() {
+                shard.applied_wal_sequence = Some(if phase1_flat_enabled() || raft_apply_batch_active() {
                     self.wal_store.cached_last_sequence(request.shard_id)
                 } else {
                     self.wal_store.stats(request.shard_id).last_sequence
@@ -550,7 +603,11 @@ impl TemporalEngine {
         // no-op, so this is byte-identical to the prior in-lock append_with_sync path.
         drop(shards);
         if let Some(barrier_seq) = pending_barrier_seq {
-            if let Err(err) = self.wal_store.commit_barrier(request.shard_id, barrier_seq) {
+            if raft_apply_batch_active() {
+                // Defer to the single coalesced barrier issued for the whole batch by
+                // `execute_raft_apply_batch` (the record bytes are already reserved + buffered).
+                record_raft_apply_batch_barrier(request.shard_id, barrier_seq);
+            } else if let Err(err) = self.wal_store.commit_barrier(request.shard_id, barrier_seq) {
                 // The coalesced durable barrier failed: this synchronous write is NOT durable, so
                 // surface the failure instead of acking (mirrors the append_with_sync sync-failure
                 // path -- the ack is returned strictly after a successful barrier, never before).
@@ -1572,6 +1629,56 @@ impl Drop for RaftApplyGuard {
 }
 
 thread_local! {
+    // Set while applying a COMMITTED raft batch under TS_RAFT_APPLY_COALESCE. While set, each
+    // per-command WAL append reserves its sequence with sync=false (append_for_group_commit) and
+    // records the reserved sequence in RAFT_APPLY_BATCH_BARRIER instead of taking its own
+    // fdatasync; `execute_raft_apply_batch` issues ONE coalesced `commit_barrier` for the whole
+    // batch after every command is applied. Thread-local because raft apply runs synchronously on
+    // the apply thread. A raft group is one shard, so the accumulator holds a single (shard, seq).
+    static RAFT_APPLY_BATCH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static RAFT_APPLY_BATCH_BARRIER: std::cell::RefCell<Option<(ShardId, u64)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn raft_apply_batch_active() -> bool {
+    RAFT_APPLY_BATCH.with(|cell| cell.get())
+}
+
+fn record_raft_apply_batch_barrier(shard_id: ShardId, sequence: u64) {
+    RAFT_APPLY_BATCH_BARRIER.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        match *slot {
+            Some((existing_shard, existing_seq)) if existing_shard == shard_id => {
+                *slot = Some((existing_shard, existing_seq.max(sequence)));
+            }
+            _ => *slot = Some((shard_id, sequence)),
+        }
+    });
+}
+
+/// Drop-guarded batch scope: sets RAFT_APPLY_BATCH on enter (clearing any stale barrier) and clears
+/// it on drop, so a panic mid-batch cannot leave the thread stuck in batch mode.
+struct RaftApplyBatchGuard;
+
+impl RaftApplyBatchGuard {
+    fn enter() -> Self {
+        RAFT_APPLY_BATCH.with(|cell| cell.set(true));
+        RAFT_APPLY_BATCH_BARRIER.with(|cell| *cell.borrow_mut() = None);
+        RaftApplyBatchGuard
+    }
+
+    fn take_barrier(&self) -> Option<(ShardId, u64)> {
+        RAFT_APPLY_BATCH_BARRIER.with(|cell| cell.borrow_mut().take())
+    }
+}
+
+impl Drop for RaftApplyBatchGuard {
+    fn drop(&mut self) {
+        RAFT_APPLY_BATCH.with(|cell| cell.set(false));
+    }
+}
+
+thread_local! {
     // During a replayed command, the leader's wall-clock timestamp captured in the
     // replayed record's metadata. Time-dependent resolution (TTL deadlines, context
     // event time) reads this instead of the live clock so a re-executed command
@@ -1737,6 +1844,16 @@ fn engine_concurrent_commit() -> bool {
 /// as before). Sharing one gate with the WAL fast-append so a single switch flattens phase-1.
 fn phase1_flat_enabled() -> bool {
     env_flag_on("TS_PHASE1_FLAT")
+}
+
+/// TS_RAFT_APPLY_COALESCE: on the raft state-machine apply path, coalesce the per-committed-entry
+/// engine-WAL fdatasync across a whole committed batch (one fsync per AppendEntries batch / recovery
+/// replay / pipelined-propose group instead of one per entry) and anchor the served index off the
+/// O(1) cached WAL sequence. Default OFF -> per-entry `execute_raft_apply` (byte-identical). The
+/// raft log stays the durability + reconstruction source; the coalesced barrier still completes
+/// before the raft runtime advances the durable applied_index.
+fn raft_apply_coalesce() -> bool {
+    env_flag_on("TS_RAFT_APPLY_COALESCE")
 }
 
 fn env_flag_on(name: &str) -> bool {
