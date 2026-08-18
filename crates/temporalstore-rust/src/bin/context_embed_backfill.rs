@@ -157,6 +157,7 @@ fn main() {
     let max_events: usize = arg("--max-events", "4").parse().unwrap_or(4);
     let prefer_events = arg("--prefer-events", "0") == "1";
     let max_nodes: usize = arg("--max-nodes", "0").parse().unwrap_or(0);
+    let max_new_embeddings: usize = arg("--max-new-embeddings", "0").parse().unwrap_or(0);
     let verify_only = arg("--verify", "0") == "1";
 
     let engine = TemporalEngine::with_local_dirs(
@@ -244,7 +245,9 @@ fn main() {
     let mut embedded = 0u64;
     let mut empty_text = 0u64;
     let mut node_l0_text_used = 0u64;
+    let mut missing_embedding_candidates = 0u64;
     let mut skipped_existing = 0u64;
+    let mut skipped_by_new_cap = 0u64;
     let mut failed = 0u64;
     let updated_at_ms = now_ms();
 
@@ -262,20 +265,34 @@ fn main() {
         let existing_embeddings = load_existing_embedding_refs(&engine, tenant_hash, &node_hashes);
         let existing_seconds = existing_started.elapsed().as_secs_f64();
         skipped_existing += existing_embeddings.len() as u64;
+        total_nodes += node_hashes.len() as u64;
+
+        let mut missing_nodes: Vec<u64> = node_hashes
+            .iter()
+            .copied()
+            .filter(|node_hash| {
+                let ref_hash = context_embedding_ref_hash(tenant_hash, *node_hash, "node_l0");
+                !existing_embeddings.contains(&ref_hash)
+            })
+            .collect();
+        missing_embedding_candidates += missing_nodes.len() as u64;
+        if max_new_embeddings > 0 {
+            let remaining = max_new_embeddings.saturating_sub(embedded as usize);
+            if missing_nodes.len() > remaining {
+                skipped_by_new_cap += (missing_nodes.len() - remaining) as u64;
+                missing_nodes.truncate(remaining);
+            }
+        }
+
         let node_text_started = Instant::now();
-        let node_texts = load_node_l0_texts(&engine, tenant_hash, &node_hashes);
+        let node_texts = load_node_l0_texts(&engine, tenant_hash, &missing_nodes);
         let node_text_seconds = node_text_started.elapsed().as_secs_f64();
 
         // Collect (node_hash, text) by reading each node's stored events.
         // If event bytes are unavailable in an old/raw-first store, fall back to
         // the ContextNode L0 text so every context node can receive a model vector.
-        let mut pending: Vec<(u64, String)> = Vec::with_capacity(node_hashes.len());
-        for node_hash in &node_hashes {
-            total_nodes += 1;
-            let ref_hash = context_embedding_ref_hash(tenant_hash, *node_hash, "node_l0");
-            if existing_embeddings.contains(&ref_hash) {
-                continue;
-            }
+        let mut pending: Vec<(u64, String)> = Vec::with_capacity(missing_nodes.len());
+        for node_hash in &missing_nodes {
             let mut text = String::new();
             if prefer_events {
                 let resp = engine.execute(ExecuteRequest {
@@ -364,11 +381,13 @@ fn main() {
             failed += bad as u64;
         }
         eprintln!(
-            "  session {} -> nodes {} embedded {} skipped_existing {} node_l0_texts {} existing_seconds {:.3} node_text_seconds {:.3} ({:.0} node/s cumulative)",
+            "  session {} -> nodes {} missing {} embedded {} skipped_existing {} skipped_by_new_cap {} node_l0_texts {} existing_seconds {:.3} node_text_seconds {:.3} ({:.0} node/s cumulative)",
             session,
             node_hashes.len(),
+            missing_nodes.len(),
             embedded,
             existing_embeddings.len(),
+            skipped_by_new_cap,
             node_texts.len(),
             existing_seconds,
             node_text_seconds,
@@ -391,12 +410,15 @@ fn main() {
         "embedding_model": embedding_model,
         "sessions": sessions.len(),
         "max_nodes": max_nodes,
+        "max_new_embeddings": max_new_embeddings,
         "shard_load_seconds": shard_load_seconds,
         "total_nodes": total_nodes,
+        "missing_embedding_candidates": missing_embedding_candidates,
         "embedded": embedded,
         "empty_text": empty_text,
         "node_l0_text_used": node_l0_text_used,
         "skipped_existing": skipped_existing,
+        "skipped_by_new_cap": skipped_by_new_cap,
         "prefer_events": prefer_events,
         "failed": failed,
         "flush_seconds": flush_seconds,
