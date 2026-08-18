@@ -159,6 +159,7 @@ fn main() {
     let max_nodes: usize = arg("--max-nodes", "0").parse().unwrap_or(0);
     let max_new_embeddings: usize = arg("--max-new-embeddings", "0").parse().unwrap_or(0);
     let max_new_per_session: usize = arg("--max-new-per-session", "0").parse().unwrap_or(0);
+    let skip_covered_sessions = arg("--skip-covered-sessions", "0") == "1";
     let verify_only = arg("--verify", "0") == "1";
 
     let engine = TemporalEngine::with_local_dirs(
@@ -248,6 +249,8 @@ fn main() {
     let mut node_l0_text_used = 0u64;
     let mut missing_embedding_candidates = 0u64;
     let mut skipped_existing = 0u64;
+    let mut skipped_covered_sessions = 0u64;
+    let mut skipped_covered_session_nodes = 0u64;
     let mut skipped_by_new_cap = 0u64;
     let mut failed = 0u64;
     let updated_at_ms = now_ms();
@@ -267,6 +270,18 @@ fn main() {
         let existing_seconds = existing_started.elapsed().as_secs_f64();
         skipped_existing += existing_embeddings.len() as u64;
         total_nodes += node_hashes.len() as u64;
+        if skip_covered_sessions && !existing_embeddings.is_empty() {
+            skipped_covered_sessions += 1;
+            skipped_covered_session_nodes += node_hashes.len() as u64;
+            eprintln!(
+                "  session {} -> nodes {} skipped_covered existing {} existing_seconds {:.3}",
+                session,
+                node_hashes.len(),
+                existing_embeddings.len(),
+                existing_seconds
+            );
+            continue;
+        }
 
         let mut missing_nodes: Vec<u64> = node_hashes
             .iter()
@@ -418,6 +433,7 @@ fn main() {
         "max_nodes": max_nodes,
         "max_new_embeddings": max_new_embeddings,
         "max_new_per_session": max_new_per_session,
+        "skip_covered_sessions": skip_covered_sessions,
         "shard_load_seconds": shard_load_seconds,
         "total_nodes": total_nodes,
         "missing_embedding_candidates": missing_embedding_candidates,
@@ -425,6 +441,8 @@ fn main() {
         "empty_text": empty_text,
         "node_l0_text_used": node_l0_text_used,
         "skipped_existing": skipped_existing,
+        "skipped_covered_sessions": skipped_covered_sessions,
+        "skipped_covered_session_nodes": skipped_covered_session_nodes,
         "skipped_by_new_cap": skipped_by_new_cap,
         "prefer_events": prefer_events,
         "failed": failed,
