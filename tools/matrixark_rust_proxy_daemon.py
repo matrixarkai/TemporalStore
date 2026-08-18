@@ -76,6 +76,11 @@ class RustProxyDaemon:
         proxy_dir = str(self.proxy_path.resolve().parent)
         old_ld = env.get("LD_LIBRARY_PATH", "")
         env["LD_LIBRARY_PATH"] = proxy_dir if not old_ld else f"{proxy_dir}:{old_ld}"
+        startup_warmup_allowed = self._startup_warmup_allowed()
+        if startup_warmup_allowed:
+            # Local hook mode should not block first serving on page-cache warming.
+            # The daemon starts a background warmup immediately after the proxy is live.
+            env.setdefault("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD", "0")
         self._proc = subprocess.Popen(
             [str(self.proxy_path), "--serve"],
             stdin=subprocess.PIPE,
@@ -85,7 +90,14 @@ class RustProxyDaemon:
             bufsize=1,
             env=env,
         )
-        self._write_log({"event": "proxy_started", "pid": self._proc.pid})
+        self._write_log(
+            {
+                "event": "proxy_started",
+                "pid": self._proc.pid,
+                "startup_warmup_allowed": startup_warmup_allowed,
+                "eager_cache_warm_on_load": env.get("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD"),
+            }
+        )
         self._maybe_start_startup_warmup()
 
     def _stop_proxy(self) -> None:

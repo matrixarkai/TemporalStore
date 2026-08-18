@@ -20,6 +20,7 @@ class RustProxyDaemonStartupWarmupTest(unittest.TestCase):
         proxy.write_text(
             """#!/usr/bin/env python3
 import json
+import os
 import sys
 
 if "--serve" not in sys.argv:
@@ -35,7 +36,8 @@ for line in sys.stdin:
                 "serving_memory_cache_layer": "durable_read_through",
                 "serving_memory_promoted": True,
                 "serving_memory_promoted_record_count": 7
-            }
+            },
+            "eager_cache_warm_on_load": os.environ.get("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD")
         }), flush=True)
     else:
         print(json.dumps({"ok": True, "echo_op": req.get("op")}), flush=True)
@@ -94,6 +96,8 @@ for line in sys.stdin:
                         break
                     time.sleep(0.05)
                 self.assertIn("startup_warmup_completed", log_text)
+                self.assertIn('"startup_warmup_allowed":true', log_text)
+                self.assertIn('"eager_cache_warm_on_load":"0"', log_text)
                 self.assertIn('"serving_memory_promoted":true', log_text)
                 self.assertIn('"serving_memory_promoted_record_count":7', log_text)
                 response = self._send(socket_path, {"op": "user_request"})

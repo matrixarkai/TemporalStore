@@ -191,11 +191,12 @@ fn main() {
             .and_then(Value::as_str)
             .unwrap_or("backfill_session")
             .to_string();
-        let ts_ms = rec
-            .get("ts_ms")
-            .and_then(Value::as_u64)
-            .filter(|v| *v > 0)
-            .unwrap_or(end_time_ms);
+        let ts_ms = normalize_epoch_ms(
+            rec.get("ts_ms")
+                .and_then(Value::as_u64)
+                .filter(|v| *v > 0)
+                .unwrap_or(end_time_ms),
+        );
         let source_id = format!(
             "{}:{}:{}:{:016x}",
             agent_name,
@@ -531,6 +532,16 @@ fn truncate_words(text: &str, max_words: usize) -> String {
         out.push_str("...");
     }
     out
+}
+
+fn normalize_epoch_ms(mut value: u64) -> u64 {
+    // Hook payloads can arrive as ns/us epoch values. TemporalStore context
+    // queries use millisecond windows, so normalize anything beyond year 2100.
+    const YEAR_2100_MS: u64 = 4_102_444_800_000;
+    while value > YEAR_2100_MS {
+        value /= 1_000;
+    }
+    value.max(1)
 }
 
 fn now_ms() -> u64 {

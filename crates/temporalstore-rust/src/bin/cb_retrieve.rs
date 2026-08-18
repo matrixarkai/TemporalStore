@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use serde::Deserialize;
 use serde_json::json;
@@ -51,6 +51,11 @@ fn main() {
     let user = arg("--user-id", "cb_user");
     let query = arg("--query", "");
     let max_nodes: usize = arg("--max-nodes", "4000").parse().unwrap_or(4000);
+    let default_max_blocks = if max_nodes == 0 { 24 } else { max_nodes };
+    let max_blocks: usize = arg("--max-blocks", "")
+        .parse()
+        .unwrap_or(default_max_blocks)
+        .max(1);
     let source_jsonl = PathBuf::from(arg("--source-jsonl", ""));
     // When --embed-base-url is set, rank by REAL model embeddings (query vector
     // comes from the same OpenAI-compatible provider used for the stored node
@@ -77,7 +82,9 @@ fn main() {
         root.join("pages"),
         root.join("indexes"),
     );
+    let load_started = Instant::now();
     engine.load_shard(1);
+    let shard_load_seconds = load_started.elapsed().as_secs_f64();
 
     let index_path = root.join(format!("{}-session-index.json", agent));
     let index: SessionIndex = fs::read_to_string(&index_path)
@@ -92,11 +99,6 @@ fn main() {
     };
 
     let tenant_hash = stable_hash64(&format!("{}:{}:{}:{}", account, tenant, user, session));
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(1);
-
     let emit_blocks = arg("--emit-blocks", "0") == "1";
 
     // Optional one-shot embedding-lookup probe (diagnostic): query node_l0 refs
@@ -202,7 +204,7 @@ fn main() {
                 node_hashes: node_hashes.clone(),
                 query: query.to_string(),
                 start_time_ms: 0,
-                end_time_ms: now_ms.saturating_add(1),
+                end_time_ms: u64::MAX,
                 max_events: cap,
                 min_confidence: 0.0,
                 min_importance: 0.0,
@@ -237,6 +239,8 @@ fn main() {
             "candidate_node_count": node_hashes.len(),
             "candidate_node_limit": max_nodes,
             "candidate_node_truncated": full_node_hashes.len() > node_hashes.len(),
+            "max_blocks": cap,
+            "shard_load_seconds": shard_load_seconds,
             "candidate_prefilter": prefilter_debug,
             "ok": report.status.ok,
             "status_code": report.status.code,
@@ -275,7 +279,7 @@ fn main() {
             let _ = out.flush();
         }
     } else {
-        println!("{}", run_one(&query, max_nodes));
+        println!("{}", run_one(&query, max_blocks));
     }
 }
 

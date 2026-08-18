@@ -27,7 +27,7 @@
 //!     --embed-base-url http://127.0.0.1:18099/v1 \
 //!     --embedding-model all-MiniLM-L6-v2
 use std::collections::hash_map::DefaultHasher;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
@@ -44,6 +44,36 @@ use temporalstore_rust::{
 #[derive(Debug, Deserialize, Default)]
 struct SessionIndex {
     sessions: BTreeMap<String, Vec<u64>>,
+}
+
+fn load_node_l0_texts(
+    engine: &TemporalEngine,
+    tenant_hash: u64,
+    node_hashes: &[u64],
+) -> HashMap<u64, String> {
+    let mut out = HashMap::new();
+    for chunk in node_hashes.chunks(512) {
+        let resp = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextGetNodes {
+                tenant_hash,
+                node_hashes: chunk.to_vec(),
+            },
+        });
+        if let CommandResponse::ContextNodes { nodes } = resp.response {
+            for node in nodes {
+                let text = if node.l0.trim().is_empty() {
+                    node.canonical_name.clone()
+                } else {
+                    node.l0.clone()
+                };
+                if !text.trim().is_empty() {
+                    out.insert(node.node_hash, text);
+                }
+            }
+        }
+    }
+    out
 }
 
 fn stable_hash64(value: &str) -> u64 {
@@ -80,6 +110,7 @@ fn main() {
     let embedding_model = arg("--embedding-model", "all-MiniLM-L6-v2");
     let batch: usize = arg("--batch", "64").parse().unwrap_or(64);
     let max_events: usize = arg("--max-events", "4").parse().unwrap_or(4);
+    let prefer_events = arg("--prefer-events", "0") == "1";
     let verify_only = arg("--verify", "0") == "1";
 
     let engine = TemporalEngine::with_local_dirs(
@@ -131,14 +162,13 @@ fn main() {
                     limit: Some(ref_hashes.len().max(1)),
                 },
             });
-            let (found, dim) = if let CommandResponse::ContextEmbeddings { embeddings } =
-                resp.response
-            {
-                let d = embeddings.first().map(|e| e.vector.len()).unwrap_or(0);
-                (embeddings.len(), d)
-            } else {
-                (0, 0)
-            };
+            let (found, dim) =
+                if let CommandResponse::ContextEmbeddings { embeddings } = resp.response {
+                    let d = embeddings.first().map(|e| e.vector.len()).unwrap_or(0);
+                    (embeddings.len(), d)
+                } else {
+                    (0, 0)
+                };
             println!(
                 "{}",
                 json!({
@@ -160,6 +190,7 @@ fn main() {
     let mut total_nodes = 0u64;
     let mut embedded = 0u64;
     let mut empty_text = 0u64;
+    let mut node_l0_text_used = 0u64;
     let mut failed = 0u64;
     let updated_at_ms = now_ms();
 
@@ -168,40 +199,49 @@ fn main() {
         if node_hashes.is_empty() {
             continue;
         }
-        let tenant_hash =
-            stable_hash64(&format!("{}:{}:{}:{}", account, tenant, user, session));
-        let end_time_ms = updated_at_ms.saturating_add(1);
+        let tenant_hash = stable_hash64(&format!("{}:{}:{}:{}", account, tenant, user, session));
+        let end_time_ms = u64::MAX;
+        let node_texts = load_node_l0_texts(&engine, tenant_hash, &node_hashes);
 
         // Collect (node_hash, text) by reading each node's stored events.
+        // If event bytes are unavailable in an old/raw-first store, fall back to
+        // the ContextNode L0 text so every context node can receive a model vector.
         let mut pending: Vec<(u64, String)> = Vec::with_capacity(node_hashes.len());
         for node_hash in &node_hashes {
             total_nodes += 1;
-            let resp = engine.execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::ContextQueryEvents {
-                    tenant_hash,
-                    node_hash: *node_hash,
-                    start_time_ms: 0,
-                    end_time_ms,
-                    limit: Some(max_events.max(1)),
-                    current_valid_only: false,
-                    as_of_ms: 0,
-                    kinds: Vec::new(),
-                    statuses: Vec::new(),
-                    min_confidence: 0.0,
-                    min_importance: 0.0,
-                },
-            });
-            let text = if let CommandResponse::ContextEvents { events, .. } = resp.response {
-                // Use the richest (longest) event text for this node.
-                events
-                    .into_iter()
-                    .map(|e| e.text)
-                    .max_by_key(|t| t.len())
-                    .unwrap_or_default()
-            } else {
-                String::new()
-            };
+            let mut text = String::new();
+            if prefer_events {
+                let resp = engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::ContextQueryEvents {
+                        tenant_hash,
+                        node_hash: *node_hash,
+                        start_time_ms: 0,
+                        end_time_ms,
+                        limit: Some(max_events.max(1)),
+                        current_valid_only: false,
+                        as_of_ms: 0,
+                        kinds: Vec::new(),
+                        statuses: Vec::new(),
+                        min_confidence: 0.0,
+                        min_importance: 0.0,
+                    },
+                });
+                if let CommandResponse::ContextEvents { events, .. } = resp.response {
+                    // Use the richest (longest) event text for this node.
+                    text = events
+                        .into_iter()
+                        .map(|e| e.text)
+                        .max_by_key(|t| t.len())
+                        .unwrap_or_default();
+                }
+            }
+            if text.trim().is_empty() {
+                if let Some(node_text) = node_texts.get(node_hash) {
+                    text = node_text.clone();
+                    node_l0_text_used += 1;
+                }
+            }
             if text.trim().is_empty() {
                 empty_text += 1;
                 continue;
@@ -278,6 +318,8 @@ fn main() {
         "total_nodes": total_nodes,
         "embedded": embedded,
         "empty_text": empty_text,
+        "node_l0_text_used": node_l0_text_used,
+        "prefer_events": prefer_events,
         "failed": failed,
         "seconds": started.elapsed().as_secs_f64(),
     });
