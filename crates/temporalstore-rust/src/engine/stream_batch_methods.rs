@@ -303,8 +303,9 @@ impl TemporalEngine {
                         );
                     }
                 }
-                if !command_updates_bucket_index_directly(&command_for_post_write)
-                    || shard.bucket_index.bucket_map.is_empty()
+                if !defer_bucket_index_reconstruct()
+                    && (!command_updates_bucket_index_directly(&command_for_post_write)
+                        || shard.bucket_index.bucket_map.is_empty())
                 {
                     rebuild_bucket_first_index(
                         request.shard_id,
@@ -584,7 +585,8 @@ impl TemporalEngine {
                                 published.page_slab_id,
                                 published.offset,
                                 published.length,
-                                published.routing_bucket),
+                                published.routing_bucket,
+                            ),
                             bytes,
                         );
                         upsert_bucket_index_page(
@@ -610,7 +612,8 @@ impl TemporalEngine {
                                 published.page_slab_id,
                                 published.offset,
                                 published.length,
-                                published.routing_bucket),
+                                published.routing_bucket,
+                            ),
                             bytes,
                         );
                         upsert_bucket_index_page(

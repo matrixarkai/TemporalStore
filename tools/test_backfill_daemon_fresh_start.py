@@ -75,7 +75,7 @@ printf '{"accepted":%s,"failed":0}\\n' "$count"
             proc = self._run_daemon(temp_root, work, store)
 
             self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertTrue((store / ".matrixark-local-context-backfill.complete.json").exists())
+            self.assertTrue((store / ".matrixark-local-context-backfill.codex.complete.json").exists())
             self.assertTrue((work / ".done").exists())
 
     def test_existing_live_prompt_record_without_marker_still_backfills(self) -> None:
@@ -91,7 +91,7 @@ printf '{"accepted":%s,"failed":0}\\n' "$count"
             proc = self._run_daemon(temp_root, work, store)
 
             self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertTrue((store / ".matrixark-local-context-backfill.complete.json").exists())
+            self.assertTrue((store / ".matrixark-local-context-backfill.codex.complete.json").exists())
 
     def test_completed_store_marker_skips_reingest(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -102,7 +102,7 @@ printf '{"accepted":%s,"failed":0}\\n' "$count"
             self._write_emitted_codex_rows(work)
             (store / "indexes").mkdir(parents=True)
             (store / "indexes" / "shard-1.index.json").write_text('{"context_events":[1]}', encoding="utf-8")
-            (store / ".matrixark-local-context-backfill.complete.json").write_text("{}", encoding="utf-8")
+            (store / ".matrixark-local-context-backfill.codex.complete.json").write_text("{}", encoding="utf-8")
 
             proc = self._run_daemon(temp_root, work, store)
 
@@ -115,8 +115,11 @@ printf '{"accepted":%s,"failed":0}\\n' "$count"
         self.assertIn('CHUNK="${MATRIXARK_BACKFILL_CHUNK:-4000}"', script)
         self.assertIn('MATRIXARK_BACKFILL_RAW_FIRST="${MATRIXARK_BACKFILL_RAW_FIRST:-1}"', script)
         self.assertIn('MATRIXARK_BACKFILL_CARGO_OFFLINE', script)
+        self.assertIn('MATRIXARK_BACKFILL_BATCH_TIMEOUT_SECONDS', script)
         self.assertIn('--report "$EMIT_REPORT"', script)
         self.assertIn("CARGO_ARGS=(build --release -q -p temporalstore-rust --bin context_batch_ingest)", script)
+        self.assertIn("unique_roots=0", script)
+        self.assertIn("JOBS > unique_roots", script)
 
     def test_daemon_writes_status_for_completed_backfill(self) -> None:
         with tempfile.TemporaryDirectory() as td:

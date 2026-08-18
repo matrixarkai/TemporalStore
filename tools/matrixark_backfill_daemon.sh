@@ -52,8 +52,10 @@ YIELD_MS="${MATRIXARK_BACKFILL_YIELD_MS:-200}"
 INGESTER="$REPO_ROOT/tools/matrixark_local_backfill_ingester.py"
 WORK="${MATRIXARK_BACKFILL_WORK:-/root/.matrixark/temporalstore-backfill}"
 CHUNK="${MATRIXARK_BACKFILL_CHUNK:-4000}"
+BATCH_TIMEOUT_SECONDS="${MATRIXARK_BACKFILL_BATCH_TIMEOUT_SECONDS:-300}"
 AGENTS="${MATRIXARK_BACKFILL_AGENTS:-claude codex}"
 SOURCES="${MATRIXARK_BACKFILL_SOURCES:-transcripts,rollouts,dual_hooks,external_memory,resources}"
+SORT_JSONL_BY_SESSION="${MATRIXARK_BACKFILL_SORT_JSONL_BY_SESSION:-1}"
 LOCK="$WORK/.lock"
 DONE="$WORK/.done"
 LOG="$WORK/daemon.log"
@@ -148,11 +150,13 @@ store_has_memory() {
 }
 agent_marker_path() {
   local root="$1"
-  echo "$root/.matrixark-local-context-backfill.complete.json"
+  local ag="$2"
+  echo "$root/.matrixark-local-context-backfill.$ag.complete.json"
 }
 agent_backfill_complete() {
   local root="$1"
-  [[ -f "$(agent_marker_path "$root")" ]] && store_has_memory "$root"
+  local ag="$2"
+  [[ -f "$(agent_marker_path "$root" "$ag")" ]] && store_has_memory "$root"
 }
 write_agent_marker() {
   local ag="$1"
@@ -171,6 +175,7 @@ payload = {
     "contract": "local_context_backfill_complete",
 }
 path = os.path.join(root, ".matrixark-local-context-backfill.complete.json")
+path = os.path.join(root, f".matrixark-local-context-backfill.{agent}.complete.json")
 tmp = path + f".{os.getpid()}.tmp"
 with open(tmp, "w", encoding="utf-8") as fh:
     json.dump(payload, fh, separators=(",", ":"))
@@ -190,7 +195,7 @@ else
   fresh_empty=0
   for AG in $AGENTS; do
     ROOT="$(agent_root "$AG")"
-    if ! agent_backfill_complete "$ROOT"; then
+    if ! agent_backfill_complete "$ROOT" "$AG"; then
       need_backfill=1
       store_has_memory "$ROOT" || fresh_empty=1
     fi
@@ -234,6 +239,95 @@ if [[ ! -f "$WORK/.emitted" ]]; then
   touch "$WORK/.emitted"
 fi
 
+if [[ "$SORT_JSONL_BY_SESSION" != "0" && "$SORT_JSONL_BY_SESSION" != "false" && "$SORT_JSONL_BY_SESSION" != "no" && ! -f "$WORK/.sorted" ]]; then
+  if compgen -G "$WORK/.offset.*" >/dev/null; then
+    log "existing offsets present; preserving committed prefixes and sorting remaining tails by session_id,ts_ms"
+    write_status "sorting_jsonl_tails" "" 0 0 "preserve_offsets_session_locality"
+    "$PYTHON" - "$WORK" $AGENTS <<'PY' 2>>"$LOG" || { log "tail sort failed"; write_status "failed" "" 0 0 "tail_sort_failed"; exit 0; }
+import json, os, sys
+from pathlib import Path
+
+work = Path(sys.argv[1])
+for agent in sys.argv[2:]:
+    path = work / f"backfill.{agent}.jsonl"
+    offset_path = work / f".offset.{agent}"
+    if not path.exists() or not offset_path.exists():
+        continue
+    try:
+        offset = max(0, int(offset_path.read_text(encoding="utf-8").strip() or "0"))
+    except Exception:
+        continue
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if offset >= len(lines):
+        continue
+    prefix = lines[:offset]
+    tail_rows = []
+    for ordinal, line in enumerate(lines[offset:]):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except Exception:
+            tail_rows.append(("", 0, ordinal, line))
+            continue
+        tail_rows.append((
+            str(row.get("session_id") or ""),
+            int(row.get("ts_ms") or 0),
+            ordinal,
+            json.dumps(row, ensure_ascii=False, separators=(",", ":")),
+        ))
+    tail_rows.sort(key=lambda item: (item[0], item[1], item[2]))
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
+    with tmp.open("w", encoding="utf-8") as out:
+        for line in prefix:
+            out.write(line)
+            out.write("\n")
+        for *_unused, encoded in tail_rows:
+            out.write(encoded)
+            out.write("\n")
+    os.replace(tmp, path)
+PY
+  else
+  log "sorting per-agent JSONL by session_id,ts_ms for chunk locality"
+  write_status "sorting_jsonl" "" 0 0 "session_locality"
+  "$PYTHON" - "$WORK" $AGENTS <<'PY' 2>>"$LOG" || { log "sort failed"; write_status "failed" "" 0 0 "sort_failed"; exit 0; }
+import json, os, sys
+from pathlib import Path
+
+work = Path(sys.argv[1])
+for agent in sys.argv[2:]:
+    path = work / f"backfill.{agent}.jsonl"
+    if not path.exists():
+        continue
+    rows = []
+    with path.open(encoding="utf-8") as fh:
+        for ordinal, line in enumerate(fh):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                rows.append(("", 0, ordinal, line))
+                continue
+            rows.append((
+                str(row.get("session_id") or ""),
+                int(row.get("ts_ms") or 0),
+                ordinal,
+                json.dumps(row, ensure_ascii=False, separators=(",", ":")),
+            ))
+    rows.sort(key=lambda item: (item[0], item[1], item[2]))
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
+    with tmp.open("w", encoding="utf-8") as out:
+        for *_unused, encoded in rows:
+            out.write(encoded)
+            out.write("\n")
+    os.replace(tmp, path)
+PY
+  fi
+  touch "$WORK/.sorted"
+fi
+
 # 3) Ingest each agent in resumable chunks.
 agent_account() { case "$1" in claude) echo acct_claude;; codex) echo acct_codex;; *) echo "acct_$1";; esac; }
 agent_tenant()  { case "$1" in claude) echo tenant_claude;; codex) echo tenant_codex;; *) echo "tenant_$1";; esac; }
@@ -241,13 +335,28 @@ agent_tenant()  { case "$1" in claude) echo tenant_claude;; codex) echo tenant_c
 # independent and run concurrently; chunks WITHIN an agent stay sequential (one
 # per-store write lock + a resumable offset that must advance in order). Parallel
 # writers into a SINGLE store would only contend on that lock, so we never split
-# one agent across workers. JOBS defaults to min(cores-1, #agents).
+# one agent across workers. JOBS defaults to min(cores-1, #unique roots).
 num_agents=$(echo $AGENTS | wc -w)
 JOBS="${MATRIXARK_BACKFILL_JOBS:-0}"
 if (( JOBS <= 0 )); then
   ncpu=$(nproc 2>/dev/null || echo 2)
   JOBS=$(( ncpu > 1 ? ncpu - 1 : 1 ))
   (( JOBS > num_agents )) && JOBS=$num_agents
+  (( JOBS < 1 )) && JOBS=1
+  unique_roots=0
+  roots_seen=""
+  for AG in $AGENTS; do
+    ROOT="$(agent_root "$AG")"
+    case " $roots_seen " in
+      *" $ROOT "*) ;;
+      *) roots_seen="$roots_seen $ROOT"; unique_roots=$(( unique_roots + 1 )) ;;
+    esac
+  done
+  # Codex and Claude normally share one durable Rust hook root. Parallel writers
+  # into the same shard contend on the WAL/index/cache files and make fresh-start
+  # backfill dramatically slower, so default concurrency is bounded by unique
+  # roots. Set MATRIXARK_BACKFILL_JOBS explicitly to override for experiments.
+  (( JOBS > unique_roots )) && JOBS=$unique_roots
   (( JOBS < 1 )) && JOBS=1
 fi
 
@@ -258,7 +367,7 @@ backfill_agent() {
   local SRC="$WORK/backfill.$AG.jsonl"
   local ROOT; ROOT="$(agent_root "$AG")"
   [[ -f "$SRC" ]] || { write_status "agent_skipped" "$AG" 0 0 "source_jsonl_missing"; echo skipped >"$WORK/.status.$AG"; return 0; }
-  if [[ "$FORCE" != "1" ]] && agent_backfill_complete "$ROOT"; then
+  if [[ "$FORCE" != "1" ]] && agent_backfill_complete "$ROOT" "$AG"; then
     log "$AG: local-context backfill marker present ($ROOT); recovering from persistence, skipping local-context backfill"
     write_status "agent_skipped" "$AG" 0 0 "agent_backfill_marker_present"
     echo skipped >"$WORK/.status.$AG"; return 0
@@ -270,13 +379,14 @@ backfill_agent() {
   write_status "agent_ingesting" "$AG" "$off" "$total" "resume_offset"
   while (( off < total )); do
     end=$(( off + CHUNK ))
+    (( end > total )) && end=$total
     log "$AG: ingesting rows $((off+1))..$([[ $end -gt $total ]] && echo $total || echo $end) / $total"
     if sed -n "$((off+1)),${end}p" "$SRC" | \
         MATRIXARK_AGENT_NAME="$AG" MATRIXARK_ACCOUNT_ID="$(agent_account "$AG")" \
         MATRIXARK_TENANT_ID="$(agent_tenant "$AG")" MATRIXARK_USER_ID="${USER:-root}" \
         MATRIXARK_BACKFILL_RAW_FIRST="${MATRIXARK_BACKFILL_RAW_FIRST:-1}" \
         TEMPORALSTORE_RUST_CODEX_HOOK_ROOT="$ROOT" \
-        $NICE_PREFIX "$BATCH" --agent-name "$AG" >>"$LOG" 2>&1; then
+        timeout "$BATCH_TIMEOUT_SECONDS" $NICE_PREFIX "$BATCH" --agent-name "$AG" >>"$LOG" 2>&1; then
       off=$end
       echo "$off" >"$off_file"
       write_status "agent_ingesting" "$AG" "$off" "$total" "chunk_committed"

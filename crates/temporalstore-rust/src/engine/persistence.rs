@@ -136,7 +136,9 @@ impl TemporalEngine {
         // a corrupt index-log delta yields None here. The authoritative load path
         // (`load_shard_with`) calls `load_index_checked` instead so it can REFUSE the load on
         // corruption rather than silently serving a base-only prefix.
-        self.load_index_inner(shard_id, warm_cache, true).ok().flatten()
+        self.load_index_inner(shard_id, warm_cache, true)
+            .ok()
+            .flatten()
     }
 
     /// Fold-aware load that surfaces a corrupt served-index delta as `Err` so the caller can
@@ -245,7 +247,11 @@ impl TemporalEngine {
     /// addresses (authoritative replace per covered key) and its per-key non-page state is
     /// applied, then the reconstructed anchor advances so WAL replay re-executes only the
     /// uncaptured (e.g. async) tail rather than relocating the pages the deltas already pin.
-    fn fold_index_log_deltas(&self, shard_id: ShardId, shard: &mut ShardState) -> Result<(), Status> {
+    fn fold_index_log_deltas(
+        &self,
+        shard_id: ShardId,
+        shard: &mut ShardState,
+    ) -> Result<(), Status> {
         // Propagate a corrupt/holed delta stream instead of silently folding a prefix. A
         // silently-skipped delta advances the reconstructed anchor past a removal/eviction that
         // lives ONLY in the delta (not the WAL), so it is recovered from neither source -- a
@@ -326,8 +332,19 @@ impl TemporalEngine {
                     let anchor = std::env::var("MATRIXARK_BULK_INGEST_REPLAY_FROM_SEQUENCE")
                         .ok()
                         .and_then(|value| value.parse::<u64>().ok())
-                        .unwrap_or(default_anchor)
-                        .min(default_anchor);
+                        .map(|start_sequence| {
+                            let expected_tail =
+                                std::env::var("MATRIXARK_BULK_INGEST_EXPECTED_WAL_COMMANDS")
+                                    .ok()
+                                    .and_then(|value| value.parse::<u64>().ok())
+                                    .and_then(|written| start_sequence.checked_add(written));
+                            if expected_tail == Some(default_anchor) {
+                                default_anchor
+                            } else {
+                                start_sequence.min(default_anchor)
+                            }
+                        })
+                        .unwrap_or(default_anchor);
                     shard.applied_wal_sequence = Some(anchor);
                     serialize_index(shard)
                 }
@@ -359,7 +376,11 @@ impl TemporalEngine {
     /// both the below-threshold (no dump) and above-threshold (dump) branches deterministically
     /// without mutating the process-wide gap env mid-test.
     #[cfg(test)]
-    pub fn maybe_dump_index_catalog_with_gap_for_test(&self, shard_id: ShardId, gap_bytes: u64) -> bool {
+    pub fn maybe_dump_index_catalog_with_gap_for_test(
+        &self,
+        shard_id: ShardId,
+        gap_bytes: u64,
+    ) -> bool {
         if !crate::index_log::index_catalog_fold_enabled() {
             return false;
         }
@@ -394,11 +415,17 @@ impl TemporalEngine {
         let (index_bytes, anchor) = {
             let shards = self.shards.read().expect("engine lock poisoned");
             match shards.get(&shard_id) {
-                Some(shard) => (serialize_index(shard), shard.applied_wal_sequence.unwrap_or(0)),
+                Some(shard) => (
+                    serialize_index(shard),
+                    shard.applied_wal_sequence.unwrap_or(0),
+                ),
                 None => return false,
             }
         };
-        if self.persist_index_bytes_durable(shard_id, &index_bytes).is_err() {
+        if self
+            .persist_index_bytes_durable(shard_id, &index_bytes)
+            .is_err()
+        {
             return false;
         }
         // 3. Fold the band/zone catalog into a MetaItem anchor and append it durably to the
@@ -416,7 +443,14 @@ impl TemporalEngine {
         };
         if self
             .index_log_store
-            .append_delta(shard_id, Vec::new(), Vec::new(), Some(anchor), Some(meta), true)
+            .append_delta(
+                shard_id,
+                Vec::new(),
+                Vec::new(),
+                Some(anchor),
+                Some(meta),
+                true,
+            )
             .is_err()
         {
             return false;
@@ -427,7 +461,11 @@ impl TemporalEngine {
         true
     }
 
-    pub(super) fn persist_index_bytes(&self, shard_id: ShardId, bytes: &[u8]) -> Result<(), std::io::Error> {
+    pub(super) fn persist_index_bytes(
+        &self,
+        shard_id: ShardId,
+        bytes: &[u8],
+    ) -> Result<(), std::io::Error> {
         // Bulk backfill defers the served-index rewrite to flush_shard_index()
         // (turns O(n^2) per-record persistence into one write per batch).
         if bulk_ingest_mode() {
@@ -458,7 +496,11 @@ impl TemporalEngine {
         atomic_write_bytes(&self.index_path(shard_id), bytes)
     }
 
-    pub(super) fn validate_load_version(&self, shard_id: ShardId, load_version: u64) -> Result<(), Status> {
+    pub(super) fn validate_load_version(
+        &self,
+        shard_id: ShardId,
+        load_version: u64,
+    ) -> Result<(), Status> {
         let infos = self.infos.read().expect("info lock poisoned");
         let Some(info) = infos.get(&shard_id) else {
             return Err(Status::error(
@@ -500,7 +542,8 @@ impl TemporalEngine {
             let set_records = state.sets.len();
             let feature_records = state.features.len();
             let sequence_records = state.sequences.len();
-            let control_state_records = state.control_state.len() + state.control_state_changes.len();
+            let control_state_records =
+                state.control_state.len() + state.control_state_changes.len();
             let loaded = info.as_ref().map(|info| info.loaded).unwrap_or(true);
             let readonly = info.as_ref().map(|info| info.readonly).unwrap_or(false);
             let load_version = info
@@ -523,7 +566,8 @@ impl TemporalEngine {
                 .as_ref()
                 .map(|info| info.end_routing_bucket)
                 .unwrap_or(u32::MAX);
-            let object_manager = object_manager_stats(state, start_routing_bucket, end_routing_bucket);
+            let object_manager =
+                object_manager_stats(state, start_routing_bucket, end_routing_bucket);
             let secondary_view_total_records = string_records
                 + hash_records
                 + set_records

@@ -57,13 +57,28 @@ struct SessionIndex {
 }
 
 fn main() {
+    let process_started = Instant::now();
     // Bulk backfill: defer per-record index persistence to flush_shard_index()
     // (see MATRIXARK_BULK_INGEST gate in the engine). Turns O(n^2) into O(n).
     std::env::set_var("MATRIXARK_BULK_INGEST", "1");
+    // Bulk backfill writes many WAL records into an already-large live hook store.
+    // Trust the WAL's verified in-process sequence cache so each append does not
+    // rescan the full WAL file to find the tail.
+    if std::env::var("TS_PHASE1_FLAT").is_err() {
+        std::env::set_var("TS_PHASE1_FLAT", "1");
+    }
+    if std::env::var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD").is_err() {
+        std::env::set_var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD", "0");
+    }
     if std::env::var("MATRIXARK_CONTEXT_INGEST_GATE_L1").is_err() {
         std::env::set_var("MATRIXARK_CONTEXT_INGEST_GATE_L1", "1");
     }
     let raw_first = env_bool("MATRIXARK_BACKFILL_RAW_FIRST");
+    let sub_batch: usize = std::env::var("MATRIXARK_BACKFILL_SUB_BATCH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(250);
     let max_body: usize = std::env::var("MATRIXARK_BACKFILL_MAX_BODY")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -101,6 +116,7 @@ fn main() {
 
     fs::create_dir_all(&root).expect("hook root should be creatable");
     // Load the engine ONCE for the whole stream.
+    let load_started = Instant::now();
     let engine = TemporalEngine::with_local_dirs(
         4 * 1024 * 1024,
         root.join("cache"),
@@ -108,6 +124,7 @@ fn main() {
         root.join("indexes"),
     );
     engine.load_shard(1);
+    let load_seconds = load_started.elapsed().as_secs_f64();
     let replay_from_sequence = engine.write_ahead_log_store().stats(1).last_sequence;
     std::env::set_var(
         "MATRIXARK_BULK_INGEST_REPLAY_FROM_SEQUENCE",
@@ -223,8 +240,10 @@ fn main() {
             }
         }
     }
+    let read_seconds = started.elapsed().as_secs_f64();
 
     let flush_every_session = env_bool("MATRIXARK_BACKFILL_FLUSH_EVERY_SESSION");
+    let ingest_started = Instant::now();
     for (session_id, sources) in groups.into_iter() {
         if sources.is_empty() {
             continue;
@@ -233,28 +252,38 @@ fn main() {
             "{}:{}:{}:{}",
             account_id, tenant_id, user_id, session_id
         ));
-        let (session_accepted, session_failed, node_hashes) = if raw_first {
-            write_raw_sources(&engine, tenant_hash, &sources)
-        } else {
-            let report = ingest_extract_context(
-                &engine,
-                ContextIngestExtractRequest {
-                    shard_id: 1,
-                    tenant_hash,
-                    sources,
-                    query: String::new(), // ingest-only: skip retrieval work during backfill
-                    start_time_ms: 0,
-                    end_time_ms,
-                    max_events: 1,
-                    provider: ContextModelProviderConfig::default(),
-                },
-            );
-            (
-                report.accepted as u64,
-                report.failed as u64,
-                report.node_hashes,
-            )
-        };
+        let mut session_accepted = 0u64;
+        let mut session_failed = 0u64;
+        let mut node_hashes = Vec::new();
+        for chunk in sources.chunks(sub_batch) {
+            let (chunk_accepted, chunk_failed, chunk_node_hashes) = if raw_first {
+                write_raw_sources(&engine, tenant_hash, chunk)
+            } else {
+                let report = ingest_extract_context(
+                    &engine,
+                    ContextIngestExtractRequest {
+                        shard_id: 1,
+                        tenant_hash,
+                        sources: chunk.to_vec(),
+                        query: String::new(), // ingest-only: skip retrieval work during backfill
+                        start_time_ms: 0,
+                        end_time_ms,
+                        max_events: 1,
+                        provider: ContextModelProviderConfig::default(),
+                    },
+                );
+                (
+                    report.accepted as u64,
+                    report.failed as u64,
+                    report.node_hashes,
+                )
+            };
+            session_accepted += chunk_accepted;
+            session_failed += chunk_failed;
+            node_hashes.extend(chunk_node_hashes);
+        }
+        node_hashes.sort_unstable();
+        node_hashes.dedup();
         accepted += session_accepted;
         failed += session_failed;
         if !node_hashes.is_empty() {
@@ -275,15 +304,24 @@ fn main() {
             session_id,
             session_accepted,
             session_failed,
-            accepted as f64 / started.elapsed().as_secs_f64().max(0.001)
+            accepted as f64 / ingest_started.elapsed().as_secs_f64().max(0.001)
         );
     }
+    let ingest_seconds = ingest_started.elapsed().as_secs_f64();
 
     // Persist the TemporalStore shard index once per process/chunk. This is the
     // main latency win for fresh-start backfill: the daemon already chunks and
     // resumes, so we keep durability at each chunk boundary without rewriting
     // the full index once per session.
+    let flush_started = Instant::now();
+    if raw_first && failed == 0 {
+        std::env::set_var(
+            "MATRIXARK_BULK_INGEST_EXPECTED_WAL_COMMANDS",
+            accepted.saturating_mul(4).to_string(),
+        );
+    }
     engine.flush_shard_index(1);
+    let flush_seconds = flush_started.elapsed().as_secs_f64();
 
     // Dedup and persist the session index once.
     for nodes in index.sessions.values_mut() {
@@ -304,12 +342,17 @@ fn main() {
         "accepted": accepted,
         "failed": failed,
         "skipped": skipped,
-        "seconds": started.elapsed().as_secs_f64(),
+        "seconds": process_started.elapsed().as_secs_f64(),
+        "load_seconds": load_seconds,
+        "read_seconds": read_seconds,
+        "ingest_seconds": ingest_seconds,
+        "flush_seconds": flush_seconds,
         "session_count": index.sessions.len(),
         "total_nodes": index.sessions.values().map(Vec::len).sum::<usize>(),
         "replay_from_sequence": replay_from_sequence,
         "gate_l1": env_bool("MATRIXARK_CONTEXT_INGEST_GATE_L1"),
         "raw_first": raw_first,
+        "sub_batch": sub_batch,
     });
     println!(
         "{}",
