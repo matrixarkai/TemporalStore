@@ -69,7 +69,8 @@ fn raft_apply_batch_coalesces_to_one_fsync_while_off_is_one_per_entry() {
     let _serial = RAFT_APPLY_ENV_LOCK.lock().unwrap();
 
     // --- Baseline: gate OFF -> per-entry execute_raft_apply -> one fsync per committed entry. ---
-    std::env::remove_var("TS_RAFT_APPLY_COALESCE");
+    // The gate defaults ON, so "off" has to be stated; unsetting would re-test the on-path.
+    std::env::set_var("TS_RAFT_APPLY_COALESCE", "0");
     let off_dir = tempfile::tempdir().unwrap();
     let off = new_engine(off_dir.path());
     let before = off.write_ahead_log_store().stats(1).syncs;

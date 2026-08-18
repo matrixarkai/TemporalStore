@@ -1825,11 +1825,12 @@ pub(super) fn wal_single_barrier() -> bool {
 /// UNDER the `shards` lock (preserving WAL-order == apply-order), then RELEASES the lock and
 /// awaits the durable barrier (`commit_barrier`). This lets concurrent same-shard writers reach
 /// the group-commit queue while a peer's fdatasync is in flight, so #45's fsync coalescing
-/// actually engages (fewer fsyncs than writes; QPS scales with concurrency). Default OFF ->
-/// byte-identical to the legacy in-lock `append_with_sync` barrier. The ack is always returned
-/// strictly AFTER the covering barrier succeeds, so durability is never weakened.
+/// actually engages (fewer fsyncs than writes; QPS scales with concurrency). Default ON; set
+/// TS_ENGINE_CONCURRENT_COMMIT=0 for the legacy in-lock `append_with_sync` barrier, which is
+/// byte-identical. The ack is always returned strictly AFTER the covering barrier succeeds,
+/// so durability is never weakened either way.
 fn engine_concurrent_commit() -> bool {
-    env_flag_on("TS_ENGINE_CONCURRENT_COMMIT")
+    env_flag_default_on("TS_ENGINE_CONCURRENT_COMMIT")
 }
 
 /// TS_PHASE1_FLAT: make phase-1 (the work under the global `shards` write lock in
@@ -1840,20 +1841,38 @@ fn engine_concurrent_commit() -> bool {
 /// `execute_with_storage_override`, which walks + clones every live model-map entry only to
 /// re-confirm that `bucket_index` (which every write already keeps authoritative) is in sync. With
 /// the gate on, once a promote scan has confirmed sync (`ShardState.promote_scan_done`) the hot
-/// path skips the repeat scan. Default OFF -> byte-identical (the scan runs every command exactly
-/// as before). Sharing one gate with the WAL fast-append so a single switch flattens phase-1.
+/// path skips the repeat scan. Default ON; set TS_PHASE1_FLAT=0 to restore the unconditional
+/// scan (byte-identical to the pre-gate path). Shares one gate with the WAL fast-append so a
+/// single switch flattens phase-1.
 fn phase1_flat_enabled() -> bool {
-    env_flag_on("TS_PHASE1_FLAT")
+    env_flag_default_on("TS_PHASE1_FLAT")
 }
 
 /// TS_RAFT_APPLY_COALESCE: on the raft state-machine apply path, coalesce the per-committed-entry
 /// engine-WAL fdatasync across a whole committed batch (one fsync per AppendEntries batch / recovery
 /// replay / pipelined-propose group instead of one per entry) and anchor the served index off the
-/// O(1) cached WAL sequence. Default OFF -> per-entry `execute_raft_apply` (byte-identical). The
-/// raft log stays the durability + reconstruction source; the coalesced barrier still completes
-/// before the raft runtime advances the durable applied_index.
+/// O(1) cached WAL sequence. Default ON; set TS_RAFT_APPLY_COALESCE=0 for the per-entry
+/// `execute_raft_apply` path (byte-identical). The raft log stays the durability +
+/// reconstruction source; the coalesced barrier still completes before the raft runtime
+/// advances the durable applied_index.
 fn raft_apply_coalesce() -> bool {
-    env_flag_on("TS_RAFT_APPLY_COALESCE")
+    env_flag_default_on("TS_RAFT_APPLY_COALESCE")
+}
+
+/// Read a gate that is ON unless explicitly disabled.
+///
+/// The opt-in `env_flag_on` treats "unset" as off, which is the right default for a gate that
+/// is still being proven. Once a gate IS the intended path, that polarity inverts: unset must
+/// mean on, and disabling has to be spelled out. Mirrors `group_commit_enabled`, which has
+/// used this shape since it became the default.
+fn env_flag_default_on(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(value) => !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => true,
+    }
 }
 
 fn env_flag_on(name: &str) -> bool {
