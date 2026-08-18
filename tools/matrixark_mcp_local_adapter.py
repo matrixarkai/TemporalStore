@@ -59,6 +59,29 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_summary_runtime import async_summary_progress_records
 
 try:
+    from tools.matrixark_tenant_policy import register_tenant_policy_records, resolve as resolve_tenant_policy
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_tenant_policy import register_tenant_policy_records, resolve as resolve_tenant_policy
+
+try:
+    from tools.matrixark_tenant_policy import (
+        describe_effective_policy,
+        set_tenant_policy as _set_tenant_policy,
+        tenant_policy_record,
+    )
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_tenant_policy import (
+        describe_effective_policy,
+        set_tenant_policy as _set_tenant_policy,
+        tenant_policy_record,
+    )
+
+try:
+    from tools.matrixark_tenant_policy import tenant_of as tenant_of_scope
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_tenant_policy import tenant_of as tenant_of_scope
+
+try:
     from tools.matrixark_pipeline_task_slim import bound_pipeline_task_footprint
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_pipeline_task_slim import bound_pipeline_task_footprint
@@ -4002,7 +4025,11 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         return kept
 
     def _apply_serving_dedup(self, records: list[Json]) -> list[Json]:
-        return self._coalesce_summary_dirty(self._filter_duplicate_model_registry(records))
+        # Both append() and append_many() funnel through here, so per-tenant record policy is
+        # enforced in exactly one place.
+        return self._drop_policy_disabled_records(
+            self._coalesce_summary_dirty(self._filter_duplicate_model_registry(records))
+        )
 
     def append(self, record: Json) -> None:
         records = self._apply_serving_dedup(
@@ -4027,6 +4054,95 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         # records -- expansion of the on-disk interned form yields exactly these.
         self._update_read_cache_after_append(sanitized)
         self._maintain_event_membership_after_append(records)
+
+    def set_tenant_policy(self, args: Json) -> Json:
+        """Change ONE tenant's memory policy on a running service.
+
+        Two effects, both required for a live multi-tenant service:
+
+        * **immediate** -- the in-memory policy is updated before this returns, so the very next
+          write or read for that tenant obeys it. No restart, no reconnect, no cache flush, and no
+          effect on any other tenant (every other tenant resolves its own policy independently).
+        * **durable** -- a ``matrixark_tenant_policy`` record is appended to the log, so a process
+          that starts later replays it (see ``_register_persisted_tenant_policies``) and the tenant
+          keeps the setting instead of silently reverting to the deployment default.
+
+        Returns the tenant's full override set and the effective value of every knob."""
+        tenant = str(args.get("tenant_id") or args.get("tenant") or "").strip()
+        if not tenant:
+            scope = args.get("scope") if isinstance(args.get("scope"), dict) else {}
+            tenant = str(scope.get("tenant_id") or "").strip()
+        if not tenant:
+            raise MatrixArkError("set_tenant_policy requires a tenant_id")
+        policy = args.get("policy") if isinstance(args.get("policy"), dict) else {}
+        if not policy:
+            raise MatrixArkError("set_tenant_policy requires a policy object")
+        merge = bool(args.get("merge", True))
+        applied = _set_tenant_policy(tenant, policy, merge=merge)
+        self.append(tenant_policy_record(tenant, applied))
+        return {
+            "tenant_id": tenant,
+            "policy": applied,
+            "effective": describe_effective_policy({"tenant_id": tenant}),
+            "applied_at_ms": now_ms(),
+        }
+
+    def get_tenant_policy(self, args: Json) -> Json:
+        """Every knob's effective value for a tenant, and whether it came from the tenant, the
+        environment, or the built-in default."""
+        tenant = str(args.get("tenant_id") or args.get("tenant") or "").strip()
+        if not tenant:
+            scope = args.get("scope") if isinstance(args.get("scope"), dict) else {}
+            tenant = str(scope.get("tenant_id") or "").strip()
+        return describe_effective_policy({"tenant_id": tenant} if tenant else None)
+
+    def _register_persisted_tenant_policies(self, records: list[Json]) -> None:
+        """Re-apply policies persisted in the log, so a restart does not revert a tenant.
+
+        read_all() is a hot path, so this replays once per distinct log state rather than scanning
+        every record on every read: the scan runs when the log's identity changes (a fresh process,
+        a new append), not on repeated reads of an unchanged store. Appends register their own policy
+        rows in _drop_policy_disabled_records, so a change is never waiting on this."""
+        signature = (len(records), id(records))
+        if signature == getattr(self, "_tenant_policy_replay_signature", None):
+            return
+        try:
+            register_tenant_policy_records(records)
+        except Exception:  # policy replay must never break a load
+            pass
+        self._tenant_policy_replay_signature = signature
+
+    def _drop_policy_disabled_records(self, records: list[Json]) -> list[Json]:
+        """Filter out record kinds the owning tenant has switched off.
+
+        Applied at the single append choke point rather than at each of the ~a dozen emission sites,
+        so a policy can never be honored in one code path and missed in another. Policy rows in the
+        same batch are registered first, so a tenant can change policy and have the very next record
+        in that batch obey it."""
+        register_tenant_policy_records(records)
+        # Some derived rows (node / entity embeddings) carry neither a scope dict nor a scope_key.
+        # An append batch comes from ONE ingest or commit, so the batch's own tenant identifies them
+        # -- but only when the batch is unambiguously single-tenant. A mixed batch falls back to
+        # per-record attribution, because guessing there could drop a DIFFERENT tenant's data.
+        batch_tenants = set()
+        for record in records:
+            identity = record.get("scope") or record.get("access_scope") or record.get("scope_key")
+            tenant = tenant_of_scope(identity)
+            if tenant:
+                batch_tenants.add(tenant)
+        batch_scope = next(iter(batch_tenants)) if len(batch_tenants) == 1 else None
+        kept: list[Json] = []
+        for record in records:
+            if str(record.get("record_type") or "") == "context_embedding":
+                # A served embedding row often has no scope dict at all (interning reduces it to a
+                # scope_key), so the key -- then the batch -- is the fallback identity.
+                scope = record.get("scope") or record.get("access_scope") or record.get("scope_key")
+                if not tenant_of_scope(scope):
+                    scope = batch_scope
+                if scope is not None and not resolve_tenant_policy("generate_embeddings", scope):
+                    continue
+            kept.append(record)
+        return kept
 
     def append_many(self, records: list[Json]) -> None:
         records = self._apply_serving_dedup(
@@ -4404,7 +4520,11 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         """Live view: the compacted, tombstone-filtered log with expired / pre-cutoff records and
         internal retention-cutoff markers removed. Expiry is enforced on every read (never cached)
         so a TTL record disappears once its ``expires_at`` passes, even with no intervening write."""
-        return filter_live_memory_records(self._read_all_compacted())
+        records = self._read_all_compacted()
+        # A policy written by an earlier process is just a record in the log; replaying it here is
+        # what makes "set it once, live" outlive a restart.
+        self._register_persisted_tenant_policies(records)
+        return filter_live_memory_records(records)
 
     def _read_all_compacted(self) -> list[Json]:
         cache_key = str(self.event_log.resolve())

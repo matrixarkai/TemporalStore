@@ -155,6 +155,17 @@ except ImportError:
 )
 
 
+try:
+    from tools.matrixark_index_growth_bound import extract_segments_enabled
+except ImportError:
+    from matrixark_index_growth_bound import extract_segments_enabled
+
+try:
+    from tools.matrixark_mcp_summaries import shared_summary_text
+except ImportError:
+    from matrixark_mcp_summaries import shared_summary_text
+
+
 class _LocalAdapterIngestMixin:
     _MEMORY_UPSERT_ARG_KEYS = ("expires_at", "ttl_seconds", "retention_cutoff_ts", "identity_key", "truth_class")
 
@@ -275,7 +286,7 @@ class _LocalAdapterIngestMixin:
                     "node_hash": node_hash,
                     "node_path": node_path,
                     "text": text,
-                    "summary_text": summarize_text(text),
+                    "summary_text": shared_summary_text(text),
                     "classification": "PENDING_ASYNC_EXTRACTION",
                     "event_type": pending_event_type,
                     "batch_event_type": "pending_async",
@@ -1369,7 +1380,7 @@ class _LocalAdapterIngestMixin:
                 }
             )
         hot_record_scope = resource_record_scope if envelope["kind"] in {"resource", "skill"} else envelope["scope"]
-        summary_text = summarize_text(text)
+        summary_text = shared_summary_text(text)
         embedding_started_perf = time.perf_counter()
         event_embedding = embedding_for_text(text)
         self._observe_model_latency("embedding", (time.perf_counter() - embedding_started_perf) * 1000.0)
@@ -2157,7 +2168,7 @@ class _LocalAdapterIngestMixin:
                     "scope": envelope["scope"],
                     "access_scope": envelope["scope"],
                     "text": event_text,
-                    "summary_text": summarize_text(event_text),
+                    "summary_text": shared_summary_text(event_text),
                     "classification": extraction["classification"],
                     "event_type": event_type,
                     "batch_event_type": extraction["event_type"],
@@ -3138,7 +3149,16 @@ class _LocalAdapterIngestMixin:
                 )
 
         segment_hashes = []
-        for segment in extraction["segments"]:
+        # A context_segment is a restatement of its context_event: measured on a real store, the
+        # segment's text is the event's text (identical, or differing only by a "user:" vs "0:"
+        # prefix), and the segment records cost slightly MORE resident memory than the events they
+        # duplicate -- plus one embedding and a set of index postings each. Entities are the real
+        # distillation, so segment materialization is OFF by default and can be switched back on
+        # per deployment with MATRIXARK_EXTRACT_SEGMENTS=1.
+        segments_to_materialize = (
+            extraction["segments"] if extract_segments_enabled(envelope["scope"]) else []
+        )
+        for segment in segments_to_materialize:
             segment_hash = stable_hash(f"{batch_id_hash}:segment:{segment['topic']}:{segment['coordinate_tuples']}")
             segment_hashes.append(segment_hash)
             (

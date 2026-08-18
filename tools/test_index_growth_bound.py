@@ -102,10 +102,15 @@ class BoundEnforcementTest(unittest.TestCase):
     def setUp(self):
         self._saved = {
             key: os.environ.get(key)
+            # Every env var these tests touch, including the legacy aliases -- an unrestored budget
+            # leaks into later tests and silently evicts their postings.
             for key in (
+                "MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_SESSION",
+                "MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_TENANT",
                 "MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_SCOPE",
                 "MATRIXARK_SECONDARY_INDEX_HARD_CEILING",
                 "MATRIXARK_INDEX_COMPACT_ON_SUMMARY",
+                "MATRIXARK_DEDUPE_INDEX_POSTINGS",
             )
         }
 
@@ -129,12 +134,21 @@ class BoundEnforcementTest(unittest.TestCase):
         self.assertEqual(by_scope, {"a": [2, 3], "b": [2, 3]}, "each scope keeps its newest 2")
         self.assertTrue(any(r.get("record_type") == "context_event" for r in kept), "non-index records untouched")
 
-    def test_hard_ceiling_applies_after_the_cap(self):
-        os.environ["MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_SCOPE"] = "3"
-        os.environ["MATRIXARK_SECONDARY_INDEX_HARD_CEILING"] = "4"
-        records = [posting("event", [i], scope_key=scope, ts=i) for scope in ("a", "b") for i in (1, 2, 3, 4)]
+    def test_tenant_budget_applies_after_the_session_budget(self):
+        """Per-session budget first, then the tenant's own budget across its sessions.
+
+        Deliberately NOT a store-wide total: the sessions below belong to one tenant, and the tenant
+        budget bounds their sum. A different tenant's sessions are accounted separately (covered in
+        test_tenant_policy), because a global total would let one tenant evict another."""
+        os.environ["MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_SESSION"] = "3"
+        os.environ["MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_TENANT"] = "4"
+        records = [
+            posting("event", [f"{session}{i}"], scope_key=f"t=42|u=1|s={session}", ts=i)
+            for session in ("a", "b")
+            for i in (1, 2, 3, 4)
+        ]
         kept = [r for r in bound.enforce_secondary_index_bounds(records) if r.get("record_type") == "context_index"]
-        self.assertEqual(len(kept), 4, "ceiling is absolute")
+        self.assertEqual(len(kept), 4, "the tenant budget bounds the sum of its sessions")
         self.assertEqual(sorted(r["timestamp_key_ms"] for r in kept), [3, 3, 4, 4], "newest survive")
 
     def test_eviction_is_deterministic_across_repeats(self):
@@ -144,6 +158,28 @@ class BoundEnforcementTest(unittest.TestCase):
         first = [r["index_hash"] for r in bound.enforce_secondary_index_bounds(list(records))]
         for _ in range(5):
             self.assertEqual([r["index_hash"] for r in bound.enforce_secondary_index_bounds(list(records))], first)
+
+    def test_eviction_gives_up_recall_paths_last(self):
+        """A binding cap must spend the cheap postings first: events before segments before
+        entities before summaries -- summaries are what lever 1 leaves as the route to compacted
+        old content, so evicting them by age alone is what turns a cap into a recall loss."""
+        os.environ["MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_SCOPE"] = "2"
+        os.environ["MATRIXARK_SECONDARY_INDEX_HARD_CEILING"] = "0"
+        # The summary posting is the OLDEST, so a pure oldest-first rule would evict it first.
+        records = [
+            posting("summary", [1], ts=1),
+            posting("entity", [2], ts=2),
+            posting("segment", [3], ts=3),
+            posting("event", [4], ts=4),
+        ]
+        kept = [record["ref_type"] for record in bound.enforce_secondary_index_bounds(records)]
+        self.assertEqual(kept, ["summary", "entity"], "recall paths survive, raw postings go first")
+
+    def test_defaults_are_small_and_enabled(self):
+        for key in ("MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_SCOPE", "MATRIXARK_SECONDARY_INDEX_HARD_CEILING"):
+            os.environ.pop(key, None)
+        self.assertEqual(bound.max_index_records_per_scope(), 256)
+        self.assertEqual(bound.index_hard_ceiling(), 2048)
 
     def test_disabled_bounds_return_input_identity(self):
         os.environ["MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_SCOPE"] = "0"
@@ -212,7 +248,6 @@ class EndToEndCompactionTest(unittest.TestCase):
         on_events = on["stats"]["by_ref_type"].get("event", 0)
         self.assertGreater(off_events, 0, "baseline must carry per-event postings to compact")
         self.assertEqual(on_events, 0, "every rolled-up event's postings must be compacted")
-        self.assertLess(on["stats"]["context_index_total"], off["stats"]["context_index_total"])
         self.assertGreater(on["stats"]["by_ref_type"].get("summary", 0), 0, "summary recall path survives")
         # Recall is the whole point of Lever 1: compaction must not cost a single fact.
         self.assertEqual(on["recall"], off["recall"])

@@ -359,6 +359,10 @@ MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_delete": {"context:forget"},
     "matrixark_reset": {"context:forget"},
     "matrixark_get_all": {"context:retrieve"},
+    # Policy is tenant administration, not memory traffic: writing it needs the portal scope so an
+    # ordinary ingest/retrieve key cannot re-tune a tenant's storage.
+    "matrixark_set_tenant_policy": {"portal:write"},
+    "matrixark_get_tenant_policy": {"portal:read"},
     "matrixark_get_memory": {"context:retrieve"},
     "matrixark_get_memory_by_key": {"context:retrieve"},
     "matrixark_update_memory": {"context:ingest"},

@@ -316,6 +316,16 @@ def dispatch_matrixark_tool(server: Any, name: str, args: Json, hook: Json | Non
         )
         response = {**result, "access": args.get("_matrixark_auth", {})}
         return server._finalize_write_response(name, args, identity, hook, response)
+    if name == "matrixark_set_tenant_policy":
+        result = server.adapter.set_tenant_policy(args)
+        server.access.append_audit(
+            "tenant.policy_set", identity, status="ok",
+            details={"tenant_id": result.get("tenant_id"), "knobs": sorted(result.get("policy") or {})},
+        )
+        return {**result, "access": args.get("_matrixark_auth", {})}
+    if name == "matrixark_get_tenant_policy":
+        result = server.adapter.get_tenant_policy(args)
+        return {**result, "access": args.get("_matrixark_auth", {})}
     if name == "matrixark_get_all":
         result = server.adapter.get_all(args)
         server.access.append_audit("context.get_all", identity, status="ok", details={"count": result.get("count")})

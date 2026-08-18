@@ -36,6 +36,18 @@ SUMMARY_LLM_MODEL = os.environ.get("MATRIXARK_SUMMARY_MODEL", os.environ.get("MA
 SUMMARY_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_SUMMARY_MAX_TOKENS", "900"))
 
 
+def shared_summary_text(text: str, *, limit: int = 220) -> str:
+    """``summarize_text`` that returns the INPUT OBJECT when the summary equals it.
+
+    ``summarize_text`` is whitespace-collapse + truncate, so for any event under the limit -- the
+    common case -- it produces a string byte-identical to ``text``. Storing that as a separate
+    object means every such record carries the message body twice in memory. Returning the same
+    object makes the duplicate cost a pointer instead of a copy; the serialized value, and every
+    reader, is unchanged."""
+    summary = summarize_text(text, limit=limit)
+    return text if summary == text else summary
+
+
 def summarize_text(text: str, *, limit: int = 220) -> str:
     compact = " ".join(text.split())
     if len(compact) <= limit:
