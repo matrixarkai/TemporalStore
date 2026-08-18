@@ -1,0 +1,49 @@
+name: Auto-approve pull requests
+
+# ────────────────────────────────────────────────────────────────────────────
+# SECURITY NOTICE — READ BEFORE ENABLING
+# This workflow auto-approves EVERY pull request, including from external forks.
+# Approvals are the human-review gate; auto-approving them means untrusted code
+# can satisfy branch protection and be merged WITHOUT anyone actually reviewing it.
+# It uses `pull_request_target`, which runs in the BASE repo with access to secrets
+# even for fork PRs — so it is deliberately review-only (no checkout, no build,
+# no code execution from the PR) to avoid leaking those secrets.
+#
+# It is INERT until you add the maintainer tokens as repo secrets:
+#   MAINTAINER_PAT_1  (fine-grained PAT, "Pull requests: write", as @bjmeetsfo)
+#   MAINTAINER_PAT_2  (same, as @superhaiou)
+#   MAINTAINER_PAT_3  (same, as the third maintainer — a GitHub *user*, not the org)
+# A maintainer cannot approve their own PR, so `|| true` tolerates that case.
+# Recommended safer alternative: request reviews (CODEOWNERS already does this) and
+# approve manually, or gate auto-approval on an allow-list of trusted PR authors.
+# ────────────────────────────────────────────────────────────────────────────
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  auto-approve:
+    runs-on: ubuntu-latest
+    env:
+      PR: ${{ github.event.pull_request.number }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Approve as maintainer 1
+        if: ${{ secrets.MAINTAINER_PAT_1 != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.MAINTAINER_PAT_1 }}
+        run: gh pr review "$PR" --repo "$REPO" --approve --body "Auto-approved by maintainer (bot)." || true
+      - name: Approve as maintainer 2
+        if: ${{ secrets.MAINTAINER_PAT_2 != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.MAINTAINER_PAT_2 }}
+        run: gh pr review "$PR" --repo "$REPO" --approve --body "Auto-approved by maintainer (bot)." || true
+      - name: Approve as maintainer 3
+        if: ${{ secrets.MAINTAINER_PAT_3 != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.MAINTAINER_PAT_3 }}
+        run: gh pr review "$PR" --repo "$REPO" --approve --body "Auto-approved by maintainer (bot)." || true
