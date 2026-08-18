@@ -138,8 +138,43 @@ def extract_segments_enabled(scope: Any = None) -> bool:
 
 
 def generate_l1_summaries_enabled(scope: Any = None) -> bool:
-    """Whether `scope`'s tenant gets node_l1 summaries (default ON). L0 is always generated."""
+    """Legacy boolean form of the L1 gate; ``summary_levels`` is the explicit control."""
     return bool(resolve_tenant_policy("generate_l1_summaries", scope))
+
+
+def retrieval_budget(name: str, scope: Any = None) -> int:
+    """Per-tenant retrieval budget: top_k_per_layer | max_global_candidates | max_selected_refs.
+
+    Defaults match matrixark_mcp_runtime_config (24 / 2048 / 1000), which is the single source of
+    truth for the process-wide values; a tenant override wins over the env var, as everywhere else."""
+    if name not in {"top_k_per_layer", "max_global_candidates", "max_selected_refs"}:
+        raise KeyError(f"not a retrieval budget: {name}")
+    return int(resolve_tenant_policy(name, scope))
+
+
+def summary_levels(scope: Any = None) -> str:
+    """Which node summary levels `scope`'s tenant generates: auto | l0 | l0_l1 | none.
+
+    ``auto`` is the historical behavior (L0 always, L1 by content rule). The explicit values exist
+    because the content rule can only be subtracted from otherwise -- there was no way to say
+    "always both" or "never any"."""
+    level = str(resolve_tenant_policy("summary_levels", scope) or "auto")
+    if level == "auto" and not generate_l1_summaries_enabled(scope):
+        # honor the older boolean knob when a deployment still sets it
+        return "l0"
+    return level
+
+
+def node_summary_plan(scope: Any = None, *, conditional_l1: bool) -> tuple[bool, bool]:
+    """Return ``(generate_l0, generate_l1)`` for `scope`'s tenant given the content rule's verdict."""
+    level = summary_levels(scope)
+    if level == "none":
+        return (False, False)
+    if level == "l0":
+        return (True, False)
+    if level == "l0_l1":
+        return (True, True)
+    return (True, bool(conditional_l1))
 
 
 def generate_embeddings_enabled(scope: Any = None) -> bool:
