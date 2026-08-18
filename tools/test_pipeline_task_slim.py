@@ -199,10 +199,8 @@ class EndToEndTest(unittest.TestCase):
         off = self._run(collapse="0")
         on = self._run(collapse="1")
         self.assertEqual(on["recall"], off["recall"], "recall must not move")
-        self.assertEqual(on["stats"]["distinct_task_states"], off["stats"]["distinct_task_states"],
-                         "every (task, status) the pipeline reached must survive")
-        self.assertLess(on["stats"]["pipeline_tasks"], off["stats"]["pipeline_tasks"],
-                        "duplicate stampings must actually be removed")
+        # Counts across two ingest runs are not comparable -- async pipeline timing decides how many
+        # task rows each run produces -- so the survival claim is checked on ONE record set below.
         # Two ingest runs mint different event ids, so the ids themselves are not comparable across
         # arms -- the equivalence that matters is on ONE record set: collapsing the un-collapsed
         # store must leave every consumer rule's answer bit-identical.
@@ -214,6 +212,9 @@ class EndToEndTest(unittest.TestCase):
         finally:
             os.environ.pop("MATRIXARK_COLLAPSE_PIPELINE_TASK_ROWS", None)
         self.assertLess(len(collapsed_tasks), len(raw_tasks), "duplicate stampings must be removed")
+        states = lambda rows: {(str(r.get("task_hash")), str(r.get("status"))) for r in rows}
+        self.assertEqual(states(collapsed_tasks), states(raw_tasks),
+                         "every (task, status) the pipeline reached must survive the collapse")
         self.assertEqual(fingerprint(collapsed_tasks), fingerprint(raw_tasks),
                          "readiness / dashboard / positional / extraction-signal answers must be identical")
 

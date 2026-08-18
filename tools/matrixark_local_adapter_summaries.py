@@ -1021,7 +1021,7 @@ class _LocalAdapterSummariesMixin:
             # summary now have redundant per-event postings -- the summary's own postings cover the
             # same content -- so tombstone them. Appended AFTER the summary + its postings so the
             # order-aware sweep reaches the older event postings and never the new summary ones.
-            if index_compact_on_summary_enabled():
+            if index_compact_on_summary_enabled(dirty.get("scope", scope)):
                 compaction_tombstone = index_compaction_tombstone(
                     source_event_ids=source_event_ids,
                     scope=dirty.get("scope", scope),

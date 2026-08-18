@@ -151,6 +151,21 @@ except ImportError:
     from test_codex_pipeline_part1 import _CodexPipelinePart1
 
 class MatrixArkCodexHookPipelineTest(unittest.TestCase, _CodexPipelinePart5, _CodexPipelinePart4, _CodexPipelinePart3, _CodexPipelinePart2, _CodexPipelinePart1):
+    def setUp(self) -> None:
+        # context_segment materialization is opt-in (a segment restates its event, so it is off by
+        # default -- see matrixark_index_growth_bound.extract_segments_enabled). These tests assert
+        # SEGMENT behavior, so they turn the feature on rather than assert the default.
+        super().setUp()
+        self._saved_extract_segments = os.environ.get("MATRIXARK_EXTRACT_SEGMENTS")
+        os.environ["MATRIXARK_EXTRACT_SEGMENTS"] = "1"
+
+    def tearDown(self) -> None:
+        if self._saved_extract_segments is None:
+            os.environ.pop("MATRIXARK_EXTRACT_SEGMENTS", None)
+        else:
+            os.environ["MATRIXARK_EXTRACT_SEGMENTS"] = self._saved_extract_segments
+        super().tearDown()
+
     def test_hook_lineage_summary_counts_scalar_source_roles(self) -> None:
         summary = matrixark_codex_hook.memory_lineage_summary(
             {

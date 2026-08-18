@@ -14,19 +14,34 @@ that growth in three layers, applied in this order:
    event postings. The index stays dense for recent turns and sparse-summarized for old ones; old
    content stays retrievable through its summary.
 
-2. **Per-scope cap** (``MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_SCOPE``, **default 0 = off**) --
-   a deterministic backstop for a subject whose events were never summarized. Oldest postings evict
-   first.
+0. **Lossless dedup** (``MATRIXARK_DEDUPE_INDEX_POSTINGS``, default ON) -- collapse postings that
+   repeat an identical (scope, term, ref set) across time buckets. Costs nothing and shrinks the
+   index enough that the budgets below rarely have to bind.
 
-3. **Hard ceiling** (``MATRIXARK_SECONDARY_INDEX_HARD_CEILING``, **default 0 = off**) -- a store-wide
-   runaway guard that is never exceeded regardless of the other two.
+2. **Per-session budget** (``MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_SESSION``, default ``256``,
+   0 = unlimited) -- how many postings one session's index may hold.
 
-Layers 2 and 3 are OPT-IN, and that is a measured decision, not caution: on a 40-turn workload with
-the cap set to 150 the index plateaued (142 -> 193 -> 295 -> 251 postings) but retrieval dropped
-from 5/5 facts to 4/5. That is inherent -- lever 1 has already removed every posting that was
-redundant, so anything a cap evicts on top of it is a live recall path, not slack. A hard memory
-ceiling therefore trades away recall of old facts, which is the operator's call to make, never a
-silent default. Both layers log exactly what they dropped.
+3. **Per-tenant budget** (``MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_TENANT``, default ``2048``,
+   0 = unlimited) -- how many that tenant may hold across all its sessions.
+
+There is deliberately **no store-wide total**. A global budget in a multi-tenant process makes one
+tenant's growth evict another tenant's memory -- a cross-tenant side effect, not a memory policy.
+Every budget stops at a tenant boundary; the process bounds memory by bounding each tenant.
+
+**They can cost recall, and the eviction order is built to minimize that.** Lever 1 has already
+removed every posting that was purely redundant, so whatever a cap evicts on top of it is a live
+lookup path. Postings are therefore evicted in RECALL-PRIORITY order, oldest first within each
+class:
+
+    event -> segment -> node/other -> entity -> summary
+
+``summary`` postings go LAST because they are exactly what lever 1 leaves behind as the surviving
+route to compacted old content -- evicting them by age (the naive rule) throws away the recall path
+lever 1 worked to preserve, which is what a measured 5/5 -> 4/5 recall drop at cap=150 looked like.
+``entity`` postings are next-to-last for the same reason: an entity is the durable distillation of
+an event, so it out-recalls the raw event posting per byte.
+
+Both layers log exactly what they dropped, per class -- never a silent truncation.
 """
 
 from __future__ import annotations
@@ -42,18 +57,46 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_identity import now_ms
 
+try:
+    from tools.matrixark_tenant_policy import resolve as resolve_tenant_policy
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_tenant_policy import resolve as resolve_tenant_policy
+
+try:
+    from tools.matrixark_tenant_policy import tenant_of as tenant_of_scope
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_tenant_policy import tenant_of as tenant_of_scope
+
 
 LOGGER = logging.getLogger("matrixark.index_growth_bound")
+
+# The bounds run on EVERY serving recompute, so a binding cap would otherwise emit an identical
+# WARNING per read. Log only when the eviction picture actually changes -- still no silent
+# truncation, just no spam.
+_LAST_EVICTION_SIGNATURE: tuple | None = None
 
 # Mirrors ``matrixark_mcp_local_adapter.MEMORY_TOMBSTONE_RECORD_TYPE``. Duplicated (not imported) so
 # this module stays leaf-level: the adapter imports it, not the other way round.
 MEMORY_TOMBSTONE_RECORD_TYPE = "matrixark_memory_tombstone"
 INDEX_COMPACT_TOMBSTONE_KIND = "index_compact"
 
-# Off by default: see the module docstring -- once lever 1 has compacted the redundant postings,
-# any further eviction costs recall, so the operator opts in.
-DEFAULT_MAX_INDEX_RECORDS_PER_SCOPE = 0
-DEFAULT_INDEX_HARD_CEILING = 0
+# Small and ON: the index must not grow linearly with turns. See the docstring for the recall
+# trade-off and the eviction priority that limits it. 0 disables either layer.
+DEFAULT_MAX_INDEX_RECORDS_PER_SCOPE = 256
+DEFAULT_INDEX_HARD_CEILING = 2048
+
+# Lower evicts first. summary postings are the surviving recall path for content lever 1 compacted,
+# so they are the last thing given up; entities outrank raw events because they are the distilled,
+# longer-lived form of the same fact.
+EVICTION_PRIORITY_BY_REF_TYPE = {
+    "event": 0,
+    "segment": 1,
+    "compression": 2,
+    "node": 3,
+    "": 3,
+    "entity": 4,
+    "summary": 5,
+}
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -74,19 +117,34 @@ def _env_int(name: str, default: int) -> int:
     return max(0, value)
 
 
-def index_compact_on_summary_enabled() -> bool:
-    """Lever 1 gate. Read per call so a test (or an operator) can flip it without re-import."""
-    return _env_flag("MATRIXARK_INDEX_COMPACT_ON_SUMMARY", True)
+def index_compact_on_summary_enabled(scope: Any = None) -> bool:
+    """Lever 1 gate, resolved for `scope`'s tenant (tenant override -> env -> default ON)."""
+    return bool(resolve_tenant_policy("compact_index_on_summary", scope))
 
 
-def max_index_records_per_scope() -> int:
-    """Lever 2 cap; ``0`` (the default) disables it. Enabling it trades old-fact recall for a bound."""
-    return _env_int("MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_SCOPE", DEFAULT_MAX_INDEX_RECORDS_PER_SCOPE)
+def extract_segments_enabled(scope: Any = None) -> bool:
+    """Whether ingest materializes ``context_segment`` rows (default OFF).
+
+    A segment is a restatement of its event -- same text up to a role/index prefix -- so each one
+    costs a record, an embedding and a set of index postings to store what the event already holds.
+    Entities remain the distillation of a turn; segments are the redundant middle layer. Set
+    ``MATRIXARK_EXTRACT_SEGMENTS=1`` to restore them -- or set ``extract_segments`` for one tenant,
+    since whether a tenant wants segments is a per-tenant decision, not a process-wide one."""
+    return bool(resolve_tenant_policy("extract_segments", scope))
 
 
-def index_hard_ceiling() -> int:
-    """Lever 3 store-wide ceiling; ``0`` (the default) disables it. Same recall trade as lever 2."""
-    return _env_int("MATRIXARK_SECONDARY_INDEX_HARD_CEILING", DEFAULT_INDEX_HARD_CEILING)
+def max_index_records_per_scope(scope: Any = None) -> int:
+    """Lever 2 cap for `scope`'s tenant (default 256); ``0`` disables it."""
+    return int(resolve_tenant_policy("max_secondary_index_records_per_session", scope))
+
+
+def index_hard_ceiling(scope: Any = None) -> int:
+    """Lever 3 ceiling for `scope`'s tenant (default 2048); ``0`` disables it.
+
+    Enforced PER TENANT, not store-wide: a store-wide ceiling in a multi-tenant process lets a busy
+    tenant's postings evict a quiet tenant's index, which is a cross-tenant isolation break, not a
+    memory policy. Scopes with no resolvable tenant share one bucket and behave as before."""
+    return int(resolve_tenant_policy("max_secondary_index_records_per_tenant", scope))
 
 
 def index_compaction_tombstone(
@@ -158,15 +216,102 @@ def index_compact_tombstone_kills_record(tombstone: Json, record: Json) -> bool:
     return all(str(ref) in target_set for ref in refs)
 
 
-def _eviction_sort_key(entry: tuple[int, Json]) -> tuple[int, str, int]:
+def _tenant_of_scope_key(scope_key: str) -> str:
+    """Tenant identity for a posting's scope_key ("" when the key carries no tenant)."""
+    return tenant_of_scope(scope_key)
+
+
+def _sample_scope_for(by_scope: dict[str, list[tuple[int, Json]]], scope_keys: list[str]) -> Any:
+    """A representative record scope for policy resolution -- any posting of this tenant will do,
+    and a full scope dict resolves a tenant_id where the bare scope_key only has the hash."""
+    for scope_key in scope_keys:
+        for _position, record in by_scope.get(scope_key, ()):
+            scope = record.get("scope") if isinstance(record.get("scope"), dict) else None
+            if scope:
+                return scope
+    return scope_keys[0] if scope_keys else ""
+
+
+def dedupe_index_postings_enabled() -> bool:
+    """Lever 0 gate (default ON). Lossless, so it runs before any lever that can cost recall."""
+    return _env_flag("MATRIXARK_DEDUPE_INDEX_POSTINGS", True)
+
+
+def dedupe_index_postings(records: list[Json]) -> list[Json]:
+    """Collapse postings that repeat an identical (scope, index_name, ref_type, ref set).
+
+    Postings are keyed by time bucket, so every summary refresh and every entity re-stamp mints a
+    NEW posting row carrying the same index term pointing at the same refs. Measured on a 30-turn
+    store: entity postings 180 rows for 30 distinct terms (83% duplicates), summary postings 191
+    rows for 108 (43%). The duplicates buy nothing -- a lookup on that term reaches the same refs
+    through any one of them -- so the newest row (freshest timestamp) is kept and the rest dropped.
+
+    Lossless, and therefore the FIRST bound applied: it shrinks the index without touching any
+    lookup path, which is what makes a genuinely small per-session budget affordable.
+
+    Returns `records` itself (identity) when disabled or nothing is duplicated."""
+    if not dedupe_index_postings_enabled():
+        return records
+    newest: dict[tuple, int] = {}
+    duplicates = 0
+    for position, record in enumerate(records):
+        if str(record.get("record_type") or "") != "context_index":
+            continue
+        refs = tuple(sorted(str(ref) for ref in _posting_ref_hashes(record)))
+        if not refs:
+            continue
+        key = (
+            str(record.get("scope_key") or ""),
+            str(record.get("index_name") or ""),
+            str(record.get("ref_type") or ""),
+            str(record.get("capability") or ""),
+            str(record.get("data_model") or ""),
+            refs,
+        )
+        previous = newest.get(key)
+        if previous is None:
+            newest[key] = position
+            continue
+        duplicates += 1
+        current_time = _posting_time(record)
+        previous_time = _posting_time(records[previous])
+        if (current_time, position) >= (previous_time, previous):
+            newest[key] = position
+    if not duplicates:
+        return records
+    keep = set(newest.values())
+    output: list[Json] = []
+    for position, record in enumerate(records):
+        if str(record.get("record_type") or "") != "context_index":
+            output.append(record)
+            continue
+        refs = tuple(sorted(str(ref) for ref in _posting_ref_hashes(record)))
+        if not refs or position in keep:
+            output.append(record)
+    return output
+
+
+def _posting_time(record: Json) -> int:
+    try:
+        return int(record.get("timestamp_key_ms") or record.get("updated_at_ms") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def eviction_class(record: Json) -> int:
+    """Recall priority of a posting: lower is given up first. See EVICTION_PRIORITY_BY_REF_TYPE."""
+    return EVICTION_PRIORITY_BY_REF_TYPE.get(str(record.get("ref_type") or ""), 3)
+
+
+def _eviction_sort_key(entry: tuple[int, Json]) -> tuple[int, int, str, int]:
     position, record = entry
     try:
         timestamp = int(record.get("timestamp_key_ms") or record.get("updated_at_ms") or 0)
     except (TypeError, ValueError):
         timestamp = 0
-    # (oldest first, then a stable tiebreak so eviction is deterministic across processes /
-    # PYTHONHASHSEED -- index_hash is content-derived, position is the final tiebreak).
-    return (timestamp, str(record.get("index_hash") or ""), position)
+    # (cheapest recall class first, then oldest, then a stable tiebreak so eviction is deterministic
+    # across processes / PYTHONHASHSEED -- index_hash is content-derived, position breaks the rest).
+    return (eviction_class(record), timestamp, str(record.get("index_hash") or ""), position)
 
 
 def enforce_secondary_index_bounds(
@@ -179,10 +324,9 @@ def enforce_secondary_index_bounds(
     Input order is preserved for everything kept. Non-``context_index`` records are never touched.
     Returns `records` itself (identity) when both levers are disabled or nothing is over budget, so
     the disabled path is byte-identical."""
-    per_scope_cap = max_index_records_per_scope()
-    ceiling = index_hard_ceiling()
-    if per_scope_cap <= 0 and ceiling <= 0:
-        return records
+    # Lossless first: drop repeated postings before any budget decides what to give up, so a
+    # budget is never spent on duplicates and never evicts a live lookup path it did not have to.
+    records = dedupe_index_postings(records)
 
     postings: list[tuple[int, Json]] = [
         (position, record)
@@ -192,41 +336,78 @@ def enforce_secondary_index_bounds(
     if not postings:
         return records
 
+    # Budgets are per TENANT: each tenant's postings are counted, capped and evicted against that
+    # tenant's own policy, so one tenant can neither borrow nor consume another's index budget.
+    by_scope: dict[str, list[tuple[int, Json]]] = {}
+    for entry in postings:
+        by_scope.setdefault(str(entry[1].get("scope_key") or ""), []).append(entry)
+    by_tenant: dict[str, list[str]] = {}
+    for scope_key in by_scope:
+        by_tenant.setdefault(_tenant_of_scope_key(scope_key), []).append(scope_key)
+
     dropped: set[int] = set()
     dropped_by_scope: dict[str, int] = {}
-    if per_scope_cap > 0:
-        by_scope: dict[str, list[tuple[int, Json]]] = {}
-        for entry in postings:
-            by_scope.setdefault(str(entry[1].get("scope_key") or ""), []).append(entry)
-        for scope_key, entries in by_scope.items():
-            overflow = len(entries) - per_scope_cap
-            if overflow <= 0:
-                continue
-            for position, _record in sorted(entries, key=_eviction_sort_key)[:overflow]:
-                dropped.add(position)
-            dropped_by_scope[scope_key] = overflow
-
     dropped_by_ceiling = 0
-    if ceiling > 0:
-        survivors = [entry for entry in postings if entry[0] not in dropped]
-        overflow = len(survivors) - ceiling
-        if overflow > 0:
-            for position, _record in sorted(survivors, key=_eviction_sort_key)[:overflow]:
-                dropped.add(position)
-            dropped_by_ceiling = overflow
+    caps_seen: set[int] = set()
+    ceilings_seen: set[int] = set()
+    for tenant, scope_keys in by_tenant.items():
+        sample_scope = _sample_scope_for(by_scope, scope_keys)
+        per_scope_cap = max_index_records_per_scope(sample_scope)
+        ceiling = index_hard_ceiling(sample_scope)
+        caps_seen.add(per_scope_cap)
+        ceilings_seen.add(ceiling)
+        if per_scope_cap <= 0 and ceiling <= 0:
+            continue
+        if per_scope_cap > 0:
+            for scope_key in scope_keys:
+                entries = by_scope[scope_key]
+                overflow = len(entries) - per_scope_cap
+                if overflow <= 0:
+                    continue
+                for position, _record in sorted(entries, key=_eviction_sort_key)[:overflow]:
+                    dropped.add(position)
+                dropped_by_scope[scope_key] = overflow
+        if ceiling > 0:
+            tenant_entries = [entry for scope_key in scope_keys for entry in by_scope[scope_key]]
+            survivors = [entry for entry in tenant_entries if entry[0] not in dropped]
+            overflow = len(survivors) - ceiling
+            if overflow > 0:
+                for position, _record in sorted(survivors, key=_eviction_sort_key)[:overflow]:
+                    dropped.add(position)
+                dropped_by_ceiling += overflow
+    per_scope_cap = max(caps_seen) if caps_seen else 0
+    ceiling = max(ceilings_seen) if ceilings_seen else 0
 
     if not dropped:
         return records
 
-    # No silent truncation: say exactly how much was dropped and by which lever.
-    LOGGER.warning(
-        "secondary_index_bound_evicted total=%d per_scope_cap=%d ceiling=%d by_scope=%s by_ceiling=%d",
+    # No silent truncation: say exactly how much was dropped, by which lever, and -- because the
+    # recall cost depends entirely on WHICH postings went -- by ref_type.
+    dropped_by_ref_type: dict[str, int] = {}
+    for position, record in postings:
+        if position in dropped:
+            key = str(record.get("ref_type") or "")
+            dropped_by_ref_type[key] = dropped_by_ref_type.get(key, 0) + 1
+    global _LAST_EVICTION_SIGNATURE
+    signature = (
         len(dropped),
         per_scope_cap,
         ceiling,
-        dropped_by_scope,
+        tuple(sorted(dropped_by_scope.items())),
         dropped_by_ceiling,
+        tuple(sorted(dropped_by_ref_type.items())),
     )
+    if signature != _LAST_EVICTION_SIGNATURE:
+        _LAST_EVICTION_SIGNATURE = signature
+        LOGGER.warning(
+            "secondary_index_bound_evicted total=%d per_scope_cap=%d ceiling=%d by_scope=%s by_ceiling=%d by_ref_type=%s",
+            len(dropped),
+            per_scope_cap,
+            ceiling,
+            dropped_by_scope,
+            dropped_by_ceiling,
+            dropped_by_ref_type,
+        )
     kept: list[Json] = []
     for position, record in enumerate(records):
         if position in dropped:
