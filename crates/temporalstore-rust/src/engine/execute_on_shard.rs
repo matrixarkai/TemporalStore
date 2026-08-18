@@ -66,7 +66,8 @@ pub(crate) fn execute_on_shard(
         Command::StringSet { key, value } => {
             remove_if_expired(shard, &key);
             let object_id = stable_page_object_id(shard_id, "string", &key, None);
-            let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            let routing_bucket =
+                page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             if let Ok(address) = append_value(
                 cache,
                 page_store,
@@ -94,7 +95,8 @@ pub(crate) fn execute_on_shard(
         Command::StringSetEx { key, value, ttl_ms } => {
             remove_if_expired(shard, &key);
             let object_id = stable_page_object_id(shard_id, "string", &key, None);
-            let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            let routing_bucket =
+                page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             if let Ok(address) = append_value(
                 cache,
                 page_store,
@@ -142,7 +144,8 @@ pub(crate) fn execute_on_shard(
             };
             if should_set {
                 let object_id = stable_page_object_id(shard_id, "string", &key, None);
-                let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+                let routing_bucket =
+                    page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
                 if let Ok(address) = append_value(
                     cache,
                     page_store,
@@ -207,7 +210,8 @@ pub(crate) fn execute_on_shard(
         Command::HashSet { key, field, value } => {
             remove_if_expired(shard, &key);
             let object_id = stable_page_object_id(shard_id, "hash", &key, Some(&field));
-            let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            let routing_bucket =
+                page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             if let Ok(address) = append_value(
                 cache,
                 page_store,
@@ -283,7 +287,8 @@ pub(crate) fn execute_on_shard(
         }
         Command::HashMultiSet { key, entries } => {
             remove_if_expired(shard, &key);
-            let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            let routing_bucket =
+                page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             let mut applied = Vec::with_capacity(entries.len());
             for (field, value) in entries {
                 let object_id = stable_page_object_id(shard_id, "hash", &key, Some(&field));
@@ -420,7 +425,8 @@ pub(crate) fn execute_on_shard(
             remove_if_expired(shard, &key);
             let member_component = hex::encode(&member);
             let object_id = stable_page_object_id(shard_id, "set", &key, Some(&member_component));
-            let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            let routing_bucket =
+                page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             if let Ok(address) = append_value(
                 cache,
                 page_store,
@@ -482,7 +488,8 @@ pub(crate) fn execute_on_shard(
         Command::FeatureAppend { key, points } => {
             remove_if_expired(shard, &key);
             let series = shard.features.entry(key.clone()).or_default();
-            let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            let routing_bucket =
+                page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             let points = sorted_feature_points(points);
             // feature_append_chunks_and_persists_timestamped_kv_pages: append each
             // timestamped feature point through the page-backed KV layout, then
@@ -510,7 +517,14 @@ pub(crate) fn execute_on_shard(
                 }
             }
             let live_addresses = series.values().cloned().collect::<Vec<_>>();
-            sync_bucket_index_object_pages(shard, shard_id, "feature", &key, live_addresses, mutated);
+            sync_bucket_index_object_pages(
+                shard,
+                shard_id,
+                "feature",
+                &key,
+                live_addresses,
+                mutated,
+            );
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
         }
@@ -521,7 +535,8 @@ pub(crate) fn execute_on_shard(
         } => {
             remove_if_expired(shard, &key);
             let series = shard.features.entry(key.clone()).or_default();
-            let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            let routing_bucket =
+                page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             let mut accepted_points = Vec::new();
             let mut accepted_timestamps = BTreeSet::new();
             // Process points in REQUEST order, NOT pre-collapsed by timestamp. feature ADD
@@ -570,7 +585,14 @@ pub(crate) fn execute_on_shard(
                 }
             }
             let live_addresses = series.values().cloned().collect::<Vec<_>>();
-            sync_bucket_index_object_pages(shard, shard_id, "feature", &key, live_addresses, mutated);
+            sync_bucket_index_object_pages(
+                shard,
+                shard_id,
+                "feature",
+                &key,
+                live_addresses,
+                mutated,
+            );
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Integer {
                 value: if mutated { 1 } else { 0 },
@@ -600,30 +622,30 @@ pub(crate) fn execute_on_shard(
                     let points = shard
                         .features
                         .get(&key)
-                    .map(|series| {
-                        let mut page_cache = HashMap::new();
-                        // feature_append_keeps_oversized_single_timestamped_value_readable:
-                        // range queries rehydrate each timestamp through the packed
-                        // page reader, so a large single timestamped value remains
-                        // readable when it occupies its own page.
-                        series
-                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
-                            // Default read bound follows feature_max_size so raising the
-                            // retention cap (long-sequence use) also lifts the read limit.
-                            .take(count.unwrap_or(feature_max_size))
-                            .filter_map(|(timestamp_ms, address)| {
-                                read_feature_point_cached(
-                                    cache,
-                                    page_store,
-                                    shard_id,
-                                    *timestamp_ms,
-                                    address,
-                                    &mut page_cache,
-                                )
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                        .map(|series| {
+                            let mut page_cache = HashMap::new();
+                            // feature_append_keeps_oversized_single_timestamped_value_readable:
+                            // range queries rehydrate each timestamp through the packed
+                            // page reader, so a large single timestamped value remains
+                            // readable when it occupies its own page.
+                            series
+                                .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
+                                // Default read bound follows feature_max_size so raising the
+                                // retention cap (long-sequence use) also lifts the read limit.
+                                .take(count.unwrap_or(feature_max_size))
+                                .filter_map(|(timestamp_ms, address)| {
+                                    read_feature_point_cached(
+                                        cache,
+                                        page_store,
+                                        shard_id,
+                                        *timestamp_ms,
+                                        address,
+                                        &mut page_cache,
+                                    )
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
                     CommandResponse::FeaturePoints { points }
                 },
             )
@@ -688,7 +710,8 @@ pub(crate) fn execute_on_shard(
         } => {
             remove_if_expired(shard, &key);
             let series = shard.features.entry(key.clone()).or_default();
-            let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            let routing_bucket =
+                page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             let replaced = series
                 .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                 .map(|(timestamp_ms, _)| *timestamp_ms)
@@ -722,7 +745,14 @@ pub(crate) fn execute_on_shard(
                 }
             }
             let live_addresses = series.values().cloned().collect::<Vec<_>>();
-            sync_bucket_index_object_pages(shard, shard_id, "feature", &key, live_addresses, mutated);
+            sync_bucket_index_object_pages(
+                shard,
+                shard_id,
+                "feature",
+                &key,
+                live_addresses,
+                mutated,
+            );
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
         }
@@ -759,7 +789,11 @@ pub(crate) fn execute_on_shard(
                 // Lazily materialize the numeric view of the feature series. Each point's value
                 // is parsed through the SAME aggregate_feature_values path, so the folded values
                 // are bit-identical to the raw scan; rebuild when the series length changed.
-                let feature_len = shard.features.get(&key).map(|series| series.len()).unwrap_or(0);
+                let feature_len = shard
+                    .features
+                    .get(&key)
+                    .map(|series| series.len())
+                    .unwrap_or(0);
                 let stale = shard
                     .feature_values
                     .get(&key)
@@ -773,10 +807,19 @@ pub(crate) fn execute_on_shard(
                             series
                                 .iter()
                                 .filter_map(|(timestamp_ms, address)| {
-                                    read_feature_point(cache, page_store, shard_id, *timestamp_ms, address)
-                                        .map(|point| {
-                                            (*timestamp_ms, aggregate_feature_values(&[point.value], "sum"))
-                                        })
+                                    read_feature_point(
+                                        cache,
+                                        page_store,
+                                        shard_id,
+                                        *timestamp_ms,
+                                        address,
+                                    )
+                                    .map(|point| {
+                                        (
+                                            *timestamp_ms,
+                                            aggregate_feature_values(&[point.value], "sum"),
+                                        )
+                                    })
                                 })
                                 .collect()
                         })
@@ -796,8 +839,14 @@ pub(crate) fn execute_on_shard(
                             .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                             .take(count.unwrap_or(feature_max_size))
                             .filter_map(|(timestamp_ms, address)| {
-                                read_feature_point(cache, page_store, shard_id, *timestamp_ms, address)
-                                    .map(|point| point.value)
+                                read_feature_point(
+                                    cache,
+                                    page_store,
+                                    shard_id,
+                                    *timestamp_ms,
+                                    address,
+                                )
+                                .map(|point| point.value)
                             })
                             .collect::<Vec<_>>()
                     })
@@ -810,7 +859,8 @@ pub(crate) fn execute_on_shard(
         Command::SequenceAdd { key, rows } => {
             remove_if_expired(shard, &key);
             let series = shard.features.entry(key.clone()).or_default();
-            let routing_bucket = page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            let routing_bucket =
+                page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             let points = rows
                 .into_iter()
                 .filter_map(|row| {
@@ -1181,8 +1231,7 @@ pub(crate) fn execute_on_shard(
             let is_duplicate = if let Some(uuid) = uuid.as_ref().filter(|u| !u.is_empty()) {
                 let dedup_key = format!("{key}\u{1}{uuid}");
                 gc_control_state_uuid(shard, now);
-                let dup =
-                    matches!(shard.control_state_uuid.get(&dedup_key), Some(expiry) if *expiry > now);
+                let dup = matches!(shard.control_state_uuid.get(&dedup_key), Some(expiry) if *expiry > now);
                 if !dup {
                     shard
                         .control_state_uuid
@@ -1328,7 +1377,10 @@ pub(crate) fn execute_on_shard(
                 };
             }
             CommandResponse::Bytes {
-                value: shard.control_state_selection.get(&key).map(|stored| stored.value.clone()),
+                value: shard
+                    .control_state_selection
+                    .get(&key)
+                    .map(|stored| stored.value.clone()),
             }
         }
         Command::ControlStateManager {
@@ -1377,7 +1429,11 @@ pub(crate) fn execute_on_shard(
             entries.push(("key".to_string(), key.as_bytes().to_vec()));
             entries.push(("start_ms".to_string(), start_ms.to_string().into_bytes()));
             entries.push(("end_ms".to_string(), end_ms.to_string().into_bytes()));
-            for family in [ControlStateFamily::Counter, ControlStateFamily::Distinct, ControlStateFamily::Selection] {
+            for family in [
+                ControlStateFamily::Counter,
+                ControlStateFamily::Distinct,
+                ControlStateFamily::Selection,
+            ] {
                 let family_key = control_state_family_key(family, &key);
                 let name = control_state_family_name(family);
                 let series = shard.control_state.get(&family_key);
@@ -1450,7 +1506,8 @@ pub(crate) fn execute_on_shard(
             let object_key = context_node_key(tenant_hash, node.node_hash);
             let object_id =
                 stable_page_object_id(shard_id, "hash", &object_key, Some(CONTEXT_NODE_FIELD));
-            let routing_bucket = page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
+            let routing_bucket =
+                page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
             let bytes = context_bytes(&node);
             if let Ok(address) = append_value(
                 cache,
@@ -1548,18 +1605,20 @@ pub(crate) fn execute_on_shard(
                 }
             }
             invalidate_record_all(cache, shard_id, &object_key);
-            if maybe_auto_compress_context_node(
-                cache,
-                page_store,
-                shard_id,
-                shard,
-                tenant_hash,
-                node_hash,
-                &object_key,
-                start_routing_bucket,
-                end_routing_bucket,
-                async_storage,
-            ) {
+            if !bulk_ingest_mode()
+                && maybe_auto_compress_context_node(
+                    cache,
+                    page_store,
+                    shard_id,
+                    shard,
+                    tenant_hash,
+                    node_hash,
+                    &object_key,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    async_storage,
+                )
+            {
                 mutated = true;
             }
             CommandResponse::ContextObjectKey { object_key }
@@ -1585,8 +1644,11 @@ pub(crate) fn execute_on_shard(
                 .or_default();
             if !(first_write_only && event_series.contains_key(&event_timeline_key)) {
                 let value = context_bytes(&event);
-                let routing_bucket =
-                    page_routing_bucket(&event_object_key, start_routing_bucket, end_routing_bucket);
+                let routing_bucket = page_routing_bucket(
+                    &event_object_key,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                );
                 if let Ok(addresses) = append_timestamped_kv_pages(
                     cache,
                     page_store,
@@ -1748,7 +1810,8 @@ pub(crate) fn execute_on_shard(
                 context_index_key(tenant_hash, &index_name, index_value_hash, scope_hash);
             let timeline_key = context_timeline_key(event_time_ms, index_ref.event_id_hash);
             let value = context_bytes(&index_ref);
-            let routing_bucket = page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
+            let routing_bucket =
+                page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
             if let Ok(addresses) = append_timestamped_kv_pages(
                 cache,
                 page_store,
@@ -1879,7 +1942,8 @@ pub(crate) fn execute_on_shard(
             let timeline_key =
                 context_timeline_key(audit.request_time_ms, stable_object_hash(&audit.query_id));
             let value = context_bytes(&audit);
-            let routing_bucket = page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
+            let routing_bucket =
+                page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
             if let Ok(addresses) = append_timestamped_kv_pages(
                 cache,
                 page_store,
@@ -1944,7 +2008,10 @@ pub(crate) fn execute_on_shard(
             // The map is ephemeral (never written to the page store) and may be lost on
             // restart; the async summary worker re-marks on the next event.
             let object_key = context_dirty_key(tenant_hash, marker.node_hash);
-            let entry = shard.context_dirty_index.entry(object_key.clone()).or_default();
+            let entry = shard
+                .context_dirty_index
+                .entry(object_key.clone())
+                .or_default();
             if entry.mark_count == 0 {
                 entry.node_hash = marker.node_hash;
                 entry.first_event_time_ms = marker.event_time_ms;
@@ -2017,10 +2084,8 @@ pub(crate) fn execute_on_shard(
                     entry.first_event_time_ms = marker.event_time_ms;
                     entry.last_event_time_ms = marker.event_time_ms;
                 } else {
-                    entry.first_event_time_ms =
-                        entry.first_event_time_ms.min(marker.event_time_ms);
-                    entry.last_event_time_ms =
-                        entry.last_event_time_ms.max(marker.event_time_ms);
+                    entry.first_event_time_ms = entry.first_event_time_ms.min(marker.event_time_ms);
+                    entry.last_event_time_ms = entry.last_event_time_ms.max(marker.event_time_ms);
                 }
                 entry.reason = marker.reason;
                 entry.propagate_depth = entry.propagate_depth.max(marker.propagate_depth);
@@ -2068,14 +2133,15 @@ pub(crate) fn execute_on_shard(
                 context_embedding_dirty_key(tenant_hash, 0)
             } else {
                 let object_key = context_embedding_dirty_key(tenant_hash, node_hash);
-                if let Some(entry) = shard
-                    .context_embedding_dirty_index
-                    .get(&object_key)
-                    .filter(|entry| {
-                        entry.mark_count > 0
-                            && entry.last_event_time_ms >= start_time_ms
-                            && entry.first_event_time_ms <= end_time_ms
-                    })
+                if let Some(entry) =
+                    shard
+                        .context_embedding_dirty_index
+                        .get(&object_key)
+                        .filter(|entry| {
+                            entry.mark_count > 0
+                                && entry.last_event_time_ms >= start_time_ms
+                                && entry.first_event_time_ms <= end_time_ms
+                        })
                 {
                     markers.push(ContextSummaryDirtyMarker {
                         node_hash: entry.node_hash,
@@ -2099,7 +2165,8 @@ pub(crate) fn execute_on_shard(
         } => {
             let object_key = context_entity_key(tenant_hash, entity.node_hash, entity.entity_hash);
             let object_id = stable_page_object_id(shard_id, "context_entity", &object_key, None);
-            let routing_bucket = page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
+            let routing_bucket =
+                page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
             let bytes = context_bytes(&entity);
             if let Ok(address) = append_value(
                 cache,
@@ -2216,7 +2283,8 @@ pub(crate) fn execute_on_shard(
         } => {
             let object_key = context_embedding_key(tenant_hash, embedding.ref_hash);
             let object_id = stable_page_object_id(shard_id, "context_embedding", &object_key, None);
-            let routing_bucket = page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
+            let routing_bucket =
+                page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
             if let Ok(address) = append_value(
                 cache,
                 page_store,
@@ -2286,7 +2354,8 @@ pub(crate) fn execute_on_shard(
             let object_key = context_summary_key(tenant_hash, summary.node_hash, summary.level);
             let timeline_key =
                 context_timeline_key(summary.valid_from_ms, u64::from(summary.level));
-            let routing_bucket = page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
+            let routing_bucket =
+                page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
             if let Ok(addresses) = append_timestamped_kv_pages(
                 cache,
                 page_store,
@@ -2339,7 +2408,8 @@ pub(crate) fn execute_on_shard(
             let object_key = context_compression_key(tenant_hash, event.node_hash);
             let timeline_key =
                 context_timeline_key(event.compressed_time_ms, event.compression_id_hash);
-            let routing_bucket = page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
+            let routing_bucket =
+                page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
             if let Ok(addresses) = append_timestamped_kv_pages(
                 cache,
                 page_store,

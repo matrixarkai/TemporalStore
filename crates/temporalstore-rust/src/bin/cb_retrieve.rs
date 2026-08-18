@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 use serde_json::json;
@@ -83,11 +83,7 @@ fn main() {
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default();
-    let node_hashes: Vec<u64> = index
-        .sessions
-        .get(&session)
-        .cloned()
-        .unwrap_or_default();
+    let node_hashes: Vec<u64> = index.sessions.get(&session).cloned().unwrap_or_default();
 
     let tenant_hash = stable_hash64(&format!("{}:{}:{}:{}", account, tenant, user, session));
     let now_ms = SystemTime::now()
@@ -133,7 +129,10 @@ fn main() {
                     CommandResponse::ContextEmbeddings { embeddings } => embeddings.len(),
                     _ => 0,
                 };
-                eprintln!("probe node_l0-only refs={} limit={} found={}", n, lim, found);
+                eprintln!(
+                    "probe node_l0-only refs={} limit={} found={}",
+                    n, lim, found
+                );
             }
         }
         // Exact retrieve shape: interleaved node_l0/node_l1, limit = len*2.
@@ -167,6 +166,7 @@ fn main() {
 
     // Run a single retrieve at a given fanout cap and serialize the result.
     let run_one = |query: &str, cap: usize| -> serde_json::Value {
+        let started = Instant::now();
         let report = retrieve_context(
             &engine,
             ContextRetrieveRequest {
@@ -214,6 +214,7 @@ fn main() {
             "query_embedding_dimension": tts.query_embedding_dimension,
             "summary_embedding_candidate_count": tts.summary_embedding_candidate_count,
             "summary_embedding_selected_count": tts.summary_embedding_selected_count,
+            "retrieve_seconds": started.elapsed().as_secs_f64(),
             "text": if emit_blocks { String::new() } else { text },
             "block_list": if emit_blocks { serde_json::Value::Array(block_list) } else { serde_json::Value::Null },
         })
