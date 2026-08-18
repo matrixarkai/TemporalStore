@@ -201,6 +201,20 @@ fn raft_env_flag_on(name: &str) -> bool {
     )
 }
 
+/// Default-ON gate read: the fix is LIVE unless explicitly disabled with
+/// `=0|false|no|off`. Shipped write-path/raft fixes use this so production gets the
+/// fixed behavior by default; the env var remains only as an escape hatch.
+fn raft_env_flag_default_on(name: &str) -> bool {
+    !matches!(
+        std::env::var(name)
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "0" | "false" | "no" | "off"
+    )
+}
+
 /// R8: §7 snapshot-install boundary-term truncation. When on, a snapshot install whose
 /// boundary entry does not term-match the local log discards the ENTIRE log instead of
 /// retaining a possibly-divergent tail.
@@ -247,14 +261,14 @@ fn raft_snapshot_state_image_on() -> bool {
 /// read-index accounting counters) are excluded from the change check. Default OFF -> every call
 /// fsyncs exactly as before (byte-identical).
 fn raft_wal_coalesce_on() -> bool {
-    raft_env_flag_on("TS_RAFT_WAL_COALESCE")
+    raft_env_flag_default_on("TS_RAFT_WAL_COALESCE")
 }
 
 /// P2 (in-order propose): hold a per-cluster serialize lock across the append+replicate+commit
 /// critical section of `propose_distributed_one` so concurrent proposals reach followers in log
 /// order and never trigger a `prev_log` mismatch + full-deadline stall. Default OFF.
 fn raft_propose_serialize_on() -> bool {
-    raft_env_flag_on("TS_RAFT_PROPOSE_SERIALIZE")
+    raft_env_flag_default_on("TS_RAFT_PROPOSE_SERIALIZE")
 }
 
 /// Fingerprint of the DURABILITY-relevant subset of a WAL record. `pipeline_state` and

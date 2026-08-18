@@ -2112,6 +2112,13 @@ impl EnvFlagGuard {
         std::env::set_var(name, "1");
         Self { name }
     }
+
+    /// Explicitly DISABLES a gate for the test's lifetime. Needed because the shipped fixes are
+    /// default-ON: leaving the variable unset now selects the fixed path, not the legacy one.
+    fn off(name: &'static str) -> Self {
+        std::env::set_var(name, "0");
+        Self { name }
+    }
 }
 
 impl Drop for EnvFlagGuard {
@@ -2406,6 +2413,7 @@ fn raft_wal_coalesce_skips_volatile_only_read_index_persists() {
 /// persists, so the same burst grows the WAL by one record per call. This pins the win as real.
 #[test]
 fn raft_wal_coalesce_off_persists_every_read_index() {
+    let _gate = EnvFlagGuard::off("TS_RAFT_WAL_COALESCE");
     let dir = tempfile::tempdir().unwrap();
     let cluster =
         RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())

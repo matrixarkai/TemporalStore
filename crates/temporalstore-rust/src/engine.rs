@@ -1829,7 +1829,7 @@ pub(super) fn wal_single_barrier() -> bool {
 /// byte-identical to the legacy in-lock `append_with_sync` barrier. The ack is always returned
 /// strictly AFTER the covering barrier succeeds, so durability is never weakened.
 fn engine_concurrent_commit() -> bool {
-    env_flag_on("TS_ENGINE_CONCURRENT_COMMIT")
+    env_flag_default_on("TS_ENGINE_CONCURRENT_COMMIT")
 }
 
 /// TS_PHASE1_FLAT: make phase-1 (the work under the global `shards` write lock in
@@ -1843,7 +1843,7 @@ fn engine_concurrent_commit() -> bool {
 /// path skips the repeat scan. Default OFF -> byte-identical (the scan runs every command exactly
 /// as before). Sharing one gate with the WAL fast-append so a single switch flattens phase-1.
 fn phase1_flat_enabled() -> bool {
-    env_flag_on("TS_PHASE1_FLAT")
+    env_flag_default_on("TS_PHASE1_FLAT")
 }
 
 /// TS_RAFT_APPLY_COALESCE: on the raft state-machine apply path, coalesce the per-committed-entry
@@ -1853,7 +1853,7 @@ fn phase1_flat_enabled() -> bool {
 /// raft log stays the durability + reconstruction source; the coalesced barrier still completes
 /// before the raft runtime advances the durable applied_index.
 fn raft_apply_coalesce() -> bool {
-    env_flag_on("TS_RAFT_APPLY_COALESCE")
+    env_flag_default_on("TS_RAFT_APPLY_COALESCE")
 }
 
 fn env_flag_on(name: &str) -> bool {
@@ -1864,6 +1864,20 @@ fn env_flag_on(name: &str) -> bool {
             .to_ascii_lowercase()
             .as_str(),
         "1" | "true" | "yes" | "on"
+    )
+}
+
+/// Default-ON gate read: the fix is LIVE unless explicitly disabled with
+/// `=0|false|no|off`. Shipped write-path/raft fixes use this so production gets the
+/// fixed behavior by default; the env var remains only as an escape hatch.
+fn env_flag_default_on(name: &str) -> bool {
+    !matches!(
+        std::env::var(name)
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "0" | "false" | "no" | "off"
     )
 }
 

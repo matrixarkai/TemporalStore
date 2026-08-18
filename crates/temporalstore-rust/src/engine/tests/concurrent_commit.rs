@@ -115,7 +115,7 @@ fn concurrent_commit_coalesces_fsyncs_while_off_path_is_one_fsync_per_write() {
     let _serial = ENGINE_COMMIT_ENV_LOCK.lock().unwrap();
 
     // --- Baseline: gate OFF -> barrier under the shards lock -> group commit unreachable. ---
-    std::env::remove_var("TS_ENGINE_CONCURRENT_COMMIT");
+    std::env::set_var("TS_ENGINE_CONCURRENT_COMMIT", "0");
     let off_dir = tempfile::tempdir().unwrap();
     let off = run_concurrent_same_shard_writes(&new_engine(off_dir.path()));
     assert_eq!(off.acked, off.writes, "gate OFF: all writes acked");

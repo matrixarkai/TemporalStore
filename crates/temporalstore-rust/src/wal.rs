@@ -928,7 +928,7 @@ fn wal_bulk_relaxed_durability() -> bool {
 /// the unconditional-scan path when off. Mirrors the warm-cache fast path already used by
 /// `index_log::append_delta` and `append_replayed_record`.
 fn wal_fast_append_seq() -> bool {
-    wal_env_flag_on("TS_PHASE1_FLAT")
+    wal_env_flag_default_on("TS_PHASE1_FLAT")
 }
 
 /// Resolve the last WAL sequence for `shard_id` immediately before an append, under the `inner`
@@ -978,6 +978,20 @@ fn wal_env_flag_on(name: &str) -> bool {
             .to_ascii_lowercase()
             .as_str(),
         "1" | "true" | "yes" | "on"
+    )
+}
+
+/// Default-ON gate read: the fix is LIVE unless explicitly disabled with
+/// `=0|false|no|off`. Shipped write-path/raft fixes use this so production gets the
+/// fixed behavior by default; the env var remains only as an escape hatch.
+fn wal_env_flag_default_on(name: &str) -> bool {
+    !matches!(
+        std::env::var(name)
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "0" | "false" | "no" | "off"
     )
 }
 
