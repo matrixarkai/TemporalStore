@@ -100,6 +100,14 @@ KNOBS: dict[str, Knob] = {
              "no store-wide total on purpose: a global budget would let one tenant evict another.",
              aliases=("secondary_index_hard_ceiling",),
              env_aliases=("MATRIXARK_SECONDARY_INDEX_HARD_CEILING",)),
+        Knob("generate_l1_summaries", "bool", "MATRIXARK_GENERATE_L1_SUMMARIES", True,
+             "Generate the richer node_l1 overview alongside the mandatory node_l0. L0 is what "
+             "traversal needs; L1 adds routing detail for nodes with a lot under them. Node "
+             "summaries are bounded by tree size (3 + one per session), so this is a small, safe "
+             "knob -- the linear-growing summary is batch_l0, one per ingest batch."),
+        Knob("write_secondary_index", "bool", "MATRIXARK_WRITE_SECONDARY_INDEX", True,
+             "Store context_index postings at all. A tenant whose corpus is small enough to scan "
+             "can turn the index off entirely and pay nothing to maintain it."),
         Knob("dedupe_index_postings", "bool", "MATRIXARK_DEDUPE_INDEX_POSTINGS", True,
              "Collapse repeated postings for the same (scope, term, refs). Lossless."),
         Knob("store_event_summary_text", "bool", "MATRIXARK_STORE_EVENT_SUMMARY_TEXT", False,
