@@ -90,6 +90,7 @@ ENV_MAP: Dict[str, str] = {
     "storage.page_store_compression_level": "TS_PAGE_STORE_COMPRESSION_LEVEL",
     "storage.page_store_compression_min_bytes": "TS_PAGE_STORE_COMPRESSION_MIN_BYTES",
     "storage.cross_shard_reclaim_guard": "TS_CROSS_SHARD_RECLAIM_GUARD",
+    "storage.index_dump_oplog_gap_bytes": "TS_INDEX_DUMP_OPLOG_GAP_BYTES",
     # ---- [wal] --------------------------------------------------------------
     "wal.wal_single_barrier": "TS_WAL_SINGLE_BARRIER",
     "wal.group_commit": "TS_GROUP_COMMIT",

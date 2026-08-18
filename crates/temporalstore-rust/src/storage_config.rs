@@ -11,6 +11,7 @@ pub const TS_COMPACTION_WATERMARK_BYTES: &str = "TS_COMPACTION_WATERMARK_BYTES";
 pub const TS_COLD_SCAN_NO_CACHE_FILL: &str = "TS_COLD_SCAN_NO_CACHE_FILL";
 pub const TS_PAGE_INDEX_CACHE_BYTES: &str = "TS_PAGE_INDEX_CACHE_BYTES";
 pub const TS_BLOCK_INDEX_CACHE_BYTES: &str = "TS_BLOCK_INDEX_CACHE_BYTES";
+pub const TS_INDEX_DUMP_OPLOG_GAP_BYTES: &str = "TS_INDEX_DUMP_OPLOG_GAP_BYTES";
 
 pub const DEFAULT_CONTEXT_PAGE_TARGET_BYTES: usize = 64 * 1024;
 pub const DEFAULT_BLOCK_SLAB_TARGET_BYTES: u64 = 1 << 30;
@@ -23,6 +24,10 @@ pub const DEFAULT_COMPACTION_WATERMARK_BYTES: u64 = 256 * 1024 * 1024;
 pub const DEFAULT_COLD_SCAN_NO_CACHE_FILL: bool = true;
 pub const DEFAULT_PAGE_INDEX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_BLOCK_INDEX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
+// Undumped index-log-gap threshold that triggers a background catalog/index dump under the
+// MANIFEST-PARITY FOLD (TS_INDEX_CATALOG_FOLD). Mirrors the reference
+// `storage_dump_index_meta_oplog_gap` default of 1 MiB.
+pub const DEFAULT_INDEX_DUMP_OPLOG_GAP_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageTuningConfig {
@@ -35,6 +40,7 @@ pub struct StorageTuningConfig {
     pub cold_scan_no_cache_fill: bool,
     pub page_index_cache_bytes: u64,
     pub block_index_cache_bytes: u64,
+    pub index_dump_oplog_gap_bytes: u64,
 }
 
 impl Default for StorageTuningConfig {
@@ -48,6 +54,7 @@ impl Default for StorageTuningConfig {
             cold_scan_no_cache_fill: DEFAULT_COLD_SCAN_NO_CACHE_FILL,
             page_index_cache_bytes: DEFAULT_PAGE_INDEX_CACHE_BYTES,
             block_index_cache_bytes: DEFAULT_BLOCK_INDEX_CACHE_BYTES,
+            index_dump_oplog_gap_bytes: DEFAULT_INDEX_DUMP_OPLOG_GAP_BYTES,
         }
     }
 }
@@ -93,6 +100,10 @@ impl StorageTuningConfig {
                 get(TS_BLOCK_INDEX_CACHE_BYTES),
                 defaults.block_index_cache_bytes,
             ),
+            index_dump_oplog_gap_bytes: parse_u64(
+                get(TS_INDEX_DUMP_OPLOG_GAP_BYTES),
+                defaults.index_dump_oplog_gap_bytes,
+            ),
         }
     }
 
@@ -106,7 +117,7 @@ impl StorageTuningConfig {
             .max(self.stream_max_blob_size)
     }
 
-    pub fn env_names() -> [&'static str; 8] {
+    pub fn env_names() -> [&'static str; 9] {
         [
             TS_CONTEXT_PAGE_TARGET_BYTES,
             TS_BLOCK_SLAB_TARGET_BYTES,
@@ -116,6 +127,7 @@ impl StorageTuningConfig {
             TS_COLD_SCAN_NO_CACHE_FILL,
             TS_PAGE_INDEX_CACHE_BYTES,
             TS_BLOCK_INDEX_CACHE_BYTES,
+            TS_INDEX_DUMP_OPLOG_GAP_BYTES,
         ]
     }
 }
@@ -130,6 +142,13 @@ pub fn effective_block_slab_target_bytes() -> u64 {
 
 pub fn storage_zone_size_bytes() -> u64 {
     StorageTuningConfig::from_env().storage_zone_size
+}
+
+/// Undumped index-log-gap threshold (bytes) that triggers a background catalog/index dump under
+/// the MANIFEST-PARITY FOLD. Reads the `TS_INDEX_DUMP_OPLOG_GAP_BYTES` env override, falling back
+/// to the 1 MiB reference-parity default. Only consulted when `index_catalog_fold_enabled()`.
+pub fn index_dump_oplog_gap_bytes() -> u64 {
+    StorageTuningConfig::from_env().index_dump_oplog_gap_bytes
 }
 
 fn parse_u64(value: Option<String>, default: u64) -> u64 {
@@ -186,6 +205,12 @@ mod tests {
             config.block_index_cache_bytes,
             DEFAULT_BLOCK_INDEX_CACHE_BYTES
         );
+        // 1 MiB reference-parity default (storage_dump_index_meta_oplog_gap).
+        assert_eq!(
+            config.index_dump_oplog_gap_bytes,
+            DEFAULT_INDEX_DUMP_OPLOG_GAP_BYTES
+        );
+        assert_eq!(config.index_dump_oplog_gap_bytes, 1024 * 1024);
     }
 
     #[test]
@@ -202,6 +227,7 @@ mod tests {
                 "TS_COLD_SCAN_NO_CACHE_FILL",
                 "TS_PAGE_INDEX_CACHE_BYTES",
                 "TS_BLOCK_INDEX_CACHE_BYTES",
+                "TS_INDEX_DUMP_OPLOG_GAP_BYTES",
             ]
         );
     }
@@ -218,6 +244,7 @@ mod tests {
             (TS_COLD_SCAN_NO_CACHE_FILL, "false"),
             (TS_PAGE_INDEX_CACHE_BYTES, "2097152"),
             (TS_BLOCK_INDEX_CACHE_BYTES, "4194304"),
+            (TS_INDEX_DUMP_OPLOG_GAP_BYTES, "2097152"),
         ]);
         let config = StorageTuningConfig::from_getter(|name| env.get(name).map(|v| v.to_string()));
         assert_eq!(config.context_page_target_bytes, 32 * 1024);
@@ -230,5 +257,6 @@ mod tests {
         assert!(!config.cold_scan_no_cache_fill);
         assert_eq!(config.page_index_cache_bytes, 2 * 1024 * 1024);
         assert_eq!(config.block_index_cache_bytes, 4 * 1024 * 1024);
+        assert_eq!(config.index_dump_oplog_gap_bytes, 2 * 1024 * 1024);
     }
 }

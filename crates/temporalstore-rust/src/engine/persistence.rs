@@ -339,6 +339,94 @@ impl TemporalEngine {
         let _ = atomic_write_bytes(&self.index_path(shard_id), &index_bytes);
     }
 
+    /// MANIFEST-PARITY FOLD threshold check: dump the index catalog when the undumped index-log
+    /// gap has crossed `index_dump_oplog_gap_bytes` (reference `storage_dump_index_meta_oplog_gap`
+    /// cadence). No-op with the `TS_INDEX_CATALOG_FOLD` gate off, so the background cycle is
+    /// byte-identical when the fold is not enabled. Returns whether a dump fired.
+    pub fn maybe_dump_index_catalog(&self, shard_id: ShardId) -> bool {
+        if !crate::index_log::index_catalog_fold_enabled() {
+            return false;
+        }
+        let gap = crate::storage_config::index_dump_oplog_gap_bytes();
+        let undumped = self.index_log_store.undumped_len_since_dump(shard_id);
+        if !crate::index_log::should_dump_index_catalog(undumped, gap) {
+            return false;
+        }
+        self.dump_index_catalog(shard_id)
+    }
+
+    /// Test-only variant of `maybe_dump_index_catalog` taking an explicit gap, so a test can drive
+    /// both the below-threshold (no dump) and above-threshold (dump) branches deterministically
+    /// without mutating the process-wide gap env mid-test.
+    #[cfg(test)]
+    pub fn maybe_dump_index_catalog_with_gap_for_test(&self, shard_id: ShardId, gap_bytes: u64) -> bool {
+        if !crate::index_log::index_catalog_fold_enabled() {
+            return false;
+        }
+        let undumped = self.index_log_store.undumped_len_since_dump(shard_id);
+        if !crate::index_log::should_dump_index_catalog(undumped, gap_bytes) {
+            return false;
+        }
+        self.dump_index_catalog(shard_id)
+    }
+
+    /// MANIFEST-PARITY FOLD dump: materialize the durable base index, fold the band/zone catalog
+    /// into an index-log `MetaItem` anchor (reference `IndexLog.MetaItem.zones` parity), and
+    /// advance the dumped watermark -- the batched, threshold-driven replacement for the per-write
+    /// band-manifest persist. No-op with the gate off. Ordering is single-barrier safe: pages +
+    /// WAL are fsynced, then the base index is written durably, then the folded anchor is fsync'd,
+    /// and only THEN is the dumped watermark advanced. A crash at any earlier point leaves the
+    /// watermark unadvanced, so the next cycle re-dumps rather than trusting a partial dump -- the
+    /// catalog is never lost, only (harmlessly) re-materialized. Returns whether a dump completed.
+    pub fn dump_index_catalog(&self, shard_id: ShardId) -> bool {
+        if !crate::index_log::index_catalog_fold_enabled() {
+            return false;
+        }
+        // 1. Make deferred data pages + the band manifest + the WAL durable BEFORE materializing
+        //    the dump, so nothing the anchor references is un-fsynced. Bail (without advancing the
+        //    watermark) if the barrier fails; the next cycle retries.
+        if self.page_store.sync_durable().is_err() || self.wal_store.flush(shard_id).is_err() {
+            return false;
+        }
+        // 2. Serialize + durably write the base served index (collapses the legacy per-write
+        //    whole-index rewrite into this threshold dump). Also read the WAL anchor the index
+        //    reflects for the folded MetaItem.
+        let (index_bytes, anchor) = {
+            let shards = self.shards.read().expect("engine lock poisoned");
+            match shards.get(&shard_id) {
+                Some(shard) => (serialize_index(shard), shard.applied_wal_sequence.unwrap_or(0)),
+                None => return false,
+            }
+        };
+        if self.persist_index_bytes_durable(shard_id, &index_bytes).is_err() {
+            return false;
+        }
+        // 3. Fold the band/zone catalog into a MetaItem anchor and append it durably to the
+        //    index-log. This is the reference's "dump the zone catalog into the index log" step:
+        //    after it, the band catalog is recoverable from the durable log, so the per-write
+        //    band-manifest file stops being the source of truth.
+        let zone_version = anchor;
+        let zones = self.page_store.zone_catalog(zone_version);
+        let meta = crate::index_log::MetaItem {
+            version: 1,
+            start_wal_sequence: anchor,
+            timestamp_ms: now_ms(),
+            zone_version,
+            zones,
+        };
+        if self
+            .index_log_store
+            .append_delta(shard_id, Vec::new(), Vec::new(), Some(anchor), Some(meta), true)
+            .is_err()
+        {
+            return false;
+        }
+        // 4. The base + folded anchor are durable; advance the dumped watermark so the undumped
+        //    gap resets and the next threshold is measured from here.
+        self.index_log_store.mark_catalog_dumped(shard_id);
+        true
+    }
+
     pub(super) fn persist_index_bytes(&self, shard_id: ShardId, bytes: &[u8]) -> Result<(), std::io::Error> {
         // Bulk backfill defers the served-index rewrite to flush_shard_index()
         // (turns O(n^2) per-record persistence into one write per batch).
