@@ -59,6 +59,19 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_summary_runtime import async_summary_progress_records
 
 try:
+    from tools.matrixark_index_growth_bound import (
+        INDEX_COMPACT_TOMBSTONE_KIND,
+        index_compact_tombstone_kills_record,
+        sweep_index_compaction,
+    )
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_index_growth_bound import (
+        INDEX_COMPACT_TOMBSTONE_KIND,
+        index_compact_tombstone_kills_record,
+        sweep_index_compaction,
+    )
+
+try:
     from tools.matrixark_mcp_summary_dirty import pending_dirty_node_records
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_summary_dirty import pending_dirty_node_records
@@ -3075,6 +3088,10 @@ def _record_scope_hashes(record: Json) -> tuple[int, int]:
 def _tombstone_kills_record(tombstone: Json, record: Json) -> bool:
     """True when `tombstone` (appended after `record`) removes `record`."""
     kind = str(tombstone.get("tombstone_kind") or "")
+    if kind == INDEX_COMPACT_TOMBSTONE_KIND:
+        # Index-only: drops a rolled-up event's redundant per-event postings, never the event or any
+        # other record type. See matrixark_index_growth_bound for the recall argument.
+        return index_compact_tombstone_kills_record(tombstone, record)
     if kind == "delete":
         target = str(tombstone.get("target_memory_id") or "")
         if not target:
@@ -3139,6 +3156,13 @@ def apply_memory_tombstones(records: list[Json]) -> list[Json]:
     Order-aware single pass: a tombstone only removes matching records that precede it in the log, so
     re-ingesting for a forgotten subject after the forget yields live memories again. Fast-path
     returns the input unchanged when the log carries no tombstone (the overwhelmingly common case)."""
+    if not _records_contain_memory_tombstone(records):
+        return records
+    # Index-compaction tombstones are emitted once per summary rollup, so a long-lived store
+    # accumulates many of them; the generic loop below is O(tombstones x records). They match a pure
+    # predicate over (record, target ids), so a single order-aware reverse pass applies all of them in
+    # O(n) first, leaving only delete/forget/reset for the generic loop (which is rare per store).
+    records = sweep_index_compaction(records)
     if not _records_contain_memory_tombstone(records):
         return records
     live: list[Json] = []

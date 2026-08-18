@@ -18,6 +18,11 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_identity import now_ms, stable_hash
 
+try:
+    from tools.matrixark_index_growth_bound import enforce_secondary_index_bounds
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_index_growth_bound import enforce_secondary_index_bounds
+
 
 MAX_SECONDARY_INDEX_TERMS_PER_RECORD = int(os.environ.get("MATRIXARK_MAX_SECONDARY_INDEX_TERMS_PER_RECORD", "10"))
 SECONDARY_INDEX_POSTING_BUCKET_MS = int(os.environ.get("MATRIXARK_SECONDARY_INDEX_POSTING_BUCKET_MS", "60000"))
@@ -520,4 +525,6 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
             }
             record["index_hash"] = stable_hash(json.dumps(identity, sort_keys=True, separators=(",", ":")))
             compacted_indexes.append(record)
-    return passthrough + compacted_indexes
+    # Levers 2+3: this is the single choke point every serving path funnels postings through, so the
+    # per-scope cap and the store-wide ceiling are enforced here (identity return when under budget).
+    return enforce_secondary_index_bounds(passthrough + compacted_indexes)
