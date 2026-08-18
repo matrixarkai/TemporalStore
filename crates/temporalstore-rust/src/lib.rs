@@ -4,6 +4,7 @@
 #![doc = include_str!("../README.md")]
 
 pub mod block_store;
+pub mod checksum;
 pub mod client;
 pub mod context_workflow;
 pub mod control;

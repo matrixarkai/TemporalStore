@@ -17,8 +17,18 @@
 //! writes are framed; the two coexist in one file across an upgrade (and across a GC rewrite,
 //! which re-emits every retained record framed).
 //!
-//! Framed line layout (single line, `\n`-terminated on disk):
-//! `#tsf1 <payload_len> <digest_hex> <payload_json>\n`
+//! Two framed formats exist. New writes use `#tsf2`, which carries a CRC32C:
+//! `#tsf2 <payload_len> <crc32c_hex> <payload_json>\n`
+//! `#tsf1` records carry a truncated SHA-256 instead and are still read:
+//! `#tsf1 <payload_len> <sha256_prefix_hex> <payload_json>\n`
+//!
+//! The switch to CRC32C is a write-path cost change, not a weakening. This checksum defends
+//! against accidental corruption of a committed record -- a flipped bit that still parses --
+//! and never against a forged one; nothing in the recovery path treats it as a signature. A
+//! cryptographic digest was simply the wrong tool here: it is computed per record,
+//! synchronously, before the durability barrier. CRC32C is what the reference implementation
+//! uses for the same job (a per-record CRC in the record header plus a running per-block CRC
+//! in the block footer).
 //! The payload JSON is compact serde output, so it contains neither a literal `\n` (line
 //! boundary) nor is its boundary ambiguous: the first two space-delimited fields after the
 //! magic are the length and digest, and everything after the third space is the payload
@@ -26,13 +36,19 @@
 
 use sha2::{Digest, Sha256};
 
-/// ASCII framing prefix, including the trailing space that delimits the fields after it.
-/// Chosen so it can never collide with a legacy record: a serialized JSON object always
-/// starts with `{`, never `#`.
-pub(crate) const FRAME_MAGIC: &[u8] = b"#tsf1 ";
+/// ASCII framing prefix for the current (CRC32C) format, including the trailing space that
+/// delimits the fields after it. Chosen so it can never collide with a legacy record: a
+/// serialized JSON object always starts with `{`, never `#`.
+pub(crate) const FRAME_MAGIC_V2: &[u8] = b"#tsf2 ";
 
-/// Number of leading SHA-256 bytes retained in the framed digest. 8 bytes (a 64-bit digest,
-/// 16 hex chars) is ample to catch accidental corruption of a committed record.
+/// Framing prefix for the previous (truncated SHA-256) format. Still decoded so logs written
+/// before the switch load unchanged; never written.
+pub(crate) const FRAME_MAGIC_V1: &[u8] = b"#tsf1 ";
+
+/// The prefix new writes use.
+pub(crate) const FRAME_MAGIC: &[u8] = FRAME_MAGIC_V2;
+
+/// Number of leading SHA-256 bytes retained in a v1 framed digest.
 const DIGEST_BYTES: usize = 8;
 
 /// Integrity failure discovered while decoding a framed log line. Carried into the WAL /
@@ -49,16 +65,22 @@ impl std::fmt::Display for FramingError {
 
 impl std::error::Error for FramingError {}
 
-fn digest_hex(payload: &[u8]) -> String {
+/// v1 checksum: the leading bytes of a SHA-256, hex encoded. Read-only.
+fn sha256_digest_hex(payload: &[u8]) -> String {
     let full = Sha256::digest(payload);
     hex::encode(&full[..DIGEST_BYTES])
+}
+
+/// v2 checksum: CRC32C, hex encoded, fixed width.
+fn crc_digest_hex(payload: &[u8]) -> String {
+    crate::checksum::crc32c_hex(payload)
 }
 
 /// Encode `payload` (a single-line JSON document with NO trailing newline) as a framed,
 /// newline-terminated log line.
 pub(crate) fn encode_line(payload: &[u8]) -> Vec<u8> {
-    let digest = digest_hex(payload);
-    let header = format!("#tsf1 {} {} ", payload.len(), digest);
+    let digest = crc_digest_hex(payload);
+    let header = format!("#tsf2 {} {} ", payload.len(), digest);
     let mut out = Vec::with_capacity(header.len() + payload.len() + 1);
     out.extend_from_slice(header.as_bytes());
     out.extend_from_slice(payload);
@@ -73,11 +95,16 @@ pub(crate) fn encode_line(payload: &[u8]) -> Vec<u8> {
 /// and returns `Err`.
 pub(crate) fn decode_line(line: &[u8]) -> Result<&[u8], FramingError> {
     let line = strip_trailing_newline(line);
-    if !line.starts_with(FRAME_MAGIC) {
+    // Pick the checksum by prefix so both framed formats round-trip out of one file: an
+    // upgrade, or a GC rewrite spanning one, leaves v1 and v2 records interleaved.
+    let (checksum_of, rest): (fn(&[u8]) -> String, &[u8]) = if line.starts_with(FRAME_MAGIC_V2) {
+        (crc_digest_hex, &line[FRAME_MAGIC_V2.len()..])
+    } else if line.starts_with(FRAME_MAGIC_V1) {
+        (sha256_digest_hex, &line[FRAME_MAGIC_V1.len()..])
+    } else {
         // Legacy unframed record (or a blank line): the whole line is the payload.
         return Ok(line);
-    }
-    let rest = &line[FRAME_MAGIC.len()..];
+    };
     let (len_field, rest) = split_once_space(rest)
         .ok_or_else(|| FramingError("framed record missing length field".to_string()))?;
     let (digest_field, payload) = split_once_space(rest)
@@ -92,7 +119,7 @@ pub(crate) fn decode_line(line: &[u8]) -> Result<&[u8], FramingError> {
             payload.len()
         )));
     }
-    let actual = digest_hex(payload);
+    let actual = checksum_of(payload);
     if actual.as_bytes() != digest_field {
         return Err(FramingError(format!(
             "framed record checksum mismatch: declared {}, actual {actual}",
@@ -156,6 +183,47 @@ mod tests {
             decoded.is_err(),
             "a value-preserving bit-flip must fail the framed checksum"
         );
+    }
+
+    #[test]
+    fn new_writes_use_the_crc_format() {
+        let framed = encode_line(br#"{"a":1}"#);
+        assert!(framed.starts_with(FRAME_MAGIC_V2));
+    }
+
+    #[test]
+    fn v1_sha256_records_still_decode() {
+        // A record written before the switch: same layout, SHA-256 prefix as the checksum.
+        let payload = br#"{"shard_id":5,"sequence":42}"#;
+        let digest = sha256_digest_hex(payload);
+        let mut legacy = format!("#tsf1 {} {} ", payload.len(), digest).into_bytes();
+        legacy.extend_from_slice(payload);
+        legacy.push(b'\n');
+        assert_eq!(decode_line(&legacy).unwrap(), payload);
+    }
+
+    #[test]
+    fn a_corrupted_v1_record_is_still_rejected_after_the_switch() {
+        let payload = br#"{"sequence":42}"#;
+        let digest = sha256_digest_hex(payload);
+        let mut legacy = format!("#tsf1 {} {} ", payload.len(), digest).into_bytes();
+        legacy.extend_from_slice(br#"{"sequence":49}"#); // same length, different value
+        legacy.push(b'\n');
+        assert!(decode_line(&legacy).is_err());
+    }
+
+    #[test]
+    fn both_formats_interleave_in_one_file() {
+        // A GC rewrite spanning the upgrade produces exactly this.
+        let payload = br#"{"k":"v"}"#;
+        let v2 = encode_line(payload);
+        let digest = sha256_digest_hex(payload);
+        let mut v1 = format!("#tsf1 {} {} ", payload.len(), digest).into_bytes();
+        v1.extend_from_slice(payload);
+        v1.push(b'\n');
+        for line in [v1, v2] {
+            assert_eq!(decode_line(&line).unwrap(), payload);
+        }
     }
 
     #[test]
