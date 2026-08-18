@@ -2,6 +2,19 @@
 
 Thanks for improving TemporalStore Rust.
 
+## How to contribute
+
+This repository is open for contributions — you do **not** need write access.
+
+1. **Fork** `matrixarkai/TemporalStore` to your own account.
+2. Create a branch: `git checkout -b my-change`.
+3. Make your change and run the checks in *Development Setup* below.
+4. Push to your fork and **open a Pull Request** against `main`.
+5. A maintainer (**@bjmeetsfo** or **@superhaiou**) reviews and approves before it is merged.
+
+Every PR requires at least one maintainer approval (enforced by branch protection + CODEOWNERS). Fork-and-PR is the normal path for everyone, including first-time contributors.
+
+
 ## Development Setup
 
 Install a stable Rust toolchain and run:
