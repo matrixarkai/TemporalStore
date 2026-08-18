@@ -158,6 +158,7 @@ fn main() {
     let prefer_events = arg("--prefer-events", "0") == "1";
     let max_nodes: usize = arg("--max-nodes", "0").parse().unwrap_or(0);
     let max_new_embeddings: usize = arg("--max-new-embeddings", "0").parse().unwrap_or(0);
+    let max_new_per_session: usize = arg("--max-new-per-session", "0").parse().unwrap_or(0);
     let verify_only = arg("--verify", "0") == "1";
 
     let engine = TemporalEngine::with_local_dirs(
@@ -283,6 +284,10 @@ fn main() {
                 missing_nodes.truncate(remaining);
             }
         }
+        if max_new_per_session > 0 && missing_nodes.len() > max_new_per_session {
+            skipped_by_new_cap += (missing_nodes.len() - max_new_per_session) as u64;
+            missing_nodes.truncate(max_new_per_session);
+        }
 
         let node_text_started = Instant::now();
         let node_texts = load_node_l0_texts(&engine, tenant_hash, &missing_nodes);
@@ -303,6 +308,7 @@ fn main() {
                         start_time_ms: 0,
                         end_time_ms,
                         limit: Some(max_events.max(1)),
+                        max_scan: None,
                         current_valid_only: false,
                         as_of_ms: 0,
                         kinds: Vec::new(),
@@ -411,6 +417,7 @@ fn main() {
         "sessions": sessions.len(),
         "max_nodes": max_nodes,
         "max_new_embeddings": max_new_embeddings,
+        "max_new_per_session": max_new_per_session,
         "shard_load_seconds": shard_load_seconds,
         "total_nodes": total_nodes,
         "missing_embedding_candidates": missing_embedding_candidates,

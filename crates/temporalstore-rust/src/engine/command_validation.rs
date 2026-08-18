@@ -504,6 +504,7 @@ pub(super) fn validate_command_preconditions(
             start_time_ms,
             end_time_ms,
             limit,
+            max_scan,
             kinds,
             statuses,
             min_confidence,
@@ -513,6 +514,7 @@ pub(super) fn validate_command_preconditions(
             validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
             validate_context_required(*node_hash != 0, "node_hash is required")?;
             validate_context_limit(*limit)?;
+            validate_context_limit(*max_scan)?;
             validate_context_range(*start_time_ms, *end_time_ms)?;
             validate_context_filters(kinds, statuses, *min_confidence, *min_importance)?;
         }

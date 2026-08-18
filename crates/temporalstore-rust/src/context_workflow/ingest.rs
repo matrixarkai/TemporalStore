@@ -508,6 +508,7 @@ pub(crate) fn verify_resource_skill_fanout(
                 start_time_ms: extract.event.event_time_ms.saturating_sub(1),
                 end_time_ms: extract.event.event_time_ms.saturating_add(1),
                 limit: Some(8),
+                max_scan: None,
                 current_valid_only: false,
                 as_of_ms: 0,
                 kinds: Vec::new(),

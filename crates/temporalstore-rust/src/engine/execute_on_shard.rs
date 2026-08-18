@@ -1747,6 +1747,7 @@ pub(crate) fn execute_on_shard(
             start_time_ms,
             end_time_ms,
             limit,
+            max_scan,
             current_valid_only,
             as_of_ms,
             kinds,
@@ -1755,6 +1756,7 @@ pub(crate) fn execute_on_shard(
             min_importance,
         } => {
             let object_key = context_event_key(tenant_hash, node_hash);
+            let scan_limit = context_limit(max_scan);
             let events = shard
                 .context_events
                 .get(&object_key)
@@ -1770,7 +1772,7 @@ pub(crate) fn execute_on_shard(
                         // `limit` must be applied AFTER filtering (LimitOrDefault runs
                         // post-filter). Scan newest-first so retrieval can find recent,
                         // serving-relevant context without walking cold history first.
-                        .take(CONTEXT_MAX_LIMIT)
+                        .take(scan_limit)
                         .filter_map(|(timeline_key, address)| {
                             read_context_value_cached::<ContextEvent>(
                                 cache,

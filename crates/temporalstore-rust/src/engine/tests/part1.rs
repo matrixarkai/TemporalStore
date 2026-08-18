@@ -246,6 +246,7 @@ fn context_models_match_keys_timeline_pages_and_filters() {
             start_time_ms: 999,
             end_time_ms: 1_001,
             limit: Some(10),
+            max_scan: None,
             current_valid_only: true,
             as_of_ms: 0,
             kinds: vec![2],
@@ -592,6 +593,7 @@ fn context_query_events_applies_limit_after_filter_like_native() {
             start_time_ms: 0,
             end_time_ms: 100_000,
             limit: Some(100),
+            max_scan: None,
             current_valid_only: false,
             as_of_ms: 0,
             kinds: Vec::new(),
@@ -922,6 +924,7 @@ fn context_temporal_compression_builds_replayable_summary_without_deleting_sourc
             start_time_ms: START,
             end_time_ms: START + 20,
             limit: Some(10),
+            max_scan: None,
             current_valid_only: false,
             as_of_ms: 0,
             kinds: Vec::new(),
@@ -2488,4 +2491,3 @@ fn string_get_uses_memory_cache() {
     assert!(stats.memory_hits >= 1);
     assert!(stats.puts >= 2);
 }
-

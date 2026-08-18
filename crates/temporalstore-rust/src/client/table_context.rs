@@ -89,6 +89,7 @@ impl TemporalStoreTable {
                 start_time_ms,
                 end_time_ms,
                 limit,
+                max_scan: None,
                 current_valid_only,
                 as_of_ms,
                 kinds,

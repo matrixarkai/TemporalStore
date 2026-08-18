@@ -80,6 +80,7 @@ fn main() {
         .parse()
         .unwrap_or(default_max_blocks)
         .max(1);
+    let max_event_nodes: usize = arg("--max-event-nodes", "4").parse().unwrap_or(4).max(1);
     let source_jsonl = PathBuf::from(arg("--source-jsonl", ""));
     let cache_bytes: usize = arg("--cache-bytes", "134217728")
         .parse()
@@ -261,7 +262,7 @@ fn main() {
                 min_importance: 0.0,
                 tiers: tiers.clone(),
                 max_summary_nodes: cap,
-                max_event_nodes: cap,
+                max_event_nodes,
                 prefer_current_agent: false,
                 current_agent_scope_key: format!("agent:{}", agent),
                 provider: provider.clone(),
@@ -309,6 +310,12 @@ fn main() {
             "ok": report.status.ok,
             "status_code": report.status.code,
             "blocks": report.blocks.len(),
+            "node_count": report.node_count,
+            "event_count": report.event_count,
+            "event_query_budget": report.fanout_plan.event_query_budget,
+            "event_query_node_count": report.fanout_plan.event_query_node_count,
+            "event_query_returned_count": report.fanout_plan.event_query_returned_count,
+            "max_event_nodes": max_event_nodes,
             "tokens": tokens,
             "query_embedding_dimension": tts.query_embedding_dimension,
             "summary_embedding_candidate_count": tts.summary_embedding_candidate_count,

@@ -1407,6 +1407,8 @@ pub enum Command {
         #[serde(default)]
         limit: Option<usize>,
         #[serde(default)]
+        max_scan: Option<usize>,
+        #[serde(default)]
         current_valid_only: bool,
         #[serde(default)]
         as_of_ms: u64,

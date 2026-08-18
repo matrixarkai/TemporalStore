@@ -147,6 +147,7 @@ fn node_embed_text(engine: &TemporalEngine, config: &EmbedDrainerConfig, tenant_
             start_time_ms: 0,
             end_time_ms: EMBED_DRAINER_MAX_TIME_MS,
             limit: Some(config.max_events_per_node.max(1)),
+            max_scan: None,
             current_valid_only: false,
             as_of_ms: 0,
             kinds: Vec::new(),

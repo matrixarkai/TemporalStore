@@ -1078,6 +1078,12 @@ pub struct ContextFanoutPlanReport {
     pub event_expanded_nodes: usize,
     pub skipped_node_count: usize,
     pub summary_lookup_batches: usize,
+    #[serde(default)]
+    pub event_query_budget: usize,
+    #[serde(default)]
+    pub event_query_node_count: usize,
+    #[serde(default)]
+    pub event_query_returned_count: usize,
     pub secondary_index_filter_group_count: usize,
     pub selected_node_hashes: Vec<u64>,
     pub skipped_node_hashes: Vec<u64>,
@@ -2070,6 +2076,12 @@ pub fn retrieve_context(
         .copied()
         .take(event_node_limit)
         .collect::<Vec<_>>();
+    let event_pack_budget = request.max_events.max(1);
+    let event_overfetch = std::env::var("MATRIXARK_CONTEXT_EVENT_QUERY_OVERFETCH")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(2);
     let skipped_node_hashes = summary_scores
         .iter()
         .skip(event_node_limit)
@@ -2080,7 +2092,9 @@ pub fn retrieve_context(
     fanout_plan.event_expanded_nodes = event_node_hashes.len();
     fanout_plan.skipped_node_count = skipped_node_hashes.len();
     fanout_plan.summary_lookup_batches = usize::from(!summary_scores.is_empty());
-    fanout_plan.selected_node_hashes = event_node_hashes.clone();
+    fanout_plan.event_query_budget = if include_l2 { event_pack_budget } else { 0 };
+    fanout_plan.event_query_node_count = event_node_hashes.len();
+    fanout_plan.selected_node_hashes = node_hashes.clone();
     fanout_plan.skipped_node_hashes = skipped_node_hashes;
     fanout_plan.locality_keys = event_node_hashes
         .iter()
@@ -2130,7 +2144,10 @@ pub fn retrieve_context(
         })
         .collect();
 
-    for node_hash in event_node_hashes {
+    let event_node_set = event_node_hashes.iter().copied().collect::<BTreeSet<_>>();
+    let mut event_query_returned_count = 0usize;
+    let mut event_node_index = 0usize;
+    for node_hash in node_hashes.iter().copied() {
         let mut node_source_ref = String::new();
         let cached_node = prefetched_nodes.remove(&node_hash).or_else(|| {
             let node_response = engine.execute(ExecuteRequest {
@@ -2174,7 +2191,23 @@ pub fn retrieve_context(
             }
         }
 
-        if include_l2 {
+        if include_l2 && event_count < event_pack_budget && event_node_set.contains(&node_hash) {
+            let remaining_budget = event_pack_budget.saturating_sub(event_count).max(1);
+            let remaining_nodes = event_node_hashes
+                .len()
+                .saturating_sub(event_node_index)
+                .max(1);
+            event_node_index = event_node_index.saturating_add(1);
+            let per_node_event_limit = remaining_budget
+                .div_ceil(remaining_nodes)
+                .max(1)
+                .saturating_mul(event_overfetch)
+                .min(event_pack_budget);
+            let event_scan_cap = std::env::var("MATRIXARK_CONTEXT_EVENT_SCAN_CAP")
+                .ok()
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(64);
             let events_response = engine.execute(ExecuteRequest {
                 shard_id: request.shard_id,
                 command: Command::ContextQueryEvents {
@@ -2182,7 +2215,8 @@ pub fn retrieve_context(
                     node_hash,
                     start_time_ms: request.start_time_ms,
                     end_time_ms: request.end_time_ms,
-                    limit: Some(request.max_events.max(1)),
+                    limit: Some(per_node_event_limit),
+                    max_scan: Some(event_scan_cap),
                     current_valid_only: false,
                     as_of_ms: 0,
                     kinds: Vec::new(),
@@ -2192,7 +2226,12 @@ pub fn retrieve_context(
                 },
             });
             if let CommandResponse::ContextEvents { events, .. } = events_response.response {
+                event_query_returned_count =
+                    event_query_returned_count.saturating_add(events.len());
                 for event in events {
+                    if event_count >= event_pack_budget {
+                        break;
+                    }
                     let passes_prefilter = context_query_matches_plan(&query_plan, &event.text);
                     context_query_debug_record_candidate(
                         &mut query_understanding_debug,
@@ -2223,6 +2262,7 @@ pub fn retrieve_context(
             }
         }
     }
+    fanout_plan.event_query_returned_count = event_query_returned_count;
     trace_stage("event_expansion");
 
     blocks.sort_by_cached_key(|block| {
@@ -2664,7 +2704,11 @@ fn default_summary_fanout_node_limit() -> usize {
 }
 
 fn default_event_fanout_node_limit() -> usize {
-    16
+    std::env::var("MATRIXARK_CONTEXT_EVENT_FANOUT_NODES")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(4)
 }
 
 fn default_current_agent_scope_key() -> String {
