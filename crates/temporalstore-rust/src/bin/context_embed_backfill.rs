@@ -46,6 +46,41 @@ struct SessionIndex {
     sessions: BTreeMap<String, Vec<u64>>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct VerifyCoverageReport {
+    rows: Vec<VerifyCoverageRow>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct VerifyCoverageRow {
+    session: String,
+    node_count: Option<usize>,
+    fully_covered: Option<bool>,
+}
+
+fn load_fully_covered_sessions(path: &str) -> HashMap<String, usize> {
+    if path.trim().is_empty() {
+        return HashMap::new();
+    }
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<VerifyCoverageReport>(&text).ok())
+        .map(|report| {
+            report
+                .rows
+                .into_iter()
+                .filter_map(|row| {
+                    if row.fully_covered.unwrap_or(false) {
+                        Some((row.session, row.node_count.unwrap_or(0)))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn load_existing_embedding_refs(
     engine: &TemporalEngine,
     tenant_hash: u64,
@@ -174,9 +209,11 @@ fn main() {
     let max_new_embeddings: usize = arg("--max-new-embeddings", "0").parse().unwrap_or(0);
     let max_new_per_session: usize = arg("--max-new-per-session", "0").parse().unwrap_or(0);
     let skip_covered_sessions = arg("--skip-covered-sessions", "0") == "1";
+    let skip_fully_covered_report = arg("--skip-fully-covered-report", "");
     let report_json = arg("--report-json", "");
     let verify_only = arg("--verify", "0") == "1";
     let verify_full = arg("--verify-full", "0") == "1";
+    let fully_covered_sessions = load_fully_covered_sessions(&skip_fully_covered_report);
 
     let engine = TemporalEngine::with_local_dirs(
         4 * 1024 * 1024,
@@ -338,6 +375,9 @@ fn main() {
     let mut skipped_existing = 0u64;
     let mut skipped_covered_sessions = 0u64;
     let mut skipped_covered_session_nodes = 0u64;
+    let mut skipped_report_sessions = 0u64;
+    let mut skipped_report_session_nodes = 0u64;
+    let mut skipped_report_stale_sessions = 0u64;
     let mut skipped_by_new_cap = 0u64;
     let mut failed = 0u64;
     let updated_at_ms = now_ms();
@@ -350,13 +390,26 @@ fn main() {
         if node_hashes.is_empty() {
             continue;
         }
+        total_nodes += node_hashes.len() as u64;
+        if let Some(covered_node_count) = fully_covered_sessions.get(session) {
+            if *covered_node_count == node_hashes.len() {
+                skipped_report_sessions += 1;
+                skipped_report_session_nodes += node_hashes.len() as u64;
+                eprintln!(
+                    "  session {} -> nodes {} skipped_report_fully_covered",
+                    session,
+                    node_hashes.len()
+                );
+                continue;
+            }
+            skipped_report_stale_sessions += 1;
+        }
         let tenant_hash = stable_hash64(&format!("{}:{}:{}:{}", account, tenant, user, session));
         let end_time_ms = u64::MAX;
         let existing_started = Instant::now();
         let existing_embeddings = load_existing_embedding_refs(&engine, tenant_hash, &node_hashes);
         let existing_seconds = existing_started.elapsed().as_secs_f64();
         skipped_existing += existing_embeddings.len() as u64;
-        total_nodes += node_hashes.len() as u64;
         if skip_covered_sessions && !existing_embeddings.is_empty() {
             skipped_covered_sessions += 1;
             skipped_covered_session_nodes += node_hashes.len() as u64;
@@ -521,6 +574,8 @@ fn main() {
         "max_new_embeddings": max_new_embeddings,
         "max_new_per_session": max_new_per_session,
         "skip_covered_sessions": skip_covered_sessions,
+        "skip_fully_covered_report": skip_fully_covered_report,
+        "skip_fully_covered_report_sessions": fully_covered_sessions.len(),
         "shard_load_seconds": shard_load_seconds,
         "total_nodes": total_nodes,
         "missing_embedding_candidates": missing_embedding_candidates,
@@ -530,6 +585,9 @@ fn main() {
         "skipped_existing": skipped_existing,
         "skipped_covered_sessions": skipped_covered_sessions,
         "skipped_covered_session_nodes": skipped_covered_session_nodes,
+        "skipped_report_sessions": skipped_report_sessions,
+        "skipped_report_session_nodes": skipped_report_session_nodes,
+        "skipped_report_stale_sessions": skipped_report_stale_sessions,
         "skipped_by_new_cap": skipped_by_new_cap,
         "prefer_events": prefer_events,
         "failed": failed,
