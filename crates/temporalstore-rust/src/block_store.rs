@@ -881,6 +881,67 @@ impl LocalBlockStore {
         roll_slab_inner(&mut inner)
     }
 
+    /// Roll the active slab ahead of the write that would otherwise have to, off the client
+    /// path. Returns the roll report if a roll happened, `None` if the active slab still has
+    /// room.
+    ///
+    /// Rolling is not cheap: `roll_slab_inner` fsyncs the outgoing slab, scans the slab
+    /// directory to pick the next id, creates and fsyncs the new file, fsyncs the parent
+    /// directory, and persists the band manifest. Run inline from `append` -- which is where
+    /// it runs today -- one unlucky client write pays all of that on top of its own
+    /// durability barrier, a latency outlier unrelated to the size of the write that
+    /// triggered it.
+    ///
+    /// The reference implementation keeps this off the write path: its background
+    /// storage-manager cycle runs a prepare step that no-ops while the active zone is under
+    /// target and otherwise rolls to a fresh one, so a client append finds space already
+    /// waiting. The inline roll in `append` stays as the fallback for a write that arrives
+    /// before the background cycle got here -- the same role the reference's forced-roll path
+    /// plays.
+    pub fn prepare_next_slab(&self) -> Result<Option<BlockStoreRollReport>, BlockStoreError> {
+        self.prepare_next_slab_with_target(effective_block_slab_target_bytes())
+    }
+
+    /// [`prepare_next_slab`] against an explicit target rather than the process-wide
+    /// configured one.
+    ///
+    /// The slab target is only reachable through a global env var, so a test that wanted a
+    /// small target would have to mutate process state — and if it then failed an assertion
+    /// before restoring it, every later test in the process would inherit the small target.
+    /// Taking the target as an argument keeps that class of cross-test failure impossible.
+    pub fn prepare_next_slab_with_target(
+        &self,
+        slab_target_bytes: u64,
+    ) -> Result<Option<BlockStoreRollReport>, BlockStoreError> {
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
+        if !slab_is_at_target(inner.write_offset, slab_target_bytes) {
+            return Ok(None);
+        }
+        roll_slab_inner(&mut inner).map(Some)
+    }
+
+    /// Whether [`prepare_next_slab`] would roll right now, without doing it. Lets a caller
+    /// (a report, or a scheduler deciding whether the phase is worth running) ask about
+    /// pressure without paying for it.
+    pub fn needs_slab_preparation(&self) -> bool {
+        self.needs_slab_preparation_with_target(effective_block_slab_target_bytes())
+    }
+
+    /// [`needs_slab_preparation`] against an explicit target.
+    pub fn needs_slab_preparation_with_target(&self, slab_target_bytes: u64) -> bool {
+        let inner = self.inner.lock().expect("block store lock poisoned");
+        slab_is_at_target(inner.write_offset, slab_target_bytes)
+    }
+
+    /// Bytes written to the active slab. Exposed so a caller can reason about slab pressure
+    /// (and so tests can drive the prepare threshold without touching global config).
+    pub fn active_slab_write_offset(&self) -> u64 {
+        self.inner
+            .lock()
+            .expect("block store lock poisoned")
+            .write_offset
+    }
+
     pub fn slab_ids(&self) -> Result<Vec<u64>, BlockStoreError> {
         let root = self
             .inner
@@ -1015,6 +1076,19 @@ fn should_roll_before_append(
     slab_target_bytes: u64,
 ) -> bool {
     write_offset > 0 && write_offset.saturating_add(record_len) > slab_target_bytes
+}
+
+/// Whether the active slab has reached its target and should be rolled ahead of the next
+/// append.
+///
+/// Deliberately NOT the same predicate as `should_roll_before_append`: that one asks "will
+/// THIS record overflow the slab", which needs the record length and is only answerable on
+/// the write path. This one asks "is the slab full enough to roll now", which is answerable
+/// in the background with no pending record. The `write_offset > 0` guard stops a freshly
+/// rolled, still-empty slab from rolling again immediately — without it a background cycle
+/// would mint an empty slab every pass.
+fn slab_is_at_target(write_offset: u64, slab_target_bytes: u64) -> bool {
+    write_offset > 0 && write_offset >= slab_target_bytes
 }
 
 /// Bulk backfill (MATRIXARK_BULK_INGEST) defers per-append fsync + manifest
@@ -1355,6 +1429,97 @@ mod tests {
         assert!(report.retained_current_page_slab_ids.is_empty());
         assert!(report.retained_live_page_slab_ids.is_empty());
         assert_eq!(store.slab_ids().unwrap(), vec![2]);
+    }
+
+    /// The point of pre-allocation: once the background prepare has rolled a full slab, the
+    /// next client append lands on the fresh one without rolling inline.
+    ///
+    /// Drives the threshold through the explicit-target API so the test never touches the
+    /// process-wide slab-target env var.
+    #[test]
+    fn prepare_next_slab_takes_the_roll_off_the_append_path() {
+        const TARGET: u64 = 2048;
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+
+        let payload = vec![b'x'; 512];
+        let mut guard = 0;
+        let mut full_slab = 0;
+        while !store.needs_slab_preparation_with_target(TARGET) {
+            full_slab = store.append(&payload).unwrap().page_slab_id;
+            guard += 1;
+            assert!(guard < 200, "filled {guard} times without reaching the target");
+        }
+
+        let rolled = store
+            .prepare_next_slab_with_target(TARGET)
+            .unwrap()
+            .expect("a slab at target must roll");
+        assert_eq!(rolled.previous_page_slab_id, full_slab);
+        assert!(rolled.new_page_slab_id > full_slab);
+
+        // The next append lands on the fresh slab, and did not have to roll to get there.
+        let after = store.append(&payload).unwrap();
+        assert_eq!(after.page_slab_id, rolled.new_page_slab_id);
+    }
+
+    /// Prepare must be a no-op while the slab has room, or a background cycle would shred the
+    /// store into one slab per pass.
+    #[test]
+    fn prepare_next_slab_is_a_noop_below_target() {
+        const TARGET: u64 = 1 << 20;
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        store.append(b"small").unwrap();
+
+        assert!(!store.needs_slab_preparation_with_target(TARGET));
+        assert!(store.prepare_next_slab_with_target(TARGET).unwrap().is_none());
+        // Repeated passes must stay no-ops.
+        assert!(store.prepare_next_slab_with_target(TARGET).unwrap().is_none());
+        assert_eq!(store.slab_ids().unwrap().len(), 1);
+    }
+
+    /// A freshly rolled, still-empty slab must not roll again — otherwise prepare would mint
+    /// an empty slab on every cycle forever.
+    #[test]
+    fn prepare_next_slab_does_not_roll_an_empty_slab() {
+        const TARGET: u64 = 2048;
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let payload = vec![b'y'; 512];
+        let mut guard = 0;
+        while !store.needs_slab_preparation_with_target(TARGET) {
+            store.append(&payload).unwrap();
+            guard += 1;
+            assert!(guard < 200, "filled {guard} times without reaching the target");
+        }
+        store
+            .prepare_next_slab_with_target(TARGET)
+            .unwrap()
+            .expect("first roll");
+
+        assert!(!store.needs_slab_preparation_with_target(TARGET));
+        assert!(store.prepare_next_slab_with_target(TARGET).unwrap().is_none());
+    }
+
+    /// Pre-allocation is an optimisation, not a correctness requirement: with prepare never
+    /// called, every payload written across an explicit roll must still read back.
+    #[test]
+    fn data_survives_when_prepare_never_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let payload = vec![b'z'; 512];
+        let mut addresses = Vec::new();
+        for round in 0..8 {
+            addresses.push(store.append(&payload).unwrap());
+            if round % 3 == 2 {
+                store.roll_slab().unwrap();
+            }
+        }
+        assert!(store.slab_ids().unwrap().len() > 1, "rolls must have happened");
+        for address in &addresses {
+            assert_eq!(store.read(address).unwrap(), payload);
+        }
     }
 
     #[test]
