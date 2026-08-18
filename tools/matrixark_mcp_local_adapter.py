@@ -4134,6 +4134,12 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         batch_scope = next(iter(batch_tenants)) if len(batch_tenants) == 1 else None
         kept: list[Json] = []
         for record in records:
+            if str(record.get("record_type") or "") == "context_index":
+                scope = record.get("scope") or record.get("access_scope") or record.get("scope_key")
+                if not tenant_of_scope(scope):
+                    scope = batch_scope
+                if scope is not None and not resolve_tenant_policy("write_secondary_index", scope):
+                    continue
             if str(record.get("record_type") or "") == "context_embedding":
                 # A served embedding row often has no scope dict at all (interning reduces it to a
                 # scope_key), so the key -- then the batch -- is the fallback identity.

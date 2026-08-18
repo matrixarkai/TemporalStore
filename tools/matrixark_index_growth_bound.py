@@ -137,6 +137,11 @@ def extract_segments_enabled(scope: Any = None) -> bool:
     return bool(resolve_tenant_policy("extract_segments", scope))
 
 
+def generate_l1_summaries_enabled(scope: Any = None) -> bool:
+    """Whether `scope`'s tenant gets node_l1 summaries (default ON). L0 is always generated."""
+    return bool(resolve_tenant_policy("generate_l1_summaries", scope))
+
+
 def generate_embeddings_enabled(scope: Any = None) -> bool:
     """Whether `scope`'s tenant stores embedding vectors (default ON -- a tenant opts out)."""
     return bool(resolve_tenant_policy("generate_embeddings", scope))

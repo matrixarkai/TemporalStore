@@ -31,6 +31,7 @@ try:
     from tools.matrixark_tenant_policy import tenant_scope_from_node_path
     from tools.matrixark_index_growth_bound import (
         generate_embeddings_enabled,
+        generate_l1_summaries_enabled,
         index_compaction_tombstone,
         index_compact_on_summary_enabled,
         max_summary_text_chars,
@@ -39,6 +40,7 @@ except ImportError:
     from matrixark_tenant_policy import tenant_scope_from_node_path
     from matrixark_index_growth_bound import (
         generate_embeddings_enabled,
+        generate_l1_summaries_enabled,
         index_compaction_tombstone,
         index_compact_on_summary_enabled,
         max_summary_text_chars,
@@ -914,7 +916,11 @@ class _LocalAdapterSummariesMixin:
                 policy=l1_policy,
             )
             summary_specs = [("node_l0", l0_summary, "node_l0", l0_provider_meta)]
-            if l1_policy["generate_l1"]:
+            # L0 is mandatory for traversal; L1 is the optional richer overview, so a tenant can
+            # decline it without losing the ability to route through the tree.
+            if l1_policy["generate_l1"] and generate_l1_summaries_enabled(
+                dirty.get("scope") or scope or tenant_scope_from_node_path(node_path)
+            ):
                 l1_summary, l1_provider_meta = synthesize_context_node_summary(
                     level="node_l1",
                     node_path=node_path,
