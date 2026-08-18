@@ -18,11 +18,15 @@ that growth in three layers, applied in this order:
    repeat an identical (scope, term, ref set) across time buckets. Costs nothing and shrinks the
    index enough that the budgets below rarely have to bind.
 
-2. **Per-session budget** (``MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_SESSION``, default ``256``,
+2. **Per-session budget** (``MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_SESSION``, default ``128``,
    0 = unlimited) -- how many postings one session's index may hold.
 
-3. **Per-tenant budget** (``MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_TENANT``, default ``2048``,
+3. **Per-tenant budget** (``MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_TENANT``, default ``1024``,
    0 = unlimited) -- how many that tenant may hold across all its sessions.
+
+   128 is the measured floor: with lever 0 running, a 40-turn session holds recall 5/5 at 128
+   postings (177 live) and loses a fact at 96. Before lever 0 the same floor was 256 -- deduping
+   first is what bought the halving.
 
 There is deliberately **no store-wide total**. A global budget in a multi-tenant process makes one
 tenant's growth evict another tenant's memory -- a cross-tenant side effect, not a memory policy.
@@ -82,8 +86,8 @@ INDEX_COMPACT_TOMBSTONE_KIND = "index_compact"
 
 # Small and ON: the index must not grow linearly with turns. See the docstring for the recall
 # trade-off and the eviction priority that limits it. 0 disables either layer.
-DEFAULT_MAX_INDEX_RECORDS_PER_SCOPE = 256
-DEFAULT_INDEX_HARD_CEILING = 2048
+DEFAULT_MAX_INDEX_RECORDS_PER_SCOPE = 128
+DEFAULT_INDEX_HARD_CEILING = 1024
 
 # Lower evicts first. summary postings are the surviving recall path for content lever 1 compacted,
 # so they are the last thing given up; entities outrank raw events because they are the distilled,
@@ -131,6 +135,60 @@ def extract_segments_enabled(scope: Any = None) -> bool:
     ``MATRIXARK_EXTRACT_SEGMENTS=1`` to restore them -- or set ``extract_segments`` for one tenant,
     since whether a tenant wants segments is a per-tenant decision, not a process-wide one."""
     return bool(resolve_tenant_policy("extract_segments", scope))
+
+
+def generate_embeddings_enabled(scope: Any = None) -> bool:
+    """Whether `scope`'s tenant stores embedding vectors (default ON -- a tenant opts out)."""
+    return bool(resolve_tenant_policy("generate_embeddings", scope))
+
+
+def store_event_summary_text_enabled(scope: Any = None) -> bool:
+    """Whether a ``context_event`` carries its own ``summary_text`` (default OFF for `scope`'s tenant).
+
+    ``summarize_text`` is whitespace-collapse + truncate(220), not an LLM call, so for any event
+    under the limit it produced a byte-identical copy of ``text``. Every event-path reader is written
+    as ``summary_text or text`` (or lists ``text`` first), so omitting it changes no lookup."""
+    return bool(resolve_tenant_policy("store_event_summary_text", scope))
+
+
+def max_summary_text_chars(scope: Any = None, *, default: int) -> int:
+    """Summary-text budget for `scope`'s tenant, falling back to the level's built-in budget."""
+    configured = int(resolve_tenant_policy("max_summary_text_chars", scope))
+    return configured if configured > 0 else default
+
+
+def max_event_text_chars(scope: Any = None) -> int:
+    """Pre-extraction clip for `scope`'s tenant; ``0`` (the default) leaves text unbounded."""
+    return int(resolve_tenant_policy("max_event_text_chars", scope))
+
+
+def clip_messages_for_ingest(messages: list, limit: int) -> tuple[list, int]:
+    """Clip each message's content to `limit` chars. Returns (messages, clipped_count).
+
+    Applied ONCE at the ingest boundary, before extraction reads the messages, so the event text,
+    the extraction, the embedding and the index postings all describe the same bounded content --
+    clipping after extraction would leave derivatives quoting text the stored event no longer has.
+    Truncation is recorded on the message (``text_truncated`` / ``text_original_chars``), never
+    silent."""
+    if limit <= 0 or not isinstance(messages, list):
+        return messages, 0
+    clipped: list = []
+    count = 0
+    for message in messages:
+        if not isinstance(message, dict):
+            clipped.append(message)
+            continue
+        content = message.get("content")
+        if not isinstance(content, str) or len(content) <= limit:
+            clipped.append(message)
+            continue
+        trimmed = dict(message)
+        trimmed["content"] = content[:limit].rstrip()
+        trimmed["text_truncated"] = True
+        trimmed["text_original_chars"] = len(content)
+        clipped.append(trimmed)
+        count += 1
+    return clipped, count
 
 
 def max_index_records_per_scope(scope: Any = None) -> int:
