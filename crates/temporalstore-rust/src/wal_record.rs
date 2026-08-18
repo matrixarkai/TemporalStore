@@ -40,7 +40,7 @@
 use prost::Message;
 
 use crate::block_store::BlockAddress;
-use crate::checksum::crc32c;
+pub use crate::record_framing::{decode_framed_at, encode_framed, RecordFramingError as WalFramingError};
 
 /// Record format version, mirroring the reference's log version.
 pub const WAL_RECORD_VERSION: u32 = 1;
@@ -97,77 +97,6 @@ pub struct WalItem {
     pub meta_log: bool,
 }
 
-/// A framing or integrity failure. A record that fails to decode is corruption of committed
-/// data, not an absent record: a block-carrying item IS the durable copy, so callers must
-/// surface this as data loss rather than skipping past it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WalFramingError(pub String);
-
-impl std::fmt::Display for WalFramingError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "wal record framing error: {}", self.0)
-    }
-}
-
-impl std::error::Error for WalFramingError {}
-
-/// Encode a record with the reference's framing:
-/// `varint32(payload_len) | little_endian_u32(crc32c) | payload`.
-pub fn encode_framed(record: &WalRecord) -> Vec<u8> {
-    let payload = record.encode_to_vec();
-    let checksum = crc32c(&payload);
-    let mut out = Vec::with_capacity(payload.len() + 9);
-    encode_varint32(payload.len() as u32, &mut out);
-    out.extend_from_slice(&checksum.to_le_bytes());
-    out.extend_from_slice(&payload);
-    out
-}
-
-/// Decode the record starting at `offset`, returning it together with the **absolute offset of
-/// the next record**.
-///
-/// `offset` is the log id: the value carried in a block address.
-///
-/// The second element is deliberately an absolute offset rather than a relative length. Every
-/// caller either scans forward (`offset = next_offset`) or stops; returning a length invites
-/// `offset = consumed`, which silently walks backwards after the first record and loops
-/// forever. That is not hypothetical -- it is the bug this signature exists to prevent.
-pub fn decode_framed_at(
-    bytes: &[u8],
-    offset: usize,
-) -> Result<(WalRecord, usize), WalFramingError> {
-    let rest = bytes
-        .get(offset..)
-        .ok_or_else(|| WalFramingError(format!("offset {offset} is past the end of the log")))?;
-    let (payload_len, varint_len) = decode_varint32(rest)?;
-    let header_len = varint_len + 4;
-    let payload_len = payload_len as usize;
-    let end = header_len
-        .checked_add(payload_len)
-        .ok_or_else(|| WalFramingError("record length overflows".to_string()))?;
-    if rest.len() < end {
-        return Err(WalFramingError(format!(
-            "record at {offset} claims {payload_len} payload bytes but only {} remain",
-            rest.len().saturating_sub(header_len)
-        )));
-    }
-    let declared = u32::from_le_bytes(
-        rest[varint_len..header_len]
-            .try_into()
-            .expect("checksum slice is 4 bytes"),
-    );
-    let payload = &rest[header_len..end];
-    let actual = crc32c(payload);
-    if declared != actual {
-        return Err(WalFramingError(format!(
-            "record at {offset} checksum mismatch: declared {declared:08x}, actual {actual:08x}"
-        )));
-    }
-    let record = WalRecord::decode(payload)
-        .map_err(|error| WalFramingError(format!("record at {offset} failed to decode: {error}")))?;
-    Ok((record, offset + end))
-}
-
 /// Build the block address for a block-carrying item, from the log id of the record that
 /// contains it.
 ///
@@ -199,31 +128,6 @@ pub fn is_wal_resident(page_slab_id: u64) -> bool {
     page_slab_id == WAL_LOG_SLAB_ID
 }
 
-fn encode_varint32(mut value: u32, out: &mut Vec<u8>) {
-    loop {
-        if value < 0x80 {
-            out.push(value as u8);
-            return;
-        }
-        out.push((value as u8 & 0x7f) | 0x80);
-        value >>= 7;
-    }
-}
-
-fn decode_varint32(bytes: &[u8]) -> Result<(u32, usize), WalFramingError> {
-    let mut value = 0_u32;
-    for (index, &byte) in bytes.iter().take(5).enumerate() {
-        let part = u32::from(byte & 0x7f);
-        value |= part
-            .checked_shl(7 * index as u32)
-            .ok_or_else(|| WalFramingError("varint overflows 32 bits".to_string()))?;
-        if byte & 0x80 == 0 {
-            return Ok((value, index + 1));
-        }
-    }
-    Err(WalFramingError("varint is truncated or overlong".to_string()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,7 +151,7 @@ mod tests {
             items: vec![block_item(5, b"block bytes with a \n newline inside")],
         };
         let framed = encode_framed(&record);
-        let (decoded, next_offset) = decode_framed_at(&framed, 0).unwrap();
+        let (decoded, next_offset): (WalRecord, usize) = decode_framed_at(&framed, 0).unwrap();
         assert_eq!(decoded, record);
         assert_eq!(next_offset, framed.len());
         // The newline is the whole reason this framing is length-prefixed rather than
@@ -272,7 +176,7 @@ mod tests {
         let second_log_id = log.len();
         log.extend_from_slice(&encode_framed(&second));
 
-        let (decoded, _) = decode_framed_at(&log, second_log_id).unwrap();
+        let (decoded, _): (WalRecord, usize) = decode_framed_at(&log, second_log_id).unwrap();
         assert_eq!(decoded.sequence, 2);
         assert_eq!(decoded.items[0].block, b"second");
     }
@@ -292,9 +196,10 @@ mod tests {
         }
 
         let mut offset = 0;
-        let mut seen = Vec::new();
+        let mut seen: Vec<WalRecord> = Vec::new();
         while offset < log.len() {
-            let (record, next_offset) = decode_framed_at(&log, offset).unwrap();
+            let (record, next_offset): (WalRecord, usize) =
+                decode_framed_at(&log, offset).unwrap();
             // A scan MUST make progress; without this the loop is unbounded and the growing
             // `seen` takes the process out via the OOM killer rather than failing an assert.
             assert!(next_offset > offset, "scan did not advance past {offset}");
@@ -316,7 +221,7 @@ mod tests {
         let mut framed = encode_framed(&record);
         let last = framed.len() - 1;
         framed[last] ^= 0xff;
-        assert!(decode_framed_at(&framed, 0).is_err());
+        assert!(decode_framed_at::<WalRecord>(&framed, 0).is_err());
     }
 
     #[test]
@@ -328,7 +233,7 @@ mod tests {
         };
         let framed = encode_framed(&record);
         let truncated = &framed[..framed.len() - 5];
-        assert!(decode_framed_at(truncated, 0).is_err());
+        assert!(decode_framed_at::<WalRecord>(truncated, 0).is_err());
     }
 
     #[test]
@@ -342,7 +247,7 @@ mod tests {
                 items: vec![block_item(1, &vec![b'x'; payload_len])],
             };
             let framed = encode_framed(&record);
-            let (decoded, next_offset) = decode_framed_at(&framed, 0).unwrap();
+            let (decoded, next_offset): (WalRecord, usize) = decode_framed_at(&framed, 0).unwrap();
             assert_eq!(decoded.items[0].block.len(), payload_len);
             assert_eq!(next_offset, framed.len(), "payload_len {payload_len}");
         }

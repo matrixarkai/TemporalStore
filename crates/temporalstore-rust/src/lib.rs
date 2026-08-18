@@ -31,6 +31,8 @@ pub mod storage_config;
 pub mod telemetry;
 pub mod types;
 pub mod wal;
+pub mod record_framing;
+pub mod index_log_record;
 pub mod wal_record;
 
 pub use block_store::{
