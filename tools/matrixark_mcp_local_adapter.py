@@ -88,6 +88,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         pre_retrieval_summary_refresh_memory_layer_budget_tokens as shared_pre_retrieval_summary_refresh_memory_layer_budget_tokens,
     )
 
+try:
+    from tools.matrixark_mcp_local_idempotency import build_idempotency_record as _build_idempotency_record
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_local_idempotency import build_idempotency_record as _build_idempotency_record
+
 RETRIEVAL_HOT_RECORD_TYPES = {
     "context_compression_event",
     "context_embedding",
@@ -380,13 +385,83 @@ INTERN_METADATA_FIELDS = (
     "placement_key",
     "placement_hash",
     "posting_policy",
+    # NB: scope_key is deliberately NOT interned. It is load-bearing for the RAW-log rewrite paths --
+    # scope-level forget / reset apply their tombstones to unexpanded records in purge_tombstones(),
+    # matching by scope_key. Eliding it there makes scope-level tombstones miss, so tombstoned records
+    # survive a purge. Interning it transparently would require expanding at every raw rewrite path;
+    # not worth the ~4% for the correctness risk. The routing/placement fields above are never
+    # tombstone-matched, so interning them (incl. via the bundle format) is safe.
 )
 INTERN_DICT_RECORD_TYPE = "matrixark_intern_dict"
-INTERN_TOKEN_KEY = "_im"  # per-record map {field_name: token}
+INTERN_TOKEN_KEY = "_im"  # legacy per-record map {field_name: token} (Phase-1 format)
+
+# Phase-2 -- bundle interning. The per-field ``_im`` map repeats the field NAMES on every interned
+# record (measured ~8% of on-disk memory just for the token map). Because the whole eligible-field
+# bundle is near-constant per store, we hash the WHOLE {field: value} bundle to a single token and
+# carry only that token (``_imb``) on the data line; the sidecar dict stores the full bundle once per
+# distinct token. This subsumes the per-field format (which is still read for backward compatibility)
+# and collapses the token-map overhead to a single short hash per record. Gated independently so it can
+# be turned off to fall back to the Phase-1 per-field format.
+INTERN_METADATA_BUNDLE = bool_env("MATRIXARK_INTERN_METADATA_BUNDLE", True)
+INTERN_BUNDLE_TOKEN_KEY = "_imb"  # bundle token -> sidecar {im_token, im_bundle: {field: value}}
+INTERN_BUNDLE_EMIT_KEY = "__bundle__"  # emitted-token namespace for bundle sidecars
+
+# Phase-2 -- model-registry dedup. context_model_registry rows are pure model-metadata REFERENCE
+# records (model_ref/model_name/model_hash/provider/execution_mode) re-emitted on every serving batch
+# that carries a context_embedding, yet only a handful of distinct models exist per store. The read
+# path already latest-state-compacts them (compact_latest_context_state_records), so the duplicates are
+# pure durable-log bloat. With MATRIXARK_DEDUP_MODEL_REGISTRY ON we append at most one registry record
+# per distinct semantic identity (timestamp excluded); a genuine change to any model field is a new
+# identity and is still recorded. Serving/retrieval that reads model info still resolves it (>=1 record
+# per model survives). Flag OFF re-emits every batch (prior behaviour).
+DEDUP_MODEL_REGISTRY = bool_env("MATRIXARK_DEDUP_MODEL_REGISTRY", True)
+
+# Phase-2 -- coalesce transient summary-dirty markers. A context_summary_dirty (status="pending")
+# marker means "this node's summary needs regeneration". One is emitted per (node prefix) on EVERY
+# event, so between refreshes a hot node accumulates many pending markers -- ~5% of on-disk memory --
+# though the refresh reconciliation only ever acts on the LATEST uncompleted pending marker per node
+# (it regenerates the node summary from all current events regardless of which marker triggered it) and
+# resolves a marker by matching a status="completed" marker on the same dirty_hash. With
+# MATRIXARK_COALESCE_SUMMARY_DIRTY ON we keep at most ONE outstanding (uncompleted) pending marker per
+# (scope, node): a new pending marker is skipped while an uncompleted one is already durable, so the
+# node stays flagged for regen. CRASH-SAFE -- the one outstanding marker is durable, so a crash before
+# regen still triggers the refresh on recovery; once the summary regenerates (completion marker with
+# that dirty_hash) the next event re-marks the node afresh. Completion/refreshed markers are never
+# dropped. Flag OFF emits a marker per event (prior behaviour).
+COALESCE_SUMMARY_DIRTY = bool_env("MATRIXARK_COALESCE_SUMMARY_DIRTY", True)
+
+
+def _canonical_scope_key_of(record: Json) -> str:
+    existing = record.get("scope_key")
+    if existing:
+        return str(existing)
+    scope = record.get("scope")
+    if isinstance(scope, dict):
+        try:
+            return str(canonical_scope_key(scope))
+        except Exception:
+            return ""
+    return ""
+
+
+def _model_registry_identity(record: Json) -> tuple[Any, ...]:
+    return (
+        str(record.get("model_kind") or ""),
+        str(record.get("model_ref") or ""),
+        str(record.get("model_name") or ""),
+        record.get("model_hash"),
+        str(record.get("provider") or ""),
+        str(record.get("execution_mode") or ""),
+    )
 
 
 def _intern_token_for_value(value: Any) -> str:
     canonical = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return _hashlib.blake2b(canonical.encode("utf-8"), digest_size=6).hexdigest()
+
+
+def _intern_token_for_bundle(bundle: dict[str, Any]) -> str:
+    canonical = json.dumps(bundle, sort_keys=True, separators=(",", ":"))
     return _hashlib.blake2b(canonical.encode("utf-8"), digest_size=6).hexdigest()
 
 
@@ -407,12 +482,30 @@ def encode_interned_records(records: list[Json], emitted_tokens: set[tuple[str, 
         if not isinstance(record, dict) or str(record.get("record_type") or "") == INTERN_DICT_RECORD_TYPE:
             encoded_records.append(record)
             continue
+        present = {field: record[field] for field in INTERN_METADATA_FIELDS if field in record}
+        if not present:
+            encoded_records.append(record)
+            continue
+        if INTERN_METADATA_BUNDLE:
+            token = _intern_token_for_bundle(present)
+            key = (INTERN_BUNDLE_EMIT_KEY, token)
+            if key not in emitted_tokens:
+                emitted_tokens.add(key)
+                dict_records.append({
+                    "record_type": INTERN_DICT_RECORD_TYPE,
+                    "im_token": token,
+                    "im_bundle": present,
+                })
+            encoded = dict(record)
+            for field in present:
+                encoded.pop(field, None)
+            encoded[INTERN_BUNDLE_TOKEN_KEY] = token
+            encoded_records.append(encoded)
+            continue
+        # Legacy Phase-1 per-field format (bundle flag OFF).
         token_map: dict[str, str] = {}
-        encoded: Json | None = None
-        for field in INTERN_METADATA_FIELDS:
-            if field not in record:
-                continue
-            value = record[field]
+        encoded = dict(record)
+        for field, value in present.items():
             token = _intern_token_for_value(value)
             token_map[field] = token
             key = (field, token)
@@ -424,19 +517,12 @@ def encode_interned_records(records: list[Json], emitted_tokens: set[tuple[str, 
                     "im_token": token,
                     "im_value": value,
                 })
-            if encoded is None:
-                encoded = dict(record)
             encoded.pop(field, None)
-        if token_map:
-            if encoded is None:
-                encoded = dict(record)
-            existing = encoded.get(INTERN_TOKEN_KEY)
-            merged = dict(existing) if isinstance(existing, dict) else {}
-            merged.update(token_map)
-            encoded[INTERN_TOKEN_KEY] = merged
-            encoded_records.append(encoded)
-        else:
-            encoded_records.append(record)
+        existing = encoded.get(INTERN_TOKEN_KEY)
+        merged = dict(existing) if isinstance(existing, dict) else {}
+        merged.update(token_map)
+        encoded[INTERN_TOKEN_KEY] = merged
+        encoded_records.append(encoded)
     return dict_records + encoded_records
 
 
@@ -446,19 +532,24 @@ def expand_interned_records(records: list[Json]) -> list[Json]:
     every raw-read choke point so no downstream consumer ever sees a token. A no-op (other than
     stripping any dict records) when nothing is interned, so old inline-field logs pass through
     unchanged."""
-    dict_map: dict[tuple[str, str], Any] = {}
+    dict_map: dict[tuple[str, str], Any] = {}  # legacy per-field sidecars
+    bundle_map: dict[str, dict[str, Any]] = {}  # bundle sidecars: token -> {field: value}
     saw_token = False
     for record in records:
         if not isinstance(record, dict):
             continue
         if str(record.get("record_type") or "") == INTERN_DICT_RECORD_TYPE:
-            field = record.get("im_field")
             token = record.get("im_token")
+            bundle = record.get("im_bundle")
+            if isinstance(token, str) and isinstance(bundle, dict):
+                bundle_map[token] = bundle
+                continue
+            field = record.get("im_field")
             if isinstance(field, str) and isinstance(token, str):
                 dict_map[(field, token)] = record.get("im_value")
-        elif isinstance(record.get(INTERN_TOKEN_KEY), dict):
+        elif isinstance(record.get(INTERN_TOKEN_KEY), dict) or isinstance(record.get(INTERN_BUNDLE_TOKEN_KEY), str):
             saw_token = True
-    if not dict_map and not saw_token:
+    if not dict_map and not bundle_map and not saw_token:
         # Fast path: nothing interned. Still drop any stray dict records (none here) and return as-is.
         return list(records)
     expanded_out: list[Json] = []
@@ -468,18 +559,26 @@ def expand_interned_records(records: list[Json]) -> list[Json]:
             continue
         if str(record.get("record_type") or "") == INTERN_DICT_RECORD_TYPE:
             continue
+        bundle_token = record.get(INTERN_BUNDLE_TOKEN_KEY)
         token_map = record.get(INTERN_TOKEN_KEY)
-        if not isinstance(token_map, dict):
+        if not isinstance(bundle_token, str) and not isinstance(token_map, dict):
             expanded_out.append(record)
             continue
         expanded = dict(record)
-        expanded.pop(INTERN_TOKEN_KEY, None)
-        for field, token in token_map.items():
-            key = (str(field), str(token))
-            if key in dict_map:
-                # Deep-copy: downstream mutates storage_route/placement in place; records sharing a
-                # token must not alias one dict object.
-                expanded[str(field)] = _copy.deepcopy(dict_map[key])
+        if isinstance(bundle_token, str):
+            expanded.pop(INTERN_BUNDLE_TOKEN_KEY, None)
+            bundle = bundle_map.get(bundle_token)
+            if isinstance(bundle, dict):
+                for field, value in bundle.items():
+                    # Deep-copy: downstream mutates storage_route/placement in place; records sharing a
+                    # token must not alias one dict object.
+                    expanded[str(field)] = _copy.deepcopy(value)
+        if isinstance(token_map, dict):
+            expanded.pop(INTERN_TOKEN_KEY, None)
+            for field, token in token_map.items():
+                key = (str(field), str(token))
+                if key in dict_map:
+                    expanded[str(field)] = _copy.deepcopy(dict_map[key])
         expanded_out.append(expanded)
     return expanded_out
 
@@ -3735,8 +3834,11 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                         except json.JSONDecodeError:
                             continue
                         if isinstance(record, dict) and str(record.get("record_type") or "") == INTERN_DICT_RECORD_TYPE:
-                            field = record.get("im_field")
                             token = record.get("im_token")
+                            if isinstance(token, str) and isinstance(record.get("im_bundle"), dict):
+                                self._intern_emitted_tokens.add((INTERN_BUNDLE_EMIT_KEY, token))
+                                continue
+                            field = record.get("im_field")
                             if isinstance(field, str) and isinstance(token, str):
                                 self._intern_emitted_tokens.add((field, token))
         except OSError:
@@ -3752,8 +3854,128 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             self._seed_intern_tokens_locked()
         return encode_interned_records(sanitized, self._intern_emitted_tokens)
 
+    def _seed_model_registry_seen_locked(self) -> None:
+        """Seed the seen-identity set from the durable log so a fresh adapter does not re-append a
+        registry record whose identity is already present. Reads raw log lines (registry records carry
+        no interned fields) so it never re-enters the read/compaction path. Best-effort."""
+        if getattr(self, "_model_registry_seeded", False):
+            return
+        self._model_registry_seeded = True
+        if not hasattr(self, "_model_registry_seen"):
+            self._model_registry_seen = set()
+        if not self._local_jsonl_enabled:
+            return
+        try:
+            for path in self._retained_jsonl_paths():
+                with path.open("r", encoding="utf-8") as handle:
+                    for line in handle:
+                        line = line.strip()
+                        if not line or "context_model_registry" not in line:
+                            continue
+                        try:
+                            record = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(record, dict) and str(record.get("record_type") or "") == "context_model_registry":
+                            self._model_registry_seen.add(_model_registry_identity(record))
+        except OSError:
+            pass
+
+    def _filter_duplicate_model_registry(self, records: list[Json]) -> list[Json]:
+        """Drop context_model_registry records whose semantic identity is already durably present.
+        Keeps at least one record per distinct model; a changed field is a new identity. No-op when the
+        flag is OFF."""
+        if not DEDUP_MODEL_REGISTRY:
+            return records
+        if not any(isinstance(r, dict) and r.get("record_type") == "context_model_registry" for r in records):
+            return records
+        if not getattr(self, "_model_registry_seeded", False):
+            self._seed_model_registry_seen_locked()
+        if not hasattr(self, "_model_registry_seen"):
+            self._model_registry_seen = set()
+        kept: list[Json] = []
+        for record in records:
+            if isinstance(record, dict) and str(record.get("record_type") or "") == "context_model_registry":
+                identity = _model_registry_identity(record)
+                if identity in self._model_registry_seen:
+                    continue
+                self._model_registry_seen.add(identity)
+            kept.append(record)
+        return kept
+
+    def _outstanding_dirty_nodes(self) -> set[tuple[str, Any]]:
+        """(scope_key, node_hash) pairs with an uncompleted pending context_summary_dirty marker in the
+        current live view. Computed from read_all() so it always reflects durable+own state -- a node is
+        reported outstanding only if a pending marker is really present, so coalescing can never drop
+        the last marker for a node that still needs regeneration."""
+        completed: set[Any] = set()
+        pending: dict[tuple[str, Any], Any] = {}
+        try:
+            live = self.read_all()
+        except (OSError, ValueError):
+            return set()
+        for record in live:
+            if not isinstance(record, dict):
+                continue
+            rt = str(record.get("record_type") or "")
+            if rt not in ("context_summary_dirty", "context_summary_refresh_audit"):
+                continue
+            dirty_hash = record.get("dirty_hash")
+            status = record.get("status")
+            if dirty_hash is not None and status in ("completed", "refreshed"):
+                completed.add(dirty_hash)
+        for record in live:
+            if not isinstance(record, dict) or str(record.get("record_type") or "") != "context_summary_dirty":
+                continue
+            if record.get("status") != "pending":
+                continue
+            dirty_hash = record.get("dirty_hash")
+            node_hash = record.get("node_hash")
+            if node_hash is None or dirty_hash in completed:
+                continue
+            key = (str(record.get("scope_key") or _canonical_scope_key_of(record)), node_hash)
+            pending[key] = record
+        return set(pending.keys())
+
+    def _coalesce_summary_dirty(self, records: list[Json]) -> list[Json]:
+        """Drop redundant pending summary-dirty markers for a (scope, node) that already has an
+        outstanding uncompleted marker. Completion / non-pending markers pass through. No-op when the
+        flag is OFF or the batch carries no pending markers."""
+        if not COALESCE_SUMMARY_DIRTY:
+            return records
+        pending_in_batch = [
+            r for r in records
+            if isinstance(r, dict) and str(r.get("record_type") or "") == "context_summary_dirty"
+            and r.get("status") == "pending"
+        ]
+        if not pending_in_batch:
+            return records
+        outstanding = self._outstanding_dirty_nodes()
+        kept: list[Json] = []
+        for record in records:
+            if (
+                isinstance(record, dict)
+                and str(record.get("record_type") or "") == "context_summary_dirty"
+                and record.get("status") == "pending"
+            ):
+                node_hash = record.get("node_hash")
+                if node_hash is not None:
+                    key = (str(record.get("scope_key") or _canonical_scope_key_of(record)), node_hash)
+                    if key in outstanding:
+                        continue  # a pending marker for this (scope, node) is already durable
+                    outstanding.add(key)  # coalesce duplicates within this same batch too
+            kept.append(record)
+        return kept
+
+    def _apply_serving_dedup(self, records: list[Json]) -> list[Json]:
+        return self._coalesce_summary_dirty(self._filter_duplicate_model_registry(records))
+
     def append(self, record: Json) -> None:
-        records = self._stamp_ingest_fields(materialize_serving_record_batch([record]))
+        records = self._apply_serving_dedup(
+            self._stamp_ingest_fields(materialize_serving_record_batch([record]))
+        )
+        if not records:
+            return
         if self._queue_batched_records(records):
             return
         sanitized = [self._sanitize_jsonl_record(item) for item in records]
@@ -3773,7 +3995,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         self._maintain_event_membership_after_append(records)
 
     def append_many(self, records: list[Json]) -> None:
-        records = self._stamp_ingest_fields(materialize_serving_record_batch(records))
+        records = self._apply_serving_dedup(
+            self._stamp_ingest_fields(materialize_serving_record_batch(records))
+        )
         if not records:
             return
         if self._queue_batched_records(records):
@@ -4118,20 +4342,18 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         return None
 
     def append_idempotency_record(self, *, key_hash: int, tool_name: str, raw_key: str, identity: Json, response: Json) -> None:
+        # Phase-2: the stored response is slimmed to identity/status fields (+ a full-response content
+        # hash) when MATRIXARK_SLIM_IDEMPOTENCY_RESPONSE is ON; flag OFF stores the full response
+        # (byte-identical to prior behaviour). Dedup is unaffected -- it keys on key_hash. See
+        # matrixark_mcp_local_idempotency.build_idempotency_record.
         self.append(
-            {
-                "record_type": "matrixark_idempotency",
-                "key_hash": key_hash,
-                "tool_name": tool_name,
-                "raw_key_hash": stable_hash(raw_key),
-                "scope_key": identity.get("scope_key", ""),
-                "account_id": identity.get("account_id", ""),
-                "tenant_id": identity.get("tenant_id", ""),
-                "user_id": identity.get("user_id", ""),
-                "session_id": identity.get("session_id", ""),
-                "response": response,
-                "created_at_ms": now_ms(),
-            }
+            _build_idempotency_record(
+                key_hash=key_hash,
+                tool_name=tool_name,
+                raw_key=raw_key,
+                identity=identity,
+                response=response,
+            )
         )
 
     def ensure_backend_ready(self, *, reason: str = "matrixark") -> Json:
