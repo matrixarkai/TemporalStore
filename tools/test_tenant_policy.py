@@ -41,7 +41,7 @@ class ResolutionOrderTest(unittest.TestCase):
     def test_builtin_defaults_when_nothing_is_configured(self):
         self.assertFalse(policy.resolve("extract_segments"))
         self.assertTrue(policy.resolve("generate_embeddings"))
-        self.assertEqual(policy.resolve("max_secondary_index_records_per_scope"), 256)
+        self.assertEqual(policy.resolve("max_secondary_index_records_per_scope"), 128)
 
     def test_env_overrides_default_and_tenant_overrides_env(self):
         os.environ["MATRIXARK_EXTRACT_SEGMENTS"] = "1"
@@ -84,7 +84,7 @@ class ResolutionOrderTest(unittest.TestCase):
 
     def test_unknown_knobs_and_bad_values_are_dropped_not_fatal(self):
         policy.set_tenant_policy("acme", {"not_a_knob": 1, "max_secondary_index_records_per_scope": "seventeen"})
-        self.assertEqual(policy.resolve("max_secondary_index_records_per_scope", {"tenant_id": "acme"}), 256)
+        self.assertEqual(policy.resolve("max_secondary_index_records_per_scope", {"tenant_id": "acme"}), 128)
 
     def test_tenant_identity_from_every_scope_shape(self):
         self.assertEqual(policy.tenant_of({"tenant_id": "acme"}), "acme")

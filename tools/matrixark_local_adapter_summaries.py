@@ -28,9 +28,21 @@ except ImportError:
 )
 
 try:
-    from tools.matrixark_index_growth_bound import index_compaction_tombstone, index_compact_on_summary_enabled
+    from tools.matrixark_tenant_policy import tenant_scope_from_node_path
+    from tools.matrixark_index_growth_bound import (
+        generate_embeddings_enabled,
+        index_compaction_tombstone,
+        index_compact_on_summary_enabled,
+        max_summary_text_chars,
+    )
 except ImportError:
-    from matrixark_index_growth_bound import index_compaction_tombstone, index_compact_on_summary_enabled
+    from matrixark_tenant_policy import tenant_scope_from_node_path
+    from matrixark_index_growth_bound import (
+        generate_embeddings_enabled,
+        index_compaction_tombstone,
+        index_compact_on_summary_enabled,
+        max_summary_text_chars,
+    )
 
 
 class _LocalAdapterSummariesMixin:
@@ -620,7 +632,7 @@ class _LocalAdapterSummariesMixin:
             events, child_summaries, entity_states, operator_states, summary_source_policy = self.node_summary_source_records(
                 records=records,
                 node_path=node_path,
-                scope=dirty.get("scope", scope),
+                scope=(dirty.get("scope") or scope),
                 node_hash=node_hash,
             )
             event_texts = [str(record.get("text", "")) for record in events if record.get("text")]
@@ -898,7 +910,7 @@ class _LocalAdapterSummariesMixin:
                 node_path=node_path,
                 source_text=source_text,
                 fallback_text=f"{prefix_label} :: {source_text}",
-                max_chars=220,
+                max_chars=max_summary_text_chars((dirty.get("scope") or scope), default=220),
                 policy=l1_policy,
             )
             summary_specs = [("node_l0", l0_summary, "node_l0", l0_provider_meta)]
@@ -911,7 +923,7 @@ class _LocalAdapterSummariesMixin:
                         f"Context node {prefix_label}. Rich overview: {source_text}. "
                         f"This node belongs to path {prefix_label} and should be used for tree-first retrieval before leaf event/entity recall."
                     ),
-                    max_chars=1200,
+                    max_chars=max_summary_text_chars((dirty.get("scope") or scope), default=1200),
                     policy=l1_policy,
                 )
                 summary_specs.append(("node_l1", l1_summary, "node_l1", l1_provider_meta))
@@ -960,7 +972,7 @@ class _LocalAdapterSummariesMixin:
                     "source_operator_hashes": source_operator_hashes,
                     "summary_generation_policy": summary_policy,
                     "dirty_hash": dirty.get("dirty_hash"),
-                    "scope": dirty.get("scope", scope),
+                    "scope": (dirty.get("scope") or scope),
                     "updated_at_ms": refreshed_at_ms,
                 }
                 self.append(summary_record)
@@ -972,12 +984,17 @@ class _LocalAdapterSummariesMixin:
                             ref_type="summary",
                             ref_hashes=[summary_hash],
                             node_hash=node_hash,
-                            scope=dirty.get("scope", scope),
+                            scope=(dirty.get("scope") or scope),
                             updated_at_ms=refreshed_at_ms,
                         )
                     )
-                summary_vector = embedding_for_text(summary_text)
-                self.append(
+                # Gate at the emission site as well as the append choke point: this is the one
+                # embedding emitter whose rows were still reaching the log for a tenant that
+                # declined embeddings, and here the scope is unambiguous.
+                embedding_scope = (dirty.get("scope") or scope or tenant_scope_from_node_path(node_path))
+                summary_vector = [] if not generate_embeddings_enabled(embedding_scope) else embedding_for_text(summary_text)
+                if summary_vector:
+                    self.append(
                     {
                         "record_type": "context_embedding",
                         "embedding_type": embedding_type,
@@ -989,7 +1006,7 @@ class _LocalAdapterSummariesMixin:
                         "dim": len(summary_vector),
                         "model": embedding_model_name(),
                         "vector": summary_vector,
-                        "scope": dirty.get("scope", scope),
+                        "scope": (dirty.get("scope") or scope),
                         "summary_type": level,
                         "source_entity_types": source_entity_types,
                         "source_roles": source_roles,
@@ -1021,17 +1038,17 @@ class _LocalAdapterSummariesMixin:
             # summary now have redundant per-event postings -- the summary's own postings cover the
             # same content -- so tombstone them. Appended AFTER the summary + its postings so the
             # order-aware sweep reaches the older event postings and never the new summary ones.
-            if index_compact_on_summary_enabled(dirty.get("scope", scope)):
+            if index_compact_on_summary_enabled((dirty.get("scope") or scope)):
                 compaction_tombstone = index_compaction_tombstone(
                     source_event_ids=source_event_ids,
-                    scope=dirty.get("scope", scope),
+                    scope=(dirty.get("scope") or scope),
                     created_at_ms=refreshed_at_ms,
                 )
                 if compaction_tombstone is not None:
                     self.append(compaction_tombstone)
             compression_refresh = self.auto_time_compress_node_events(
                 records=records,
-                scope=dirty.get("scope", scope),
+                scope=(dirty.get("scope") or scope),
                 node_hash=node_hash,
                 node_path=node_path,
                 compressed_time_ms=refreshed_at_ms,
@@ -1047,7 +1064,7 @@ class _LocalAdapterSummariesMixin:
                 "dirty_hash": dirty.get("dirty_hash"),
                 "node_hash": node_hash,
                 "node_path": node_path,
-                "scope": dirty.get("scope", scope),
+                "scope": (dirty.get("scope") or scope),
                 "dirty_reason": dirty.get("dirty_reason", ""),
                 "source_ref_type": dirty.get("source_ref_type", ""),
                 "changed_ref_count": dirty.get("changed_ref_count", 0),
@@ -1101,13 +1118,13 @@ class _LocalAdapterSummariesMixin:
                         "status": "refreshed",
                         "worker": "matrixark-local-async-summary-worker",
                         "refreshed_at_ms": refreshed_at_ms,
-                        "scope": dirty.get("scope", scope),
+                        "scope": (dirty.get("scope") or scope),
                     }
                 )
             generated_summary_types = [spec[0] for spec in summary_specs]
             summary_progress_records = async_summary_progress_records(
                 records=records,
-                scope=dirty.get("scope", scope),
+                scope=(dirty.get("scope") or scope),
                 source_event_ids=source_event_ids,
                 source_entity_hashes=source_entity_hashes,
                 dirty_hash=dirty.get("dirty_hash"),

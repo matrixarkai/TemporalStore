@@ -156,9 +156,19 @@ except ImportError:
 
 
 try:
-    from tools.matrixark_index_growth_bound import extract_segments_enabled
+    from tools.matrixark_index_growth_bound import (
+        clip_messages_for_ingest,
+        extract_segments_enabled,
+        max_event_text_chars,
+        store_event_summary_text_enabled,
+    )
 except ImportError:
-    from matrixark_index_growth_bound import extract_segments_enabled
+    from matrixark_index_growth_bound import (
+        clip_messages_for_ingest,
+        extract_segments_enabled,
+        max_event_text_chars,
+        store_event_summary_text_enabled,
+    )
 
 try:
     from tools.matrixark_mcp_summaries import shared_summary_text
@@ -198,6 +208,14 @@ class _LocalAdapterIngestMixin:
 
     def _ingest_impl(self, args: Json, *, hook: Json | None = None) -> Json:
         envelope = normalize_envelope(args, default_kind="message")
+        # Pre-extraction bound: everything downstream (extraction, event text, embeddings, postings)
+        # reads envelope["messages"], so clipping here -- and only here -- keeps them consistent.
+        text_limit = max_event_text_chars(envelope.get("scope"))
+        if text_limit > 0:
+            envelope["messages"], clipped_count = clip_messages_for_ingest(envelope["messages"], text_limit)
+            if clipped_count:
+                envelope["text_clipped_message_count"] = clipped_count
+                envelope["max_event_text_chars"] = text_limit
         # Guard: a message-ingest scope without tenant_id/user_id silently disables profile
         # long-term memory. Warn (once per identity) so profile_scope_missing is never silent.
         self._profile_scope_warning = (
@@ -286,7 +304,8 @@ class _LocalAdapterIngestMixin:
                     "node_hash": node_hash,
                     "node_path": node_path,
                     "text": text,
-                    "summary_text": shared_summary_text(text),
+                    **({"summary_text": shared_summary_text(text)}
+                       if store_event_summary_text_enabled(envelope["scope"]) else {}),
                     "classification": "PENDING_ASYNC_EXTRACTION",
                     "event_type": pending_event_type,
                     "batch_event_type": "pending_async",
@@ -2168,7 +2187,8 @@ class _LocalAdapterIngestMixin:
                     "scope": envelope["scope"],
                     "access_scope": envelope["scope"],
                     "text": event_text,
-                    "summary_text": shared_summary_text(event_text),
+                    **({"summary_text": shared_summary_text(event_text)}
+                       if store_event_summary_text_enabled(envelope["scope"]) else {}),
                     "classification": extraction["classification"],
                     "event_type": event_type,
                     "batch_event_type": extraction["event_type"],

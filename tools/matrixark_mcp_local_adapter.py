@@ -4025,15 +4025,16 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         return kept
 
     def _apply_serving_dedup(self, records: list[Json]) -> list[Json]:
-        # Both append() and append_many() funnel through here, so per-tenant record policy is
-        # enforced in exactly one place.
-        return self._drop_policy_disabled_records(
-            self._coalesce_summary_dirty(self._filter_duplicate_model_registry(records))
-        )
+        return self._coalesce_summary_dirty(self._filter_duplicate_model_registry(records))
 
     def append(self, record: Json) -> None:
+        # Policy runs on the RAW record, before serving materialization strips the scope a
+        # context_embedding row carries -- afterwards there is no tenant left to attribute it to.
+        allowed = self._drop_policy_disabled_records([record])
+        if not allowed:
+            return
         records = self._apply_serving_dedup(
-            self._stamp_ingest_fields(materialize_serving_record_batch([record]))
+            self._stamp_ingest_fields(materialize_serving_record_batch(allowed))
         )
         if not records:
             return
@@ -4145,8 +4146,11 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         return kept
 
     def append_many(self, records: list[Json]) -> None:
+        # Same as append(): policy first, while the raw records still carry their scope.
         records = self._apply_serving_dedup(
-            self._stamp_ingest_fields(materialize_serving_record_batch(records))
+            self._stamp_ingest_fields(
+                materialize_serving_record_batch(self._drop_policy_disabled_records(records))
+            )
         )
         if not records:
             return

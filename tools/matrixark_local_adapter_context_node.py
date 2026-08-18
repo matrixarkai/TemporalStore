@@ -20,6 +20,12 @@ except ImportError:
 )
 
 
+try:
+    from tools.matrixark_index_growth_bound import generate_embeddings_enabled
+except ImportError:
+    from matrixark_index_growth_bound import generate_embeddings_enabled
+
+
 class _LocalAdapterContextNodeMixin:
     def default_session_node_path(self, scope: Json) -> list[str]:
         tenant_id = str(scope.get("tenant_id") or "tenant_local_agent")
@@ -214,6 +220,13 @@ class _LocalAdapterContextNodeMixin:
             "node_path": node_path,
             "text": text,
             "scope": candidate_access_scope(record),
+            # Identity fallback for rows whose access scope is empty (context_node / some entity
+            # rows): without it the emitted embedding carries no tenant at all, and per-tenant record
+            # policy has to fail open on it. Deliberately separate from "scope", which feeds the
+            # scope_matches filter below -- changing that would change WHICH embeddings exist.
+            "scope_key": str(record.get("scope_key") or "") or str(
+                (candidate_access_scope(record) or {}).get("scope_key") or ""
+            ),
             "memory_scope": record.get("memory_scope", ""),
             "session_continuity": record.get("session_continuity", ""),
             "source_updated_at_ms": record.get("updated_at_ms"),
@@ -229,6 +242,10 @@ class _LocalAdapterContextNodeMixin:
     ) -> Json:
         limit = max(1, int(limit or 1))
         refreshed_at_ms = updated_at_ms if isinstance(updated_at_ms, int) else now_ms()
+        # The refresh itself is scoped, so it is the last-resort identity for a row that carries none.
+        # canonical_scope_key() needs tenant_hash, which a caller-supplied {"tenant_id": ...} scope
+        # does not have, so keep the scope OBJECT as the fallback identity instead of a derived key.
+        operation_scope = scope if isinstance(scope, dict) and scope else None
         current_model = embedding_model_name()
         current_model_ref = embedding_model_ref_for_name(current_model)
         existing_embeddings: dict[tuple[str, str, int], Json] = {}
@@ -257,6 +274,11 @@ class _LocalAdapterContextNodeMixin:
                 continue
             target = self._embedding_target_for_context_record(record)
             if target is None:
+                continue
+            # A tenant that declined embeddings must not get them backfilled either. Resolved from
+            # the record's own scope first, then this refresh's scope -- a summary row read back
+            # from the store has already lost its scope to serving materialization.
+            if not generate_embeddings_enabled(target["scope"] or target.get("scope_key") or operation_scope):
                 continue
             if scope and not scope_matches(target["scope"], scope):
                 skipped_scope += 1
@@ -297,7 +319,13 @@ class _LocalAdapterContextNodeMixin:
                         "dim": len(vector),
                         "model": current_model,
                         "vector": vector,
-                        "scope": target["scope"],
+                        # A summary/node row read back from the store has already lost its scope
+                        # (serving materialization drops it), so fall back to the source record's
+                        # scope_key and then to the scope this refresh was called with -- otherwise
+                        # the emitted embedding carries no tenant and per-tenant record policy has
+                        # to fail open on it.
+                        "scope": target["scope"] or operation_scope or {},
+                        **({"scope_key": target["scope_key"]} if target.get("scope_key") else {}),
                         "memory_scope": target.get("memory_scope", ""),
                         "session_continuity": target.get("session_continuity", ""),
                         "source_record_type": target["record_type"],

@@ -89,18 +89,31 @@ KNOBS: dict[str, Knob] = {
         Knob("compact_index_on_summary", "bool", "MATRIXARK_INDEX_COMPACT_ON_SUMMARY", True,
              "Drop an event's per-event index postings once a summary covers it (lossless)."),
         Knob("max_secondary_index_records_per_session", "int",
-             "MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_SESSION", 256,
-             "Per-session posting budget; 0 = unlimited.",
+             "MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_SESSION", 128,
+             "Per-session posting budget; 0 = unlimited. Measured with dedup on: 128 holds recall "
+             "5/5 (177 postings at 40 turns), 96 and below lose a fact.",
              aliases=("max_secondary_index_records_per_scope",),
              env_aliases=("MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_SCOPE",)),
         Knob("max_secondary_index_records_per_tenant", "int",
-             "MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_TENANT", 2048,
+             "MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_TENANT", 1024,
              "Per-tenant posting budget across all that tenant's sessions; 0 = unlimited. There is "
              "no store-wide total on purpose: a global budget would let one tenant evict another.",
              aliases=("secondary_index_hard_ceiling",),
              env_aliases=("MATRIXARK_SECONDARY_INDEX_HARD_CEILING",)),
         Knob("dedupe_index_postings", "bool", "MATRIXARK_DEDUPE_INDEX_POSTINGS", True,
              "Collapse repeated postings for the same (scope, term, refs). Lossless."),
+        Knob("store_event_summary_text", "bool", "MATRIXARK_STORE_EVENT_SUMMARY_TEXT", False,
+             "Store a context_event's summary_text. Off by default: it is a whitespace-collapsed "
+             "truncation of text (no LLM), so it duplicates text for any event under the limit, and "
+             "every reader already falls back to text."),
+        Knob("max_summary_text_chars", "int", "MATRIXARK_MAX_SUMMARY_TEXT_CHARS", 0,
+             "Cap a context_summary's summary_text; 0 = the built-in budget (220 for L0, 1200 for "
+             "L1). Measured: this is where noisy tool output actually persists -- an event drops it, "
+             "the node summary keeps up to 1200 chars of it per row."),
+        Knob("max_event_text_chars", "int", "MATRIXARK_MAX_EVENT_TEXT_CHARS", 0,
+             "Clip each message's content to this many characters BEFORE extraction; 0 = unlimited. "
+             "Bounds what a noisy tool-output turn can cost across the event, its extraction, its "
+             "embedding and its index postings -- all of which read the clipped text."),
         Knob("generate_embeddings", "bool", "MATRIXARK_GENERATE_EMBEDDINGS", True,
              "Store context_embedding vectors. A small tenant can turn these off and retrieve "
              "through the secondary index instead -- embeddings are ~13% of resident memory."),
@@ -282,6 +295,21 @@ def tenant_of(scope: Any) -> str:
                 return value.strip()
         return ""
     return text.strip()
+
+
+def tenant_scope_from_node_path(node_path: Any) -> Json:
+    """Recover a tenant identity from a context node path (``["tenant:acme", "user:u1", ...]``).
+
+    A background summary refresh can run with no scope argument, against a dirty marker whose own
+    scope was stripped by serving materialization -- but the node path always names the tenant, so
+    per-tenant policy has a last-resort identity instead of failing open."""
+    if not isinstance(node_path, (list, tuple)):
+        return {}
+    for part in node_path:
+        text = str(part or "")
+        if text.startswith("tenant:") and len(text) > 7:
+            return {"tenant_id": text[7:]}
+    return {}
 
 
 def tenant_policy(scope: Any = None) -> Json:

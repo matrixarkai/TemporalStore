@@ -178,8 +178,8 @@ class BoundEnforcementTest(unittest.TestCase):
     def test_defaults_are_small_and_enabled(self):
         for key in ("MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_SCOPE", "MATRIXARK_SECONDARY_INDEX_HARD_CEILING"):
             os.environ.pop(key, None)
-        self.assertEqual(bound.max_index_records_per_scope(), 256)
-        self.assertEqual(bound.index_hard_ceiling(), 2048)
+        self.assertEqual(bound.max_index_records_per_scope(), 128)
+        self.assertEqual(bound.index_hard_ceiling(), 1024)
 
     def test_disabled_bounds_return_input_identity(self):
         os.environ["MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_SCOPE"] = "0"
