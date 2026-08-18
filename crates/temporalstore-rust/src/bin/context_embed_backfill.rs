@@ -176,6 +176,7 @@ fn main() {
     let skip_covered_sessions = arg("--skip-covered-sessions", "0") == "1";
     let report_json = arg("--report-json", "");
     let verify_only = arg("--verify", "0") == "1";
+    let verify_full = arg("--verify-full", "0") == "1";
 
     let engine = TemporalEngine::with_local_dirs(
         4 * 1024 * 1024,
@@ -208,9 +209,10 @@ fn main() {
     };
 
     if verify_only {
-        // Fresh-load verification: for the first N nodes of each session, query
-        // the node_l0 embedding straight from the reloaded store and count hits.
-        let n_probe = 20usize;
+        // Fresh-load verification: by default sample the first N nodes of each
+        // session for fast checks; --verify-full checks every indexed node so
+        // bulk load jobs can prove exact missing counts before/after backfill.
+        let n_probe = if verify_full { usize::MAX } else { 20usize };
         let mut verify_reports = Vec::new();
         for session in &sessions {
             let node_hashes = capped_nodes(
@@ -224,27 +226,37 @@ fn main() {
                 .iter()
                 .map(|nh| context_embedding_ref_hash(tenant_hash, *nh, "node_l0"))
                 .collect();
-            let resp = engine.execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::ContextQueryEmbeddings {
-                    tenant_hash,
-                    ref_hashes: ref_hashes.clone(),
-                    limit: Some(ref_hashes.len().max(1)),
-                },
-            });
-            let (found, dim) =
-                if let CommandResponse::ContextEmbeddings { embeddings } = resp.response {
-                    let d = embeddings.first().map(|e| e.vector.len()).unwrap_or(0);
-                    (embeddings.len(), d)
-                } else {
-                    (0, 0)
-                };
+            let existing_refs = load_existing_embedding_refs(&engine, tenant_hash, &probe);
+            let found = existing_refs.len();
+            let dim = existing_refs
+                .iter()
+                .next()
+                .and_then(|ref_hash| {
+                    let resp = engine.execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::ContextQueryEmbeddings {
+                            tenant_hash,
+                            ref_hashes: vec![*ref_hash],
+                            limit: Some(1),
+                        },
+                    });
+                    if let CommandResponse::ContextEmbeddings { embeddings } = resp.response {
+                        embeddings.first().map(|e| e.vector.len())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0);
             let row = json!({
                 "verify": true,
+                "verify_full": verify_full,
                 "session": session,
                 "tenant_hash": tenant_hash,
+                "node_count": node_hashes.len(),
                 "probed": probe.len(),
                 "found": found,
+                "missing": probe.len().saturating_sub(found),
+                "fully_covered": found == probe.len(),
                 "vector_dim": dim,
                 "max_nodes": max_nodes,
                 "shard_load_seconds": shard_load_seconds,
@@ -258,6 +270,22 @@ fn main() {
             .iter()
             .filter(|row| row.get("found").and_then(|value| value.as_u64()).unwrap_or(0) > 0)
             .count();
+        let sessions_fully_covered = verify_reports
+            .iter()
+            .filter(|row| {
+                let probed = row.get("probed").and_then(|value| value.as_u64()).unwrap_or(0);
+                probed > 0
+                    && row.get("found").and_then(|value| value.as_u64()).unwrap_or(0) == probed
+            })
+            .count();
+        let sessions_partially_covered = verify_reports
+            .iter()
+            .filter(|row| {
+                let probed = row.get("probed").and_then(|value| value.as_u64()).unwrap_or(0);
+                let found = row.get("found").and_then(|value| value.as_u64()).unwrap_or(0);
+                probed > 0 && found > 0 && found < probed
+            })
+            .count();
         let sessions_missing_all_probed = verify_reports
             .iter()
             .filter(|row| {
@@ -265,6 +293,10 @@ fn main() {
                     && row.get("found").and_then(|value| value.as_u64()).unwrap_or(0) == 0
             })
             .count();
+        let total_nodes: u64 = verify_reports
+            .iter()
+            .map(|row| row.get("node_count").and_then(|value| value.as_u64()).unwrap_or(0))
+            .sum();
         let total_probed: u64 = verify_reports
             .iter()
             .map(|row| row.get("probed").and_then(|value| value.as_u64()).unwrap_or(0))
@@ -276,13 +308,19 @@ fn main() {
         let report = json!({
             "status": "ok",
             "verify": true,
+            "verify_full": verify_full,
             "root": root.display().to_string(),
             "index_path": index_path.display().to_string(),
             "sessions": sessions.len(),
             "sessions_with_embeddings": sessions_with_embeddings,
+            "sessions_fully_covered": sessions_fully_covered,
+            "sessions_partially_covered": sessions_partially_covered,
             "sessions_missing_all_probed": sessions_missing_all_probed,
+            "total_nodes": total_nodes,
             "total_probed": total_probed,
             "total_found": total_found,
+            "total_missing": total_probed.saturating_sub(total_found),
+            "probe_limit": if verify_full { 0 } else { n_probe },
             "max_nodes": max_nodes,
             "shard_load_seconds": shard_load_seconds,
             "rows": verify_reports,
