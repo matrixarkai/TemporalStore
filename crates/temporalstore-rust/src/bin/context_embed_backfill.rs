@@ -120,6 +120,20 @@ fn arg(flag: &str, default: &str) -> String {
     default.to_string()
 }
 
+fn write_report_json(path: &str, value: &serde_json::Value) {
+    if path.trim().is_empty() {
+        return;
+    }
+    if let Some(parent) = PathBuf::from(path).parent() {
+        if !parent.as_os_str().is_empty() {
+            let _ = fs::create_dir_all(parent);
+        }
+    }
+    if let Ok(text) = serde_json::to_string_pretty(value) {
+        let _ = fs::write(path, text);
+    }
+}
+
 fn capped_nodes(mut nodes: Vec<u64>, max_nodes: usize) -> Vec<u64> {
     if max_nodes > 0 && nodes.len() > max_nodes {
         nodes.truncate(max_nodes);
@@ -160,6 +174,7 @@ fn main() {
     let max_new_embeddings: usize = arg("--max-new-embeddings", "0").parse().unwrap_or(0);
     let max_new_per_session: usize = arg("--max-new-per-session", "0").parse().unwrap_or(0);
     let skip_covered_sessions = arg("--skip-covered-sessions", "0") == "1";
+    let report_json = arg("--report-json", "");
     let verify_only = arg("--verify", "0") == "1";
 
     let engine = TemporalEngine::with_local_dirs(
@@ -196,6 +211,7 @@ fn main() {
         // Fresh-load verification: for the first N nodes of each session, query
         // the node_l0 embedding straight from the reloaded store and count hits.
         let n_probe = 20usize;
+        let mut verify_reports = Vec::new();
         for session in &sessions {
             let node_hashes = capped_nodes(
                 index.sessions.get(session).cloned().unwrap_or_default(),
@@ -223,22 +239,55 @@ fn main() {
                 } else {
                     (0, 0)
                 };
-            println!(
-                "{}",
-                json!({
-                    "verify": true,
-                    "session": session,
-                    "tenant_hash": tenant_hash,
-                    "probed": probe.len(),
-                    "found": found,
-                    "vector_dim": dim,
-                    "max_nodes": max_nodes,
-                    "shard_load_seconds": shard_load_seconds,
-                    "first_node_hash": probe.first().copied(),
-                    "first_ref_hash": ref_hashes.first().copied(),
-                })
-            );
+            let row = json!({
+                "verify": true,
+                "session": session,
+                "tenant_hash": tenant_hash,
+                "probed": probe.len(),
+                "found": found,
+                "vector_dim": dim,
+                "max_nodes": max_nodes,
+                "shard_load_seconds": shard_load_seconds,
+                "first_node_hash": probe.first().copied(),
+                "first_ref_hash": ref_hashes.first().copied(),
+            });
+            println!("{row}");
+            verify_reports.push(row);
         }
+        let sessions_with_embeddings = verify_reports
+            .iter()
+            .filter(|row| row.get("found").and_then(|value| value.as_u64()).unwrap_or(0) > 0)
+            .count();
+        let sessions_missing_all_probed = verify_reports
+            .iter()
+            .filter(|row| {
+                row.get("probed").and_then(|value| value.as_u64()).unwrap_or(0) > 0
+                    && row.get("found").and_then(|value| value.as_u64()).unwrap_or(0) == 0
+            })
+            .count();
+        let total_probed: u64 = verify_reports
+            .iter()
+            .map(|row| row.get("probed").and_then(|value| value.as_u64()).unwrap_or(0))
+            .sum();
+        let total_found: u64 = verify_reports
+            .iter()
+            .map(|row| row.get("found").and_then(|value| value.as_u64()).unwrap_or(0))
+            .sum();
+        let report = json!({
+            "status": "ok",
+            "verify": true,
+            "root": root.display().to_string(),
+            "index_path": index_path.display().to_string(),
+            "sessions": sessions.len(),
+            "sessions_with_embeddings": sessions_with_embeddings,
+            "sessions_missing_all_probed": sessions_missing_all_probed,
+            "total_probed": total_probed,
+            "total_found": total_found,
+            "max_nodes": max_nodes,
+            "shard_load_seconds": shard_load_seconds,
+            "rows": verify_reports,
+        });
+        write_report_json(&report_json, &report);
         return;
     }
 
@@ -453,4 +502,5 @@ fn main() {
         "{}",
         serde_json::to_string_pretty(&report).expect("report should serialize")
     );
+    write_report_json(&report_json, &report);
 }
