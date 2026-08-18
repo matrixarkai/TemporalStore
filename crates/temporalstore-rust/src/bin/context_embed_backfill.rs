@@ -27,7 +27,7 @@
 //!     --embed-base-url http://127.0.0.1:18099/v1 \
 //!     --embedding-model all-MiniLM-L6-v2
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
@@ -44,6 +44,34 @@ use temporalstore_rust::{
 #[derive(Debug, Deserialize, Default)]
 struct SessionIndex {
     sessions: BTreeMap<String, Vec<u64>>,
+}
+
+fn load_existing_embedding_refs(
+    engine: &TemporalEngine,
+    tenant_hash: u64,
+    node_hashes: &[u64],
+) -> HashSet<u64> {
+    let mut out = HashSet::new();
+    for chunk in node_hashes.chunks(512) {
+        let ref_hashes: Vec<u64> = chunk
+            .iter()
+            .map(|node_hash| context_embedding_ref_hash(tenant_hash, *node_hash, "node_l0"))
+            .collect();
+        let resp = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQueryEmbeddings {
+                tenant_hash,
+                ref_hashes,
+                limit: Some(chunk.len().max(1)),
+            },
+        });
+        if let CommandResponse::ContextEmbeddings { embeddings } = resp.response {
+            for embedding in embeddings {
+                out.insert(embedding.ref_hash);
+            }
+        }
+    }
+    out
 }
 
 fn load_node_l0_texts(
@@ -92,6 +120,13 @@ fn arg(flag: &str, default: &str) -> String {
     default.to_string()
 }
 
+fn capped_nodes(mut nodes: Vec<u64>, max_nodes: usize) -> Vec<u64> {
+    if max_nodes > 0 && nodes.len() > max_nodes {
+        nodes.truncate(max_nodes);
+    }
+    nodes
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -100,6 +135,16 @@ fn now_ms() -> u64 {
 }
 
 fn main() {
+    // Embedding backfill is an additive bulk maintenance task. Coalesce per-node
+    // persistence and persist the served index once at the end.
+    std::env::set_var("MATRIXARK_BULK_INGEST", "1");
+    if std::env::var("TS_PHASE1_FLAT").is_err() {
+        std::env::set_var("TS_PHASE1_FLAT", "1");
+    }
+    if std::env::var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD").is_err() {
+        std::env::set_var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD", "0");
+    }
+
     let root = PathBuf::from(arg("--root", "/tmp/ts-cb/store"));
     let agent = arg("--agent-name", "claude");
     let account = arg("--account-id", "acct_cb");
@@ -111,6 +156,7 @@ fn main() {
     let batch: usize = arg("--batch", "64").parse().unwrap_or(64);
     let max_events: usize = arg("--max-events", "4").parse().unwrap_or(4);
     let prefer_events = arg("--prefer-events", "0") == "1";
+    let max_nodes: usize = arg("--max-nodes", "0").parse().unwrap_or(0);
     let verify_only = arg("--verify", "0") == "1";
 
     let engine = TemporalEngine::with_local_dirs(
@@ -119,7 +165,9 @@ fn main() {
         root.join("pages"),
         root.join("indexes"),
     );
+    let load_started = Instant::now();
     engine.load_shard(1);
+    let shard_load_seconds = load_started.elapsed().as_secs_f64();
 
     let index_path = root.join(format!("{}-session-index.json", agent));
     let index: SessionIndex = fs::read_to_string(&index_path)
@@ -146,7 +194,10 @@ fn main() {
         // the node_l0 embedding straight from the reloaded store and count hits.
         let n_probe = 20usize;
         for session in &sessions {
-            let node_hashes = index.sessions.get(session).cloned().unwrap_or_default();
+            let node_hashes = capped_nodes(
+                index.sessions.get(session).cloned().unwrap_or_default(),
+                max_nodes,
+            );
             let tenant_hash =
                 stable_hash64(&format!("{}:{}:{}:{}", account, tenant, user, session));
             let probe: Vec<u64> = node_hashes.iter().take(n_probe).copied().collect();
@@ -178,6 +229,8 @@ fn main() {
                     "probed": probe.len(),
                     "found": found,
                     "vector_dim": dim,
+                    "max_nodes": max_nodes,
+                    "shard_load_seconds": shard_load_seconds,
                     "first_node_hash": probe.first().copied(),
                     "first_ref_hash": ref_hashes.first().copied(),
                 })
@@ -191,17 +244,27 @@ fn main() {
     let mut embedded = 0u64;
     let mut empty_text = 0u64;
     let mut node_l0_text_used = 0u64;
+    let mut skipped_existing = 0u64;
     let mut failed = 0u64;
     let updated_at_ms = now_ms();
 
     for session in &sessions {
-        let node_hashes = index.sessions.get(session).cloned().unwrap_or_default();
+        let node_hashes = capped_nodes(
+            index.sessions.get(session).cloned().unwrap_or_default(),
+            max_nodes,
+        );
         if node_hashes.is_empty() {
             continue;
         }
         let tenant_hash = stable_hash64(&format!("{}:{}:{}:{}", account, tenant, user, session));
         let end_time_ms = u64::MAX;
+        let existing_started = Instant::now();
+        let existing_embeddings = load_existing_embedding_refs(&engine, tenant_hash, &node_hashes);
+        let existing_seconds = existing_started.elapsed().as_secs_f64();
+        skipped_existing += existing_embeddings.len() as u64;
+        let node_text_started = Instant::now();
         let node_texts = load_node_l0_texts(&engine, tenant_hash, &node_hashes);
+        let node_text_seconds = node_text_started.elapsed().as_secs_f64();
 
         // Collect (node_hash, text) by reading each node's stored events.
         // If event bytes are unavailable in an old/raw-first store, fall back to
@@ -209,6 +272,10 @@ fn main() {
         let mut pending: Vec<(u64, String)> = Vec::with_capacity(node_hashes.len());
         for node_hash in &node_hashes {
             total_nodes += 1;
+            let ref_hash = context_embedding_ref_hash(tenant_hash, *node_hash, "node_l0");
+            if existing_embeddings.contains(&ref_hash) {
+                continue;
+            }
             let mut text = String::new();
             if prefer_events {
                 let resp = engine.execute(ExecuteRequest {
@@ -297,16 +364,24 @@ fn main() {
             failed += bad as u64;
         }
         eprintln!(
-            "  session {} -> nodes {} embedded {} ({:.0} node/s cumulative)",
+            "  session {} -> nodes {} embedded {} skipped_existing {} node_l0_texts {} existing_seconds {:.3} node_text_seconds {:.3} ({:.0} node/s cumulative)",
             session,
             node_hashes.len(),
             embedded,
+            existing_embeddings.len(),
+            node_texts.len(),
+            existing_seconds,
+            node_text_seconds,
             embedded as f64 / started.elapsed().as_secs_f64().max(0.001)
         );
     }
 
     // Persist the shard index once so the upserted embeddings survive reload.
-    engine.flush_shard_index(1);
+    let flush_started = Instant::now();
+    if embedded > 0 || failed > 0 {
+        engine.flush_shard_index(1);
+    }
+    let flush_seconds = flush_started.elapsed().as_secs_f64();
 
     let report = json!({
         "status": "ok",
@@ -315,12 +390,16 @@ fn main() {
         "base_url": base_url,
         "embedding_model": embedding_model,
         "sessions": sessions.len(),
+        "max_nodes": max_nodes,
+        "shard_load_seconds": shard_load_seconds,
         "total_nodes": total_nodes,
         "embedded": embedded,
         "empty_text": empty_text,
         "node_l0_text_used": node_l0_text_used,
+        "skipped_existing": skipped_existing,
         "prefer_events": prefer_events,
         "failed": failed,
+        "flush_seconds": flush_seconds,
         "seconds": started.elapsed().as_secs_f64(),
     });
     println!(
