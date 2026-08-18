@@ -1791,6 +1791,24 @@ pub fn retrieve_context(
     engine: &TemporalEngine,
     request: ContextRetrieveRequest,
 ) -> ContextRetrieveReport {
+    let trace_retrieve = matches!(
+        std::env::var("MATRIXARK_CONTEXT_RETRIEVE_TRACE")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    );
+    let trace_started = Instant::now();
+    let trace_stage = |stage: &str| {
+        if trace_retrieve {
+            eprintln!(
+                "context_retrieve_stage={stage} elapsed_seconds={:.6}",
+                trace_started.elapsed().as_secs_f64()
+            );
+        }
+    };
+    trace_stage("start");
     let mut blocks = Vec::new();
     let mut node_count = 0usize;
     let mut event_count = 0usize;
@@ -1852,6 +1870,7 @@ pub fn retrieve_context(
             };
         }
     };
+    trace_stage("query_embedding");
     let mut summary_ref_owners = BTreeMap::new();
     let mut summary_ref_hashes = Vec::with_capacity(node_hashes.len().saturating_mul(2));
     for node_hash in &node_hashes {
@@ -1895,6 +1914,7 @@ pub fn retrieve_context(
             }
         }
     }
+    trace_stage("summary_embedding_lookup");
     // Hybrid lexical fallback: nodes with NO stored summary embedding used to score
     // a flat 0 here (missing-embedding -> unwrap_or_default), so a freshly
     // bulk-loaded (un-embedded) store collapsed to recency order and lost focused
@@ -1939,6 +1959,7 @@ pub fn retrieve_context(
             }
         }
     }
+    trace_stage("lexical_fallback");
     let mut summary_scores = node_hashes
         .iter()
         .map(|node_hash| {
@@ -1969,6 +1990,7 @@ pub fn retrieve_context(
             *node_hash,
         )
     });
+    trace_stage("summary_score_sort");
     let summary_node_limit = request
         .max_summary_nodes
         .max(1)
@@ -2000,6 +2022,7 @@ pub fn retrieve_context(
             _ => Vec::new(),
         }
     };
+    trace_stage("rerank_node_load");
     for node in rerank_nodes {
         let node_hash = node.node_hash;
         if let Some(score) = summary_scores
@@ -2036,6 +2059,7 @@ pub fn retrieve_context(
             *node_hash,
         )
     });
+    trace_stage("rerank_sort");
     node_hashes = summary_scores
         .iter()
         .take(summary_node_limit)
@@ -2150,37 +2174,37 @@ pub fn retrieve_context(
             }
         }
 
-        let events_response = engine.execute(ExecuteRequest {
-            shard_id: request.shard_id,
-            command: Command::ContextQueryEvents {
-                tenant_hash: request.tenant_hash,
-                node_hash,
-                start_time_ms: request.start_time_ms,
-                end_time_ms: request.end_time_ms,
-                limit: Some(request.max_events.max(1)),
-                current_valid_only: false,
-                as_of_ms: 0,
-                kinds: Vec::new(),
-                statuses: Vec::new(),
-                min_confidence: request.min_confidence,
-                min_importance: request.min_importance,
-            },
-        });
-        if let CommandResponse::ContextEvents { events, .. } = events_response.response {
-            for event in events {
-                let passes_prefilter = context_query_matches_plan(&query_plan, &event.text);
-                context_query_debug_record_candidate(
-                    &mut query_understanding_debug,
-                    request.tenant_hash,
+        if include_l2 {
+            let events_response = engine.execute(ExecuteRequest {
+                shard_id: request.shard_id,
+                command: Command::ContextQueryEvents {
+                    tenant_hash: request.tenant_hash,
                     node_hash,
-                    &event,
-                    passes_prefilter,
-                );
-                if !passes_prefilter {
-                    continue;
-                }
-                event_count += 1;
-                if include_l2 {
+                    start_time_ms: request.start_time_ms,
+                    end_time_ms: request.end_time_ms,
+                    limit: Some(request.max_events.max(1)),
+                    current_valid_only: false,
+                    as_of_ms: 0,
+                    kinds: Vec::new(),
+                    statuses: Vec::new(),
+                    min_confidence: request.min_confidence,
+                    min_importance: request.min_importance,
+                },
+            });
+            if let CommandResponse::ContextEvents { events, .. } = events_response.response {
+                for event in events {
+                    let passes_prefilter = context_query_matches_plan(&query_plan, &event.text);
+                    context_query_debug_record_candidate(
+                        &mut query_understanding_debug,
+                        request.tenant_hash,
+                        node_hash,
+                        &event,
+                        passes_prefilter,
+                    );
+                    if !passes_prefilter {
+                        continue;
+                    }
+                    event_count += 1;
                     let source_ref = if event.source_ref.is_empty() {
                         node_source_ref.clone()
                     } else {
@@ -2199,6 +2223,7 @@ pub fn retrieve_context(
             }
         }
     }
+    trace_stage("event_expansion");
 
     blocks.sort_by_cached_key(|block| {
         (
@@ -2208,7 +2233,9 @@ pub fn retrieve_context(
             block.uri.clone(),
         )
     });
+    trace_stage("block_sort");
     dedupe_context_blocks_by_source_ref(&mut blocks);
+    trace_stage("block_dedupe");
     context_query_debug_finalize(
         &mut query_understanding_debug,
         &query_plan,
@@ -2216,6 +2243,7 @@ pub fn retrieve_context(
         node_count,
         tiers.as_slice(),
     );
+    trace_stage("debug_finalize");
     ContextRetrieveReport {
         status: Status::ok(),
         blocks,

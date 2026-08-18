@@ -1765,10 +1765,11 @@ pub(crate) fn execute_on_shard(
                             context_timeline_start(start_time_ms)
                                 ..context_timeline_end(end_time_ms),
                         )
+                        .rev()
                         // Bound the SCAN (kMaxLimit), NOT the result: the caller's
                         // `limit` must be applied AFTER filtering (LimitOrDefault runs
-                        // post-filter). Taking `limit` here would drop matching events when
-                        // the earliest-by-time window entries are filtered out.
+                        // post-filter). Scan newest-first so retrieval can find recent,
+                        // serving-relevant context without walking cold history first.
                         .take(CONTEXT_MAX_LIMIT)
                         .filter_map(|(timeline_key, address)| {
                             read_context_value_cached::<ContextEvent>(

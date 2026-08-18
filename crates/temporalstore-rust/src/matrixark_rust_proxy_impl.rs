@@ -2405,7 +2405,40 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
         root.join("indexes"),
         matrixark_proxy_block_store_options(),
     );
+    // Hook-mode startup must publish serving state quickly after a normal local
+    // restart. Rebuild decoded serving maps during load, then warm the page cache
+    // in the background so first requests can read through storage instead of
+    // waiting for a full synchronous cache promotion pass.
+    let defaulted_nonblocking_warm = env::var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD").is_err();
+    if defaulted_nonblocking_warm {
+        env::set_var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD", "0");
+    }
     engine.load_shard(DEFAULT_SHARD_ID);
+    let async_cache_warm = !matches!(
+        env::var("MATRIXARK_RUST_PROXY_ASYNC_CACHE_WARM_ON_LOAD")
+            .unwrap_or_else(|_| "1".to_string())
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "0" | "false" | "no" | "off"
+    );
+    if async_cache_warm {
+        let warm_engine = engine.clone();
+        let warm_root = root.clone();
+        std::thread::spawn(move || {
+            let report =
+                warm_engine.storage_cache_warmup_report(DEFAULT_SHARD_ID, Vec::<u32>::new());
+            eprintln!(
+                "matrixark_rust_proxy_async_cache_warm root={} considered={} warmed={} already_cached={} failed={} bytes={}",
+                warm_root.display(),
+                report.considered_page_refs,
+                report.warmed_page_refs,
+                report.already_cached_page_refs,
+                report.failed_page_refs,
+                report.warmed_bytes
+            );
+        });
+    }
     let _ = engine.set_config(SetConfigRequest {
         shard_id: DEFAULT_SHARD_ID,
         config: Config {

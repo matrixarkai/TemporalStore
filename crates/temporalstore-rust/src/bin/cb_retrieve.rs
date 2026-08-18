@@ -42,7 +42,31 @@ fn arg(flag: &str, default: &str) -> String {
     default.to_string()
 }
 
+fn parse_tiers(value: &str) -> Vec<ContextTier> {
+    let mut tiers = Vec::new();
+    for part in value.split(',') {
+        match part.trim().to_ascii_lowercase().as_str() {
+            "l0" => tiers.push(ContextTier::L0),
+            "l1" => tiers.push(ContextTier::L1),
+            "l2" | "event" | "events" => tiers.push(ContextTier::L2),
+            _ => {}
+        }
+    }
+    if tiers.is_empty() {
+        vec![ContextTier::L0, ContextTier::L1, ContextTier::L2]
+    } else {
+        tiers
+    }
+}
+
 fn main() {
+    let trace_stages = arg("--trace-stages", "0") == "1";
+    // Retrieval probes should measure serving-read latency, not block startup on
+    // full page-cache warmup. The decoded serving maps are still rebuilt during
+    // load; cold pages can then warm through read-through or a separate warmer.
+    if std::env::var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD").is_err() {
+        std::env::set_var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD", "0");
+    }
     let root = PathBuf::from(arg("--root", "/tmp/ts-cb/store"));
     let agent = arg("--agent-name", "claude");
     let session = arg("--session-id", "s000");
@@ -57,6 +81,11 @@ fn main() {
         .unwrap_or(default_max_blocks)
         .max(1);
     let source_jsonl = PathBuf::from(arg("--source-jsonl", ""));
+    let cache_bytes: usize = arg("--cache-bytes", "134217728")
+        .parse()
+        .unwrap_or(128 * 1024 * 1024);
+    let tier_arg = arg("--tiers", "l0,l1,l2");
+    let tiers = parse_tiers(&tier_arg);
     // When --embed-base-url is set, rank by REAL model embeddings (query vector
     // comes from the same OpenAI-compatible provider used for the stored node
     // vectors). Without it, the default mock/deterministic provider is used
@@ -77,20 +106,33 @@ fn main() {
     };
 
     let engine = TemporalEngine::with_local_dirs(
-        4 * 1024 * 1024,
+        cache_bytes,
         root.join("cache"),
         root.join("pages"),
         root.join("indexes"),
     );
+    if trace_stages {
+        eprintln!("stage=engine_open root={}", root.display());
+    }
     let load_started = Instant::now();
     engine.load_shard(1);
     let shard_load_seconds = load_started.elapsed().as_secs_f64();
+    if trace_stages {
+        eprintln!("stage=shard_loaded seconds={shard_load_seconds:.6}");
+    }
 
     let index_path = root.join(format!("{}-session-index.json", agent));
     let index: SessionIndex = fs::read_to_string(&index_path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default();
+    if trace_stages {
+        eprintln!(
+            "stage=session_index_loaded path={} sessions={}",
+            index_path.display(),
+            index.sessions.len()
+        );
+    }
     let full_node_hashes: Vec<u64> = index.sessions.get(&session).cloned().unwrap_or_default();
     let fallback_node_hashes: Vec<u64> = if max_nodes == 0 {
         full_node_hashes.clone()
@@ -196,6 +238,15 @@ fn main() {
             }
         }
         let started = Instant::now();
+        if trace_stages {
+            eprintln!(
+                "stage=retrieve_start query_len={} candidates={} cap={}",
+                query.len(),
+                node_hashes.len(),
+                cap
+            );
+        }
+        let cache_before = engine.storage_cache_inspection_report(1).stats;
         let report = retrieve_context(
             &engine,
             ContextRetrieveRequest {
@@ -208,7 +259,7 @@ fn main() {
                 max_events: cap,
                 min_confidence: 0.0,
                 min_importance: 0.0,
-                tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
+                tiers: tiers.clone(),
                 max_summary_nodes: cap,
                 max_event_nodes: cap,
                 prefer_current_agent: false,
@@ -216,6 +267,15 @@ fn main() {
                 provider: provider.clone(),
             },
         );
+        if trace_stages {
+            eprintln!(
+                "stage=retrieve_done seconds={:.6} ok={} status={}",
+                started.elapsed().as_secs_f64(),
+                report.status.ok,
+                report.status.code
+            );
+        }
+        let cache_after = engine.storage_cache_inspection_report(1).stats;
         let mut text = String::new();
         let mut tokens: u64 = 0;
         let mut block_list = Vec::new();
@@ -242,6 +302,10 @@ fn main() {
             "max_blocks": cap,
             "shard_load_seconds": shard_load_seconds,
             "candidate_prefilter": prefilter_debug,
+            "cache_bytes": cache_bytes,
+            "tiers": tier_arg,
+            "cache_before": cache_before,
+            "cache_after": cache_after,
             "ok": report.status.ok,
             "status_code": report.status.code,
             "blocks": report.blocks.len(),
