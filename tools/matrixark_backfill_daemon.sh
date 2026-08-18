@@ -20,7 +20,7 @@
 # marker disappears too, so stale daemon workdir state cannot suppress backfill.
 # The engine dedups by content hash, so re-processed records never duplicate.
 #
-# Flow: build batch bin (offline) -> emit per-agent JSONL once -> ingest in
+# Flow: build batch bin -> emit per-agent JSONL once -> ingest in
 # bounded chunks (MATRIXARK_BULK_INGEST keeps disk O(1)/record) advancing an
 # offset per chunk -> mark done. High-value durable memory (resources/skills/
 # memory/external) is emitted under the `_global` scope by the ingester, so it
@@ -57,6 +57,9 @@ SOURCES="${MATRIXARK_BACKFILL_SOURCES:-transcripts,rollouts,dual_hooks,external_
 LOCK="$WORK/.lock"
 DONE="$WORK/.done"
 LOG="$WORK/daemon.log"
+STATUS="$WORK/status.json"
+EMIT_REPORT="$WORK/emit-report.json"
+START_MS="$("$PYTHON" -c 'import time; print(int(time.time() * 1000))' 2>/dev/null || date +%s000)"
 
 FORCE="${MATRIXARK_BACKFILL_FORCE:-0}"     # =1: force re-ingest from agent logs, overriding the guard
 REEMIT_ON_FRESH="${MATRIXARK_BACKFILL_REEMIT_ON_FRESH:-1}"
@@ -65,7 +68,53 @@ exec 9>"$LOCK" 2>/dev/null || exit 0
 flock -n 9 || exit 0                      # another daemon already running
 
 log() { echo "[$(date -u +%FT%TZ)] $*" >>"$LOG"; }
+write_status() {
+  local phase="${1:-running}"
+  local agent="${2:-}"
+  local processed="${3:-0}"
+  local total="${4:-0}"
+  local detail="${5:-}"
+  "$PYTHON" - "$STATUS" "$phase" "$agent" "$processed" "$total" "$START_MS" "$detail" <<'PY' 2>>"$LOG" || true
+import json, os, sys, time
+path, phase, agent, processed, total, start_ms, detail = sys.argv[1:8]
+now_ms = int(time.time() * 1000)
+try:
+    start_ms_i = int(start_ms)
+except Exception:
+    start_ms_i = now_ms
+try:
+    processed_i = int(processed)
+except Exception:
+    processed_i = 0
+try:
+    total_i = int(total)
+except Exception:
+    total_i = 0
+payload = {
+    "phase": phase,
+    "agent": agent or None,
+    "processed_rows": processed_i,
+    "total_rows": total_i,
+    "elapsed_ms": max(0, now_ms - start_ms_i),
+    "rows_per_second": None,
+    "detail": detail or None,
+    "updated_at_ms": now_ms,
+    "work_dir": os.path.dirname(path),
+    "emit_report": os.environ.get("MATRIXARK_BACKFILL_EMIT_REPORT_PATH"),
+}
+elapsed_s = max(0.001, payload["elapsed_ms"] / 1000.0)
+if processed_i:
+    payload["rows_per_second"] = round(processed_i / elapsed_s, 2)
+tmp = f"{path}.{os.getpid()}.tmp"
+with open(tmp, "w", encoding="utf-8") as fh:
+    json.dump(payload, fh, separators=(",", ":"))
+    fh.write("\n")
+os.replace(tmp, path)
+PY
+}
 log "daemon start (chunk=$CHUNK agents='$AGENTS' sources='$SOURCES')"
+export MATRIXARK_BACKFILL_EMIT_REPORT_PATH="$EMIT_REPORT"
+write_status "starting" "" 0 0 "daemon_start"
 
 # Recover-from-persistence guard.
 #
@@ -148,6 +197,7 @@ else
   done
   if (( ! need_backfill )); then
     log "all agent stores have local-context backfill markers; recovering from persistence, skipping local-context backfill"
+    write_status "skipped" "" 0 0 "all_agent_stores_have_backfill_markers"
     touch "$DONE"
     exit 0
   fi
@@ -157,23 +207,30 @@ else
   fi
   if (( fresh_empty )) && [[ "$REEMIT_ON_FRESH" != "0" && "$REEMIT_ON_FRESH" != "false" && "$REEMIT_ON_FRESH" != "no" ]]; then
     log "fresh empty Rust store detected; resetting emitted source snapshot and offsets for a full local-context stream"
+    write_status "fresh_start_reset" "" 0 0 "fresh_empty_store_detected"
     rm -f "$WORK/.emitted" "$WORK"/backfill.*.jsonl "$WORK"/.offset.*
   fi
 fi
 
-# 1) Ensure the load-once batch bin exists (offline build; deps are cached).
+# 1) Ensure the load-once batch bin exists. Offline is opt-in because fresh WSL
+# installs usually do not have the crate graph cached yet.
 if [[ ! -x "$BATCH" ]]; then
   log "building context_batch_ingest"
-  CARGO_TARGET_DIR="$TARGET_DIR" "$CARGO_BIN" build --offline --release -q -p temporalstore-rust \
-    --bin context_batch_ingest >>"$LOG" 2>&1 || { log "build failed"; exit 0; }
+  write_status "building_batch_ingester" "" 0 0 "context_batch_ingest_missing"
+  CARGO_ARGS=(build --release -q -p temporalstore-rust --bin context_batch_ingest)
+  if [[ "${MATRIXARK_BACKFILL_CARGO_OFFLINE:-0}" == "1" || "${MATRIXARK_BACKFILL_CARGO_OFFLINE:-0}" == "true" ]]; then
+    CARGO_ARGS=(build --offline --release -q -p temporalstore-rust --bin context_batch_ingest)
+  fi
+  CARGO_TARGET_DIR="$TARGET_DIR" "$CARGO_BIN" "${CARGO_ARGS[@]}" >>"$LOG" 2>&1 || { log "build failed"; write_status "failed" "" 0 0 "build_failed"; exit 0; }
   BATCH="$TARGET_DIR/release/context_batch_ingest"
 fi
 
 # 2) Emit per-agent JSONL once (fast enumerator; durable memory -> _global scope).
 if [[ ! -f "$WORK/.emitted" ]]; then
   log "emitting per-agent JSONL"
+  write_status "emitting_jsonl" "" 0 0 "scan_local_context"
   AGENT_CSV="$(echo "$AGENTS" | tr ' ' ',')"
-  "$PYTHON" "$INGESTER" --agents "$AGENT_CSV" --sources "$SOURCES" --emit-jsonl "$WORK" >>"$LOG" 2>&1 || { log "emit failed"; exit 0; }
+  "$PYTHON" "$INGESTER" --agents "$AGENT_CSV" --sources "$SOURCES" --emit-jsonl "$WORK" --report "$EMIT_REPORT" >>"$LOG" 2>&1 || { log "emit failed"; write_status "failed" "" 0 0 "emit_failed"; exit 0; }
   touch "$WORK/.emitted"
 fi
 
@@ -200,15 +257,17 @@ backfill_agent() {
   local AG="$1"
   local SRC="$WORK/backfill.$AG.jsonl"
   local ROOT; ROOT="$(agent_root "$AG")"
-  [[ -f "$SRC" ]] || { echo skipped >"$WORK/.status.$AG"; return 0; }
+  [[ -f "$SRC" ]] || { write_status "agent_skipped" "$AG" 0 0 "source_jsonl_missing"; echo skipped >"$WORK/.status.$AG"; return 0; }
   if [[ "$FORCE" != "1" ]] && agent_backfill_complete "$ROOT"; then
     log "$AG: local-context backfill marker present ($ROOT); recovering from persistence, skipping local-context backfill"
+    write_status "agent_skipped" "$AG" 0 0 "agent_backfill_marker_present"
     echo skipped >"$WORK/.status.$AG"; return 0
   fi
   local total off end off_file
   total=$(wc -l <"$SRC")
   off_file="$WORK/.offset.$AG"
   off=$(cat "$off_file" 2>/dev/null || echo 0)
+  write_status "agent_ingesting" "$AG" "$off" "$total" "resume_offset"
   while (( off < total )); do
     end=$(( off + CHUNK ))
     log "$AG: ingesting rows $((off+1))..$([[ $end -gt $total ]] && echo $total || echo $end) / $total"
@@ -220,13 +279,16 @@ backfill_agent() {
         $NICE_PREFIX "$BATCH" --agent-name "$AG" >>"$LOG" 2>&1; then
       off=$end
       echo "$off" >"$off_file"
+      write_status "agent_ingesting" "$AG" "$off" "$total" "chunk_committed"
       [[ "${YIELD_MS:-0}" -gt 0 ]] && sleep "$(awk "BEGIN{print $YIELD_MS/1000}")"
     else
       log "$AG: chunk failed at offset $off; will retry next launch"
+      write_status "paused" "$AG" "$off" "$total" "chunk_failed"
       echo paused >"$WORK/.status.$AG"; return 0
     fi
   done
   write_agent_marker "$AG" "$ROOT" "$SRC" "$total"
+  write_status "agent_done" "$AG" "$total" "$total" "marker_written"
   echo done >"$WORK/.status.$AG"
   return 0
 }
@@ -253,6 +315,8 @@ done
 if (( all_done )); then
   touch "$DONE"
   log "daemon complete: all agents fully backfilled"
+  write_status "completed" "" 0 0 "all_agents_fully_backfilled"
 else
   log "daemon paused; relaunch (next SessionStart) resumes from offsets"
+  write_status "paused" "" 0 0 "one_or_more_agents_paused"
 fi

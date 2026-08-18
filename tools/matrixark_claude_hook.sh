@@ -116,6 +116,25 @@ EVENT="${EVENT:-$PAYLOAD_EVENT}"
 EVENT="${EVENT:-UserPromptSubmit}"
 SESSION="${PAYLOAD_SESSION:-claude_session}"
 
+_matrixark_backfill_enabled() {
+  case "${MATRIXARK_BACKFILL_ON_START:-auto}" in
+    0|false|False|FALSE|no|No|NO|off|Off|OFF) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+_matrixark_start_backfill_daemon() {
+  _matrixark_backfill_enabled || return 0
+  [[ "$EVENT" == "SessionStart" || "${MATRIXARK_BACKFILL_ON_EVERY_HOOK:-0}" == "1" ]] || return 0
+  setsid bash "$REPO_ROOT/tools/matrixark_backfill_daemon.sh" >/dev/null 2>&1 </dev/null &
+  disown 2>/dev/null || true
+}
+
+# Async first-start local context load. Start before backend selection so Claude's
+# shared Python pipeline and self-contained Rust path both get the same
+# nonblocking backfill behavior.
+_matrixark_start_backfill_daemon
+
 # Resolve `auto` to the shared pipeline when its runtime is present. On the
 # long-budget SessionStart, kick a detached build of the shared proxy so it never
 # blocks the turn; once present, later turns auto-upgrade from the offline engine
@@ -237,15 +256,6 @@ if [[ "$EVENT" == "SessionStart" || "${MATRIXARK_CLAUDE_HOOK_ALLOW_BUILD:-0}" ==
   fi
 elif [[ ! -x "$BIN" ]]; then
   fail_open "hook binary not built yet; run the SessionStart hook or set MATRIXARK_CLAUDE_HOOK_ALLOW_BUILD=1"
-fi
-
-# Async first-start backfill (default auto; disable with MATRIXARK_BACKFILL_ON_START=0).
-# Detached so it never blocks the turn; the daemon self-locks and resumes from
-# per-agent offsets, warming the store with local Claude/Codex context + durable
-# global memory. Fail-open: any error here must not affect the hook output.
-if [[ "$EVENT" == "SessionStart" && "${MATRIXARK_BACKFILL_ON_START:-auto}" != "0" && "${MATRIXARK_BACKFILL_ON_START:-auto}" != "false" && "${MATRIXARK_BACKFILL_ON_START:-auto}" != "no" ]]; then
-  setsid bash "$REPO_ROOT/tools/matrixark_backfill_daemon.sh" >/dev/null 2>&1 </dev/null &
-  disown 2>/dev/null || true
 fi
 
 REPORT="$("$BIN" --agent-name claude --event "$EVENT" --session-id "$SESSION" < "$PAYLOAD_FILE" 2>/dev/null)" \

@@ -114,6 +114,24 @@ printf '{"accepted":%s,"failed":0}\\n' "$count"
         script = DAEMON.read_text(encoding="utf-8")
         self.assertIn('CHUNK="${MATRIXARK_BACKFILL_CHUNK:-4000}"', script)
         self.assertIn('MATRIXARK_BACKFILL_RAW_FIRST="${MATRIXARK_BACKFILL_RAW_FIRST:-1}"', script)
+        self.assertIn('MATRIXARK_BACKFILL_CARGO_OFFLINE', script)
+        self.assertIn('--report "$EMIT_REPORT"', script)
+        self.assertIn("CARGO_ARGS=(build --release -q -p temporalstore-rust --bin context_batch_ingest)", script)
+
+    def test_daemon_writes_status_for_completed_backfill(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            temp_root = Path(td)
+            work = temp_root / "work"
+            store = temp_root / "codex-rust"
+            self._make_batch_stub(temp_root)
+            self._write_emitted_codex_rows(work)
+
+            proc = self._run_daemon(temp_root, work, store)
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            status = (work / "status.json").read_text(encoding="utf-8")
+            self.assertIn('"phase":"completed"', status)
+            self.assertIn('"elapsed_ms"', status)
 
 
 if __name__ == "__main__":
