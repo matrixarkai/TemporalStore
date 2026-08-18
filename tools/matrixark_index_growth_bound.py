@@ -14,15 +14,19 @@ that growth in three layers, applied in this order:
    event postings. The index stays dense for recent turns and sparse-summarized for old ones; old
    content stays retrievable through its summary.
 
-2. **Per-scope cap** (``MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_SCOPE``, 0 = unlimited) -- a
-   deterministic backstop for a subject whose events were never summarized. Oldest postings evict
+2. **Per-scope cap** (``MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_SCOPE``, **default 0 = off**) --
+   a deterministic backstop for a subject whose events were never summarized. Oldest postings evict
    first.
 
-3. **Hard ceiling** (``MATRIXARK_SECONDARY_INDEX_HARD_CEILING``, 0 = unlimited) -- a store-wide
+3. **Hard ceiling** (``MATRIXARK_SECONDARY_INDEX_HARD_CEILING``, **default 0 = off**) -- a store-wide
    runaway guard that is never exceeded regardless of the other two.
 
-Layers 2 and 3 CAN drop postings whose events are not summarized, so they log what they dropped --
-never a silent truncation.
+Layers 2 and 3 are OPT-IN, and that is a measured decision, not caution: on a 40-turn workload with
+the cap set to 150 the index plateaued (142 -> 193 -> 295 -> 251 postings) but retrieval dropped
+from 5/5 facts to 4/5. That is inherent -- lever 1 has already removed every posting that was
+redundant, so anything a cap evicts on top of it is a live recall path, not slack. A hard memory
+ceiling therefore trades away recall of old facts, which is the operator's call to make, never a
+silent default. Both layers log exactly what they dropped.
 """
 
 from __future__ import annotations
@@ -46,8 +50,10 @@ LOGGER = logging.getLogger("matrixark.index_growth_bound")
 MEMORY_TOMBSTONE_RECORD_TYPE = "matrixark_memory_tombstone"
 INDEX_COMPACT_TOMBSTONE_KIND = "index_compact"
 
-DEFAULT_MAX_INDEX_RECORDS_PER_SCOPE = 5000
-DEFAULT_INDEX_HARD_CEILING = 20000
+# Off by default: see the module docstring -- once lever 1 has compacted the redundant postings,
+# any further eviction costs recall, so the operator opts in.
+DEFAULT_MAX_INDEX_RECORDS_PER_SCOPE = 0
+DEFAULT_INDEX_HARD_CEILING = 0
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -74,12 +80,12 @@ def index_compact_on_summary_enabled() -> bool:
 
 
 def max_index_records_per_scope() -> int:
-    """Lever 2 cap; ``0`` disables it."""
+    """Lever 2 cap; ``0`` (the default) disables it. Enabling it trades old-fact recall for a bound."""
     return _env_int("MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_SCOPE", DEFAULT_MAX_INDEX_RECORDS_PER_SCOPE)
 
 
 def index_hard_ceiling() -> int:
-    """Lever 3 store-wide ceiling; ``0`` disables it."""
+    """Lever 3 store-wide ceiling; ``0`` (the default) disables it. Same recall trade as lever 2."""
     return _env_int("MATRIXARK_SECONDARY_INDEX_HARD_CEILING", DEFAULT_INDEX_HARD_CEILING)
 
 
