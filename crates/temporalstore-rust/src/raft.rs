@@ -4856,6 +4856,16 @@ fn apply_committed(node: &mut RaftNode) -> Option<CommandResponse> {
         .log
         .binary_search_by_key(&node.applied_index.saturating_add(1), |entry| entry.index)
         .unwrap_or_else(|position| position);
+    // Collect the committed entries that pass the exactly-once floor (and are freshly inserted
+    // into `applied`) into a single batch, then apply them via `execute_raft_apply_batch`. Under
+    // TS_RAFT_APPLY_COALESCE this coalesces the batch's engine-WAL fdatasync into ONE barrier; with
+    // the gate off (or a single-entry batch) the batch method degrades to the same per-entry
+    // `execute_raft_apply` calls, so the exactly-once + durability semantics are byte-identical.
+    // Cursor advances happen in-order exactly as before (skipped/already-applied entries update the
+    // apply cursor inline; executed entries advance applied_index/max_applied_index after apply),
+    // and nothing observes node state mid-loop (all under the caller's `inner` write lock).
+    let mut batch = Vec::new();
+    let mut batch_indexes = Vec::new();
     for entry in node.log[start..]
         .iter()
         .take_while(|entry| entry.index <= node.commit_index)
@@ -4871,16 +4881,19 @@ fn apply_committed(node: &mut RaftNode) -> Option<CommandResponse> {
             continue;
         }
         if node.applied.insert(entry.index) {
-            let response = node
-                .engine
-                .execute_raft_apply(ExecuteRequest {
-                    shard_id: entry.shard_id,
-                    command: entry.command.clone(),
-                })
-                .response;
-            node.applied_index = entry.index;
-            node.max_applied_index = node.max_applied_index.max(entry.index);
-            last_response = Some(response);
+            batch.push(ExecuteRequest {
+                shard_id: entry.shard_id,
+                command: entry.command.clone(),
+            });
+            batch_indexes.push(entry.index);
+        }
+    }
+    if !batch.is_empty() {
+        let responses = node.engine.execute_raft_apply_batch(batch);
+        for (index, response) in batch_indexes.into_iter().zip(responses) {
+            node.applied_index = index;
+            node.max_applied_index = node.max_applied_index.max(index);
+            last_response = Some(response.response);
         }
     }
     last_response
