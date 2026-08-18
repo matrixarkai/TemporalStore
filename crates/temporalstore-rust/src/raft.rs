@@ -271,6 +271,28 @@ fn raft_propose_serialize_on() -> bool {
     raft_env_flag_default_on("TS_RAFT_PROPOSE_SERIALIZE")
 }
 
+/// P3 (local-only durability): a DEPLOYED raft process runs exactly one node but keeps a full
+/// cluster view, so `wal_records()` emits a record per peer and `persist_configured_wal` fsyncs
+/// every one of them. A leader has no duty to make its peers' hard-state durable -- each node
+/// persists its own before answering an RPC, and peer state is re-learned from AppendEntries on
+/// restart. When this is on AND the runtime told us which node we are, persist only that record.
+/// Default OFF -> byte-identical. Has no effect on the in-process test cluster, which genuinely
+/// hosts every node and leaves `local_node_id` as None.
+fn raft_persist_local_only_on() -> bool {
+    raft_env_flag_on("TS_RAFT_PERSIST_LOCAL_ONLY")
+}
+
+/// P4 (one barrier per propose): a single propose calls `persist_configured_wal` several times
+/// as the log appends and then the commit index advances, so each write pays several barriers.
+/// Only the FINAL state has to be durable before the ack -- an intermediate state is subsumed by
+/// it, and a crash before the ack simply drops an unacked entry. When on, nested persists record
+/// that a barrier is owed and ONE persist flushes before the response is returned. Enabled only
+/// while the propose serialize lock is held, so exactly one writer can own the deferral.
+/// Default OFF -> byte-identical.
+fn raft_persist_defer_on() -> bool {
+    raft_env_flag_on("TS_RAFT_PERSIST_DEFER")
+}
+
 /// Fingerprint of the DURABILITY-relevant subset of a WAL record. `pipeline_state` and
 /// `read_safety_state` are cleared before hashing because they are volatile (reinitialised on
 /// election / re-driven on restart) and pure metrics respectively -- excluding them is what lets
@@ -3751,6 +3773,13 @@ struct RaftClusterInner {
     last_durable_fingerprint: BTreeMap<RaftNodeId, u64>,
     /// P2: serialize proposes into the log in order under `TS_RAFT_PROPOSE_SERIALIZE`.
     propose_serialize: Arc<Mutex<()>>,
+    /// P3: which node THIS process is, when the deployed runtime tells us. None for the
+    /// in-process test cluster (which hosts every node). Gates `TS_RAFT_PERSIST_LOCAL_ONLY`.
+    local_node_id: Option<RaftNodeId>,
+    /// P4: while set, `persist_configured_wal` records that a barrier is owed instead of taking
+    /// one; `flush_deferred_persist` takes the single real barrier before the propose acks.
+    persist_deferred: bool,
+    persist_dirty: bool,
 }
 
 impl RaftCluster {
@@ -3758,6 +3787,14 @@ impl RaftCluster {
     ///
     /// Production runtime/deployment paths must use the distributed production
     /// Raft runtime and are rejected by readiness if they select this local model.
+    /// P3: tell the cluster which node THIS process actually is. Set by the deployed
+    /// production runtime (one node per process); left unset by the in-process test cluster,
+    /// which hosts every node. Only consulted under `TS_RAFT_PERSIST_LOCAL_ONLY`.
+    pub fn set_local_node_id(&self, node_id: RaftNodeId) {
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        inner.local_node_id = Some(node_id);
+    }
+
     pub fn new_single_shard(
         shard_id: ShardId,
         node_ids: impl IntoIterator<Item = RaftNodeId>,
@@ -3800,6 +3837,9 @@ impl RaftCluster {
                 membership_evidence: RaftMembershipRuntimeEvidence::default(),
                 last_durable_fingerprint: BTreeMap::new(),
                 propose_serialize: Arc::new(Mutex::new(())),
+                local_node_id: None,
+                persist_deferred: false,
+                persist_dirty: false,
             })),
         })
     }
@@ -3920,6 +3960,9 @@ impl RaftCluster {
                 membership_evidence,
                 last_durable_fingerprint: BTreeMap::new(),
                 propose_serialize: Arc::new(Mutex::new(())),
+                local_node_id: None,
+                persist_deferred: false,
+                persist_dirty: false,
             })),
         })
     }
@@ -4120,6 +4163,40 @@ impl RaftCluster {
         let _propose_guard = propose_gate
             .as_ref()
             .map(|gate| gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
+        // P4: the propose lock makes us the only writer, so nested persists can record that a
+        // barrier is owed and let one flush below cover the final state -- before the ack.
+        let deferring = raft_persist_defer_on() && _propose_guard.is_some();
+        if deferring {
+            self.inner
+                .write()
+                .expect("raft cluster lock poisoned")
+                .begin_deferred_persist();
+        }
+        let outcome = self.propose_distributed_one_locked(command, transport);
+        if !deferring {
+            return outcome;
+        }
+        let flushed = self
+            .inner
+            .write()
+            .expect("raft cluster lock poisoned")
+            .flush_deferred_persist();
+        // Never ack a write whose barrier failed: a flush error wins over a successful propose.
+        match (outcome, flushed) {
+            (Ok(response), Ok(())) => Ok(response),
+            (Ok(_), Err(err)) => Err(err),
+            (Err(err), _) => Err(err),
+        }
+    }
+
+    fn propose_distributed_one_locked<T>(
+        &self,
+        command: Command,
+        transport: &T,
+    ) -> Result<CommandResponse, RaftError>
+    where
+        T: RaftTransport + Clone + Send + 'static,
+    {
         let (entry, leader_id, target_ids, required) = {
             let mut inner = self.inner.write().expect("raft cluster lock poisoned");
             inner.ensure_live_leader()?;
