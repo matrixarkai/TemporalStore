@@ -73,12 +73,14 @@ class MatrixArkRustProxyCacheMixin:
         record_hash_key: str,
         shard_size: int,
         request: Json,
+        record_count_watermark: str = "",
     ) -> str:
         return context_pack_response_cache_key(
             count_key=count_key,
             record_hash_key=record_hash_key,
             shard_size=shard_size,
             request=request,
+            record_count_watermark=record_count_watermark,
         )
 
     def _mark_context_pack_response_cache_hit(self, response: Json) -> Json:

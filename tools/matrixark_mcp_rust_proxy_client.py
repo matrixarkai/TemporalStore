@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import queue
+import select
 import subprocess
 import threading
 import time
@@ -552,11 +553,21 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
         shard_size: int,
         request: Json,
     ) -> Json:
+        # Include a caller-supplied durable append watermark in the hot
+        # response-cache key so repeated identical queries stay in memory, but
+        # callers that already observed a newer record_count avoid stale packs.
+        record_count_watermark = str(
+            request.get("record_count_watermark")
+            or request.get("append_watermark")
+            or request.get("resource_version_watermark")
+            or ""
+        )
         cache_key = self._context_pack_response_cache_key(
             count_key=count_key,
             record_hash_key=record_hash_key,
             shard_size=shard_size,
             request=request,
+            record_count_watermark=record_count_watermark,
         )
         cached = self._context_pack_response_cache_get(cache_key)
         if cached is not None:

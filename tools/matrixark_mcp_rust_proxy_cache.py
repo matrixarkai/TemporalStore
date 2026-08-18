@@ -93,11 +93,13 @@ def context_pack_response_cache_key(
     record_hash_key: str,
     shard_size: int,
     request: Json,
+    record_count_watermark: str = "",
 ) -> str:
     ranking = request.get("ranking") if isinstance(request, dict) else {}
     payload = {
         "count_key": count_key,
         "record_hash_key": record_hash_key,
+        "record_count_watermark": str(record_count_watermark or ""),
         "shard_size": int(shard_size),
         "scope": request.get("scope", {}) if isinstance(request, dict) else {},
         "secondary_index_groups": request.get("secondary_index_groups", []) if isinstance(request, dict) else [],
