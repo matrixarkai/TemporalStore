@@ -1,3 +1,5 @@
 # Default owners for everything in this repository.
+# Every pull request requires review/approval from a maintainer below
+# (enforced together with branch protection: "Require review from Code Owners").
 # See https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
-* @bjmeetsfo
+* @bjmeetsfo @superhaiou

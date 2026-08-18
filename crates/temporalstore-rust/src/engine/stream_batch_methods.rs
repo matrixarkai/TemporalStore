@@ -362,9 +362,14 @@ impl TemporalEngine {
             // async and bulk modes (index_log/persist already no-op under bulk).
             if !config.async_storage && !bulk_ingest_mode() {
                 // Anchor the served index to the WAL sequence it reflects (see the
-                // single-command path) so shard load replays only records after it.
-                shard.applied_wal_sequence =
-                    Some(self.wal_store.stats(request.shard_id).last_sequence);
+                // single-command path) so shard load replays only records after it. Under
+                // TS_PHASE1_FLAT read the O(1) cached last sequence instead of `stats()` (which
+                // rescans the whole WAL file); gate OFF keeps the exact `stats()` value.
+                shard.applied_wal_sequence = Some(if phase1_flat_enabled() {
+                    self.wal_store.cached_last_sequence(request.shard_id)
+                } else {
+                    self.wal_store.stats(request.shard_id).last_sequence
+                });
                 // Append the pages this batch changed (O(delta)) to the index-log (advances
                 // the sequence + populates the delta stream). The whole-index base rewrite is
                 // deferred to the next compaction point (see the single-command execute path).
