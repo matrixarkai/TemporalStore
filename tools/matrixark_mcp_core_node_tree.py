@@ -76,12 +76,26 @@ def tree_first_traversal(
     *,
     top_k_per_layer: int,
     max_children_scored_per_parent: int,
+    max_nodes_per_layer: int = 0,
 ) -> Json:
     """Traverse ContextNode summaries layer by layer and return selected subtrees.
 
     The current Python runtime infers ContextNode children from node_path prefixes.
     can later replace this with native ContextChildRef/list-children APIs while
     preserving the retrieval contract.
+
+    Bounds, and what each one really means:
+
+    * ``top_k_per_layer`` is applied **per parent**, not per layer -- each parent contributes up to
+      this many children to the next frontier, so a layer with P selected parents can admit up to
+      P x K nodes. The name is kept for compatibility; ``max_nodes_per_layer`` is the honest
+      per-layer bound.
+    * ``max_children_scored_per_parent`` caps how many of a parent's children are considered. It is
+      applied AFTER ranking: it used to slice the raw ``children`` list before sorting, which
+      discarded children in dict order rather than by score, so lowering it to bound cost would have
+      dropped the best-scoring children at random.
+    * ``max_nodes_per_layer`` (0 = off) bounds the whole frontier by score after every parent has
+      contributed, which is what callers reaching for "top k per layer" usually want.
     """
     node_by_path: dict[tuple[str, ...], Json] = {}
     children_by_parent: dict[tuple[str, ...], list[Json]] = {}
@@ -106,7 +120,19 @@ def tree_first_traversal(
             "fallback_to_flat": True,
         }
 
-    frontier = top_scored_nodes(roots[:max_children_scored_per_parent], top_k_per_layer)
+    def pick_children(candidates: list[Json]) -> list[Json]:
+        """Rank first, then apply both caps -- so a cap never drops a child by dict order."""
+        if not candidates:
+            return []
+        limit = max(1, min(int(top_k_per_layer), int(max_children_scored_per_parent)))
+        return top_scored_nodes(candidates, limit)
+
+    def bound_layer(nodes: list[Json]) -> list[Json]:
+        if max_nodes_per_layer and len(nodes) > max_nodes_per_layer:
+            return top_scored_nodes(nodes, int(max_nodes_per_layer))
+        return nodes
+
+    frontier = bound_layer(pick_children(roots))
     selected_paths: set[tuple[str, ...]] = set()
     selected_node_hashes: set[int] = set()
     leaf_paths: set[tuple[str, ...]] = set()
@@ -123,8 +149,8 @@ def tree_first_traversal(
                 selected_node_hashes.add(int(node.get("node_hash")))
             except (TypeError, ValueError):
                 pass
-            children = children_by_parent.get(path, [])[:max_children_scored_per_parent]
-            picked_children = top_scored_nodes(children, top_k_per_layer) if children else []
+            children = children_by_parent.get(path, [])
+            picked_children = pick_children(children)
             trace.append(
                 {
                     "node_hash": node.get("node_hash"),
@@ -142,7 +168,7 @@ def tree_first_traversal(
                 next_frontier.extend(picked_children)
             else:
                 leaf_paths.add(path)
-        frontier = next_frontier
+        frontier = bound_layer(next_frontier)
 
     if not leaf_paths:
         leaf_paths = set(selected_paths)

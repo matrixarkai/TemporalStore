@@ -142,6 +142,16 @@ def generate_l1_summaries_enabled(scope: Any = None) -> bool:
     return bool(resolve_tenant_policy("generate_l1_summaries", scope))
 
 
+def retrieval_budget(name: str, scope: Any = None) -> int:
+    """Per-tenant retrieval budget: top_k_per_layer | max_global_candidates | max_selected_refs.
+
+    Defaults match matrixark_mcp_runtime_config (24 / 2048 / 1000), which is the single source of
+    truth for the process-wide values; a tenant override wins over the env var, as everywhere else."""
+    if name not in {"top_k_per_layer", "max_global_candidates", "max_selected_refs"}:
+        raise KeyError(f"not a retrieval budget: {name}")
+    return int(resolve_tenant_policy(name, scope))
+
+
 def summary_levels(scope: Any = None) -> str:
     """Which node summary levels `scope`'s tenant generates: auto | l0 | l0_l1 | none.
 

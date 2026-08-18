@@ -106,6 +106,13 @@ KNOBS: dict[str, Knob] = {
              "no store-wide total on purpose: a global budget would let one tenant evict another.",
              aliases=("secondary_index_hard_ceiling",),
              env_aliases=("MATRIXARK_SECONDARY_INDEX_HARD_CEILING",)),
+        Knob("top_k_per_layer", "int", "MATRIXARK_TOP_K_PER_LAYER", 24,
+             "How many children each parent contributes to the next traversal frontier (applied "
+             "per parent, so a layer with P parents admits up to P x K)."),
+        Knob("max_global_candidates", "int", "MATRIXARK_MAX_GLOBAL_CANDIDATES", 2048,
+             "Ceiling on candidate records considered for the context pack."),
+        Knob("max_selected_refs", "int", "MATRIXARK_MAX_SELECTED_REFS", 1000,
+             "Ceiling on refs selected into the context pack (the token budget usually binds first)."),
         Knob("summary_levels", "choice", "MATRIXARK_SUMMARY_LEVELS", "auto",
              "Which node summaries to generate, explicitly: 'auto' keeps today's content-driven "
              "rule (L0 always, L1 when the node has child summaries / >=3 events / >=180 tokens), "
