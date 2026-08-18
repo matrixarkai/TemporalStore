@@ -103,6 +103,12 @@ pub struct TemporalEngine {
     configs: Arc<RwLock<HashMap<ShardId, Config>>>,
     infos: Arc<RwLock<HashMap<ShardId, ShardInfo>>>,
     admissions: Arc<RwLock<HashMap<AdmissionScope, AdmissionState>>>,
+    /// Diagnostics: number of per-execute `promote_model_maps_to_bucket_index_authority` full
+    /// O(store) reconcile scans this engine has run at the hot-path call site. Without
+    /// TS_PHASE1_FLAT this fires once per command (O(writes)); with the gate on the
+    /// `promote_scan_done` fast-skip holds it to a small constant once warm. Read by the phase-1
+    /// aging test to prove the per-write O(n) reconcile scan is gone.
+    promote_scans: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl TemporalEngine {
@@ -253,15 +259,31 @@ impl TemporalEngine {
         // the dominant O(n^2) cost of a large ingest/reload; fresh writes live in the
         // model maps, so the single reconstruct rebuilds bucket_index and the secondary
         // views losslessly.
+        // Phase-1 flat-append fast-skip: once a promote scan has confirmed `bucket_index` is in
+        // sync with the model maps, skip the O(store) re-scan on every subsequent command. The
+        // live write path keeps `bucket_index` authoritative in lock-step (each mutating command
+        // upserts its page before returning), so the repeat scan can only re-confirm sync. The
+        // flag is `#[serde(skip)]` (false on any fresh load), so the first live command after a
+        // reload still pays one full reconcile. Gate OFF -> the scan runs every command as before.
         if !defer_bucket_index_reconstruct()
-            && promote_model_maps_to_bucket_index_authority(
+            && !(phase1_flat_enabled() && shard.promote_scan_done)
+        {
+            self.promote_scans
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if promote_model_maps_to_bucket_index_authority(
                 request.shard_id,
                 shard,
                 start_routing_bucket,
                 end_routing_bucket,
-            )
-        {
-            reconcile_secondary_views_from_bucket_index(&self.page_store, shard, None);
+            ) {
+                reconcile_secondary_views_from_bucket_index(&self.page_store, shard, None);
+            }
+            // Mark the reconcile confirmed only once the shard actually holds model-map state:
+            // `promote` returns false (without establishing anything) on an empty shard, so
+            // guarding on non-emptiness avoids latching the flag before the first real write.
+            if phase1_flat_enabled() && shard_has_model_entries(shard) {
+                shard.promote_scan_done = true;
+            }
         }
         let write_command = is_write_command(&command);
         if let Err(status) = self.check_admission(request.shard_id, write_command, &config, &info) {
@@ -477,9 +499,16 @@ impl TemporalEngine {
             if !config.async_storage && !bulk_ingest_mode() && !replaying_wal() {
                 // Anchor the (in-memory) served index to the WAL sequence it now reflects, so a
                 // later load replays only records written after this point (the
-                // dumped-log-id anchor read back on load).
-                shard.applied_wal_sequence =
-                    Some(self.wal_store.stats(request.shard_id).last_sequence);
+                // dumped-log-id anchor read back on load). Reading the sequence via `stats()`
+                // triggers a full-file `last_wal_sequence_at` rescan -- an O(records)-per-write cost
+                // under this lock (stack-sampling shows it dominates a warm ingest). Under
+                // TS_PHASE1_FLAT anchor off the O(1) cached last sequence (authoritative right after
+                // this write's append) instead; gate OFF keeps the exact `stats()` value.
+                shard.applied_wal_sequence = Some(if phase1_flat_enabled() {
+                    self.wal_store.cached_last_sequence(request.shard_id)
+                } else {
+                    self.wal_store.stats(request.shard_id).last_sequence
+                });
                 // Append ONLY the pages this write changed (O(delta)) to the index-log,
                 // advancing the index-log sequence and populating the served-index delta
                 // stream. The whole base index is NOT rewritten per write (that O(store) path
@@ -1694,6 +1723,20 @@ pub(super) fn wal_single_barrier() -> bool {
 /// strictly AFTER the covering barrier succeeds, so durability is never weakened.
 fn engine_concurrent_commit() -> bool {
     env_flag_on("TS_ENGINE_CONCURRENT_COMMIT")
+}
+
+/// TS_PHASE1_FLAT: make phase-1 (the work under the global `shards` write lock in
+/// `execute_with_storage_override`) O(1) per write so it stops aging O(n) with data size. Two
+/// per-write O(store) costs otherwise run under the lock on the live path: (1) the WAL append's
+/// full-file `last_wal_sequence_at` rescan (handled in `wal.rs` by the same gate), and (2) the
+/// per-execute `promote_model_maps_to_bucket_index_authority` reconciliation scan at the top of
+/// `execute_with_storage_override`, which walks + clones every live model-map entry only to
+/// re-confirm that `bucket_index` (which every write already keeps authoritative) is in sync. With
+/// the gate on, once a promote scan has confirmed sync (`ShardState.promote_scan_done`) the hot
+/// path skips the repeat scan. Default OFF -> byte-identical (the scan runs every command exactly
+/// as before). Sharing one gate with the WAL fast-append so a single switch flattens phase-1.
+fn phase1_flat_enabled() -> bool {
+    env_flag_on("TS_PHASE1_FLAT")
 }
 
 fn env_flag_on(name: &str) -> bool {

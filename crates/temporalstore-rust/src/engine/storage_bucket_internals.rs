@@ -881,6 +881,27 @@ pub(super) fn collect_bucket_index_live_page_entries(shard: &ShardState) -> Vec<
     entries
 }
 
+/// Cheap O(1)-per-map check for whether the shard holds ANY live model-map entry that
+/// `collect_model_live_page_entries` would enumerate. Used to avoid latching the phase-1
+/// `promote_scan_done` fast-skip flag before the shard has any state to reconcile. Short-circuits
+/// on the first non-empty map; never clones.
+pub(super) fn shard_has_model_entries(shard: &ShardState) -> bool {
+    !shard.strings.is_empty()
+        || !shard.hashes.is_empty()
+        || !shard.sets.is_empty()
+        || !shard.features.is_empty()
+        || !shard.control_state_pages.is_empty()
+        || !shard.context_nodes.is_empty()
+        || !shard.context_events.is_empty()
+        || !shard.context_indexes.is_empty()
+        || !shard.context_audits.is_empty()
+        || !shard.context_entities.is_empty()
+        || !shard.context_children.is_empty()
+        || !shard.context_embeddings.is_empty()
+        || !shard.context_summaries.is_empty()
+        || !shard.context_compressions.is_empty()
+}
+
 pub(super) fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
     let mut entries = Vec::new();
     entries.extend(
