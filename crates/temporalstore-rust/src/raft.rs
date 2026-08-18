@@ -240,6 +240,39 @@ fn raft_snapshot_state_image_on() -> bool {
     raft_env_flag_on("TS_RAFT_SNAPSHOT_STATE_IMAGE")
 }
 
+/// P1 (fsync coalescing): skip a node's WAL fdatasync when none of its DURABILITY-relevant state
+/// changed since the last persist. Driven purely by whether hard_state / log / membership /
+/// snapshot / fences changed, so it can never skip a persist that Raft safety requires -- only the
+/// volatile `pipeline_state` + `read_safety_state` (match/next index, inflight/queue depths,
+/// read-index accounting counters) are excluded from the change check. Default OFF -> every call
+/// fsyncs exactly as before (byte-identical).
+fn raft_wal_coalesce_on() -> bool {
+    raft_env_flag_on("TS_RAFT_WAL_COALESCE")
+}
+
+/// P2 (in-order propose): hold a per-cluster serialize lock across the append+replicate+commit
+/// critical section of `propose_distributed_one` so concurrent proposals reach followers in log
+/// order and never trigger a `prev_log` mismatch + full-deadline stall. Default OFF.
+fn raft_propose_serialize_on() -> bool {
+    raft_env_flag_on("TS_RAFT_PROPOSE_SERIALIZE")
+}
+
+/// Fingerprint of the DURABILITY-relevant subset of a WAL record. `pipeline_state` and
+/// `read_safety_state` are cleared before hashing because they are volatile (reinitialised on
+/// election / re-driven on restart) and pure metrics respectively -- excluding them is what lets
+/// the read-index/tick/match-index storm coalesce to zero fsyncs while any change to term,
+/// voted_for, commit_index, the log, membership, snapshots, or the apply/storage fences still
+/// flips the fingerprint and forces a durable persist.
+fn raft_durable_fingerprint(record: &RaftWalRecord) -> u64 {
+    let mut reduced = record.clone();
+    reduced.pipeline_state = RaftPeerPipelineRuntimeState::default();
+    reduced.read_safety_state = RaftReadSafetyRuntimeState::default();
+    let bytes = serde_json::to_vec(&reduced).unwrap_or_default();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hasher::write(&mut hasher, &bytes);
+    std::hash::Hasher::finish(&hasher)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DataRaftLogCodecEntry {
     pub shard_id: ShardId,
@@ -3143,6 +3176,16 @@ pub struct RaftConfig {
     pub min_keep_segment_num: u64,
     pub can_trigger_snapshot: bool,
     pub max_applied_log_bytes: u64,
+    /// P2: how long `propose_distributed_one` waits for the replication quorum before returning
+    /// `NoMajority`. Defaults to 5000 ms (the legacy hardcoded deadline); a config that omits the
+    /// field also resolves to 5000 so behavior stays byte-identical. Lower it (e.g. 500) so a
+    /// lagging/rejecting follower no longer freezes the proposer for a full 5 s.
+    #[serde(default = "default_replication_deadline_ms")]
+    pub replication_deadline_ms: u64,
+}
+
+fn default_replication_deadline_ms() -> u64 {
+    5000
 }
 
 impl Default for RaftConfig {
@@ -3173,6 +3216,7 @@ impl Default for RaftConfig {
             min_keep_segment_num: 2,
             can_trigger_snapshot: true,
             max_applied_log_bytes: 1024 * 1024 * 1024,
+            replication_deadline_ms: default_replication_deadline_ms(),
         }
     }
 }
@@ -3688,6 +3732,11 @@ struct RaftClusterInner {
     pending_snapshots: BTreeMap<(RaftNodeId, String), PendingSnapshotChunks>,
     read_safety_state: RaftReadSafetyRuntimeState,
     membership_evidence: RaftMembershipRuntimeEvidence,
+    /// P1: last durable fingerprint persisted per node (see `raft_durable_fingerprint`). Only
+    /// consulted when `TS_RAFT_WAL_COALESCE` is on; otherwise left untouched.
+    last_durable_fingerprint: BTreeMap<RaftNodeId, u64>,
+    /// P2: serialize proposes into the log in order under `TS_RAFT_PROPOSE_SERIALIZE`.
+    propose_serialize: Arc<Mutex<()>>,
 }
 
 impl RaftCluster {
@@ -3735,6 +3784,8 @@ impl RaftCluster {
                 pending_snapshots: BTreeMap::new(),
                 read_safety_state: RaftReadSafetyRuntimeState::default(),
                 membership_evidence: RaftMembershipRuntimeEvidence::default(),
+                last_durable_fingerprint: BTreeMap::new(),
+                propose_serialize: Arc::new(Mutex::new(())),
             })),
         })
     }
@@ -3853,6 +3904,8 @@ impl RaftCluster {
                 pending_snapshots: BTreeMap::new(),
                 read_safety_state,
                 membership_evidence,
+                last_durable_fingerprint: BTreeMap::new(),
+                propose_serialize: Arc::new(Mutex::new(())),
             })),
         })
     }
@@ -4039,6 +4092,20 @@ impl RaftCluster {
     where
         T: RaftTransport + Clone + Send + 'static,
     {
+        // P2: serialize proposes into the log in order. Concurrent proposers otherwise append
+        // under the write lock (sequential indices) but release it before the async network phase,
+        // so their AppendEntries race and can reach a follower out of order -> `prev_log` mismatch
+        // -> reject -> a full-deadline stall. Holding this per-cluster lock across the whole
+        // append+replicate+commit critical section forces index N to commit before N+1 begins.
+        let propose_gate = if raft_propose_serialize_on() {
+            let inner = self.inner.read().expect("raft cluster lock poisoned");
+            Some(inner.propose_serialize.clone())
+        } else {
+            None
+        };
+        let _propose_guard = propose_gate
+            .as_ref()
+            .map(|gate| gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
         let (entry, leader_id, target_ids, required) = {
             let mut inner = self.inner.write().expect("raft cluster lock poisoned");
             inner.ensure_live_leader()?;
@@ -4132,7 +4199,19 @@ impl RaftCluster {
             });
         }
         drop(tx);
-        let replication_deadline = Instant::now() + Duration::from_secs(5);
+        // P2: configurable replication deadline (legacy hardcoded 5 s). A config that leaves the
+        // field at 0 resolves to the 5000 ms default so behavior stays byte-identical.
+        let replication_deadline_ms = {
+            let inner = self.inner.read().expect("raft cluster lock poisoned");
+            let configured = inner.config.replication_deadline_ms;
+            if configured == 0 {
+                default_replication_deadline_ms()
+            } else {
+                configured
+            }
+        };
+        let replication_deadline =
+            Instant::now() + Duration::from_millis(replication_deadline_ms);
         while replicated < required {
             let remaining = replication_deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
