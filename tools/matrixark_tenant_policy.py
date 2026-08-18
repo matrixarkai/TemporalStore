@@ -59,10 +59,11 @@ class Knob:
     ``aliases`` / ``env_aliases`` keep an earlier name working after a rename, so an existing
     deployment's config file or environment is not silently ignored."""
 
-    __slots__ = ("name", "kind", "env", "default", "description", "aliases", "env_aliases")
+    __slots__ = ("name", "kind", "env", "default", "description", "aliases", "env_aliases", "choices")
 
     def __init__(self, name: str, kind: str, env: str, default: Any, description: str,
-                 aliases: tuple = (), env_aliases: tuple = ()) -> None:
+                 aliases: tuple = (), env_aliases: tuple = (), choices: tuple = ()) -> None:
+        self.choices = frozenset(choices)
         self.name = name
         self.kind = kind
         self.env = env
@@ -72,6 +73,11 @@ class Knob:
         self.env_aliases = env_aliases
 
     def coerce(self, value: Any) -> Any:
+        if self.kind == "choice":
+            text = str(value).strip().lower()
+            if text not in self.choices:
+                raise ValueError(f"{self.name} must be one of {sorted(self.choices)}")
+            return text
         if self.kind == "bool":
             if isinstance(value, bool):
                 return value
@@ -100,6 +106,13 @@ KNOBS: dict[str, Knob] = {
              "no store-wide total on purpose: a global budget would let one tenant evict another.",
              aliases=("secondary_index_hard_ceiling",),
              env_aliases=("MATRIXARK_SECONDARY_INDEX_HARD_CEILING",)),
+        Knob("summary_levels", "choice", "MATRIXARK_SUMMARY_LEVELS", "auto",
+             "Which node summaries to generate, explicitly: 'auto' keeps today's content-driven "
+             "rule (L0 always, L1 when the node has child summaries / >=3 events / >=180 tokens), "
+             "'l0' never generates L1, 'l0_l1' always generates both regardless of the rule, 'none' "
+             "generates neither. NOTE 'none' also disables index compaction, which only fires once "
+             "an event has been rolled up -- so per-event postings then live forever.",
+             choices=("auto", "l0", "l0_l1", "none")),
         Knob("generate_l1_summaries", "bool", "MATRIXARK_GENERATE_L1_SUMMARIES", True,
              "Generate the richer node_l1 overview alongside the mandatory node_l0. L0 is what "
              "traversal needs; L1 adds routing detail for nodes with a lot under them. Node "
