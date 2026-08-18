@@ -44,6 +44,7 @@ class RustProxyDaemon:
             self.socket_path.unlink()
         self._log_file = self.log_path.open("a", encoding="utf-8")
         self._start_proxy()
+        self._maybe_start_startup_warmup()
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server.bind(str(self.socket_path))
         server.listen(64)
@@ -85,6 +86,7 @@ class RustProxyDaemon:
             env=env,
         )
         self._write_log({"event": "proxy_started", "pid": self._proc.pid})
+        self._maybe_start_startup_warmup()
 
     def _stop_proxy(self) -> None:
         proc = self._proc
@@ -106,6 +108,109 @@ class RustProxyDaemon:
         self._write_log({"event": "proxy_restarting", "returncode": None if proc is None else proc.returncode})
         self._stop_proxy()
         self._start_proxy()
+
+    @staticmethod
+    def _env_disabled(value: str | None) -> bool:
+        return (value or "").strip().lower() in {"0", "false", "no", "off"}
+
+    @staticmethod
+    def _env_enabled(value: str | None) -> bool:
+        return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @classmethod
+    def _startup_warmup_allowed(cls) -> bool:
+        setting = os.environ.get("MATRIXARK_RUST_PROXY_STARTUP_WARMUP", "auto")
+        if cls._env_disabled(setting):
+            return False
+        if cls._env_enabled(setting):
+            return True
+        local_values = " ".join(
+            os.environ.get(name, "")
+            for name in (
+                "MATRIXARK_LOCAL_MODE",
+                "MATRIXARK_TEMPORALSTORE_METASERVER",
+                "TEMPORALSTORE_METASERVER",
+            )
+        ).lower()
+        if any(token in local_values for token in ("no-metaserver", "local", "single", "single-node", "single_node")):
+            return True
+        mode_values = " ".join(
+            os.environ.get(name, "")
+            for name in (
+                "MATRIXARK_TEMPORALSTORE_MODE",
+                "MATRIXARK_TEMPORALSTORE_STORAGE_MODE",
+                "MATRIXARK_STORAGE_MODE",
+                "MATRIXARK_HOOK_STORAGE_ROUTE",
+                "TEMPORALSTORE_STORAGE_MODE",
+            )
+        ).lower()
+        if any(token in mode_values for token in ("distributed", "replicated", "raft", "shared_store", "cluster", "production")):
+            return False
+        return True
+
+    @staticmethod
+    def _startup_warmup_storage_prefix() -> str:
+        return (
+            os.environ.get("MATRIXARK_RUST_PROXY_STARTUP_WARMUP_PREFIX")
+            or os.environ.get("MATRIXARK_STORAGE_PREFIX")
+            or os.environ.get("MATRIXARK_TEMPORALSTORE_PREFIX")
+            or "matrixark:codex-hook:rust-live-v2"
+        )
+
+    def _maybe_start_startup_warmup(self) -> None:
+        if not self._startup_warmup_allowed():
+            self._write_log({"event": "startup_warmup_skipped", "reason": "mode_gate"})
+            return
+        if getattr(self, "_startup_warmup_started", False):
+            return
+        self._startup_warmup_started = True
+        threading.Thread(target=self._startup_warmup_loop, daemon=True).start()
+
+    def _startup_warmup_loop(self) -> None:
+        delay_ms = int(os.environ.get("MATRIXARK_RUST_PROXY_STARTUP_WARMUP_DELAY_MS", "50") or "50")
+        if delay_ms > 0:
+            time.sleep(delay_ms / 1000.0)
+        storage_prefix = self._startup_warmup_storage_prefix()
+        op = "matrixark_retrieve_context_pack_full_scan"
+        if self._env_disabled(os.environ.get("MATRIXARK_RUST_PROXY_STARTUP_WARMUP_FULL_SCAN", "1")):
+            op = "matrixark_retrieve_context_pack"
+        try:
+            max_selected_refs = int(os.environ.get("MATRIXARK_RUST_PROXY_STARTUP_WARMUP_MAX_SELECTED_REFS", "1") or "1")
+        except ValueError:
+            max_selected_refs = 1
+        request: Json = {
+            "op": op,
+            "storage_prefix": storage_prefix,
+            "count_key": f"{storage_prefix}:record_count",
+            "record_hash_key": f"{storage_prefix}:records",
+            "query": os.environ.get("MATRIXARK_RUST_PROXY_STARTUP_WARMUP_QUERY", "__matrixark_startup_context_warmup__"),
+            "max_selected_refs": max(1, max_selected_refs),
+            "request_timeout_ms": 120000,
+        }
+        try:
+            request["request_timeout_ms"] = int(os.environ.get("MATRIXARK_RUST_PROXY_STARTUP_WARMUP_TIMEOUT_MS", "120000") or "120000")
+        except ValueError:
+            pass
+        self._write_log({"event": "startup_warmup_started", "op": op, "storage_prefix": storage_prefix})
+        started = time.monotonic()
+        response = self._call_proxy(request)
+        metrics = response.get("retrieval_metrics") if isinstance(response, dict) else None
+        metrics = metrics if isinstance(metrics, dict) else {}
+        self._write_log(
+            {
+                "event": "startup_warmup_completed",
+                "ok": bool(response.get("ok", False)) if isinstance(response, dict) else False,
+                "elapsed_ms": int((time.monotonic() - started) * 1000),
+                "storage_prefix": storage_prefix,
+                "op": op,
+                "candidate_cache_hit": metrics.get("candidate_cache_hit"),
+                "context_pack_cache_hit": metrics.get("context_pack_cache_hit"),
+                "serving_memory_cache_layer": metrics.get("serving_memory_cache_layer"),
+                "serving_memory_promoted": metrics.get("serving_memory_promoted"),
+                "serving_memory_promoted_record_count": metrics.get("serving_memory_promoted_record_count"),
+                "error": response.get("error") if isinstance(response, dict) else "invalid_response",
+            }
+        )
 
     def _handle_conn(self, conn: socket.socket) -> None:
         with conn:
