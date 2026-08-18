@@ -27,6 +27,11 @@ except ImportError:
     source_event_lineage_summary,
 )
 
+try:
+    from tools.matrixark_index_growth_bound import index_compaction_tombstone, index_compact_on_summary_enabled
+except ImportError:
+    from matrixark_index_growth_bound import index_compaction_tombstone, index_compact_on_summary_enabled
+
 
 class _LocalAdapterSummariesMixin:
     def node_summary_source_records(
@@ -1012,6 +1017,18 @@ class _LocalAdapterSummariesMixin:
                         "updated_at_ms": refreshed_at_ms,
                     }
                 )
+            # Temporal index compaction (Lever 1): the events just rolled up into this node's L0/L1
+            # summary now have redundant per-event postings -- the summary's own postings cover the
+            # same content -- so tombstone them. Appended AFTER the summary + its postings so the
+            # order-aware sweep reaches the older event postings and never the new summary ones.
+            if index_compact_on_summary_enabled():
+                compaction_tombstone = index_compaction_tombstone(
+                    source_event_ids=source_event_ids,
+                    scope=dirty.get("scope", scope),
+                    created_at_ms=refreshed_at_ms,
+                )
+                if compaction_tombstone is not None:
+                    self.append(compaction_tombstone)
             compression_refresh = self.auto_time_compress_node_events(
                 records=records,
                 scope=dirty.get("scope", scope),
