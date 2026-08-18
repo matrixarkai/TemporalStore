@@ -59,6 +59,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_summary_runtime import async_summary_progress_records
 
 try:
+    from tools.matrixark_pipeline_task_slim import bound_pipeline_task_footprint
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_pipeline_task_slim import bound_pipeline_task_footprint
+
+try:
     from tools.matrixark_index_growth_bound import (
         INDEX_COMPACT_TOMBSTONE_KIND,
         index_compact_tombstone_kills_record,
@@ -3231,7 +3236,12 @@ def compact_and_apply_tombstones(records: list[Json]) -> list[Json]:
     A tombstone-free log short-circuits ``apply_memory_tombstones`` unchanged, so the middle step is a
     no-op for the overwhelmingly common no-tombstone case (and ``compact_latest_value`` then
     ``compact_latest_context_state`` is exactly the historical composition)."""
-    return compact_latest_context_state_records(apply_memory_tombstones(compact_latest_value_records(records)))
+    # Pipeline-task rows are re-stamped on every refresh (193 rows for 25 tasks on a 25-turn store),
+    # making them the largest resident record type; collapse the duplicate states -- see
+    # matrixark_pipeline_task_slim. Runs LAST so it sees exactly the rows that will serve.
+    return bound_pipeline_task_footprint(
+        compact_latest_context_state_records(apply_memory_tombstones(compact_latest_value_records(records)))
+    )
 
 
 # --------------------------------------------------------------------------------------------- #
