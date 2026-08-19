@@ -3414,3 +3414,74 @@ fn corrupt_index_log_delta_refuses_load_rather_than_silently_skipping() {
         );
     }
 }
+
+/// Eviction cost must track how many victims are wanted, not how much the shard holds.
+///
+/// Measured with the live-page scan counter rather than a clock, so the number is the work done
+/// rather than the speed of the machine, and the test cannot pass by happening to run fast.
+///
+/// Serialized against other tests in this file only by the fact that it reads a process-wide
+/// counter around its own call; it resets immediately before measuring.
+#[test]
+fn sampled_eviction_scan_volume_does_not_grow_with_the_store() {
+    fn scan_volume_for(page_count: usize, sampled: bool) -> (u64, usize) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..page_count {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("scaling-key-{index}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+
+        if sampled {
+            std::env::set_var("TS_EVICT_SAMPLED_LRU", "1");
+        } else {
+            std::env::remove_var("TS_EVICT_SAMPLED_LRU");
+        }
+        crate::engine::reset_live_page_scan_entries();
+        // Threshold 0 so the pressure gate always admits and the selection path actually runs.
+        let report = engine.apply_storage_eviction(1, 0, 4, false, false);
+        let scanned = crate::engine::live_page_scan_entries();
+        std::env::remove_var("TS_EVICT_SAMPLED_LRU");
+        (scanned, report.selected_victims.len())
+    }
+
+    let (small_full, _) = scan_volume_for(200, false);
+    let (large_full, _) = scan_volume_for(1600, false);
+    let (small_sampled, small_victims) = scan_volume_for(200, true);
+    let (large_sampled, large_victims) = scan_volume_for(1600, true);
+
+    println!(
+        "\n  full-scan   200 pages -> {small_full:>6} live-page entries scanned\n  \
+         full-scan  1600 pages -> {large_full:>6} live-page entries scanned\n  \
+         sampled     200 pages -> {small_sampled:>6} live-page entries scanned ({small_victims} victims)\n  \
+         sampled    1600 pages -> {large_sampled:>6} live-page entries scanned ({large_victims} victims)\n"
+    );
+
+    // The default path pays for the whole store: 8x the pages costs materially more.
+    assert!(
+        large_full > small_full * 4,
+        "full scan should grow with the store, got {small_full} -> {large_full}"
+    );
+
+    // The sampled path must not. It may still read the pages of the buckets it picked, which is
+    // bounded by batch_limit, so this is a ceiling rather than an equality.
+    assert!(
+        large_sampled < large_full / 4,
+        "sampled scan should be far below the full scan, got {large_sampled} vs {large_full}"
+    );
+    assert!(
+        large_sampled <= small_sampled.saturating_mul(2).max(64),
+        "sampled scan should not grow with the store, got {small_sampled} -> {large_sampled}"
+    );
+}

@@ -165,6 +165,11 @@ pub(super) struct ShardState {
     /// full reconcile and re-establishes it. Only consulted when `phase1_flat_enabled()`.
     #[serde(skip)]
     pub(super) promote_scan_done: bool,
+    /// Resume point and candidate pool for sampled eviction. In-memory and ephemeral like
+    /// `bucket_recency`: on restart the scan simply restarts from the top, which costs one
+    /// pass, not correctness. Only consulted when `evict_sampled_lru_enabled()`.
+    #[serde(skip)]
+    pub(super) evict_sampler: super::eviction_sampler::EvictionSamplerState,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
