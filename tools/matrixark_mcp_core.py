@@ -623,18 +623,27 @@ def one_pass_memory_extraction(envelope: Json, *, prior_context: Json) -> Json:
     """
 
     provider = understanding_provider(envelope)
+    # A provider that fails falls back to the deterministic rules below -- which is the right
+    # behaviour, but the result used to still advertise `understanding_provider: <the provider>`.
+    # That is actively misleading: an LLM call that times out (the client timeout is 30s by
+    # default, and a 7B on CPU needs minutes) produced rule-based entities while the payload
+    # claimed the LLM had run, so anyone measuring extraction quality would silently measure the
+    # deterministic path instead. The failure is recorded and the label corrected below.
+    provider_failure = ""
     if provider in {"openai", "openai_compatible", "openai_compatible_llm"}:
         try:
             return openai_compatible_one_pass_memory_extraction(envelope, prior_context=prior_context)
-        except MatrixArkError:
+        except MatrixArkError as exc:
             if require_oss_understanding():
                 raise
+            provider_failure = str(exc)
     if provider in {"anthropic", "claude", "anthropic_messages"}:
         try:
             return anthropic_one_pass_memory_extraction(envelope, prior_context=prior_context)
-        except MatrixArkError:
+        except MatrixArkError as exc:
             if require_oss_understanding():
                 raise
+            provider_failure = str(exc)
     messages = envelope["messages"]
     batch_text = text_from_messages(messages)
     batch_terms = tokens(batch_text)
@@ -682,7 +691,9 @@ def one_pass_memory_extraction(envelope: Json, *, prior_context: Json) -> Json:
     )
     return {
         "mode": "matrixark_one_pass_schema_oss_encoder" if provider == "oss_encoder" else "matrixark_one_pass_schema",
-        "understanding_provider": provider,
+        "understanding_provider": "deterministic" if provider_failure else provider,
+        "understanding_provider_requested": provider if provider_failure else "",
+        "understanding_provider_error": provider_failure,
         "schema": ONE_PASS_MEMORY_SCHEMA,
         "classification": classification,
         "status": "observed",
