@@ -1,94 +1,111 @@
 {
-  "generated_at_ms": 1787121177265,
+  "generated_at_ms": 1787128050046,
+  "scope": "full local Claude/Codex context corpus emitted from /mnt/c/Users/Deeproute",
+  "storage_root": "/tmp/ts-full-local-context/store",
   "sample_emit": {
     "emit": true,
-    "scanned": 10,
+    "scanned": 92994,
     "counts": {
-      "claude": 5,
-      "codex": 5
+      "claude": 52745,
+      "codex": 40248
     },
     "by_source": {
-      "resource_md": 10
+      "claude_transcript": 50625,
+      "codex_rollout": 26198,
+      "codex_rollout_exploration": 11929,
+      "resource_md": 4242
     },
     "by_agent": {
-      "claude": 5,
-      "codex": 5
+      "claude": 52746,
+      "codex": 40248
     },
-    "dropped": 0
+    "dropped": 1
+  },
+  "jsonl": {
+    "claude": {
+      "path": "/tmp/ts-full-local-context/jsonl/backfill.claude.jsonl",
+      "lines": 52745,
+      "bytes": 23818981
+    },
+    "codex": {
+      "path": "/tmp/ts-full-local-context/jsonl/backfill.codex.jsonl",
+      "lines": 40248,
+      "bytes": 120878355
+    }
   },
   "agents": {
     "claude": {
       "first_load": {
-        "accepted": 5,
+        "accepted": 52745,
         "agent_name": "claude",
-        "cache_bytes": 268435456,
+        "cache_bytes": 1073741824,
         "cache_stats": {
           "disk_bytes": 0,
           "disk_fills": 0,
           "disk_hits": 0,
-          "memory_bytes": 25105,
+          "memory_bytes": 80696041,
           "memory_evictions": 0,
-          "memory_fills": 10,
+          "memory_fills": 105454,
           "memory_hits": 0,
           "misses": 0,
           "pinned_bytes": 0,
           "pinned_entries": 0,
-          "puts": 10
+          "puts": 105454
         },
-        "checkpoint_flush_seconds": 0.022238273,
-        "checkpoint_flushes": 1,
+        "checkpoint_flush_seconds": 55.886475968,
+        "checkpoint_flushes": 5,
         "failed": 0,
-        "flush_every_accepted": 5,
-        "flush_seconds": 0.009563371,
+        "flush_every_accepted": 10000,
+        "flush_seconds": 13.579040348,
         "gate_l1": true,
-        "index_path": "/tmp/ts-goal-context-store-stable/claude/claude-session-index.json",
-        "ingest_seconds": 0.032260736,
-        "load_seconds": 0.072867731,
+        "index_path": "/tmp/ts-full-local-context/store/claude/claude-session-index.json",
+        "ingest_seconds": 2821.780426102,
+        "load_seconds": 0.198563623,
         "raw_first": true,
-        "read_seconds": 0.00078739,
+        "read_seconds": 0.715683825,
         "replay_from_sequence": 0,
-        "root": "/tmp/ts-goal-context-store-stable/claude",
-        "scanned": 5,
-        "seconds": 0.11875951,
-        "session_count": 1,
+        "root": "/tmp/ts-full-local-context/store/claude",
+        "scanned": 52745,
+        "seconds": 2836.279843321,
+        "session_count": 33,
         "skip_covered_sessions": false,
         "skipped": 0,
         "skipped_covered": 0,
         "status": "ok",
         "sub_batch": 250,
-        "total_nodes": 5
+        "total_nodes": 42498
       },
       "checkpoint_only_restart_warm": {
         "agent_name": "claude",
-        "cache_bytes": 268435456,
+        "cache_bytes": 1073741824,
         "cache_stats": {
           "disk_bytes": 0,
           "disk_fills": 0,
           "disk_hits": 0,
-          "memory_bytes": 906,
+          "memory_bytes": 9604387,
           "memory_evictions": 0,
-          "memory_fills": 5,
+          "memory_fills": 52745,
           "memory_hits": 0,
           "misses": 0,
           "pinned_bytes": 0,
           "pinned_entries": 0,
-          "puts": 5
+          "puts": 52745
         },
-        "flush_seconds": 0.011816677,
-        "index_path": "/tmp/ts-goal-context-store-stable/claude/claude-session-index.json",
-        "load_seconds": 0.020996347,
+        "flush_seconds": 6.462306782,
+        "index_path": "/tmp/ts-full-local-context/store/claude/claude-session-index.json",
+        "load_seconds": 338.780683678,
         "mode": "checkpoint_only",
-        "replay_from_sequence": 15,
-        "root": "/tmp/ts-goal-context-store-stable/claude",
-        "seconds": 0.033009213,
-        "session_count": 1,
+        "replay_from_sequence": 158199,
+        "root": "/tmp/ts-full-local-context/store/claude",
+        "seconds": 345.86589478,
+        "session_count": 33,
         "status": "ok",
-        "total_nodes": 5
+        "total_nodes": 42498
       },
       "skip_covered_rerun": {
         "accepted": 0,
         "agent_name": "claude",
-        "cache_bytes": 268435456,
+        "cache_bytes": 1073741824,
         "cache_stats": {
           "disk_bytes": 0,
           "disk_fills": 0,
@@ -105,101 +122,114 @@
         "checkpoint_flush_seconds": 0.0,
         "checkpoint_flushes": 0,
         "failed": 0,
-        "flush_every_accepted": 5,
-        "flush_seconds": 0.007477365,
+        "flush_every_accepted": 10000,
+        "flush_seconds": 4.949726565,
         "gate_l1": true,
-        "index_path": "/tmp/ts-goal-context-store-stable/claude/claude-session-index.json",
-        "ingest_seconds": 6.571e-05,
-        "load_seconds": 0.01948352,
+        "index_path": "/tmp/ts-full-local-context/store/claude/claude-session-index.json",
+        "ingest_seconds": 0.130569327,
+        "load_seconds": 8.556909368,
         "raw_first": true,
-        "read_seconds": 5.9287e-05,
-        "replay_from_sequence": 15,
-        "root": "/tmp/ts-goal-context-store-stable/claude",
-        "scanned": 5,
-        "seconds": 0.027436811,
-        "session_count": 1,
+        "read_seconds": 0.36454265,
+        "replay_from_sequence": 158199,
+        "root": "/tmp/ts-full-local-context/store/claude",
+        "scanned": 52745,
+        "seconds": 14.745263523,
+        "session_count": 33,
         "skip_covered_sessions": true,
         "skipped": 0,
-        "skipped_covered": 5,
+        "skipped_covered": 52745,
         "status": "ok",
         "sub_batch": 250,
-        "total_nodes": 5
+        "total_nodes": 42498
       },
-      "first_stderr_tail": "  checkpoint accepted 5 flush_seconds 0.022\n  session _global -> accepted 5 failed 0 skipped_covered 0 (155 rec/s cumulative)\n",
-      "skip_stderr_tail": "  session _global -> accepted 0 failed 0 skipped_covered 5 (0 rec/s cumulative)\n"
+      "first_time": {
+        "elapsed_text": "47:18.35",
+        "max_rss_kb": 1892692,
+        "cpu_percent": "94%"
+      },
+      "checkpoint_time": {
+        "elapsed_text": "5:47.04",
+        "max_rss_kb": 1809264,
+        "cpu_percent": "99%"
+      },
+      "skip_time": {
+        "elapsed_text": "0:15.58",
+        "max_rss_kb": 1479328,
+        "cpu_percent": "99%"
+      }
     },
     "codex": {
       "first_load": {
-        "accepted": 5,
+        "accepted": 40248,
         "agent_name": "codex",
-        "cache_bytes": 268435456,
+        "cache_bytes": 1073741824,
         "cache_stats": {
           "disk_bytes": 0,
           "disk_fills": 0,
           "disk_hits": 0,
-          "memory_bytes": 25111,
+          "memory_bytes": 226083357,
           "memory_evictions": 0,
-          "memory_fills": 10,
+          "memory_fills": 80496,
           "memory_hits": 0,
           "misses": 0,
           "pinned_bytes": 0,
           "pinned_entries": 0,
-          "puts": 10
+          "puts": 80496
         },
-        "checkpoint_flush_seconds": 0.016776647,
-        "checkpoint_flushes": 1,
+        "checkpoint_flush_seconds": 29.259763798999998,
+        "checkpoint_flushes": 4,
         "failed": 0,
-        "flush_every_accepted": 5,
-        "flush_seconds": 0.00825303,
+        "flush_every_accepted": 10000,
+        "flush_seconds": 11.288954014,
         "gate_l1": true,
-        "index_path": "/tmp/ts-goal-context-store-stable/codex/codex-session-index.json",
-        "ingest_seconds": 0.021083966,
-        "load_seconds": 0.045467904,
+        "index_path": "/tmp/ts-full-local-context/store/codex/codex-session-index.json",
+        "ingest_seconds": 1677.482626685,
+        "load_seconds": 0.037506983,
         "raw_first": true,
-        "read_seconds": 0.000489983,
+        "read_seconds": 3.71019596,
         "replay_from_sequence": 0,
-        "root": "/tmp/ts-goal-context-store-stable/codex",
-        "scanned": 5,
-        "seconds": 0.076345706,
-        "session_count": 1,
+        "root": "/tmp/ts-full-local-context/store/codex",
+        "scanned": 40248,
+        "seconds": 1692.522075647,
+        "session_count": 75,
         "skip_covered_sessions": false,
         "skipped": 0,
         "skipped_covered": 0,
         "status": "ok",
         "sub_batch": 250,
-        "total_nodes": 5
+        "total_nodes": 39352
       },
       "checkpoint_only_restart_warm": {
         "agent_name": "codex",
-        "cache_bytes": 268435456,
+        "cache_bytes": 1073741824,
         "cache_stats": {
           "disk_bytes": 0,
           "disk_fills": 0,
           "disk_hits": 0,
-          "memory_bytes": 914,
+          "memory_bytes": 7329223,
           "memory_evictions": 0,
-          "memory_fills": 5,
+          "memory_fills": 40248,
           "memory_hits": 0,
           "misses": 0,
           "pinned_bytes": 0,
           "pinned_entries": 0,
-          "puts": 5
+          "puts": 40248
         },
-        "flush_seconds": 0.010799071,
-        "index_path": "/tmp/ts-goal-context-store-stable/codex/codex-session-index.json",
-        "load_seconds": 0.019513564,
+        "flush_seconds": 4.623509748,
+        "index_path": "/tmp/ts-full-local-context/store/codex/codex-session-index.json",
+        "load_seconds": 201.079986178,
         "mode": "checkpoint_only",
-        "replay_from_sequence": 15,
-        "root": "/tmp/ts-goal-context-store-stable/codex",
-        "seconds": 0.030506379,
-        "session_count": 1,
+        "replay_from_sequence": 120744,
+        "root": "/tmp/ts-full-local-context/store/codex",
+        "seconds": 206.432275667,
+        "session_count": 75,
         "status": "ok",
-        "total_nodes": 5
+        "total_nodes": 39352
       },
       "skip_covered_rerun": {
         "accepted": 0,
         "agent_name": "codex",
-        "cache_bytes": 268435456,
+        "cache_bytes": 1073741824,
         "cache_stats": {
           "disk_bytes": 0,
           "disk_fills": 0,
@@ -216,28 +246,71 @@
         "checkpoint_flush_seconds": 0.0,
         "checkpoint_flushes": 0,
         "failed": 0,
-        "flush_every_accepted": 5,
-        "flush_seconds": 0.00668287,
+        "flush_every_accepted": 10000,
+        "flush_seconds": 3.458754741,
         "gate_l1": true,
-        "index_path": "/tmp/ts-goal-context-store-stable/codex/codex-session-index.json",
-        "ingest_seconds": 3.9675e-05,
-        "load_seconds": 0.016739775,
+        "index_path": "/tmp/ts-full-local-context/store/codex/codex-session-index.json",
+        "ingest_seconds": 0.063877244,
+        "load_seconds": 8.664914079,
         "raw_first": true,
-        "read_seconds": 4.0186e-05,
-        "replay_from_sequence": 15,
-        "root": "/tmp/ts-goal-context-store-stable/codex",
-        "scanned": 5,
-        "seconds": 0.023844996,
-        "session_count": 1,
+        "read_seconds": 0.465200768,
+        "replay_from_sequence": 120744,
+        "root": "/tmp/ts-full-local-context/store/codex",
+        "scanned": 40248,
+        "seconds": 13.090842182,
+        "session_count": 75,
         "skip_covered_sessions": true,
         "skipped": 0,
-        "skipped_covered": 5,
+        "skipped_covered": 40248,
         "status": "ok",
         "sub_batch": 250,
-        "total_nodes": 5
+        "total_nodes": 39352
       },
-      "first_stderr_tail": "  checkpoint accepted 5 flush_seconds 0.017\n  session _global -> accepted 5 failed 0 skipped_covered 0 (238 rec/s cumulative)\n",
-      "skip_stderr_tail": "  session _global -> accepted 0 failed 0 skipped_covered 5 (0 rec/s cumulative)\n"
+      "first_time": {
+        "elapsed_text": "28:14.43",
+        "max_rss_kb": 1865360,
+        "cpu_percent": "99%"
+      },
+      "checkpoint_time": {
+        "elapsed_text": "3:27.33",
+        "max_rss_kb": 1598608,
+        "cpu_percent": "99%"
+      },
+      "skip_time": {
+        "elapsed_text": "0:13.79",
+        "max_rss_kb": 1338012,
+        "cpu_percent": "98%"
+      }
     }
-  }
+  },
+  "findings": [
+    {
+      "agent": "claude",
+      "no_missing_ingest": true,
+      "fresh_load_seconds": 2836.279843321,
+      "fresh_load_records_per_sec": 18.596542976605893,
+      "fresh_memory_bytes": 80696041,
+      "fresh_memory_fills": 105454,
+      "restart_warm_seconds": 345.86589478,
+      "restart_memory_fills": 52745,
+      "restart_memory_bytes": 9604387,
+      "skip_coverage_ok": true,
+      "skip_seconds": 14.745263523,
+      "disk_hits_any_phase": 0
+    },
+    {
+      "agent": "codex",
+      "no_missing_ingest": true,
+      "fresh_load_seconds": 1692.522075647,
+      "fresh_load_records_per_sec": 23.779896628299163,
+      "fresh_memory_bytes": 226083357,
+      "fresh_memory_fills": 80496,
+      "restart_warm_seconds": 206.432275667,
+      "restart_memory_fills": 40248,
+      "restart_memory_bytes": 7329223,
+      "skip_coverage_ok": true,
+      "skip_seconds": 13.090842182,
+      "disk_hits_any_phase": 0
+    }
+  ]
 }

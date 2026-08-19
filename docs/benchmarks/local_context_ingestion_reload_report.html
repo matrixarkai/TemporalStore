@@ -1,103 +1,126 @@
-<!doctype html><html><head><meta charset='utf-8'><title>TemporalStore Local Context Load Optimization Report</title><style>
-body{font-family:Inter,Segoe UI,Arial,sans-serif;margin:32px;color:#172026;background:#f7f8f8}h1{margin:0 0 6px}.muted{color:#5d6b72}table{border-collapse:collapse;width:100%;background:#fff;margin:16px 0;border:1px solid #d7dddf}th,td{padding:9px 10px;border-bottom:1px solid #e3e7e8;text-align:left;font-size:13px}th{background:#edf1f2}code,pre{background:#eef2f3;padding:2px 5px;border-radius:4px}.ok{color:#086b3c;font-weight:600}.warn{color:#8a5a00;font-weight:600}section{margin:24px 0}pre{white-space:pre-wrap;padding:12px;overflow:auto}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.card{background:#fff;border:1px solid #d7dddf;border-radius:8px;padding:14px}</style></head><body>
-<h1>TemporalStore Local Context Load Optimization Report</h1>
-<p class='muted'>Generated 2026-08-18 23:32:57 PDT. Stable validation artifact under <code>/root/src/github-services/TemporalStore/docs/benchmarks/local_context_validation_current</code>.</p><section><h2>Source Enumeration</h2><table><tr><th>Metric</th><th>Value</th></tr><tr><td>Total emitted records</td><td>10</td></tr><tr><td>By agent</td><td><code>{&#x27;claude&#x27;: 5, &#x27;codex&#x27;: 5}</code></td></tr><tr><td>By source</td><td><code>{&#x27;resource_md&#x27;: 10}</code></td></tr><tr><td>Dropped low-value records</td><td>0</td></tr></table></section><section><h2>Measured Runs</h2><table><tr><th>Agent</th><th>Run</th><th>Scanned</th><th>Accepted</th><th>Failed</th><th>Skipped covered</th><th>Total s</th><th>Load s</th><th>Ingest s</th><th>Flush s</th><th>Memory cache bytes</th><th>Memory fills</th><th>Disk hits</th></tr><tr><td>claude</td><td>fresh load</td><td>5</td><td>5</td><td>0</td><td>0</td><td>0.119</td><td>0.073</td><td>0.032</td><td>0.010</td><td>25105</td><td>10</td><td>0</td></tr><tr><td>claude</td><td>restart warm/checkpoint</td><td>-</td><td>-</td><td>-</td><td>-</td><td>0.033</td><td>0.021</td><td>-</td><td>0.012</td><td>906</td><td>5</td><td>0</td></tr><tr><td>claude</td><td>duplicate coverage rerun</td><td>5</td><td>0</td><td>0</td><td>5</td><td>0.027</td><td>0.019</td><td>0.000</td><td>0.007</td><td>0</td><td>0</td><td>0</td></tr><tr><td>codex</td><td>fresh load</td><td>5</td><td>5</td><td>0</td><td>0</td><td>0.076</td><td>0.045</td><td>0.021</td><td>0.008</td><td>25111</td><td>10</td><td>0</td></tr><tr><td>codex</td><td>restart warm/checkpoint</td><td>-</td><td>-</td><td>-</td><td>-</td><td>0.031</td><td>0.020</td><td>-</td><td>0.011</td><td>914</td><td>5</td><td>0</td></tr><tr><td>codex</td><td>duplicate coverage rerun</td><td>5</td><td>0</td><td>0</td><td>5</td><td>0.024</td><td>0.017</td><td>0.000</td><td>0.007</td><td>0</td><td>0</td><td>0</td></tr></table></section><section><h2>Findings</h2><div class='grid'>
-<div class='card'><h3>Fresh start</h3><p class='ok'>All stable local context records were accepted with zero failures.</p><p>The loader now uses a 256 MB default cache and immediately promotes packed context pages into memory on batched append. First-load reports show positive <code>memory_bytes</code> and <code>memory_fills</code>.</p></div>
-<div class='card'><h3>Normal restart</h3><p class='ok'>Checkpoint-only restart warms memory without ingesting duplicate stdin.</p><p>Both Claude and Codex replayed persisted local records and filled memory cache in about 30 ms on this small stable sample.</p></div>
-<div class='card'><h3>Duplicate/resume</h3><p class='ok'>Second identical load skipped 100% covered rows.</p><p>The skip path proves coverage against the same session-index node hashes used by ingestion; accepted and failed were both 0.</p></div>
-<div class='card'><h3>Full-corpus note</h3><p class='warn'>The code path is fixed and validated on a stable bounded artifact. The full Windows-mounted transcript scan was intermittently slow/nonzero during this turn, so full-corpus validation remains active goal work.</p></div>
+<!doctype html><html><head><meta charset='utf-8'><title>TemporalStore Full Local Context Load Report</title><style>
+body{font-family:Inter,Segoe UI,Arial,sans-serif;margin:32px;color:#172026;background:#f7f8f8}h1{margin:0 0 6px}.muted{color:#5d6b72}.ok{color:#086b3c;font-weight:700}.warn{color:#8a5a00;font-weight:700}table{border-collapse:collapse;width:100%;background:#fff;margin:16px 0;border:1px solid #d7dddf}th,td{padding:8px 9px;border-bottom:1px solid #e3e7e8;text-align:left;font-size:13px;vertical-align:top}th{background:#edf1f2}code,pre{background:#eef2f3;padding:2px 5px;border-radius:4px}section{margin:24px 0}pre{white-space:pre-wrap;padding:12px;overflow:auto}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.card{background:#fff;border:1px solid #d7dddf;border-radius:8px;padding:14px}.num{font-variant-numeric:tabular-nums}</style></head><body>
+<h1>TemporalStore Full Local Context Load Report</h1>
+<p class='muted'>Generated 2026-08-19 01:27:30 PDT. Full Claude+Codex local context emitted from <code>/mnt/c/Users/Deeproute</code>; TemporalStore validation root <code>/tmp/ts-full-local-context/store</code>.</p><section><h2>Corpus</h2><table><tr><th>Metric</th><th>Value</th></tr><tr><td>Scanned source items</td><td><code>92994</code></td></tr><tr><td>Emitted records</td><td><code>92993</code></td></tr><tr><td>Dropped low-value records</td><td><code>1</code></td></tr><tr><td>By source</td><td><code>{&#x27;claude_transcript&#x27;: 50625, &#x27;codex_rollout&#x27;: 26198, &#x27;codex_rollout_exploration&#x27;: 11929, &#x27;resource_md&#x27;: 4242}</code></td></tr><tr><td>By agent</td><td><code>{&#x27;claude&#x27;: 52745, &#x27;codex&#x27;: 40248}</code></td></tr><tr><td>claude JSONL</td><td>52745 lines, 22.7 MB</td></tr><tr><td>codex JSONL</td><td>40248 lines, 115.3 MB</td></tr></table></section><section><h2>Measured Runs</h2><table><tr><th>Agent</th><th>Run</th><th>Scanned</th><th>Accepted</th><th>Failed</th><th>Skipped covered</th><th>Total s</th><th>Ingest s</th><th>Load s</th><th>Flush s</th><th>Memory bytes</th><th>Memory fills</th><th>Disk hits</th><th>Evictions</th></tr><tr><td class="num">claude</td><td class="num">fresh full load</td><td class="num">52745</td><td class="num">52745</td><td class="num">0</td><td class="num">0</td><td class="num">2836.280</td><td class="num">2821.780</td><td class="num">0.199</td><td class="num">13.579</td><td class="num">80696041</td><td class="num">105454</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="num">claude</td><td class="num">restart warm/checkpoint</td><td class="num">-</td><td class="num">-</td><td class="num">-</td><td class="num">-</td><td class="num">345.866</td><td class="num">-</td><td class="num">338.781</td><td class="num">6.462</td><td class="num">9604387</td><td class="num">52745</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="num">claude</td><td class="num">duplicate coverage rerun</td><td class="num">52745</td><td class="num">0</td><td class="num">0</td><td class="num">52745</td><td class="num">14.745</td><td class="num">0.131</td><td class="num">8.557</td><td class="num">4.950</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="num">codex</td><td class="num">fresh full load</td><td class="num">40248</td><td class="num">40248</td><td class="num">0</td><td class="num">0</td><td class="num">1692.522</td><td class="num">1677.483</td><td class="num">0.038</td><td class="num">11.289</td><td class="num">226083357</td><td class="num">80496</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="num">codex</td><td class="num">restart warm/checkpoint</td><td class="num">-</td><td class="num">-</td><td class="num">-</td><td class="num">-</td><td class="num">206.432</td><td class="num">-</td><td class="num">201.080</td><td class="num">4.624</td><td class="num">7329223</td><td class="num">40248</td><td class="num">0</td><td class="num">0</td></tr><tr><td class="num">codex</td><td class="num">duplicate coverage rerun</td><td class="num">40248</td><td class="num">0</td><td class="num">0</td><td class="num">40248</td><td class="num">13.091</td><td class="num">0.064</td><td class="num">8.665</td><td class="num">3.459</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr></table></section><section><h2>Outcome</h2><div class='grid'><div class='card'><h3>claude</h3>
+<p class='ok'>No-missing ingest: True; duplicate coverage: True</p>
+<p>Fresh load: <b>2836.280s</b> at 18.597 records/sec, memory fills 105454, memory 77.0 MB.</p>
+<p>Restart warm: <b>345.866s</b>, memory fills 52745, memory 9.2 MB.</p>
+<p>Skip rerun: <b>14.745s</b>; disk hits across phases 0.</p></div><div class='card'><h3>codex</h3>
+<p class='ok'>No-missing ingest: True; duplicate coverage: True</p>
+<p>Fresh load: <b>1692.522s</b> at 23.780 records/sec, memory fills 80496, memory 215.6 MB.</p>
+<p>Restart warm: <b>206.432s</b>, memory fills 40248, memory 7.0 MB.</p>
+<p>Skip rerun: <b>13.091s</b>; disk hits across phases 0.</p></div><div class='card'><h3>Bottlenecks Found</h3><p class='warn'>Fresh ingestion is CPU-bound, not disk-bound.</p><p>Claude large sessions drove throughput down to about 18.6 records/sec overall. Codex was faster initially but slowed in the tail because many tiny sessions create session-level overhead. Restart warmup is also CPU-bound and should be optimized next.</p></div>
+<div class='card'><h3>Memory Promotion</h3><p class='ok'>Fresh load promoted context pages into memory with zero disk hits and zero evictions for both agents.</p><p>Restart checkpoint-only reload also promoted every durable row into memory (<code>memory_fills == accepted rows</code>), but decoded memory bytes are much smaller than fresh packed-page bytes.</p></div>
 </div></section>
-<section><h2>Implementation Changes Validated</h2><ul><li><code>MATRIXARK_BACKFILL_CACHE_BYTES</code> controls local-context backfill cache size; default is 256 MB.</li><li><code>MATRIXARK_BACKFILL_FLUSH_EVERY_ACCEPTED</code> checkpoints during large raw-first backfills; default is 10,000.</li><li><code>--checkpoint-only</code> / <code>MATRIXARK_BACKFILL_CHECKPOINT_ONLY=1</code> loads and flushes the shard index without consuming duplicate local-context input.</li><li><code>MATRIXARK_BACKFILL_SKIP_COVERED_SESSIONS=1</code> skips rows whose expected node hashes already exist in the session index.</li><li>Batched packed-page writes now place the just-written page bytes into memory cache immediately.</li></ul></section><section><h2>Raw JSON</h2><pre>{
-  &quot;generated_at_ms&quot;: 1787121177265,
+<section><h2>Next Optimization Targets</h2><ul><li>Add chunk-level progress inside large sessions so long runs are observable every sub-batch.</li><li>Reduce per-session CPU cost for large Claude sessions; current raw-first batching still slows as session-local state grows.</li><li>Batch tiny Codex sessions together where tenant/session boundaries allow it, or add a small-session fast path.</li><li>Make restart warmup async/nonblocking for serving, because full Claude warmup is 345.9s and full Codex warmup is 206.4s.</li></ul></section>
+<section><h2>Raw Audit JSON</h2><pre>{
+  &quot;generated_at_ms&quot;: 1787128050046,
+  &quot;scope&quot;: &quot;full local Claude/Codex context corpus emitted from /mnt/c/Users/Deeproute&quot;,
+  &quot;storage_root&quot;: &quot;/tmp/ts-full-local-context/store&quot;,
   &quot;sample_emit&quot;: {
     &quot;emit&quot;: true,
-    &quot;scanned&quot;: 10,
+    &quot;scanned&quot;: 92994,
     &quot;counts&quot;: {
-      &quot;claude&quot;: 5,
-      &quot;codex&quot;: 5
+      &quot;claude&quot;: 52745,
+      &quot;codex&quot;: 40248
     },
     &quot;by_source&quot;: {
-      &quot;resource_md&quot;: 10
+      &quot;claude_transcript&quot;: 50625,
+      &quot;codex_rollout&quot;: 26198,
+      &quot;codex_rollout_exploration&quot;: 11929,
+      &quot;resource_md&quot;: 4242
     },
     &quot;by_agent&quot;: {
-      &quot;claude&quot;: 5,
-      &quot;codex&quot;: 5
+      &quot;claude&quot;: 52746,
+      &quot;codex&quot;: 40248
     },
-    &quot;dropped&quot;: 0
+    &quot;dropped&quot;: 1
+  },
+  &quot;jsonl&quot;: {
+    &quot;claude&quot;: {
+      &quot;path&quot;: &quot;/tmp/ts-full-local-context/jsonl/backfill.claude.jsonl&quot;,
+      &quot;lines&quot;: 52745,
+      &quot;bytes&quot;: 23818981
+    },
+    &quot;codex&quot;: {
+      &quot;path&quot;: &quot;/tmp/ts-full-local-context/jsonl/backfill.codex.jsonl&quot;,
+      &quot;lines&quot;: 40248,
+      &quot;bytes&quot;: 120878355
+    }
   },
   &quot;agents&quot;: {
     &quot;claude&quot;: {
       &quot;first_load&quot;: {
-        &quot;accepted&quot;: 5,
+        &quot;accepted&quot;: 52745,
         &quot;agent_name&quot;: &quot;claude&quot;,
-        &quot;cache_bytes&quot;: 268435456,
+        &quot;cache_bytes&quot;: 1073741824,
         &quot;cache_stats&quot;: {
           &quot;disk_bytes&quot;: 0,
           &quot;disk_fills&quot;: 0,
           &quot;disk_hits&quot;: 0,
-          &quot;memory_bytes&quot;: 25105,
+          &quot;memory_bytes&quot;: 80696041,
           &quot;memory_evictions&quot;: 0,
-          &quot;memory_fills&quot;: 10,
+          &quot;memory_fills&quot;: 105454,
           &quot;memory_hits&quot;: 0,
           &quot;misses&quot;: 0,
           &quot;pinned_bytes&quot;: 0,
           &quot;pinned_entries&quot;: 0,
-          &quot;puts&quot;: 10
+          &quot;puts&quot;: 105454
         },
-        &quot;checkpoint_flush_seconds&quot;: 0.022238273,
-        &quot;checkpoint_flushes&quot;: 1,
+        &quot;checkpoint_flush_seconds&quot;: 55.886475968,
+        &quot;checkpoint_flushes&quot;: 5,
         &quot;failed&quot;: 0,
-        &quot;flush_every_accepted&quot;: 5,
-        &quot;flush_seconds&quot;: 0.009563371,
+        &quot;flush_every_accepted&quot;: 10000,
+        &quot;flush_seconds&quot;: 13.579040348,
         &quot;gate_l1&quot;: true,
-        &quot;index_path&quot;: &quot;/tmp/ts-goal-context-store-stable/claude/claude-session-index.json&quot;,
-        &quot;ingest_seconds&quot;: 0.032260736,
-        &quot;load_seconds&quot;: 0.072867731,
+        &quot;index_path&quot;: &quot;/tmp/ts-full-local-context/store/claude/claude-session-index.json&quot;,
+        &quot;ingest_seconds&quot;: 2821.780426102,
+        &quot;load_seconds&quot;: 0.198563623,
         &quot;raw_first&quot;: true,
-        &quot;read_seconds&quot;: 0.00078739,
+        &quot;read_seconds&quot;: 0.715683825,
         &quot;replay_from_sequence&quot;: 0,
-        &quot;root&quot;: &quot;/tmp/ts-goal-context-store-stable/claude&quot;,
-        &quot;scanned&quot;: 5,
-        &quot;seconds&quot;: 0.11875951,
-        &quot;session_count&quot;: 1,
+        &quot;root&quot;: &quot;/tmp/ts-full-local-context/store/claude&quot;,
+        &quot;scanned&quot;: 52745,
+        &quot;seconds&quot;: 2836.279843321,
+        &quot;session_count&quot;: 33,
         &quot;skip_covered_sessions&quot;: false,
         &quot;skipped&quot;: 0,
         &quot;skipped_covered&quot;: 0,
         &quot;status&quot;: &quot;ok&quot;,
         &quot;sub_batch&quot;: 250,
-        &quot;total_nodes&quot;: 5
+        &quot;total_nodes&quot;: 42498
       },
       &quot;checkpoint_only_restart_warm&quot;: {
         &quot;agent_name&quot;: &quot;claude&quot;,
-        &quot;cache_bytes&quot;: 268435456,
+        &quot;cache_bytes&quot;: 1073741824,
         &quot;cache_stats&quot;: {
           &quot;disk_bytes&quot;: 0,
           &quot;disk_fills&quot;: 0,
           &quot;disk_hits&quot;: 0,
-          &quot;memory_bytes&quot;: 906,
+          &quot;memory_bytes&quot;: 9604387,
           &quot;memory_evictions&quot;: 0,
-          &quot;memory_fills&quot;: 5,
+          &quot;memory_fills&quot;: 52745,
           &quot;memory_hits&quot;: 0,
           &quot;misses&quot;: 0,
           &quot;pinned_bytes&quot;: 0,
           &quot;pinned_entries&quot;: 0,
-          &quot;puts&quot;: 5
+          &quot;puts&quot;: 52745
         },
-        &quot;flush_seconds&quot;: 0.011816677,
-        &quot;index_path&quot;: &quot;/tmp/ts-goal-context-store-stable/claude/claude-session-index.json&quot;,
-        &quot;load_seconds&quot;: 0.020996347,
+        &quot;flush_seconds&quot;: 6.462306782,
+        &quot;index_path&quot;: &quot;/tmp/ts-full-local-context/store/claude/claude-session-index.json&quot;,
+        &quot;load_seconds&quot;: 338.780683678,
         &quot;mode&quot;: &quot;checkpoint_only&quot;,
-        &quot;replay_from_sequence&quot;: 15,
-        &quot;root&quot;: &quot;/tmp/ts-goal-context-store-stable/claude&quot;,
-        &quot;seconds&quot;: 0.033009213,
-        &quot;session_count&quot;: 1,
+        &quot;replay_from_sequence&quot;: 158199,
+        &quot;root&quot;: &quot;/tmp/ts-full-local-context/store/claude&quot;,
+        &quot;seconds&quot;: 345.86589478,
+        &quot;session_count&quot;: 33,
         &quot;status&quot;: &quot;ok&quot;,
-        &quot;total_nodes&quot;: 5
+        &quot;total_nodes&quot;: 42498
       },
       &quot;skip_covered_rerun&quot;: {
         &quot;accepted&quot;: 0,
         &quot;agent_name&quot;: &quot;claude&quot;,
-        &quot;cache_bytes&quot;: 268435456,
+        &quot;cache_bytes&quot;: 1073741824,
         &quot;cache_stats&quot;: {
           &quot;disk_bytes&quot;: 0,
           &quot;disk_fills&quot;: 0,
@@ -114,101 +137,114 @@ body{font-family:Inter,Segoe UI,Arial,sans-serif;margin:32px;color:#172026;backg
         &quot;checkpoint_flush_seconds&quot;: 0.0,
         &quot;checkpoint_flushes&quot;: 0,
         &quot;failed&quot;: 0,
-        &quot;flush_every_accepted&quot;: 5,
-        &quot;flush_seconds&quot;: 0.007477365,
+        &quot;flush_every_accepted&quot;: 10000,
+        &quot;flush_seconds&quot;: 4.949726565,
         &quot;gate_l1&quot;: true,
-        &quot;index_path&quot;: &quot;/tmp/ts-goal-context-store-stable/claude/claude-session-index.json&quot;,
-        &quot;ingest_seconds&quot;: 6.571e-05,
-        &quot;load_seconds&quot;: 0.01948352,
+        &quot;index_path&quot;: &quot;/tmp/ts-full-local-context/store/claude/claude-session-index.json&quot;,
+        &quot;ingest_seconds&quot;: 0.130569327,
+        &quot;load_seconds&quot;: 8.556909368,
         &quot;raw_first&quot;: true,
-        &quot;read_seconds&quot;: 5.9287e-05,
-        &quot;replay_from_sequence&quot;: 15,
-        &quot;root&quot;: &quot;/tmp/ts-goal-context-store-stable/claude&quot;,
-        &quot;scanned&quot;: 5,
-        &quot;seconds&quot;: 0.027436811,
-        &quot;session_count&quot;: 1,
+        &quot;read_seconds&quot;: 0.36454265,
+        &quot;replay_from_sequence&quot;: 158199,
+        &quot;root&quot;: &quot;/tmp/ts-full-local-context/store/claude&quot;,
+        &quot;scanned&quot;: 52745,
+        &quot;seconds&quot;: 14.745263523,
+        &quot;session_count&quot;: 33,
         &quot;skip_covered_sessions&quot;: true,
         &quot;skipped&quot;: 0,
-        &quot;skipped_covered&quot;: 5,
+        &quot;skipped_covered&quot;: 52745,
         &quot;status&quot;: &quot;ok&quot;,
         &quot;sub_batch&quot;: 250,
-        &quot;total_nodes&quot;: 5
+        &quot;total_nodes&quot;: 42498
       },
-      &quot;first_stderr_tail&quot;: &quot;  checkpoint accepted 5 flush_seconds 0.022\n  session _global -&gt; accepted 5 failed 0 skipped_covered 0 (155 rec/s cumulative)\n&quot;,
-      &quot;skip_stderr_tail&quot;: &quot;  session _global -&gt; accepted 0 failed 0 skipped_covered 5 (0 rec/s cumulative)\n&quot;
+      &quot;first_time&quot;: {
+        &quot;elapsed_text&quot;: &quot;47:18.35&quot;,
+        &quot;max_rss_kb&quot;: 1892692,
+        &quot;cpu_percent&quot;: &quot;94%&quot;
+      },
+      &quot;checkpoint_time&quot;: {
+        &quot;elapsed_text&quot;: &quot;5:47.04&quot;,
+        &quot;max_rss_kb&quot;: 1809264,
+        &quot;cpu_percent&quot;: &quot;99%&quot;
+      },
+      &quot;skip_time&quot;: {
+        &quot;elapsed_text&quot;: &quot;0:15.58&quot;,
+        &quot;max_rss_kb&quot;: 1479328,
+        &quot;cpu_percent&quot;: &quot;99%&quot;
+      }
     },
     &quot;codex&quot;: {
       &quot;first_load&quot;: {
-        &quot;accepted&quot;: 5,
+        &quot;accepted&quot;: 40248,
         &quot;agent_name&quot;: &quot;codex&quot;,
-        &quot;cache_bytes&quot;: 268435456,
+        &quot;cache_bytes&quot;: 1073741824,
         &quot;cache_stats&quot;: {
           &quot;disk_bytes&quot;: 0,
           &quot;disk_fills&quot;: 0,
           &quot;disk_hits&quot;: 0,
-          &quot;memory_bytes&quot;: 25111,
+          &quot;memory_bytes&quot;: 226083357,
           &quot;memory_evictions&quot;: 0,
-          &quot;memory_fills&quot;: 10,
+          &quot;memory_fills&quot;: 80496,
           &quot;memory_hits&quot;: 0,
           &quot;misses&quot;: 0,
           &quot;pinned_bytes&quot;: 0,
           &quot;pinned_entries&quot;: 0,
-          &quot;puts&quot;: 10
+          &quot;puts&quot;: 80496
         },
-        &quot;checkpoint_flush_seconds&quot;: 0.016776647,
-        &quot;checkpoint_flushes&quot;: 1,
+        &quot;checkpoint_flush_seconds&quot;: 29.259763798999998,
+        &quot;checkpoint_flushes&quot;: 4,
         &quot;failed&quot;: 0,
-        &quot;flush_every_accepted&quot;: 5,
-        &quot;flush_seconds&quot;: 0.00825303,
+        &quot;flush_every_accepted&quot;: 10000,
+        &quot;flush_seconds&quot;: 11.288954014,
         &quot;gate_l1&quot;: true,
-        &quot;index_path&quot;: &quot;/tmp/ts-goal-context-store-stable/codex/codex-session-index.json&quot;,
-        &quot;ingest_seconds&quot;: 0.021083966,
-        &quot;load_seconds&quot;: 0.045467904,
+        &quot;index_path&quot;: &quot;/tmp/ts-full-local-context/store/codex/codex-session-index.json&quot;,
+        &quot;ingest_seconds&quot;: 1677.482626685,
+        &quot;load_seconds&quot;: 0.037506983,
         &quot;raw_first&quot;: true,
-        &quot;read_seconds&quot;: 0.000489983,
+        &quot;read_seconds&quot;: 3.71019596,
         &quot;replay_from_sequence&quot;: 0,
-        &quot;root&quot;: &quot;/tmp/ts-goal-context-store-stable/codex&quot;,
-        &quot;scanned&quot;: 5,
-        &quot;seconds&quot;: 0.076345706,
-        &quot;session_count&quot;: 1,
+        &quot;root&quot;: &quot;/tmp/ts-full-local-context/store/codex&quot;,
+        &quot;scanned&quot;: 40248,
+        &quot;seconds&quot;: 1692.522075647,
+        &quot;session_count&quot;: 75,
         &quot;skip_covered_sessions&quot;: false,
         &quot;skipped&quot;: 0,
         &quot;skipped_covered&quot;: 0,
         &quot;status&quot;: &quot;ok&quot;,
         &quot;sub_batch&quot;: 250,
-        &quot;total_nodes&quot;: 5
+        &quot;total_nodes&quot;: 39352
       },
       &quot;checkpoint_only_restart_warm&quot;: {
         &quot;agent_name&quot;: &quot;codex&quot;,
-        &quot;cache_bytes&quot;: 268435456,
+        &quot;cache_bytes&quot;: 1073741824,
         &quot;cache_stats&quot;: {
           &quot;disk_bytes&quot;: 0,
           &quot;disk_fills&quot;: 0,
           &quot;disk_hits&quot;: 0,
-          &quot;memory_bytes&quot;: 914,
+          &quot;memory_bytes&quot;: 7329223,
           &quot;memory_evictions&quot;: 0,
-          &quot;memory_fills&quot;: 5,
+          &quot;memory_fills&quot;: 40248,
           &quot;memory_hits&quot;: 0,
           &quot;misses&quot;: 0,
           &quot;pinned_bytes&quot;: 0,
           &quot;pinned_entries&quot;: 0,
-          &quot;puts&quot;: 5
+          &quot;puts&quot;: 40248
         },
-        &quot;flush_seconds&quot;: 0.010799071,
-        &quot;index_path&quot;: &quot;/tmp/ts-goal-context-store-stable/codex/codex-session-index.json&quot;,
-        &quot;load_seconds&quot;: 0.019513564,
+        &quot;flush_seconds&quot;: 4.623509748,
+        &quot;index_path&quot;: &quot;/tmp/ts-full-local-context/store/codex/codex-session-index.json&quot;,
+        &quot;load_seconds&quot;: 201.079986178,
         &quot;mode&quot;: &quot;checkpoint_only&quot;,
-        &quot;replay_from_sequence&quot;: 15,
-        &quot;root&quot;: &quot;/tmp/ts-goal-context-store-stable/codex&quot;,
-        &quot;seconds&quot;: 0.030506379,
-        &quot;session_count&quot;: 1,
+        &quot;replay_from_sequence&quot;: 120744,
+        &quot;root&quot;: &quot;/tmp/ts-full-local-context/store/codex&quot;,
+        &quot;seconds&quot;: 206.432275667,
+        &quot;session_count&quot;: 75,
         &quot;status&quot;: &quot;ok&quot;,
-        &quot;total_nodes&quot;: 5
+        &quot;total_nodes&quot;: 39352
       },
       &quot;skip_covered_rerun&quot;: {
         &quot;accepted&quot;: 0,
         &quot;agent_name&quot;: &quot;codex&quot;,
-        &quot;cache_bytes&quot;: 268435456,
+        &quot;cache_bytes&quot;: 1073741824,
         &quot;cache_stats&quot;: {
           &quot;disk_bytes&quot;: 0,
           &quot;disk_fills&quot;: 0,
@@ -225,28 +261,71 @@ body{font-family:Inter,Segoe UI,Arial,sans-serif;margin:32px;color:#172026;backg
         &quot;checkpoint_flush_seconds&quot;: 0.0,
         &quot;checkpoint_flushes&quot;: 0,
         &quot;failed&quot;: 0,
-        &quot;flush_every_accepted&quot;: 5,
-        &quot;flush_seconds&quot;: 0.00668287,
+        &quot;flush_every_accepted&quot;: 10000,
+        &quot;flush_seconds&quot;: 3.458754741,
         &quot;gate_l1&quot;: true,
-        &quot;index_path&quot;: &quot;/tmp/ts-goal-context-store-stable/codex/codex-session-index.json&quot;,
-        &quot;ingest_seconds&quot;: 3.9675e-05,
-        &quot;load_seconds&quot;: 0.016739775,
+        &quot;index_path&quot;: &quot;/tmp/ts-full-local-context/store/codex/codex-session-index.json&quot;,
+        &quot;ingest_seconds&quot;: 0.063877244,
+        &quot;load_seconds&quot;: 8.664914079,
         &quot;raw_first&quot;: true,
-        &quot;read_seconds&quot;: 4.0186e-05,
-        &quot;replay_from_sequence&quot;: 15,
-        &quot;root&quot;: &quot;/tmp/ts-goal-context-store-stable/codex&quot;,
-        &quot;scanned&quot;: 5,
-        &quot;seconds&quot;: 0.023844996,
-        &quot;session_count&quot;: 1,
+        &quot;read_seconds&quot;: 0.465200768,
+        &quot;replay_from_sequence&quot;: 120744,
+        &quot;root&quot;: &quot;/tmp/ts-full-local-context/store/codex&quot;,
+        &quot;scanned&quot;: 40248,
+        &quot;seconds&quot;: 13.090842182,
+        &quot;session_count&quot;: 75,
         &quot;skip_covered_sessions&quot;: true,
         &quot;skipped&quot;: 0,
-        &quot;skipped_covered&quot;: 5,
+        &quot;skipped_covered&quot;: 40248,
         &quot;status&quot;: &quot;ok&quot;,
         &quot;sub_batch&quot;: 250,
-        &quot;total_nodes&quot;: 5
+        &quot;total_nodes&quot;: 39352
       },
-      &quot;first_stderr_tail&quot;: &quot;  checkpoint accepted 5 flush_seconds 0.017\n  session _global -&gt; accepted 5 failed 0 skipped_covered 0 (238 rec/s cumulative)\n&quot;,
-      &quot;skip_stderr_tail&quot;: &quot;  session _global -&gt; accepted 0 failed 0 skipped_covered 5 (0 rec/s cumulative)\n&quot;
+      &quot;first_time&quot;: {
+        &quot;elapsed_text&quot;: &quot;28:14.43&quot;,
+        &quot;max_rss_kb&quot;: 1865360,
+        &quot;cpu_percent&quot;: &quot;99%&quot;
+      },
+      &quot;checkpoint_time&quot;: {
+        &quot;elapsed_text&quot;: &quot;3:27.33&quot;,
+        &quot;max_rss_kb&quot;: 1598608,
+        &quot;cpu_percent&quot;: &quot;99%&quot;
+      },
+      &quot;skip_time&quot;: {
+        &quot;elapsed_text&quot;: &quot;0:13.79&quot;,
+        &quot;max_rss_kb&quot;: 1338012,
+        &quot;cpu_percent&quot;: &quot;98%&quot;
+      }
     }
-  }
+  },
+  &quot;findings&quot;: [
+    {
+      &quot;agent&quot;: &quot;claude&quot;,
+      &quot;no_missing_ingest&quot;: true,
+      &quot;fresh_load_seconds&quot;: 2836.279843321,
+      &quot;fresh_load_records_per_sec&quot;: 18.596542976605893,
+      &quot;fresh_memory_bytes&quot;: 80696041,
+      &quot;fresh_memory_fills&quot;: 105454,
+      &quot;restart_warm_seconds&quot;: 345.86589478,
+      &quot;restart_memory_fills&quot;: 52745,
+      &quot;restart_memory_bytes&quot;: 9604387,
+      &quot;skip_coverage_ok&quot;: true,
+      &quot;skip_seconds&quot;: 14.745263523,
+      &quot;disk_hits_any_phase&quot;: 0
+    },
+    {
+      &quot;agent&quot;: &quot;codex&quot;,
+      &quot;no_missing_ingest&quot;: true,
+      &quot;fresh_load_seconds&quot;: 1692.522075647,
+      &quot;fresh_load_records_per_sec&quot;: 23.779896628299163,
+      &quot;fresh_memory_bytes&quot;: 226083357,
+      &quot;fresh_memory_fills&quot;: 80496,
+      &quot;restart_warm_seconds&quot;: 206.432275667,
+      &quot;restart_memory_fills&quot;: 40248,
+      &quot;restart_memory_bytes&quot;: 7329223,
+      &quot;skip_coverage_ok&quot;: true,
+      &quot;skip_seconds&quot;: 13.090842182,
+      &quot;disk_hits_any_phase&quot;: 0
+    }
+  ]
 }</pre></section></body></html>
