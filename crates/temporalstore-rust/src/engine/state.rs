@@ -34,6 +34,22 @@ pub(super) struct ContextDirtyEntry {
     pub(super) mark_count: u64,
 }
 
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(super) struct ShardState {
     pub(super) expires_at_ms: HashMap<String, u64>,
@@ -213,14 +229,21 @@ pub(super) struct BucketNode {
     pub(super) routing_bucket: u32,
     #[serde(default)]
     pub(super) layout: BucketLayoutState,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub(super) dirty: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub(super) deleted: bool,
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub(super) meta_loaded: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub(super) loading: bool,
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub(super) in_memory: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) ttl_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub(super) dirty_generation: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub(super) last_dump_sequence: u64,
     #[serde(default, alias = "object_ids")]
     pub(super) object_index: ObjectIndex,
@@ -248,8 +271,11 @@ pub(super) struct PageIndex {
     pub(super) component: Option<String>,
     pub(super) object_id: u64,
     pub(super) address: BlockAddress,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub(super) dirty: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub(super) deleted: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub(super) log_backed: bool,
 }
 
