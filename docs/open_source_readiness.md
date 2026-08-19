@@ -11,9 +11,9 @@ Rust TemporalStore worktree.
 - `crates/temporalstore-rust/README.md`
 - `LICENSE`
 - `NOTICE`
-- `CONTRIBUTING.md`
-- `SECURITY.md`
-- `CODE_OF_CONDUCT.md`
+- `docs/CONTRIBUTING.md`
+- `docs/SECURITY.md`
+- `docs/CODE_OF_CONDUCT.md`
 - `.gitignore`
 
 CI is intentionally tracked as a follow-up publishing step when the pushing

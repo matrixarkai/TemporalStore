@@ -18,9 +18,9 @@ REQUIRED_FILES = [
     "README.md",
     "LICENSE",
     "NOTICE",
-    "CONTRIBUTING.md",
-    "SECURITY.md",
-    "CODE_OF_CONDUCT.md",
+    "docs/CONTRIBUTING.md",
+    "docs/SECURITY.md",
+    "docs/CODE_OF_CONDUCT.md",
     ".gitignore",
     "docs/open_source_readiness.md",
     "tools/run_matrixark_context_backfill_ci_gate_ubuntu22.sh",
@@ -261,8 +261,8 @@ def main() -> int:
     validate_no_private_paths()
     validate_no_enterprise_object_store()
     require_tokens("README.md", README_TOKENS)
-    require_tokens("SECURITY.md", SECURITY_TOKENS)
-    require_tokens("CONTRIBUTING.md", CONTRIBUTING_TOKENS)
+    require_tokens("docs/SECURITY.md", SECURITY_TOKENS)
+    require_tokens("docs/CONTRIBUTING.md", CONTRIBUTING_TOKENS)
     require_tokens(".gitignore", IGNORE_TOKENS)
     require_tokens(
         "tools/run_matrixark_context_backfill_ci_gate_ubuntu22.sh",

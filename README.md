@@ -280,7 +280,7 @@ Out of scope unless separately re-added: alternate wire-protocol compatibility (
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). Contributions target the `rust-main` branch. New product-behavior tests
+See [CONTRIBUTING.md](docs/CONTRIBUTING.md) and [SECURITY.md](docs/SECURITY.md). Contributions target the `rust-main` branch. New product-behavior tests
 should reference a shared corpus case with `shared-corpus: <case_id>`; Rust-only implementation
 tests should be marked `rust-internal: <reason>`.
 
@@ -288,5 +288,5 @@ tests should be marked `rust-internal: <reason>`.
 
 Licensed under the Apache License, Version 2.0 ([`LICENSE`](LICENSE), [`NOTICE`](NOTICE)).
 Third-party dependency licenses and attributions are listed in
-[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md). Product and crate names are trademarks
-of MatrixArkAI; see [`TRADEMARKS.md`](TRADEMARKS.md).
+[`THIRD-PARTY-NOTICES.md`](docs/THIRD-PARTY-NOTICES.md). Product and crate names are trademarks
+of MatrixArkAI; see [`TRADEMARKS.md`](docs/TRADEMARKS.md).
