@@ -225,6 +225,18 @@ pub struct ServerMetaInfo {
     #[serde(default)]
     pub freeze_cooldown_until_ms: u64,
     pub boot_time_ms: u64,
+    /// The boot time the metaserver anchored on for this server: the first
+    /// non-zero boot time it heartbeated after registering. `boot_time_ms`
+    /// tracks whatever the latest heartbeat claimed; this one does not move, so
+    /// the two disagreeing is the signal that the process restarted.
+    #[serde(default)]
+    pub reported_boot_time_ms: u64,
+    /// Set once the server heartbeats a boot time different from the anchored
+    /// one, meaning the process restarted without re-registering. Sticky until
+    /// the server registers again, because a restarted datanode has lost the
+    /// shards the metaserver still believes it is serving.
+    #[serde(default)]
+    pub reboot_detected: bool,
     pub binary_version: String,
     pub shard_loads: Vec<ShardLoad>,
     #[serde(default)]
@@ -1272,6 +1284,103 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         panic!("failure detector loop did not freeze stale resources");
+    }
+
+    #[test]
+    fn metaserver_detects_a_datanode_that_restarted_in_place() {
+        // The heartbeats never stop, so nothing in the stale-timeout path notices
+        // this. But the restarted node has dropped every shard the metaserver
+        // still believes it serves, and reads routed there will all miss.
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "node-a".to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+        });
+
+        let heartbeat = |boot_time_ms: u64| ServerHeartbeatRequest {
+            server_addr: "node-a".to_string(),
+            boot_time_ms,
+            binary_version: "v1".to_string(),
+            shard_loads: Vec::new(),
+            shard_stat_loads: Vec::new(),
+            runtime_load: ServerRuntimeLoad::default(),
+            shard_states: Vec::new(),
+        };
+        let server_state = || {
+            meta.list_servers()
+                .servers
+                .into_iter()
+                .find(|server| server.server_addr == "node-a")
+                .expect("registered")
+        };
+
+        // The first heartbeat anchors the boot time; repeats of it are normal.
+        assert!(meta.server_heartbeat(heartbeat(1_000)).status.ok);
+        assert_eq!(server_state().reported_boot_time_ms, 1_000);
+        assert!(!server_state().reboot_detected);
+        assert!(meta.server_heartbeat(heartbeat(1_000)).status.ok);
+        assert!(!server_state().reboot_detected);
+
+        // A different boot time means the process restarted underneath us.
+        assert!(meta.server_heartbeat(heartbeat(2_000)).status.ok);
+        assert!(server_state().reboot_detected);
+        // The anchor does not follow the new value, so the verdict is sticky
+        // rather than resetting itself on the next beat.
+        assert_eq!(server_state().reported_boot_time_ms, 1_000);
+        assert!(meta.server_heartbeat(heartbeat(2_000)).status.ok);
+        assert!(server_state().reboot_detected);
+
+        // Re-registering is how a datanode says it is ready to be trusted again.
+        assert!(meta
+            .register_server(RegisterServerRequest {
+                server_addr: "node-a".to_string(),
+                node_id: 1,
+                location: "rack-1".to_string(),
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok);
+        assert!(!server_state().reboot_detected);
+        assert_eq!(server_state().reported_boot_time_ms, 0);
+        assert!(meta.server_heartbeat(heartbeat(2_000)).status.ok);
+        assert_eq!(server_state().reported_boot_time_ms, 2_000);
+        assert!(!server_state().reboot_detected);
+    }
+
+    #[test]
+    fn a_datanode_that_never_reports_a_boot_time_is_not_flagged() {
+        // Older datanodes send 0. Treating that as a changed boot time would
+        // convict the entire fleet on upgrade.
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "node-a".to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+        });
+        for boot_time_ms in [0, 0, 0] {
+            assert!(meta
+                .server_heartbeat(ServerHeartbeatRequest {
+                    server_addr: "node-a".to_string(),
+                    boot_time_ms,
+                    binary_version: "v1".to_string(),
+                    shard_loads: Vec::new(),
+                    shard_stat_loads: Vec::new(),
+                    runtime_load: ServerRuntimeLoad::default(),
+                    shard_states: Vec::new(),
+                })
+                .status
+                .ok);
+        }
+        let server = meta
+            .list_servers()
+            .servers
+            .into_iter()
+            .find(|server| server.server_addr == "node-a")
+            .expect("registered");
+        assert!(!server.reboot_detected);
     }
 
     #[test]
