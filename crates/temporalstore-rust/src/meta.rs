@@ -45,7 +45,8 @@ pub use self::shard_check::{
     ShardCheckOptions, ShardCheckReport, ShardChecker, ShardDivergence,
 };
 pub use self::retention::{
-    plan_meta_retention, MetaRetentionOptions, MetaRetentionPlan, MetaRetentionReport,
+    plan_freeze_aging, plan_meta_retention, FreezeAgingOptions, FreezeAgingPlan,
+    FreezeAgingReport, MetaRetentionOptions, MetaRetentionPlan, MetaRetentionReport,
     RetentionCandidate,
 };
 
@@ -777,6 +778,12 @@ pub(crate) struct MetaState {
     /// expressible; retention ages against this. Kept beside the resources
     /// rather than inside them so the wire types are unchanged.
     dropped_since_ms: BTreeMap<String, u64>,
+    /// When each frozen table was frozen, keyed `table:<namespace.table>`.
+    /// Servers and proxies carry `frozen_since_ms` on the resource itself;
+    /// tables do not, and adding a field there would touch every
+    /// `TableMetaInfo` literal in the tree, so the metaserver keeps it beside
+    /// them the same way it keeps drop times.
+    frozen_since_ms: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -798,6 +805,10 @@ pub struct MetaSnapshot {
     /// every tombstone's clock.
     #[serde(default)]
     pub dropped_since_ms: BTreeMap<String, u64>,
+    /// Freeze timestamps for the frozen tables in this snapshot, so a peer that
+    /// installs it keeps ageing them instead of restarting their clocks.
+    #[serde(default)]
+    pub frozen_since_ms: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

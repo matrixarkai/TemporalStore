@@ -165,7 +165,9 @@ impl SingleNodeMeta {
             .expect("table exists after state validation");
         table.info.state = next;
         table.info.topology_version = topology_version;
-        stamp_dropped_since(&mut state, &dropped_key("table", &key), next, now_ms());
+        let now = now_ms();
+        stamp_dropped_since(&mut state, &dropped_key("table", &key), next, now);
+        stamp_frozen_since(&mut state, &dropped_key("table", &key), next, now);
         AckResponse {
             status: Status::ok(),
         }
