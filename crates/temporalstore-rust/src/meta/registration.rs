@@ -36,6 +36,11 @@ impl SingleNodeMeta {
                 frozen_since_ms: 0,
                 freeze_cooldown_until_ms: 0,
                 boot_time_ms: 0,
+                // Registration is the server declaring a fresh identity, so any
+                // previous reboot verdict is cleared and the anchor is re-taken
+                // from its next heartbeat.
+                reported_boot_time_ms: 0,
+                reboot_detected: false,
                 binary_version: request.binary_version,
                 shard_loads: Vec::new(),
                 shard_stat_loads: Vec::new(),
@@ -75,6 +80,27 @@ impl SingleNodeMeta {
             };
         }
         server.last_heartbeat_ms = now_ms();
+        // Reboot detection. The metaserver anchors on the first non-zero boot
+        // time a registered server reports; a later heartbeat claiming a
+        // different one means the process restarted in place. That matters even
+        // though the heartbeats never stopped: a restarted datanode has dropped
+        // every shard the metaserver still believes it is serving, so routing to
+        // it returns misses until it reloads. Without this the restart is
+        // invisible - the old code simply overwrote boot_time_ms.
+        //
+        // The verdict is sticky. It clears when the server registers again,
+        // which is how a datanode announces it is ready to be trusted.
+        let rebooted = if server.reported_boot_time_ms == 0 {
+            server.reported_boot_time_ms = request.boot_time_ms;
+            false
+        } else {
+            request.boot_time_ms != 0
+                && request.boot_time_ms != server.reported_boot_time_ms
+                && !server.reboot_detected
+        };
+        if rebooted {
+            server.reboot_detected = true;
+        }
         server.boot_time_ms = request.boot_time_ms;
         if !request.binary_version.is_empty() {
             server.binary_version = request.binary_version;
@@ -83,11 +109,24 @@ impl SingleNodeMeta {
         server.shard_stat_loads = request.shard_stat_loads;
         server.runtime_load = request.runtime_load;
         server.shard_states = request.shard_states;
+        let server_state = server.state.as_str().to_string();
+        let anchored = server.reported_boot_time_ms;
+        if rebooted {
+            record_topology_event(
+                &mut state,
+                "server_reboot_detected",
+                format!("server:{}", request.server_addr),
+                format!(
+                    "anchored_boot_time_ms={anchored},reported_boot_time_ms={}",
+                    request.boot_time_ms
+                ),
+            );
+        }
         ServerHeartbeatResponse {
             status: Status::ok(),
             forbid_auto_register: false,
             topology_version,
-            server_state: server.state.as_str().to_string(),
+            server_state,
         }
     }
 

@@ -813,6 +813,7 @@ fn conviction_policy_from_env() -> ConvictionPolicy {
         ) as usize,
         safe_mode_enabled: env_bool("TS_META_CONVICT_SAFE_MODE", defaults.safe_mode_enabled),
         convict_enabled: env_bool("TS_META_CONVICT_ENABLED", defaults.convict_enabled),
+        convict_on_reboot: env_bool("TS_META_CONVICT_ON_REBOOT", defaults.convict_on_reboot),
     }
 }
 

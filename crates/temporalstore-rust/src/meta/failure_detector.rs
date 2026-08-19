@@ -138,6 +138,11 @@ pub struct ConvictionPolicy {
     /// Master switch for conviction itself. With it off the plan is still
     /// computed and reportable but no server is named for freezing (dry run).
     pub convict_enabled: bool,
+    /// Treat a detected reboot as a failure. A restarted datanode has dropped
+    /// every shard the metaserver still believes it is serving, so leaving it in
+    /// the topology means routing reads to a node that will miss on all of them.
+    /// With this off a reboot is reported but not acted on.
+    pub convict_on_reboot: bool,
 }
 
 impl Default for ConvictionPolicy {
@@ -148,6 +153,7 @@ impl Default for ConvictionPolicy {
             min_abnormal_for_safe_mode: 2,
             safe_mode_enabled: true,
             convict_enabled: true,
+            convict_on_reboot: true,
         }
     }
 }
@@ -164,6 +170,11 @@ pub struct ConvictionCandidate {
     pub abnormal: bool,
     /// The detector diagnosed this serving server as [`Diagnosis::Failed`].
     pub failed: bool,
+    /// The server restarted in place: it heartbeated a boot time different from
+    /// the one the metaserver anchored on. Unlike `failed` this is not inferred
+    /// from silence, so it is trustworthy even while the detector is paused.
+    #[serde(default)]
+    pub rebooted: bool,
 }
 
 /// The damage assessment for one location.
@@ -187,6 +198,11 @@ pub struct ConvictionPlan {
     pub held_by_safe_mode: Vec<String>,
     /// Per-location damage, ordered by location.
     pub damage: Vec<LocationDamage>,
+    /// Serving servers observed to have restarted in place, ordered by address.
+    /// Reported whether or not the policy converts a reboot into a conviction,
+    /// so the restart is visible even when it is not acted on.
+    #[serde(default)]
+    pub rebooted: Vec<String>,
 }
 
 impl ConvictionPlan {
@@ -218,17 +234,29 @@ pub fn plan_conviction(
     let mut plan = ConvictionPlan::default();
     for (location, members) in by_location {
         let total = members.len();
-        // A failed server counts as damage too: it is about to stop serving.
+        // A server is a conviction target when the detector called it failed, or
+        // when it restarted in place and the policy treats that as a failure.
+        let is_target = |member: &ConvictionCandidate| {
+            member.failed || (member.rebooted && policy.convict_on_reboot)
+        };
+        // A targeted server counts as damage too: it is about to stop serving.
         let abnormal = members
             .iter()
-            .filter(|member| member.abnormal || member.failed)
+            .filter(|member| member.abnormal || is_target(member))
             .count();
         let severity = assess_severity(total, abnormal, policy);
         let safe_mode = policy.safe_mode_enabled && severity != DamageSeverity::Normal;
 
+        plan.rebooted.extend(
+            members
+                .iter()
+                .filter(|member| member.rebooted && !member.abnormal)
+                .map(|member| member.server_addr.clone()),
+        );
+
         let mut failed = members
             .iter()
-            .filter(|member| member.failed && !member.abnormal)
+            .filter(|member| is_target(member) && !member.abnormal)
             .map(|member| member.server_addr.clone())
             .collect::<Vec<_>>();
         failed.sort();
@@ -248,6 +276,7 @@ pub fn plan_conviction(
     }
     plan.convict.sort();
     plan.held_by_safe_mode.sort();
+    plan.rebooted.sort();
     plan
 }
 
@@ -486,6 +515,11 @@ impl MetaFailureDetector {
                     failed: active
                         && serving
                         && self.diagnose(&server.server_addr, now_ms) == Diagnosis::Failed,
+                    // Not gated on `active`: a changed boot time is direct
+                    // evidence the process restarted, not an inference drawn
+                    // from silence, so the detector's stall guard does not
+                    // apply to it.
+                    rebooted: serving && server.reboot_detected,
                 }
             })
             .collect::<Vec<_>>();
@@ -505,6 +539,9 @@ pub struct AdaptiveConvictionReport {
     pub held_by_safe_mode: Vec<String>,
     /// Per-location damage assessment for this round.
     pub damage: Vec<LocationDamage>,
+    /// Serving servers observed to have restarted in place this round.
+    #[serde(default)]
+    pub rebooted: Vec<String>,
     /// True when the detector was paused this round (it had only just started,
     /// or it stalled), so no server could be convicted whatever its silence.
     pub detector_paused: bool,
@@ -550,6 +587,7 @@ impl SingleNodeMeta {
                     frozen_servers,
                     held_by_safe_mode: plan.held_by_safe_mode,
                     damage: plan.damage,
+                    rebooted: plan.rebooted,
                     detector_paused,
                 };
             }
@@ -561,6 +599,7 @@ impl SingleNodeMeta {
             frozen_servers,
             held_by_safe_mode: plan.held_by_safe_mode,
             damage: plan.damage,
+            rebooted: plan.rebooted,
             detector_paused,
         }
     }
@@ -614,6 +653,8 @@ mod tests {
             frozen_since_ms: 0,
             freeze_cooldown_until_ms: 0,
             boot_time_ms: 1,
+            reported_boot_time_ms: 0,
+            reboot_detected: false,
             binary_version: "test".to_string(),
             shard_loads: Vec::new(),
             shard_stat_loads: Vec::new(),
@@ -628,6 +669,14 @@ mod tests {
             location: location.to_string(),
             abnormal,
             failed,
+            rebooted: false,
+        }
+    }
+
+    fn rebooted_candidate(addr: &str, location: &str) -> ConvictionCandidate {
+        ConvictionCandidate {
+            rebooted: true,
+            ..candidate(addr, location, false, false)
         }
     }
 
@@ -721,6 +770,100 @@ mod tests {
         detector.observe("node-a", after_grace);
         assert!(detector.begin_round(after_grace));
         assert_eq!(detector.diagnose("node-a", after_grace), Diagnosis::Healthy);
+    }
+
+    #[test]
+    fn a_restarted_server_is_convicted_without_waiting_for_silence() {
+        // The heartbeats never stopped, so no amount of phi would ever flag this
+        // node. What changed is that it dropped every shard it was serving.
+        let plan = plan_conviction(
+            &[
+                rebooted_candidate("node-a", "rack-1"),
+                candidate("node-b", "rack-1", false, false),
+                candidate("node-c", "rack-1", false, false),
+                candidate("node-d", "rack-1", false, false),
+            ],
+            ConvictionPolicy::default(),
+        );
+        assert_eq!(plan.convict, vec!["node-a"]);
+        assert_eq!(plan.rebooted, vec!["node-a"]);
+    }
+
+    #[test]
+    fn a_reboot_is_still_subject_to_safe_mode() {
+        // A rolling restart that takes out half a rack is as damaging as a rack
+        // fault, and the same guard has to hold.
+        let plan = plan_conviction(
+            &[
+                rebooted_candidate("node-a", "rack-1"),
+                rebooted_candidate("node-b", "rack-1"),
+                candidate("node-c", "rack-1", false, false),
+                candidate("node-d", "rack-1", false, false),
+            ],
+            ConvictionPolicy::default(),
+        );
+        assert!(plan.convict.is_empty());
+        assert_eq!(plan.held_by_safe_mode, vec!["node-a", "node-b"]);
+        assert_eq!(plan.rebooted, vec!["node-a", "node-b"]);
+        assert_eq!(plan.worst_severity(), DamageSeverity::Critical);
+    }
+
+    #[test]
+    fn reboot_conviction_can_be_turned_off_while_still_being_reported() {
+        let policy = ConvictionPolicy {
+            convict_on_reboot: false,
+            ..ConvictionPolicy::default()
+        };
+        let plan = plan_conviction(
+            &[
+                rebooted_candidate("node-a", "rack-1"),
+                candidate("node-b", "rack-1", false, false),
+            ],
+            policy,
+        );
+        assert!(plan.convict.is_empty());
+        assert!(plan.held_by_safe_mode.is_empty());
+        // Still surfaced: an operator needs to see the restart either way.
+        assert_eq!(plan.rebooted, vec!["node-a"]);
+        assert_eq!(plan.worst_severity(), DamageSeverity::Normal);
+    }
+
+    #[test]
+    fn a_reboot_is_trusted_even_while_the_detector_is_paused() {
+        // The stall guard exists because silence is ambiguous after a detector
+        // pause. A changed boot time is not an inference from silence, so it
+        // stays actionable.
+        let mut detector = MetaFailureDetector::new(options());
+        let policy = ConvictionPolicy::default();
+        let mut rebooted_server = server("a", "rack-1", MetaEntityState::Normal, 10_000);
+        rebooted_server.reboot_detected = true;
+        let servers = vec![
+            rebooted_server,
+            server("b", "rack-1", MetaEntityState::Normal, 10_000),
+            server("c", "rack-1", MetaEntityState::Normal, 10_000),
+            server("d", "rack-1", MetaEntityState::Normal, 10_000),
+        ];
+        // First round ever: the detector is paused, so phi convicts nobody.
+        let plan = detector.plan_round(&servers, 10_000, policy);
+        assert!(plan.damage.iter().all(|entry| entry.total_servers == 4));
+        assert_eq!(plan.convict, vec!["a"]);
+    }
+
+    #[test]
+    fn a_frozen_server_that_rebooted_is_not_reconvicted() {
+        let plan = plan_conviction(
+            &[
+                ConvictionCandidate {
+                    abnormal: true,
+                    rebooted: true,
+                    ..candidate("node-a", "rack-1", true, false)
+                },
+                candidate("node-b", "rack-1", false, false),
+            ],
+            ConvictionPolicy::default(),
+        );
+        assert!(plan.convict.is_empty());
+        assert!(plan.rebooted.is_empty());
     }
 
     #[test]
