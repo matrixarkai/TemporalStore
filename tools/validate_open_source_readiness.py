@@ -224,6 +224,23 @@ def validate_no_enterprise_object_store() -> None:
             if "dep:matrixobjectstore" in line:
                 offenders.append(f"{relative_path}: optional dep pulls in matrixobjectstore")
 
+    # A standalone executable that SPEAKS the object-store wire protocol is the store itself,
+    # whatever it is named. The sanctioned open-source surface is the feature-gated bridge and
+    # its clients -- never a binary that serves objects. This is the hole the 20260817 sync
+    # slipped through: the checks above look only for the crate directory and the Cargo
+    # dependency, so a src/bin/ server imported clean and shipped for two days.
+    for relative_path in tracked:
+        if not (relative_path.endswith(".rs") and "/src/bin/" in relative_path):
+            continue
+        path = ROOT / relative_path
+        if not path.is_file():
+            continue
+        if "MORP1" in path.read_text(encoding="utf-8", errors="replace"):
+            offenders.append(
+                f"{relative_path}: a src/bin/ executable speaks the enterprise object-store "
+                "wire protocol -- that server is enterprise-only"
+            )
+
     if offenders:
         raise SystemExit(
             "enterprise MatrixObject object store must not ship in open source "
