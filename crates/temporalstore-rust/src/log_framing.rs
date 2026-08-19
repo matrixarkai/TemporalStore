@@ -48,6 +48,61 @@ pub(crate) const FRAME_MAGIC_V1: &[u8] = b"#tsf1 ";
 /// The prefix new writes use.
 pub(crate) const FRAME_MAGIC: &[u8] = FRAME_MAGIC_V2;
 
+/// Prefix of the reclaim-base header, the optional first line of a log file.
+///
+/// A reclaim drops a prefix of the file, shifting every surviving record down by the number of
+/// bytes removed. This header records the running total of bytes reclaimed so far, which is
+/// what lets a stored byte offset keep meaning the same record afterwards. Distinct from the
+/// record magics so a reader can tell a header from a record, and absent from files that have
+/// never been reclaimed -- which read as a base of zero.
+pub(crate) const BASE_HEADER_MAGIC: &[u8] = b"#tsb1 ";
+
+/// Encode the reclaim-base header line, newline-terminated.
+///
+/// Checksummed like a record: the base is load-bearing for address resolution, so a corrupted
+/// one would silently resolve every offset to the wrong record.
+pub(crate) fn encode_base_header(base_offset: u64) -> Vec<u8> {
+    let value = base_offset.to_string();
+    let mut line = Vec::with_capacity(BASE_HEADER_MAGIC.len() + 32);
+    line.extend_from_slice(BASE_HEADER_MAGIC);
+    line.extend_from_slice(crc_digest_hex(value.as_bytes()).as_bytes());
+    line.push(b' ');
+    line.extend_from_slice(value.as_bytes());
+    line.push(b'\n');
+    line
+}
+
+/// Decode a reclaim-base header line, verifying its checksum.
+///
+/// Returns `Ok(None)` when the line is not a header at all, which is how a file that predates
+/// reclaim -- or has simply never been reclaimed -- reads as a base of zero.
+pub(crate) fn decode_base_header(line: &[u8]) -> Result<Option<u64>, FramingError> {
+    if !line.starts_with(BASE_HEADER_MAGIC) {
+        return Ok(None);
+    }
+    let rest = &line[BASE_HEADER_MAGIC.len()..];
+    let split = rest
+        .iter()
+        .position(|byte| *byte == b' ')
+        .ok_or_else(|| FramingError("reclaim-base header has no checksum separator".to_string()))?;
+    let (digest, value) = rest.split_at(split);
+    let value = &value[1..];
+    let value_text = std::str::from_utf8(value)
+        .map_err(|_| FramingError("reclaim-base header is not utf-8".to_string()))?
+        .trim_end();
+    let expected = crc_digest_hex(value_text.as_bytes());
+    if expected.as_bytes() != digest {
+        return Err(FramingError(format!(
+            "reclaim-base header checksum mismatch: expected {expected}, found {}",
+            String::from_utf8_lossy(digest)
+        )));
+    }
+    value_text
+        .parse::<u64>()
+        .map(Some)
+        .map_err(|_| FramingError(format!("reclaim-base header is not a number: {value_text}")))
+}
+
 /// Number of leading SHA-256 bytes retained in a v1 framed digest.
 const DIGEST_BYTES: usize = 8;
 
@@ -234,5 +289,35 @@ mod tests {
         let magic_len = FRAME_MAGIC.len();
         framed[magic_len] = b'9';
         assert!(decode_line(&framed).is_err());
+    }
+
+    #[test]
+    fn a_reclaim_base_header_round_trips() {
+        for base in [0u64, 1, 4096, u64::MAX] {
+            let line = encode_base_header(base);
+            assert!(line.starts_with(BASE_HEADER_MAGIC));
+            assert!(line.ends_with(b"\n"));
+            assert_eq!(decode_base_header(&line).unwrap(), Some(base));
+        }
+    }
+
+    #[test]
+    fn a_record_line_is_not_mistaken_for_a_base_header() {
+        // The two must be distinguishable, or a reader would take a record for a base and
+        // resolve every offset against garbage.
+        let record = encode_line(br#"{"k":1}"#);
+        assert_eq!(decode_base_header(&record).unwrap(), None);
+        // A file that has never been reclaimed has no header at all, which reads as base zero.
+        assert_eq!(decode_base_header(br#"{"k":1}"#).unwrap(), None);
+    }
+
+    #[test]
+    fn a_corrupted_base_header_is_rejected_not_silently_zeroed() {
+        // Falling back to zero on a corrupt base would resolve every stored offset to the
+        // wrong record while looking like a clean read.
+        let mut line = encode_base_header(8192);
+        let position = line.len() - 2;
+        line[position] ^= 0x01;
+        assert!(decode_base_header(&line).is_err());
     }
 }
