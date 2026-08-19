@@ -20,7 +20,7 @@ pub(super) const PAGE_RECORD_VERSION: u8 = 7;
 /// The digest is computed per page record on the synchronous write path, before the
 /// durability barrier, and a cryptographic hash is the wrong tool for it: nothing here is
 /// defending against a forged page, only against a page that corrupted into something still
-/// decodable. CRC32C is what the reference implementation uses for exactly this. Records at
+/// decodable. CRC32C is what this design uses for exactly this. Records at
 /// version 6 and below keep verifying as SHA-256, so existing slabs read back unchanged.
 ///
 /// The field stays 32 bytes wide even though CRC32C needs 4, because every subsequent header

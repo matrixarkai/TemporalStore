@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! The write-ahead log record, ported from the reference implementation's operation log.
+//! The write-ahead log record, ported from the design described below.
 //!
 //! This is a direct port: same record shape, same field numbers, same framing, and the same
 //! addressing scheme. Only the names differ, following this crate's vocabulary — a routing
@@ -12,20 +12,20 @@
 //! The existing WAL record carries a `Command`, so recovery re-executes the operation. That
 //! only reproduces state if everything that influenced the original execution is reproduced
 //! too, which is why config-driven eviction had to be made WAL-sequence-ordered and why expiry
-//! needs a replay clock. The reference stores the *result* instead: an item describes a
+//! needs a replay clock. This design stores the *result* instead: an item describes a
 //! mutation at the storage layer, and a block-carrying item holds the block image itself.
 //! Replay installs bytes rather than re-deriving them.
 //!
 //! # Addressing: the log id
 //!
 //! A block-carrying item does not name a slab. Its address is the **log id** — the byte offset
-//! of the record that contains it — exactly as the reference sets `address = log_id` when it
+//! of the record that contains it — exactly as this design sets `address = log_id` when it
 //! turns a log item into a block descriptor. Nothing needs to be looked up: a read seeks to the
 //! offset and parses the record there. That is why the framing below must be length-prefixed
 //! and offset-addressable rather than line-oriented.
 //!
 //! The address cannot be known while a command executes, because the record has not been
-//! appended yet and therefore has no offset. The reference resolves this by staging: items
+//! appended yet and therefore has no offset. This design resolves this by staging: items
 //! accumulate during execution, and at commit the append returns the offset which is then
 //! written back into every staged block descriptor. This module provides the pieces for that;
 //! see [`block_address_from_item`].
@@ -34,19 +34,19 @@
 //!
 //! `varint32(payload_len) | little_endian_u32(crc32c) | payload`
 //!
-//! matching the reference's record header exactly. The payload is protobuf, with the same field
-//! numbers as the reference's log item, so the encodings are wire-compatible.
+//! matching the record header exactly. The payload is protobuf, with the same field
+//! numbers as the log item, so the encodings are wire-compatible.
 
 use prost::Message;
 
 use crate::block_store::BlockAddress;
 pub use crate::record_framing::{decode_framed_at, encode_framed, RecordFramingError as WalFramingError};
 
-/// Record format version, mirroring the reference's log version.
+/// Record format version, mirroring the log version.
 pub const WAL_RECORD_VERSION: u32 = 1;
 
 /// One write-ahead log record: the unit that is appended, and whose byte offset becomes the log
-/// id for every block it carries. Mirrors the reference's operation-log message.
+/// id for every block it carries. Mirrors the operation-log message.
 #[derive(Clone, PartialEq, Message)]
 pub struct WalRecord {
     #[prost(uint32, tag = "1")]
@@ -57,11 +57,10 @@ pub struct WalRecord {
     pub sequence: u64,
 }
 
-/// One mutation inside a record. Field numbers match the reference's log item one-for-one, so
+/// One mutation inside a record. Field numbers match the log item one-for-one, so
 /// the two encodings are wire-compatible; only the names are this crate's.
 #[derive(Clone, PartialEq, Message)]
 pub struct WalItem {
-    /// The reference calls this the slot id.
     #[prost(uint64, tag = "1")]
     pub routing_bucket: u64,
     #[prost(bytes = "vec", tag = "2")]
@@ -80,15 +79,14 @@ pub struct WalItem {
     pub deleted: bool,
     #[prost(bool, tag = "9")]
     pub object_deleted: bool,
-    /// The reference calls this `page_log`: the item carries a block image.
+    /// The item carries a block image.
     #[prost(bool, tag = "10")]
     pub block_log: bool,
     #[prost(uint32, tag = "11")]
     pub object_id: u32,
-    /// The reference calls this `page_id`.
     #[prost(uint32, tag = "12")]
     pub block_id: u32,
-    /// The block image. The reference calls this `page`.
+    /// The block image.
     #[prost(bytes = "vec", tag = "13")]
     pub block: Vec<u8>,
     #[prost(uint64, tag = "14")]
@@ -100,7 +98,7 @@ pub struct WalItem {
 /// Build the block address for a block-carrying item, from the log id of the record that
 /// contains it.
 ///
-/// This is the port of the reference's log-item-to-block-descriptor conversion: the address is
+/// This is the port of the log-item-to-block-descriptor conversion: the address is
 /// the log id, and the length is the record's framed size. Nothing is looked up — the address
 /// alone locates the bytes.
 pub fn block_address_from_item(log_id: u64, log_size: u64, item: &WalItem) -> BlockAddress {
@@ -117,10 +115,9 @@ pub fn block_address_from_item(log_id: u64, log_size: u64, item: &WalItem) -> Bl
     }
 }
 
-/// Sentinel slab id marking an address that resolves inside the WAL rather than a slab. The
-/// reference distinguishes these with a `page_in_log` flag on the descriptor; a reserved slab
-/// id carries the same information through this crate's existing address type without widening
-/// it.
+/// Sentinel slab id marking an address that resolves inside the WAL rather than a slab.
+/// A reserved slab id carries this distinction through the existing address type without
+/// widening it or adding a parallel flag.
 pub const WAL_LOG_SLAB_ID: u64 = u64::MAX - 1;
 
 /// Whether an address resolves inside the WAL.
@@ -266,7 +263,7 @@ mod tests {
     }
 
     #[test]
-    fn field_numbers_match_the_reference_log_item() {
+    fn field_numbers_match_the_on_disk_log_item_layout() {
         // Wire compatibility is the point of porting the field numbers, so assert on the
         // encoding rather than trusting the attributes. routing_bucket is field 1, varint:
         // key byte = (1 << 3) | 0 = 0x08.

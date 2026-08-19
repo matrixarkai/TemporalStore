@@ -113,7 +113,7 @@ impl DataNodeRuntime {
             // LocalBlockStore::prepare_next_slab). Left to the write path it lands on one
             // unlucky write as a latency outlier unrelated to that write's size. Doing it
             // here -- the stage that already exists and is already named "prepare" -- is what
-            // the reference implementation does with PrepareNewZone in the same position of
+            // this design does with PrepareNewZone in the same position of
             // its background cycle.
             //
             // A no-op while the active slab has room, so this costs a lock and a comparison

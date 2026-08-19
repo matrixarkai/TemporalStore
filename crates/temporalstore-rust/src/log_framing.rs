@@ -26,7 +26,7 @@
 //! against accidental corruption of a committed record -- a flipped bit that still parses --
 //! and never against a forged one; nothing in the recovery path treats it as a signature. A
 //! cryptographic digest was simply the wrong tool here: it is computed per record,
-//! synchronously, before the durability barrier. CRC32C is what the reference implementation
+//! synchronously, before the durability barrier. CRC32C is what this design
 //! uses for the same job (a per-record CRC in the record header plus a running per-block CRC
 //! in the block footer).
 //! The payload JSON is compact serde output, so it contains neither a literal `\n` (line

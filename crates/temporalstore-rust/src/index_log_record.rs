@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! The served-index log record, ported from the reference implementation's index log.
+//! The served-index log record, ported from the design described below.
 //!
 //! Direct port: same record shape, same field numbers, same framing (see [`crate::record_framing`]).
 //! Only the names follow this crate's vocabulary — routing bucket for slot, block for page, band
@@ -17,18 +17,18 @@
 //!     durable copy.
 //!   * [`IndexItem::in_wal`] records whether a block still lives in the WAL rather than a band.
 //!     It is the flag that makes an address resolvable without a lookup table.
-//!   * [`BandInfo`] carries the band lifecycle. The reference pre-allocates a band in an INIT
+//!   * [`BandInfo`] carries the band lifecycle. This design pre-allocates a band in an INIT
 //!     state, makes it durable, then creates the stream and moves it to CREATED — so a crash
 //!     between the two leaves a band that is reused rather than an orphaned stream.
 
 use prost::Message;
 
-/// Record format version, mirroring the reference's on-disk index-log version.
+/// Record format version, mirroring the on-disk index-log version.
 pub const INDEX_LOG_RECORD_VERSION: u32 = 1;
 
 /// One served-index log record.
 ///
-/// Field numbers match the reference one-for-one, including the gap at 2 where a since-deprecated
+/// Field numbers match this design one-for-one, including the gap at 2 where a since-deprecated
 /// item-type discriminator sat. The gap is preserved deliberately: reusing the tag would make the
 /// two encodings disagree while still parsing, which is worse than a hole.
 #[derive(Clone, PartialEq, Message)]
@@ -36,8 +36,8 @@ pub struct IndexLogRecord {
     /// On-disk version.
     #[prost(uint32, tag = "1")]
     pub version: u32,
-    // Tag 2 is retired (a deprecated item-type discriminator in the reference). Do not reuse.
-    /// The reference calls this the slot id. Fixed-width, matching the reference.
+    // Tag 2 is retired. Do not reuse.
+    /// Fixed-width.
     #[prost(fixed64, tag = "3")]
     pub routing_bucket: u64,
     /// Block-location entries.
@@ -51,7 +51,7 @@ pub struct IndexLogRecord {
     pub object_items: Vec<IndexObjectItem>,
     #[prost(uint64, tag = "7")]
     pub sequence: u64,
-    /// The reference calls this the oplog sequence: the WAL sequence this index state reflects.
+    /// The WAL sequence this index state reflects.
     #[prost(uint64, tag = "8")]
     pub wal_sequence: u64,
     #[prost(uint64, tag = "9")]
@@ -63,7 +63,6 @@ pub struct IndexLogRecord {
 pub struct IndexItem {
     #[prost(uint32, tag = "1")]
     pub object_id: u32,
-    /// The reference calls this `page_id`.
     #[prost(uint32, tag = "2")]
     pub block_id: u32,
     /// The block's address. When [`Self::in_wal`] is set this is the log id — the byte offset of
@@ -72,8 +71,7 @@ pub struct IndexItem {
     pub address: u64,
     #[prost(uint32, tag = "4")]
     pub size: u32,
-    /// The reference calls this `in_log`: the block still lives in the WAL and has not been
-    /// dumped into a band yet.
+    /// The block still lives in the WAL and has not been dumped into a band yet.
     #[prost(bool, tag = "5")]
     pub in_wal: bool,
     #[prost(bool, tag = "6")]
@@ -82,9 +80,9 @@ pub struct IndexItem {
     pub model_id: u32,
 }
 
-/// Band lifecycle state. The reference calls a band a zone.
+/// Band lifecycle state. This design calls a band a zone.
 ///
-/// Numbering matches the reference exactly, including that RECYCLED is 4 and 3 is unused.
+/// Numbering matches this design exactly, including that RECYCLED is 4 and 3 is unused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum BandState {
@@ -94,7 +92,7 @@ pub enum BandState {
     Created = 1,
     /// Sealed; no further writes.
     Frozen = 2,
-    // 3 is unused in the reference.
+    // 3 is unused in this design.
     /// Reclaimed and available for reuse.
     Recycled = 4,
 }
@@ -102,7 +100,6 @@ pub enum BandState {
 /// One band's lifecycle record.
 #[derive(Clone, PartialEq, Message)]
 pub struct BandInfo {
-    /// The reference calls this `zone_id`.
     #[prost(uint32, tag = "1")]
     pub band_id: u32,
     #[prost(uint64, tag = "2")]
@@ -130,11 +127,9 @@ pub struct IndexMetaItem {
     pub version: u64,
     /// The lowest WAL log id that has NOT been truncated — the dump watermark.
     ///
-    /// The reference calls this `start_oplog_id`. Replay starts here, and truncation must never
-    /// advance past it.
+    /// Replay starts here, and truncation must never advance past it.
     #[prost(uint64, tag = "2")]
     pub start_wal_id: u64,
-    /// The reference calls these zones.
     #[prost(map = "uint32, message", tag = "3")]
     pub bands: std::collections::HashMap<u32, BandInfo>,
     #[prost(uint64, tag = "4")]
@@ -144,8 +139,7 @@ pub struct IndexMetaItem {
     pub band_version: u64,
 }
 
-/// Per-object metadata carried on a meta record. Only the TTL is meaningful, matching the
-/// reference's note on the same message.
+/// Per-object metadata carried on a meta record. Only the TTL is meaningful.
 #[derive(Clone, PartialEq, Message)]
 pub struct IndexObjectItem {
     #[prost(uint64, tag = "1")]
@@ -162,7 +156,7 @@ mod tests {
     use crate::record_framing::{decode_framed_at, encode_framed, FramedRecords};
 
     #[test]
-    fn field_numbers_match_the_reference_index_log() {
+    fn field_numbers_match_the_on_disk_index_log_layout() {
         // Wire compatibility is the point, so assert on bytes rather than trusting attributes.
         // routing_bucket is field 3, FIXED64 (wire type 1): key = (3 << 3) | 1 = 0x19.
         let record = IndexLogRecord {
@@ -182,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn band_states_keep_the_reference_numbering() {
+    fn band_states_keep_their_on_disk_numbering() {
         // RECYCLED is 4, not 3 -- the gap is real and a renumber would silently reinterpret
         // existing records.
         assert_eq!(BandState::Init as i32, 0);
@@ -193,7 +187,7 @@ mod tests {
 
     #[test]
     fn tag_two_stays_retired() {
-        // The reference retired tag 2. Encoding must never emit it, or the two disagree while
+        // This design retired tag 2. Encoding must never emit it, or the two disagree while
         // still parsing.
         let record = IndexLogRecord {
             version: INDEX_LOG_RECORD_VERSION,
@@ -211,7 +205,7 @@ mod tests {
 
     #[test]
     fn index_records_share_the_wal_framing() {
-        // One framing for both streams, as in the reference.
+        // One framing for both streams, as in this design.
         let record = IndexLogRecord {
             version: INDEX_LOG_RECORD_VERSION,
             routing_bucket: 4,
