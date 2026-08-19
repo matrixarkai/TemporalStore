@@ -1,0 +1,27 @@
+{
+  "agent_name": "codex",
+  "cache_bytes": 268435456,
+  "cache_stats": {
+    "disk_bytes": 0,
+    "disk_fills": 0,
+    "disk_hits": 0,
+    "memory_bytes": 914,
+    "memory_evictions": 0,
+    "memory_fills": 5,
+    "memory_hits": 0,
+    "misses": 0,
+    "pinned_bytes": 0,
+    "pinned_entries": 0,
+    "puts": 5
+  },
+  "flush_seconds": 0.010799071,
+  "index_path": "/tmp/ts-goal-context-store-stable/codex/codex-session-index.json",
+  "load_seconds": 0.019513564,
+  "mode": "checkpoint_only",
+  "replay_from_sequence": 15,
+  "root": "/tmp/ts-goal-context-store-stable/codex",
+  "seconds": 0.030506379,
+  "session_count": 1,
+  "status": "ok",
+  "total_nodes": 5
+}

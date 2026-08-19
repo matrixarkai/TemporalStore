@@ -1,0 +1,16 @@
+{
+  "emit": true,
+  "scanned": 10,
+  "counts": {
+    "claude": 5,
+    "codex": 5
+  },
+  "by_source": {
+    "resource_md": 10
+  },
+  "by_agent": {
+    "claude": 5,
+    "codex": 5
+  },
+  "dropped": 0
+}

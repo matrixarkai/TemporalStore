@@ -1,0 +1,2 @@
+  checkpoint accepted 5 flush_seconds 0.017
+  session _global -> accepted 5 failed 0 skipped_covered 0 (238 rec/s cumulative)

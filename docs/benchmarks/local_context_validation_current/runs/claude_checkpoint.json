@@ -1,0 +1,27 @@
+{
+  "agent_name": "claude",
+  "cache_bytes": 268435456,
+  "cache_stats": {
+    "disk_bytes": 0,
+    "disk_fills": 0,
+    "disk_hits": 0,
+    "memory_bytes": 906,
+    "memory_evictions": 0,
+    "memory_fills": 5,
+    "memory_hits": 0,
+    "misses": 0,
+    "pinned_bytes": 0,
+    "pinned_entries": 0,
+    "puts": 5
+  },
+  "flush_seconds": 0.011816677,
+  "index_path": "/tmp/ts-goal-context-store-stable/claude/claude-session-index.json",
+  "load_seconds": 0.020996347,
+  "mode": "checkpoint_only",
+  "replay_from_sequence": 15,
+  "root": "/tmp/ts-goal-context-store-stable/claude",
+  "seconds": 0.033009213,
+  "session_count": 1,
+  "status": "ok",
+  "total_nodes": 5
+}
