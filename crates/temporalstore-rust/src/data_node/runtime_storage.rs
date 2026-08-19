@@ -107,6 +107,35 @@ impl DataNodeRuntime {
 
         if options.enable_prepare {
             executed_stages.push("prepare".to_string());
+            // Pre-allocate the next data slab so a client append never has to roll inline.
+            //
+            // Rolling costs several fsyncs plus a slab-directory scan (see
+            // LocalBlockStore::prepare_next_slab). Left to the write path it lands on one
+            // unlucky write as a latency outlier unrelated to that write's size. Doing it
+            // here -- the stage that already exists and is already named "prepare" -- is what
+            // the reference implementation does with PrepareNewZone in the same position of
+            // its background cycle.
+            //
+            // A no-op while the active slab has room, so this costs a lock and a comparison
+            // on the overwhelming majority of cycles. A failure is recorded and does not stop
+            // the cycle: the inline roll in `append` remains the fallback, so the only
+            // consequence is that the next append pays for the roll, exactly as it does today.
+            match self.inner.engine.block_store().prepare_next_slab() {
+                Ok(Some(roll)) => {
+                    tracing::debug!(
+                        previous_page_slab_id = roll.previous_page_slab_id,
+                        new_page_slab_id = roll.new_page_slab_id,
+                        "storage manager pre-allocated the next data slab"
+                    );
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "storage manager could not pre-allocate the next data slab;                          the next append will roll inline"
+                    );
+                }
+            }
             self.inner
                 .stats
                 .lock()

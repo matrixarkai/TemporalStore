@@ -4,6 +4,7 @@
 #![doc = include_str!("../README.md")]
 
 pub mod block_store;
+pub mod checksum;
 pub mod client;
 pub mod context_workflow;
 pub mod control;
@@ -30,6 +31,9 @@ pub mod storage_config;
 pub mod telemetry;
 pub mod types;
 pub mod wal;
+pub mod record_framing;
+pub mod index_log_record;
+pub mod wal_record;
 
 pub use block_store::{
     BlockAddress, BlockStoreBandDescriptor, BlockStoreBandState, BlockStoreBandSummary,

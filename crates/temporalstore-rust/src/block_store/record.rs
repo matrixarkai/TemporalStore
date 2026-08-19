@@ -12,7 +12,29 @@ use super::{
 };
 
 pub(super) const PAGE_RECORD_MAGIC: &[u8; 8] = b"TSPAGE01";
-pub(super) const PAGE_RECORD_VERSION: u8 = 6;
+pub(super) const PAGE_RECORD_VERSION: u8 = 7;
+
+/// Version at which the 32-byte checksum field switched from holding a full SHA-256 to
+/// holding a CRC32C.
+///
+/// The digest is computed per page record on the synchronous write path, before the
+/// durability barrier, and a cryptographic hash is the wrong tool for it: nothing here is
+/// defending against a forged page, only against a page that corrupted into something still
+/// decodable. CRC32C is what the reference implementation uses for exactly this. Records at
+/// version 6 and below keep verifying as SHA-256, so existing slabs read back unchanged.
+///
+/// The field stays 32 bytes wide even though CRC32C needs 4, because every subsequent header
+/// offset (page id, object id, routing bucket, band id, compression) is keyed off it. Keeping
+/// the width means v7 differs from v6 only in how those bytes are interpreted, rather than
+/// re-laying-out the header. The 28 unused bytes are written as zero and are worth reclaiming
+/// in a later format change that renumbers offsets deliberately.
+pub(super) const PAGE_RECORD_CHECKSUM_CRC32C_VERSION: u8 = 7;
+
+/// Width of the checksum field, unchanged across the switch.
+pub(super) const PAGE_RECORD_CHECKSUM_LEN: usize = 32;
+
+/// Marker used in the checksum field's tail so a v7 record is self-describing on inspection.
+const PAGE_RECORD_CHECKSUM_CRC32C: &[u8; 4] = b"C32C";
 pub(super) const PAGE_RECORD_V1_HEADER_LEN: usize = 8 + 1 + 1 + 2 + 8 + 8 + 32;
 pub(super) const PAGE_RECORD_V2_HEADER_LEN: usize = PAGE_RECORD_V1_HEADER_LEN + 8;
 pub(super) const PAGE_RECORD_V3_HEADER_LEN: usize = PAGE_RECORD_V2_HEADER_LEN + 8;
@@ -44,6 +66,9 @@ pub(super) enum PageRecordCompression {
 
 #[derive(Debug, Clone, Copy)]
 struct PageRecordHeader {
+    /// Record format version, retained so the checksum is verified with the algorithm the
+    /// record was written with.
+    version: u8,
     header_len: usize,
     payload_len: usize,
     pub(super) stored_len: usize,
@@ -84,7 +109,7 @@ pub(super) fn encode_page_record(
     band_id: u64,
     options: BlockStoreOptions,
 ) -> Result<EncodedPageRecord, BlockStoreError> {
-    let digest = Sha256::digest(payload);
+    let checksum_field = page_record_checksum_field(payload);
     let (stored_payload, compression) = encode_page_record_payload(payload, options)?;
     let stored_len = stored_payload.len();
     let mut record = Vec::with_capacity(PAGE_RECORD_HEADER_LEN + stored_payload.len());
@@ -94,7 +119,7 @@ pub(super) fn encode_page_record(
     record.extend_from_slice(&(PAGE_RECORD_HEADER_LEN as u16).to_le_bytes());
     record.extend_from_slice(&(payload.len() as u64).to_le_bytes());
     record.extend_from_slice(&(payload.len() as u64).to_le_bytes());
-    record.extend_from_slice(&digest);
+    record.extend_from_slice(&checksum_field);
     record.extend_from_slice(&page_id.to_le_bytes());
     record.extend_from_slice(&object_id.unwrap_or_default().to_le_bytes());
     record.push(u8::from(routing_bucket.is_some()));
@@ -198,7 +223,7 @@ pub(super) fn decode_page_record(
         ));
     }
     let payload = decode_page_record_payload(&record[header.header_len..], &header, address)?;
-    verify_page_record_checksum(&payload, &header.expected_sha256, address)?;
+    verify_page_record_checksum(&payload, &header.expected_sha256, header.version, address)?;
     Ok(DecodedPageRecord {
         payload,
         logical_len: header.payload_len,
@@ -283,7 +308,7 @@ pub(super) fn logical_range_from_slab(
             &header,
             &address,
         )?;
-        verify_page_record_checksum(&payload, &header.expected_sha256, &address)?;
+        verify_page_record_checksum(&payload, &header.expected_sha256, header.version, &address)?;
         if header.compression == PageRecordCompression::Zstd {
             compressed_records_read += 1;
         }
@@ -432,6 +457,7 @@ fn parse_page_record_header(
         ));
     }
     Ok(PageRecordHeader {
+        version,
         header_len,
         payload_len,
         stored_len,
@@ -470,22 +496,54 @@ fn decode_page_record_payload(
     }
 }
 
+/// Build the 32-byte checksum field for a new (v7) record: CRC32C little-endian in the first
+/// four bytes, a marker so the field is self-describing, then zero padding.
+fn page_record_checksum_field(payload: &[u8]) -> [u8; PAGE_RECORD_CHECKSUM_LEN] {
+    let mut field = [0_u8; PAGE_RECORD_CHECKSUM_LEN];
+    field[..4].copy_from_slice(&crate::checksum::crc32c(payload).to_le_bytes());
+    field[4..8].copy_from_slice(PAGE_RECORD_CHECKSUM_CRC32C);
+    field
+}
+
+/// Verify a page record's payload against its stored checksum field.
+///
+/// `version` selects the algorithm: v7 and later carry a CRC32C, v6 and earlier a full
+/// SHA-256. Dispatching on the record's own version (rather than sniffing the field) means an
+/// old slab always verifies the way it was written.
 fn verify_page_record_checksum(
     payload: &[u8],
-    expected_sha256: &[u8; 32],
+    expected_checksum: &[u8; PAGE_RECORD_CHECKSUM_LEN],
+    version: u8,
     address: &BlockAddress,
 ) -> Result<(), BlockStoreError> {
-    let actual_sha256 = Sha256::digest(payload);
-    if &actual_sha256[..] != expected_sha256 {
-        return Err(BlockStoreError::ChecksumMismatch {
-            page_slab_id: address.page_slab_id,
-            offset: address.offset,
-            length: address.length,
-            expected: hex::encode(expected_sha256),
-            actual: hex::encode(actual_sha256),
-        });
-    }
-    Ok(())
+    let (expected, actual) = if version >= PAGE_RECORD_CHECKSUM_CRC32C_VERSION {
+        let stored = u32::from_le_bytes(
+            expected_checksum[..4]
+                .try_into()
+                .expect("page envelope crc32c slice"),
+        );
+        let actual = crate::checksum::crc32c(payload);
+        if stored == actual {
+            return Ok(());
+        }
+        (format!("{stored:08x}"), format!("{actual:08x}"))
+    } else {
+        let actual_sha256 = Sha256::digest(payload);
+        if &actual_sha256[..] == expected_checksum {
+            return Ok(());
+        }
+        (
+            hex::encode(expected_checksum),
+            hex::encode(actual_sha256),
+        )
+    };
+    Err(BlockStoreError::ChecksumMismatch {
+        page_slab_id: address.page_slab_id,
+        offset: address.offset,
+        length: address.length,
+        expected,
+        actual,
+    })
 }
 
 pub(super) fn corrupt_page_envelope(
@@ -713,4 +771,112 @@ fn record_slab_inspection_error(
     report.has_corruption = true;
     report.first_error_offset = Some(offset);
     report.first_error = Some(error);
+}
+
+#[cfg(test)]
+mod crc32c_switch_tests {
+    use super::*;
+
+    fn address() -> BlockAddress {
+        BlockAddress {
+            page_slab_id: 1,
+            offset: 0,
+            length: 0,
+            page_id: None,
+            object_id: None,
+            routing_bucket: None,
+            generation: None,
+            band_id: None,
+            sha256: None,
+        }
+    }
+
+    /// Rewrite a freshly encoded record as if it had been written by the previous format:
+    /// version 6, with a full SHA-256 in the checksum field. The rest of the layout is
+    /// identical, which is the whole reason the field kept its width.
+    fn downgrade_to_v6_sha256(record: &mut [u8], payload: &[u8]) {
+        record[8] = 6;
+        let digest = Sha256::digest(payload);
+        record[28..60].copy_from_slice(&digest);
+    }
+
+    #[test]
+    fn new_records_are_written_at_the_crc32c_version() {
+        let payload = b"page payload that is long enough to be interesting";
+        let encoded = encode_page_record(payload, 7, None, None, 3, BlockStoreOptions::default())
+            .expect("encode");
+        assert_eq!(encoded.bytes[8], PAGE_RECORD_CHECKSUM_CRC32C_VERSION);
+        // CRC32C in the first four bytes, self-describing marker after it.
+        let stored = u32::from_le_bytes(encoded.bytes[28..32].try_into().unwrap());
+        assert_eq!(stored, crate::checksum::crc32c(payload));
+        assert_eq!(&encoded.bytes[32..36], PAGE_RECORD_CHECKSUM_CRC32C);
+    }
+
+    #[test]
+    fn crc32c_records_round_trip() {
+        let payload = b"round trip payload";
+        let encoded = encode_page_record(payload, 1, None, None, 0, BlockStoreOptions::default())
+            .expect("encode");
+        let decoded = decode_page_record(&encoded.bytes, &address()).expect("decode");
+        assert_eq!(decoded.payload, payload);
+    }
+
+    /// The compatibility case that matters: slabs written before the switch must still read.
+    #[test]
+    fn v6_sha256_page_records_still_verify() {
+        let payload = b"a page written before the checksum switch";
+        let mut encoded =
+            encode_page_record(payload, 2, None, None, 0, BlockStoreOptions::default())
+                .expect("encode");
+        downgrade_to_v6_sha256(&mut encoded.bytes, payload);
+        let decoded = decode_page_record(&encoded.bytes, &address()).expect("v6 record must decode");
+        assert_eq!(decoded.payload, payload);
+    }
+
+    #[test]
+    fn a_corrupted_v6_record_is_still_rejected() {
+        let payload = b"payload that will be corrupted after the fact";
+        let mut encoded =
+            encode_page_record(payload, 3, None, None, 0, BlockStoreOptions::default())
+                .expect("encode");
+        downgrade_to_v6_sha256(&mut encoded.bytes, payload);
+        // Corrupt the stored payload without touching the SHA-256 field.
+        let last = encoded.bytes.len() - 1;
+        encoded.bytes[last] ^= 0xff;
+        assert!(matches!(
+            decode_page_record(&encoded.bytes, &address()),
+            Err(BlockStoreError::ChecksumMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn a_corrupted_v7_record_is_rejected() {
+        let payload = b"payload protected by crc32c";
+        let mut encoded =
+            encode_page_record(payload, 4, None, None, 0, BlockStoreOptions::default())
+                .expect("encode");
+        let last = encoded.bytes.len() - 1;
+        encoded.bytes[last] ^= 0xff;
+        assert!(matches!(
+            decode_page_record(&encoded.bytes, &address()),
+            Err(BlockStoreError::ChecksumMismatch { .. })
+        ));
+    }
+
+    /// A v7 record must NOT be accepted on the strength of a SHA-256 that happens to sit in
+    /// the field, and vice versa -- the version alone selects the algorithm.
+    #[test]
+    fn the_version_selects_the_algorithm_not_the_field_contents() {
+        let payload = b"version selects the algorithm";
+        let mut encoded =
+            encode_page_record(payload, 5, None, None, 0, BlockStoreOptions::default())
+                .expect("encode");
+        // Leave the CRC32C field in place but claim the record is v6: SHA-256 verification
+        // must then fail, because those bytes are not a SHA-256.
+        encoded.bytes[8] = 6;
+        assert!(matches!(
+            decode_page_record(&encoded.bytes, &address()),
+            Err(BlockStoreError::ChecksumMismatch { .. })
+        ));
+    }
 }
