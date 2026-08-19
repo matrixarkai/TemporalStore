@@ -293,6 +293,10 @@ struct WriteAheadLogInner {
     // GC clamps its retain floor to this. Absent = no shard has WAL-resident blocks, and GC is
     // unconstrained, which is the behaviour when nothing registers a floor.
     block_retention_floor_by_shard: HashMap<ShardId, u64>,
+    // Cached (reclaim base, header length) per shard so turning a record's physical offset into
+    // the log id that survives reclaim costs no file read on the write path. Filled on first use
+    // and refreshed by reclaim -- the only thing that moves the base.
+    base_by_shard: HashMap<ShardId, (u64, u64)>,
 }
 
 impl LocalWriteAheadLogStore {
@@ -306,6 +310,7 @@ impl LocalWriteAheadLogStore {
                 last_sequence_by_shard: HashMap::new(),
                 verified_len_by_shard: HashMap::new(),
                 block_retention_floor_by_shard: HashMap::new(),
+                base_by_shard: HashMap::new(),
             })),
             sync_coord: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -324,12 +329,35 @@ impl LocalWriteAheadLogStore {
     /// writer ALWAYS records the entry; EVENT_REPLICATION_SYNC
     /// vs ASYNC_STORAGE only changes whether the commit blocks
     /// The WAL commit runs synchronously vs deferred.
+    /// Append, and report the log id the record landed at.
+    ///
+    /// The log id is the record's position in the log's whole history, so it stays valid across
+    /// a reclaim. That is what lets a block carried in this record be addressed by it.
+    pub fn append_with_sync_reporting(
+        &self,
+        shard_id: ShardId,
+        command: Command,
+        sync: bool,
+    ) -> Result<(WriteAheadLogRecord, u64), WriteAheadLogError> {
+        self.append_with_sync_inner(shard_id, command, sync)
+    }
+
     pub fn append_with_sync(
         &self,
         shard_id: ShardId,
         command: Command,
         sync: bool,
     ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
+        self.append_with_sync_inner(shard_id, command, sync)
+            .map(|(record, _)| record)
+    }
+
+    fn append_with_sync_inner(
+        &self,
+        shard_id: ShardId,
+        command: Command,
+        sync: bool,
+    ) -> Result<(WriteAheadLogRecord, u64), WriteAheadLogError> {
         // In group-commit mode the durable barrier is deferred out of the append
         // critical section (below), so the byte-append records with sync=false and the
         // fsync is coalesced across concurrent writers. Default mode keeps the exact
@@ -337,6 +365,7 @@ impl LocalWriteAheadLogStore {
         let group = sync && group_commit_enabled();
         let record;
         let next_sequence;
+        let log_id;
         {
             let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
             fs::create_dir_all(&inner.root)?;
@@ -363,6 +392,9 @@ impl LocalWriteAheadLogStore {
             // trap for any future reclaim/ack gate that reads it. The group path advances it below
             // after the coalesced barrier actually reaches disk.
             inner.last_sequence_by_shard.insert(shard_id, seq);
+            // Where the record landed, in the addressing space that survives reclaim.
+            let (base, header_len) = cached_wal_base(&mut inner, shard_id)?;
+            log_id = base.saturating_add(report.offset.saturating_sub(header_len));
             record = rec;
             next_sequence = seq;
             // `inner` and `_append_lock` are released here so a concurrent writer can
@@ -372,7 +404,7 @@ impl LocalWriteAheadLogStore {
         if group {
             self.group_commit_sync(shard_id, next_sequence)?;
         }
-        Ok(record)
+        Ok((record, log_id))
     }
 
     /// Phase 1 of a two-phase durable commit: append the record bytes and RESERVE its WAL
@@ -778,7 +810,7 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         retain_from_sequence: u64,
     ) -> Result<WriteAheadLogGcReport, WriteAheadLogError> {
-        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let path = write_ahead_log_path(&inner.root, shard_id);
         if !path.exists() {
@@ -874,6 +906,12 @@ impl LocalWriteAheadLogStore {
         }
         fs::rename(&temp_path, &path)?;
         sync_parent_dir(&path)?;
+        // Reclaim is the only thing that moves the base, so refresh the cache here rather than
+        // letting an append compute a log id against a stale one.
+        let new_header_len = crate::log_framing::encode_base_header(new_base).len() as u64;
+        inner
+            .base_by_shard
+            .insert(shard_id, (new_base, new_header_len));
         let bytes_after = path.metadata()?.len();
         Ok(WriteAheadLogGcReport {
             shard_id,
@@ -1241,6 +1279,20 @@ fn append_record_locked(
 ///
 /// A file with no header has never been reclaimed, so nothing has shifted: base 0, header
 /// length 0. Every reader skips `header_len` bytes; every address resolves against `base`.
+/// Cached `(base, header_len)` for a shard, reading it from disk only the first time.
+fn cached_wal_base(
+    inner: &mut WriteAheadLogInner,
+    shard_id: ShardId,
+) -> Result<(u64, u64), WriteAheadLogError> {
+    if let Some(cached) = inner.base_by_shard.get(&shard_id) {
+        return Ok(*cached);
+    }
+    let path = write_ahead_log_path(&inner.root, shard_id);
+    let base = read_wal_base(&path)?;
+    inner.base_by_shard.insert(shard_id, base);
+    Ok(base)
+}
+
 fn read_wal_base(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
     if !path.exists() {
         return Ok((0, 0));
@@ -2161,5 +2213,117 @@ mod tests {
             report.sequence, 9,
             "sequencing must continue past the reclaim, not restart"
         );
+    }
+
+    #[test]
+    fn an_append_reports_the_log_id_its_record_landed_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let mut reported = Vec::new();
+        for index in 0..5 {
+            let (record, log_id) = store
+                .append_with_sync_reporting(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index}"),
+                        value: b"v".to_vec(),
+                    },
+                    true,
+                )
+                .unwrap();
+            reported.push((log_id, record.sequence));
+        }
+
+        // Nothing reclaimed yet, so each reported id is where the record physically sits.
+        let offsets = record_offsets_on_disk(dir.path(), 1);
+        for (index, (log_id, _)) in reported.iter().enumerate() {
+            assert_eq!(*log_id, offsets[index] as u64);
+        }
+
+        // And each one reads back as the record it named.
+        for (log_id, sequence) in &reported {
+            let bytes = store
+                .read_at_log_id(1, *log_id, 4096)
+                .unwrap()
+                .expect("a live log id must resolve");
+            let line = bytes.split(|byte| *byte == 10u8).next().unwrap();
+            assert_eq!(decode_wal_line(line).unwrap().sequence, *sequence);
+        }
+    }
+
+    #[test]
+    fn a_reported_log_id_still_names_its_record_after_a_reclaim() {
+        // This is the whole point of reporting a log id rather than a file offset: the record
+        // moves, and the id has to keep naming it.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let mut reported = Vec::new();
+        for index in 0..8 {
+            let (record, log_id) = store
+                .append_with_sync_reporting(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index}"),
+                        value: b"v".to_vec(),
+                    },
+                    true,
+                )
+                .unwrap();
+            reported.push((log_id, record.sequence));
+        }
+
+        store.gc_before_sequence(1, 5).unwrap();
+        let base = store.base_offset(1).unwrap();
+        assert!(base > 0, "the reclaim must have moved the base");
+
+        for (log_id, sequence) in &reported {
+            match store.read_at_log_id(1, *log_id, 4096).unwrap() {
+                Some(bytes) => {
+                    let line = bytes.split(|byte| *byte == 10u8).next().unwrap();
+                    assert_eq!(
+                        decode_wal_line(line).unwrap().sequence,
+                        *sequence,
+                        "a surviving log id must still name its own record"
+                    );
+                }
+                None => assert!(
+                    *log_id < base,
+                    "only a reclaimed log id may fail to resolve, but {log_id} is at or above {base}"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn log_ids_reported_after_a_reclaim_account_for_the_base() {
+        // The base is cached on the write path; a stale cache would report ids that are wrong by
+        // exactly the reclaimed prefix -- and they would still resolve, to the wrong record.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        append_n(&store, 1, 6);
+        store.gc_before_sequence(1, 4).unwrap();
+        let base = store.base_offset(1).unwrap();
+        assert!(base > 0);
+
+        let (record, log_id) = store
+            .append_with_sync_reporting(
+                1,
+                Command::StringSet {
+                    key: "after-reclaim".to_string(),
+                    value: b"v".to_vec(),
+                },
+                true,
+            )
+            .unwrap();
+        assert!(
+            log_id >= base,
+            "a record appended after a reclaim cannot have a log id below the base"
+        );
+        let bytes = store
+            .read_at_log_id(1, log_id, 4096)
+            .unwrap()
+            .expect("the just-appended record must resolve");
+        let line = bytes.split(|byte| *byte == 10u8).next().unwrap();
+        assert_eq!(decode_wal_line(line).unwrap().sequence, record.sequence);
     }
 }
