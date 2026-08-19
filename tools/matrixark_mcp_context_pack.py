@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import os as _os
+
 import os
 from typing import Any
 
@@ -1319,6 +1321,79 @@ def compact_prebuilt_serving_groups(groups: list[Json], *, include_debug: bool =
     return compact_groups
 
 
+def _normalized_item_text(item: Json) -> str:
+    text = str(item.get("text") or "")
+    if "=" in text:
+        text = text.split("=", 1)[1]
+    return " ".join(text.split()).strip().lower().rstrip(".")
+
+
+def drop_redundant_pack_items(groups: list[Json]) -> list[Json]:
+    """Remove items whose content a LONGER item elsewhere in the pack already carries.
+
+    An entity item is a projection of the event it came from, so one fact is commonly shipped twice:
+    ``user: I live in Kyoto and my favorite drink is matcha.`` and, in the entity group,
+    ``preference: preference = drink is matcha``. Both are billed to the reader's token budget.
+
+    Only a strict containment is dropped, comparing the entity's VALUE half (after ``=``) against the
+    other item's text, so nothing unique is lost -- an entity that adds a name, a type, or a value not
+    literally present in the kept item survives. The longer item wins because it carries the
+    surrounding context that makes the fact usable.
+
+    Group ``n`` is recomputed, and a group emptied by the sweep is dropped entirely."""
+    surviving: list[tuple[Json, list[Json]]] = []
+    everything: list[tuple[str, Json]] = []
+    for group in groups:
+        for item in group.get("items") or []:
+            everything.append((_normalized_item_text(item), item))
+    if not everything:
+        return groups
+
+    redundant: set[int] = set()
+    for text, item in everything:
+        if not text or len(text) < 8:
+            continue
+        for other_text, other in everything:
+            if other is item or id(other) in redundant:
+                continue
+            if len(other_text) <= len(text):
+                continue
+            if text in other_text:
+                redundant.add(id(item))
+                break
+    if not redundant:
+        return groups
+
+    for group in groups:
+        kept = [item for item in (group.get("items") or []) if id(item) not in redundant]
+        if not kept:
+            continue
+        trimmed = dict(group)
+        trimmed["items"] = kept
+        trimmed["n"] = len(kept)
+        surviving.append((trimmed, kept))
+    return [group for group, _kept in surviving]
+
+
+def _pack_redundancy_filter_enabled() -> bool:
+    """Whether to drop pack items another item already carries.
+
+    Resolved through the per-tenant policy layer when that layer is present, and from the environment
+    otherwise. The fallback is what keeps this module standalone: the pack builder is useful without
+    the policy layer, and a hard import would make it unimportable wherever that layer is not shipped
+    -- which is exactly what happened (ModuleNotFoundError at pack-build time). Default ON either
+    way, so behaviour does not change with the layer's presence."""
+    try:
+        try:
+            from tools.matrixark_index_growth_bound import pack_drop_redundant_items_enabled
+        except ImportError:  # Direct script execution from tools/.
+            from matrixark_index_growth_bound import pack_drop_redundant_items_enabled
+    except ImportError:  # Policy layer not shipped here.
+        return _os.environ.get("MATRIXARK_PACK_DROP_REDUNDANT_ITEMS", "1").strip().lower() not in {
+            "0", "false", "no", "off"}
+    return bool(pack_drop_redundant_items_enabled(None))
+
+
 def serving_ref_groups_for_pack(refs: list[Json], *, default_session_continuity: str = "", default_memory_layer: str = "", include_debug: bool = False) -> list[Json]:
     groups: dict[tuple[str, str], Json] = {}
     order: list[tuple[str, str]] = []
@@ -1341,7 +1416,10 @@ def serving_ref_groups_for_pack(refs: list[Json], *, default_session_continuity:
         )
         groups[key]["items"].append(item)
         groups[key]["n"] += 1
-    return [groups[key] for key in order]
+    built = [groups[key] for key in order]
+    if _pack_redundancy_filter_enabled():
+        built = drop_redundant_pack_items(built)
+    return built
 
 
 def selected_ref_count_from_pack(pack: Json) -> int:
