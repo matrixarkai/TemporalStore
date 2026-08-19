@@ -59,6 +59,9 @@ impl SingleNodeMeta {
             topology_version: snapshot.topology_version,
             topology_events: VecDeque::new(),
             scheduler_finish_generations: snapshot.scheduler_finish_generations,
+            // Carried across the install so a peer keeps ageing the tombstones
+            // it inherits instead of restarting every one of their clocks.
+            dropped_since_ms: snapshot.dropped_since_ms,
         })
     }
 
@@ -92,6 +95,7 @@ impl MetaSnapshot {
             next_table_id: state.next_table_id,
             topology_version: state.topology_version,
             scheduler_finish_generations: state.scheduler_finish_generations.clone(),
+            dropped_since_ms: state.dropped_since_ms.clone(),
         }
     }
 }
