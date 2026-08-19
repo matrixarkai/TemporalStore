@@ -13,7 +13,7 @@ use temporalstore_rust::http::{
 use temporalstore_rust::meta::{
     AckResponse, AddNamespaceRequest, AddTableRequest, AutoRebalanceOptions, ConvictionPolicy,
     DeleteTableRequest, FailureDetectorOptions, FreezeStaleServersRequest, GetShardResponse,
-    MetaRetentionOptions,
+    FreezeAgingOptions, MetaRetentionOptions,
     GetTableTopologyRequest, LoadFinishRequest,
     MetaSnapshot, MetaSnapshotFileRequest, MetaSnapshotFileResponse, MetaSnapshotResponse,
     ProxyHeartbeatRequest, PublishShardSnapshotRequest, RegisterProxyRequest,
@@ -174,6 +174,46 @@ fn main() {
             }
             MetaBackend::Raft(_) => {
                 warn!("TS_META_SHARD_DIVERGENCE_CHECK ignored: raft backend manages placement itself");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    // Freeze aging. A frozen resource stays frozen forever, so the retention GC
+    // below - which only collects *dropped* resources - can never reach a node
+    // the failure detector froze. This is the stage between them: a resource
+    // that has been frozen longer than its cooldown is dropped, and retention
+    // then forgets it. OFF by default (TS_META_FREEZE_AGING); tables are not
+    // aged even then unless TS_META_TABLE_FREEZE_MS is set, because freezing a
+    // table is an operator action they may still intend to undo.
+    let _freeze_aging = if env_bool("TS_META_FREEZE_AGING", false) {
+        match &backend {
+            MetaBackend::Single(meta) => {
+                let defaults = FreezeAgingOptions::default();
+                let options = FreezeAgingOptions {
+                    server_freeze_ms: env_u64(
+                        "TS_META_SERVER_FREEZE_MS",
+                        defaults.server_freeze_ms,
+                    ),
+                    proxy_freeze_ms: env_u64("TS_META_PROXY_FREEZE_MS", defaults.proxy_freeze_ms),
+                    table_freeze_ms: env_u64("TS_META_TABLE_FREEZE_MS", defaults.table_freeze_ms),
+                    max_drops_per_round: env_u64(
+                        "TS_META_FREEZE_AGING_MAX_DROPS",
+                        defaults.max_drops_per_round as u64,
+                    ) as usize,
+                };
+                let interval_ms = env_u64("TS_META_FREEZE_AGING_INTERVAL_MS", 60_000);
+                info!(
+                    interval_ms,
+                    server_freeze_ms = options.server_freeze_ms,
+                    table_freeze_ms = options.table_freeze_ms,
+                    "meta freeze aging enabled"
+                );
+                Some(meta.start_freeze_aging_loop(options, interval_ms))
+            }
+            MetaBackend::Raft(_) => {
+                warn!("TS_META_FREEZE_AGING ignored: raft backend owns its own meta state");
                 None
             }
         }

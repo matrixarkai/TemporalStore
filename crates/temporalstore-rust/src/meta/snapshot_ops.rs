@@ -62,6 +62,7 @@ impl SingleNodeMeta {
             // Carried across the install so a peer keeps ageing the tombstones
             // it inherits instead of restarting every one of their clocks.
             dropped_since_ms: snapshot.dropped_since_ms,
+            frozen_since_ms: snapshot.frozen_since_ms,
         })
     }
 
@@ -96,6 +97,7 @@ impl MetaSnapshot {
             topology_version: state.topology_version,
             scheduler_finish_generations: state.scheduler_finish_generations.clone(),
             dropped_since_ms: state.dropped_since_ms.clone(),
+            frozen_since_ms: state.frozen_since_ms.clone(),
         }
     }
 }

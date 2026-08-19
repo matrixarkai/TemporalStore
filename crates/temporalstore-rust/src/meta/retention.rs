@@ -344,12 +344,509 @@ impl SingleNodeMeta {
     }
 }
 
+/// How long a frozen resource waits before it is dropped, per kind. Zero
+/// disables aging for that kind, which is the default for tables: freezing a
+/// table is an operator action, and an operator who froze it may still intend to
+/// unfreeze it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FreezeAgingOptions {
+    /// How long a frozen server stays frozen before it is dropped.
+    pub server_freeze_ms: u64,
+    /// How long a frozen proxy stays frozen before it is dropped.
+    pub proxy_freeze_ms: u64,
+    /// How long a frozen table stays frozen before it is dropped. Zero (the
+    /// default) never ages a table.
+    pub table_freeze_ms: u64,
+    /// Most resources dropped in one round.
+    pub max_drops_per_round: usize,
+}
+
+impl Default for FreezeAgingOptions {
+    fn default() -> Self {
+        Self {
+            server_freeze_ms: 6 * 60 * 60 * 1_000,
+            proxy_freeze_ms: 6 * 60 * 60 * 1_000,
+            table_freeze_ms: 0,
+            max_drops_per_round: 20,
+        }
+    }
+}
+
+/// What one aging round should drop.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FreezeAgingPlan {
+    /// Frozen servers to drop, ordered by address.
+    pub servers: Vec<String>,
+    /// Frozen proxies to drop, ordered by address.
+    pub proxies: Vec<String>,
+    /// Frozen tables to drop, ordered by key.
+    pub tables: Vec<String>,
+    /// How many otherwise-eligible resources the per-round cap held back.
+    pub capped: usize,
+}
+
+impl FreezeAgingPlan {
+    pub fn is_empty(&self) -> bool {
+        self.servers.is_empty() && self.proxies.is_empty() && self.tables.is_empty()
+    }
+
+    pub fn drop_count(&self) -> usize {
+        self.servers.len() + self.proxies.len() + self.tables.len()
+    }
+}
+
+/// What one aging round actually dropped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FreezeAgingReport {
+    pub status: Status,
+    pub plan: FreezeAgingPlan,
+}
+
+/// Pure planner: decide which frozen resources have waited long enough to be
+/// dropped. `candidates` carry the time each resource was frozen; a zero
+/// timestamp means unknown and is never aged, for the same reason an
+/// untimestamped tombstone is never purged. Deterministic — output is sorted and
+/// the cap is spent proxies, then tables, then servers.
+pub fn plan_freeze_aging(
+    servers: &[RetentionCandidate],
+    proxies: &[RetentionCandidate],
+    tables: &[RetentionCandidate],
+    now_ms: u64,
+    options: FreezeAgingOptions,
+) -> FreezeAgingPlan {
+    let mut plan = FreezeAgingPlan::default();
+    // A zero threshold disables aging for that kind entirely, rather than
+    // meaning "immediately" — otherwise an unset knob would drop the fleet.
+    let eligible = |candidates: &[RetentionCandidate], threshold_ms: u64| -> Vec<String> {
+        if threshold_ms == 0 {
+            return Vec::new();
+        }
+        let mut ids = candidates
+            .iter()
+            .filter(|candidate| candidate.dropped_since_ms != 0)
+            .filter(|candidate| {
+                now_ms.saturating_sub(candidate.dropped_since_ms) >= threshold_ms
+            })
+            .map(|candidate| candidate.id.clone())
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids
+    };
+
+    let eligible_proxies = eligible(proxies, options.proxy_freeze_ms);
+    let eligible_tables = eligible(tables, options.table_freeze_ms);
+    let eligible_servers = eligible(servers, options.server_freeze_ms);
+    let total = eligible_proxies.len() + eligible_tables.len() + eligible_servers.len();
+
+    let mut budget = options.max_drops_per_round;
+    for (source, sink) in [
+        (eligible_proxies, &mut plan.proxies),
+        (eligible_tables, &mut plan.tables),
+        (eligible_servers, &mut plan.servers),
+    ] {
+        for item in source {
+            if budget == 0 {
+                break;
+            }
+            budget -= 1;
+            sink.push(item);
+        }
+    }
+    plan.capped = total.saturating_sub(plan.drop_count());
+    plan
+}
+
+impl SingleNodeMeta {
+    /// Compute the freeze-aging plan for the current state without applying it.
+    pub fn plan_freeze_aging_now(&self, options: FreezeAgingOptions) -> FreezeAgingPlan {
+        let now = now_ms();
+        let state = self.inner.read().expect("meta lock poisoned");
+        let servers = state
+            .servers
+            .values()
+            .filter(|server| server.state == MetaEntityState::Frozen)
+            .map(|server| RetentionCandidate {
+                id: server.server_addr.clone(),
+                dropped_since_ms: server.frozen_since_ms,
+            })
+            .collect::<Vec<_>>();
+        let proxies = state
+            .proxies
+            .values()
+            .filter(|proxy| proxy.state == MetaEntityState::Frozen)
+            .map(|proxy| RetentionCandidate {
+                id: proxy.proxy_addr.clone(),
+                dropped_since_ms: proxy.frozen_since_ms,
+            })
+            .collect::<Vec<_>>();
+        // Tables carry no frozen-at field of their own, so the metaserver keeps
+        // it beside them the same way it keeps drop times.
+        let tables = state
+            .tables
+            .iter()
+            .filter(|(_, table)| table.info.state == MetaEntityState::Frozen)
+            .map(|(key, _)| RetentionCandidate {
+                id: key.clone(),
+                dropped_since_ms: state
+                    .frozen_since_ms
+                    .get(&dropped_key("table", key))
+                    .copied()
+                    .unwrap_or_default(),
+            })
+            .collect::<Vec<_>>();
+        plan_freeze_aging(&servers, &proxies, &tables, now, options)
+    }
+
+    /// Compute and apply one aging round, moving frozen resources that have
+    /// waited out their cooldown to [`MetaEntityState::Dropped`].
+    ///
+    /// This is what makes [`Self::purge_expired_meta`] reachable for anything
+    /// the failure detector froze: retention only collects dropped resources, so
+    /// without this stage a frozen dead node stays in the meta state - and in
+    /// every exported snapshot - forever.
+    pub fn age_frozen_meta(&self, options: FreezeAgingOptions) -> FreezeAgingReport {
+        let plan = self.plan_freeze_aging_now(options);
+        if plan.is_empty() {
+            return FreezeAgingReport {
+                status: Status::ok(),
+                plan,
+            };
+        }
+        // Routed through the ordinary state setters so the drop is recorded in
+        // the mutation log, stamps `dropped_since_ms`, and emits the same
+        // topology event an operator-driven drop would.
+        for addr in &plan.proxies {
+            let response = self.drop_proxy(StateChangeRequest {
+                endpoint: addr.clone(),
+                freeze_cooldown_ms: 0,
+            });
+            if !response.status.ok {
+                return FreezeAgingReport {
+                    status: response.status,
+                    plan,
+                };
+            }
+        }
+        for key in &plan.tables {
+            // `table_key` joins on '/', so the key must be split on the same
+            // separator: a namespace or table name may legitimately contain a
+            // dot, and splitting there recovers the wrong pair.
+            let Some((namespace, table_name)) = key.split_once('/') else {
+                continue;
+            };
+            let response = self.delete_table(DeleteTableRequest {
+                namespace: namespace.to_string(),
+                table_name: table_name.to_string(),
+            });
+            if !response.status.ok {
+                return FreezeAgingReport {
+                    status: response.status,
+                    plan,
+                };
+            }
+        }
+        for addr in &plan.servers {
+            let response = self.drop_server(StateChangeRequest {
+                endpoint: addr.clone(),
+                freeze_cooldown_ms: 0,
+            });
+            if !response.status.ok {
+                return FreezeAgingReport {
+                    status: response.status,
+                    plan,
+                };
+            }
+        }
+        FreezeAgingReport {
+            status: Status::ok(),
+            plan,
+        }
+    }
+
+    /// Background loop running [`Self::age_frozen_meta`] on an interval.
+    pub fn start_freeze_aging_loop(
+        &self,
+        options: FreezeAgingOptions,
+        interval_ms: u64,
+    ) -> thread::JoinHandle<()> {
+        let meta = self.clone();
+        let interval = Duration::from_millis(interval_ms.max(1));
+        thread::spawn(move || loop {
+            let _ = meta.age_frozen_meta(options);
+            thread::sleep(interval);
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const NOW: u64 = 30 * 24 * 60 * 60 * 1_000;
     const DAY: u64 = 24 * 60 * 60 * 1_000;
+    const HOUR: u64 = 60 * 60 * 1_000;
+
+    fn aging(options: FreezeAgingOptions) -> FreezeAgingOptions {
+        options
+    }
+
+    #[test]
+    fn a_frozen_resource_is_dropped_once_its_cooldown_expires() {
+        let plan = plan_freeze_aging(
+            &candidates(&[("s0", NOW - 7 * HOUR)]),
+            &candidates(&[("p0", NOW - 7 * HOUR)]),
+            &[],
+            NOW,
+            FreezeAgingOptions::default(),
+        );
+        assert_eq!(plan.servers, vec!["s0"]);
+        assert_eq!(plan.proxies, vec!["p0"]);
+        assert_eq!(plan.capped, 0);
+    }
+
+    #[test]
+    fn a_frozen_resource_inside_its_cooldown_is_left_alone() {
+        // A frozen node can still come back; dropping it early throws away the
+        // chance for it to re-register into the same identity.
+        let plan = plan_freeze_aging(
+            &candidates(&[("s0", NOW - 60_000)]),
+            &candidates(&[("p0", NOW - 60_000)]),
+            &[],
+            NOW,
+            FreezeAgingOptions::default(),
+        );
+        assert!(plan.is_empty());
+    }
+
+    #[test]
+    fn a_zero_threshold_disables_aging_for_that_kind() {
+        // Zero must mean "never", not "immediately" -- an unset knob that meant
+        // immediately would drop the whole fleet on the first round.
+        let plan = plan_freeze_aging(
+            &candidates(&[("s0", NOW - 7 * HOUR)]),
+            &[],
+            &[],
+            NOW,
+            aging(FreezeAgingOptions {
+                server_freeze_ms: 0,
+                ..FreezeAgingOptions::default()
+            }),
+        );
+        assert!(plan.is_empty());
+    }
+
+    #[test]
+    fn tables_are_not_aged_unless_asked() {
+        // Freezing a table is an operator action, and an operator who froze it
+        // may still intend to unfreeze it, so the default never ages one.
+        let frozen_tables = candidates(&[("ns/t0", NOW - 7 * HOUR)]);
+        assert!(plan_freeze_aging(
+            &[],
+            &[],
+            &frozen_tables,
+            NOW,
+            FreezeAgingOptions::default()
+        )
+        .is_empty());
+
+        let configured = plan_freeze_aging(
+            &[],
+            &[],
+            &frozen_tables,
+            NOW,
+            aging(FreezeAgingOptions {
+                table_freeze_ms: 6 * HOUR,
+                ..FreezeAgingOptions::default()
+            }),
+        );
+        assert_eq!(configured.tables, vec!["ns/t0"]);
+    }
+
+    #[test]
+    fn a_freeze_with_no_timestamp_is_never_aged() {
+        let plan = plan_freeze_aging(
+            &candidates(&[("legacy", 0)]),
+            &[],
+            &[],
+            NOW,
+            FreezeAgingOptions::default(),
+        );
+        assert!(plan.is_empty());
+    }
+
+    #[test]
+    fn the_per_round_cap_bounds_drops() {
+        let servers = (0..10)
+            .map(|index| RetentionCandidate {
+                id: format!("s{index}"),
+                dropped_since_ms: NOW - 7 * HOUR,
+            })
+            .collect::<Vec<_>>();
+        let plan = plan_freeze_aging(
+            &servers,
+            &[],
+            &[],
+            NOW,
+            aging(FreezeAgingOptions {
+                max_drops_per_round: 3,
+                ..FreezeAgingOptions::default()
+            }),
+        );
+        assert_eq!(plan.drop_count(), 3);
+        assert_eq!(plan.capped, 7);
+        assert_eq!(plan.servers, vec!["s0", "s1", "s2"]);
+    }
+
+    #[test]
+    fn a_dead_node_is_frozen_then_dropped_then_forgotten() {
+        // The whole point of this stage: retention only collects *dropped*
+        // resources, so without aging a node the failure detector froze would
+        // stay in the meta state -- and in every exported snapshot -- forever.
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "node-a".to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+        });
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        // The failure detector freezes it.
+        let frozen = meta.freeze_stale_resources(0);
+        assert_eq!(frozen.frozen_servers, vec!["node-a"]);
+        // Retention cannot see it: it is frozen, not dropped.
+        assert!(meta
+            .purge_expired_meta(MetaRetentionOptions {
+                server_retention_ms: 0,
+                proxy_retention_ms: 0,
+                table_retention_ms: 0,
+                max_purges_per_round: 20,
+            })
+            .plan
+            .is_empty());
+
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let aged = meta.age_frozen_meta(aging(FreezeAgingOptions {
+            server_freeze_ms: 1,
+            ..FreezeAgingOptions::default()
+        }));
+        assert!(aged.status.ok);
+        assert_eq!(aged.plan.servers, vec!["node-a"]);
+        assert_eq!(
+            meta.list_servers().servers[0].state,
+            MetaEntityState::Dropped
+        );
+
+        // Now retention can finish the job.
+        let purged = meta.purge_expired_meta(MetaRetentionOptions {
+            server_retention_ms: 0,
+            proxy_retention_ms: 0,
+            table_retention_ms: 0,
+            max_purges_per_round: 20,
+        });
+        assert_eq!(purged.plan.servers, vec!["node-a"]);
+        assert!(meta.list_servers().servers.is_empty());
+        assert!(meta.export_snapshot().servers.is_empty());
+    }
+
+    #[test]
+    fn a_server_that_comes_back_is_not_aged() {
+        // Re-registering clears frozen_since_ms, so the cooldown does not keep
+        // running underneath a node that is serving again.
+        let meta = SingleNodeMeta::default();
+        let register = || {
+            meta.register_server(RegisterServerRequest {
+                server_addr: "node-a".to_string(),
+                node_id: 1,
+                location: "rack-1".to_string(),
+                binary_version: "v1".to_string(),
+            })
+        };
+        register();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        meta.freeze_stale_resources(0);
+        assert!(register().status.ok);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        let aged = meta.age_frozen_meta(aging(FreezeAgingOptions {
+            server_freeze_ms: 1,
+            ..FreezeAgingOptions::default()
+        }));
+        assert!(aged.plan.is_empty());
+        assert_eq!(meta.list_servers().servers[0].state, MetaEntityState::Normal);
+    }
+
+    #[test]
+    fn a_frozen_table_gets_a_clock_that_unfreezing_clears() {
+        let meta = SingleNodeMeta::default();
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            first_shard_id: 1,
+            shard_count: 1,
+            replica_count: 1,
+            partition_version: 0,
+            serving_options: TableServingOptions::default(),
+        });
+        let request = DeleteTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+        };
+        assert!(meta.freeze_table(request.clone()).status.ok);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        let options = aging(FreezeAgingOptions {
+            table_freeze_ms: 1,
+            ..FreezeAgingOptions::default()
+        });
+        assert_eq!(meta.plan_freeze_aging_now(options).tables, vec!["ns/orders"]);
+
+        // Unfreezing takes it back out of scope.
+        assert!(meta.unfreeze_table(request).status.ok);
+        assert!(meta.plan_freeze_aging_now(options).is_empty());
+    }
+
+    #[test]
+    fn a_frozen_tables_clock_survives_a_snapshot_round_trip() {
+        let meta = SingleNodeMeta::default();
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            first_shard_id: 1,
+            shard_count: 1,
+            replica_count: 1,
+            partition_version: 0,
+            serving_options: TableServingOptions::default(),
+        });
+        assert!(meta
+            .freeze_table(DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "orders".to_string(),
+            })
+            .status
+            .ok);
+        let snapshot = meta.export_snapshot();
+        assert_eq!(snapshot.frozen_since_ms.len(), 1);
+
+        let restored = SingleNodeMeta::default();
+        assert!(restored.install_snapshot(snapshot).status.ok);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert_eq!(
+            restored
+                .plan_freeze_aging_now(aging(FreezeAgingOptions {
+                    table_freeze_ms: 1,
+                    ..FreezeAgingOptions::default()
+                }))
+                .tables,
+            vec!["ns/orders"]
+        );
+    }
 
     fn candidates(pairs: &[(&str, u64)]) -> Vec<RetentionCandidate> {
         pairs
@@ -392,14 +889,14 @@ mod tests {
         let result = plan(
             &candidates(&[("old-server", NOW - 2 * DAY)]),
             &candidates(&[("old-proxy", NOW - 2 * DAY)]),
-            &candidates(&[("ns.old-table", NOW - 2 * DAY)]),
+            &candidates(&[("ns/old-table", NOW - 2 * DAY)]),
             &BTreeMap::new(),
             &BTreeMap::new(),
             MetaRetentionOptions::default(),
         );
         assert_eq!(result.servers, vec!["old-server"]);
         assert_eq!(result.proxies, vec!["old-proxy"]);
-        assert_eq!(result.tables, vec!["ns.old-table"]);
+        assert_eq!(result.tables, vec!["ns/old-table"]);
         assert_eq!(result.capped, 0);
     }
 
@@ -410,7 +907,7 @@ mod tests {
         let result = plan(
             &candidates(&[("recent", NOW - 60_000)]),
             &candidates(&[("recent-proxy", NOW - 60_000)]),
-            &candidates(&[("ns.recent", NOW - 60_000)]),
+            &candidates(&[("ns/recent", NOW - 60_000)]),
             &BTreeMap::new(),
             &BTreeMap::new(),
             MetaRetentionOptions::default(),
@@ -455,12 +952,12 @@ mod tests {
         let result = plan(
             &[],
             &[],
-            &candidates(&[("ns.gone", NOW - 2 * DAY)]),
+            &candidates(&[("ns/gone", NOW - 2 * DAY)]),
             &map(&[(1, "s1"), (2, "s1"), (3, "s1")]),
-            &map(&[(1, "ns.gone"), (2, "ns.gone"), (3, "ns.stays")]),
+            &map(&[(1, "ns/gone"), (2, "ns/gone"), (3, "ns/stays")]),
             MetaRetentionOptions::default(),
         );
-        assert_eq!(result.tables, vec!["ns.gone"]);
+        assert_eq!(result.tables, vec!["ns/gone"]);
         assert_eq!(result.shards, vec![1, 2]);
     }
 
@@ -472,7 +969,7 @@ mod tests {
         let result = plan(
             &candidates(&[("legacy", 0)]),
             &candidates(&[("legacy-proxy", 0)]),
-            &candidates(&[("ns.legacy", 0)]),
+            &candidates(&[("ns/legacy", 0)]),
             &BTreeMap::new(),
             &BTreeMap::new(),
             MetaRetentionOptions::default(),
@@ -536,7 +1033,7 @@ mod tests {
         let result = plan(
             &candidates(&[("s0", NOW - 2 * DAY)]),
             &candidates(&[("p0", NOW - 2 * DAY)]),
-            &candidates(&[("ns.t0", NOW - 2 * DAY)]),
+            &candidates(&[("ns/t0", NOW - 2 * DAY)]),
             &BTreeMap::new(),
             &BTreeMap::new(),
             MetaRetentionOptions {

@@ -256,6 +256,26 @@ pub(super) fn dropped_key(kind: &str, id: &str) -> String {
     format!("{kind}:{id}")
 }
 
+/// Record when a table was frozen, or clear the record when it leaves the
+/// frozen state. Freeze aging has nothing to measure without this.
+pub(super) fn stamp_frozen_since(
+    state: &mut MetaState,
+    key: &str,
+    next: MetaEntityState,
+    now_ms: u64,
+) {
+    match next {
+        MetaEntityState::Frozen => {
+            // Keep the first freeze time: re-freezing an already frozen table
+            // must not restart its cooldown.
+            state.frozen_since_ms.entry(key.to_string()).or_insert(now_ms);
+        }
+        MetaEntityState::Normal | MetaEntityState::Dropped => {
+            state.frozen_since_ms.remove(key);
+        }
+    }
+}
+
 /// Record when a resource was dropped, or clear the record when it comes back.
 /// Retention has nothing to age against without this.
 pub(super) fn stamp_dropped_since(
