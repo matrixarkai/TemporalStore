@@ -67,15 +67,20 @@ fn main() {
     if std::env::var("TS_PHASE1_FLAT").is_err() {
         std::env::set_var("TS_PHASE1_FLAT", "1");
     }
-    if std::env::var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD").is_err() {
-        std::env::set_var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD", "0");
-    }
+    let eager_cache_warm_on_load_overridden =
+        std::env::var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD").is_ok();
     if std::env::var("MATRIXARK_CONTEXT_INGEST_GATE_L1").is_err() {
         std::env::set_var("MATRIXARK_CONTEXT_INGEST_GATE_L1", "1");
     }
     let raw_first = env_bool("MATRIXARK_BACKFILL_RAW_FIRST");
     let checkpoint_only = env_bool("MATRIXARK_BACKFILL_CHECKPOINT_ONLY")
         || std::env::args().any(|arg| arg == "--checkpoint-only");
+    if !eager_cache_warm_on_load_overridden {
+        std::env::set_var(
+            "MATRIXARK_EAGER_CACHE_WARM_ON_LOAD",
+            if checkpoint_only { "1" } else { "0" },
+        );
+    }
     let skip_covered_sessions = env_bool("MATRIXARK_BACKFILL_SKIP_COVERED_SESSIONS");
     let cache_bytes: usize = std::env::var("MATRIXARK_BACKFILL_CACHE_BYTES")
         .ok()
@@ -90,7 +95,7 @@ fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .filter(|v| *v > 0)
-        .unwrap_or(250);
+        .unwrap_or(if raw_first { 4_000 } else { 250 });
     let max_body: usize = std::env::var("MATRIXARK_BACKFILL_MAX_BODY")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -290,35 +295,111 @@ fn main() {
 
     let flush_every_session = env_bool("MATRIXARK_BACKFILL_FLUSH_EVERY_SESSION");
     let ingest_started = Instant::now();
-    for (session_id, sources) in groups.into_iter() {
-        if sources.is_empty() {
-            continue;
-        }
-        let tenant_hash = stable_hash64(&format!(
-            "{}:{}:{}:{}",
-            account_id, tenant_id, user_id, session_id
-        ));
-        let mut session_accepted = 0u64;
-        let mut session_failed = 0u64;
-        let mut session_skipped_covered = 0u64;
-        let mut node_hashes = Vec::new();
-        for chunk in sources.chunks(sub_batch) {
-            let expected_hashes = expected_node_hashes(tenant_hash, chunk);
-            if skip_covered_sessions
-                && !expected_hashes.is_empty()
-                && indexed_nodes_by_session
-                    .get(&session_id)
-                    .map(|covered| expected_hashes.iter().all(|hash| covered.contains(hash)))
-                    .unwrap_or(false)
-            {
-                let rows = chunk.len() as u64;
-                skipped_covered = skipped_covered.saturating_add(rows);
-                session_skipped_covered = session_skipped_covered.saturating_add(rows);
+    if raw_first {
+        let mut batch = Vec::with_capacity(sub_batch);
+        let mut raw_batches = 0u64;
+        for (session_id, sources) in groups.into_iter() {
+            if sources.is_empty() {
                 continue;
             }
-            let (chunk_accepted, chunk_failed, chunk_node_hashes) = if raw_first {
-                write_raw_sources(&engine, tenant_hash, chunk)
-            } else {
+            let tenant_hash =
+                tenant_hash_for_session(&account_id, &tenant_id, &user_id, &session_id);
+            let mut session_seen = 0u64;
+            let mut session_skipped_covered = 0u64;
+            for source in sources {
+                let expected_hash = expected_node_hash(tenant_hash, &source);
+                if skip_covered_sessions
+                    && indexed_nodes_by_session
+                        .get(&session_id)
+                        .map(|covered| covered.contains(&expected_hash))
+                        .unwrap_or(false)
+                {
+                    skipped_covered = skipped_covered.saturating_add(1);
+                    session_skipped_covered = session_skipped_covered.saturating_add(1);
+                    continue;
+                }
+                batch.push(RawBackfillItem {
+                    session_id: session_id.clone(),
+                    tenant_hash,
+                    source,
+                });
+                session_seen = session_seen.saturating_add(1);
+                if batch.len() >= sub_batch {
+                    let (chunk_accepted, chunk_failed, chunk_node_hashes) =
+                        write_raw_sources_mixed(&engine, &batch);
+                    accepted = accepted.saturating_add(chunk_accepted);
+                    failed = failed.saturating_add(chunk_failed);
+                    raw_batches = raw_batches.saturating_add(1);
+                    extend_session_index(&mut index, chunk_node_hashes);
+                    maybe_checkpoint(
+                        &engine,
+                        accepted,
+                        failed,
+                        true,
+                        flush_every_accepted,
+                        &mut next_checkpoint_accepted,
+                        &mut checkpoint_flushes,
+                        &mut checkpoint_flush_seconds,
+                    );
+                    batch.clear();
+                }
+            }
+            eprintln!(
+                "  session {} -> queued {} skipped_covered {} ({:.0} rec/s cumulative)",
+                session_id,
+                session_seen,
+                session_skipped_covered,
+                accepted as f64 / ingest_started.elapsed().as_secs_f64().max(0.001)
+            );
+        }
+        if !batch.is_empty() {
+            let (chunk_accepted, chunk_failed, chunk_node_hashes) =
+                write_raw_sources_mixed(&engine, &batch);
+            accepted = accepted.saturating_add(chunk_accepted);
+            failed = failed.saturating_add(chunk_failed);
+            raw_batches = raw_batches.saturating_add(1);
+            extend_session_index(&mut index, chunk_node_hashes);
+            maybe_checkpoint(
+                &engine,
+                accepted,
+                failed,
+                true,
+                flush_every_accepted,
+                &mut next_checkpoint_accepted,
+                &mut checkpoint_flushes,
+                &mut checkpoint_flush_seconds,
+            );
+        }
+        eprintln!(
+            "  raw-first mixed batches {} ({:.0} rec/s cumulative)",
+            raw_batches,
+            accepted as f64 / ingest_started.elapsed().as_secs_f64().max(0.001)
+        );
+    } else {
+        for (session_id, sources) in groups.into_iter() {
+            if sources.is_empty() {
+                continue;
+            }
+            let tenant_hash =
+                tenant_hash_for_session(&account_id, &tenant_id, &user_id, &session_id);
+            let mut session_accepted = 0u64;
+            let mut session_failed = 0u64;
+            let mut session_skipped_covered = 0u64;
+            let mut node_hashes = Vec::new();
+            for chunk in sources.chunks(sub_batch) {
+                let expected_hashes = expected_node_hashes(tenant_hash, chunk);
+                if skip_covered_sessions
+                    && !expected_hashes.is_empty()
+                    && indexed_nodes_by_session
+                        .get(&session_id)
+                        .map(|covered| expected_hashes.iter().all(|hash| covered.contains(hash)))
+                        .unwrap_or(false)
+                {
+                    let rows = chunk.len() as u64;
+                    skipped_covered = skipped_covered.saturating_add(rows);
+                    session_skipped_covered = session_skipped_covered.saturating_add(rows);
+                    continue;
+                }
                 let report = ingest_extract_context(
                     &engine,
                     ContextIngestExtractRequest {
@@ -332,68 +413,51 @@ fn main() {
                         provider: ContextModelProviderConfig::default(),
                     },
                 );
-                (
+                let (chunk_accepted, chunk_failed, chunk_node_hashes) = (
                     report.accepted as u64,
                     report.failed as u64,
                     report.node_hashes,
-                )
-            };
-            session_accepted += chunk_accepted;
-            session_failed += chunk_failed;
-            node_hashes.extend(chunk_node_hashes);
-            if flush_every_accepted > 0
-                && accepted.saturating_add(session_accepted) >= next_checkpoint_accepted
-            {
-                let checkpoint_started = Instant::now();
-                if raw_first && failed.saturating_add(session_failed) == 0 {
-                    std::env::set_var(
-                        "MATRIXARK_BULK_INGEST_EXPECTED_WAL_COMMANDS",
-                        accepted
-                            .saturating_add(session_accepted)
-                            .saturating_mul(4)
-                            .to_string(),
-                    );
-                }
-                engine.flush_shard_index(1);
-                let elapsed = checkpoint_started.elapsed().as_secs_f64();
-                checkpoint_flushes = checkpoint_flushes.saturating_add(1);
-                checkpoint_flush_seconds += elapsed;
-                while next_checkpoint_accepted <= accepted.saturating_add(session_accepted) {
-                    next_checkpoint_accepted =
-                        next_checkpoint_accepted.saturating_add(flush_every_accepted.max(1));
-                }
-                eprintln!(
-                    "  checkpoint accepted {} flush_seconds {:.3}",
+                );
+                session_accepted += chunk_accepted;
+                session_failed += chunk_failed;
+                node_hashes.extend(chunk_node_hashes);
+                maybe_checkpoint(
+                    &engine,
                     accepted.saturating_add(session_accepted),
-                    elapsed
+                    failed.saturating_add(session_failed),
+                    false,
+                    flush_every_accepted,
+                    &mut next_checkpoint_accepted,
+                    &mut checkpoint_flushes,
+                    &mut checkpoint_flush_seconds,
                 );
             }
+            node_hashes.sort_unstable();
+            node_hashes.dedup();
+            accepted += session_accepted;
+            failed += session_failed;
+            if !node_hashes.is_empty() {
+                index
+                    .sessions
+                    .entry(session_id.clone())
+                    .or_default()
+                    .extend(node_hashes.iter().copied());
+            }
+            // Bulk persistence normally flushes once after all session groups below.
+            // Keep an escape hatch for diagnosis, but do not rewrite the growing
+            // shard index after every session in the normal fresh-start backfill.
+            if flush_every_session {
+                engine.flush_shard_index(1);
+            }
+            eprintln!(
+                "  session {} -> accepted {} failed {} skipped_covered {} ({:.0} rec/s cumulative)",
+                session_id,
+                session_accepted,
+                session_failed,
+                session_skipped_covered,
+                accepted as f64 / ingest_started.elapsed().as_secs_f64().max(0.001)
+            );
         }
-        node_hashes.sort_unstable();
-        node_hashes.dedup();
-        accepted += session_accepted;
-        failed += session_failed;
-        if !node_hashes.is_empty() {
-            index
-                .sessions
-                .entry(session_id.clone())
-                .or_default()
-                .extend(node_hashes.iter().copied());
-        }
-        // Bulk persistence normally flushes once after all session groups below.
-        // Keep an escape hatch for diagnosis, but do not rewrite the growing
-        // shard index after every session in the normal fresh-start backfill.
-        if flush_every_session {
-            engine.flush_shard_index(1);
-        }
-        eprintln!(
-            "  session {} -> accepted {} failed {} skipped_covered {} ({:.0} rec/s cumulative)",
-            session_id,
-            session_accepted,
-            session_failed,
-            session_skipped_covered,
-            accepted as f64 / ingest_started.elapsed().as_secs_f64().max(0.001)
-        );
     }
     let ingest_seconds = ingest_started.elapsed().as_secs_f64();
 
@@ -447,6 +511,7 @@ fn main() {
         "skip_covered_sessions": skip_covered_sessions,
         "gate_l1": env_bool("MATRIXARK_CONTEXT_INGEST_GATE_L1"),
         "raw_first": raw_first,
+        "raw_first_mixed_batching": raw_first,
         "sub_batch": sub_batch,
     });
     println!(
@@ -488,22 +553,93 @@ fn expected_node_hashes(tenant_hash: u64, sources: &[ContextExtractRequest]) -> 
     hashes
 }
 
-fn write_raw_sources(
-    engine: &TemporalEngine,
+#[derive(Debug)]
+struct RawBackfillItem {
+    session_id: String,
     tenant_hash: u64,
-    sources: &[ContextExtractRequest],
-) -> (u64, u64, Vec<u64>) {
-    if sources.is_empty() {
+    source: ContextExtractRequest,
+}
+
+fn tenant_hash_for_session(
+    account_id: &str,
+    tenant_id: &str,
+    user_id: &str,
+    session_id: &str,
+) -> u64 {
+    stable_hash64(&format!(
+        "{}:{}:{}:{}",
+        account_id, tenant_id, user_id, session_id
+    ))
+}
+
+fn expected_node_hash(tenant_hash: u64, source: &ContextExtractRequest) -> u64 {
+    stable_hash64(&format!(
+        "{}:{}:{}",
+        tenant_hash, source.source_kind as u8, source.source_id
+    ))
+}
+
+fn extend_session_index(index: &mut SessionIndex, node_hashes: Vec<(String, u64)>) {
+    if node_hashes.is_empty() {
+        return;
+    }
+    for (session_id, node_hash) in node_hashes {
+        index
+            .sessions
+            .entry(session_id)
+            .or_default()
+            .push(node_hash);
+    }
+}
+
+fn maybe_checkpoint(
+    engine: &TemporalEngine,
+    accepted: u64,
+    failed: u64,
+    raw_first: bool,
+    flush_every_accepted: u64,
+    next_checkpoint_accepted: &mut u64,
+    checkpoint_flushes: &mut u64,
+    checkpoint_flush_seconds: &mut f64,
+) {
+    if flush_every_accepted == 0 || accepted < *next_checkpoint_accepted {
+        return;
+    }
+    let checkpoint_started = Instant::now();
+    if raw_first && failed == 0 {
+        std::env::set_var(
+            "MATRIXARK_BULK_INGEST_EXPECTED_WAL_COMMANDS",
+            accepted.saturating_mul(4).to_string(),
+        );
+    }
+    engine.flush_shard_index(1);
+    let elapsed = checkpoint_started.elapsed().as_secs_f64();
+    *checkpoint_flushes = checkpoint_flushes.saturating_add(1);
+    *checkpoint_flush_seconds += elapsed;
+    while *next_checkpoint_accepted <= accepted {
+        *next_checkpoint_accepted =
+            next_checkpoint_accepted.saturating_add(flush_every_accepted.max(1));
+    }
+    eprintln!(
+        "  checkpoint accepted {} flush_seconds {:.3}",
+        accepted, elapsed
+    );
+}
+
+fn write_raw_sources_mixed(
+    engine: &TemporalEngine,
+    items: &[RawBackfillItem],
+) -> (u64, u64, Vec<(String, u64)>) {
+    if items.is_empty() {
         return (0, 0, Vec::new());
     }
-    let shard_id = sources[0].shard_id;
-    let mut commands = Vec::with_capacity(sources.len().saturating_mul(4));
+    let shard_id = items[0].source.shard_id;
+    let mut commands = Vec::with_capacity(items.len().saturating_mul(4));
     let mut node_hashes = Vec::new();
-    for source in sources {
-        let node_hash = stable_hash64(&format!(
-            "{}:{}:{}",
-            tenant_hash, source.source_kind as u8, source.source_id
-        ));
+    for item in items {
+        let source = &item.source;
+        let tenant_hash = item.tenant_hash;
+        let node_hash = expected_node_hash(tenant_hash, source);
         let event_id_hash = stable_hash64(&format!("event:{}:{}", source.source_id, source.body));
         let timestamp_ms = source.timestamp_ms.max(1);
         let node = ContextNode {
@@ -555,12 +691,6 @@ fn write_raw_sources(
             event_time_ms: timestamp_ms,
             index_ref,
         });
-        // Raw-first bulk ingest stores no embeddings, so mark each node
-        // embedding-dirty. The async embed drainer (MATRIXARK_EMBED_DRAINER) picks
-        // these up and attaches vectors; until then the hybrid retrieve path keeps
-        // them rankable via lexical scoring. This is the ONLY place the bulk path
-        // marks embedding-dirty (the live/extraction path embeds inline and marks
-        // only on failure).
         commands.push(Command::ContextMarkEmbeddingDirty {
             tenant_hash,
             marker: ContextSummaryDirtyMarker {
@@ -571,11 +701,11 @@ fn write_raw_sources(
             },
             clear: false,
         });
-        node_hashes.push(node_hash);
+        node_hashes.push((item.session_id.clone(), node_hash));
     }
     let response = engine.batch_execute(BatchExecuteRequest { shard_id, commands });
     if !response.status.ok {
-        return (0, sources.len() as u64, Vec::new());
+        return (0, items.len() as u64, Vec::new());
     }
     let failed_commands = response
         .responses
@@ -583,15 +713,13 @@ fn write_raw_sources(
         .filter(|entry| !entry.status.ok)
         .count();
     if failed_commands > 0 {
-        // Four commands per source: upsert-node, write-event, write-index-ref,
-        // mark-embedding-dirty.
         let failed_rows = failed_commands.div_ceil(4);
-        let accepted = sources.len().saturating_sub(failed_rows) as u64;
+        let accepted = items.len().saturating_sub(failed_rows) as u64;
         return (accepted, failed_rows as u64, node_hashes);
     }
     node_hashes.sort_unstable();
     node_hashes.dedup();
-    (sources.len() as u64, 0, node_hashes)
+    (items.len() as u64, 0, node_hashes)
 }
 
 fn session_index_path(root: &PathBuf, agent_name: &str) -> PathBuf {
