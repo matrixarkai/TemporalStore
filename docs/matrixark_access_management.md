@@ -318,13 +318,12 @@ agent-context systems:
 
 ## Registration And Console Pages
 
-The public website includes `website/matrixark-site/registration.html` for
-account registration and API-key request planning. The local operations UI
-includes `tools/temporalstore-monitoring-ui/access-management.html` for admins
-to see the account, tenant, user, session, API-key, and audit tool map.
+The local operations UI includes
+`tools/temporalstore-monitoring-ui/access-management.html` for admins to see the
+account, tenant, user, session, API-key, and audit tool map.
 
-Both pages are intentionally static-friendly: they generate request payloads and
-explain governance controls without requiring a live billing backend. A hosted
+That page is intentionally static-friendly: it generates request payloads and
+explains governance controls without requiring a live billing backend. A hosted
 MatrixArk Cloud control plane can wire the same fields directly into the MCP
 admin tools.
 

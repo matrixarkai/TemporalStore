@@ -18,7 +18,6 @@ from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 UI_DIR = ROOT / "tools" / "temporalstore-monitoring-ui"
-SITE_DIR = ROOT / "website" / "matrixark-site"
 
 
 class IdCollector(HTMLParser):
@@ -289,56 +288,6 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
         self.assertIn("portalState", html)
         self.assertIn("fallbackPortal", html)
 
-    def test_matrixark_site_has_management_portal(self) -> None:
-        html = (SITE_DIR / "management-portal.html").read_text(encoding="utf-8")
-        css = (SITE_DIR / "management-portal.css").read_text(encoding="utf-8")
-
-        self.assertIn("MatrixArk Management Portal", html)
-        self.assertIn("./management-portal.css", html)
-        self.assertIn("matrixark_auth_signup", html)
-        self.assertIn("matrixark_auth_sso_callback", html)
-        self.assertIn("matrixark_admin_apply_api_key", html)
-        self.assertIn("mcpServers", html)
-        self.assertIn("MATRIXARK_METADATA_BACKEND", html)
-        self.assertIn("matrixkv_sql", html)
-        self.assertIn("matrixkv_sql", html)
-        self.assertIn("matrixkv+mysql://matrixark", html)
-        self.assertIn("mysql://matrixark", html)
-        self.assertIn("matrixark_metadata_records", html)
-        self.assertIn("fallbackPortal", html)
-        self.assertIn("portalState", html)
-        self.assertIn("loadLivePortal", html)
-        self.assertIn("portalAutoRefresh", html)
-        self.assertIn("/api/management_portal", html)
-        self.assertIn("/api/backend_metrics", html)
-        self.assertIn("portal-prev-page", html)
-        self.assertIn("portal-next-page", html)
-        self.assertIn("ContextPack Audit Debugger", html)
-        self.assertIn("context_pack_debugger", html)
-        self.assertIn("portal-topology-records", html)
-        self.assertIn("Security And Governance", html)
-        self.assertIn("portal:read", html)
-        self.assertIn("owner / admin / operator / developer / viewer", html)
-        self.assertIn("Prometheus Observability", html)
-        self.assertIn("matrixark_backend_metrics", html)
-        self.assertIn("matrixark_ingest_qps", html)
-        self.assertIn("matrixark_retrieve_qps", html)
-        self.assertIn("topology_not_ready", html)
-        self.assertIn(".portal-token-grid", css)
-        self.assertIn(".portal-prometheus-grid", css)
-        self.assertIn(".portal-alert-card-list", css)
-
-        for page_name in [
-            "index.html",
-            "registration.html",
-            "blogs.html",
-            "temporalstore.html",
-            "matrixdb.html",
-            "matrixkv.html",
-            "blog-temporalstore-serving-engine.html",
-        ]:
-            page = (SITE_DIR / page_name).read_text(encoding="utf-8-sig")
-            self.assertIn("management-portal.html", page, page_name)
 
     def test_context_sample_health_has_operable_pipeline(self) -> None:
         health = json.loads((UI_DIR / "health.json").read_text(encoding="utf-8"))
