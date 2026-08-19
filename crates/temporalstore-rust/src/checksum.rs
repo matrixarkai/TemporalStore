@@ -8,7 +8,7 @@
 //! their cost is paid per write, before the durability barrier -- and a cryptographic digest
 //! is the wrong tool for the job. Nothing here is defending against a forged record; the
 //! threat is accidental corruption of a committed record (a flipped bit that still parses),
-//! which is exactly what a CRC is for. CRC32C is the same choice the reference implementation
+//! which is exactly what a CRC is for. CRC32C is the same choice this design
 //! makes: a per-record CRC32C in the record header plus a running per-block CRC32C in the
 //! block footer.
 //!

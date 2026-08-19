@@ -3,17 +3,16 @@
 
 //! Record framing shared by the write-ahead log and the served-index log.
 //!
-//! Both are append-only streams in the reference implementation, and both are framed by the
+//! Both are append-only streams in this design, and both are framed by the
 //! same stream layer:
 //!
 //! ```text
 //! varint32(payload_len) | little_endian_u32(crc32c) | payload
 //! ```
 //!
-//! This module is that layer. It is shared rather than duplicated for the same reason the
-//! reference shares it: the two streams differ in what they carry, not in how a record is
-//! delimited or verified, and a second framing would be a second set of corruption and
-//! truncation semantics to keep correct.
+//! This module is that layer. It is shared rather than duplicated because the two streams
+//! differ in what they carry, not in how a record is delimited or verified, and a second
+//! framing would be a second set of corruption and truncation semantics to keep correct.
 //!
 //! Length-prefixing is what makes a record addressable by its byte offset — the log id that a
 //! block address carries — and it is what allows a payload to contain any byte, including the
@@ -102,7 +101,7 @@ pub fn decode_framed_at<M: Message + Default>(
 /// Iterate every record in a framed stream, owning the cursor.
 ///
 /// Callers get records rather than offsets, so they cannot do the offset arithmetic that the
-/// signature above exists to prevent. This mirrors the reference, whose log iterators advance
+/// signature above exists to prevent. This mirrors this design, whose log iterators advance
 /// internally for the same reason. Stops at the first malformed record, yielding the error.
 pub struct FramedRecords<'a, M> {
     bytes: &'a [u8],
