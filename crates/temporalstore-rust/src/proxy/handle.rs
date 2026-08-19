@@ -70,7 +70,10 @@ impl ProxyService {
             }
             ("POST", "/proxy/config") | ("POST", "/ProxyService/UpdateConfig") => {
                 match parse_json::<ProxyOptions>(&request.body) {
-                    Ok(options) => json_response(200, &self.update_options_report(options)),
+                    Ok(mut options) => {
+                        self.carry_forward_admission_options(&mut options, &request.body);
+                        json_response(200, &self.update_options_report(options))
+                    }
                     Err(err) => {
                         self.inc_bad_request();
                         json_response(400, &Status::error("bad_request", err.to_string()))

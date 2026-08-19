@@ -18,6 +18,8 @@ impl ProxyService {
             ("batch_execute", stats.batch_execute_requests),
             ("bad_request", stats.bad_requests),
             ("admission_rejection", stats.admission_rejections),
+            ("account_rejection", stats.account_rejections),
+            ("inflight_rejection", stats.inflight_rejections),
             ("heartbeat", stats.heartbeat_total),
             ("auto_register", stats.auto_register_total),
         ] {
@@ -98,6 +100,58 @@ impl ProxyService {
             "temporalstore_proxy_drop_percent",
             &[],
             options.drop_percent as u64,
+        );
+
+        let (inflight_total, inflight_writes) = self.inflight_snapshot();
+        out.push_str(
+            "# HELP temporalstore_proxy_inflight_requests Requests currently in flight through this proxy.\n",
+        );
+        out.push_str("# TYPE temporalstore_proxy_inflight_requests gauge\n");
+        for (kind, value) in [("total", inflight_total), ("write", inflight_writes)] {
+            push_proxy_metric(
+                &mut out,
+                "temporalstore_proxy_inflight_requests",
+                &[("kind", kind)],
+                value,
+            );
+        }
+
+        out.push_str(
+            "# HELP temporalstore_proxy_inflight_limit Configured in-flight admission quota; 0 is unlimited.\n",
+        );
+        out.push_str("# TYPE temporalstore_proxy_inflight_limit gauge\n");
+        for (kind, value) in [
+            ("total", options.max_inflight_requests),
+            ("write", options.max_inflight_write_requests),
+        ] {
+            push_proxy_metric(
+                &mut out,
+                "temporalstore_proxy_inflight_limit",
+                &[("kind", kind)],
+                value,
+            );
+        }
+
+        out.push_str(
+            "# HELP temporalstore_proxy_account_enforcement Whether this proxy rejects namespaces outside its account.\n",
+        );
+        out.push_str("# TYPE temporalstore_proxy_account_enforcement gauge\n");
+        push_proxy_metric(
+            &mut out,
+            "temporalstore_proxy_account_enforcement",
+            &[],
+            u64::from(options.enforce_ingestion_account),
+        );
+
+        out.push_str(
+            "# HELP temporalstore_proxy_pin_primary_reads Whether reads default to the primary replica.\n",
+        );
+        out.push_str("# TYPE temporalstore_proxy_pin_primary_reads gauge\n");
+        push_proxy_metric(
+            &mut out,
+            "temporalstore_proxy_pin_primary_reads",
+            &[],
+            u64::from(options.pin_primary_reads),
         );
 
         out.push_str("# HELP temporalstore_proxy_metric_family_parity proxy operational metric surface mapped to Rust Prometheus families.\n");
