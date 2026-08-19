@@ -26,6 +26,7 @@ mod failure_detector;
 mod placement_rebalance;
 mod raft_failover;
 mod shard_check;
+mod retention;
 use self::partitioning::*;
 use self::topology_helpers::*;
 pub use self::auto_rebalance::{
@@ -42,6 +43,10 @@ pub use self::placement_rebalance::{
 pub use self::raft_failover::{compute_raft_failover_triggers, RaftFailoverTrigger};
 pub use self::shard_check::{
     ShardCheckOptions, ShardCheckReport, ShardChecker, ShardDivergence,
+};
+pub use self::retention::{
+    plan_meta_retention, MetaRetentionOptions, MetaRetentionPlan, MetaRetentionReport,
+    RetentionCandidate,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -766,6 +771,12 @@ pub(crate) struct MetaState {
     topology_version: u64,
     topology_events: VecDeque<TopologyChangeEvent>,
     scheduler_finish_generations: BTreeMap<String, u64>,
+    /// When each dropped resource was dropped, keyed `server:<addr>`,
+    /// `proxy:<addr>` or `table:<namespace.table>`. Dropping previously recorded
+    /// no timestamp at all, so "dropped long enough ago to forget" was not
+    /// expressible; retention ages against this. Kept beside the resources
+    /// rather than inside them so the wire types are unchanged.
+    dropped_since_ms: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -782,6 +793,11 @@ pub struct MetaSnapshot {
     pub topology_version: u64,
     #[serde(default)]
     pub scheduler_finish_generations: BTreeMap<String, u64>,
+    /// Drop timestamps for the tombstones in this snapshot. Carried so a peer
+    /// that installs the snapshot can keep ageing them instead of restarting
+    /// every tombstone's clock.
+    #[serde(default)]
+    pub dropped_since_ms: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

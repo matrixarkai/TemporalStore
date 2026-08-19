@@ -13,6 +13,7 @@ use temporalstore_rust::http::{
 use temporalstore_rust::meta::{
     AckResponse, AddNamespaceRequest, AddTableRequest, AutoRebalanceOptions, ConvictionPolicy,
     DeleteTableRequest, FailureDetectorOptions, FreezeStaleServersRequest, GetShardResponse,
+    MetaRetentionOptions,
     GetTableTopologyRequest, LoadFinishRequest,
     MetaSnapshot, MetaSnapshotFileRequest, MetaSnapshotFileResponse, MetaSnapshotResponse,
     ProxyHeartbeatRequest, PublishShardSnapshotRequest, RegisterProxyRequest,
@@ -173,6 +174,42 @@ fn main() {
             }
             MetaBackend::Raft(_) => {
                 warn!("TS_META_SHARD_DIVERGENCE_CHECK ignored: raft backend manages placement itself");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    // Retention GC. Dropping a server, proxy or table leaves its entry in the
+    // meta state forever, so state, /servers, /tables and every exported
+    // snapshot grow for the lifetime of the cluster. This ages the tombstones
+    // out. OFF by default (TS_META_RETENTION_GC) because forgetting a resource
+    // is not reversible.
+    let _retention_gc = if env_bool("TS_META_RETENTION_GC", false) {
+        match &backend {
+            MetaBackend::Single(meta) => {
+                let defaults = MetaRetentionOptions::default();
+                let retention_ms = env_u64("TS_META_RETENTION_MS", defaults.server_retention_ms);
+                let options = MetaRetentionOptions {
+                    server_retention_ms: env_u64("TS_META_SERVER_RETENTION_MS", retention_ms),
+                    proxy_retention_ms: env_u64("TS_META_PROXY_RETENTION_MS", retention_ms),
+                    table_retention_ms: env_u64("TS_META_TABLE_RETENTION_MS", retention_ms),
+                    max_purges_per_round: env_u64(
+                        "TS_META_RETENTION_MAX_PURGES",
+                        defaults.max_purges_per_round as u64,
+                    ) as usize,
+                };
+                let interval_ms = env_u64("TS_META_RETENTION_INTERVAL_MS", 60_000);
+                info!(
+                    interval_ms,
+                    server_retention_ms = options.server_retention_ms,
+                    max_purges_per_round = options.max_purges_per_round,
+                    "meta retention GC enabled"
+                );
+                Some(meta.start_meta_retention_loop(options, interval_ms))
+            }
+            MetaBackend::Raft(_) => {
+                warn!("TS_META_RETENTION_GC ignored: raft backend owns its own meta state");
                 None
             }
         }

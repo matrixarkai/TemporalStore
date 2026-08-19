@@ -249,3 +249,29 @@ pub(super) fn counters_from_stats(stats: &MetaStats) -> MetaCounters {
         load_finish_total: stats.load_finish_total,
     }
 }
+
+/// Key under which a resource's drop timestamp is recorded in
+/// [`MetaState::dropped_since_ms`].
+pub(super) fn dropped_key(kind: &str, id: &str) -> String {
+    format!("{kind}:{id}")
+}
+
+/// Record when a resource was dropped, or clear the record when it comes back.
+/// Retention has nothing to age against without this.
+pub(super) fn stamp_dropped_since(
+    state: &mut MetaState,
+    key: &str,
+    next: MetaEntityState,
+    now_ms: u64,
+) {
+    match next {
+        MetaEntityState::Dropped => {
+            // Keep the first drop time: re-dropping an already dropped resource
+            // must not restart its retention clock.
+            state.dropped_since_ms.entry(key.to_string()).or_insert(now_ms);
+        }
+        MetaEntityState::Normal | MetaEntityState::Frozen => {
+            state.dropped_since_ms.remove(key);
+        }
+    }
+}
