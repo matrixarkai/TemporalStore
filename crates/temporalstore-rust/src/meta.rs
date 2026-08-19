@@ -24,6 +24,7 @@ mod topology_helpers;
 mod auto_rebalance;
 mod failure_detector;
 mod raft_failover;
+mod shard_check;
 use self::partitioning::*;
 use self::topology_helpers::*;
 pub use self::auto_rebalance::{
@@ -35,6 +36,9 @@ pub use self::failure_detector::{
     MetaFailureDetector,
 };
 pub use self::raft_failover::{compute_raft_failover_triggers, RaftFailoverTrigger};
+pub use self::shard_check::{
+    ShardCheckOptions, ShardCheckReport, ShardChecker, ShardDivergence,
+};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -237,6 +241,11 @@ pub struct ServerMetaInfo {
     /// shards the metaserver still believes it is serving.
     #[serde(default)]
     pub reboot_detected: bool,
+    /// Set once this server has been seen reporting `shard_states` at all.
+    /// Until then an empty report is indistinguishable from an old build that
+    /// does not send them, so the shard-divergence check declines to judge it.
+    #[serde(default)]
+    pub reports_shard_states: bool,
     pub binary_version: String,
     pub shard_loads: Vec<ShardLoad>,
     #[serde(default)]

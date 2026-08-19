@@ -41,6 +41,7 @@ impl SingleNodeMeta {
                 // from its next heartbeat.
                 reported_boot_time_ms: 0,
                 reboot_detected: false,
+                reports_shard_states: false,
                 binary_version: request.binary_version,
                 shard_loads: Vec::new(),
                 shard_stat_loads: Vec::new(),
@@ -108,6 +109,11 @@ impl SingleNodeMeta {
         server.shard_loads = request.shard_loads;
         server.shard_stat_loads = request.shard_stat_loads;
         server.runtime_load = request.runtime_load;
+        // Sticky: once a server has been seen reporting shard states, a later
+        // empty report is real information (it dropped everything) rather than
+        // an old build that never sends them.
+        server.reports_shard_states =
+            server.reports_shard_states || !request.shard_states.is_empty();
         server.shard_states = request.shard_states;
         let server_state = server.state.as_str().to_string();
         let anchored = server.reported_boot_time_ms;

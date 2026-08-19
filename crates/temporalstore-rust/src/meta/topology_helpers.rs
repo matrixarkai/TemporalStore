@@ -102,6 +102,7 @@ pub(super) fn ensure_server(state: &mut MetaState, server_addr: &str) {
             boot_time_ms: 0,
             reported_boot_time_ms: 0,
             reboot_detected: false,
+            reports_shard_states: false,
             binary_version: String::new(),
             shard_loads: Vec::new(),
             shard_stat_loads: Vec::new(),
