@@ -104,7 +104,13 @@ fn stage_timestamped_outcomes(
 ///
 /// The insert above records where a point landed; without this its removal is invisible, and a
 /// shard rebuilt from records alone would keep points the shard itself has dropped.
-fn stage_timestamped_removal(shard_id: ShardId, kind: &str, key: &str, routing_bucket: u32, timestamp_ms: u64) {
+fn stage_timestamped_removal(
+    shard_id: ShardId,
+    kind: &str,
+    key: &str,
+    routing_bucket: u32,
+    timestamp_ms: u64,
+) {
     if !crate::wal::wal_outcome_items_enabled() {
         return;
     }
@@ -179,6 +185,7 @@ pub(super) fn append_timestamped_kv_pages(
     points: Vec<FeaturePoint>,
     routing_bucket: u32,
     async_storage: bool,
+    promote_sync_writes: bool,
 ) -> Result<Vec<(u64, BlockAddress)>, BlockStoreError> {
     append_timestamped_kv_pages_inner(
         cache,
@@ -189,6 +196,7 @@ pub(super) fn append_timestamped_kv_pages(
         points,
         routing_bucket,
         async_storage,
+        promote_sync_writes,
         None,
     )
 }
@@ -207,6 +215,7 @@ pub(super) fn append_timestamped_kv_pages_keyed(
     points: Vec<FeaturePoint>,
     routing_bucket: u32,
     async_storage: bool,
+    promote_sync_writes: bool,
     identity: u64,
 ) -> Result<Vec<(u64, BlockAddress)>, BlockStoreError> {
     append_timestamped_kv_pages_inner(
@@ -218,6 +227,7 @@ pub(super) fn append_timestamped_kv_pages_keyed(
         points,
         routing_bucket,
         async_storage,
+        promote_sync_writes,
         Some(identity),
     )
 }
@@ -232,6 +242,7 @@ fn append_timestamped_kv_pages_inner(
     points: Vec<FeaturePoint>,
     routing_bucket: u32,
     async_storage: bool,
+    promote_sync_writes: bool,
     identity: Option<u64>,
 ) -> Result<Vec<(u64, BlockAddress)>, BlockStoreError> {
     let object_id = stable_page_object_id(shard_id, kind, key, None);
@@ -256,16 +267,18 @@ fn append_timestamped_kv_pages_inner(
         }
         for ((chunk, packed), address) in chunk_points.into_iter().zip(encoded_pages).zip(addresses)
         {
-            cache.put_memory_only(
-                CacheKey::page_with_slot(
-                    shard_id,
-                    address.page_slab_id,
-                    address.offset,
-                    address.length,
-                    address.routing_bucket,
-                ),
-                packed,
-            );
+            if promote_sync_writes {
+                cache.put_memory_only(
+                    CacheKey::page_with_slot(
+                        shard_id,
+                        address.page_slab_id,
+                        address.offset,
+                        address.length,
+                        address.routing_bucket(),
+                    ),
+                    packed,
+                );
+            }
             refs.extend(
                 chunk
                     .into_iter()

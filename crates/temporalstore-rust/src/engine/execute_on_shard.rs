@@ -649,8 +649,12 @@ pub(crate) fn execute_on_shard(
             let entries = bucket_index_component_page_addresses(shard, "hash", &key)
                 .into_iter()
                 .filter_map(|(field, address)| {
-                    read_page_bytes(cache, page_store, shard_id, &address)
-                        .map(|value| (field.map(|name| name.to_string()).unwrap_or_default(), value))
+                    read_page_bytes(cache, page_store, shard_id, &address).map(|value| {
+                        (
+                            field.map(|name| name.to_string()).unwrap_or_default(),
+                            value,
+                        )
+                    })
                 })
                 .collect();
             CommandResponse::HashEntries { entries }
@@ -669,7 +673,8 @@ pub(crate) fn execute_on_shard(
             }
         }
         Command::HashDelete { key, field } => {
-            mutated |= mark_bucket_index_page_deleted(shard, shard_id, "hash", &key, Some(field.as_str()));
+            mutated |=
+                mark_bucket_index_page_deleted(shard, shard_id, "hash", &key, Some(field.as_str()));
             if let Some(fields) = shard.hashes.get_mut(&key) {
                 mutated |= fields.remove(&field).is_some();
                 // Mirror hash2::Del: deleting the last field removes the whole key
@@ -872,9 +877,7 @@ pub(crate) fn execute_on_shard(
             }
             let members = ordered
                 .into_iter()
-                .flat_map(|(member, biased)| {
-                    [member, zset_score_string(biased).into_bytes()]
-                })
+                .flat_map(|(member, biased)| [member, zset_score_string(biased).into_bytes()])
                 .collect();
             CommandResponse::Members { members }
         }
@@ -928,10 +931,7 @@ pub(crate) fn execute_on_shard(
             }
         }
         Command::SeenCard { key } => CommandResponse::Integer {
-            value: shard
-                .seen
-                .get(&key)
-                .map_or(0, |seen| seen.by_member.len()) as i64,
+            value: shard.seen.get(&key).map_or(0, |seen| seen.by_member.len()) as i64,
         },
         Command::BucketTake {
             key,
@@ -1197,8 +1197,7 @@ pub(crate) fn execute_on_shard(
             match popped {
                 None => CommandResponse::Bytes { value: None },
                 Some((seq, address)) => {
-                    let component =
-                        format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
+                    let component = format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
                     mutated = true;
                     mark_bucket_index_page_deleted(shard, shard_id, "list", &key, Some(&component));
                     if shard.lists.get(&key).is_some_and(BTreeMap::is_empty) {
@@ -1299,7 +1298,13 @@ pub(crate) fn execute_on_shard(
         }
         Command::SetRemove { key, member } => {
             let member_component = hex::encode(&member);
-            mutated |= mark_bucket_index_page_deleted(shard, shard_id, "set", &key, Some(&member_component));
+            mutated |= mark_bucket_index_page_deleted(
+                shard,
+                shard_id,
+                "set",
+                &key,
+                Some(&member_component),
+            );
             if let Some(set) = shard.sets.get_mut(&key) {
                 mutated |= set.remove(&member).is_some();
             }
@@ -1324,6 +1329,7 @@ pub(crate) fn execute_on_shard(
                 points,
                 routing_bucket,
                 async_storage,
+                true,
             ) {
                 for (timestamp_ms, address) in addresses {
                     series.insert(timestamp_ms, address);
@@ -1391,6 +1397,7 @@ pub(crate) fn execute_on_shard(
                     sorted_feature_points(accepted_points),
                     routing_bucket,
                     async_storage,
+                    true,
                 ) {
                     for (timestamp_ms, address) in addresses {
                         series.insert(timestamp_ms, address);
@@ -1556,6 +1563,7 @@ pub(crate) fn execute_on_shard(
                 points,
                 routing_bucket,
                 async_storage,
+                true,
             ) {
                 for (timestamp_ms, address) in addresses {
                     series.insert(timestamp_ms, address);
@@ -1717,6 +1725,7 @@ pub(crate) fn execute_on_shard(
                 points,
                 routing_bucket,
                 async_storage,
+                true,
             ) {
                 for (timestamp_ms, address) in addresses {
                     series.insert(timestamp_ms, address);
@@ -2564,6 +2573,7 @@ pub(crate) fn execute_on_shard(
                     }],
                     routing_bucket,
                     async_storage && !cold_storage,
+                    !cold_storage,
                     event_id_hash,
                 ) {
                     for (stored_timeline_key, address) in addresses {
@@ -2643,6 +2653,7 @@ pub(crate) fn execute_on_shard(
                     }],
                     routing_bucket,
                     async_storage && !cold_storage,
+                    !cold_storage,
                     event_id_hash,
                 ) {
                     for (stored_timeline_key, address) in addresses {
@@ -2686,7 +2697,8 @@ pub(crate) fn execute_on_shard(
                             value,
                         }],
                         routing_bucket,
-                        async_storage,
+                        async_storage && !cold_storage,
+                        !cold_storage,
                     ) {
                         let series = shard.context_indexes.entry(object_key.clone()).or_default();
                         for (timestamp_ms, address) in addresses {
@@ -2813,6 +2825,7 @@ pub(crate) fn execute_on_shard(
                 }],
                 routing_bucket,
                 async_storage,
+                true,
             ) {
                 let series = shard.context_indexes.entry(object_key.clone()).or_default();
                 for (timestamp_ms, address) in addresses {
@@ -2945,6 +2958,7 @@ pub(crate) fn execute_on_shard(
                 }],
                 routing_bucket,
                 async_storage,
+                true,
             ) {
                 let series = shard.context_audits.entry(object_key.clone()).or_default();
                 for (timestamp_ms, address) in addresses {
@@ -3041,17 +3055,14 @@ pub(crate) fn execute_on_shard(
                     vec![ContextDirtyNode {
                         node_hash: entry.node_hash,
                         first_event_time_ms: entry.first_event_time_ms,
-            last_event_time_ms: entry.last_event_time_ms,
+                        last_event_time_ms: entry.last_event_time_ms,
                         reason: entry.reason,
                         propagate_depth: entry.propagate_depth,
                         mark_count: entry.mark_count,
                     }]
                 })
                 .unwrap_or_default();
-            CommandResponse::ContextSummaryDirtyNodes {
-                object_key,
-                nodes,
-            }
+            CommandResponse::ContextSummaryDirtyNodes { object_key, nodes }
         }
         Command::ContextMarkEmbeddingDirty {
             tenant_hash,
@@ -3122,7 +3133,7 @@ pub(crate) fn execute_on_shard(
                     nodes.push(ContextDirtyNode {
                         node_hash: entry.node_hash,
                         first_event_time_ms: entry.first_event_time_ms,
-            last_event_time_ms: entry.last_event_time_ms,
+                        last_event_time_ms: entry.last_event_time_ms,
                         reason: entry.reason,
                         propagate_depth: entry.propagate_depth,
                         mark_count: entry.mark_count,
@@ -3145,7 +3156,7 @@ pub(crate) fn execute_on_shard(
                     nodes.push(ContextDirtyNode {
                         node_hash: entry.node_hash,
                         first_event_time_ms: entry.first_event_time_ms,
-            last_event_time_ms: entry.last_event_time_ms,
+                        last_event_time_ms: entry.last_event_time_ms,
                         reason: entry.reason,
                         propagate_depth: entry.propagate_depth,
                         mark_count: entry.mark_count,
@@ -3287,6 +3298,7 @@ pub(crate) fn execute_on_shard(
                     }],
                     routing_bucket,
                     async_storage,
+                    true,
                 ) {
                     let series = shard
                         .context_children
@@ -3367,6 +3379,7 @@ pub(crate) fn execute_on_shard(
                 }],
                 routing_bucket,
                 async_storage,
+                true,
             ) {
                 let series = shard
                     .context_summaries
@@ -3390,8 +3403,7 @@ pub(crate) fn execute_on_shard(
                 && !summary.vector.is_empty()
             {
                 let node_key = context_node_key(tenant_hash, summary.node_hash);
-                if let Some(node) =
-                    load_context_node(cache, page_store, shard_id, shard, &node_key)
+                if let Some(node) = load_context_node(cache, page_store, shard_id, shard, &node_key)
                 {
                     // Never move the copy BACKWARDS. A summary can be written with an older
                     // `valid_from_ms` than one already stored -- a backfill, a replay, a
@@ -3471,7 +3483,12 @@ pub(crate) fn execute_on_shard(
                     // re-summarised, scoring used the superseded embedding, and a stale vector of
                     // the right width still scores a plausible cosine, so nothing surfaced it.
                     load_newest_context_summary(
-                        cache, page_store, shard_id, shard, &object_key, as_of_ms,
+                        cache,
+                        page_store,
+                        shard_id,
+                        shard,
+                        &object_key,
+                        as_of_ms,
                     )
                     .filter(|summary| !summary.vector.is_empty())
                     .map(|summary| ContextSummaryVector {
@@ -3501,6 +3518,7 @@ pub(crate) fn execute_on_shard(
                 }],
                 routing_bucket,
                 async_storage,
+                true,
             ) {
                 let series = shard
                     .context_compressions
@@ -3569,17 +3587,13 @@ pub(crate) fn execute_on_shard(
                         source_start_ms,
                         source_end_ms,
                     )
-                        .filter_map(|(timeline_key, address)| {
-                            read_context_value_cold::<ContextEvent>(
-                                page_store,
-                                timeline_key,
-                                address,
-                            )
-                        })
-                        .filter(|event| {
-                            event.confidence >= min_confidence && event.importance >= min_importance
-                        })
-                        .collect::<Vec<_>>()
+                    .filter_map(|(timeline_key, address)| {
+                        read_context_value_cold::<ContextEvent>(page_store, timeline_key, address)
+                    })
+                    .filter(|event| {
+                        event.confidence >= min_confidence && event.importance >= min_importance
+                    })
+                    .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
             selected.sort_by_key(|event| (event.event_time_ms, event.event_id_hash));
@@ -3618,6 +3632,7 @@ pub(crate) fn execute_on_shard(
                     }],
                     routing_bucket,
                     async_storage,
+                    false,
                 ) {
                     let series = shard
                         .context_compressions
@@ -3821,7 +3836,11 @@ pub(super) fn bucket_take(
 
 fn bucket_answer(allowed: bool, remaining: f64, retry_after_ms: u64) -> Vec<Vec<u8>> {
     vec![
-        if allowed { b"1".to_vec() } else { b"0".to_vec() },
+        if allowed {
+            b"1".to_vec()
+        } else {
+            b"0".to_vec()
+        },
         format!("{remaining:.3}").into_bytes(),
         retry_after_ms.to_string().into_bytes(),
     ]

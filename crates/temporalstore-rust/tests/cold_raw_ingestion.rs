@@ -2,8 +2,8 @@
 // Copyright 2026 MatrixArkAI
 
 use temporalstore_rust::{
-    Command, CommandResponse, ContextEvent, ContextExtractedEventIndexes, ExecuteRequest,
-    ScanStreamRequest, StreamKind, TemporalEngine, WriteAheadLogRecord,
+    wal::decode_wal_line, Command, CommandResponse, ContextEvent, ContextExtractedEventIndexes,
+    ExecuteRequest, ScanStreamRequest, StreamKind, TemporalEngine,
 };
 
 fn cold_event(event_id_hash: u64, event_time_ms: u64, text: &str) -> ContextEvent {
@@ -105,7 +105,7 @@ fn cold_raw_ingestion_writes_wal_and_avoids_cache_promotion() {
     let wal_records = wal_scan
         .records
         .iter()
-        .map(|record| serde_json::from_slice::<WriteAheadLogRecord>(&record.data).unwrap())
+        .map(|record| decode_wal_line(&record.data).unwrap())
         .collect::<Vec<_>>();
     assert_eq!(wal_records.len(), 4);
     // This asserts on the OPERATION, which a record carries only when it is not carrying results

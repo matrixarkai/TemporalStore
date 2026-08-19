@@ -226,6 +226,9 @@ impl TemporalEngine {
         if fold_deltas {
             self.fold_index_log_deltas(shard_id, &mut shard)?;
         }
+        // object_*_lookup is a derived serving accelerator and is no longer persisted;
+        // rebuild it before reconcile/promotion and before returning a loaded shard.
+        shard.bucket_index.rebuild_object_page_lookup();
         // No base and nothing to fold -> genuinely nothing persisted yet.
         if !base_present
             && shard.bucket_index.bucket_map.is_empty()

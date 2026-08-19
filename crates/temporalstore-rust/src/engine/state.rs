@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use serde::{Deserialize, Serialize};
 
 use crate::block_store::BlockAddress;
-use crate::types::{CommandResponse, FeaturePoint, ControlStateSelectionType, ShardId};
+use crate::types::{CommandResponse, ControlStateSelectionType, FeaturePoint, ShardId};
 
 use super::control_rollup::RollupEntry;
 use super::hll::Hll;
@@ -91,6 +91,8 @@ pub(super) struct ShardState {
     /// window rather than at everything.
     pub(super) expires_at_ms: BTreeMap<String, u64>,
     pub(super) strings: HashMap<String, BlockAddress>,
+    // Rebuildable from the durable bucket/page index on load; do not duplicate in checkpoints.
+    #[serde(default, skip_serializing)]
     pub(super) hashes: HashMap<String, HashMap<String, BlockAddress>>,
     #[serde(default, with = "super::set_index_serde")]
     pub(super) sets: HashMap<String, BTreeMap<Vec<u8>, BlockAddress>>,
@@ -177,7 +179,7 @@ pub(super) struct ShardState {
     // Keyed by EVENT ID HASH, aligning events with entities/embeddings so update and delete
     // address one event directly in log n instead of scanning the node's whole series (mem0
     // delete carries the event id, not the time, so it previously had no way to locate one).
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub(super) context_events: HashMap<String, BTreeMap<u64, BlockAddress>>,
     // Time index over the same events: timeline_key -> event_id_hash, where timeline_key stays
     // timestamp_ms * CONTEXT_TIMELINE_FANOUT + (id % FANOUT). The primary map above is ordered
@@ -191,7 +193,7 @@ pub(super) struct ShardState {
     // ShardState is snapshotted whole.
     #[serde(default)]
     pub(super) context_event_timeline: HashMap<String, BTreeMap<u64, u64>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub(super) context_indexes: HashMap<String, BTreeMap<u64, BlockAddress>>,
     #[serde(default)]
     pub(super) context_audits: HashMap<String, BTreeMap<u64, BlockAddress>>,
@@ -282,7 +284,10 @@ pub(super) struct CoreIndex {
     #[serde(default, alias = "slots")]
     #[serde(rename = "slot_map")]
     pub(super) bucket_map: BucketMap,
-    #[serde(default)]
+    // Derived lookup tables rebuilt from the bucket map on load. Persisting them duplicates
+    // page references already carried by the bucket index and made large context backfill
+    // checkpoints tens of MB larger without adding authoritative recovery state.
+    #[serde(default, skip_serializing)]
     pub(super) object_page_lookup: ObjectBlockLookup,
     /// One shared copy of each page kind, so a page holds a pointer rather than its own string.
     ///
