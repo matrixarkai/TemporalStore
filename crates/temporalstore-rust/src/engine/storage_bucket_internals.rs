@@ -719,11 +719,31 @@ pub(super) fn storage_topology_snapshot_with_samples(
     snapshot
 }
 
+/// Running total of live-page entries materialized by [`collect_live_page_entries`].
+///
+/// This walk is `O(live pages)` and clones two strings per entry, and several callers run it on
+/// a background loop, so its cost is easy to introduce and hard to notice. The counter makes it
+/// measurable: a test can assert that a code path's scan volume does not grow with the store.
+static LIVE_PAGE_SCAN_ENTRIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Live-page entries materialized since the last reset.
+pub fn live_page_scan_entries() -> u64 {
+    LIVE_PAGE_SCAN_ENTRIES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Reset the scan counter. For tests measuring one operation's scan volume.
+pub fn reset_live_page_scan_entries() {
+    LIVE_PAGE_SCAN_ENTRIES.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub(super) fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
-    if !shard.bucket_index.bucket_map.is_empty() {
-        return collect_bucket_index_live_page_entries(shard);
-    }
-    collect_model_live_page_entries(shard)
+    let entries = if !shard.bucket_index.bucket_map.is_empty() {
+        collect_bucket_index_live_page_entries(shard)
+    } else {
+        collect_model_live_page_entries(shard)
+    };
+    LIVE_PAGE_SCAN_ENTRIES.fetch_add(entries.len() as u64, std::sync::atomic::Ordering::Relaxed);
+    entries
 }
 
 pub(super) fn mark_async_dirty_object(

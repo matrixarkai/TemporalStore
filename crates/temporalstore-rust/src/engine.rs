@@ -33,12 +33,14 @@ mod recovery_sweep_compact;
 mod persistence;
 mod bucket_dump_io;
 mod command_validation;
+pub(crate) mod eviction_sampler;
 // Single source of truth for write-command classification (shared with the data_node layer,
 // which previously kept a drifted subset that mis-classified context/control-state writes
 // as reads -> lifecycle-write-barrier bypass + missing dump scheduling).
 pub(crate) use command_validation::{command_object_keys, is_write_command};
 pub(crate) use storage_manager_cycle::cross_shard_reclaim_guard_enabled;
 mod storage_bucket_internals;
+pub use storage_bucket_internals::{live_page_scan_entries, reset_live_page_scan_entries};
 mod compaction;
 mod storage_reporting;
 mod hashing;
@@ -1870,6 +1872,31 @@ fn env_flag_on(name: &str) -> bool {
 /// Default-ON gate read: the fix is LIVE unless explicitly disabled with
 /// `=0|false|no|off`. Shipped write-path/raft fixes use this so production gets the
 /// fixed behavior by default; the env var remains only as an escape hatch.
+/// Bound eviction victim selection to a sampled scan instead of enumerating and sorting every
+/// bucket. Off by default: this changes which buckets are chosen, not just how fast they are
+/// found, so it wants deliberate enabling and measurement per deployment.
+pub fn evict_sampled_lru_enabled() -> bool {
+    env_flag_on("TS_EVICT_SAMPLED_LRU")
+}
+
+/// Tuning for sampled eviction, read from the environment with defaults that mirror the
+/// established policy: sample several buckets per wanted victim, keep a bounded candidate pool
+/// across passes, and cap how far one pass may walk.
+pub(crate) fn evict_sampler_config() -> eviction_sampler::EvictionSamplerConfig {
+    fn parse(name: &str, default: usize) -> usize {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(default)
+    }
+    eviction_sampler::EvictionSamplerConfig {
+        samples: parse("TS_EVICT_SAMPLES", 5),
+        pool_size: parse("TS_EVICT_POOL_SIZE", 64),
+        scan_turns: parse("TS_EVICT_SCAN_TURNS", 4),
+    }
+}
+
 fn env_flag_default_on(name: &str) -> bool {
     !matches!(
         std::env::var(name)

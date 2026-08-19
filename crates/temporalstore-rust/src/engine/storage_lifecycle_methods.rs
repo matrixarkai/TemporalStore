@@ -880,6 +880,165 @@ impl TemporalEngine {
         }
     }
 
+    /// Pick victims with a bounded sampled scan instead of enumerating every bucket.
+    ///
+    /// Reads recency and eligibility straight off the bucket index -- the same signals the full
+    /// scan derives, but without materializing every live page -- and computes byte totals only
+    /// for the buckets actually chosen, which is at most `batch_limit` of them.
+    fn sampled_eviction_victims(
+        &self,
+        shard_id: ShardId,
+        batch_limit: usize,
+        cache_by_bucket: &BTreeMap<u32, crate::StorageCacheBucketSummary>,
+    ) -> Vec<StorageEvictionVictim> {
+        use super::eviction_sampler::{select_victims, BucketSample, BucketSource, ScanResult};
+
+        /// Bucket-index-backed source. Scanning ranges over the ordered map from the cursor, so
+        /// a pass touches only the window it is budgeted for.
+        struct IndexSource<'a> {
+            buckets: &'a super::state::BucketMap,
+            recency: &'a std::collections::HashMap<u32, u64>,
+        }
+
+        impl<'a> IndexSource<'a> {
+            fn sample(&self, routing_bucket: u32, bucket: &super::state::BucketNode) -> BucketSample {
+                BucketSample {
+                    routing_bucket,
+                    // Evicting a bucket only frees something if it is resident and still holds
+                    // live objects, which is the same eligibility the full scan applies via its
+                    // weight filter.
+                    eligible: bucket.in_memory
+                        && !bucket.deleted
+                        && !bucket.object_index.is_empty(),
+                    last_used_ms: self.recency.get(&routing_bucket).copied().unwrap_or(0),
+                }
+            }
+        }
+
+        impl<'a> BucketSource for IndexSource<'a> {
+            fn bucket_count(&self) -> usize {
+                self.buckets.len()
+            }
+
+            fn scan(
+                &self,
+                cursor: Option<u32>,
+                budget: usize,
+                visit: &mut dyn FnMut(&BucketSample) -> bool,
+            ) -> ScanResult {
+                if self.buckets.is_empty() || budget == 0 {
+                    return ScanResult::default();
+                }
+                let mut scanned = 0usize;
+                let mut wrapped = false;
+                let mut next_cursor = None;
+                let mut keep_going = true;
+
+                let start = cursor.unwrap_or(0);
+                // Two ranges rather than one, so the scan wraps past the end of the bucket space
+                // back to the beginning without materializing the map.
+                for pass in 0..2 {
+                    let iter: Box<dyn Iterator<Item = (&u32, &super::state::BucketNode)>> =
+                        if pass == 0 {
+                            Box::new(self.buckets.range(start..))
+                        } else {
+                            wrapped = true;
+                            Box::new(self.buckets.range(..start))
+                        };
+                    for (routing_bucket, bucket) in iter {
+                        if scanned >= budget || !keep_going || scanned >= self.buckets.len() {
+                            next_cursor = Some(*routing_bucket);
+                            break;
+                        }
+                        let sample = self.sample(*routing_bucket, bucket);
+                        scanned += 1;
+                        keep_going = visit(&sample);
+                        next_cursor = Some(routing_bucket.saturating_add(1));
+                    }
+                    if scanned >= budget || !keep_going || scanned >= self.buckets.len() {
+                        break;
+                    }
+                }
+
+                ScanResult {
+                    scanned,
+                    // Covering the whole store restarts from the top next pass.
+                    next_cursor: if scanned >= self.buckets.len() {
+                        None
+                    } else {
+                        next_cursor
+                    },
+                    wrapped,
+                }
+            }
+
+            fn lookup(&self, routing_bucket: u32) -> Option<BucketSample> {
+                self.buckets
+                    .get(&routing_bucket)
+                    .map(|bucket| self.sample(routing_bucket, bucket))
+            }
+        }
+
+        let config = super::evict_sampler_config();
+        let mut shards = self.shards.write().expect("shards lock poisoned");
+        let Some(shard) = shards.get_mut(&shard_id) else {
+            return Vec::new();
+        };
+        // Take the sampler state out so the scan can borrow the bucket index immutably.
+        let mut sampler = std::mem::take(&mut shard.evict_sampler);
+        let selected = {
+            let source = IndexSource {
+                buckets: &shard.bucket_index.bucket_map,
+                recency: &shard.bucket_recency,
+            };
+            select_victims(&mut sampler, config, batch_limit, source).victims
+        };
+        shard.evict_sampler = sampler;
+
+        // Byte totals for the chosen buckets only. Bounded by batch_limit, not by store size.
+        selected
+            .into_iter()
+            .filter_map(|routing_bucket| {
+                let bucket = shard.bucket_index.bucket_map.get(&routing_bucket)?;
+                let mut logical_bytes = 0u64;
+                let mut physical_bytes = 0u64;
+                let mut dirty_object_count = 0u64;
+                for page in bucket.page_index.values() {
+                    if page.deleted {
+                        continue;
+                    }
+                    logical_bytes = logical_bytes.saturating_add(page.address.length);
+                    physical_bytes = physical_bytes.saturating_add(page.address.length);
+                    if page.dirty {
+                        dirty_object_count = dirty_object_count.saturating_add(1);
+                    }
+                }
+                let cache = cache_by_bucket.get(&routing_bucket);
+                let cache_memory_bytes = cache.map(|cache| cache.memory_bytes).unwrap_or_default();
+                let cache_disk_bytes = cache.map(|cache| cache.disk_bytes).unwrap_or_default();
+                Some(StorageEvictionVictim {
+                    routing_bucket,
+                    object_count: bucket.object_index.len() as u64,
+                    logical_bytes,
+                    physical_bytes,
+                    cache_memory_bytes,
+                    cache_disk_bytes,
+                    dirty_object_count,
+                    weight: cache_memory_bytes
+                        .saturating_mul(4)
+                        .saturating_add(cache_disk_bytes.saturating_mul(2))
+                        .saturating_add(physical_bytes)
+                        .saturating_add(dirty_object_count.saturating_mul(1024)),
+                    last_touched_ms: shard
+                        .bucket_recency
+                        .get(&routing_bucket)
+                        .copied()
+                        .unwrap_or(0),
+                })
+            })
+            .collect()
+    }
+
     pub fn apply_storage_eviction(
         &self,
         shard_id: ShardId,
@@ -925,47 +1084,53 @@ impl TemporalEngine {
                 .map(|shard| shard.bucket_recency.clone())
                 .unwrap_or_default()
         };
-        let mut victims = self
-            .bucket_storage_summaries(shard_id)
-            .into_iter()
-            .map(|summary| {
-                let cache = cache_by_bucket.get(&summary.routing_bucket);
-                let cache_memory_bytes = cache.map(|cache| cache.memory_bytes).unwrap_or_default();
-                let cache_disk_bytes = cache.map(|cache| cache.disk_bytes).unwrap_or_default();
-                StorageEvictionVictim {
-                    routing_bucket: summary.routing_bucket,
-                    object_count: summary.object_count,
-                    logical_bytes: summary.logical_bytes,
-                    physical_bytes: summary.physical_bytes,
-                    cache_memory_bytes,
-                    cache_disk_bytes,
-                    dirty_object_count: summary.dirty_object_count,
-                    weight: cache_memory_bytes
-                        .saturating_mul(4)
-                        .saturating_add(cache_disk_bytes.saturating_mul(2))
-                        .saturating_add(summary.physical_bytes)
-                        .saturating_add(summary.dirty_object_count.saturating_mul(1024)),
-                    last_touched_ms: recency_by_bucket
-                        .get(&summary.routing_bucket)
-                        .copied()
-                        .unwrap_or(0),
-                }
-            })
-            .filter(|victim| victim.weight > 0)
-            .collect::<Vec<_>>();
-        // The LRU policy sorts candidates by last-used time, then evicts
-        // least-recently-used buckets first. Never-touched buckets (last_touched_ms ==
-        // 0) are coldest and go first; ties fall back to the heavier bucket, then the
-        // lower routing_bucket for determinism.
-        victims.sort_by(|left, right| {
-            left.last_touched_ms
-                .cmp(&right.last_touched_ms)
-                .then_with(|| right.weight.cmp(&left.weight))
-                .then_with(|| left.routing_bucket.cmp(&right.routing_bucket))
-        });
-        if batch_limit > 0 && victims.len() > batch_limit {
-            victims.truncate(batch_limit);
-        }
+        let victims = if super::evict_sampled_lru_enabled() {
+            self.sampled_eviction_victims(shard_id, batch_limit, &cache_by_bucket)
+        } else {
+            let mut victims = self
+                .bucket_storage_summaries(shard_id)
+                .into_iter()
+                .map(|summary| {
+                    let cache = cache_by_bucket.get(&summary.routing_bucket);
+                    let cache_memory_bytes =
+                        cache.map(|cache| cache.memory_bytes).unwrap_or_default();
+                    let cache_disk_bytes = cache.map(|cache| cache.disk_bytes).unwrap_or_default();
+                    StorageEvictionVictim {
+                        routing_bucket: summary.routing_bucket,
+                        object_count: summary.object_count,
+                        logical_bytes: summary.logical_bytes,
+                        physical_bytes: summary.physical_bytes,
+                        cache_memory_bytes,
+                        cache_disk_bytes,
+                        dirty_object_count: summary.dirty_object_count,
+                        weight: cache_memory_bytes
+                            .saturating_mul(4)
+                            .saturating_add(cache_disk_bytes.saturating_mul(2))
+                            .saturating_add(summary.physical_bytes)
+                            .saturating_add(summary.dirty_object_count.saturating_mul(1024)),
+                        last_touched_ms: recency_by_bucket
+                            .get(&summary.routing_bucket)
+                            .copied()
+                            .unwrap_or(0),
+                    }
+                })
+                .filter(|victim| victim.weight > 0)
+                .collect::<Vec<_>>();
+            // The LRU policy sorts candidates by last-used time, then evicts
+            // least-recently-used buckets first. Never-touched buckets (last_touched_ms ==
+            // 0) are coldest and go first; ties fall back to the heavier bucket, then the
+            // lower routing_bucket for determinism.
+            victims.sort_by(|left, right| {
+                left.last_touched_ms
+                    .cmp(&right.last_touched_ms)
+                    .then_with(|| right.weight.cmp(&left.weight))
+                    .then_with(|| left.routing_bucket.cmp(&right.routing_bucket))
+            });
+            if batch_limit > 0 && victims.len() > batch_limit {
+                victims.truncate(batch_limit);
+            }
+            victims
+        };
         let mut dump_manifest_ids = Vec::new();
         if dump_before_evict {
             let dirty_buckets = victims
