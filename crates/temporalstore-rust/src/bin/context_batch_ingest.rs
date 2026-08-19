@@ -42,19 +42,20 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use temporalstore_rust::{
     ingest_extract_context, BatchExecuteRequest, Command, ContextEvent, ContextExtractRequest,
-    ContextIndexRef, ContextIngestExtractRequest, ContextModelProviderConfig, ContextNode,
-    ContextSourceKind, ContextSummaryDirtyMarker, TemporalEngine,
+    ContextExtractedEventIndexes, ContextIngestExtractRequest, ContextModelProviderConfig,
+    ContextNode, ContextSourceKind, ContextSummaryDirtyMarker, InternalContextIndex,
+    TemporalEngine,
 };
 
 // Reason code stamped on embedding-dirty markers written by the raw-first bulk
 // path, distinguishing "embedding deferred at bulk ingest" from a live-path embed
 // failure. Purely diagnostic; the drainer treats any pending marker identically.
 const EMBEDDING_DIRTY_REASON_BULK_DEFERRED: u32 = 2;
-// Raw-first emits four engine commands per source, but ContextMarkEmbeddingDirty
-// is transient/in-memory and is not WAL persisted. The bulk flush anchor must
-// therefore count only the three durable commands to avoid replaying the whole
-// just-flushed backfill on first restart.
-const RAW_FIRST_DURABLE_WAL_COMMANDS_PER_SOURCE: u64 = 3;
+// Raw-first emits three engine commands per source: node upsert, combined
+// event+source-index write, and an in-memory embedding-dirty marker. The marker
+// is transient and is not WAL persisted, so non-exclusive conservative anchoring
+// counts only the two durable commands.
+const RAW_FIRST_DURABLE_WAL_COMMANDS_PER_SOURCE: u64 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct SessionIndex {
@@ -99,7 +100,7 @@ fn main() {
     let flush_every_accepted: u64 = std::env::var("MATRIXARK_BACKFILL_FLUSH_EVERY_ACCEPTED")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(10_000);
+        .unwrap_or(if raw_first { 100_000_000 } else { 10_000 });
     let sub_batch: usize = std::env::var("MATRIXARK_BACKFILL_SUB_BATCH")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -680,7 +681,7 @@ fn write_raw_sources_mixed(
         return (0, 0, Vec::new());
     }
     let shard_id = items[0].source.shard_id;
-    let mut commands = Vec::with_capacity(items.len().saturating_mul(4));
+    let mut commands = Vec::with_capacity(items.len().saturating_mul(3));
     let mut node_hashes = Vec::new();
     for item in items {
         let source = &item.source;
@@ -716,26 +717,23 @@ fn write_raw_sources_mixed(
             related_node_hashes: Vec::new(),
             compact_attrs: Vec::new(),
         };
-        let index_ref = ContextIndexRef {
-            primary_node_hash: node_hash,
-            primary_event_time_ms: timestamp_ms,
-            event_id_hash,
-        };
         commands.push(Command::ContextUpsertNode { tenant_hash, node });
-        commands.push(Command::ContextWriteEvent {
+        commands.push(Command::ContextWriteExtractedEvent {
             tenant_hash,
             node_hash,
             event,
+            indexes: ContextExtractedEventIndexes {
+                source_hash: stable_hash64(&source.source_id),
+                disabled_indexes: vec![
+                    InternalContextIndex::EventKind,
+                    InternalContextIndex::Status,
+                    InternalContextIndex::EventTimeBucket,
+                    InternalContextIndex::Entity,
+                ],
+                ..ContextExtractedEventIndexes::default()
+            },
             first_write_only: true,
             cold_storage: false,
-        });
-        commands.push(Command::ContextWriteIndexRef {
-            tenant_hash,
-            index_name: "source".to_string(),
-            index_value_hash: stable_hash64(&source.source_id),
-            scope_hash: 0,
-            event_time_ms: timestamp_ms,
-            index_ref,
         });
         commands.push(Command::ContextMarkEmbeddingDirty {
             tenant_hash,
@@ -759,7 +757,7 @@ fn write_raw_sources_mixed(
         .filter(|entry| !entry.status.ok)
         .count();
     if failed_commands > 0 {
-        let failed_rows = failed_commands.div_ceil(4);
+        let failed_rows = failed_commands.div_ceil(3);
         let accepted = items.len().saturating_sub(failed_rows) as u64;
         return (accepted, failed_rows as u64, node_hashes);
     }
