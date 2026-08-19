@@ -62,8 +62,9 @@ fn main() {
     // for a grace window after a detector stall, and a location losing too many
     // servers at once enters safe mode instead of being frozen wholesale. OFF by
     // default: which servers get frozen is behavior-visible, so the fixed
-    // threshold stays the default until a deployment opts in. Proxies stay on the
-    // fixed threshold either way.
+    // threshold stays the default until a deployment opts in. Both tiers are
+    // covered: a correlated proxy failure takes out the routing path entirely,
+    // so the proxies need the guard at least as much as the datanodes do.
     let adaptive_detector = env_bool("TS_META_ADAPTIVE_FAILURE_DETECTOR", false);
     let _failure_detector = match &backend {
         MetaBackend::Single(meta) if adaptive_detector => {
@@ -75,6 +76,7 @@ fn main() {
                 warning_ratio_percent = policy.warning_ratio_percent,
                 critical_ratio_percent = policy.critical_ratio_percent,
                 safe_mode_enabled = policy.safe_mode_enabled,
+                convict_proxies = policy.convict_proxies,
                 "adaptive failure detection enabled"
             );
             Some(MetaBackground::Single(
@@ -82,7 +84,6 @@ fn main() {
                     options,
                     policy,
                     safe_mode_policy_from_env(),
-                    stale_after_ms,
                     detector_interval_ms,
                 ),
             ))
@@ -1011,6 +1012,7 @@ fn conviction_policy_from_env() -> ConvictionPolicy {
         safe_mode_enabled: env_bool("TS_META_CONVICT_SAFE_MODE", defaults.safe_mode_enabled),
         convict_enabled: env_bool("TS_META_CONVICT_ENABLED", defaults.convict_enabled),
         convict_on_reboot: env_bool("TS_META_CONVICT_ON_REBOOT", defaults.convict_on_reboot),
+        convict_proxies: env_bool("TS_META_CONVICT_PROXIES", defaults.convict_proxies),
     }
 }
 

@@ -47,6 +47,14 @@
 //! [`MetaFailureDetector::plan_round`] wires them together into the single call
 //! the metaserver loop makes.
 //!
+//! Both datanodes and proxies are judged this way. Proxies were initially left
+//! on the fixed threshold on the grounds that freezing one is cheap because it
+//! moves no data. That reasoning covers failure mode 1 and misses the other two,
+//! which are what actually matter here: a metaserver stall or a rack fault
+//! freezes *every* proxy at once, and the proxies are the routing tier, so
+//! losing all of them takes out the serving path completely. The blast radius of
+//! a correlated proxy failure is larger than for datanodes, not smaller.
+//!
 //! The detector is fed by polling [`ServerMetaInfo::last_heartbeat_ms`] rather
 //! than by hooking the heartbeat handler: that field already carries the true
 //! arrival timestamp, so the learned interval distribution is identical, while
@@ -143,6 +151,10 @@ pub struct ConvictionPolicy {
     /// the topology means routing reads to a node that will miss on all of them.
     /// With this off a reboot is reported but not acted on.
     pub convict_on_reboot: bool,
+    /// Convict proxies as well as datanodes. Kept separate because the two
+    /// tiers fail for different reasons and an operator may want to hold the
+    /// routing tier steady while letting datanode conviction run.
+    pub convict_proxies: bool,
 }
 
 impl Default for ConvictionPolicy {
@@ -154,6 +166,7 @@ impl Default for ConvictionPolicy {
             safe_mode_enabled: true,
             convict_enabled: true,
             convict_on_reboot: true,
+            convict_proxies: true,
         }
     }
 }
@@ -493,38 +506,107 @@ impl MetaFailureDetector {
         now_ms: u64,
         policy: ConvictionPolicy,
     ) -> ConvictionPlan {
+        let subjects = servers
+            .iter()
+            .map(|server| ConvictionSubject {
+                addr: server.server_addr.as_str(),
+                location: server.location.as_str(),
+                state: server.state,
+                last_heartbeat_ms: server.last_heartbeat_ms,
+                // Not gated on the detector being active: a changed boot time is
+                // direct evidence the process restarted, not an inference drawn
+                // from silence, so the stall guard does not apply to it.
+                rebooted: server.reboot_detected,
+            })
+            .collect::<Vec<_>>();
+        self.plan_subject_round(&subjects, now_ms, policy)
+    }
+
+    /// Run one detection round over the proxies, with the same phi detection and
+    /// the same correlated-failure gate the datanodes get.
+    ///
+    /// A proxy carries no boot-time anchor, so it is never convicted for a
+    /// restart -- only for silence.
+    pub fn plan_proxy_round(
+        &mut self,
+        proxies: &[ProxyMetaInfo],
+        now_ms: u64,
+        policy: ConvictionPolicy,
+    ) -> ConvictionPlan {
+        if !policy.convict_proxies {
+            // Still assess damage so the severity is reportable; just never name
+            // anybody to freeze.
+            let policy = ConvictionPolicy {
+                convict_enabled: false,
+                ..policy
+            };
+            let subjects = proxy_subjects(proxies);
+            return self.plan_subject_round(&subjects, now_ms, policy);
+        }
+        let subjects = proxy_subjects(proxies);
+        self.plan_subject_round(&subjects, now_ms, policy)
+    }
+
+    /// The shared body of a detection round: learn from every heartbeat,
+    /// diagnose everything still serving, then apply the correlated-failure
+    /// gate.
+    fn plan_subject_round(
+        &mut self,
+        subjects: &[ConvictionSubject<'_>],
+        now_ms: u64,
+        policy: ConvictionPolicy,
+    ) -> ConvictionPlan {
         let active = self.begin_round(now_ms);
         let mut present = BTreeSet::new();
-        for server in servers {
-            present.insert(server.server_addr.clone());
-            self.observe(&server.server_addr, server.last_heartbeat_ms);
+        for subject in subjects {
+            present.insert(subject.addr.to_string());
+            self.observe(subject.addr, subject.last_heartbeat_ms);
         }
         self.retain_only(&present);
 
-        let candidates = servers
+        let candidates = subjects
             .iter()
-            // A dropped server has left the cluster: it is neither damage nor a
-            // conviction candidate.
-            .filter(|server| server.state != MetaEntityState::Dropped)
-            .map(|server| {
-                let serving = server.state == MetaEntityState::Normal;
+            // A dropped resource has left the cluster: it is neither damage nor
+            // a conviction candidate.
+            .filter(|subject| subject.state != MetaEntityState::Dropped)
+            .map(|subject| {
+                let serving = subject.state == MetaEntityState::Normal;
                 ConvictionCandidate {
-                    server_addr: server.server_addr.clone(),
-                    location: server.location.clone(),
+                    server_addr: subject.addr.to_string(),
+                    location: subject.location.to_string(),
                     abnormal: !serving,
                     failed: active
                         && serving
-                        && self.diagnose(&server.server_addr, now_ms) == Diagnosis::Failed,
-                    // Not gated on `active`: a changed boot time is direct
-                    // evidence the process restarted, not an inference drawn
-                    // from silence, so the detector's stall guard does not
-                    // apply to it.
-                    rebooted: serving && server.reboot_detected,
+                        && self.diagnose(subject.addr, now_ms) == Diagnosis::Failed,
+                    rebooted: serving && subject.rebooted,
                 }
             })
             .collect::<Vec<_>>();
         plan_conviction(&candidates, policy)
     }
+}
+
+/// One resource under judgement, shared by the datanode and proxy rounds so both
+/// tiers run identical detection rather than drifting apart.
+struct ConvictionSubject<'a> {
+    addr: &'a str,
+    location: &'a str,
+    state: MetaEntityState,
+    last_heartbeat_ms: u64,
+    rebooted: bool,
+}
+
+fn proxy_subjects(proxies: &[ProxyMetaInfo]) -> Vec<ConvictionSubject<'_>> {
+    proxies
+        .iter()
+        .map(|proxy| ConvictionSubject {
+            addr: proxy.proxy_addr.as_str(),
+            location: proxy.location.as_str(),
+            state: proxy.state,
+            last_heartbeat_ms: proxy.last_heartbeat_ms,
+            rebooted: false,
+        })
+        .collect()
 }
 
 /// Outcome of one adaptive detection round.
@@ -533,6 +615,9 @@ pub struct AdaptiveConvictionReport {
     pub status: Status,
     /// Servers frozen this round.
     pub frozen_servers: Vec<String>,
+    /// Proxies frozen this round.
+    #[serde(default)]
+    pub frozen_proxies: Vec<String>,
     /// Servers the detector called failed but that safe mode held back. Nothing
     /// is wrong with the detection; the metaserver is declining to act on it
     /// because acting would widen the outage.
@@ -556,8 +641,7 @@ impl SingleNodeMeta {
     /// server past one fixed age, it judges each server against its own learned
     /// heartbeat cadence, declines to act at all if the detector itself stalled,
     /// and holds back conviction in any location that is losing too many servers
-    /// at once. Proxies are not covered here and stay on the fixed threshold
-    /// (see [`Self::freeze_stale_proxies`]).
+    /// at once.
     ///
     /// `detector` carries the learned per-server distributions across rounds, so
     /// the caller must keep the same instance for the life of the loop.
@@ -585,6 +669,7 @@ impl SingleNodeMeta {
                 return AdaptiveConvictionReport {
                     status: response.status,
                     frozen_servers,
+                    frozen_proxies: Vec::new(),
                     held_by_safe_mode: plan.held_by_safe_mode,
                     damage: plan.damage,
                     rebooted: plan.rebooted,
@@ -597,6 +682,66 @@ impl SingleNodeMeta {
         AdaptiveConvictionReport {
             status: Status::ok(),
             frozen_servers,
+            frozen_proxies: Vec::new(),
+            held_by_safe_mode: plan.held_by_safe_mode,
+            damage: plan.damage,
+            rebooted: plan.rebooted,
+            detector_paused,
+        }
+    }
+
+    /// Run one adaptive detection round over the proxies and freeze exactly the
+    /// proxies the resulting plan names.
+    ///
+    /// The proxy tier gets the same treatment as the datanodes deliberately. A
+    /// proxy freeze moves no data, which is why it was originally left on the
+    /// fixed threshold, but that only addresses false positives on one proxy.
+    /// The cases that matter are the correlated ones: a metaserver stall or a
+    /// rack fault makes every proxy look stale at the same instant, and freezing
+    /// the whole routing tier is a total outage of the serving path, not a cheap
+    /// one.
+    ///
+    /// `detector` must be a different instance from the one used for datanodes:
+    /// each keeps its own per-address heartbeat distributions and its own stall
+    /// clock.
+    pub fn convict_stale_proxies_adaptive(
+        &self,
+        detector: &mut MetaFailureDetector,
+        policy: ConvictionPolicy,
+        safe_mode: SafeModePolicy,
+    ) -> AdaptiveConvictionReport {
+        let now = now_ms();
+        let proxies = {
+            let state = self.inner.read().expect("meta lock poisoned");
+            state.proxies.values().cloned().collect::<Vec<_>>()
+        };
+        let plan = detector.plan_proxy_round(&proxies, now, policy);
+        let detector_paused = !detector.is_active(now);
+
+        let mut frozen_proxies = Vec::new();
+        for endpoint in &plan.convict {
+            let response = self.freeze_proxy(StateChangeRequest {
+                endpoint: endpoint.clone(),
+                freeze_cooldown_ms: safe_mode.proxy_freeze_cooldown_ms,
+            });
+            if !response.status.ok {
+                return AdaptiveConvictionReport {
+                    status: response.status,
+                    frozen_servers: Vec::new(),
+                    frozen_proxies,
+                    held_by_safe_mode: plan.held_by_safe_mode,
+                    damage: plan.damage,
+                    rebooted: plan.rebooted,
+                    detector_paused,
+                };
+            }
+            frozen_proxies.push(endpoint.clone());
+        }
+
+        AdaptiveConvictionReport {
+            status: Status::ok(),
+            frozen_servers: Vec::new(),
+            frozen_proxies,
             held_by_safe_mode: plan.held_by_safe_mode,
             damage: plan.damage,
             rebooted: plan.rebooted,
@@ -605,8 +750,7 @@ impl SingleNodeMeta {
     }
 
     /// Background loop that replaces [`Self::start_failure_detector_loop`] when
-    /// adaptive detection is enabled: adaptive conviction for datanodes, and the
-    /// existing fixed threshold for proxies.
+    /// adaptive detection is enabled: adaptive conviction for both tiers.
     ///
     /// The detector is owned by the loop so its learned distributions survive
     /// across rounds; a restart of the loop starts detection over, which is why
@@ -616,15 +760,21 @@ impl SingleNodeMeta {
         options: FailureDetectorOptions,
         policy: ConvictionPolicy,
         safe_mode: SafeModePolicy,
-        proxy_stale_after_ms: u64,
         interval_ms: u64,
     ) -> thread::JoinHandle<()> {
         let meta = self.clone();
         let interval = Duration::from_millis(interval_ms.max(1));
-        let mut detector = MetaFailureDetector::new(options);
+        // One detector per tier: each learns its own per-address heartbeat
+        // distributions, and datanode cadence has nothing to say about proxy
+        // cadence. They also keep separate stall clocks, so a pause is judged
+        // against the tier it actually affected.
+        let mut server_detector = MetaFailureDetector::new(options);
+        let mut proxy_detector = MetaFailureDetector::new(options);
         thread::spawn(move || loop {
-            let _ = meta.convict_stale_servers_adaptive(&mut detector, policy, safe_mode.clone());
-            let _ = meta.freeze_stale_proxies(proxy_stale_after_ms, safe_mode.clone());
+            let _ =
+                meta.convict_stale_servers_adaptive(&mut server_detector, policy, safe_mode.clone());
+            let _ =
+                meta.convict_stale_proxies_adaptive(&mut proxy_detector, policy, safe_mode.clone());
             thread::sleep(interval);
         })
     }
@@ -865,6 +1015,177 @@ mod tests {
         );
         assert!(plan.convict.is_empty());
         assert!(plan.rebooted.is_empty());
+    }
+
+    fn proxy(addr: &str, location: &str, state: MetaEntityState, heartbeat_ms: u64) -> ProxyMetaInfo {
+        ProxyMetaInfo {
+            proxy_addr: addr.to_string(),
+            namespace: "ns".to_string(),
+            location: location.to_string(),
+            state,
+            config_version: 1,
+            last_heartbeat_ms: heartbeat_ms,
+            frozen_since_ms: 0,
+            freeze_cooldown_until_ms: 0,
+            binary_version: "test".to_string(),
+        }
+    }
+
+    /// Beat `addrs` together on `interval_ms` for `beats` rounds, then let only
+    /// `silent` go quiet. Returns the plan from the first round that convicts,
+    /// or the last plan if none does.
+    fn run_proxy_rounds(
+        detector: &mut MetaFailureDetector,
+        addrs: &[&str],
+        silent: &[&str],
+        policy: ConvictionPolicy,
+    ) -> ConvictionPlan {
+        let mut now = 10_000;
+        for _ in 0..40 {
+            let proxies = addrs
+                .iter()
+                .map(|addr| proxy(addr, "rack-1", MetaEntityState::Normal, now))
+                .collect::<Vec<_>>();
+            let plan = detector.plan_proxy_round(&proxies, now, policy);
+            assert!(plan.convict.is_empty(), "healthy proxies must not convict");
+            now += 1_000;
+        }
+        let quiet_since = now - 1_000;
+        let mut plan = ConvictionPlan::default();
+        for _ in 0..20 {
+            let proxies = addrs
+                .iter()
+                .map(|addr| {
+                    let heartbeat = if silent.contains(addr) { quiet_since } else { now };
+                    proxy(addr, "rack-1", MetaEntityState::Normal, heartbeat)
+                })
+                .collect::<Vec<_>>();
+            plan = detector.plan_proxy_round(&proxies, now, policy);
+            if !plan.convict.is_empty() {
+                break;
+            }
+            now += 1_000;
+        }
+        plan
+    }
+
+    #[test]
+    fn a_single_silent_proxy_is_convicted() {
+        let mut detector = MetaFailureDetector::new(options());
+        let plan = run_proxy_rounds(
+            &mut detector,
+            &["p1", "p2", "p3", "p4"],
+            &["p1"],
+            ConvictionPolicy::default(),
+        );
+        assert_eq!(plan.convict, vec!["p1"]);
+    }
+
+    #[test]
+    fn a_correlated_proxy_failure_is_held_back() {
+        // This is the case the fixed threshold gets wrong. Freezing every proxy
+        // behind a failed rack takes out the routing tier, and with it the whole
+        // serving path -- a bigger blast radius than the datanode equivalent,
+        // not a smaller one.
+        let mut detector = MetaFailureDetector::new(options());
+        let plan = run_proxy_rounds(
+            &mut detector,
+            &["p1", "p2", "p3", "p4"],
+            &["p1", "p2", "p3", "p4"],
+            ConvictionPolicy::default(),
+        );
+        assert!(plan.convict.is_empty());
+        assert_eq!(plan.held_by_safe_mode, vec!["p1", "p2", "p3", "p4"]);
+        assert_eq!(plan.worst_severity(), DamageSeverity::Critical);
+    }
+
+    #[test]
+    fn a_stalled_detector_never_convicts_proxies() {
+        // Same guard as the datanodes: the metaserver paused, the proxies did
+        // not, and freezing the routing tier for the metaserver's own stall
+        // would be self-inflicted.
+        let mut detector = MetaFailureDetector::new(options());
+        let policy = ConvictionPolicy::default();
+        let mut now = 10_000;
+        for _ in 0..40 {
+            let proxies = vec![proxy("p1", "rack-1", MetaEntityState::Normal, now)];
+            detector.plan_proxy_round(&proxies, now, policy);
+            now += 1_000;
+        }
+        let quiet_since = now - 1_000;
+        let stalled_at = now + 600_000;
+        let plan = detector.plan_proxy_round(
+            &[proxy("p1", "rack-1", MetaEntityState::Normal, quiet_since)],
+            stalled_at,
+            policy,
+        );
+        assert!(plan.convict.is_empty());
+    }
+
+    #[test]
+    fn proxy_conviction_can_be_disabled_while_damage_is_still_reported() {
+        let policy = ConvictionPolicy {
+            convict_proxies: false,
+            ..ConvictionPolicy::default()
+        };
+        let mut detector = MetaFailureDetector::new(options());
+        let plan = run_proxy_rounds(&mut detector, &["p1", "p2", "p3", "p4"], &["p1"], policy);
+        assert!(plan.convict.is_empty());
+        // The failure is still surfaced so an operator can see it.
+        assert_eq!(plan.held_by_safe_mode, vec!["p1"]);
+    }
+
+    #[test]
+    fn a_frozen_proxy_counts_as_damage_but_is_not_reconvicted() {
+        let mut detector = MetaFailureDetector::new(options());
+        let policy = ConvictionPolicy::default();
+        let proxies = vec![
+            proxy("p1", "rack-1", MetaEntityState::Frozen, 10_000),
+            proxy("p2", "rack-1", MetaEntityState::Normal, 10_000),
+            proxy("p3", "rack-1", MetaEntityState::Normal, 10_000),
+        ];
+        let plan = detector.plan_proxy_round(&proxies, 10_000, policy);
+        assert!(plan.convict.is_empty());
+        assert_eq!(plan.damage.len(), 1);
+        assert_eq!(plan.damage[0].abnormal_servers, 1);
+        assert_eq!(plan.damage[0].total_servers, 3);
+    }
+
+    #[test]
+    fn proxies_are_never_convicted_for_a_restart() {
+        // A proxy carries no boot-time anchor, so the reboot path cannot fire
+        // for it -- only silence can convict a proxy.
+        let mut detector = MetaFailureDetector::new(options());
+        let policy = ConvictionPolicy::default();
+        let plan = detector.plan_proxy_round(
+            &[proxy("p1", "rack-1", MetaEntityState::Normal, 10_000)],
+            10_000,
+            policy,
+        );
+        assert!(plan.rebooted.is_empty());
+    }
+
+    #[test]
+    fn the_two_tiers_do_not_share_a_heartbeat_distribution() {
+        // Datanode cadence says nothing about proxy cadence; mixing them into
+        // one detector would judge each against the other's rhythm.
+        let mut server_detector = MetaFailureDetector::new(options());
+        let mut proxy_detector = MetaFailureDetector::new(options());
+        let policy = ConvictionPolicy::default();
+        let mut now = 10_000;
+        for _ in 0..10 {
+            server_detector.plan_round(
+                &[server("shared-addr", "rack-1", MetaEntityState::Normal, now)],
+                now,
+                policy,
+            );
+            now += 1_000;
+        }
+        // The proxy detector has never seen this address, even though the server
+        // detector knows it well.
+        proxy_detector.begin_round(now);
+        assert!(proxy_detector.phi("shared-addr", now).is_none());
+        assert!(server_detector.phi("shared-addr", now).is_some());
     }
 
     #[test]
