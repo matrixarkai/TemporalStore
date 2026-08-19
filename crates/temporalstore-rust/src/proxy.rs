@@ -20,11 +20,16 @@ mod response;
 
 use config::{
     default_context_first_shard_id, default_context_io_timeout_ms, default_context_shard_count,
-    default_proxy_addr, default_service_registry_ttl_ms, now_ms, proxy_client_from_options,
-    proxy_config_version,
+    default_pin_primary_reads, default_proxy_addr, default_service_registry_ttl_ms, now_ms,
+    proxy_client_from_options, proxy_config_version,
 };
+use commands::proxy_command_is_write;
 use metrics::push_proxy_metric;
-use policy::{proxy_policy_rejection, proxy_serving_mode_from_meta, proxy_serving_mode_label};
+use policy::{
+    proxy_account_rejection, proxy_drop_rejection, proxy_policy_rejection,
+    proxy_serving_mode_from_meta, proxy_serving_mode_label, proxy_serving_rejection, ProxyInflight,
+    ProxyInflightGuard,
+};
 use response::execute_error;
 
 use crate::client::{
@@ -67,6 +72,29 @@ pub struct ProxyOptions {
     pub serving_mode: ProxyServingMode,
     #[serde(default)]
     pub drop_percent: u8,
+    /// Account (namespace) this proxy is scoped to when
+    /// `enforce_ingestion_account` is set. Empty while enforcement is on is a
+    /// misconfiguration and fails closed.
+    #[serde(default)]
+    pub ingestion_account: String,
+    /// Reject requests whose namespace does not match `ingestion_account`.
+    #[serde(default)]
+    pub enforce_ingestion_account: bool,
+    /// Maximum concurrent in-flight requests this proxy admits. `0` is
+    /// unlimited.
+    #[serde(default)]
+    pub max_inflight_requests: u64,
+    /// Maximum concurrent in-flight *write* requests, counted on top of
+    /// `max_inflight_requests` so a write burst cannot starve reads. `0` is
+    /// unlimited.
+    #[serde(default)]
+    pub max_inflight_write_requests: u64,
+    /// Default replica-read routing for tables opened through this proxy. `true`
+    /// pins reads to the primary for read-after-write safety; set `false` to
+    /// allow follower/locality reads. An explicit per-request `pin_primary`
+    /// still wins.
+    #[serde(default = "default_pin_primary_reads")]
+    pub pin_primary_reads: bool,
     /// First shard id used when routing high-level `/context/*` requests by
     /// tenant. Mirrors a table's `first_shard_id`; combined with
     /// `context_shard_count` and the engine's `shard_id_for_key` it selects the
@@ -130,6 +158,11 @@ impl Default for ProxyOptions {
             service_registry_ttl_ms: default_service_registry_ttl_ms(),
             serving_mode: ProxyServingMode::Serving,
             drop_percent: 0,
+            ingestion_account: String::new(),
+            enforce_ingestion_account: false,
+            max_inflight_requests: 0,
+            max_inflight_write_requests: 0,
+            pin_primary_reads: default_pin_primary_reads(),
             context_first_shard_id: default_context_first_shard_id(),
             context_shard_count: default_context_shard_count(),
             context_io_timeout_ms: default_context_io_timeout_ms(),
@@ -149,6 +182,8 @@ pub struct ProxyStats {
     pub metaserver_errors: u64,
     pub bad_requests: u64,
     pub admission_rejections: u64,
+    pub account_rejections: u64,
+    pub inflight_rejections: u64,
     pub heartbeat_total: u64,
     pub auto_register_total: u64,
 }
@@ -314,6 +349,24 @@ pub struct ProxyPolicyReport {
     pub serving_writes: bool,
     pub rejecting_all: bool,
     pub admission_rejections: u64,
+    #[serde(default)]
+    pub account_rejections: u64,
+    #[serde(default)]
+    pub inflight_rejections: u64,
+    #[serde(default)]
+    pub enforce_ingestion_account: bool,
+    #[serde(default)]
+    pub ingestion_account: String,
+    #[serde(default)]
+    pub max_inflight_requests: u64,
+    #[serde(default)]
+    pub max_inflight_write_requests: u64,
+    #[serde(default)]
+    pub inflight_requests: u64,
+    #[serde(default)]
+    pub inflight_write_requests: u64,
+    #[serde(default)]
+    pub pin_primary_reads: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -696,6 +749,15 @@ impl From<TableOptions> for ProxyTableOptionsView {
     }
 }
 
+/// Which counter an admission rejection increments alongside the shared
+/// `admission_rejections` total.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProxyRejectionKind {
+    Policy,
+    Account,
+    Inflight,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProxyService {
     inner: Arc<ProxyInner>,
@@ -708,6 +770,7 @@ struct ProxyInner {
     last_client_stats: RwLock<ClientStats>,
     stats: RwLock<ProxyStats>,
     service_discovery: RwLock<ProxyServiceDiscoveryState>,
+    inflight: ProxyInflight,
     boot_time_ms: u64,
 }
 
@@ -720,6 +783,7 @@ impl ProxyService {
                 last_client_stats: RwLock::default(),
                 stats: RwLock::default(),
                 service_discovery: RwLock::default(),
+                inflight: ProxyInflight::default(),
                 boot_time_ms: now_ms(),
             }),
         }
@@ -731,11 +795,10 @@ impl ProxyService {
             .write()
             .expect("proxy stats lock poisoned")
             .execute_requests += 1;
-        if let Some(status) =
-            self.check_admission_for_commands(std::slice::from_ref(&request.command))
-        {
-            return execute_error(status.code, status.message);
-        }
+        let _admitted = match self.admit(None, std::slice::from_ref(&request.command)) {
+            Ok(guard) => guard,
+            Err(status) => return execute_error(status.code, status.message),
+        };
         self.invalidate_cached_routes_if_meta_changed();
         let response = self
             .client()
@@ -751,12 +814,15 @@ impl ProxyService {
             .write()
             .expect("proxy stats lock poisoned")
             .batch_execute_requests += 1;
-        if let Some(status) = self.check_admission_for_commands(&request.commands) {
-            return BatchExecuteResponse {
-                status,
-                responses: Vec::new(),
-            };
-        }
+        let _admitted = match self.admit(None, &request.commands) {
+            Ok(guard) => guard,
+            Err(status) => {
+                return BatchExecuteResponse {
+                    status,
+                    responses: Vec::new(),
+                }
+            }
+        };
         self.invalidate_cached_routes_if_meta_changed();
         let response = self
             .client()
@@ -770,16 +836,24 @@ impl ProxyService {
     }
 
     pub fn open_table(&self, request: ProxyOpenTableRequest) -> ProxyOpenTableResponse {
+        if let Some(status) = self.check_account_scope(&request.namespace) {
+            return ProxyOpenTableResponse {
+                status,
+                options: None,
+            };
+        }
+        let pin_primary_default = self.options().pin_primary_reads;
         match self
             .client()
             .open_table_from_meta(request.namespace, request.table_name)
         {
             Ok(table) => {
-                if request.pin_primary.is_some() || request.replica_read_policy.is_some() {
+                let pin_primary = request.pin_primary.unwrap_or(pin_primary_default);
+                if pin_primary != table.options().pin_primary
+                    || request.replica_read_policy.is_some()
+                {
                     let mut options = table.options();
-                    if let Some(pin_primary) = request.pin_primary {
-                        options.pin_primary = pin_primary;
-                    }
+                    options.pin_primary = pin_primary;
                     if let Some(policy) = request.replica_read_policy {
                         options.replica_read_policy = policy.into();
                     }
@@ -817,11 +891,13 @@ impl ProxyService {
             .write()
             .expect("proxy stats lock poisoned")
             .execute_requests += 1;
-        if let Some(status) =
-            self.check_admission_for_commands(std::slice::from_ref(&request.command))
-        {
-            return execute_error(status.code, status.message);
-        }
+        let _admitted = match self.admit(
+            Some(&request.namespace),
+            std::slice::from_ref(&request.command),
+        ) {
+            Ok(guard) => guard,
+            Err(status) => return execute_error(status.code, status.message),
+        };
         self.invalidate_cached_routes_if_meta_changed();
         let response = self
             .table_for_request(request.namespace, request.table_name)
@@ -840,12 +916,15 @@ impl ProxyService {
             .write()
             .expect("proxy stats lock poisoned")
             .batch_execute_requests += 1;
-        if let Some(status) = self.check_admission_for_commands(&request.commands) {
-            return BatchExecuteResponse {
-                status,
-                responses: Vec::new(),
-            };
-        }
+        let _admitted = match self.admit(Some(&request.namespace), &request.commands) {
+            Ok(guard) => guard,
+            Err(status) => {
+                return BatchExecuteResponse {
+                    status,
+                    responses: Vec::new(),
+                }
+            }
+        };
         self.invalidate_cached_routes_if_meta_changed();
         let response = self
             .table_for_request(request.namespace, request.table_name)
@@ -884,6 +963,39 @@ impl ProxyService {
 
     pub fn update_options(&self, options: ProxyOptions) {
         let _ = self.update_options_report(options);
+    }
+
+    /// `POST /proxy/config` replaces the whole options document, so a caller
+    /// that omits a field gets the serde default for it. For the admission
+    /// options that default is the permissive one, and silently dropping
+    /// account enforcement because a config push predates the field is not an
+    /// acceptable failure mode. Keys absent from the body therefore carry the
+    /// running value forward; only an explicit key changes them.
+    pub(super) fn carry_forward_admission_options(
+        &self,
+        options: &mut ProxyOptions,
+        body: &[u8],
+    ) {
+        let Ok(serde_json::Value::Object(supplied)) = serde_json::from_slice::<serde_json::Value>(body)
+        else {
+            return;
+        };
+        let current = self.options();
+        if !supplied.contains_key("ingestion_account") {
+            options.ingestion_account = current.ingestion_account;
+        }
+        if !supplied.contains_key("enforce_ingestion_account") {
+            options.enforce_ingestion_account = current.enforce_ingestion_account;
+        }
+        if !supplied.contains_key("max_inflight_requests") {
+            options.max_inflight_requests = current.max_inflight_requests;
+        }
+        if !supplied.contains_key("max_inflight_write_requests") {
+            options.max_inflight_write_requests = current.max_inflight_write_requests;
+        }
+        if !supplied.contains_key("pin_primary_reads") {
+            options.pin_primary_reads = current.pin_primary_reads;
+        }
     }
 
     pub fn update_options_report(&self, options: ProxyOptions) -> ProxyConfigUpdateReport {
@@ -991,17 +1103,101 @@ impl ProxyService {
             .clone()
     }
 
-    fn check_admission_for_commands(&self, commands: &[Command]) -> Option<Status> {
-        let options = self.options();
-        let status = proxy_policy_rejection(&options, commands);
-        if status.is_some() {
-            self.inner
-                .stats
-                .write()
-                .expect("proxy stats lock poisoned")
-                .admission_rejections += 1;
+    fn reject(&self, status: Status, kind: ProxyRejectionKind) -> Status {
+        let mut stats = self.inner.stats.write().expect("proxy stats lock poisoned");
+        stats.admission_rejections += 1;
+        match kind {
+            ProxyRejectionKind::Policy => {}
+            ProxyRejectionKind::Account => stats.account_rejections += 1,
+            ProxyRejectionKind::Inflight => stats.inflight_rejections += 1,
         }
         status
+    }
+
+    /// Namespace scope check for the request paths that carry one. Requests
+    /// admitted here still have to pass `admit`.
+    fn check_account_scope(&self, namespace: &str) -> Option<Status> {
+        let options = self.options();
+        proxy_account_rejection(&options, namespace)
+            .map(|status| self.reject(status, ProxyRejectionKind::Account))
+    }
+
+    /// Full admission for a request: account scope (where a namespace is
+    /// carried), serving-mode/drop policy, then an in-flight slot. The returned
+    /// guard releases the slot when it is dropped, so every return path from the
+    /// caller decrements exactly once.
+    fn admit(
+        &self,
+        namespace: Option<&str>,
+        commands: &[Command],
+    ) -> Result<ProxyInflightGuard<'_>, Status> {
+        let options = self.options();
+        if let Some(namespace) = namespace {
+            if let Some(status) = proxy_account_rejection(&options, namespace) {
+                return Err(self.reject(status, ProxyRejectionKind::Account));
+            }
+        }
+        if let Some(status) = proxy_policy_rejection(&options, commands) {
+            return Err(self.reject(status, ProxyRejectionKind::Policy));
+        }
+        let is_write = commands.iter().any(proxy_command_is_write);
+        self.inner
+            .inflight
+            .try_acquire(
+                is_write,
+                options.max_inflight_requests,
+                options.max_inflight_write_requests,
+            )
+            .map_err(|rejection| self.reject(rejection.status(), ProxyRejectionKind::Inflight))
+    }
+
+    /// Admission for the high-level `/context/*` routes. These forward straight
+    /// to the owning datanode instead of going through command execution, so
+    /// without this they would be the one class of traffic -- and the only class
+    /// the context gateway sends -- that ignores drain, write-disable, account
+    /// scope, and the in-flight quotas.
+    pub(super) fn admit_context(
+        &self,
+        scope: &context::ProxyContextScope,
+        is_write: bool,
+    ) -> Result<ProxyInflightGuard<'_>, (u16, Vec<u8>)> {
+        let options = self.options();
+        let rejection = proxy_account_rejection(&options, &scope.account_id)
+            .map(|status| (status, ProxyRejectionKind::Account))
+            .or_else(|| {
+                proxy_serving_rejection(&options, is_write)
+                    .map(|status| (status, ProxyRejectionKind::Policy))
+            })
+            .or_else(|| {
+                proxy_drop_rejection(&options, &context_drop_key(scope))
+                    .map(|status| (status, ProxyRejectionKind::Policy))
+            });
+        if let Some((status, kind)) = rejection {
+            return Err(self.context_rejection_response(status, kind));
+        }
+        self.inner
+            .inflight
+            .try_acquire(
+                is_write,
+                options.max_inflight_requests,
+                options.max_inflight_write_requests,
+            )
+            .map_err(|rejection| {
+                self.context_rejection_response(rejection.status(), ProxyRejectionKind::Inflight)
+            })
+    }
+
+    fn context_rejection_response(
+        &self,
+        status: Status,
+        kind: ProxyRejectionKind,
+    ) -> (u16, Vec<u8>) {
+        let status = self.reject(status, kind);
+        crate::http::json_response(proxy_rejection_http_status(&status.code), &status)
+    }
+
+    pub(super) fn inflight_snapshot(&self) -> (u64, u64) {
+        self.inner.inflight.snapshot()
     }
 
     fn invalidate_cached_routes_if_meta_changed(&self) {
@@ -1024,6 +1220,26 @@ impl ProxyService {
         use crate::http::json_response;
         self.inc_bad_request();
         json_response(400, &execute_error("bad_request", err.to_string()))
+    }
+}
+
+/// Deterministic drop key for a context scope. Keyed on account+tenant so a
+/// drop percentage sheds whole tenants instead of a random slice of every
+/// tenant's session.
+fn context_drop_key(scope: &context::ProxyContextScope) -> String {
+    format!("{}|{}", scope.account_id, scope.tenant_id)
+}
+
+/// HTTP status for an admission rejection on the `/context/*` routes, which
+/// return the transport code rather than embedding it in a body the gateway
+/// would have to parse to notice it was shed.
+fn proxy_rejection_http_status(code: &str) -> u16 {
+    match code {
+        "proxy_account_denied" => 403,
+        "proxy_inflight_quota_exceeded"
+        | "proxy_write_inflight_quota_exceeded"
+        | "proxy_traffic_dropped" => 429,
+        _ => 503,
     }
 }
 
@@ -1755,6 +1971,398 @@ mod tests {
         assert_eq!(code, 200);
         let routed = parse_json::<ProxyPreflightReport>(&body).unwrap();
         assert_eq!(routed.stats.bad_requests, 1);
+    }
+
+    fn read_command() -> Command {
+        Command::StringGet {
+            key: "k".to_string(),
+        }
+    }
+
+    fn write_command() -> Command {
+        Command::StringSet {
+            key: "k".to_string(),
+            value: b"v".to_vec(),
+        }
+    }
+
+    fn scoped_proxy(options: ProxyOptions) -> ProxyService {
+        ProxyService::new(ProxyOptions {
+            meta_addr: "127.0.0.1:1".to_string(),
+            ..options
+        })
+    }
+
+    #[test]
+    fn proxy_account_scope_rejects_foreign_namespaces() {
+        let proxy = scoped_proxy(ProxyOptions {
+            ingestion_account: "tenant-a".to_string(),
+            enforce_ingestion_account: true,
+            ..ProxyOptions::default()
+        });
+
+        let denied = proxy.table_execute(ProxyTableExecuteRequest {
+            namespace: "tenant-b".to_string(),
+            table_name: "t".to_string(),
+            command: read_command(),
+        });
+        assert_eq!(denied.status.code, "proxy_account_denied");
+
+        let denied_open = proxy.open_table(ProxyOpenTableRequest {
+            namespace: "tenant-b".to_string(),
+            table_name: "t".to_string(),
+            pin_primary: None,
+            replica_read_policy: None,
+        });
+        assert_eq!(denied_open.status.code, "proxy_account_denied");
+        assert!(denied_open.options.is_none());
+
+        let policy = proxy.policy_report();
+        assert_eq!(policy.account_rejections, 2);
+        assert_eq!(policy.admission_rejections, 2);
+        assert!(policy.enforce_ingestion_account);
+        assert_eq!(policy.ingestion_account, "tenant-a");
+
+        assert!(proxy
+            .preflight_report()
+            .degraded_reasons
+            .iter()
+            .any(|reason| reason == "account_rejections"));
+
+        // The proxy's own account still reaches routing, where the unreachable
+        // metaserver -- not admission -- is what fails it.
+        let allowed = proxy.table_execute(ProxyTableExecuteRequest {
+            namespace: "tenant-a".to_string(),
+            table_name: "t".to_string(),
+            command: read_command(),
+        });
+        assert_ne!(allowed.status.code, "proxy_account_denied");
+        assert_eq!(proxy.policy_report().account_rejections, 2);
+    }
+
+    #[test]
+    fn proxy_account_enforcement_without_an_account_fails_closed() {
+        let proxy = scoped_proxy(ProxyOptions {
+            enforce_ingestion_account: true,
+            ..ProxyOptions::default()
+        });
+
+        let response = proxy.table_execute(ProxyTableExecuteRequest {
+            namespace: "anything".to_string(),
+            table_name: "t".to_string(),
+            command: read_command(),
+        });
+        assert_eq!(response.status.code, "proxy_account_not_configured");
+        assert_eq!(proxy.policy_report().account_rejections, 1);
+    }
+
+    #[test]
+    fn proxy_account_scope_is_off_by_default() {
+        let proxy = scoped_proxy(ProxyOptions {
+            ingestion_account: "tenant-a".to_string(),
+            ..ProxyOptions::default()
+        });
+        let response = proxy.table_execute(ProxyTableExecuteRequest {
+            namespace: "tenant-b".to_string(),
+            table_name: "t".to_string(),
+            command: read_command(),
+        });
+        assert_ne!(response.status.code, "proxy_account_denied");
+        assert_eq!(proxy.policy_report().account_rejections, 0);
+    }
+
+    #[test]
+    fn proxy_inflight_quota_rejects_only_while_slots_are_held() {
+        let proxy = scoped_proxy(ProxyOptions {
+            max_inflight_requests: 1,
+            ..ProxyOptions::default()
+        });
+
+        let held = proxy
+            .admit(None, std::slice::from_ref(&read_command()))
+            .expect("first request is admitted");
+        assert_eq!(proxy.inflight_snapshot(), (1, 0));
+
+        let status = proxy
+            .admit(None, std::slice::from_ref(&read_command()))
+            .expect_err("the single slot is taken");
+        assert_eq!(status.code, "proxy_inflight_quota_exceeded");
+        assert_eq!(proxy.inflight_snapshot(), (1, 0));
+
+        drop(held);
+        assert_eq!(proxy.inflight_snapshot(), (0, 0));
+        proxy
+            .admit(None, std::slice::from_ref(&read_command()))
+            .expect("the slot is released with the guard");
+
+        let policy = proxy.policy_report();
+        assert_eq!(policy.inflight_rejections, 1);
+        assert_eq!(policy.admission_rejections, 1);
+        assert_eq!(policy.max_inflight_requests, 1);
+    }
+
+    #[test]
+    fn proxy_write_quota_leaves_read_capacity_free() {
+        let proxy = scoped_proxy(ProxyOptions {
+            max_inflight_write_requests: 1,
+            ..ProxyOptions::default()
+        });
+
+        let held = proxy
+            .admit(None, std::slice::from_ref(&write_command()))
+            .expect("first write is admitted");
+        assert_eq!(proxy.inflight_snapshot(), (1, 1));
+
+        let status = proxy
+            .admit(None, std::slice::from_ref(&write_command()))
+            .expect_err("the single write slot is taken");
+        assert_eq!(status.code, "proxy_write_inflight_quota_exceeded");
+        // The rejected write must not leak a slot in the shared total.
+        assert_eq!(proxy.inflight_snapshot(), (1, 1));
+
+        let reader = proxy
+            .admit(None, std::slice::from_ref(&read_command()))
+            .expect("reads are unaffected by the write quota");
+        assert_eq!(proxy.inflight_snapshot(), (2, 1));
+
+        drop(reader);
+        drop(held);
+        assert_eq!(proxy.inflight_snapshot(), (0, 0));
+        assert_eq!(proxy.policy_report().inflight_rejections, 1);
+    }
+
+    #[test]
+    fn proxy_unlimited_quotas_never_reject() {
+        let proxy = scoped_proxy(ProxyOptions::default());
+        let mut guards = Vec::new();
+        for _ in 0..64 {
+            guards.push(
+                proxy
+                    .admit(None, std::slice::from_ref(&write_command()))
+                    .expect("the default configuration is unlimited"),
+            );
+        }
+        assert_eq!(proxy.inflight_snapshot(), (64, 64));
+        drop(guards);
+        assert_eq!(proxy.inflight_snapshot(), (0, 0));
+        assert_eq!(proxy.policy_report().inflight_rejections, 0);
+    }
+
+    #[test]
+    fn proxy_pin_primary_reads_defaults_on_and_is_reported() {
+        let proxy = scoped_proxy(ProxyOptions::default());
+        let policy = proxy.policy_report();
+        assert!(policy.pin_primary_reads);
+
+        let follower_reads = scoped_proxy(ProxyOptions {
+            pin_primary_reads: false,
+            ..ProxyOptions::default()
+        });
+        assert!(!follower_reads.policy_report().pin_primary_reads);
+        assert_ne!(
+            proxy_config_version(&proxy.options()),
+            proxy_config_version(&follower_reads.options()),
+            "the read-routing policy has to move config_version so a rollout can confirm it"
+        );
+    }
+
+    #[test]
+    fn proxy_metrics_expose_admission_quotas() {
+        let proxy = scoped_proxy(ProxyOptions {
+            max_inflight_requests: 8,
+            max_inflight_write_requests: 2,
+            enforce_ingestion_account: true,
+            ingestion_account: "tenant-a".to_string(),
+            ..ProxyOptions::default()
+        });
+        let _ = proxy.table_execute(ProxyTableExecuteRequest {
+            namespace: "tenant-b".to_string(),
+            table_name: "t".to_string(),
+            command: read_command(),
+        });
+
+        let metrics = proxy.prometheus_metrics();
+        assert!(metrics
+            .contains("temporalstore_proxy_requests_total{kind=\"account_rejection\"} 1"));
+        assert!(metrics.contains("temporalstore_proxy_inflight_limit{kind=\"total\"} 8"));
+        assert!(metrics.contains("temporalstore_proxy_inflight_limit{kind=\"write\"} 2"));
+        assert!(metrics.contains("temporalstore_proxy_inflight_requests{kind=\"total\"} 0"));
+        assert!(metrics.contains("temporalstore_proxy_account_enforcement 1"));
+        assert!(metrics.contains("temporalstore_proxy_pin_primary_reads 1"));
+    }
+
+    use serde_json::json;
+
+    fn context_scope(account: &str, tenant: &str) -> context::ProxyContextScope {
+        context::ProxyContextScope {
+            tenant_id: tenant.to_string(),
+            account_id: account.to_string(),
+            user_id: String::new(),
+            session_id: "s1".to_string(),
+        }
+    }
+
+    fn context_ingest_body(account: &str, tenant: &str) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "scope": {"account_id": account, "tenant_id": tenant, "session_id": "s1"},
+            "messages": [{"role": "user", "content": "hello"}],
+        }))
+        .unwrap()
+    }
+
+    fn post(proxy: &ProxyService, path: &str, body: Vec<u8>) -> (u16, Vec<u8>) {
+        proxy.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: path.to_string(),
+            body,
+        })
+    }
+
+    #[test]
+    fn context_routes_honour_account_scope() {
+        let proxy = scoped_proxy(ProxyOptions {
+            ingestion_account: "tenant-a".to_string(),
+            enforce_ingestion_account: true,
+            ..ProxyOptions::default()
+        });
+
+        let (code, body) = post(
+            &proxy,
+            "/context/ingest",
+            context_ingest_body("tenant-b", "t"),
+        );
+        assert_eq!(code, 403);
+        assert!(String::from_utf8_lossy(&body).contains("proxy_account_denied"));
+
+        let (code, _) = post(
+            &proxy,
+            "/context/retrieve",
+            serde_json::to_vec(&json!({
+                "scope": {"account_id": "tenant-b", "tenant_id": "t", "session_id": "s1"},
+                "query": "q",
+            }))
+            .unwrap(),
+        );
+        assert_eq!(code, 403);
+        assert_eq!(proxy.policy_report().account_rejections, 2);
+    }
+
+    #[test]
+    fn context_routes_honour_drain_and_write_disable() {
+        let drained = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::NotServing,
+            ..ProxyOptions::default()
+        });
+        let (code, body) = post(
+            &drained,
+            "/context/ingest",
+            context_ingest_body("acct", "t"),
+        );
+        assert_eq!(code, 503);
+        assert!(String::from_utf8_lossy(&body).contains("proxy_not_serving"));
+
+        let readonly = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::Readonly,
+            ..ProxyOptions::default()
+        });
+        let (code, body) = post(
+            &readonly,
+            "/context/extract",
+            context_ingest_body("acct", "t"),
+        );
+        assert_eq!(code, 503);
+        assert!(String::from_utf8_lossy(&body).contains("proxy_write_disabled"));
+
+        // A read-only proxy still serves retrieval; it fails on the unreachable
+        // shard rather than on admission.
+        let (_, body) = post(
+            &readonly,
+            "/context/retrieve",
+            serde_json::to_vec(&json!({
+                "scope": {"account_id": "acct", "tenant_id": "t", "session_id": "s1"},
+                "query": "q",
+            }))
+            .unwrap(),
+        );
+        let body = String::from_utf8_lossy(&body).to_string();
+        assert!(!body.contains("proxy_write_disabled"), "{body}");
+        assert!(!body.contains("proxy_not_serving"), "{body}");
+    }
+
+    #[test]
+    fn context_routes_share_the_inflight_quota() {
+        let proxy = scoped_proxy(ProxyOptions {
+            max_inflight_requests: 1,
+            ..ProxyOptions::default()
+        });
+        let held = proxy
+            .admit_context(&context_scope("acct", "t"), true)
+            .expect("first context request is admitted");
+        assert_eq!(proxy.inflight_snapshot(), (1, 1));
+
+        let (code, body) = post(&proxy, "/context/ingest", context_ingest_body("acct", "t"));
+        assert_eq!(code, 429);
+        assert!(String::from_utf8_lossy(&body).contains("proxy_inflight_quota_exceeded"));
+
+        drop(held);
+        assert_eq!(proxy.inflight_snapshot(), (0, 0));
+        assert_eq!(proxy.policy_report().inflight_rejections, 1);
+    }
+
+    #[test]
+    fn config_push_without_admission_fields_keeps_account_enforcement() {
+        let proxy = scoped_proxy(ProxyOptions {
+            ingestion_account: "tenant-a".to_string(),
+            enforce_ingestion_account: true,
+            max_inflight_requests: 4,
+            pin_primary_reads: false,
+            ..ProxyOptions::default()
+        });
+
+        // A config push shaped before these options existed.
+        let (code, _) = post(
+            &proxy,
+            "/proxy/config",
+            serde_json::to_vec(&json!({
+                "meta_addr": "127.0.0.1:1",
+                "proxy_addr": "127.0.0.1:17000",
+                "route_cache_ttl_ms": 1000,
+                "connect_timeout_ms": 200,
+                "io_timeout_ms": 200,
+                "max_retries": 0,
+                "refresh_route_on_backend_error": true,
+                "backend_continuous_failed_time_ms": 10000,
+                "drop_percent": 5,
+            }))
+            .unwrap(),
+        );
+        assert_eq!(code, 200);
+
+        let policy = proxy.policy_report();
+        assert!(policy.enforce_ingestion_account, "enforcement must survive");
+        assert_eq!(policy.ingestion_account, "tenant-a");
+        assert_eq!(policy.max_inflight_requests, 4);
+        assert!(!policy.pin_primary_reads);
+        assert_eq!(policy.drop_percent, 5, "supplied fields still apply");
+
+        // An explicit key does change it.
+        let (code, _) = post(
+            &proxy,
+            "/proxy/config",
+            serde_json::to_vec(&json!({
+                "meta_addr": "127.0.0.1:1",
+                "route_cache_ttl_ms": 1000,
+                "connect_timeout_ms": 200,
+                "io_timeout_ms": 200,
+                "max_retries": 0,
+                "refresh_route_on_backend_error": true,
+                "backend_continuous_failed_time_ms": 10000,
+                "enforce_ingestion_account": false,
+            }))
+            .unwrap(),
+        );
+        assert_eq!(code, 200);
+        assert!(!proxy.policy_report().enforce_ingestion_account);
     }
 
     #[test]
