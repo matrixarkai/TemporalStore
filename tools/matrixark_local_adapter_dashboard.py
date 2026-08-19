@@ -3,6 +3,11 @@
 """_LocalAdapterDashboardMixin methods split from matrixark_mcp_local_adapter.MatrixArkLocalAdapter (mixin)."""
 from __future__ import annotations
 
+try:
+    from tools.matrixark_mcp_registry import skill_visible_in_scope
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_registry import skill_visible_in_scope
+
 try:  # package path
     from tools.matrixark_mcp_core import *  # noqa: F401,F403
 except ImportError:
@@ -738,7 +743,11 @@ class _LocalAdapterDashboardMixin:
         for record in reversed(self.read_all()):
             if record.get("record_type") != "skill_manifest":
                 continue
-            if not scope_matches(candidate_access_scope(record), scope):
+            # Visibility follows owner_scope, not the session the skill was ingested in.
+            if not skill_visible_in_scope(
+                    record, scope,
+                    str(controls.get(int(record.get("skill_hash") or 0), {}).get("owner_scope")
+                        or record.get("owner_scope") or "")):
                 continue
             skill_hash = int(record.get("skill_hash") or 0)
             if skill_hash in skills:

@@ -1,6 +1,11 @@
 """_LocalAdapterRetrieveMixin methods split from matrixark_mcp_local_adapter.MatrixArkLocalAdapter (mixin)."""
 from __future__ import annotations
 
+try:
+    from tools.matrixark_mcp_registry import skill_visible_in_scope
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_registry import skill_visible_in_scope
+
 import os as _os
 import re as _re
 
@@ -1438,6 +1443,22 @@ class _LocalAdapterRetrieveMixin:
 
         if placement_candidate_records and not traversal.get("fallback_to_flat"):
             tree_candidate_records = [record for record in placement_candidate_records if selected_by_tree(record)]
+            # Skills are a RESERVED layer, and candidates are otherwise fetched by selected node
+            # PLACEMENT -- so a skill authored in one session is never fetched by a query in
+            # another, whatever the scope rules say. It is admitted here, at the fetch, and its
+            # visibility is decided by owner_scope rather than by which subtree the query selected.
+            placement_section_hashes = {
+                record.get("section_hash") for record in tree_candidate_records
+                if record.get("record_type") == "skill_section"}
+            for record in records:
+                if record.get("record_type") != "skill_section":
+                    continue
+                if record.get("section_hash") in placement_section_hashes:
+                    continue
+                if not skill_visible_in_scope(record, retrieval_scope,
+                                              str(record.get("owner_scope") or "")):
+                    continue
+                tree_candidate_records.append(record)
             tree_prefilter_dropped_count = max(0, len(placement_candidate_records) - len(tree_candidate_records))
             retrieval_scan_stats = {
                 **retrieval_scan_stats,
@@ -2284,10 +2305,17 @@ class _LocalAdapterRetrieveMixin:
                 return deadline_fallback("deadline_during_resource_skill_scan", records)
             if record.get("record_type") not in {"resource_chunk", "skill_section"}:
                 continue
-            if not access_scope_matches_before_scoring(record, retrieval_scope):
-                continue
-            if not selected_by_tree(record):
-                continue
+            if record.get("record_type") == "skill_section":
+                # Admitted at fetch by owner_scope; re-applying the session-scope and tree checks
+                # here would discard it again for the same reason it was missing before.
+                if not skill_visible_in_scope(record, retrieval_scope,
+                                              str(record.get("owner_scope") or "")):
+                    continue
+            else:
+                if not access_scope_matches_before_scoring(record, retrieval_scope):
+                    continue
+                if not selected_by_tree(record):
+                    continue
             if record.get("record_type") == "resource_chunk" and record.get("resource_type") == "skill":
                 continue
             index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node, index_terms_by_ref)

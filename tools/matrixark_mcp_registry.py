@@ -95,6 +95,43 @@ def list_resources(adapter: object, args: Json) -> Json:
     return {"status": "ok", "resources": list(resources.values()), "count": len(resources)}
 
 
+SKILL_SCOPE_LEVELS = ("global", "account", "tenant", "team", "user")
+
+
+def skill_visible_in_scope(record: Json, scope: Json | None, owner_scope: str = "") -> bool:
+    """Is a skill visible from `scope`, at the level its ``owner_scope`` declares?
+
+    A skill is authored once and meant to apply broadly: a ``global`` runbook belongs to everyone,
+    a ``user`` skill follows its author into every conversation they have. Matching the FULL access
+    scope -- which includes the session the skill happened to be ingested in -- made every skill
+    session-local, so a global skill was invisible from the next conversation and ``owner_scope``
+    was recorded but never honoured.
+
+    Each level therefore compares only the identity it names, and ignores everything narrower:
+    ``global`` matches always, ``account``/``tenant``/``team`` match that identity, and ``user``
+    matches the author. An unrecognised value falls back to ``user``, the safest of the five,
+    because widening visibility by accident is the failure that leaks one customer's skill to
+    another."""
+    level = str(owner_scope or record.get("owner_scope") or "user").strip().lower()
+    if level not in SKILL_SCOPE_LEVELS:
+        level = "user"
+    if level == "global":
+        return True
+    if not isinstance(scope, dict):
+        return True
+    access = candidate_access_scope(record)
+    if not isinstance(access, dict):
+        return True
+    field = {"account": "account_id", "tenant": "tenant_id", "team": "team",
+             "user": "user_id"}[level]
+    wanted = str(scope.get(field) or "")
+    holder = str(access.get(field) or "")
+    if not wanted or not holder:
+        # Nothing to compare at this level -- fall back to the strict check rather than widen.
+        return scope_matches(access, scope)
+    return wanted == holder
+
+
 def list_skills(adapter: object, args: Json) -> Json:
     scope = optional_object(args, "scope")
     limit = args.get("limit", 100)
@@ -106,7 +143,10 @@ def list_skills(adapter: object, args: Json) -> Json:
     for record in reversed(adapter.read_all()):
         if record.get("record_type") != "skill_manifest":
             continue
-        if not scope_matches(candidate_access_scope(record), scope):
+        control_for_scope = latest_skill_controls(adapter).get(int(record.get("skill_hash") or 0), {})
+        if not skill_visible_in_scope(
+                record, scope,
+                str(control_for_scope.get("owner_scope") or record.get("owner_scope") or "")):
             continue
         skill_hash = int(record.get("skill_hash") or 0)
         if skill_hash in skills:
