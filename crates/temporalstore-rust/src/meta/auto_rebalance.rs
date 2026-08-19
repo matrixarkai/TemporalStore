@@ -35,6 +35,11 @@ pub enum ShardReassignmentReason {
     /// The shard's owner is live, but load is uneven; the shard moves to spread
     /// shards more evenly across live servers (e.g. onto a newly-joined node).
     Rebalance,
+    /// The shard's owner is live and healthy but is not serving this shard, so
+    /// every read routed to it misses. Produced by [`ShardChecker`]; evacuation
+    /// cannot catch it because the owner itself is perfectly available -- it is
+    /// the shard that is gone, not the server.
+    OwnerDiverged,
 }
 
 /// A single planned shard ownership change.

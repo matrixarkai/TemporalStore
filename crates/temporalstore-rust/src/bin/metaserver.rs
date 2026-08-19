@@ -18,7 +18,8 @@ use temporalstore_rust::meta::{
     MetaSnapshot, MetaSnapshotFileRequest, MetaSnapshotFileResponse, MetaSnapshotResponse,
     ProxyHeartbeatRequest, PublishShardSnapshotRequest, RegisterProxyRequest,
     RegisterServerRequest, RegisterShardRequest, SafeModePolicy, ServerHeartbeatRequest,
-    ShardReassignmentReason, SingleNodeMeta, StateChangeRequest, TopologyVersionRequest,
+    ShardCheckOptions, ShardChecker, ShardReassignment, ShardReassignmentReason,
+    SingleNodeMeta, StateChangeRequest, TopologyVersionRequest,
     UpdateTableRequest,
 };
 use temporalstore_rust::raft::{
@@ -154,6 +155,46 @@ fn main() {
             }
             MetaBackend::Raft(_) => {
                 warn!("TS_META_RETENTION_GC ignored: raft backend owns its own meta state");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    // Shard-divergence reconciliation: compare the owner map against what each
+    // datanode reports serving, and re-place the shards its recorded owner is
+    // not actually serving. OFF by default (TS_META_SHARD_DIVERGENCE_CHECK)
+    // because it moves data. Only the single-node backend is auto-driven here.
+    let _shard_divergence = if env_bool("TS_META_SHARD_DIVERGENCE_CHECK", false) {
+        match &backend {
+            MetaBackend::Single(meta) => {
+                let interval_ms =
+                    env_u64("TS_META_SHARD_DIVERGENCE_INTERVAL_MS", detector_interval_ms);
+                let defaults = ShardCheckOptions::default();
+                let options = ShardCheckOptions {
+                    reboot_grace_ms: env_u64(
+                        "TS_META_SHARD_DIVERGENCE_REBOOT_GRACE_MS",
+                        defaults.reboot_grace_ms,
+                    ),
+                    max_moves_per_window: env_u64(
+                        "TS_META_SHARD_DIVERGENCE_MAX_MOVES",
+                        defaults.max_moves_per_window as u64,
+                    ) as usize,
+                    window_ms: env_u64(
+                        "TS_META_SHARD_DIVERGENCE_WINDOW_MS",
+                        defaults.window_ms,
+                    ),
+                };
+                info!(
+                    interval_ms,
+                    reboot_grace_ms = options.reboot_grace_ms,
+                    max_moves_per_window = options.max_moves_per_window,
+                    "shard-divergence reconciliation enabled"
+                );
+                Some(start_shard_divergence_loop(meta.clone(), options, interval_ms))
+            }
+            MetaBackend::Raft(_) => {
+                warn!("TS_META_SHARD_DIVERGENCE_CHECK ignored: raft backend manages placement itself");
                 None
             }
         }
@@ -733,6 +774,16 @@ fn run_auto_rebalance_round(
         ..AutoRebalanceOptions::default()
     };
     let plans = meta.plan_auto_rebalance_with_options(options);
+    drive_reassignments(meta, plans, http_options);
+}
+
+/// Drive a set of reassignments: ask the target to load the shard, unload the
+/// source when it still holds it, then rewrite the owner map.
+fn drive_reassignments(
+    meta: &SingleNodeMeta,
+    plans: Vec<ShardReassignment>,
+    http_options: HttpRequestOptions,
+) {
     for plan in plans {
         let load_version = now_epoch_ms();
         let load_request = LoadShardRequest {
@@ -764,7 +815,9 @@ fn run_auto_rebalance_round(
             );
             continue;
         }
-        // A balance move vacates a still-live source: unload there (best-effort).
+        // A balance move vacates a still-live source: unload there
+        // (best-effort). An evacuation has no live source, and a divergence's
+        // source is precisely the node that no longer holds the shard.
         if plan.reason == ShardReassignmentReason::Rebalance {
             if let Some(from_server) = &plan.from_server {
                 let unload_status = post_unload_or_error(
@@ -796,6 +849,44 @@ fn run_auto_rebalance_round(
             );
         }
     }
+}
+
+/// Background loop that reconciles the metaserver's shard->owner map against
+/// what datanodes report serving.
+///
+/// A shard can vanish from a healthy node -- unloaded by hand, failed to reload
+/// after a restart, a rolled-back load -- and nothing else notices: the node
+/// keeps heartbeating, so neither the stale-heartbeat detector nor reboot
+/// detection has anything to say, and auto-rebalance only evacuates shards whose
+/// *owner* is unavailable. This owner is available; it is the shard that is
+/// gone. Until something compares the two views, every read for that shard is
+/// routed to a server that will miss on all of them.
+fn start_shard_divergence_loop(
+    meta: SingleNodeMeta,
+    options: ShardCheckOptions,
+    interval_ms: u64,
+) -> std::thread::JoinHandle<()> {
+    let interval = std::time::Duration::from_millis(interval_ms.max(1));
+    let http_options = HttpRequestOptions {
+        connect_timeout_ms: env_u64("TS_META_SHARD_DIVERGENCE_CONNECT_TIMEOUT_MS", 500),
+        io_timeout_ms: env_u64("TS_META_SHARD_DIVERGENCE_IO_TIMEOUT_MS", 2_000),
+        ..HttpRequestOptions::default()
+    };
+    let mut checker = ShardChecker::new(options);
+    std::thread::spawn(move || loop {
+        let (report, moves) = meta.check_shard_divergence(&mut checker);
+        if !report.diverged.is_empty() {
+            warn!(
+                diverged = report.diverged.len(),
+                planned = moves.len(),
+                rate_limited = report.rate_limited,
+                skipped_booting = report.skipped_in_reboot_grace.len(),
+                "shard-divergence: owner map disagrees with what datanodes serve"
+            );
+        }
+        drive_reassignments(&meta, moves, http_options);
+        std::thread::sleep(interval);
+    })
 }
 
 /// Wire body for `POST /raft/admin/liveness` on a datanode (mirrors the private
@@ -850,6 +941,7 @@ fn conviction_policy_from_env() -> ConvictionPolicy {
         ) as usize,
         safe_mode_enabled: env_bool("TS_META_CONVICT_SAFE_MODE", defaults.safe_mode_enabled),
         convict_enabled: env_bool("TS_META_CONVICT_ENABLED", defaults.convict_enabled),
+        convict_on_reboot: env_bool("TS_META_CONVICT_ON_REBOOT", defaults.convict_on_reboot),
     }
 }
 

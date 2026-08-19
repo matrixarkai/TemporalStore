@@ -235,6 +235,10 @@ impl ProxyService {
     /// embeddings/summaries). Reuses the proxy's cached-route execute path, so it
     /// is one datanode write regardless of message count.
     pub(super) fn context_ingest(&self, request: ProxyContextIngestRequest) -> (u16, Vec<u8>) {
+        let _admitted = match self.admit_context(&request.scope, true) {
+            Ok(guard) => guard,
+            Err(response) => return response,
+        };
         let tenant_hash = context_tenant_hash(&request.scope);
         let shard_id = self.context_shard_id(tenant_hash);
         let session = scope_session(&request.scope);
@@ -292,6 +296,10 @@ impl ProxyService {
     /// finalize. When no messages/sources are supplied, replay the buffered
     /// `raw_event` records for the scope and extract those.
     pub(super) fn context_extract(&self, request: ProxyContextIngestRequest) -> (u16, Vec<u8>) {
+        let _admitted = match self.admit_context(&request.scope, true) {
+            Ok(guard) => guard,
+            Err(response) => return response,
+        };
         let tenant_hash = context_tenant_hash(&request.scope);
         let shard_id = self.context_shard_id(tenant_hash);
         let session = scope_session(&request.scope);
@@ -365,6 +373,10 @@ impl ProxyService {
 
     /// Forward a `ContextRetrieveRequest` to the owning datanode.
     pub(super) fn context_retrieve(&self, request: ProxyContextRetrieveRequest) -> (u16, Vec<u8>) {
+        let _admitted = match self.admit_context(&request.scope, false) {
+            Ok(guard) => guard,
+            Err(response) => return response,
+        };
         let tenant_hash = context_tenant_hash(&request.scope);
         let shard_id = self.context_shard_id(tenant_hash);
         let now = now_ms();

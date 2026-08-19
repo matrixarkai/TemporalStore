@@ -67,6 +67,12 @@ impl ProxyService {
         if stats.admission_rejections > 0 {
             degraded_reasons.push("admission_rejections".to_string());
         }
+        if stats.account_rejections > 0 {
+            degraded_reasons.push("account_rejections".to_string());
+        }
+        if stats.inflight_rejections > 0 {
+            degraded_reasons.push("inflight_rejections".to_string());
+        }
         if options.serving_mode != ProxyServingMode::Serving {
             degraded_reasons.push(format!("serving_mode:{:?}", options.serving_mode));
         }
@@ -124,6 +130,7 @@ impl ProxyService {
     pub fn policy_report(&self) -> ProxyPolicyReport {
         let options = self.options();
         let stats = *self.inner.stats.read().expect("proxy stats lock poisoned");
+        let (inflight_total, inflight_writes) = self.inflight_snapshot();
         ProxyPolicyReport {
             serving_mode: options.serving_mode,
             drop_percent: options.drop_percent.min(100),
@@ -134,6 +141,15 @@ impl ProxyService {
             ),
             rejecting_all: matches!(options.serving_mode, ProxyServingMode::NotServing),
             admission_rejections: stats.admission_rejections,
+            account_rejections: stats.account_rejections,
+            inflight_rejections: stats.inflight_rejections,
+            enforce_ingestion_account: options.enforce_ingestion_account,
+            ingestion_account: options.ingestion_account.clone(),
+            max_inflight_requests: options.max_inflight_requests,
+            max_inflight_write_requests: options.max_inflight_write_requests,
+            inflight_requests: inflight_total,
+            inflight_write_requests: inflight_writes,
+            pin_primary_reads: options.pin_primary_reads,
         }
     }
 
@@ -276,7 +292,7 @@ impl ProxyService {
                     "TemporalStoreThriftService admission/inflight checks",
                     "/proxy/policy",
                     "/ProxyService/GetPolicy",
-                    "Rust policy covers serving mode, write-disabled/readonly rejection, drop-percent admission, and rejection counters.",
+                    "Rust policy covers account-scope enforcement, total and write in-flight quotas, serving mode, write-disabled/readonly rejection, drop-percent admission, and per-kind rejection counters.",
                 ),
                 proxy_operational_surface_entry(
                     "proxy metrics/status",

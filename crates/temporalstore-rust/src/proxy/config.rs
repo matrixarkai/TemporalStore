@@ -17,6 +17,10 @@ pub(super) fn default_service_registry_ttl_ms() -> u64 {
     30_000
 }
 
+pub(super) fn default_pin_primary_reads() -> bool {
+    true
+}
+
 pub(super) fn default_context_first_shard_id() -> crate::types::ShardId {
     1
 }
@@ -67,6 +71,11 @@ pub(super) fn proxy_config_version(options: &ProxyOptions) -> u64 {
         max_retries: options.max_retries,
         refresh_route_on_backend_error: options.refresh_route_on_backend_error,
         backend_continuous_failed_time_ms: options.backend_continuous_failed_time_ms,
+        ingestion_account: &options.ingestion_account,
+        enforce_ingestion_account: options.enforce_ingestion_account,
+        max_inflight_requests: options.max_inflight_requests,
+        max_inflight_write_requests: options.max_inflight_write_requests,
+        pin_primary_reads: options.pin_primary_reads,
     };
     for byte in serde_json::to_vec(&view).unwrap_or_default() {
         version ^= byte as u64;
@@ -88,4 +97,9 @@ struct ProxyConfigHashView<'a> {
     max_retries: usize,
     refresh_route_on_backend_error: bool,
     backend_continuous_failed_time_ms: u64,
+    ingestion_account: &'a str,
+    enforce_ingestion_account: bool,
+    max_inflight_requests: u64,
+    max_inflight_write_requests: u64,
+    pin_primary_reads: bool,
 }
