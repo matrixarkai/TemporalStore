@@ -2094,10 +2094,10 @@ fn read_string(engine: &TemporalEngine, key: &str) -> Option<Vec<u8>> {
 
 #[test]
 fn manifest_fold_threshold_dump_fires_only_past_the_gap_and_folds_the_catalog() {
-    // MANIFEST-PARITY FOLD cadence: with a tiny oplog gap, a threshold dump fires once the
+    // MANIFEST-PARITY FOLD cadence: with a tiny WAL gap, a threshold dump fires once the
     // undumped index-log has grown past it, folding the band/zone catalog into an index-log
-    // MetaItem anchor; below the gap nothing is dumped. Mirrors the reference
-    // storage_dump_index_meta_oplog_gap background cadence -- never a per-write dump.
+    // MetaItem anchor; below the gap nothing is dumped. Matches
+    // index-meta dump background cadence -- never a per-write dump.
     let _guard = FoldEnvGuard::set(&[("TS_INDEX_CATALOG_FOLD", "1")]);
     let dir = tempfile::tempdir().unwrap();
     let page_dir = dir.path().join("pages");

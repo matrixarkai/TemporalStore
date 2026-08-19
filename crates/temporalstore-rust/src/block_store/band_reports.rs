@@ -37,10 +37,10 @@ impl LocalBlockStore {
     }
 
     /// MANIFEST-PARITY FOLD: project the in-memory band catalog into the DURABLE `ZoneInfo`
-    /// subset the reference keeps in `IndexLog.MetaItem.zones`. Only the durable fields ride in
+    /// subset kept in the index-log band catalog. Only the durable fields ride in
     /// the fold; the band descriptor's diagnostic fields (readable_prefix / corruption / errors)
     /// are deliberately dropped -- they are recomputed on load by scanning the slab, exactly as
-    /// the reference does not persist them. `zone_version` stamps every entry so a folded anchor
+    /// this design does not persist them. `zone_version` stamps every entry so a folded anchor
     /// carries a monotonically-versioned snapshot.
     pub fn zone_catalog(&self, zone_version: u64) -> Vec<crate::index_log::ZoneInfo> {
         self.inner

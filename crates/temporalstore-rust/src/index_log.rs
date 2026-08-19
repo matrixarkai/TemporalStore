@@ -47,7 +47,7 @@ pub struct IndexLogRecord {
 
 /// Kind of a single delta item in the append-only served-index log. A write emits a
 /// bounded set of these (the pages/objects it touched), so the log grows by O(delta)
-/// per write instead of O(store). Mirrors the on-disk item taxonomy: a PAGE item is a
+/// per write instead of O(store). Follows the on-disk item taxonomy: a block item is a
 /// concrete page-index entry change, an OBJECT item is an object-level change (e.g. a
 /// TTL-only or whole-object tombstone), and a META item carries the compaction anchor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,7 +101,7 @@ pub struct IndexItem {
 }
 
 /// Band/zone lifecycle state folded into the index-log MetaItem. 1:1 with
-/// `block_store::BlockStoreBandState` and with the reference `IndexLog.ZoneState`
+/// `block_store::BlockStoreBandState` and with the on-disk band-state encoding
 /// (INIT/CREATED/FROZEN/RECYCLED): Active==CREATED, Sealed==FROZEN, DelayedDestroy/Purged
 /// cover the RECYCLED grace. Serialized snake_case so it round-trips with the band manifest's
 /// own state enum.
@@ -114,13 +114,13 @@ pub enum ZoneState {
     Purged,
 }
 
-/// One band/zone catalog entry folded into the index-log MetaItem, mirroring the reference
-/// `IndexLog.MetaItem.zones` (`map<uint32,ZoneInfo>`). Carries the DURABLE catalog fields the
+/// One band/zone catalog entry folded into the index-log MetaItem, mirroring this design
+/// the durable band catalog in the index-log anchor. Carries the DURABLE catalog fields the
 /// band descriptor tracks -- lifecycle state, byte counts, timestamps, page-id range, version.
 /// The band descriptor's DIAGNOSTIC fields (readable_prefix_physical_bytes / has_corruption /
 /// first_error*) are intentionally ABSENT: they are recomputed on load by scanning the slab
 /// (`inspect_slab`, driven by `rebuild_band_manifest_at` / reconcile-on-open), exactly as the
-/// reference does not persist them. So this is the lossless durable projection of a band.
+/// are not persisted. So this is the lossless durable projection of a band.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ZoneInfo {
     #[serde(alias = "zone_id")]
@@ -145,10 +145,10 @@ pub struct ZoneInfo {
 /// Compaction anchor for the delta log. `start_wal_sequence` is the lowest WAL sequence
 /// still required to reconstruct the served index on top of the base snapshot: once the
 /// base `shard-{id}.index.json` is rewritten at a compaction point, the anchor advances
-/// and every delta record at or before it can be truncated. Mirrors the reference
-/// MetaItem's `start_oplog_id` role in the native WAL vocabulary.
+/// and every delta record at or before it can be truncated. Matches
+/// MetaItem's `start_WAL_id` role in the native WAL vocabulary.
 ///
-/// `zones` folds the band/zone catalog into the anchor (reference `MetaItem.zones` parity). It
+/// `zones` folds the band catalog into the anchor. It
 /// is populated ONLY at a threshold dump, and ONLY when the `TS_INDEX_CATALOG_FOLD` gate is on;
 /// with the gate off it is always empty and (via `skip_serializing_if`) not serialized, so an
 /// anchor record is byte-identical to the pre-fold record. Legacy anchors without `zones`
@@ -257,7 +257,7 @@ struct IndexLogInner {
     last_sequence_by_shard: HashMap<ShardId, u64>,
     /// MANIFEST-PARITY FOLD: the index-log byte length recorded at the last catalog dump, per
     /// shard. `undumped_len_since_dump` subtracts this from the current on-disk length to get the
-    /// undumped gap that drives the threshold-dump cadence (reference `UnDumpLength`). Reset to 0
+    /// undumped gap that drives the threshold-dump cadence. Reset to 0
     /// on process restart, so the first post-restart cycle may dump once -- harmless (a dump only
     /// materializes durable state that is already recoverable).
     last_dumped_len_by_shard: HashMap<ShardId, u64>,
@@ -298,8 +298,8 @@ fn indexlog_wal_only_sync() -> bool {
 }
 
 /// MANIFEST-PARITY FOLD gate (default OFF, byte-identical when off). When on, the band/zone
-/// catalog is folded into the index-log `MetaItem.zones` at a threshold dump (reference
-/// `IndexLog.MetaItem.zones` parity) and the per-write band-manifest file stops being the
+/// catalog is folded into the index-log anchor at a threshold dump
+/// and the per-write band-manifest file stops being the
 /// catalog's source of truth (it is reconstructed on load from the durable pages + the folded
 /// anchor). Off, none of that fold code runs: no `zones` are ever captured (so anchor records
 /// serialize identically), and recovery/persistence take the existing paths unchanged. Ships
@@ -315,9 +315,9 @@ pub fn index_catalog_fold_enabled() -> bool {
     )
 }
 
-/// Threshold decision for the background catalog/index dump, mirroring the reference
-/// `storage_dump_index_meta_oplog_gap` gate (`ShouldDelayDumpOplog` compares the undumped
-/// oplog length against the 1 MiB gap). `undumped_bytes` is the served-index-log growth since
+/// Threshold decision for the background catalog/index dump, mirroring this design
+/// index-meta dump gate (the dump-delay check compares the undumped
+/// WAL length against the 1 MiB gap). `undumped_bytes` is the served-index-log growth since
 /// the last dumped watermark; when it crosses `gap_bytes` the dump fires. A zero gap disables
 /// the cadence (never dump on threshold) so an operator can pin dumps to compaction/unload only.
 pub fn should_dump_index_catalog(undumped_bytes: u64, gap_bytes: u64) -> bool {
@@ -327,7 +327,7 @@ pub fn should_dump_index_catalog(undumped_bytes: u64, gap_bytes: u64) -> bool {
 impl LocalIndexLogStore {
     /// On-disk byte length of a shard's index-log file (0 if absent). Used as the "undumped
     /// length" signal for the threshold-dump cadence: the growth of this file since the last
-    /// dumped watermark is the native analog of the reference `OpLogger::UnDumpLength()`.
+    /// dumped watermark is the undumped-length signal.
     pub fn log_len_bytes(&self, shard_id: ShardId) -> u64 {
         let inner = self.inner.lock().expect("index log lock poisoned");
         index_log_path(&inner.root, shard_id)
@@ -337,8 +337,8 @@ impl LocalIndexLogStore {
     }
 
     /// Undumped index-log length for a shard: the on-disk byte growth since the last catalog
-    /// dump (`mark_catalog_dumped`). This is the native analog of the reference
-    /// `OpLogger::UnDumpLength()` and is the signal compared against `index_dump_oplog_gap_bytes`
+    /// dump (`mark_catalog_dumped`). This is the native analog of this design
+    /// the undumped WAL length, and is the signal compared against `index_dump_oplog_gap_bytes`
     /// to decide a threshold dump. A shard never dumped this process (or freshly restarted)
     /// reports the whole current length.
     pub fn undumped_len_since_dump(&self, shard_id: ShardId) -> u64 {

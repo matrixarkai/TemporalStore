@@ -17,7 +17,7 @@ pub const DEFAULT_CONTEXT_PAGE_TARGET_BYTES: usize = 64 * 1024;
 pub const DEFAULT_BLOCK_SLAB_TARGET_BYTES: u64 = 1 << 30;
 // Match the data-slab seal size (block_slab_target) so one slab maps to one band
 // (band_id_for_slab stays 1:1), Mirroring where group_size == zone_size
-// (reference source) and a zone seals at the device zone_size (~1GiB large mode).
+// (specification) and a zone seals at the device zone_size (~1GiB large mode).
 pub const DEFAULT_STORAGE_ZONE_SIZE: u64 = 1 << 30;
 pub const DEFAULT_STREAM_MAX_BLOB_SIZE: u64 = 10 * 1024 * 1024;
 pub const DEFAULT_COMPACTION_WATERMARK_BYTES: u64 = 256 * 1024 * 1024;
@@ -25,8 +25,8 @@ pub const DEFAULT_COLD_SCAN_NO_CACHE_FILL: bool = true;
 pub const DEFAULT_PAGE_INDEX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_BLOCK_INDEX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 // Undumped index-log-gap threshold that triggers a background catalog/index dump under the
-// MANIFEST-PARITY FOLD (TS_INDEX_CATALOG_FOLD). Mirrors the reference
-// `storage_dump_index_meta_oplog_gap` default of 1 MiB.
+// MANIFEST-PARITY FOLD (TS_INDEX_CATALOG_FOLD). Matches the
+// default of 1 MiB.
 pub const DEFAULT_INDEX_DUMP_OPLOG_GAP_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,7 +110,7 @@ impl StorageTuningConfig {
     pub fn effective_slab_target_bytes(self) -> u64 {
         // A slab must be able to hold the largest blob it stores, so the max blob
         // size is a FLOOR, not a ceiling. asserts a record fits within a zone
-        // (reference source), i.e. seal >= max_blob. The previous
+        // (specification), i.e. seal >= max_blob. The previous
         // `.min` inverted this, clamping the 1GiB seal target down to the 10MiB blob
         // size and sealing slabs 100x too small.
         self.block_slab_target_bytes
@@ -146,7 +146,7 @@ pub fn storage_zone_size_bytes() -> u64 {
 
 /// Undumped index-log-gap threshold (bytes) that triggers a background catalog/index dump under
 /// the MANIFEST-PARITY FOLD. Reads the `TS_INDEX_DUMP_OPLOG_GAP_BYTES` env override, falling back
-/// to the 1 MiB reference-parity default. Only consulted when `index_catalog_fold_enabled()`.
+/// to the 1 MiB parity default. Only consulted when `index_catalog_fold_enabled()`.
 pub fn index_dump_oplog_gap_bytes() -> u64 {
     StorageTuningConfig::from_env().index_dump_oplog_gap_bytes
 }
@@ -205,7 +205,7 @@ mod tests {
             config.block_index_cache_bytes,
             DEFAULT_BLOCK_INDEX_CACHE_BYTES
         );
-        // 1 MiB reference-parity default (storage_dump_index_meta_oplog_gap).
+        // 1 MiB default.
         assert_eq!(
             config.index_dump_oplog_gap_bytes,
             DEFAULT_INDEX_DUMP_OPLOG_GAP_BYTES

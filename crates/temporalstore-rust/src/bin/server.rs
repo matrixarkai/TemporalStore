@@ -1970,7 +1970,7 @@ fn wire_matrixobject_networked_durability(
     };
     let replicator = Arc::new(SharedStoreReplicator::new(cluster_id, Arc::new(store)));
 
-    // Fresh node: rebuild from the networked store via reference-parity lazy
+    // Fresh node: rebuild from the networked store via parity lazy
     // data-follow (index + address map, then WAL tail; old pages fetched on demand).
     if !local_state_present {
         let after_wal_index = match rt.block_on(replicator.restore_index_and_page_addresses(

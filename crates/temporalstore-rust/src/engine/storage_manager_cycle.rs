@@ -302,7 +302,7 @@ impl TemporalEngine {
             match self.page_store.gc_slabs_before_with_live_refs_policy(
                 retain_from_page_slab_id,
                 reclaim_live_refs,
-                // garbage-ratio GC victim selection (reference source): reclaim the
+                // garbage-ratio GC victim selection (specification): reclaim the
                 // highest-garbage bands first, keeping bands below the garbage floor.
                 // Floor 0 (the default) reclaims every eligible band as before.
                 BlockStoreGcPolicy::with_band_garbage_floor(
@@ -950,7 +950,7 @@ impl TemporalEngine {
         // MANIFEST-PARITY FOLD threshold dump (gate on only, never on a dry run): if the undumped
         // index-log gap has crossed `index_dump_oplog_gap_bytes`, materialize the base index +
         // fold the band/zone catalog into an index-log anchor here, in the background cycle --
-        // mirroring the reference's background `StorageManager` dump-on-oplog-gap cadence, never
+        // mirroring this design's background `StorageManager` dump-on-WAL-gap cadence, never
         // per write. No-op with the gate off, so the cycle stays byte-identical when the fold is
         // not enabled.
         if !request.dry_run {
