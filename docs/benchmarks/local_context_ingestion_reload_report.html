@@ -1,0 +1,252 @@
+<!doctype html><html><head><meta charset='utf-8'><title>TemporalStore Local Context Load Optimization Report</title><style>
+body{font-family:Inter,Segoe UI,Arial,sans-serif;margin:32px;color:#172026;background:#f7f8f8}h1{margin:0 0 6px}.muted{color:#5d6b72}table{border-collapse:collapse;width:100%;background:#fff;margin:16px 0;border:1px solid #d7dddf}th,td{padding:9px 10px;border-bottom:1px solid #e3e7e8;text-align:left;font-size:13px}th{background:#edf1f2}code,pre{background:#eef2f3;padding:2px 5px;border-radius:4px}.ok{color:#086b3c;font-weight:600}.warn{color:#8a5a00;font-weight:600}section{margin:24px 0}pre{white-space:pre-wrap;padding:12px;overflow:auto}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.card{background:#fff;border:1px solid #d7dddf;border-radius:8px;padding:14px}</style></head><body>
+<h1>TemporalStore Local Context Load Optimization Report</h1>
+<p class='muted'>Generated 2026-08-18 23:32:57 PDT. Stable validation artifact under <code>/root/src/github-services/TemporalStore/docs/benchmarks/local_context_validation_current</code>.</p><section><h2>Source Enumeration</h2><table><tr><th>Metric</th><th>Value</th></tr><tr><td>Total emitted records</td><td>10</td></tr><tr><td>By agent</td><td><code>{&#x27;claude&#x27;: 5, &#x27;codex&#x27;: 5}</code></td></tr><tr><td>By source</td><td><code>{&#x27;resource_md&#x27;: 10}</code></td></tr><tr><td>Dropped low-value records</td><td>0</td></tr></table></section><section><h2>Measured Runs</h2><table><tr><th>Agent</th><th>Run</th><th>Scanned</th><th>Accepted</th><th>Failed</th><th>Skipped covered</th><th>Total s</th><th>Load s</th><th>Ingest s</th><th>Flush s</th><th>Memory cache bytes</th><th>Memory fills</th><th>Disk hits</th></tr><tr><td>claude</td><td>fresh load</td><td>5</td><td>5</td><td>0</td><td>0</td><td>0.119</td><td>0.073</td><td>0.032</td><td>0.010</td><td>25105</td><td>10</td><td>0</td></tr><tr><td>claude</td><td>restart warm/checkpoint</td><td>-</td><td>-</td><td>-</td><td>-</td><td>0.033</td><td>0.021</td><td>-</td><td>0.012</td><td>906</td><td>5</td><td>0</td></tr><tr><td>claude</td><td>duplicate coverage rerun</td><td>5</td><td>0</td><td>0</td><td>5</td><td>0.027</td><td>0.019</td><td>0.000</td><td>0.007</td><td>0</td><td>0</td><td>0</td></tr><tr><td>codex</td><td>fresh load</td><td>5</td><td>5</td><td>0</td><td>0</td><td>0.076</td><td>0.045</td><td>0.021</td><td>0.008</td><td>25111</td><td>10</td><td>0</td></tr><tr><td>codex</td><td>restart warm/checkpoint</td><td>-</td><td>-</td><td>-</td><td>-</td><td>0.031</td><td>0.020</td><td>-</td><td>0.011</td><td>914</td><td>5</td><td>0</td></tr><tr><td>codex</td><td>duplicate coverage rerun</td><td>5</td><td>0</td><td>0</td><td>5</td><td>0.024</td><td>0.017</td><td>0.000</td><td>0.007</td><td>0</td><td>0</td><td>0</td></tr></table></section><section><h2>Findings</h2><div class='grid'>
+<div class='card'><h3>Fresh start</h3><p class='ok'>All stable local context records were accepted with zero failures.</p><p>The loader now uses a 256 MB default cache and immediately promotes packed context pages into memory on batched append. First-load reports show positive <code>memory_bytes</code> and <code>memory_fills</code>.</p></div>
+<div class='card'><h3>Normal restart</h3><p class='ok'>Checkpoint-only restart warms memory without ingesting duplicate stdin.</p><p>Both Claude and Codex replayed persisted local records and filled memory cache in about 30 ms on this small stable sample.</p></div>
+<div class='card'><h3>Duplicate/resume</h3><p class='ok'>Second identical load skipped 100% covered rows.</p><p>The skip path proves coverage against the same session-index node hashes used by ingestion; accepted and failed were both 0.</p></div>
+<div class='card'><h3>Full-corpus note</h3><p class='warn'>The code path is fixed and validated on a stable bounded artifact. The full Windows-mounted transcript scan was intermittently slow/nonzero during this turn, so full-corpus validation remains active goal work.</p></div>
+</div></section>
+<section><h2>Implementation Changes Validated</h2><ul><li><code>MATRIXARK_BACKFILL_CACHE_BYTES</code> controls local-context backfill cache size; default is 256 MB.</li><li><code>MATRIXARK_BACKFILL_FLUSH_EVERY_ACCEPTED</code> checkpoints during large raw-first backfills; default is 10,000.</li><li><code>--checkpoint-only</code> / <code>MATRIXARK_BACKFILL_CHECKPOINT_ONLY=1</code> loads and flushes the shard index without consuming duplicate local-context input.</li><li><code>MATRIXARK_BACKFILL_SKIP_COVERED_SESSIONS=1</code> skips rows whose expected node hashes already exist in the session index.</li><li>Batched packed-page writes now place the just-written page bytes into memory cache immediately.</li></ul></section><section><h2>Raw JSON</h2><pre>{
+  &quot;generated_at_ms&quot;: 1787121177265,
+  &quot;sample_emit&quot;: {
+    &quot;emit&quot;: true,
+    &quot;scanned&quot;: 10,
+    &quot;counts&quot;: {
+      &quot;claude&quot;: 5,
+      &quot;codex&quot;: 5
+    },
+    &quot;by_source&quot;: {
+      &quot;resource_md&quot;: 10
+    },
+    &quot;by_agent&quot;: {
+      &quot;claude&quot;: 5,
+      &quot;codex&quot;: 5
+    },
+    &quot;dropped&quot;: 0
+  },
+  &quot;agents&quot;: {
+    &quot;claude&quot;: {
+      &quot;first_load&quot;: {
+        &quot;accepted&quot;: 5,
+        &quot;agent_name&quot;: &quot;claude&quot;,
+        &quot;cache_bytes&quot;: 268435456,
+        &quot;cache_stats&quot;: {
+          &quot;disk_bytes&quot;: 0,
+          &quot;disk_fills&quot;: 0,
+          &quot;disk_hits&quot;: 0,
+          &quot;memory_bytes&quot;: 25105,
+          &quot;memory_evictions&quot;: 0,
+          &quot;memory_fills&quot;: 10,
+          &quot;memory_hits&quot;: 0,
+          &quot;misses&quot;: 0,
+          &quot;pinned_bytes&quot;: 0,
+          &quot;pinned_entries&quot;: 0,
+          &quot;puts&quot;: 10
+        },
+        &quot;checkpoint_flush_seconds&quot;: 0.022238273,
+        &quot;checkpoint_flushes&quot;: 1,
+        &quot;failed&quot;: 0,
+        &quot;flush_every_accepted&quot;: 5,
+        &quot;flush_seconds&quot;: 0.009563371,
+        &quot;gate_l1&quot;: true,
+        &quot;index_path&quot;: &quot;/tmp/ts-goal-context-store-stable/claude/claude-session-index.json&quot;,
+        &quot;ingest_seconds&quot;: 0.032260736,
+        &quot;load_seconds&quot;: 0.072867731,
+        &quot;raw_first&quot;: true,
+        &quot;read_seconds&quot;: 0.00078739,
+        &quot;replay_from_sequence&quot;: 0,
+        &quot;root&quot;: &quot;/tmp/ts-goal-context-store-stable/claude&quot;,
+        &quot;scanned&quot;: 5,
+        &quot;seconds&quot;: 0.11875951,
+        &quot;session_count&quot;: 1,
+        &quot;skip_covered_sessions&quot;: false,
+        &quot;skipped&quot;: 0,
+        &quot;skipped_covered&quot;: 0,
+        &quot;status&quot;: &quot;ok&quot;,
+        &quot;sub_batch&quot;: 250,
+        &quot;total_nodes&quot;: 5
+      },
+      &quot;checkpoint_only_restart_warm&quot;: {
+        &quot;agent_name&quot;: &quot;claude&quot;,
+        &quot;cache_bytes&quot;: 268435456,
+        &quot;cache_stats&quot;: {
+          &quot;disk_bytes&quot;: 0,
+          &quot;disk_fills&quot;: 0,
+          &quot;disk_hits&quot;: 0,
+          &quot;memory_bytes&quot;: 906,
+          &quot;memory_evictions&quot;: 0,
+          &quot;memory_fills&quot;: 5,
+          &quot;memory_hits&quot;: 0,
+          &quot;misses&quot;: 0,
+          &quot;pinned_bytes&quot;: 0,
+          &quot;pinned_entries&quot;: 0,
+          &quot;puts&quot;: 5
+        },
+        &quot;flush_seconds&quot;: 0.011816677,
+        &quot;index_path&quot;: &quot;/tmp/ts-goal-context-store-stable/claude/claude-session-index.json&quot;,
+        &quot;load_seconds&quot;: 0.020996347,
+        &quot;mode&quot;: &quot;checkpoint_only&quot;,
+        &quot;replay_from_sequence&quot;: 15,
+        &quot;root&quot;: &quot;/tmp/ts-goal-context-store-stable/claude&quot;,
+        &quot;seconds&quot;: 0.033009213,
+        &quot;session_count&quot;: 1,
+        &quot;status&quot;: &quot;ok&quot;,
+        &quot;total_nodes&quot;: 5
+      },
+      &quot;skip_covered_rerun&quot;: {
+        &quot;accepted&quot;: 0,
+        &quot;agent_name&quot;: &quot;claude&quot;,
+        &quot;cache_bytes&quot;: 268435456,
+        &quot;cache_stats&quot;: {
+          &quot;disk_bytes&quot;: 0,
+          &quot;disk_fills&quot;: 0,
+          &quot;disk_hits&quot;: 0,
+          &quot;memory_bytes&quot;: 0,
+          &quot;memory_evictions&quot;: 0,
+          &quot;memory_fills&quot;: 0,
+          &quot;memory_hits&quot;: 0,
+          &quot;misses&quot;: 0,
+          &quot;pinned_bytes&quot;: 0,
+          &quot;pinned_entries&quot;: 0,
+          &quot;puts&quot;: 0
+        },
+        &quot;checkpoint_flush_seconds&quot;: 0.0,
+        &quot;checkpoint_flushes&quot;: 0,
+        &quot;failed&quot;: 0,
+        &quot;flush_every_accepted&quot;: 5,
+        &quot;flush_seconds&quot;: 0.007477365,
+        &quot;gate_l1&quot;: true,
+        &quot;index_path&quot;: &quot;/tmp/ts-goal-context-store-stable/claude/claude-session-index.json&quot;,
+        &quot;ingest_seconds&quot;: 6.571e-05,
+        &quot;load_seconds&quot;: 0.01948352,
+        &quot;raw_first&quot;: true,
+        &quot;read_seconds&quot;: 5.9287e-05,
+        &quot;replay_from_sequence&quot;: 15,
+        &quot;root&quot;: &quot;/tmp/ts-goal-context-store-stable/claude&quot;,
+        &quot;scanned&quot;: 5,
+        &quot;seconds&quot;: 0.027436811,
+        &quot;session_count&quot;: 1,
+        &quot;skip_covered_sessions&quot;: true,
+        &quot;skipped&quot;: 0,
+        &quot;skipped_covered&quot;: 5,
+        &quot;status&quot;: &quot;ok&quot;,
+        &quot;sub_batch&quot;: 250,
+        &quot;total_nodes&quot;: 5
+      },
+      &quot;first_stderr_tail&quot;: &quot;  checkpoint accepted 5 flush_seconds 0.022\n  session _global -&gt; accepted 5 failed 0 skipped_covered 0 (155 rec/s cumulative)\n&quot;,
+      &quot;skip_stderr_tail&quot;: &quot;  session _global -&gt; accepted 0 failed 0 skipped_covered 5 (0 rec/s cumulative)\n&quot;
+    },
+    &quot;codex&quot;: {
+      &quot;first_load&quot;: {
+        &quot;accepted&quot;: 5,
+        &quot;agent_name&quot;: &quot;codex&quot;,
+        &quot;cache_bytes&quot;: 268435456,
+        &quot;cache_stats&quot;: {
+          &quot;disk_bytes&quot;: 0,
+          &quot;disk_fills&quot;: 0,
+          &quot;disk_hits&quot;: 0,
+          &quot;memory_bytes&quot;: 25111,
+          &quot;memory_evictions&quot;: 0,
+          &quot;memory_fills&quot;: 10,
+          &quot;memory_hits&quot;: 0,
+          &quot;misses&quot;: 0,
+          &quot;pinned_bytes&quot;: 0,
+          &quot;pinned_entries&quot;: 0,
+          &quot;puts&quot;: 10
+        },
+        &quot;checkpoint_flush_seconds&quot;: 0.016776647,
+        &quot;checkpoint_flushes&quot;: 1,
+        &quot;failed&quot;: 0,
+        &quot;flush_every_accepted&quot;: 5,
+        &quot;flush_seconds&quot;: 0.00825303,
+        &quot;gate_l1&quot;: true,
+        &quot;index_path&quot;: &quot;/tmp/ts-goal-context-store-stable/codex/codex-session-index.json&quot;,
+        &quot;ingest_seconds&quot;: 0.021083966,
+        &quot;load_seconds&quot;: 0.045467904,
+        &quot;raw_first&quot;: true,
+        &quot;read_seconds&quot;: 0.000489983,
+        &quot;replay_from_sequence&quot;: 0,
+        &quot;root&quot;: &quot;/tmp/ts-goal-context-store-stable/codex&quot;,
+        &quot;scanned&quot;: 5,
+        &quot;seconds&quot;: 0.076345706,
+        &quot;session_count&quot;: 1,
+        &quot;skip_covered_sessions&quot;: false,
+        &quot;skipped&quot;: 0,
+        &quot;skipped_covered&quot;: 0,
+        &quot;status&quot;: &quot;ok&quot;,
+        &quot;sub_batch&quot;: 250,
+        &quot;total_nodes&quot;: 5
+      },
+      &quot;checkpoint_only_restart_warm&quot;: {
+        &quot;agent_name&quot;: &quot;codex&quot;,
+        &quot;cache_bytes&quot;: 268435456,
+        &quot;cache_stats&quot;: {
+          &quot;disk_bytes&quot;: 0,
+          &quot;disk_fills&quot;: 0,
+          &quot;disk_hits&quot;: 0,
+          &quot;memory_bytes&quot;: 914,
+          &quot;memory_evictions&quot;: 0,
+          &quot;memory_fills&quot;: 5,
+          &quot;memory_hits&quot;: 0,
+          &quot;misses&quot;: 0,
+          &quot;pinned_bytes&quot;: 0,
+          &quot;pinned_entries&quot;: 0,
+          &quot;puts&quot;: 5
+        },
+        &quot;flush_seconds&quot;: 0.010799071,
+        &quot;index_path&quot;: &quot;/tmp/ts-goal-context-store-stable/codex/codex-session-index.json&quot;,
+        &quot;load_seconds&quot;: 0.019513564,
+        &quot;mode&quot;: &quot;checkpoint_only&quot;,
+        &quot;replay_from_sequence&quot;: 15,
+        &quot;root&quot;: &quot;/tmp/ts-goal-context-store-stable/codex&quot;,
+        &quot;seconds&quot;: 0.030506379,
+        &quot;session_count&quot;: 1,
+        &quot;status&quot;: &quot;ok&quot;,
+        &quot;total_nodes&quot;: 5
+      },
+      &quot;skip_covered_rerun&quot;: {
+        &quot;accepted&quot;: 0,
+        &quot;agent_name&quot;: &quot;codex&quot;,
+        &quot;cache_bytes&quot;: 268435456,
+        &quot;cache_stats&quot;: {
+          &quot;disk_bytes&quot;: 0,
+          &quot;disk_fills&quot;: 0,
+          &quot;disk_hits&quot;: 0,
+          &quot;memory_bytes&quot;: 0,
+          &quot;memory_evictions&quot;: 0,
+          &quot;memory_fills&quot;: 0,
+          &quot;memory_hits&quot;: 0,
+          &quot;misses&quot;: 0,
+          &quot;pinned_bytes&quot;: 0,
+          &quot;pinned_entries&quot;: 0,
+          &quot;puts&quot;: 0
+        },
+        &quot;checkpoint_flush_seconds&quot;: 0.0,
+        &quot;checkpoint_flushes&quot;: 0,
+        &quot;failed&quot;: 0,
+        &quot;flush_every_accepted&quot;: 5,
+        &quot;flush_seconds&quot;: 0.00668287,
+        &quot;gate_l1&quot;: true,
+        &quot;index_path&quot;: &quot;/tmp/ts-goal-context-store-stable/codex/codex-session-index.json&quot;,
+        &quot;ingest_seconds&quot;: 3.9675e-05,
+        &quot;load_seconds&quot;: 0.016739775,
+        &quot;raw_first&quot;: true,
+        &quot;read_seconds&quot;: 4.0186e-05,
+        &quot;replay_from_sequence&quot;: 15,
+        &quot;root&quot;: &quot;/tmp/ts-goal-context-store-stable/codex&quot;,
+        &quot;scanned&quot;: 5,
+        &quot;seconds&quot;: 0.023844996,
+        &quot;session_count&quot;: 1,
+        &quot;skip_covered_sessions&quot;: true,
+        &quot;skipped&quot;: 0,
+        &quot;skipped_covered&quot;: 5,
+        &quot;status&quot;: &quot;ok&quot;,
+        &quot;sub_batch&quot;: 250,
+        &quot;total_nodes&quot;: 5
+      },
+      &quot;first_stderr_tail&quot;: &quot;  checkpoint accepted 5 flush_seconds 0.017\n  session _global -&gt; accepted 5 failed 0 skipped_covered 0 (238 rec/s cumulative)\n&quot;,
+      &quot;skip_stderr_tail&quot;: &quot;  session _global -&gt; accepted 0 failed 0 skipped_covered 5 (0 rec/s cumulative)\n&quot;
+    }
+  }
+}</pre></section></body></html>

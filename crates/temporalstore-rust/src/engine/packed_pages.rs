@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::block_store::{BlockAddress, BlockStoreError, LocalBlockStore};
 use crate::types::{FeaturePoint, ShardId};
-use matrixcache::MultiLayerCache;
+use matrixcache::{CacheKey, MultiLayerCache};
 
 use super::constants::FEATURE_PAGE_MAGIC;
 use super::state::{PackedFeaturePage, PackedFeaturePageDecode};
@@ -240,12 +240,11 @@ fn append_timestamped_kv_pages_inner(
     if !async_storage {
         let mut writes = Vec::with_capacity(chunks.len());
         let mut chunk_points = Vec::with_capacity(chunks.len());
+        let mut encoded_pages = Vec::with_capacity(chunks.len());
         for chunk in chunks {
-            writes.push((
-                encode_feature_page(&chunk),
-                Some(object_id),
-                Some(routing_bucket),
-            ));
+            let packed = encode_feature_page(&chunk);
+            writes.push((packed.clone(), Some(object_id), Some(routing_bucket)));
+            encoded_pages.push(packed);
             chunk_points.push(chunk);
         }
         let addresses = block_store.append_batch_with_page_metadata(writes)?;
@@ -255,7 +254,18 @@ fn append_timestamped_kv_pages_inner(
                 "batch page append returned fewer addresses than chunks",
             )));
         }
-        for (chunk, address) in chunk_points.into_iter().zip(addresses) {
+        for ((chunk, packed), address) in chunk_points.into_iter().zip(encoded_pages).zip(addresses)
+        {
+            cache.put_memory_only(
+                CacheKey::page_with_slot(
+                    shard_id,
+                    address.page_slab_id,
+                    address.offset,
+                    address.length,
+                    address.routing_bucket,
+                ),
+                packed,
+            );
             refs.extend(
                 chunk
                     .into_iter()

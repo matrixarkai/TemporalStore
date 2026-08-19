@@ -31,7 +31,7 @@
 //!     context_batch_ingest --agent-name claude < backfill.claude.jsonl
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{self, BufRead, Write};
@@ -74,6 +74,18 @@ fn main() {
         std::env::set_var("MATRIXARK_CONTEXT_INGEST_GATE_L1", "1");
     }
     let raw_first = env_bool("MATRIXARK_BACKFILL_RAW_FIRST");
+    let checkpoint_only = env_bool("MATRIXARK_BACKFILL_CHECKPOINT_ONLY")
+        || std::env::args().any(|arg| arg == "--checkpoint-only");
+    let skip_covered_sessions = env_bool("MATRIXARK_BACKFILL_SKIP_COVERED_SESSIONS");
+    let cache_bytes: usize = std::env::var("MATRIXARK_BACKFILL_CACHE_BYTES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(256 * 1024 * 1024);
+    let flush_every_accepted: u64 = std::env::var("MATRIXARK_BACKFILL_FLUSH_EVERY_ACCEPTED")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10_000);
     let sub_batch: usize = std::env::var("MATRIXARK_BACKFILL_SUB_BATCH")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -118,7 +130,7 @@ fn main() {
     // Load the engine ONCE for the whole stream.
     let load_started = Instant::now();
     let engine = TemporalEngine::with_local_dirs(
-        4 * 1024 * 1024,
+        cache_bytes,
         root.join("cache"),
         root.join("pages"),
         root.join("indexes"),
@@ -137,11 +149,45 @@ fn main() {
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default();
+    if checkpoint_only {
+        let flush_started = Instant::now();
+        engine.flush_shard_index(1);
+        let report = json!({
+            "status": "ok",
+            "mode": "checkpoint_only",
+            "agent_name": agent_name,
+            "root": root.display().to_string(),
+            "index_path": index_path.display().to_string(),
+            "seconds": process_started.elapsed().as_secs_f64(),
+            "load_seconds": load_seconds,
+            "flush_seconds": flush_started.elapsed().as_secs_f64(),
+            "cache_bytes": cache_bytes,
+            "cache_stats": cache_stats_json(&engine),
+            "session_count": index.sessions.len(),
+            "total_nodes": index.sessions.values().map(Vec::len).sum::<usize>(),
+            "replay_from_sequence": replay_from_sequence,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).expect("report should serialize")
+        );
+        let _ = io::stdout().flush();
+        return;
+    }
+    let indexed_nodes_by_session: BTreeMap<String, BTreeSet<u64>> = index
+        .sessions
+        .iter()
+        .map(|(session, nodes)| (session.clone(), nodes.iter().copied().collect()))
+        .collect();
 
     let mut scanned = 0u64;
     let mut accepted = 0u64;
     let mut failed = 0u64;
     let mut skipped = 0u64;
+    let mut skipped_covered = 0u64;
+    let mut checkpoint_flushes = 0u64;
+    let mut checkpoint_flush_seconds = 0.0f64;
+    let mut next_checkpoint_accepted = flush_every_accepted.max(1);
     let started = Instant::now();
     let end_time_ms = now_ms().saturating_add(1);
 
@@ -255,8 +301,22 @@ fn main() {
         ));
         let mut session_accepted = 0u64;
         let mut session_failed = 0u64;
+        let mut session_skipped_covered = 0u64;
         let mut node_hashes = Vec::new();
         for chunk in sources.chunks(sub_batch) {
+            let expected_hashes = expected_node_hashes(tenant_hash, chunk);
+            if skip_covered_sessions
+                && !expected_hashes.is_empty()
+                && indexed_nodes_by_session
+                    .get(&session_id)
+                    .map(|covered| expected_hashes.iter().all(|hash| covered.contains(hash)))
+                    .unwrap_or(false)
+            {
+                let rows = chunk.len() as u64;
+                skipped_covered = skipped_covered.saturating_add(rows);
+                session_skipped_covered = session_skipped_covered.saturating_add(rows);
+                continue;
+            }
             let (chunk_accepted, chunk_failed, chunk_node_hashes) = if raw_first {
                 write_raw_sources(&engine, tenant_hash, chunk)
             } else {
@@ -282,6 +342,33 @@ fn main() {
             session_accepted += chunk_accepted;
             session_failed += chunk_failed;
             node_hashes.extend(chunk_node_hashes);
+            if flush_every_accepted > 0
+                && accepted.saturating_add(session_accepted) >= next_checkpoint_accepted
+            {
+                let checkpoint_started = Instant::now();
+                if raw_first && failed.saturating_add(session_failed) == 0 {
+                    std::env::set_var(
+                        "MATRIXARK_BULK_INGEST_EXPECTED_WAL_COMMANDS",
+                        accepted
+                            .saturating_add(session_accepted)
+                            .saturating_mul(4)
+                            .to_string(),
+                    );
+                }
+                engine.flush_shard_index(1);
+                let elapsed = checkpoint_started.elapsed().as_secs_f64();
+                checkpoint_flushes = checkpoint_flushes.saturating_add(1);
+                checkpoint_flush_seconds += elapsed;
+                while next_checkpoint_accepted <= accepted.saturating_add(session_accepted) {
+                    next_checkpoint_accepted =
+                        next_checkpoint_accepted.saturating_add(flush_every_accepted.max(1));
+                }
+                eprintln!(
+                    "  checkpoint accepted {} flush_seconds {:.3}",
+                    accepted.saturating_add(session_accepted),
+                    elapsed
+                );
+            }
         }
         node_hashes.sort_unstable();
         node_hashes.dedup();
@@ -301,10 +388,11 @@ fn main() {
             engine.flush_shard_index(1);
         }
         eprintln!(
-            "  session {} -> accepted {} failed {} ({:.0} rec/s cumulative)",
+            "  session {} -> accepted {} failed {} skipped_covered {} ({:.0} rec/s cumulative)",
             session_id,
             session_accepted,
             session_failed,
+            session_skipped_covered,
             accepted as f64 / ingest_started.elapsed().as_secs_f64().max(0.001)
         );
     }
@@ -343,14 +431,21 @@ fn main() {
         "accepted": accepted,
         "failed": failed,
         "skipped": skipped,
+        "skipped_covered": skipped_covered,
         "seconds": process_started.elapsed().as_secs_f64(),
         "load_seconds": load_seconds,
         "read_seconds": read_seconds,
         "ingest_seconds": ingest_seconds,
         "flush_seconds": flush_seconds,
+        "checkpoint_flushes": checkpoint_flushes,
+        "checkpoint_flush_seconds": checkpoint_flush_seconds,
         "session_count": index.sessions.len(),
         "total_nodes": index.sessions.values().map(Vec::len).sum::<usize>(),
         "replay_from_sequence": replay_from_sequence,
+        "cache_bytes": cache_bytes,
+        "cache_stats": cache_stats_json(&engine),
+        "flush_every_accepted": flush_every_accepted,
+        "skip_covered_sessions": skip_covered_sessions,
         "gate_l1": env_bool("MATRIXARK_CONTEXT_INGEST_GATE_L1"),
         "raw_first": raw_first,
         "sub_batch": sub_batch,
@@ -360,6 +455,38 @@ fn main() {
         serde_json::to_string_pretty(&report).expect("report should serialize")
     );
     let _ = io::stdout().flush();
+}
+
+fn cache_stats_json(engine: &TemporalEngine) -> Value {
+    let stats = engine.cache().stats();
+    json!({
+        "memory_bytes": stats.memory_bytes,
+        "disk_bytes": stats.disk_bytes,
+        "memory_hits": stats.memory_hits,
+        "disk_hits": stats.disk_hits,
+        "misses": stats.misses,
+        "puts": stats.puts,
+        "memory_fills": stats.memory_fills,
+        "disk_fills": stats.disk_fills,
+        "memory_evictions": stats.memory_evictions,
+        "pinned_entries": stats.pinned_entries,
+        "pinned_bytes": stats.pinned_bytes,
+    })
+}
+
+fn expected_node_hashes(tenant_hash: u64, sources: &[ContextExtractRequest]) -> Vec<u64> {
+    let mut hashes = sources
+        .iter()
+        .map(|source| {
+            stable_hash64(&format!(
+                "{}:{}:{}",
+                tenant_hash, source.source_kind as u8, source.source_id
+            ))
+        })
+        .collect::<Vec<_>>();
+    hashes.sort_unstable();
+    hashes.dedup();
+    hashes
 }
 
 fn write_raw_sources(
