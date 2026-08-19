@@ -149,6 +149,10 @@ fn main() {
                         "TS_META_SHARD_DIVERGENCE_REBOOT_GRACE_MS",
                         defaults.reboot_grace_ms,
                     ),
+                    settle_grace_ms: env_u64(
+                        "TS_META_SHARD_DIVERGENCE_SETTLE_GRACE_MS",
+                        defaults.settle_grace_ms,
+                    ),
                     max_moves_per_window: env_u64(
                         "TS_META_SHARD_DIVERGENCE_MAX_MOVES",
                         defaults.max_moves_per_window as u64,
@@ -161,6 +165,7 @@ fn main() {
                 info!(
                     interval_ms,
                     reboot_grace_ms = options.reboot_grace_ms,
+                    settle_grace_ms = options.settle_grace_ms,
                     max_moves_per_window = options.max_moves_per_window,
                     "shard-divergence reconciliation enabled"
                 );
@@ -866,6 +871,7 @@ fn start_shard_divergence_loop(
                 diverged = report.diverged.len(),
                 planned = moves.len(),
                 rate_limited = report.rate_limited,
+                settling = report.settling.len(),
                 skipped_booting = report.skipped_in_reboot_grace.len(),
                 "shard-divergence: owner map disagrees with what datanodes serve"
             );

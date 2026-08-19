@@ -38,6 +38,16 @@
 //!   ([`ServerMetaInfo::reports_shard_states`]). A node that never reports them
 //!   is indistinguishable from one serving nothing, and treating silence as
 //!   "serving nothing" would re-place the entire cluster.
+//! * **Settle grace.** A shard the owner reports but has not finished loading
+//!   is *in progress*, not missing. `serving_state` distinguishes them:
+//!   `loading`, `reloading`, `queued`, `running` and `unloading` are transient,
+//!   and acting on them would cancel work already underway and re-place a shard
+//!   that was about to serve — thrashing the very load it is waiting on. Those
+//!   states become actionable only after
+//!   [`ShardCheckOptions::settle_grace_ms`] of being continuously reported that
+//!   way. `serving` and `readonly` are healthy and never diverge; `failed` and
+//!   `unloaded` are terminal and act immediately, as does a shard absent from
+//!   the report entirely.
 //! * **Rate limit.** At most [`ShardCheckOptions::max_moves_per_window`]
 //!   divergences are acted on per window. A correlated fault can make many
 //!   shards look missing at once, and reacting to all of them would move more
@@ -54,6 +64,9 @@ use super::*;
 pub struct ShardCheckOptions {
     /// Skip a server this recently booted; it is still reloading its shards.
     pub reboot_grace_ms: u64,
+    /// How long a shard may sit in a transient serving state before the
+    /// metaserver stops waiting for it and treats it as diverged.
+    pub settle_grace_ms: u64,
     /// Most divergences acted on per window.
     pub max_moves_per_window: usize,
     /// Length of the rate-limit window.
@@ -64,6 +77,7 @@ impl Default for ShardCheckOptions {
     fn default() -> Self {
         Self {
             reboot_grace_ms: 30_000,
+            settle_grace_ms: 120_000,
             max_moves_per_window: 10,
             window_ms: 60_000,
         }
@@ -76,10 +90,14 @@ pub struct ShardDivergence {
     pub shard_id: ShardId,
     /// The recorded owner, which is live but does not report this shard.
     pub server_addr: String,
-    /// True when the owner reports the shard but has it marked not loaded --
-    /// a weaker signal than the shard being absent entirely.
+    /// True when the owner reports the shard but is not serving it -- a weaker
+    /// signal than the shard being absent from the report entirely.
     #[serde(default)]
     pub reported_unloaded: bool,
+    /// The `serving_state` the owner reported, or empty when the shard was
+    /// absent from the report altogether.
+    #[serde(default)]
+    pub serving_state: String,
 }
 
 /// What one reconciliation round found.
@@ -95,6 +113,42 @@ pub struct ShardCheckReport {
     pub skipped_without_shard_reports: Vec<String>,
     /// How many divergences the rate limit held back this round.
     pub rate_limited: usize,
+    /// Shards being waited on: reported in a transient state that has not yet
+    /// outlasted the settle grace. Not divergences, but worth surfacing --
+    /// a shard that never leaves this list is a load that never finishes.
+    #[serde(default)]
+    pub settling: Vec<ShardId>,
+}
+
+/// How a datanode describes one shard it is holding, reduced to what the
+/// reconciler needs. Ordered so the healthiest verdict wins when two workers
+/// report the same shard mid-handoff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ShardHealth {
+    /// The node has stopped trying (`failed`), or is holding it unloaded.
+    Broken(&'static str),
+    /// Work is underway: the node is loading, reloading, queued, running or
+    /// unloading it. Not a divergence until it outlasts the settle grace.
+    Transient(&'static str),
+    /// Serving reads, in read-write or read-only mode.
+    Serving(&'static str),
+}
+
+impl ShardHealth {
+    fn classify(state: &ServerShardServingState) -> Self {
+        match state.serving_state.as_str() {
+            // `readonly` is a serving mode, not a fault: reads resolve there.
+            "serving" | "readonly" => Self::Serving("serving"),
+            "loading" | "reloading" | "queued" | "running" => Self::Transient("loading"),
+            "unloading" => Self::Transient("unloading"),
+            "failed" => Self::Broken("failed"),
+            "unloaded" => Self::Broken("unloaded"),
+            // An unrecognised state from a newer datanode: fall back to the
+            // `loaded` flag rather than guessing it is broken.
+            _ if state.loaded => Self::Serving("serving"),
+            _ => Self::Broken("unloaded"),
+        }
+    }
 }
 
 /// Stateful reconciler: pure comparison plus a rate-limit window.
@@ -103,6 +157,10 @@ pub struct ShardChecker {
     options: ShardCheckOptions,
     window_start_ms: u64,
     moves_this_window: usize,
+    /// When each (shard, owner) pair was first seen in a transient state, so the
+    /// settle grace is measured from the first observation rather than from a
+    /// load start time the metaserver does not know.
+    settling_since_ms: BTreeMap<(ShardId, String), u64>,
 }
 
 impl Default for ShardChecker {
@@ -117,6 +175,7 @@ impl ShardChecker {
             options,
             window_start_ms: 0,
             moves_this_window: 0,
+            settling_since_ms: BTreeMap::new(),
         }
     }
 
@@ -143,7 +202,7 @@ impl ShardChecker {
 
         let mut report = ShardCheckReport::default();
         // Which servers may be judged this round, and what each one serves.
-        let mut served: BTreeMap<&str, BTreeMap<ShardId, bool>> = BTreeMap::new();
+        let mut served: BTreeMap<&str, BTreeMap<ShardId, ShardHealth>> = BTreeMap::new();
         let mut judgeable: BTreeSet<&str> = BTreeSet::new();
         for server in servers {
             if server.state != MetaEntityState::Normal {
@@ -164,34 +223,67 @@ impl ShardChecker {
             judgeable.insert(server.server_addr.as_str());
             let entry = served.entry(server.server_addr.as_str()).or_default();
             for state in &server.shard_states {
-                // A shard reported twice (two workers mid-handoff) counts as
-                // loaded if any report says so.
-                let loaded = entry.get(&state.shard_id).copied().unwrap_or(false) || state.loaded;
-                entry.insert(state.shard_id, loaded);
+                let health = ShardHealth::classify(state);
+                // A shard reported twice (two workers mid-handoff) keeps the
+                // healthiest verdict: one worker still serving it is enough.
+                let health = match entry.get(&state.shard_id) {
+                    Some(existing) => (*existing).max(health),
+                    None => health,
+                };
+                entry.insert(state.shard_id, health);
             }
         }
         report.skipped_in_reboot_grace.sort();
         report.skipped_without_shard_reports.sort();
 
+        let mut still_settling = BTreeMap::new();
         for (shard_id, owner_addr) in shard_owners {
             if !judgeable.contains(owner_addr.as_str()) {
                 continue;
             }
-            let owner_view = served.get(owner_addr.as_str());
-            match owner_view.and_then(|shards| shards.get(shard_id)) {
-                Some(true) => {}
-                Some(false) => report.diverged.push(ShardDivergence {
+            let key = (*shard_id, owner_addr.clone());
+            let health = served
+                .get(owner_addr.as_str())
+                .and_then(|shards| shards.get(shard_id))
+                .copied();
+            let (diverged, serving_state) = match health {
+                // Serving, in either mode: nothing to reconcile.
+                Some(ShardHealth::Serving(_)) => (false, None),
+                Some(ShardHealth::Transient(state)) => {
+                    // The node is working on it. Start (or continue) the clock,
+                    // and only give up once the grace has elapsed -- acting
+                    // sooner would cancel a load that was about to finish.
+                    let since = self
+                        .settling_since_ms
+                        .get(&key)
+                        .copied()
+                        .unwrap_or(now_ms);
+                    still_settling.insert(key.clone(), since);
+                    if now_ms.saturating_sub(since) >= self.options.settle_grace_ms {
+                        (true, Some(state))
+                    } else {
+                        report.settling.push(*shard_id);
+                        (false, None)
+                    }
+                }
+                // The node has stopped trying, or never had it.
+                Some(ShardHealth::Broken(state)) => (true, Some(state)),
+                None => (true, None),
+            };
+            if diverged {
+                report.diverged.push(ShardDivergence {
                     shard_id: *shard_id,
                     server_addr: owner_addr.clone(),
-                    reported_unloaded: true,
-                }),
-                None => report.diverged.push(ShardDivergence {
-                    shard_id: *shard_id,
-                    server_addr: owner_addr.clone(),
-                    reported_unloaded: false,
-                }),
+                    reported_unloaded: serving_state.is_some(),
+                    serving_state: serving_state.unwrap_or_default().to_string(),
+                });
             }
         }
+        // Forget clocks for shards that recovered or moved: a later stall must
+        // start its own grace rather than inherit an expired one.
+        self.settling_since_ms = still_settling;
+        report.settling.sort();
+        report.settling.dedup();
         report
     }
 
@@ -333,14 +425,14 @@ mod tests {
         addrs.iter().map(|addr| (*addr).to_string()).collect()
     }
 
-    fn serving_state(shard_id: ShardId, loaded: bool) -> ServerShardServingState {
+    fn serving_state(shard_id: ShardId, state: &str) -> ServerShardServingState {
         ServerShardServingState {
             shard_id,
-            serving_state: "serving".to_string(),
+            serving_state: state.to_string(),
             worker_index: 0,
             worker_threads: 1,
-            loaded,
-            readonly: false,
+            loaded: matches!(state, "serving" | "readonly"),
+            readonly: state == "readonly",
             load_version: 1,
             table_name: "ns.orders".to_string(),
             shard_uri: String::new(),
@@ -358,7 +450,7 @@ mod tests {
     }
 
     /// A healthy, reporting server that boots long before any test clock.
-    fn server(addr: &str, serving: &[(ShardId, bool)]) -> ServerMetaInfo {
+    fn server(addr: &str, serving: &[(ShardId, &str)]) -> ServerMetaInfo {
         ServerMetaInfo {
             server_addr: addr.to_string(),
             node_id: 1,
@@ -377,7 +469,7 @@ mod tests {
             runtime_load: ServerRuntimeLoad::default(),
             shard_states: serving
                 .iter()
-                .map(|(shard_id, loaded)| serving_state(*shard_id, *loaded))
+                .map(|(shard_id, state)| serving_state(*shard_id, *state))
                 .collect(),
         }
     }
@@ -391,8 +483,8 @@ mod tests {
         let mut checker = ShardChecker::default();
         let shard_owners = owners(&[(1, "s1"), (2, "s1"), (3, "s2")]);
         let servers = vec![
-            server("s1", &[(1, true)]),
-            server("s2", &[(3, true)]),
+            server("s1", &[(1, "serving")]),
+            server("s2", &[(3, "serving")]),
         ];
         let mut report = checker.check(&shard_owners, &servers, NOW);
         assert_eq!(report.diverged.len(), 1);
@@ -408,15 +500,100 @@ mod tests {
     }
 
     #[test]
-    fn a_shard_reported_but_not_loaded_is_flagged_more_weakly() {
+    fn a_shard_the_node_gave_up_on_diverges_immediately() {
+        // `failed` is terminal: the node is not going to serve this by waiting.
         let mut checker = ShardChecker::default();
-        let report = checker.check(
-            &owners(&[(1, "s1")]),
-            &[server("s1", &[(1, false)])],
-            NOW,
-        );
+        let report = checker.check(&owners(&[(1, "s1")]), &[server("s1", &[(1, "failed")])], NOW);
         assert_eq!(report.diverged.len(), 1);
         assert!(report.diverged[0].reported_unloaded);
+        assert_eq!(report.diverged[0].serving_state, "failed");
+        assert!(report.settling.is_empty());
+    }
+
+    #[test]
+    fn an_unloaded_shard_diverges_immediately() {
+        let mut checker = ShardChecker::default();
+        let report = checker.check(&owners(&[(1, "s1")]), &[server("s1", &[(1, "unloaded")])], NOW);
+        assert_eq!(report.diverged.len(), 1);
+        assert_eq!(report.diverged[0].serving_state, "unloaded");
+    }
+
+    #[test]
+    fn a_shard_that_is_still_loading_is_not_yanked_out_from_under_the_load() {
+        // The node is mid-load. Re-placing it now cancels work already underway
+        // and thrashes the very load the metaserver is waiting on.
+        for state in ["loading", "reloading", "queued", "running", "unloading"] {
+            let mut checker = ShardChecker::default();
+            let report =
+                checker.check(&owners(&[(1, "s1")]), &[server("s1", &[(1, state)])], NOW);
+            assert!(
+                report.diverged.is_empty(),
+                "{state} must not diverge on sight"
+            );
+            assert_eq!(report.settling, vec![1], "{state} should be waited on");
+        }
+    }
+
+    #[test]
+    fn a_readonly_shard_is_serving_and_never_diverges() {
+        // Read-only is a serving mode, not a fault: reads resolve there.
+        let mut checker = ShardChecker::default();
+        let report = checker.check(&owners(&[(1, "s1")]), &[server("s1", &[(1, "readonly")])], NOW);
+        assert!(report.diverged.is_empty());
+        assert!(report.settling.is_empty());
+    }
+
+    #[test]
+    fn a_load_that_never_finishes_eventually_diverges() {
+        let mut checker = ShardChecker::default();
+        let shard_owners = owners(&[(1, "s1")]);
+        let servers = [server("s1", &[(1, "loading")])];
+
+        // Inside the grace the metaserver keeps waiting.
+        assert!(checker.check(&shard_owners, &servers, NOW).diverged.is_empty());
+        let grace = ShardCheckOptions::default().settle_grace_ms;
+        assert!(checker
+            .check(&shard_owners, &servers, NOW + grace - 1)
+            .diverged
+            .is_empty());
+
+        // Past it, the load is not coming and the shard is re-placed.
+        let report = checker.check(&shard_owners, &servers, NOW + grace);
+        assert_eq!(report.diverged.len(), 1);
+        assert_eq!(report.diverged[0].serving_state, "loading");
+        assert!(report.settling.is_empty());
+    }
+
+    #[test]
+    fn the_settle_clock_restarts_after_the_shard_recovers() {
+        // A shard that loaded successfully and later stalls again gets a fresh
+        // grace, rather than inheriting an already-expired one.
+        let mut checker = ShardChecker::default();
+        let shard_owners = owners(&[(1, "s1")]);
+        let grace = ShardCheckOptions::default().settle_grace_ms;
+
+        checker.check(&shard_owners, &[server("s1", &[(1, "loading")])], NOW);
+        checker.check(&shard_owners, &[server("s1", &[(1, "serving")])], NOW + 1_000);
+        // Stalls again well past the original clock; the grace starts over.
+        let report = checker.check(
+            &shard_owners,
+            &[server("s1", &[(1, "loading")])],
+            NOW + grace + 2_000,
+        );
+        assert!(report.diverged.is_empty());
+        assert_eq!(report.settling, vec![1]);
+    }
+
+    #[test]
+    fn a_shard_two_workers_disagree_about_keeps_the_healthier_verdict() {
+        // Mid-handoff one worker can report `loading` while another serves it.
+        // One worker serving is enough.
+        let mut checker = ShardChecker::default();
+        let mut handoff = server("s1", &[(1, "loading")]);
+        handoff.shard_states.push(serving_state(1, "serving"));
+        let report = checker.check(&owners(&[(1, "s1")]), &[handoff], NOW);
+        assert!(report.diverged.is_empty());
+        assert!(report.settling.is_empty());
     }
 
     #[test]
@@ -424,7 +601,7 @@ mod tests {
         let mut checker = ShardChecker::default();
         let report = checker.check(
             &owners(&[(1, "s1"), (2, "s2")]),
-            &[server("s1", &[(1, true)]), server("s2", &[(2, true)])],
+            &[server("s1", &[(1, "serving")]), server("s2", &[(2, "serving")])],
             NOW,
         );
         assert!(report.diverged.is_empty());
