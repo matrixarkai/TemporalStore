@@ -503,6 +503,7 @@ pub(crate) fn execute_on_shard(
                 points,
                 routing_bucket,
                 async_storage,
+                true,
             ) {
                 for (timestamp_ms, address) in addresses {
                     series.insert(timestamp_ms, address);
@@ -569,6 +570,7 @@ pub(crate) fn execute_on_shard(
                     sorted_feature_points(accepted_points),
                     routing_bucket,
                     async_storage,
+                    true,
                 ) {
                     for (timestamp_ms, address) in addresses {
                         series.insert(timestamp_ms, address);
@@ -730,6 +732,7 @@ pub(crate) fn execute_on_shard(
                 points,
                 routing_bucket,
                 async_storage,
+                true,
             ) {
                 for (timestamp_ms, address) in addresses {
                     series.insert(timestamp_ms, address);
@@ -880,6 +883,7 @@ pub(crate) fn execute_on_shard(
                 points,
                 routing_bucket,
                 async_storage,
+                true,
             ) {
                 for (timestamp_ms, address) in addresses {
                     series.insert(timestamp_ms, address);
@@ -1597,6 +1601,7 @@ pub(crate) fn execute_on_shard(
                     }],
                     routing_bucket,
                     async_storage && !cold_storage,
+                    !cold_storage,
                 ) {
                     for (timestamp_ms, address) in addresses {
                         series.insert(timestamp_ms, address);
@@ -1661,6 +1666,7 @@ pub(crate) fn execute_on_shard(
                     }],
                     routing_bucket,
                     async_storage && !cold_storage,
+                    !cold_storage,
                 ) {
                     for (timestamp_ms, address) in addresses {
                         event_series.insert(timestamp_ms, address);
@@ -1698,7 +1704,8 @@ pub(crate) fn execute_on_shard(
                             value,
                         }],
                         routing_bucket,
-                        async_storage,
+                        async_storage && !cold_storage,
+                        !cold_storage,
                     ) {
                         let series = shard.context_indexes.entry(object_key.clone()).or_default();
                         for (timestamp_ms, address) in addresses {
@@ -1824,6 +1831,7 @@ pub(crate) fn execute_on_shard(
                 }],
                 routing_bucket,
                 async_storage,
+                true,
             ) {
                 let series = shard.context_indexes.entry(object_key.clone()).or_default();
                 for (timestamp_ms, address) in addresses {
@@ -1956,6 +1964,7 @@ pub(crate) fn execute_on_shard(
                 }],
                 routing_bucket,
                 async_storage,
+                true,
             ) {
                 let series = shard.context_audits.entry(object_key.clone()).or_default();
                 for (timestamp_ms, address) in addresses {
@@ -2244,6 +2253,7 @@ pub(crate) fn execute_on_shard(
                     }],
                     routing_bucket,
                     async_storage,
+                    true,
                 ) {
                     let series = shard
                         .context_children
@@ -2368,6 +2378,7 @@ pub(crate) fn execute_on_shard(
                 }],
                 routing_bucket,
                 async_storage,
+                true,
             ) {
                 let series = shard
                     .context_summaries
@@ -2422,6 +2433,7 @@ pub(crate) fn execute_on_shard(
                 }],
                 routing_bucket,
                 async_storage,
+                true,
             ) {
                 let series = shard
                     .context_compressions
@@ -2538,6 +2550,7 @@ pub(crate) fn execute_on_shard(
                     }],
                     routing_bucket,
                     async_storage,
+                    false,
                 ) {
                     let series = shard
                         .context_compressions

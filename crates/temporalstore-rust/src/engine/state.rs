@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use serde::{Deserialize, Serialize};
 
 use crate::block_store::BlockAddress;
-use crate::types::{CommandResponse, FeaturePoint, ControlStateSelectionType, ShardId};
+use crate::types::{CommandResponse, ControlStateSelectionType, FeaturePoint, ShardId};
 
 use super::control_rollup::RollupEntry;
 use super::hll::Hll;
@@ -38,6 +38,8 @@ pub(super) struct ContextDirtyEntry {
 pub(super) struct ShardState {
     pub(super) expires_at_ms: HashMap<String, u64>,
     pub(super) strings: HashMap<String, BlockAddress>,
+    // Rebuildable from the durable bucket/page index on load; do not duplicate in checkpoints.
+    #[serde(default, skip_serializing)]
     pub(super) hashes: HashMap<String, HashMap<String, BlockAddress>>,
     #[serde(default, with = "super::set_index_serde")]
     pub(super) sets: HashMap<String, BTreeMap<Vec<u8>, BlockAddress>>,
@@ -95,9 +97,9 @@ pub(super) struct ShardState {
     pub(super) feature_rollups: HashMap<String, RollupEntry>,
     #[serde(default)]
     pub(super) context_nodes: HashMap<String, BlockAddress>,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub(super) context_events: HashMap<String, BTreeMap<u64, BlockAddress>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub(super) context_indexes: HashMap<String, BTreeMap<u64, BlockAddress>>,
     #[serde(default)]
     pub(super) context_audits: HashMap<String, BTreeMap<u64, BlockAddress>>,
@@ -172,9 +174,12 @@ pub(super) struct CoreIndex {
     #[serde(default, alias = "slots")]
     #[serde(rename = "slot_map")]
     pub(super) bucket_map: BucketMap,
-    #[serde(default)]
+    // Derived lookup tables rebuilt from the bucket map on load. Persisting them duplicates
+    // page references already carried by the bucket index and made large context backfill
+    // checkpoints tens of MB larger without adding authoritative recovery state.
+    #[serde(default, skip_serializing)]
     pub(super) object_page_lookup: ObjectPageLookup,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub(super) object_component_lookup: ObjectComponentLookup,
 }
 

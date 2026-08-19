@@ -1998,6 +1998,7 @@ fn maybe_auto_compress_context_node(
         }],
         routing_bucket,
         async_storage,
+        false,
     ) {
         let series = shard
             .context_compressions
