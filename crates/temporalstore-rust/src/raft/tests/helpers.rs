@@ -320,6 +320,7 @@ pub(super) fn server_meta(addr: &str, node_id: u64, state: MetaEntityState) -> S
         boot_time_ms: 1,
         reported_boot_time_ms: 0,
         reboot_detected: false,
+        reports_shard_states: false,
         binary_version: "test".to_string(),
         shard_loads: Vec::new(),
         shard_stat_loads: Vec::new(),
