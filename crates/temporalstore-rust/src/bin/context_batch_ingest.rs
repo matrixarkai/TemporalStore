@@ -50,6 +50,11 @@ use temporalstore_rust::{
 // path, distinguishing "embedding deferred at bulk ingest" from a live-path embed
 // failure. Purely diagnostic; the drainer treats any pending marker identically.
 const EMBEDDING_DIRTY_REASON_BULK_DEFERRED: u32 = 2;
+// Raw-first emits four engine commands per source, but ContextMarkEmbeddingDirty
+// is transient/in-memory and is not WAL persisted. The bulk flush anchor must
+// therefore count only the three durable commands to avoid replaying the whole
+// just-flushed backfill on first restart.
+const RAW_FIRST_DURABLE_WAL_COMMANDS_PER_SOURCE: u64 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct SessionIndex {
@@ -82,6 +87,10 @@ fn main() {
         );
     }
     let skip_covered_sessions = env_bool("MATRIXARK_BACKFILL_SKIP_COVERED_SESSIONS");
+    let exclusive_writer = std::env::var("MATRIXARK_BACKFILL_EXCLUSIVE_WRITER")
+        .ok()
+        .map(|value| env_value_bool(&value))
+        .unwrap_or(raw_first);
     let cache_bytes: usize = std::env::var("MATRIXARK_BACKFILL_CACHE_BYTES")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -336,6 +345,8 @@ fn main() {
                         accepted,
                         failed,
                         true,
+                        exclusive_writer,
+                        replay_from_sequence,
                         flush_every_accepted,
                         &mut next_checkpoint_accepted,
                         &mut checkpoint_flushes,
@@ -364,6 +375,8 @@ fn main() {
                 accepted,
                 failed,
                 true,
+                exclusive_writer,
+                replay_from_sequence,
                 flush_every_accepted,
                 &mut next_checkpoint_accepted,
                 &mut checkpoint_flushes,
@@ -426,6 +439,8 @@ fn main() {
                     accepted.saturating_add(session_accepted),
                     failed.saturating_add(session_failed),
                     false,
+                    exclusive_writer,
+                    replay_from_sequence,
                     flush_every_accepted,
                     &mut next_checkpoint_accepted,
                     &mut checkpoint_flushes,
@@ -467,9 +482,12 @@ fn main() {
     // the full index once per session.
     let flush_started = Instant::now();
     if raw_first && failed == 0 {
-        std::env::set_var(
-            "MATRIXARK_BULK_INGEST_EXPECTED_WAL_COMMANDS",
-            accepted.saturating_mul(4).to_string(),
+        set_bulk_ingest_expected_wal_commands(
+            &engine,
+            1,
+            replay_from_sequence,
+            accepted,
+            exclusive_writer,
         );
     }
     engine.flush_shard_index(1);
@@ -512,6 +530,7 @@ fn main() {
         "gate_l1": env_bool("MATRIXARK_CONTEXT_INGEST_GATE_L1"),
         "raw_first": raw_first,
         "raw_first_mixed_batching": raw_first,
+        "exclusive_writer": exclusive_writer,
         "sub_batch": sub_batch,
     });
     println!(
@@ -597,6 +616,8 @@ fn maybe_checkpoint(
     accepted: u64,
     failed: u64,
     raw_first: bool,
+    exclusive_writer: bool,
+    replay_from_sequence: u64,
     flush_every_accepted: u64,
     next_checkpoint_accepted: &mut u64,
     checkpoint_flushes: &mut u64,
@@ -607,9 +628,12 @@ fn maybe_checkpoint(
     }
     let checkpoint_started = Instant::now();
     if raw_first && failed == 0 {
-        std::env::set_var(
-            "MATRIXARK_BULK_INGEST_EXPECTED_WAL_COMMANDS",
-            accepted.saturating_mul(4).to_string(),
+        set_bulk_ingest_expected_wal_commands(
+            &engine,
+            1,
+            replay_from_sequence,
+            accepted,
+            exclusive_writer,
         );
     }
     engine.flush_shard_index(1);
@@ -623,6 +647,28 @@ fn maybe_checkpoint(
     eprintln!(
         "  checkpoint accepted {} flush_seconds {:.3}",
         accepted, elapsed
+    );
+}
+
+fn set_bulk_ingest_expected_wal_commands(
+    engine: &TemporalEngine,
+    shard_id: u64,
+    replay_from_sequence: u64,
+    accepted: u64,
+    exclusive_writer: bool,
+) {
+    let expected = if exclusive_writer {
+        engine
+            .write_ahead_log_store()
+            .stats(shard_id)
+            .last_sequence
+            .saturating_sub(replay_from_sequence)
+    } else {
+        accepted.saturating_mul(RAW_FIRST_DURABLE_WAL_COMMANDS_PER_SOURCE)
+    };
+    std::env::set_var(
+        "MATRIXARK_BULK_INGEST_EXPECTED_WAL_COMMANDS",
+        expected.to_string(),
     );
 }
 
@@ -797,13 +843,16 @@ fn now_ms() -> u64 {
 
 fn env_bool(name: &str) -> bool {
     std::env::var(name)
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
+        .ok()
+        .map(|value| env_value_bool(&value))
         .unwrap_or(false)
+}
+
+fn env_value_bool(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 fn stable_hash64(value: &str) -> u64 {
