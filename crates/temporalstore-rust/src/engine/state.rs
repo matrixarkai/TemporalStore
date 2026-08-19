@@ -50,6 +50,10 @@ fn is_zero_u64(value: &u64) -> bool {
     *value == 0
 }
 
+fn is_empty_bucket_layout(value: &BucketLayoutState) -> bool {
+    *value == BucketLayoutState::Empty
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(super) struct ShardState {
     pub(super) expires_at_ms: HashMap<String, u64>,
@@ -225,31 +229,81 @@ pub(super) struct ComponentPageLookupRef {
 /// Index -> BucketMap -> BucketNode -> PageIndex/ObjectIndex.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub(super) struct BucketNode {
-    #[serde(rename = "routing_slot")]
+    #[serde(default, alias = "routing_slot", rename = "r")]
     pub(super) routing_bucket: u32,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "layout",
+        rename = "l",
+        skip_serializing_if = "is_empty_bucket_layout"
+    )]
     pub(super) layout: BucketLayoutState,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(
+        default,
+        alias = "dirty",
+        rename = "d",
+        skip_serializing_if = "is_false"
+    )]
     pub(super) dirty: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(
+        default,
+        alias = "deleted",
+        rename = "x",
+        skip_serializing_if = "is_false"
+    )]
     pub(super) deleted: bool,
-    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    #[serde(
+        default = "default_true",
+        alias = "meta_loaded",
+        rename = "ml",
+        skip_serializing_if = "is_true"
+    )]
     pub(super) meta_loaded: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(
+        default,
+        alias = "loading",
+        rename = "ld",
+        skip_serializing_if = "is_false"
+    )]
     pub(super) loading: bool,
-    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    #[serde(
+        default = "default_true",
+        alias = "in_memory",
+        rename = "im",
+        skip_serializing_if = "is_true"
+    )]
     pub(super) in_memory: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        alias = "ttl_ms",
+        rename = "ttl",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub(super) ttl_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    #[serde(
+        default,
+        alias = "dirty_generation",
+        rename = "dg",
+        skip_serializing_if = "is_zero_u64"
+    )]
     pub(super) dirty_generation: u64,
-    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    #[serde(
+        default,
+        alias = "last_dump_sequence",
+        rename = "lds",
+        skip_serializing_if = "is_zero_u64"
+    )]
     pub(super) last_dump_sequence: u64,
-    #[serde(default, alias = "object_ids")]
+    #[serde(default, alias = "object_ids", alias = "object_index", rename = "o")]
     pub(super) object_index: ObjectIndex,
-    #[serde(default, alias = "deleted_object_ids")]
+    #[serde(
+        default,
+        alias = "deleted_object_ids",
+        alias = "deleted_object_index",
+        rename = "do"
+    )]
     pub(super) deleted_object_index: ObjectIndex,
-    #[serde(default, alias = "page_refs")]
+    #[serde(default, alias = "page_refs", alias = "page_index", rename = "p")]
     pub(super) page_index: PageIndexMap,
 }
 
@@ -265,17 +319,41 @@ pub(super) enum BucketLayoutState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct PageIndex {
+    #[serde(alias = "object_key", rename = "k")]
     pub(super) object_key: String,
+    #[serde(alias = "model_id", rename = "m")]
     pub(super) model_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        alias = "component",
+        rename = "c",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub(super) component: Option<String>,
+    #[serde(alias = "object_id", rename = "o")]
     pub(super) object_id: u64,
+    #[serde(alias = "address", rename = "a")]
     pub(super) address: BlockAddress,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(
+        default,
+        alias = "dirty",
+        rename = "d",
+        skip_serializing_if = "is_false"
+    )]
     pub(super) dirty: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(
+        default,
+        alias = "deleted",
+        rename = "x",
+        skip_serializing_if = "is_false"
+    )]
     pub(super) deleted: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(
+        default,
+        alias = "log_backed",
+        rename = "lb",
+        skip_serializing_if = "is_false"
+    )]
     pub(super) log_backed: bool,
 }
 
