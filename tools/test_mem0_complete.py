@@ -483,5 +483,88 @@ class GatewayCompletionRoutesCase(unittest.TestCase):
         self.assertEqual("insufficient_scope", json.loads(body)["error"])
 
 
+class Mem0SearchPackShapeCase(unittest.TestCase):
+    """search() must return the pack's refs, and they must be addressable.
+
+    Both of these shipped broken: the shim was written against a flat ``selected_refs`` pack, but a
+    ContextPack now serves refs GROUPED and emits no ``selected_refs`` key at all, so every
+    ``search()`` returned ``{"results": []}`` while ``search_raw`` showed content."""
+
+    def test_grouped_pack_is_reshaped_into_mem0_results(self):
+        pack = {
+            "context_pack_id": "1",
+            "groups": [
+                {"type": "event", "n": 1, "items": [
+                    {"text": "user: I live in Kyoto.", "memory_layer": "session"}]},
+                {"type": "entity", "n": 1, "items": [
+                    {"text": "location: Kyoto", "entity_type": "location"}]},
+            ],
+        }
+        results = _reshape_search_results(pack)["results"]
+        self.assertEqual(2, len(results), "grouped pack must not reshape to an empty result set")
+        self.assertEqual("user: I live in Kyoto.", results[0]["memory"])
+        self.assertEqual("location: Kyoto", results[1]["memory"])
+        # The group's type survives as metadata so callers keep the event/entity distinction the
+        # flat selected_refs shape gave them.
+        self.assertEqual("event", results[0]["metadata"].get("ref_type"))
+        self.assertEqual("entity", results[1]["metadata"].get("ref_type"))
+
+    def test_flat_selected_refs_pack_still_works(self):
+        pack = {"selected_refs": [{"text": "flat ref", "source_ref": "e1", "score": 0.5}]}
+        results = _reshape_search_results(pack)["results"]
+        self.assertEqual(1, len(results))
+        self.assertEqual("flat ref", results[0]["memory"])
+        self.assertEqual("e1", results[0]["id"])
+
+    def test_search_results_carry_addressable_ids(self):
+        """A synthetic ``ref-N-...`` id is useless: get/update/delete all reject it."""
+
+        class _Client(mem0.Memory):
+            def __init__(self):
+                pass  # no transport: the two hops are stubbed below
+
+            def search_raw(self, query, **kw):
+                return {"groups": [{"type": "event", "n": 1, "items": [
+                    {"text": "user: I live in Kyoto."}]}]}
+
+            def get_all(self, **kw):
+                return {"memories": [{"id": 12345, "memory": "user: I live in Kyoto."}]}
+
+        results = _Client().search("where do I live", user_id="u1")["results"]
+        self.assertEqual(1, len(results))
+        self.assertEqual("12345", results[0]["id"], "id must be the real memory id, not ref-N-...")
+
+    def test_unmatched_items_keep_their_synthetic_id(self):
+        """A derived entity ref is a projection of a memory, not an addressable memory."""
+
+        class _Client(mem0.Memory):
+            def __init__(self):
+                pass
+
+            def search_raw(self, query, **kw):
+                return {"groups": [{"type": "entity", "n": 1, "items": [
+                    {"text": "location: Kyoto"}]}]}
+
+            def get_all(self, **kw):
+                return {"memories": [{"id": 12345, "memory": "user: I live in Kyoto."}]}
+
+        results = _Client().search("where", user_id="u1")["results"]
+        self.assertTrue(results[0]["id"].startswith("ref-"))
+
+    def test_search_survives_a_failing_id_lookup(self):
+        class _Client(mem0.Memory):
+            def __init__(self):
+                pass
+
+            def search_raw(self, query, **kw):
+                return {"groups": [{"type": "event", "n": 1, "items": [{"text": "hello"}]}]}
+
+            def get_all(self, **kw):
+                raise RuntimeError("gateway down")
+
+        results = _Client().search("q", user_id="u1")["results"]
+        self.assertEqual("hello", results[0]["memory"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -65,14 +65,41 @@ def _reshape_search_results(res: Json) -> Json:
     """Map a MatrixArk ContextPack response to mem0's ``search`` shape.
 
     mem0 callers read ``res["results"][i]["memory"]`` (the text), plus ``id`` / ``score`` /
-    ``metadata``. MatrixArk returns ``selected_refs`` (compacted ContextPack refs). Each ref becomes
-    ``{"id", "memory": <text>, "score", "metadata"}``; ``memory`` is the ref's text/citation, ``id``
-    is a stable identifier derived from the ref (``source_ref`` / ``ref_hash`` / a hash of the text)
-    and ``metadata`` carries the remaining ref fields. Unknown shapes yield ``{"results": []}``."""
+    ``metadata``. Each ref becomes ``{"id", "memory": <text>, "score", "metadata"}``; ``memory`` is
+    the ref's text/citation, ``id`` is a stable identifier derived from the ref (``source_ref`` /
+    ``ref_hash`` / a hash of the text) and ``metadata`` carries the remaining ref fields. Unknown
+    shapes yield ``{"results": []}``.
+
+    TWO pack shapes are accepted, because this is where mem0 parity silently broke: the shim was
+    written against flat ``selected_refs``, but a ContextPack now serves its refs GROUPED --
+    ``groups: [{"type": "event"|"entity", "n": N, "items": [{"text", ...}]}]`` -- and no key named
+    ``selected_refs`` appears at all. Every ``Memory.search()`` call therefore returned
+    ``{"results": []}`` against a pack that plainly had content (``search_raw`` showed it), for what
+    is mem0's primary read API. Group items are flattened in group order, and the group's ``type``
+    is carried into each item's metadata as ``ref_type`` so callers keep the event/entity
+    distinction the flat shape gave them."""
     refs = res.get("selected_refs")
     if not isinstance(refs, list):
         result = res.get("result")
         refs = result.get("selected_refs") if isinstance(result, dict) else None
+    if not isinstance(refs, list):
+        groups = res.get("groups")
+        if not isinstance(groups, list):
+            result = res.get("result")
+            groups = result.get("groups") if isinstance(result, dict) else None
+        if isinstance(groups, list):
+            flattened: list[Json] = []
+            for group in groups:
+                if not isinstance(group, dict):
+                    continue
+                group_type = group.get("type")
+                for item in group.get("items") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    if group_type and "ref_type" not in item:
+                        item = {**item, "ref_type": group_type}
+                    flattened.append(item)
+            refs = flattened
     results: list[Json] = []
     for index, ref in enumerate(refs or []):
         if not isinstance(ref, dict):
@@ -282,7 +309,58 @@ class Memory:
         pack = self.search_raw(query, user_id=user_id, agent_id=agent_id, run_id=run_id, limit=limit)
         if raw:
             return pack
-        return _reshape_search_results(pack)
+        reshaped = _reshape_search_results(pack)
+        return self._attach_real_ids(reshaped, user_id=user_id, agent_id=agent_id, run_id=run_id)
+
+    def _attach_real_ids(self, reshaped: Json, *, user_id: Optional[str],
+                         agent_id: Optional[str], run_id: Optional[str]) -> Json:
+        """Replace synthetic ``ref-N-...`` ids with the real memory id, matching on text.
+
+        mem0's contract is that a ``search`` result is addressable: callers feed ``results[i]["id"]``
+        straight back into ``get`` / ``update`` / ``delete``. A ContextPack cannot satisfy that on
+        its own -- ``source_ref`` is classified as debug-only lineage and stripped from serving
+        items, so every item arrives with text but no id, and ``_reshape_search_results`` has to
+        synthesize one. Handing those synthesized ids back to ``get``/``update``/``delete`` fails
+        (``found: false``, HTTP 500, ``deleted: false``), which is the end-to-end break this repairs.
+
+        So the ids are recovered from ``get_all``, which does return them, by exact text match. One
+        extra request, made only when a synthetic id is actually present. Items that match nothing
+        keep their synthetic id: derived entity refs ("preference: drink is matcha") are projections
+        of a memory rather than an addressable memory, and inventing an id for them would only move
+        the failure downstream."""
+        results = reshaped.get("results")
+        if not isinstance(results, list) or not results:
+            return reshaped
+        if not any(str(entry.get("id") or "").startswith("ref-") for entry in results
+                   if isinstance(entry, dict)):
+            return reshaped
+        try:
+            listing = self.get_all(user_id=user_id, agent_id=agent_id, run_id=run_id)
+        except Exception:  # A search must not fail because the id lookup did.
+            return reshaped
+        rows = listing.get("memories") if isinstance(listing, dict) else None
+        if not isinstance(rows, list):
+            rows = listing.get("results") if isinstance(listing, dict) else None
+        by_text: Json = {}
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            row_id = row.get("id") or row.get("memory_id")
+            body = str(row.get("memory") or row.get("text") or "").strip()
+            if row_id in (None, "") or not body:
+                continue
+            by_text.setdefault(body, row_id)
+        if not by_text:
+            return reshaped
+        for entry in results:
+            if not isinstance(entry, dict):
+                continue
+            if not str(entry.get("id") or "").startswith("ref-"):
+                continue
+            real = by_text.get(str(entry.get("memory") or "").strip())
+            if real not in (None, ""):
+                entry["id"] = str(real)
+        return reshaped
 
     def search_raw(self, query: str, *, user_id: Optional[str] = None,
                    agent_id: Optional[str] = None, run_id: Optional[str] = None,

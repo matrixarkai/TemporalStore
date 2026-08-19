@@ -814,9 +814,20 @@ def oss_model_memory_segments(messages: list[Json], *, model: str, model_path: s
             {"role": "system", "content": "Return only JSON. No markdown."},
             {"role": "user", "content": prompt},
         ]
-        input_ids = tokenizer.apply_chat_template(chat, add_generation_prompt=True, return_tensors="pt").to(device)
-        outputs = model_obj.generate(input_ids, max_new_tokens=max_new_tokens, do_sample=False)
-        generated = outputs[0][input_ids.shape[-1]:]
+        encoded = tokenizer.apply_chat_template(chat, add_generation_prompt=True, return_tensors="pt")
+        # transformers >= 5 returns a BatchEncoding (input_ids + attention_mask) here, where older
+        # versions returned a bare tensor. Passing the mapping positionally to generate() made it
+        # read `.shape` off a dict-like and raise a bare AttributeError, so the OSS extractor could
+        # not run at all on a current transformers. Accept both shapes.
+        if hasattr(encoded, "keys"):
+            inputs = {key: value.to(device) for key, value in dict(encoded).items()}
+            prompt_length = inputs["input_ids"].shape[-1]
+            outputs = model_obj.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+        else:
+            input_ids = encoded.to(device)
+            prompt_length = input_ids.shape[-1]
+            outputs = model_obj.generate(input_ids, max_new_tokens=max_new_tokens, do_sample=False)
+        generated = outputs[0][prompt_length:]
         response = tokenizer.decode(generated, skip_special_tokens=True)
     else:
         inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=4096)
