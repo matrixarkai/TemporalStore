@@ -22,11 +22,17 @@ mod registration;
 mod table_ops;
 mod topology_helpers;
 mod auto_rebalance;
+mod failure_detector;
 mod raft_failover;
 use self::partitioning::*;
 use self::topology_helpers::*;
 pub use self::auto_rebalance::{
     compute_auto_rebalance, AutoRebalanceOptions, ShardReassignment, ShardReassignmentReason,
+};
+pub use self::failure_detector::{
+    plan_conviction, AdaptiveConvictionReport, ConvictionCandidate, ConvictionPlan,
+    ConvictionPolicy, DamageSeverity, Diagnosis, FailureDetectorOptions, LocationDamage,
+    MetaFailureDetector,
 };
 pub use self::raft_failover::{compute_raft_failover_triggers, RaftFailoverTrigger};
 

@@ -121,9 +121,9 @@ impl SingleNodeMeta {
         policy: SafeModePolicy,
     ) -> StaleResourceReport {
         let now = now_ms();
-        let (stale_servers, stale_proxies) = {
+        let stale_servers = {
             let state = self.inner.read().expect("meta lock poisoned");
-            let stale_servers = state
+            state
                 .servers
                 .values()
                 .filter(|server| {
@@ -131,17 +131,7 @@ impl SingleNodeMeta {
                         && now.saturating_sub(server.last_heartbeat_ms) > stale_after_ms
                 })
                 .map(|server| server.server_addr.clone())
-                .collect::<Vec<_>>();
-            let stale_proxies = state
-                .proxies
-                .values()
-                .filter(|proxy| {
-                    proxy.state == MetaEntityState::Normal
-                        && now.saturating_sub(proxy.last_heartbeat_ms) > stale_after_ms
-                })
-                .map(|proxy| proxy.proxy_addr.clone())
-                .collect::<Vec<_>>();
-            (stale_servers, stale_proxies)
+                .collect::<Vec<_>>()
         };
 
         let mut frozen_servers = Vec::new();
@@ -160,6 +150,40 @@ impl SingleNodeMeta {
             frozen_servers.push(endpoint);
         }
 
+        let proxy_report = self.freeze_stale_proxies(stale_after_ms, policy);
+        StaleResourceReport {
+            status: proxy_report.status,
+            frozen_servers,
+            frozen_proxies: proxy_report.frozen_proxies,
+        }
+    }
+
+    /// Freeze every proxy whose heartbeat is older than `stale_after_ms`.
+    ///
+    /// Split out of [`Self::freeze_stale_resources_with_policy`] so the adaptive
+    /// server detector ([`Self::convict_stale_servers_adaptive`]) can keep
+    /// sweeping proxies on the fixed threshold: proxies are stateless routers,
+    /// so freezing one is cheap and does not move data, and the correlated
+    /// -failure reasoning that applies to datanodes does not apply to them.
+    pub fn freeze_stale_proxies(
+        &self,
+        stale_after_ms: u64,
+        policy: SafeModePolicy,
+    ) -> StaleResourceReport {
+        let now = now_ms();
+        let stale_proxies = {
+            let state = self.inner.read().expect("meta lock poisoned");
+            state
+                .proxies
+                .values()
+                .filter(|proxy| {
+                    proxy.state == MetaEntityState::Normal
+                        && now.saturating_sub(proxy.last_heartbeat_ms) > stale_after_ms
+                })
+                .map(|proxy| proxy.proxy_addr.clone())
+                .collect::<Vec<_>>()
+        };
+
         let mut frozen_proxies = Vec::new();
         for endpoint in stale_proxies {
             let response = self.freeze_proxy(StateChangeRequest {
@@ -169,7 +193,7 @@ impl SingleNodeMeta {
             if !response.status.ok {
                 return StaleResourceReport {
                     status: response.status,
-                    frozen_servers,
+                    frozen_servers: Vec::new(),
                     frozen_proxies,
                 };
             }
@@ -178,7 +202,7 @@ impl SingleNodeMeta {
 
         StaleResourceReport {
             status: Status::ok(),
-            frozen_servers,
+            frozen_servers: Vec::new(),
             frozen_proxies,
         }
     }

@@ -11,8 +11,9 @@ use temporalstore_rust::http::{
     HttpRequestOptions,
 };
 use temporalstore_rust::meta::{
-    AckResponse, AddNamespaceRequest, AddTableRequest, AutoRebalanceOptions, DeleteTableRequest,
-    FreezeStaleServersRequest, GetShardResponse, GetTableTopologyRequest, LoadFinishRequest,
+    AckResponse, AddNamespaceRequest, AddTableRequest, AutoRebalanceOptions, ConvictionPolicy,
+    DeleteTableRequest, FailureDetectorOptions, FreezeStaleServersRequest, GetShardResponse,
+    GetTableTopologyRequest, LoadFinishRequest,
     MetaSnapshot, MetaSnapshotFileRequest, MetaSnapshotFileResponse, MetaSnapshotResponse,
     ProxyHeartbeatRequest, PublishShardSnapshotRequest, RegisterProxyRequest,
     RegisterServerRequest, RegisterShardRequest, SafeModePolicy, ServerHeartbeatRequest,
@@ -46,11 +47,55 @@ fn main() {
         MetaTaskScheduler::from_env().expect("failed to initialize metaserver scheduler");
     let stale_after_ms = env_u64("TS_META_STALE_AFTER_MS", 30_000);
     let detector_interval_ms = env_u64("TS_META_FAILURE_DETECTOR_INTERVAL_MS", 10_000);
+    // Adaptive failure detection. The default detector freezes any datanode whose
+    // heartbeat is older than one fixed `stale_after_ms`, which misjudges nodes
+    // whose heartbeat cadence differs from the tuning, convicts the entire fleet
+    // if the metaserver itself stalls (every node crosses the threshold at once),
+    // and freezes a whole rack when a rack-wide fault makes all of its nodes look
+    // stale together -- amplifying a partial outage into a total one, because the
+    // freeze is what auto-rebalance and raft failover then act on.
+    //
+    // With TS_META_ADAPTIVE_FAILURE_DETECTOR each datanode is judged against its
+    // own learned heartbeat distribution (phi accrual), detection is suppressed
+    // for a grace window after a detector stall, and a location losing too many
+    // servers at once enters safe mode instead of being frozen wholesale. OFF by
+    // default: which servers get frozen is behavior-visible, so the fixed
+    // threshold stays the default until a deployment opts in. Proxies stay on the
+    // fixed threshold either way.
+    let adaptive_detector = env_bool("TS_META_ADAPTIVE_FAILURE_DETECTOR", false);
     let _failure_detector = match &backend {
+        MetaBackend::Single(meta) if adaptive_detector => {
+            let options = failure_detector_options_from_env();
+            let policy = conviction_policy_from_env();
+            info!(
+                phi_failure_threshold = options.phi_failure_threshold,
+                max_round_pause_ms = options.max_round_pause_ms,
+                warning_ratio_percent = policy.warning_ratio_percent,
+                critical_ratio_percent = policy.critical_ratio_percent,
+                safe_mode_enabled = policy.safe_mode_enabled,
+                "adaptive failure detection enabled"
+            );
+            Some(MetaBackground::Single(
+                meta.start_adaptive_failure_detector_loop(
+                    options,
+                    policy,
+                    safe_mode_policy_from_env(),
+                    stale_after_ms,
+                    detector_interval_ms,
+                ),
+            ))
+        }
         MetaBackend::Single(meta) => Some(MetaBackground::Single(
             meta.start_failure_detector_loop(stale_after_ms, detector_interval_ms),
         )),
-        MetaBackend::Raft(runtime) => Some(MetaBackground::Raft(runtime.start_timer_loop())),
+        MetaBackend::Raft(runtime) => {
+            if adaptive_detector {
+                warn!(
+                    "TS_META_ADAPTIVE_FAILURE_DETECTOR ignored: raft backend runs its own timer loop"
+                );
+            }
+            Some(MetaBackground::Raft(runtime.start_timer_loop()))
+        }
     };
     // Automatic shard rebalancing: on a membership change (a node freezes/leaves,
     // or a fresh node joins) recompute placement and drive the target nodes to
@@ -727,6 +772,56 @@ struct RaftAdminLivenessRequest {
 #[derive(Debug, serde::Deserialize)]
 struct RaftAdminLivenessResponse {
     status: Status,
+}
+
+/// Read [`FailureDetectorOptions`] from the environment, falling back to the
+/// defaults documented on each field.
+fn failure_detector_options_from_env() -> FailureDetectorOptions {
+    let defaults = FailureDetectorOptions::default();
+    FailureDetectorOptions {
+        sample_capacity: env_u64(
+            "TS_META_FD_SAMPLE_CAPACITY",
+            defaults.sample_capacity as u64,
+        )
+        .max(1) as usize,
+        initial_interval_ms: env_u64("TS_META_FD_INITIAL_INTERVAL_MS", defaults.initial_interval_ms),
+        max_interval_ms: env_u64("TS_META_FD_MAX_INTERVAL_MS", defaults.max_interval_ms),
+        phi_failure_threshold: std::env::var("TS_META_FD_PHI_THRESHOLD")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or(defaults.phi_failure_threshold),
+        max_round_pause_ms: env_u64("TS_META_FD_MAX_ROUND_PAUSE_MS", defaults.max_round_pause_ms),
+    }
+}
+
+/// Read the correlated-failure gate policy from the environment.
+fn conviction_policy_from_env() -> ConvictionPolicy {
+    let defaults = ConvictionPolicy::default();
+    ConvictionPolicy {
+        warning_ratio_percent: env_u64(
+            "TS_META_CONVICT_WARNING_RATIO_PERCENT",
+            defaults.warning_ratio_percent,
+        ),
+        critical_ratio_percent: env_u64(
+            "TS_META_CONVICT_CRITICAL_RATIO_PERCENT",
+            defaults.critical_ratio_percent,
+        ),
+        min_abnormal_for_safe_mode: env_u64(
+            "TS_META_CONVICT_MIN_ABNORMAL",
+            defaults.min_abnormal_for_safe_mode as u64,
+        ) as usize,
+        safe_mode_enabled: env_bool("TS_META_CONVICT_SAFE_MODE", defaults.safe_mode_enabled),
+        convict_enabled: env_bool("TS_META_CONVICT_ENABLED", defaults.convict_enabled),
+    }
+}
+
+/// Freeze cooldowns applied to servers and proxies frozen by the detector.
+fn safe_mode_policy_from_env() -> SafeModePolicy {
+    SafeModePolicy {
+        server_freeze_cooldown_ms: env_u64("TS_META_SERVER_FREEZE_COOLDOWN_MS", 0),
+        proxy_freeze_cooldown_ms: env_u64("TS_META_PROXY_FREEZE_COOLDOWN_MS", 0),
+    }
 }
 
 /// Wire body for `POST /raft/admin/failover` (the datanode handler ignores the
