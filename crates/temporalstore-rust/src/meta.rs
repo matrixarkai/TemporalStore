@@ -22,11 +22,15 @@ mod registration;
 mod table_ops;
 mod topology_helpers;
 mod auto_rebalance;
+mod placement_rebalance;
 mod raft_failover;
 use self::partitioning::*;
 use self::topology_helpers::*;
 pub use self::auto_rebalance::{
     compute_auto_rebalance, AutoRebalanceOptions, ShardReassignment, ShardReassignmentReason,
+};
+pub use self::placement_rebalance::{
+    compute_placement_aware_rebalance, PlacementTarget, ShardPlacement,
 };
 pub use self::raft_failover::{compute_raft_failover_triggers, RaftFailoverTrigger};
 

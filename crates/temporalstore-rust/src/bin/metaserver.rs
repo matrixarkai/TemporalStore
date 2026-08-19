@@ -63,11 +63,21 @@ fn main() {
             MetaBackend::Single(meta) => {
                 let interval_ms = env_u64("TS_META_AUTO_REBALANCE_INTERVAL_MS", detector_interval_ms);
                 let balance_load = env_bool("TS_META_AUTO_REBALANCE_BALANCE", true);
-                info!(interval_ms, balance_load, "auto-rebalance enabled");
+                // Placement-aware planning honours each table's preferred
+                // location and balances per table, so a table cannot end up
+                // single-homed while total shard counts look even. OFF by
+                // default: it changes which server a shard lands on, which is
+                // behavior-visible.
+                let placement_aware = env_bool("TS_META_PLACEMENT_AWARE_REBALANCE", false);
+                info!(
+                    interval_ms,
+                    balance_load, placement_aware, "auto-rebalance enabled"
+                );
                 Some(start_auto_rebalance_loop(
                     meta.clone(),
                     interval_ms,
                     balance_load,
+                    placement_aware,
                 ))
             }
             MetaBackend::Raft(_) => {
@@ -628,6 +638,7 @@ fn start_auto_rebalance_loop(
     meta: SingleNodeMeta,
     interval_ms: u64,
     balance_load: bool,
+    placement_aware: bool,
 ) -> std::thread::JoinHandle<()> {
     let interval = std::time::Duration::from_millis(interval_ms.max(1));
     let http_options = HttpRequestOptions {
@@ -636,7 +647,7 @@ fn start_auto_rebalance_loop(
         max_retries: 1,
     };
     std::thread::spawn(move || loop {
-        run_auto_rebalance_round(&meta, balance_load, http_options);
+        run_auto_rebalance_round(&meta, balance_load, placement_aware, http_options);
         std::thread::sleep(interval);
     })
 }
@@ -644,13 +655,21 @@ fn start_auto_rebalance_loop(
 fn run_auto_rebalance_round(
     meta: &SingleNodeMeta,
     balance_load: bool,
+    placement_aware: bool,
     http_options: HttpRequestOptions,
 ) {
     let options = AutoRebalanceOptions {
         balance_load,
+        location_scoped: env_bool("TS_META_REBALANCE_LOCATION_SCOPED", true),
+        per_table_balance: env_bool("TS_META_REBALANCE_PER_TABLE", true),
+        balance_safe_gap: env_u64("TS_META_REBALANCE_SAFE_GAP", 0) as usize,
         ..AutoRebalanceOptions::default()
     };
-    let plans = meta.plan_auto_rebalance_with_options(options);
+    let plans = if placement_aware {
+        meta.plan_placement_aware_rebalance(options)
+    } else {
+        meta.plan_auto_rebalance_with_options(options)
+    };
     for plan in plans {
         let load_version = now_epoch_ms();
         let load_request = LoadShardRequest {
@@ -682,8 +701,12 @@ fn run_auto_rebalance_round(
             );
             continue;
         }
-        // A balance move vacates a still-live source: unload there (best-effort).
-        if plan.reason == ShardReassignmentReason::Rebalance {
+        // A balance move or a location pull-back vacates a still-live source:
+        // unload there (best-effort). An evacuation has no live source to unload.
+        if matches!(
+            plan.reason,
+            ShardReassignmentReason::Rebalance | ShardReassignmentReason::LocationViolation
+        ) {
             if let Some(from_server) = &plan.from_server {
                 let unload_status = post_unload_or_error(
                     from_server,
