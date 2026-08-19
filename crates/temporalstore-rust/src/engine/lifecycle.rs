@@ -221,7 +221,7 @@ impl TemporalEngine {
             (loaded, replay_watermark)
         };
         // MANIFEST-PARITY FOLD recovery (gate on only): seed the band catalog from the folded
-        // `MetaItem.zones` anchor recovered from the index-log. This is applied AFTER the block
+        // band-catalog anchor recovered from the index-log. This is applied AFTER the block
         // store already reconciled its catalog from the durable pages on open, so it only
         // RESTORES the catalog fields a pure disk scan cannot infer (exact lifecycle state,
         // creation/update timestamps, logical byte count, page-id range) and installs bands for

@@ -357,7 +357,7 @@ impl TemporalEngine {
     }
 
     /// MANIFEST-PARITY FOLD threshold check: dump the index catalog when the undumped index-log
-    /// gap has crossed `index_dump_oplog_gap_bytes` (reference `storage_dump_index_meta_oplog_gap`
+    /// gap has crossed `index_dump_oplog_gap_bytes` (the index-meta dump gap
     /// cadence). No-op with the `TS_INDEX_CATALOG_FOLD` gate off, so the background cycle is
     /// byte-identical when the fold is not enabled. Returns whether a dump fired.
     pub fn maybe_dump_index_catalog(&self, shard_id: ShardId) -> bool {
@@ -392,7 +392,7 @@ impl TemporalEngine {
     }
 
     /// MANIFEST-PARITY FOLD dump: materialize the durable base index, fold the band/zone catalog
-    /// into an index-log `MetaItem` anchor (reference `IndexLog.MetaItem.zones` parity), and
+    /// into an index-log anchor (the durable band catalog, parity), and
     /// advance the dumped watermark -- the batched, threshold-driven replacement for the per-write
     /// band-manifest persist. No-op with the gate off. Ordering is single-barrier safe: pages +
     /// WAL are fsynced, then the base index is written durably, then the folded anchor is fsync'd,
@@ -429,7 +429,7 @@ impl TemporalEngine {
             return false;
         }
         // 3. Fold the band/zone catalog into a MetaItem anchor and append it durably to the
-        //    index-log. This is the reference's "dump the zone catalog into the index log" step:
+        //    index-log. This is this design's "dump the zone catalog into the index log" step:
         //    after it, the band catalog is recoverable from the durable log, so the per-write
         //    band-manifest file stops being the source of truth.
         let zone_version = anchor;

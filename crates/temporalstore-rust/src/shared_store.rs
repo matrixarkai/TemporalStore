@@ -1646,7 +1646,7 @@ struct SharedSlabAddress {
     sha256: String,
 }
 
-/// Lazy read-through source backing reference-parity recovery on the shared-filesystem
+/// Lazy read-through source backing parity recovery on the shared-filesystem
 /// (`FileObjectStore`) backend. Holds the checkpoint's slab address map (slab id ->
 /// shared object key) with no slab bytes, and resolves each slab on demand to a
 /// synchronous filesystem read of the shared store, verifying the checkpoint
@@ -1701,7 +1701,7 @@ impl SharedSlabSource for SharedPathSlabSource {
     }
 }
 
-/// Lazy read-through source backing reference-parity recovery on the *networked*
+/// Lazy read-through source backing parity recovery on the *networked*
 /// matrixobject (`MatrixObjectHttpStore`) backend. Same contract as
 /// [`SharedPathSlabSource`], but resolves each slab to a synchronous networked
 /// GET ([`MatrixObjectHttpStore::get_blocking`]) of the shared object instead of a
@@ -1764,7 +1764,7 @@ impl<O> SharedStoreReplicator<O>
 where
     O: ObjectStore + 'static,
 {
-    /// Shared body of the reference-parity LAZY restore, parameterized over the
+    /// Shared body of the parity LAZY restore, parameterized over the
     /// slab-source constructor so every shared-storage backend reuses the identical
     /// index-install + address-map + lazy-range-reserve logic; only the per-slab
     /// fetch transport differs (a local filesystem read vs a networked GET). Install
@@ -1842,7 +1842,7 @@ where
 }
 
 impl SharedStoreReplicator<FileObjectStore> {
-    /// Reference-parity LAZY restore for the shared-filesystem backend: install the served
+    /// Parity LAZY restore for the shared-filesystem backend: install the served
     /// INDEX and a per-slab shared address map WITHOUT downloading any slab bytes.
     /// Old (pre-checkpoint) pages are then read lazily through [`SharedPathSlabSource`]
     /// on the first read that needs them. See
@@ -1862,7 +1862,7 @@ impl SharedStoreReplicator<FileObjectStore> {
 }
 
 impl SharedStoreReplicator<MatrixObjectHttpStore> {
-    /// Reference-parity LAZY restore for the *networked* matrixobject backend: install
+    /// Parity LAZY restore for the *networked* matrixobject backend: install
     /// the served INDEX and a per-slab shared address map WITHOUT downloading any slab
     /// bytes. Old (pre-checkpoint) pages are then fetched lazily over the network
     /// through [`MatrixObjectSlabSource`] on the first read that needs them, so shard
@@ -1948,7 +1948,7 @@ where
         }
     }
 
-    /// Timer-less queue-coalesced group commit (the reference sync-closure group-commit model). The
+    /// Timer-less queue-coalesced group commit (this design sync-closure group-commit model). The
     /// writer stages its entry and either becomes the flush LEADER (first arrival) or a FOLLOWER
     /// that awaits the leader's covering durable barrier. The leader issues ONE coalesced append
     /// per round covering every entry staged before that round began (the batch window is bounded
@@ -2837,7 +2837,7 @@ mod tests {
 
     #[tokio::test]
     async fn shared_store_lazy_restore_reads_old_page_on_demand() {
-        // Reference-parity lazy recovery: a fresh node with ONLY shared storage restores the
+        // On-demand lazy recovery: a fresh node with ONLY shared storage restores the
         // served index + a slab ADDRESS map (no slab bytes), replays the WAL tail, and
         // fetches an old (pre-checkpoint) slab ON DEMAND the first time a read needs it.
         let dir = tempfile::tempdir().unwrap();
@@ -3509,7 +3509,7 @@ mod tests {
 
     #[tokio::test]
     async fn matrixobject_networked_lazy_restore_reads_old_page_on_demand() {
-        // Reference-parity lazy data-follow over the NETWORK: a fresh node with only
+        // Parity lazy data-follow over the NETWORK: a fresh node with only
         // the networked matrixobject store restores the served index + a slab ADDRESS
         // map (no slab bytes), replays the WAL tail, and fetches an old (pre-checkpoint)
         // slab ON DEMAND over the socket the first time a read needs it.

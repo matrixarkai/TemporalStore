@@ -127,7 +127,7 @@ pub struct BlockStoreStats {
     pub compressed_records_read: u64,
     #[serde(default)]
     pub compression_bytes_saved: u64,
-    /// Slabs fetched on-demand from a shared-storage read-through source (reference-parity
+    /// Slabs fetched on-demand from a shared-storage read-through source (parity
     /// lazy recovery). Each shared slab is fetched at most once, only when a read
     /// misses it locally; a nonzero count proves recovery did not install every slab
     /// up front.
@@ -621,7 +621,7 @@ struct BlockStoreInner {
     bands: BTreeMap<u64, BlockStoreBandDescriptor>,
     band_manifest_reconciled_on_open: bool,
     stats: BlockStoreStats,
-    // Optional shared-storage read-through (reference-parity lazy recovery): set by
+    // Optional shared-storage read-through (on-demand lazy recovery): set by
     // attach_shared_slab_source() after a metadata-only restore. When present, a
     // read that misses a slab locally fetches it from here, caches it, then serves.
     shared_slab_source: Option<Arc<dyn SharedSlabSource>>,
@@ -710,7 +710,7 @@ impl LocalBlockStore {
         }
     }
 
-    /// Attach a shared-storage read-through source (reference-parity lazy recovery). After a
+    /// Attach a shared-storage read-through source (on-demand lazy recovery). After a
     /// metadata-only restore installs the served index and a slab address map, this
     /// lets a later read fetch a missing old slab on demand from shared storage,
     /// cache it locally, and serve it — instead of installing every slab up front.
@@ -740,7 +740,7 @@ impl LocalBlockStore {
 
     /// Reserve the slab-id (and page-id) range consumed by a lazily-restored checkpoint
     /// so replayed/new appends land in a FRESH slab beyond it, never overwriting a slab
-    /// that is still served on-demand from shared storage. Mirrors the reference recovery
+    /// that is still served on-demand from shared storage. Matches the recovery behaviour
     /// model where old pages stay addressable in shared storage while new writes roll
     /// forward. Called right after attaching the shared read-through on a fresh owner.
     pub fn reserve_lazy_checkpoint_range(
@@ -2125,7 +2125,7 @@ mod tests {
 
     #[test]
     fn read_range_and_logical_range_drive_shared_slab_read_through() {
-        // Reference-parity lazy recovery must cover band-report / streaming reads too:
+        // On-demand lazy recovery must cover band-report / streaming reads too:
         // read_range and read_logical_range on a metadata-only restored node must pull a
         // not-yet-fetched checkpoint slab from shared storage on first access (previously
         // they hit a local File::open miss instead of the shared read-through).
