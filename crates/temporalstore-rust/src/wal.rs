@@ -199,6 +199,13 @@ pub struct WriteAheadLogGcReport {
     pub records_removed: usize,
     pub bytes_before: u64,
     pub bytes_after: u64,
+    /// The retain floor actually used, after clamping. Differs from
+    /// `retain_from_sequence` when the caller asked to reclaim further than the tail or the
+    /// block-retention floor allowed.
+    pub effective_retain_from_sequence: u64,
+    /// The block-retention floor held this reclaim back: records at or above it may still be
+    /// the only copy of a block's bytes.
+    pub clamped_by_block_retention: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -277,6 +284,12 @@ struct WriteAheadLogInner {
     // skipped. Any mismatch (external append, or first touch this process lifetime) falls back to
     // the full scan. Only consulted when `wal_fast_append_seq()`; harmless to maintain when off.
     verified_len_by_shard: HashMap<ShardId, u64>,
+    // Lowest sequence whose record may still hold the only copy of a block's bytes -- the dump
+    // watermark. A block written into the WAL is addressed by the byte offset of its record and
+    // has no copy in a band until it is dumped, so reclaiming that record destroys the block.
+    // GC clamps its retain floor to this. Absent = no shard has WAL-resident blocks, and GC is
+    // unconstrained, which is the behaviour when nothing registers a floor.
+    block_retention_floor_by_shard: HashMap<ShardId, u64>,
 }
 
 impl LocalWriteAheadLogStore {
@@ -289,6 +302,7 @@ impl LocalWriteAheadLogStore {
                 stats: WriteAheadLogStats::default(),
                 last_sequence_by_shard: HashMap::new(),
                 verified_len_by_shard: HashMap::new(),
+                block_retention_floor_by_shard: HashMap::new(),
             })),
             sync_coord: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -664,6 +678,30 @@ impl LocalWriteAheadLogStore {
         })
     }
 
+    /// Hold WAL reclaim at `sequence`: records at or above it may still be the only copy of a
+    /// block's bytes, so GC must not reclaim past it.
+    ///
+    /// Set this to the dump watermark and advance it as blocks are dumped into bands. Until a
+    /// shard registers a floor its GC is unconstrained, so this is inert for callers that do not
+    /// put blocks in the WAL.
+    pub fn set_block_retention_floor(&self, shard_id: ShardId, sequence: u64) {
+        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        inner.block_retention_floor_by_shard.insert(shard_id, sequence);
+    }
+
+    /// The shard's block-retention floor, if one is registered.
+    pub fn block_retention_floor(&self, shard_id: ShardId) -> Option<u64> {
+        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        inner.block_retention_floor_by_shard.get(&shard_id).copied()
+    }
+
+    /// Drop the shard's floor, letting GC reclaim freely again. Call this only once no block
+    /// resolves inside this shard's WAL.
+    pub fn clear_block_retention_floor(&self, shard_id: ShardId) {
+        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        inner.block_retention_floor_by_shard.remove(&shard_id);
+    }
+
     pub fn gc_before_sequence(
         &self,
         shard_id: ShardId,
@@ -676,6 +714,7 @@ impl LocalWriteAheadLogStore {
             return Ok(WriteAheadLogGcReport {
                 shard_id,
                 retain_from_sequence,
+                effective_retain_from_sequence: retain_from_sequence,
                 ..WriteAheadLogGcReport::default()
             });
         }
@@ -690,6 +729,17 @@ impl LocalWriteAheadLogStore {
         // it. the zone-aligned wal Truncate always retains the tail zone holding the highest
         // sequence for exactly this continuity reason. Clamp the retain floor to keep the tail.
         let effective_retain = retain_from_sequence.min(last_sequence);
+        // Never reclaim past the block-retention floor. A record at or above it may carry the
+        // only copy of a block's bytes -- a block in the WAL has no copy in a band until it is
+        // dumped -- so removing it loses data that the served index still points at, and the
+        // read fails at some later, unrelated moment.
+        let floor = inner
+            .block_retention_floor_by_shard
+            .get(&shard_id)
+            .copied()
+            .unwrap_or(u64::MAX);
+        let clamped_by_block_retention = effective_retain > floor;
+        let effective_retain = effective_retain.min(floor);
         let file = File::open(&path)?;
         let reader = BufReader::new(file);
         let mut records_before = 0usize;
@@ -727,6 +777,8 @@ impl LocalWriteAheadLogStore {
             records_removed: records_before.saturating_sub(retained.len()),
             bytes_before,
             bytes_after,
+            effective_retain_from_sequence: effective_retain,
+            clamped_by_block_retention,
         })
     }
 
@@ -1656,5 +1708,155 @@ mod tests {
         assert_eq!(info.records, 2);
         assert_eq!(info.persistent_length_bytes, flush.persistent_bytes);
         assert_eq!(info.format_version, WRITE_AHEAD_LOG_FORMAT_VERSION);
+    }
+
+    // ---- block-retention floor -------------------------------------------------------------
+
+    /// Decode the shard's WAL the way GC does, so a test can assert on what survived.
+    fn sequences_on_disk(root: &std::path::Path, shard: ShardId) -> Vec<u64> {
+        let bytes = std::fs::read(write_ahead_log_path(root, shard)).unwrap();
+        bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| decode_wal_line(line).unwrap().sequence)
+            .collect()
+    }
+
+    /// Byte offset at which each record starts, in order.
+    fn record_offsets_on_disk(root: &std::path::Path, shard: ShardId) -> Vec<usize> {
+        let bytes = std::fs::read(write_ahead_log_path(root, shard)).unwrap();
+        let mut offsets = vec![0usize];
+        for (index, byte) in bytes.iter().enumerate() {
+            if *byte == b'\n' && index + 1 < bytes.len() {
+                offsets.push(index + 1);
+            }
+        }
+        offsets
+    }
+
+    fn append_n(store: &LocalWriteAheadLogStore, shard: ShardId, count: usize) {
+        for index in 0..count {
+            store
+                .append(
+                    shard,
+                    Command::StringSet {
+                        key: format!("k{index}"),
+                        value: b"v".to_vec(),
+                    },
+                )
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn gc_is_unconstrained_when_no_block_retention_floor_is_registered() {
+        // The floor is opt-in: a caller that puts no blocks in the WAL must see the reclaim
+        // behaviour it had before the floor existed.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        append_n(&store, 1, 6);
+
+        assert_eq!(store.block_retention_floor(1), None);
+        let report = store.gc_before_sequence(1, 4).unwrap();
+
+        assert_eq!(report.records_before, 6);
+        assert_eq!(report.records_after, 3, "sequences 4, 5, 6 survive");
+        assert!(!report.clamped_by_block_retention);
+        assert_eq!(report.effective_retain_from_sequence, 4);
+    }
+
+    #[test]
+    fn gc_will_not_reclaim_past_the_block_retention_floor() {
+        // Records at or above the floor may hold the only copy of a block's bytes. Reclaiming
+        // them destroys data the served index still points at.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        append_n(&store, 1, 6);
+
+        store.set_block_retention_floor(1, 3);
+        let report = store.gc_before_sequence(1, 6).unwrap();
+
+        assert!(
+            report.clamped_by_block_retention,
+            "the reclaim asked to go past the floor and must report being held back"
+        );
+        assert_eq!(report.effective_retain_from_sequence, 3);
+        assert_eq!(report.records_after, 4, "sequences 3..=6 are retained");
+
+        // The retained records are the ones at and above the floor, in order.
+        assert_eq!(sequences_on_disk(dir.path(), 1), vec![3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn advancing_the_floor_lets_the_held_back_records_go() {
+        // The floor is the dump watermark: as blocks are dumped into bands the WAL stops being
+        // their only copy, and the records become reclaimable.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        append_n(&store, 1, 6);
+
+        store.set_block_retention_floor(1, 2);
+        assert_eq!(store.gc_before_sequence(1, 6).unwrap().records_after, 5);
+
+        store.set_block_retention_floor(1, 5);
+        let report = store.gc_before_sequence(1, 6).unwrap();
+        assert_eq!(report.effective_retain_from_sequence, 5);
+        assert_eq!(report.records_after, 2, "sequences 5 and 6");
+
+        store.clear_block_retention_floor(1);
+        assert_eq!(store.block_retention_floor(1), None);
+        let report = store.gc_before_sequence(1, 6).unwrap();
+        assert!(!report.clamped_by_block_retention);
+        assert_eq!(report.records_after, 1, "the tail record is always kept");
+    }
+
+    #[test]
+    fn the_floor_never_overrides_the_tail_retention_rule() {
+        // Clamping must compose with the existing rule that the highest-sequence record is
+        // never removed -- the WAL is the sequence generator on restart, so emptying it would
+        // restart sequencing at 1 and silently drop the re-used sequences on replay.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        append_n(&store, 1, 3);
+
+        store.set_block_retention_floor(1, u64::MAX);
+        let report = store.gc_before_sequence(1, u64::MAX).unwrap();
+
+        assert_eq!(report.records_after, 1, "the tail survives both clamps");
+        assert_eq!(report.effective_retain_from_sequence, 3);
+    }
+
+    #[test]
+    fn reclaim_moves_the_surviving_records_so_byte_offsets_are_not_stable() {
+        // This GC rewrites the file rather than dropping whole segments from the head, so
+        // removing a prefix shifts every surviving record down. Any address that names a record
+        // by its byte offset is therefore invalidated by a reclaim -- and the shifted offset
+        // still parses, as some other record, so nothing announces the error.
+        //
+        // This is why nothing addresses a block by its WAL offset yet: offset-stable reclaim
+        // needs the slab chain, where whole slabs leave the head and the survivors keep their
+        // absolute positions.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        append_n(&store, 1, 4);
+
+        let offsets_before = record_offsets_on_disk(dir.path(), 1);
+        let sequences_before = sequences_on_disk(dir.path(), 1);
+        assert_eq!(sequences_before, vec![1, 2, 3, 4]);
+        let tail_offset_before = *offsets_before.last().unwrap();
+
+        store.gc_before_sequence(1, 3).unwrap();
+
+        let offsets_after = record_offsets_on_disk(dir.path(), 1);
+        let sequences_after = sequences_on_disk(dir.path(), 1);
+        assert_eq!(sequences_after, vec![3, 4], "the prefix was reclaimed");
+
+        // Sequence 4 is the same record either way, but it no longer lives where it did.
+        let tail_offset_after = *offsets_after.last().unwrap();
+        assert_ne!(
+            tail_offset_before, tail_offset_after,
+            "reclaim shifted the surviving tail, so its byte offset is not a stable address"
+        );
+        assert!(tail_offset_after < tail_offset_before);
     }
 }
