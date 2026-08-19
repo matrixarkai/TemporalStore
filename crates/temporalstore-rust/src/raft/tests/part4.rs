@@ -2112,6 +2112,13 @@ impl EnvFlagGuard {
         std::env::set_var(name, "1");
         Self { name }
     }
+
+    /// Explicitly DISABLES a gate for the test's lifetime. Needed because the shipped fixes are
+    /// default-ON: leaving the variable unset now selects the fixed path, not the legacy one.
+    fn off(name: &'static str) -> Self {
+        std::env::set_var(name, "0");
+        Self { name }
+    }
 }
 
 impl Drop for EnvFlagGuard {
@@ -2360,11 +2367,59 @@ fn s2_snapshot_gate_off_still_carries_entries_and_no_image() {
 
 /// Sum the durable WAL records on disk for one node (each record == one real fdatasync in the
 /// segmented append path), read via a fresh WAL handle so it reflects the on-disk truth.
+/// Serialises the tests in this file that mutate process-global env gates.
+static PART4_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn node_wal_record_count(root: &std::path::Path, shard: ShardId, node: RaftNodeId) -> u64 {
     LocalRaftWal::new(root)
         .segment_report(shard, node)
         .map(|report| report.segments.iter().map(|s| s.record_count).sum())
         .unwrap_or(0)
+}
+
+/// P3 core: a DEPLOYED process owns one node but keeps a full cluster view, so the default
+/// persist fsyncs a record for every peer. With `TS_RAFT_PERSIST_LOCAL_ONLY` on and the runtime
+/// having declared which node we are, only OUR record may grow -- peers persist their own
+/// hard-state before answering an RPC, so the leader writing it buys no Raft safety. Durability
+/// of the local node is unchanged, which is what the first assertion pins.
+#[test]
+fn persist_local_only_writes_just_this_nodes_record() {
+    let _serial = PART4_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _gate = EnvFlagGuard::set("TS_RAFT_PERSIST_LOCAL_ONLY");
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+    cluster.set_local_node_id(1);
+
+    let base: Vec<u64> = (1..=3).map(|n| node_wal_record_count(dir.path(), 1, n)).collect();
+    for i in 0..10 {
+        cluster
+            .propose(Command::StringSet {
+                key: format!("p3-{i}"),
+                value: b"v".to_vec(),
+            })
+            .unwrap();
+    }
+    let after: Vec<u64> = (1..=3).map(|n| node_wal_record_count(dir.path(), 1, n)).collect();
+
+    assert!(
+        after[0] > base[0],
+        "local node 1 must still take its durability barrier: {} -> {}",
+        base[0],
+        after[0]
+    );
+    for peer in 1..3 {
+        assert_eq!(
+            after[peer], base[peer],
+            "peer node {} must not be persisted by us under local-only: {} -> {}",
+            peer + 1,
+            base[peer],
+            after[peer]
+        );
+    }
 }
 
 /// P1 core: with `TS_RAFT_WAL_COALESCE` on, a burst of read-index calls (which only touch the
@@ -2406,6 +2461,7 @@ fn raft_wal_coalesce_skips_volatile_only_read_index_persists() {
 /// persists, so the same burst grows the WAL by one record per call. This pins the win as real.
 #[test]
 fn raft_wal_coalesce_off_persists_every_read_index() {
+    let _gate = EnvFlagGuard::off("TS_RAFT_WAL_COALESCE");
     let dir = tempfile::tempdir().unwrap();
     let cluster =
         RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())

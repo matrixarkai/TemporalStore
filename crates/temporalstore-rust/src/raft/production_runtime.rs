@@ -105,6 +105,9 @@ impl ProductionRaftRuntime {
             options.voter_ids(),
             options.config.clone(),
         )?;
+        // P3: one node per process here, so the WAL persist can be scoped to our own record
+        // under `TS_RAFT_PERSIST_LOCAL_ONLY` instead of fsyncing every peer's hard-state.
+        cluster.set_local_node_id(options.local_node_id);
         Ok(Self { options, cluster })
     }
 

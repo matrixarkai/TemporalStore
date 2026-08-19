@@ -142,7 +142,7 @@ fn phase1_flat_keeps_per_write_scans_flat_over_5k_writes() {
     );
 
     // --- Gate OFF baseline: each scan fires once per command -> counts track the write volume. ---
-    std::env::remove_var("TS_PHASE1_FLAT");
+    std::env::set_var("TS_PHASE1_FLAT", "0");
     let off_dir = tempfile::tempdir().unwrap();
     let off = new_engine(off_dir.path());
     // Smaller than N: with the gate off each of these writes pays the O(store) promote scan AND a

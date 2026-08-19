@@ -646,6 +646,11 @@ impl RaftClusterInner {
     }
 
     pub(super) fn persist_configured_wal(&mut self) -> Result<(), RaftError> {
+        // P4: a barrier is owed, not skipped -- flush_deferred_persist takes it before the ack.
+        if self.persist_deferred {
+            self.persist_dirty = true;
+            return Ok(());
+        }
         // Clone the WAL handle (cheap -- it shares the cursor cache via an Arc) so `self` is free
         // to be borrowed mutably below for the coalescing fingerprint map.
         let wal = match &self.wal {
@@ -656,7 +661,15 @@ impl RaftClusterInner {
         let max_segment_bytes = self.config.max_segment_bytes;
         let min_keep_segment_num = self.config.min_keep_segment_num as usize;
         let coalesce = raft_wal_coalesce_on();
+        // P3: a deployed process owns exactly one node; persisting a peer's hard-state buys no
+        // Raft safety (the peer fsyncs its own before answering) and costs a barrier per peer.
+        let local_only = if raft_persist_local_only_on() { self.local_node_id } else { None };
         for (node_id, record) in self.wal_records() {
+            if let Some(local) = local_only {
+                if node_id != local {
+                    continue;
+                }
+            }
             // P1: when coalescing is enabled, skip the fdatasync for a node whose durability-
             // relevant state is byte-identical to what we last persisted. A false "changed" only
             // costs a redundant (safe) fsync; the skip fires ONLY when nothing Raft must persist
@@ -687,6 +700,22 @@ impl RaftClusterInner {
             }
         }
         Ok(())
+    }
+
+    /// P4: start owing barriers instead of taking them. Caller must hold the propose lock.
+    pub(super) fn begin_deferred_persist(&mut self) {
+        self.persist_deferred = true;
+        self.persist_dirty = false;
+    }
+
+    /// P4: take the single real barrier covering everything deferred since `begin_deferred_persist`.
+    pub(super) fn flush_deferred_persist(&mut self) -> Result<(), RaftError> {
+        self.persist_deferred = false;
+        if !self.persist_dirty {
+            return Ok(());
+        }
+        self.persist_dirty = false;
+        self.persist_configured_wal()
     }
 
     pub(super) fn wal_records(&self) -> Vec<(RaftNodeId, RaftWalRecord)> {
