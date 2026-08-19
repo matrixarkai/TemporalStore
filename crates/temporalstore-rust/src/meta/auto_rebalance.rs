@@ -40,6 +40,11 @@ pub enum ShardReassignmentReason {
     /// [`compute_placement_aware_rebalance`]; evacuation cannot catch this case
     /// because the owner is healthy.
     LocationViolation,
+    /// The shard's owner is live and healthy but is not serving this shard, so
+    /// every read routed to it misses. Produced by [`ShardChecker`]; evacuation
+    /// cannot catch it because the owner itself is perfectly available -- it is
+    /// the shard that is gone, not the server.
+    OwnerDiverged,
 }
 
 /// A single planned shard ownership change.

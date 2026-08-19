@@ -11,12 +11,14 @@ use temporalstore_rust::http::{
     HttpRequestOptions,
 };
 use temporalstore_rust::meta::{
-    AckResponse, AddNamespaceRequest, AddTableRequest, AutoRebalanceOptions, DeleteTableRequest,
-    FreezeStaleServersRequest, GetShardResponse, GetTableTopologyRequest, LoadFinishRequest,
+    AckResponse, AddNamespaceRequest, AddTableRequest, AutoRebalanceOptions, ConvictionPolicy,
+    DeleteTableRequest, FailureDetectorOptions, FreezeStaleServersRequest, GetShardResponse,
+    GetTableTopologyRequest, LoadFinishRequest,
     MetaSnapshot, MetaSnapshotFileRequest, MetaSnapshotFileResponse, MetaSnapshotResponse,
     ProxyHeartbeatRequest, PublishShardSnapshotRequest, RegisterProxyRequest,
     RegisterServerRequest, RegisterShardRequest, SafeModePolicy, ServerHeartbeatRequest,
-    ShardReassignmentReason, SingleNodeMeta, StateChangeRequest, TopologyVersionRequest,
+    ShardCheckOptions, ShardChecker, ShardReassignment, ShardReassignmentReason,
+    SingleNodeMeta, StateChangeRequest, TopologyVersionRequest,
     UpdateTableRequest,
 };
 use temporalstore_rust::raft::{
@@ -46,11 +48,55 @@ fn main() {
         MetaTaskScheduler::from_env().expect("failed to initialize metaserver scheduler");
     let stale_after_ms = env_u64("TS_META_STALE_AFTER_MS", 30_000);
     let detector_interval_ms = env_u64("TS_META_FAILURE_DETECTOR_INTERVAL_MS", 10_000);
+    // Adaptive failure detection. The default detector freezes any datanode whose
+    // heartbeat is older than one fixed `stale_after_ms`, which misjudges nodes
+    // whose heartbeat cadence differs from the tuning, convicts the entire fleet
+    // if the metaserver itself stalls (every node crosses the threshold at once),
+    // and freezes a whole rack when a rack-wide fault makes all of its nodes look
+    // stale together -- amplifying a partial outage into a total one, because the
+    // freeze is what auto-rebalance and raft failover then act on.
+    //
+    // With TS_META_ADAPTIVE_FAILURE_DETECTOR each datanode is judged against its
+    // own learned heartbeat distribution (phi accrual), detection is suppressed
+    // for a grace window after a detector stall, and a location losing too many
+    // servers at once enters safe mode instead of being frozen wholesale. OFF by
+    // default: which servers get frozen is behavior-visible, so the fixed
+    // threshold stays the default until a deployment opts in. Proxies stay on the
+    // fixed threshold either way.
+    let adaptive_detector = env_bool("TS_META_ADAPTIVE_FAILURE_DETECTOR", false);
     let _failure_detector = match &backend {
+        MetaBackend::Single(meta) if adaptive_detector => {
+            let options = failure_detector_options_from_env();
+            let policy = conviction_policy_from_env();
+            info!(
+                phi_failure_threshold = options.phi_failure_threshold,
+                max_round_pause_ms = options.max_round_pause_ms,
+                warning_ratio_percent = policy.warning_ratio_percent,
+                critical_ratio_percent = policy.critical_ratio_percent,
+                safe_mode_enabled = policy.safe_mode_enabled,
+                "adaptive failure detection enabled"
+            );
+            Some(MetaBackground::Single(
+                meta.start_adaptive_failure_detector_loop(
+                    options,
+                    policy,
+                    safe_mode_policy_from_env(),
+                    stale_after_ms,
+                    detector_interval_ms,
+                ),
+            ))
+        }
         MetaBackend::Single(meta) => Some(MetaBackground::Single(
             meta.start_failure_detector_loop(stale_after_ms, detector_interval_ms),
         )),
-        MetaBackend::Raft(runtime) => Some(MetaBackground::Raft(runtime.start_timer_loop())),
+        MetaBackend::Raft(runtime) => {
+            if adaptive_detector {
+                warn!(
+                    "TS_META_ADAPTIVE_FAILURE_DETECTOR ignored: raft backend runs its own timer loop"
+                );
+            }
+            Some(MetaBackground::Raft(runtime.start_timer_loop()))
+        }
     };
     // Automatic shard rebalancing: on a membership change (a node freezes/leaves,
     // or a fresh node joins) recompute placement and drive the target nodes to
@@ -82,6 +128,46 @@ fn main() {
             }
             MetaBackend::Raft(_) => {
                 warn!("TS_META_AUTO_REBALANCE ignored: raft backend manages placement itself");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    // Shard-divergence reconciliation: compare the owner map against what each
+    // datanode reports serving, and re-place the shards its recorded owner is
+    // not actually serving. OFF by default (TS_META_SHARD_DIVERGENCE_CHECK)
+    // because it moves data. Only the single-node backend is auto-driven here.
+    let _shard_divergence = if env_bool("TS_META_SHARD_DIVERGENCE_CHECK", false) {
+        match &backend {
+            MetaBackend::Single(meta) => {
+                let interval_ms =
+                    env_u64("TS_META_SHARD_DIVERGENCE_INTERVAL_MS", detector_interval_ms);
+                let defaults = ShardCheckOptions::default();
+                let options = ShardCheckOptions {
+                    reboot_grace_ms: env_u64(
+                        "TS_META_SHARD_DIVERGENCE_REBOOT_GRACE_MS",
+                        defaults.reboot_grace_ms,
+                    ),
+                    max_moves_per_window: env_u64(
+                        "TS_META_SHARD_DIVERGENCE_MAX_MOVES",
+                        defaults.max_moves_per_window as u64,
+                    ) as usize,
+                    window_ms: env_u64(
+                        "TS_META_SHARD_DIVERGENCE_WINDOW_MS",
+                        defaults.window_ms,
+                    ),
+                };
+                info!(
+                    interval_ms,
+                    reboot_grace_ms = options.reboot_grace_ms,
+                    max_moves_per_window = options.max_moves_per_window,
+                    "shard-divergence reconciliation enabled"
+                );
+                Some(start_shard_divergence_loop(meta.clone(), options, interval_ms))
+            }
+            MetaBackend::Raft(_) => {
+                warn!("TS_META_SHARD_DIVERGENCE_CHECK ignored: raft backend manages placement itself");
                 None
             }
         }
@@ -670,6 +756,16 @@ fn run_auto_rebalance_round(
     } else {
         meta.plan_auto_rebalance_with_options(options)
     };
+    drive_reassignments(meta, plans, http_options);
+}
+
+/// Drive a set of reassignments: ask the target to load the shard, unload the
+/// source when it still holds it, then rewrite the owner map.
+fn drive_reassignments(
+    meta: &SingleNodeMeta,
+    plans: Vec<ShardReassignment>,
+    http_options: HttpRequestOptions,
+) {
     for plan in plans {
         let load_version = now_epoch_ms();
         let load_request = LoadShardRequest {
@@ -702,7 +798,9 @@ fn run_auto_rebalance_round(
             continue;
         }
         // A balance move or a location pull-back vacates a still-live source:
-        // unload there (best-effort). An evacuation has no live source to unload.
+        // unload there (best-effort). An evacuation has no live source, and a
+        // divergence's source is precisely the node that no longer holds the
+        // shard -- neither is unloaded.
         if matches!(
             plan.reason,
             ShardReassignmentReason::Rebalance | ShardReassignmentReason::LocationViolation
@@ -739,6 +837,44 @@ fn run_auto_rebalance_round(
     }
 }
 
+/// Background loop that reconciles the metaserver's shard->owner map against
+/// what datanodes report serving.
+///
+/// A shard can vanish from a healthy node -- unloaded by hand, failed to reload
+/// after a restart, a rolled-back load -- and nothing else notices: the node
+/// keeps heartbeating, so neither the stale-heartbeat detector nor reboot
+/// detection has anything to say, and auto-rebalance only evacuates shards whose
+/// *owner* is unavailable. This owner is available; it is the shard that is
+/// gone. Until something compares the two views, every read for that shard is
+/// routed to a server that will miss on all of them.
+fn start_shard_divergence_loop(
+    meta: SingleNodeMeta,
+    options: ShardCheckOptions,
+    interval_ms: u64,
+) -> std::thread::JoinHandle<()> {
+    let interval = std::time::Duration::from_millis(interval_ms.max(1));
+    let http_options = HttpRequestOptions {
+        connect_timeout_ms: env_u64("TS_META_SHARD_DIVERGENCE_CONNECT_TIMEOUT_MS", 500),
+        io_timeout_ms: env_u64("TS_META_SHARD_DIVERGENCE_IO_TIMEOUT_MS", 2_000),
+        ..HttpRequestOptions::default()
+    };
+    let mut checker = ShardChecker::new(options);
+    std::thread::spawn(move || loop {
+        let (report, moves) = meta.check_shard_divergence(&mut checker);
+        if !report.diverged.is_empty() {
+            warn!(
+                diverged = report.diverged.len(),
+                planned = moves.len(),
+                rate_limited = report.rate_limited,
+                skipped_booting = report.skipped_in_reboot_grace.len(),
+                "shard-divergence: owner map disagrees with what datanodes serve"
+            );
+        }
+        drive_reassignments(&meta, moves, http_options);
+        std::thread::sleep(interval);
+    })
+}
+
 /// Wire body for `POST /raft/admin/liveness` on a datanode (mirrors the private
 /// request struct in `bin/server.rs`; the response carries only a status).
 #[derive(Debug, serde::Serialize)]
@@ -750,6 +886,57 @@ struct RaftAdminLivenessRequest {
 #[derive(Debug, serde::Deserialize)]
 struct RaftAdminLivenessResponse {
     status: Status,
+}
+
+/// Read [`FailureDetectorOptions`] from the environment, falling back to the
+/// defaults documented on each field.
+fn failure_detector_options_from_env() -> FailureDetectorOptions {
+    let defaults = FailureDetectorOptions::default();
+    FailureDetectorOptions {
+        sample_capacity: env_u64(
+            "TS_META_FD_SAMPLE_CAPACITY",
+            defaults.sample_capacity as u64,
+        )
+        .max(1) as usize,
+        initial_interval_ms: env_u64("TS_META_FD_INITIAL_INTERVAL_MS", defaults.initial_interval_ms),
+        max_interval_ms: env_u64("TS_META_FD_MAX_INTERVAL_MS", defaults.max_interval_ms),
+        phi_failure_threshold: std::env::var("TS_META_FD_PHI_THRESHOLD")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or(defaults.phi_failure_threshold),
+        max_round_pause_ms: env_u64("TS_META_FD_MAX_ROUND_PAUSE_MS", defaults.max_round_pause_ms),
+    }
+}
+
+/// Read the correlated-failure gate policy from the environment.
+fn conviction_policy_from_env() -> ConvictionPolicy {
+    let defaults = ConvictionPolicy::default();
+    ConvictionPolicy {
+        warning_ratio_percent: env_u64(
+            "TS_META_CONVICT_WARNING_RATIO_PERCENT",
+            defaults.warning_ratio_percent,
+        ),
+        critical_ratio_percent: env_u64(
+            "TS_META_CONVICT_CRITICAL_RATIO_PERCENT",
+            defaults.critical_ratio_percent,
+        ),
+        min_abnormal_for_safe_mode: env_u64(
+            "TS_META_CONVICT_MIN_ABNORMAL",
+            defaults.min_abnormal_for_safe_mode as u64,
+        ) as usize,
+        safe_mode_enabled: env_bool("TS_META_CONVICT_SAFE_MODE", defaults.safe_mode_enabled),
+        convict_enabled: env_bool("TS_META_CONVICT_ENABLED", defaults.convict_enabled),
+        convict_on_reboot: env_bool("TS_META_CONVICT_ON_REBOOT", defaults.convict_on_reboot),
+    }
+}
+
+/// Freeze cooldowns applied to servers and proxies frozen by the detector.
+fn safe_mode_policy_from_env() -> SafeModePolicy {
+    SafeModePolicy {
+        server_freeze_cooldown_ms: env_u64("TS_META_SERVER_FREEZE_COOLDOWN_MS", 0),
+        proxy_freeze_cooldown_ms: env_u64("TS_META_PROXY_FREEZE_COOLDOWN_MS", 0),
+    }
 }
 
 /// Wire body for `POST /raft/admin/failover` (the datanode handler ignores the

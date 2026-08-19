@@ -818,33 +818,42 @@ impl LocalWriteAheadLogStore {
         // That is what makes the whole reclaim expressible as one number: every survivor moves
         // down by exactly the length of the removed prefix.
         let (base_offset, header_len) = read_wal_base(&path)?;
-        let contents = fs::read(&path)?;
+        // One line at a time. A log is not bounded by memory, so neither this search nor the
+        // copy below may hold it: reclaiming a large log otherwise costs a transient allocation
+        // the size of the whole file.
+        let mut reader = BufReader::new(File::open(&path)?);
+        reader.seek(SeekFrom::Start(header_len))?;
         let mut records_before = 0usize;
         let mut records_after = 0usize;
         let mut split = None;
-        let mut cursor = header_len as usize;
-        while cursor < contents.len() {
-            let end = contents[cursor..]
-                .iter()
-                .position(|byte| *byte == b'\n')
-                .map(|index| cursor + index)
-                .unwrap_or(contents.len());
-            let line = &contents[cursor..end];
-            if !line.iter().all(|byte| byte.is_ascii_whitespace()) {
+        let mut cursor = header_len;
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            let read = reader.read_until(b'\n', &mut line)?;
+            if read == 0 {
+                break;
+            }
+            let trimmed = line
+                .strip_suffix(b"\n")
+                .unwrap_or(line.as_slice());
+            if !trimmed.iter().all(|byte| byte.is_ascii_whitespace()) {
                 records_before += 1;
-                let record = decode_wal_line(line)?;
-                if record.sequence >= effective_retain {
-                    if split.is_none() {
-                        split = Some(cursor);
-                    }
+                if split.is_some() {
+                    // Past the split every remaining record is retained, and the sequence is
+                    // ascending, so there is nothing left to decide -- count it and move on
+                    // rather than parsing it again.
+                    records_after += 1;
+                } else if decode_wal_line(trimmed)?.sequence >= effective_retain {
+                    split = Some(cursor);
                     records_after += 1;
                 }
             }
-            cursor = end.saturating_add(1);
+            cursor = cursor.saturating_add(read as u64);
         }
         // Nothing retained means everything before the end goes; the split is the end of file.
-        let split = split.unwrap_or(contents.len());
-        let removed_bytes = (split as u64).saturating_sub(header_len);
+        let split = split.unwrap_or(cursor);
+        let removed_bytes = split.saturating_sub(header_len);
         let new_base = base_offset.saturating_add(removed_bytes);
 
         let temp_path = path.with_extension("jsonl.tmp");
@@ -857,7 +866,9 @@ impl LocalWriteAheadLogStore {
             // Copy the retained records byte for byte rather than decoding and re-encoding
             // them. Re-encoding could change a record's length, which would break the offset
             // arithmetic this whole scheme rests on, and it costs a parse per record.
-            temp.write_all(&contents[split..])?;
+            let mut source = File::open(&path)?;
+            source.seek(SeekFrom::Start(split))?;
+            std::io::copy(&mut BufReader::new(source), &mut temp)?;
             temp.flush()?;
             temp.sync_all()?;
         }
