@@ -357,14 +357,14 @@ impl TemporalEngine {
     }
 
     /// MANIFEST-PARITY FOLD threshold check: dump the index catalog when the undumped index-log
-    /// gap has crossed `index_dump_oplog_gap_bytes` (the index-meta dump gap
+    /// gap has crossed `index_dump_wal_gap_bytes` (the index-meta dump gap
     /// cadence). No-op with the `TS_INDEX_CATALOG_FOLD` gate off, so the background cycle is
     /// byte-identical when the fold is not enabled. Returns whether a dump fired.
     pub fn maybe_dump_index_catalog(&self, shard_id: ShardId) -> bool {
         if !crate::index_log::index_catalog_fold_enabled() {
             return false;
         }
-        let gap = crate::storage_config::index_dump_oplog_gap_bytes();
+        let gap = crate::storage_config::index_dump_wal_gap_bytes();
         let undumped = self.index_log_store.undumped_len_since_dump(shard_id);
         if !crate::index_log::should_dump_index_catalog(undumped, gap) {
             return false;

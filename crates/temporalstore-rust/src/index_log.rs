@@ -338,7 +338,7 @@ impl LocalIndexLogStore {
 
     /// Undumped index-log length for a shard: the on-disk byte growth since the last catalog
     /// dump (`mark_catalog_dumped`). This is the native analog of this design
-    /// the undumped WAL length, and is the signal compared against `index_dump_oplog_gap_bytes`
+    /// the undumped WAL length, and is the signal compared against `index_dump_wal_gap_bytes`
     /// to decide a threshold dump. A shard never dumped this process (or freshly restarted)
     /// reports the whole current length.
     pub fn undumped_len_since_dump(&self, shard_id: ShardId) -> u64 {
