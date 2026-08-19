@@ -206,6 +206,9 @@ pub struct WriteAheadLogGcReport {
     /// The block-retention floor held this reclaim back: records at or above it may still be
     /// the only copy of a block's bytes.
     pub clamped_by_block_retention: bool,
+    /// Bytes reclaimed from the head of this shard's log over its lifetime, after this pass.
+    /// A record's log id minus this is where it now physically lives.
+    pub base_offset: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -622,6 +625,11 @@ impl LocalWriteAheadLogStore {
             return Ok(Vec::new());
         }
         let _ = last_wal_sequence_at(&inner.root, shard_id)?;
+        // Start past the reclaim-base header. A caller asking from 0 means "from the first
+        // record"; handing it the header would decode as a corrupt record and be reported as
+        // data loss.
+        let (_, header_len) = read_wal_base(&path)?;
+        let start_offset = start_offset.max(header_len);
         let mut file = File::open(&path)?;
         file.seek(SeekFrom::Start(start_offset))?;
         let mut reader = BufReader::new(file);
@@ -702,6 +710,69 @@ impl LocalWriteAheadLogStore {
         inner.block_retention_floor_by_shard.remove(&shard_id);
     }
 
+    /// Bytes reclaimed from the head of this shard's log so far.
+    ///
+    /// A record's log id is its byte offset in the log's whole history, which does not change
+    /// when the head is reclaimed. This is the difference between that and where the record
+    /// physically sits now.
+    pub fn base_offset(&self, shard_id: ShardId) -> Result<u64, WriteAheadLogError> {
+        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let path = write_ahead_log_path(&inner.root, shard_id);
+        Ok(read_wal_base(&path)?.0)
+    }
+
+    /// Physical byte offset of the record with this log id, or `None` if the log id has been
+    /// reclaimed and the record no longer exists.
+    ///
+    /// Returning `None` rather than a wrong offset is the point: a reclaimed log id would
+    /// otherwise resolve into the middle of the file and parse as some other record.
+    pub fn resolve_log_id(
+        &self,
+        shard_id: ShardId,
+        log_id: u64,
+    ) -> Result<Option<u64>, WriteAheadLogError> {
+        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let path = write_ahead_log_path(&inner.root, shard_id);
+        let (base, header_len) = read_wal_base(&path)?;
+        if log_id < base {
+            return Ok(None);
+        }
+        let physical = header_len.saturating_add(log_id - base);
+        let length = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+        if physical >= length {
+            return Ok(None);
+        }
+        Ok(Some(physical))
+    }
+
+    /// Log id of a record currently at `physical_offset`. The inverse of [`Self::resolve_log_id`],
+    /// used when recording the address of a record just appended.
+    pub fn log_id_at(
+        &self,
+        shard_id: ShardId,
+        physical_offset: u64,
+    ) -> Result<u64, WriteAheadLogError> {
+        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let path = write_ahead_log_path(&inner.root, shard_id);
+        let (base, header_len) = read_wal_base(&path)?;
+        Ok(base.saturating_add(physical_offset.saturating_sub(header_len)))
+    }
+
+    /// Read `size` bytes of the record at `log_id`, following the reclaim base.
+    ///
+    /// `Ok(None)` means the log id was reclaimed.
+    pub fn read_at_log_id(
+        &self,
+        shard_id: ShardId,
+        log_id: u64,
+        size: u64,
+    ) -> Result<Option<Vec<u8>>, WriteAheadLogError> {
+        let Some(physical) = self.resolve_log_id(shard_id, log_id)? else {
+            return Ok(None);
+        };
+        self.read_range(shard_id, physical, size).map(Some)
+    }
+
     pub fn gc_before_sequence(
         &self,
         shard_id: ShardId,
@@ -717,6 +788,7 @@ impl LocalWriteAheadLogStore {
                 effective_retain_from_sequence: retain_from_sequence,
                 ..WriteAheadLogGcReport::default()
             });
+            // (an absent log has reclaimed nothing, so the default base of 0 is correct)
         }
 
         let bytes_before = path.metadata()?.len();
@@ -740,29 +812,52 @@ impl LocalWriteAheadLogStore {
             .unwrap_or(u64::MAX);
         let clamped_by_block_retention = effective_retain > floor;
         let effective_retain = effective_retain.min(floor);
-        let file = File::open(&path)?;
-        let reader = BufReader::new(file);
+        // Records are appended in strictly ascending sequence -- the live path increments under
+        // the append lock, and the replay path refuses anything at or below the last sequence --
+        // so the records to keep are a contiguous SUFFIX and the ones to drop are a prefix.
+        // That is what makes the whole reclaim expressible as one number: every survivor moves
+        // down by exactly the length of the removed prefix.
+        let (base_offset, header_len) = read_wal_base(&path)?;
+        let contents = fs::read(&path)?;
         let mut records_before = 0usize;
-        let mut retained = Vec::new();
-        for line in reader.lines() {
-            let line = line?;
-            if line.trim().is_empty() {
-                continue;
+        let mut records_after = 0usize;
+        let mut split = None;
+        let mut cursor = header_len as usize;
+        while cursor < contents.len() {
+            let end = contents[cursor..]
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map(|index| cursor + index)
+                .unwrap_or(contents.len());
+            let line = &contents[cursor..end];
+            if !line.iter().all(|byte| byte.is_ascii_whitespace()) {
+                records_before += 1;
+                let record = decode_wal_line(line)?;
+                if record.sequence >= effective_retain {
+                    if split.is_none() {
+                        split = Some(cursor);
+                    }
+                    records_after += 1;
+                }
             }
-            records_before += 1;
-            let record = decode_wal_line(line.as_bytes())?;
-            if record.sequence >= effective_retain {
-                retained.push(record);
-            }
+            cursor = end.saturating_add(1);
         }
+        // Nothing retained means everything before the end goes; the split is the end of file.
+        let split = split.unwrap_or(contents.len());
+        let removed_bytes = (split as u64).saturating_sub(header_len);
+        let new_base = base_offset.saturating_add(removed_bytes);
 
         let temp_path = path.with_extension("jsonl.tmp");
         {
             let mut temp = File::create(&temp_path)?;
-            for record in &retained {
-                // Re-emit each retained record framed so the integrity envelope survives GC.
-                temp.write_all(&crate::log_framing::encode_line(&serde_json::to_vec(record)?))?;
-            }
+            // The base goes inside the file so it is swapped in by the same rename as the bytes
+            // it describes. A base kept beside the file could survive a crash disagreeing with
+            // them, and every address would then resolve to the wrong record.
+            temp.write_all(&crate::log_framing::encode_base_header(new_base))?;
+            // Copy the retained records byte for byte rather than decoding and re-encoding
+            // them. Re-encoding could change a record's length, which would break the offset
+            // arithmetic this whole scheme rests on, and it costs a parse per record.
+            temp.write_all(&contents[split..])?;
             temp.flush()?;
             temp.sync_all()?;
         }
@@ -773,10 +868,11 @@ impl LocalWriteAheadLogStore {
             shard_id,
             retain_from_sequence,
             records_before,
-            records_after: retained.len(),
-            records_removed: records_before.saturating_sub(retained.len()),
+            records_after,
+            records_removed: records_before.saturating_sub(records_after),
             bytes_before,
             bytes_after,
+            base_offset: new_base,
             effective_retain_from_sequence: effective_retain,
             clamped_by_block_retention,
         })
@@ -838,7 +934,9 @@ impl LocalWriteAheadLogStore {
             });
         }
         let _ = last_wal_sequence_at(&inner.root, shard_id)?;
-        let file = File::open(&path)?;
+        let (_, header_len) = read_wal_base(&path)?;
+        let mut file = File::open(&path)?;
+        file.seek(SeekFrom::Start(header_len))?;
         let reader = BufReader::new(file);
         let mut start_sequence = 0_u64;
         let mut current_sequence = 0_u64;
@@ -1128,16 +1226,40 @@ fn append_record_locked(
     })
 }
 
+/// Read the reclaim-base header, returning `(base_offset, header_len_bytes)`.
+///
+/// A file with no header has never been reclaimed, so nothing has shifted: base 0, header
+/// length 0. Every reader skips `header_len` bytes; every address resolves against `base`.
+fn read_wal_base(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
+    if !path.exists() {
+        return Ok((0, 0));
+    }
+    let mut reader = BufReader::new(File::open(path)?);
+    let mut line = Vec::new();
+    let read = reader.read_until(b'\n', &mut line)?;
+    if read == 0 {
+        return Ok((0, 0));
+    }
+    match crate::log_framing::decode_base_header(&line)? {
+        Some(base) => Ok((base, read as u64)),
+        None => Ok((0, 0)),
+    }
+}
+
 fn last_wal_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, WriteAheadLogError> {
     let path = write_ahead_log_path(root, shard_id);
     if !path.exists() {
         return Ok(0);
     }
+    let (_, header_len) = read_wal_base(&path)?;
     let file = OpenOptions::new().read(true).write(true).open(&path)?;
     let mut reader = BufReader::new(file.try_clone()?);
+    reader.seek(SeekFrom::Start(header_len))?;
     let mut last = 0;
-    let mut offset = 0_u64;
-    let mut good_offset = 0_u64;
+    // Offsets here are physical, and the tail-truncation below cuts the file at `good_offset`,
+    // so both start past the header rather than at zero -- truncating to 0 would discard it.
+    let mut offset = header_len;
+    let mut good_offset = header_len;
     loop {
         let mut line = Vec::new();
         let read = reader.read_until(b'\n', &mut line)?;
@@ -1712,26 +1834,54 @@ mod tests {
 
     // ---- block-retention floor -------------------------------------------------------------
 
+    /// Byte offset at which records begin: past the reclaim-base header if the file has one.
+    ///
+    /// Raw-file helpers have to step over the header for the same reason the readers do --
+    /// decoding it as a record fails.
+    fn data_start(bytes: &[u8]) -> usize {
+        if bytes.starts_with(crate::log_framing::BASE_HEADER_MAGIC) {
+            bytes
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map(|index| index + 1)
+                .unwrap_or(bytes.len())
+        } else {
+            0
+        }
+    }
+
     /// Decode the shard's WAL the way GC does, so a test can assert on what survived.
     fn sequences_on_disk(root: &std::path::Path, shard: ShardId) -> Vec<u64> {
         let bytes = std::fs::read(write_ahead_log_path(root, shard)).unwrap();
-        bytes
+        bytes[data_start(&bytes)..]
             .split(|byte| *byte == b'\n')
             .filter(|line| !line.is_empty())
             .map(|line| decode_wal_line(line).unwrap().sequence)
             .collect()
     }
 
-    /// Byte offset at which each record starts, in order.
+    /// Byte offset at which each record starts, in order, past any base header.
     fn record_offsets_on_disk(root: &std::path::Path, shard: ShardId) -> Vec<usize> {
         let bytes = std::fs::read(write_ahead_log_path(root, shard)).unwrap();
-        let mut offsets = vec![0usize];
-        for (index, byte) in bytes.iter().enumerate() {
+        let start = data_start(&bytes);
+        let mut offsets = vec![start];
+        for (index, byte) in bytes.iter().enumerate().skip(start) {
             if *byte == b'\n' && index + 1 < bytes.len() {
                 offsets.push(index + 1);
             }
         }
         offsets
+    }
+
+    /// Bytes of the record starting at `offset`, including its newline.
+    fn record_bytes_at(root: &std::path::Path, shard: ShardId, offset: usize) -> Vec<u8> {
+        let bytes = std::fs::read(write_ahead_log_path(root, shard)).unwrap();
+        let end = bytes[offset..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|index| offset + index + 1)
+            .unwrap_or(bytes.len());
+        bytes[offset..end].to_vec()
     }
 
     fn append_n(store: &LocalWriteAheadLogStore, shard: ShardId, count: usize) {
@@ -1827,36 +1977,178 @@ mod tests {
     }
 
     #[test]
-    fn reclaim_moves_the_surviving_records_so_byte_offsets_are_not_stable() {
-        // This GC rewrites the file rather than dropping whole segments from the head, so
-        // removing a prefix shifts every surviving record down. Any address that names a record
-        // by its byte offset is therefore invalidated by a reclaim -- and the shifted offset
-        // still parses, as some other record, so nothing announces the error.
-        //
-        // This is why nothing addresses a block by its WAL offset yet: offset-stable reclaim
-        // needs the slab chain, where whole slabs leave the head and the survivors keep their
-        // absolute positions.
+    fn reclaim_shifts_physical_offsets_but_log_ids_stay_stable() {
+        // Reclaim still compacts, so where a record physically sits does change. What must not
+        // change is its log id -- its offset in the log's whole history -- because that is the
+        // address a block carries. Resolving a log id after a reclaim has to land on the same
+        // record it named before.
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
-        append_n(&store, 1, 4);
+        append_n(&store, 1, 6);
 
         let offsets_before = record_offsets_on_disk(dir.path(), 1);
-        let sequences_before = sequences_on_disk(dir.path(), 1);
-        assert_eq!(sequences_before, vec![1, 2, 3, 4]);
-        let tail_offset_before = *offsets_before.last().unwrap();
+        assert_eq!(sequences_on_disk(dir.path(), 1), vec![1, 2, 3, 4, 5, 6]);
+        // Nothing reclaimed yet, so a log id is simply the physical offset.
+        assert_eq!(store.base_offset(1).unwrap(), 0);
+        let tail_physical_before = *offsets_before.last().unwrap() as u64;
+        let tail_log_id = store.log_id_at(1, tail_physical_before).unwrap();
+        assert_eq!(tail_log_id, tail_physical_before);
+        let tail_bytes_before = record_bytes_at(dir.path(), 1, tail_physical_before as usize);
 
-        store.gc_before_sequence(1, 3).unwrap();
+        store.gc_before_sequence(1, 4).unwrap();
 
-        let offsets_after = record_offsets_on_disk(dir.path(), 1);
-        let sequences_after = sequences_on_disk(dir.path(), 1);
-        assert_eq!(sequences_after, vec![3, 4], "the prefix was reclaimed");
-
-        // Sequence 4 is the same record either way, but it no longer lives where it did.
-        let tail_offset_after = *offsets_after.last().unwrap();
+        // The record moved.
+        let tail_physical_after = *record_offsets_on_disk(dir.path(), 1).last().unwrap() as u64;
         assert_ne!(
-            tail_offset_before, tail_offset_after,
-            "reclaim shifted the surviving tail, so its byte offset is not a stable address"
+            tail_physical_before, tail_physical_after,
+            "reclaim compacts, so the physical position is expected to change"
         );
-        assert!(tail_offset_after < tail_offset_before);
+
+        // Its log id still names it.
+        let resolved = store
+            .resolve_log_id(1, tail_log_id)
+            .unwrap()
+            .expect("a retained log id must still resolve");
+        assert_eq!(
+            resolved, tail_physical_after,
+            "the log id must resolve to where the record now lives"
+        );
+        let tail_bytes_after = record_bytes_at(dir.path(), 1, resolved as usize);
+        assert_eq!(
+            tail_bytes_before, tail_bytes_after,
+            "the log id must name the same record, byte for byte"
+        );
+    }
+
+    #[test]
+    fn a_reclaimed_log_id_resolves_to_nothing_rather_than_the_wrong_record() {
+        // The dangerous failure is silent: an offset below the base would otherwise land in the
+        // middle of the file and parse as some other record.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        append_n(&store, 1, 6);
+        let first_log_id = record_offsets_on_disk(dir.path(), 1)[0] as u64;
+
+        store.gc_before_sequence(1, 4).unwrap();
+
+        assert!(store.base_offset(1).unwrap() > first_log_id);
+        assert_eq!(
+            store.resolve_log_id(1, first_log_id).unwrap(),
+            None,
+            "a reclaimed log id must resolve to nothing"
+        );
+    }
+
+    #[test]
+    fn retained_records_are_copied_verbatim() {
+        // The offset arithmetic assumes a survivor's bytes and length are untouched. Decoding
+        // and re-encoding could change either, so reclaim copies the range as-is.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        append_n(&store, 1, 6);
+
+        let raw_before = std::fs::read(write_ahead_log_path(dir.path(), 1)).unwrap();
+        let offsets = record_offsets_on_disk(dir.path(), 1);
+        // Reclaiming from sequence 4 keeps records from index 3 onward.
+        let split = offsets[3];
+        let suffix_before = raw_before[split..].to_vec();
+
+        store.gc_before_sequence(1, 4).unwrap();
+
+        let raw_after = std::fs::read(write_ahead_log_path(dir.path(), 1)).unwrap();
+        let header_len = raw_after
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .expect("a reclaimed file carries a base header")
+            + 1;
+        assert_eq!(
+            &raw_after[header_len..],
+            suffix_before.as_slice(),
+            "retained bytes must survive reclaim unchanged"
+        );
+    }
+
+    #[test]
+    fn the_base_accumulates_across_repeated_reclaims() {
+        // Each reclaim shifts survivors again; the base is the running total, not the last hop.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        append_n(&store, 1, 12);
+
+        let all_offsets = record_offsets_on_disk(dir.path(), 1);
+        let last_log_id = *all_offsets.last().unwrap() as u64;
+        let last_bytes = record_bytes_at(dir.path(), 1, last_log_id as usize);
+
+        store.gc_before_sequence(1, 4).unwrap();
+        let base_after_first = store.base_offset(1).unwrap();
+        store.gc_before_sequence(1, 9).unwrap();
+        let base_after_second = store.base_offset(1).unwrap();
+
+        assert!(
+            base_after_second > base_after_first,
+            "the base must keep climbing, got {base_after_first} then {base_after_second}"
+        );
+
+        // The surviving tail is still reachable by the log id it had at the very beginning.
+        let resolved = store
+            .resolve_log_id(1, last_log_id)
+            .unwrap()
+            .expect("the tail survives both reclaims");
+        assert_eq!(record_bytes_at(dir.path(), 1, resolved as usize), last_bytes);
+    }
+
+    #[test]
+    fn a_log_that_was_never_reclaimed_reads_as_base_zero() {
+        // Existing files carry no header, and must keep loading unchanged.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        append_n(&store, 1, 3);
+
+        assert_eq!(store.base_offset(1).unwrap(), 0);
+        let raw = std::fs::read(write_ahead_log_path(dir.path(), 1)).unwrap();
+        assert!(
+            !raw.starts_with(b"#tsb1 "),
+            "an un-reclaimed log must not grow a header it does not need"
+        );
+        assert_eq!(sequences_on_disk(dir.path(), 1), vec![1, 2, 3]);
+        assert_eq!(store.info(1).unwrap().records, 3);
+    }
+
+    #[test]
+    fn readers_keep_working_after_a_reclaim() {
+        // The header sits where readers expect the first record. Every path that walks the file
+        // has to step over it, or it decodes as a corrupt record and surfaces as data loss.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        append_n(&store, 1, 8);
+        store.gc_before_sequence(1, 5).unwrap();
+
+        // scan(), which recovery and checkpoint publishing both read through
+        let scanned = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        assert_eq!(scanned.len(), 4, "sequences 5..=8 survive");
+        for (_, line) in &scanned {
+            decode_wal_line(line).expect("no scanned line may be the header");
+        }
+
+        // info()
+        let info = store.info(1).unwrap();
+        assert_eq!(info.records, 4);
+        assert_eq!(info.current_sequence, 8);
+
+        // the sequence cache rebuilt from disk, which drives the next append
+        let store_reopened = LocalWriteAheadLogStore::new(dir.path());
+        let report = store_reopened
+            .append(
+                1,
+                Command::StringSet {
+                    key: "after-reclaim".to_string(),
+                    value: b"v".to_vec(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            report.sequence, 9,
+            "sequencing must continue past the reclaim, not restart"
+        );
     }
 }
