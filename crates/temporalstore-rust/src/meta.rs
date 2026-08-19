@@ -23,6 +23,7 @@ mod table_ops;
 mod topology_helpers;
 mod auto_rebalance;
 mod failure_detector;
+mod placement_rebalance;
 mod raft_failover;
 mod shard_check;
 use self::partitioning::*;
@@ -34,6 +35,9 @@ pub use self::failure_detector::{
     plan_conviction, AdaptiveConvictionReport, ConvictionCandidate, ConvictionPlan,
     ConvictionPolicy, DamageSeverity, Diagnosis, FailureDetectorOptions, LocationDamage,
     MetaFailureDetector,
+};
+pub use self::placement_rebalance::{
+    compute_placement_aware_rebalance, PlacementTarget, ShardPlacement,
 };
 pub use self::raft_failover::{compute_raft_failover_triggers, RaftFailoverTrigger};
 pub use self::shard_check::{

@@ -40,6 +40,11 @@ pub enum ShardReassignmentReason {
     /// cannot catch it because the owner itself is perfectly available -- it is
     /// the shard that is gone, not the server.
     OwnerDiverged,
+    /// The shard's owner is live but sits outside the location its table asked
+    /// for, so the shard moves back into that location. Only produced by
+    /// [`compute_placement_aware_rebalance`]; evacuation cannot catch this case
+    /// because the owner is healthy.
+    LocationViolation,
 }
 
 /// A single planned shard ownership change.
@@ -62,6 +67,21 @@ pub struct AutoRebalanceOptions {
     /// Enable the load-balancing pass (spread shards onto under-loaded live
     /// servers). Evacuation of unavailable owners always runs regardless.
     pub balance_load: bool,
+    /// Confine placement to the location the shard's table prefers, and pull
+    /// back shards that have drifted out of it. Read only by
+    /// [`compute_placement_aware_rebalance`]; the flat planner has no notion of
+    /// location and ignores this.
+    pub location_scoped: bool,
+    /// Balance each table across its eligible servers separately, instead of
+    /// balancing total shard counts. Without it a table can be entirely homed on
+    /// one node while global counts look even. Read only by
+    /// [`compute_placement_aware_rebalance`].
+    pub per_table_balance: bool,
+    /// How many shards above its fair share a server may hold before it sheds
+    /// load. Damps churn: without it the planner chases a one-shard imbalance
+    /// and moves data every round. Read only by
+    /// [`compute_placement_aware_rebalance`].
+    pub balance_safe_gap: usize,
 }
 
 impl Default for AutoRebalanceOptions {
@@ -69,6 +89,9 @@ impl Default for AutoRebalanceOptions {
         Self {
             max_moves: 64,
             balance_load: true,
+            location_scoped: true,
+            per_table_balance: true,
+            balance_safe_gap: 0,
         }
     }
 }
@@ -337,6 +360,7 @@ mod tests {
             AutoRebalanceOptions {
                 max_moves: 1,
                 balance_load: true,
+                ..AutoRebalanceOptions::default()
             },
         );
         assert_eq!(plans.len(), 1);
@@ -351,6 +375,7 @@ mod tests {
             AutoRebalanceOptions {
                 max_moves: 64,
                 balance_load: false,
+                ..AutoRebalanceOptions::default()
             },
         );
         assert!(plans.is_empty());
