@@ -66,7 +66,55 @@ pub struct WriteAheadLogRecord {
 pub struct StagedPage {
     /// The object the page belongs to, which is what a read has when it comes looking.
     pub object_id: u64,
+    /// The page contents, stored text-encoded.
+    ///
+    /// A byte vector serializes as an array of numbers, about five bytes of log per byte of
+    /// page. For a field that exists to carry page contents that is the dominant cost of the
+    /// whole record, so it is encoded instead -- about a third of the size.
+    #[serde(with = "staged_page_bytes")]
     pub bytes: Vec<u8>,
+}
+
+/// Text encoding for a staged page's contents.
+///
+/// Reading accepts the array form too, so a log written before this still loads.
+mod staged_page_bytes {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    use serde::de::{Deserializer, Error, SeqAccess, Visitor};
+    use serde::Serializer;
+
+    pub(super) fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&STANDARD.encode(bytes))
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<u8>, D::Error> {
+        struct EitherShape;
+
+        impl<'de> Visitor<'de> for EitherShape {
+            type Value = Vec<u8>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("an encoded page, or the array of bytes written before")
+            }
+
+            fn visit_str<E: Error>(self, value: &str) -> Result<Self::Value, E> {
+                STANDARD.decode(value).map_err(E::custom)
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut bytes = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+                while let Some(byte) = seq.next_element::<u8>()? {
+                    bytes.push(byte);
+                }
+                Ok(bytes)
+            }
+        }
+
+        deserializer.deserialize_any(EitherShape)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2374,5 +2422,68 @@ mod tests {
             .expect("the just-appended record must resolve");
         let line = bytes.split(|byte| *byte == 10u8).next().unwrap();
         assert_eq!(decode_wal_line(line).unwrap().sequence, record.sequence);
+    }
+
+    #[test]
+    fn a_staged_page_costs_about_a_third_over_its_contents() {
+        // A byte vector serializes as an array of numbers -- about 5 bytes of log per byte of
+        // page -- which is what kept this from being on by default. Encoded, the record should
+        // be close to the page it carries.
+        let page = vec![b'x'; 4096];
+        let record = WriteAheadLogRecord {
+            shard_id: 1,
+            sequence: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: Vec::new(),
+            },
+            metadata: None,
+            staged_pages: vec![StagedPage {
+                object_id: 7,
+                bytes: page.clone(),
+            }],
+        };
+        let encoded = serde_json::to_vec(&record).unwrap();
+        let overhead = encoded.len() as f64 / page.len() as f64;
+        assert!(
+            overhead < 1.6,
+            "a staged page should cost about a third over its contents, got {overhead:.2}x              ({} bytes of record for {} bytes of page)",
+            encoded.len(),
+            page.len()
+        );
+
+        // And it round-trips.
+        let decoded: WriteAheadLogRecord = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded.staged_pages[0].bytes, page);
+    }
+
+    #[test]
+    fn a_record_written_with_the_array_shape_still_loads() {
+        // Records written before the encoding change must keep loading, or a log written by an
+        // earlier build becomes unreadable.
+        let json = br#"{"shard_id":1,"sequence":2,"command":{"kind":"string_set","key":"k","value":[]},"staged_pages":[{"object_id":9,"bytes":[104,105]}]}"#;
+        let decoded: WriteAheadLogRecord = serde_json::from_slice(json).unwrap();
+        assert_eq!(decoded.staged_pages[0].object_id, 9);
+        assert_eq!(decoded.staged_pages[0].bytes, b"hi".to_vec());
+    }
+
+    #[test]
+    fn a_record_with_no_staged_page_is_unchanged_on_disk() {
+        // The gate-off path must serialize exactly as it did before staging existed.
+        let record = WriteAheadLogRecord {
+            shard_id: 1,
+            sequence: 3,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+            metadata: None,
+            staged_pages: Vec::new(),
+        };
+        let encoded = String::from_utf8(serde_json::to_vec(&record).unwrap()).unwrap();
+        assert!(
+            !encoded.contains("staged_pages"),
+            "an empty staged list must be skipped entirely, got {encoded}"
+        );
     }
 }
