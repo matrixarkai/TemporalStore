@@ -2147,11 +2147,25 @@ class _LocalAdapterIngestMixin:
                 if carried:
                     inherited_event_fields[prior_event_id] = carried
         if derive_from_existing_events:
+            # The commit path re-emits one event PER MESSAGE, but the sync-accept path writes ONE
+            # pending event for the whole envelope -- so a 10-message batch arrives here with a
+            # single source_event_id. Skipping the messages past that id silently dropped nine of
+            # ten: the re-emitted event reuses source_event_ids[0], and latest-value compaction
+            # then replaced the full 359-char pending event with a 35-char one holding only the
+            # first message. The text survived in the session summary, but events are what
+            # retrieval returns, so those messages became unreachable.
+            #
+            # Messages beyond the supplied ids therefore get an id derived exactly as the
+            # non-derived branch below does, which keeps the id stable for the same batch and
+            # message position instead of discarding the message.
             for index, message in enumerate(envelope["messages"]):
-                if index >= len(source_event_ids):
-                    continue
                 event_text = f"{message['role']}: {message['content']}"
-                event_rows.append((index, message, event_text, int(source_event_ids[index])))
+                if index < len(source_event_ids):
+                    event_id_hash = int(source_event_ids[index])
+                else:
+                    event_id_hash = stable_hash(f"{batch_id_hash}:event:{index}:{event_text}")
+                    event_hashes.append(event_id_hash)
+                event_rows.append((index, message, event_text, event_id_hash))
         else:
             for index, message in enumerate(envelope["messages"]):
                 event_text = f"{message['role']}: {message['content']}"
