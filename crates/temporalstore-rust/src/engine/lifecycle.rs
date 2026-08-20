@@ -794,6 +794,7 @@ mod batch_truncation_tests {
             sequence: seq,
             command,
             metadata: Some(metadata),
+            staged_pages: Vec::new(),
         }
     }
 

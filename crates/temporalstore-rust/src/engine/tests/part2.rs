@@ -1504,6 +1504,7 @@ fn wal_replay_gap_refuses_load_like_dataloss() {
                 value: b"v".to_vec(),
             },
             metadata: None,
+            staged_pages: Vec::new(),
         })
         .unwrap();
     }

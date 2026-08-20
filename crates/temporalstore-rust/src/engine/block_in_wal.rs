@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Serving a block back out of the WAL record that holds it.
+//! Serving a written page back out of the log record that carries it.
 //!
 //! # The hole this closes
 //!
@@ -15,42 +15,41 @@
 //! The value was in the WAL the whole time. What was missing was a way to say *where*: the
 //! synthetic address is a counter, not a position, so nothing could find the record again.
 //!
-//! # How the address is resolved
+//! # Staging
 //!
-//! An append now reports the log id its record landed at, and a log id survives reclaim -- the
-//! record moves when the log is compacted, but the id keeps naming it. So a write registers the
-//! synthetic offset it minted against the log id of the record carrying it, and a read that
-//! misses the cache resolves through that registration, reads the record, and serves the value
-//! from it.
+//! A page is often derived state rather than the command's own bytes -- a serialized counter
+//! series cannot be rebuilt from the command that bumped it -- so the page itself has to travel
+//! with the write. As a write produces pages it puts them aside here; the append attaches
+//! whatever was staged to the record it writes and reports the log id that record landed at;
+//! and a read resolves the log id and takes its page straight out of the record.
 //!
-//! # Why identity, and why only single-value commands
+//! The buffer is per thread and cleared at the start of every execute, so a command that stages
+//! a page and then fails to append cannot leak it into the next command's record.
 //!
-//! A registration is keyed by the object id the write derived, which the stored address already
-//! carries -- not by when the write happened. Keying on timing (the span of the synthetic
-//! counter across one command) would be exact only while nothing else was writing, and would
-//! quietly stop registering under concurrency. Matching a stored page back to its record by
-//! identity is also what the established design does at commit.
+//! # Addressing
 //!
-//! Only a command whose bytes ARE the stored value registers at all. A page that is derived
-//! state (a serialized series, say) cannot be rebuilt from the record this way, so it is
-//! deliberately not attempted and falls through to the existing behaviour unchanged.
+//! A log id survives reclaim -- the record moves when the log is compacted, but the id keeps
+//! naming it -- which is what makes it usable as an address at all. Registrations are keyed on
+//! the object id the write derived, which the stored address already carries, so a read finds
+//! its record by identity rather than by when the write happened.
 //!
 //! # Lifetime
 //!
-//! The registry is live-path state, like the spill redirects: on reload the WAL is replayed and
-//! every value is re-derived, so it is never persisted, and a shard's entries are dropped when
-//! the shard unloads.
+//! Registrations are live-path state, like the spill redirects: on reload the WAL is replayed
+//! and every page is re-derived, so they are never persisted, and a shard's entries are dropped
+//! when the shard unloads.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use crate::types::{Command, ShardId};
-use crate::wal::{decode_wal_line, LocalWriteAheadLogStore};
+use crate::types::ShardId;
+use crate::wal::{decode_wal_line, LocalWriteAheadLogStore, StagedPage};
 
-/// TS_BLOCK_IN_WAL: serve a cache-missed hot value by reading the WAL record that holds it.
+/// TS_BLOCK_IN_WAL: stage written pages into their log record and serve them back from it.
 ///
-/// Default OFF. It changes where a read gets its bytes, so it wants deliberate enabling even
-/// though it can only turn a MISSING into a hit -- the fallback path is untouched.
+/// Default OFF. It changes what a record carries and where a read gets its bytes, so it wants
+/// deliberate enabling even though it can only turn a MISSING into a hit.
 pub(super) fn enabled() -> bool {
     matches!(
         std::env::var("TS_BLOCK_IN_WAL")
@@ -62,11 +61,40 @@ pub(super) fn enabled() -> bool {
     )
 }
 
-/// (shard, object id) -> the log holding that value, and where in it.
+thread_local! {
+    /// Pages produced by the write currently executing on this thread.
+    static STAGED: RefCell<Vec<StagedPage>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Start a write with nothing staged.
+///
+/// Called before every execute. Without it a command that staged a page and then did not append
+/// -- a rejected write, a read-only command -- would leave the page for the next command to
+/// attach to an unrelated record.
+pub(super) fn begin_write() {
+    STAGED.with(|staged| staged.borrow_mut().clear());
+}
+
+/// Put a page aside for the record this write is about to append.
+pub(super) fn stage(object_id: u64, bytes: &[u8]) {
+    STAGED.with(|staged| {
+        staged.borrow_mut().push(StagedPage {
+            object_id,
+            bytes: bytes.to_vec(),
+        })
+    });
+}
+
+/// Take what this write staged, leaving nothing behind.
+pub(super) fn take_staged() -> Vec<StagedPage> {
+    STAGED.with(|staged| std::mem::take(&mut *staged.borrow_mut()))
+}
+
+/// (shard, object id) -> the log holding that page, and where in it.
 ///
 /// The log handle is stored per entry rather than once per process: two engines in one process
 /// have separate logs, and a single shared handle would resolve one engine's addresses against
-/// the other's log.
+/// the other's log -- reading the wrong bytes, silently.
 type Registration = (LocalWriteAheadLogStore, u64);
 
 fn registry() -> &'static Mutex<HashMap<(ShardId, u64), Registration>> {
@@ -74,55 +102,48 @@ fn registry() -> &'static Mutex<HashMap<(ShardId, u64), Registration>> {
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// The object id this command's value is stored under, if the record can serve it back.
+/// Note that the pages in `record` live in the record at `log_id`.
 ///
-/// Recomputed from the command with the same derivation the write path used, so the two agree
-/// without the write path having to report it.
-pub(super) fn object_id_for(shard_id: ShardId, command: &Command) -> Option<u64> {
-    match command {
-        Command::StringSet { key, .. } => {
-            Some(super::stable_page_object_id(shard_id, "string", key, None))
-        }
-        _ => None,
-    }
-}
-
-/// Note that the value for `object_id` lives in the record at `log_id`.
-///
-/// A later write of the same object replaces the entry, so the registration always names the
-/// record holding the current value rather than a superseded one.
-pub(super) fn register(
+/// A later write of the same object replaces its entry, so a registration always names the
+/// record holding the current page rather than a superseded one.
+pub(super) fn register_record(
     shard_id: ShardId,
-    object_id: u64,
+    staged_pages: &[StagedPage],
     log_id: u64,
     store: &LocalWriteAheadLogStore,
 ) {
+    if staged_pages.is_empty() {
+        return;
+    }
     if let Ok(mut map) = registry().lock() {
-        map.insert((shard_id, object_id), (store.clone(), log_id));
+        for page in staged_pages {
+            map.insert((shard_id, page.object_id), (store.clone(), log_id));
+        }
     }
 }
 
 /// Forget a shard's registrations. Called when the shard unloads; a reload replays the WAL and
-/// re-registers whatever it re-derives.
+/// re-derives whatever it needs.
 pub(super) fn clear_shard(shard_id: ShardId) {
     if let Ok(mut map) = registry().lock() {
         map.retain(|(shard, _), _| *shard != shard_id);
     }
 }
 
-/// Read the value for `object_id` back out of its WAL record.
+/// Read the page for `object_id` back out of the record carrying it.
 ///
 /// `None` means the object was never registered, its record has been reclaimed, or the record
-/// does not carry the value directly -- in every case the caller falls through to the behaviour
-/// it had before, so this can only turn a miss into a hit.
-pub(super) fn read_value(shard_id: ShardId, object_id: u64) -> Option<Vec<u8>> {
+/// does not carry that page -- in every case the caller falls through to the behaviour it had
+/// before, so this can only turn a miss into a hit.
+pub(super) fn read_page(shard_id: ShardId, object_id: u64) -> Option<Vec<u8>> {
     let (store, log_id) = registry().lock().ok()?.get(&(shard_id, object_id))?.clone();
     // Ask for an upper bound; the read clamps to what the file holds.
     let bytes = store.read_at_log_id(shard_id, log_id, 1 << 20).ok()??;
     let line = bytes.split(|byte| *byte == 10u8).next()?;
     let record = decode_wal_line(line).ok()?;
-    match record.command {
-        Command::StringSet { value, .. } => Some(value),
-        _ => None,
-    }
+    record
+        .staged_pages
+        .into_iter()
+        .find(|page| page.object_id == object_id)
+        .map(|page| page.bytes)
 }

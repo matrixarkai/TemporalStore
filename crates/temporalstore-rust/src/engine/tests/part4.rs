@@ -3564,3 +3564,62 @@ fn an_evicted_async_write_is_served_from_its_wal_record() {
         "an acked write must not read back as missing once its cache entry is gone"
     );
 }
+
+/// A page that is DERIVED state must also survive its cache entry being dropped.
+///
+/// A hash field set stores a serialized map, so unlike a plain string the page cannot be
+/// reconstructed from the command that wrote it. Serving it back therefore requires the record
+/// to carry the page itself, which is what staging does.
+#[test]
+fn an_evicted_derived_page_is_served_from_its_wal_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 2,
+            async_storage: true,
+            ..Config::default()
+        },
+    });
+
+    std::env::set_var("TS_BLOCK_IN_WAL", "1");
+    std::env::set_var("TS_HOT_PAGE_SPILL", "0");
+
+    let write = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashSet {
+            key: "derived-page-key".to_string(),
+            field: "f1".to_string(),
+            value: b"derived-page-value".to_vec(),
+        },
+    });
+    assert!(write.status.ok, "the write must be acked: {write:?}");
+
+    // Drop every cached copy: the page now exists only inside its WAL record.
+    engine.cache().invalidate_shard(1).unwrap();
+
+    let read = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashGet {
+            key: "derived-page-key".to_string(),
+            field: "f1".to_string(),
+        },
+    });
+    std::env::remove_var("TS_BLOCK_IN_WAL");
+    std::env::remove_var("TS_HOT_PAGE_SPILL");
+
+    assert_eq!(
+        read.response,
+        CommandResponse::Bytes {
+            value: Some(b"derived-page-value".to_vec())
+        },
+        "a derived page must not read back as missing once its cache entry is gone"
+    );
+}

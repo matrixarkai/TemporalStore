@@ -51,6 +51,22 @@ pub struct WriteAheadLogRecord {
     pub command: Command,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<WriteAheadLogRecordMetadata>,
+    /// Pages this write produced, carried in the record that records the write.
+    ///
+    /// A page is often derived state rather than the command's own bytes, so it cannot be
+    /// rebuilt from the command alone. Carrying it here is what lets a read serve the page back
+    /// out of the log. Empty and skipped for every write that stages nothing, so records
+    /// written without this are byte-identical to before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub staged_pages: Vec<StagedPage>,
+}
+
+/// A page put aside during a write, to be carried in that write's log record.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StagedPage {
+    /// The object the page belongs to, which is what a read has when it comes looking.
+    pub object_id: u64,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -339,7 +355,21 @@ impl LocalWriteAheadLogStore {
         command: Command,
         sync: bool,
     ) -> Result<(WriteAheadLogRecord, u64), WriteAheadLogError> {
-        self.append_with_sync_inner(shard_id, command, sync)
+        self.append_with_sync_inner(shard_id, command, sync, Vec::new())
+    }
+
+    /// Append, carrying pages this write produced, and report the log id it landed at.
+    ///
+    /// The pages travel in the same record as the command, so one durability barrier covers
+    /// both and a read that finds the record finds the page with it.
+    pub fn append_with_sync_staged(
+        &self,
+        shard_id: ShardId,
+        command: Command,
+        sync: bool,
+        staged_pages: Vec<StagedPage>,
+    ) -> Result<(WriteAheadLogRecord, u64), WriteAheadLogError> {
+        self.append_with_sync_inner(shard_id, command, sync, staged_pages)
     }
 
     pub fn append_with_sync(
@@ -348,7 +378,7 @@ impl LocalWriteAheadLogStore {
         command: Command,
         sync: bool,
     ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
-        self.append_with_sync_inner(shard_id, command, sync)
+        self.append_with_sync_inner(shard_id, command, sync, Vec::new())
             .map(|(record, _)| record)
     }
 
@@ -357,6 +387,7 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         command: Command,
         sync: bool,
+        staged_pages: Vec<StagedPage>,
     ) -> Result<(WriteAheadLogRecord, u64), WriteAheadLogError> {
         // In group-commit mode the durable barrier is deferred out of the append
         // critical section (below), so the byte-append records with sync=false and the
@@ -378,6 +409,7 @@ impl LocalWriteAheadLogStore {
                 sequence: seq,
                 metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
                 command,
+                staged_pages,
             };
             let report = append_record_locked(&mut inner, &rec, sync && !group)?;
             inner.stats.last_sequence = report.current_sequence;
@@ -431,6 +463,7 @@ impl LocalWriteAheadLogStore {
             sequence: seq,
             metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
             command,
+            staged_pages: Vec::new(),
         };
         // sync=false: write the bytes, defer the fdatasync to `commit_barrier`. Same as the
         // group branch of append_with_sync. `last_flushed_sequence` is NOT advanced here (the
@@ -511,6 +544,7 @@ impl LocalWriteAheadLogStore {
                     sequence: seq,
                     metadata: Some(metadata),
                     command,
+                    staged_pages: Vec::new(),
                 };
                 // Buffer every record (sync=false); the single durability barrier below covers
                 // the whole batch. append_record_locked keeps last_flushed_sequence honest -- it
@@ -1676,6 +1710,7 @@ mod tests {
                 value: b"v".to_vec(),
             },
             metadata: None,
+            staged_pages: Vec::new(),
         };
         let mut raw = serde_json::to_vec(&make(1, "k1")).unwrap();
         raw.push(b'\n');
@@ -1854,6 +1889,7 @@ mod tests {
             sequence: 8,
             metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
             command,
+            staged_pages: Vec::new(),
         };
 
         let first = store.append_replayed_record(replayed.clone()).unwrap();
