@@ -654,6 +654,16 @@ pub struct ListProxiesResponse {
     pub proxies: Vec<ProxyMetaInfo>,
 }
 
+/// Relabel a registered server's location without disturbing anything else
+/// about it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateServerRequest {
+    pub server_addr: String,
+    /// The new location. May be empty, which means "unlabelled, place anywhere".
+    #[serde(default)]
+    pub location: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StateChangeRequest {
     /// Why the resource is being frozen. Absent from the wire it reads as
@@ -749,6 +759,7 @@ pub enum MetaMutation {
     FreezeTable(DeleteTableRequest),
     UnfreezeTable(DeleteTableRequest),
     FinishLoad(LoadFinishRequest),
+    UpdateServer(UpdateServerRequest),
     FreezeServer(StateChangeRequest),
     UnfreezeServer(StateChangeRequest),
     DropServer(StateChangeRequest),
@@ -1057,6 +1068,7 @@ impl SingleNodeMeta {
                 self.apply_set_proxy_state(request, MetaEntityState::Normal)
                     .status
             }
+            MetaMutation::UpdateServer(request) => self.apply_update_server(request).status,
             MetaMutation::FreezeServer(request) => {
                 self.apply_set_server_state(request, MetaEntityState::Frozen)
                     .status
@@ -1768,6 +1780,214 @@ mod tests {
             2,
             "both replicas landed in the same availability unit: {units:?}"
         );
+    }
+
+    fn relabel_meta(servers: &[(&str, &str)]) -> SingleNodeMeta {
+        let meta = SingleNodeMeta::default();
+        for (addr, location) in servers {
+            assert!(meta
+                .register_server(RegisterServerRequest {
+                    server_addr: addr.to_string(),
+                    node_id: 1,
+                    location: location.to_string(),
+                    binary_version: "v1".to_string(),
+                })
+                .status
+                .ok);
+        }
+        meta
+    }
+
+    fn located(meta: &SingleNodeMeta, addr: &str) -> ServerMetaInfo {
+        meta.list_servers()
+            .servers
+            .into_iter()
+            .find(|server| server.server_addr == addr)
+            .expect("registered")
+    }
+
+    #[test]
+    fn relabelling_changes_the_location_and_nothing_else() {
+        // The whole reason this exists rather than re-registering: a
+        // re-registration resets heartbeat state, reported shards and runtime
+        // load, which is a disruptive way to fix a label.
+        let meta = relabel_meta(&[("node-a", "us-east/dc1/az1/rack1")]);
+        assert!(meta
+            .server_heartbeat(ServerHeartbeatRequest {
+                server_addr: "node-a".to_string(),
+                boot_time_ms: 4_242,
+                binary_version: "v9".to_string(),
+                shard_loads: vec![ShardLoad {
+                    shard_id: 7,
+                    key_count: 11,
+                    memory_bytes: 22,
+                }],
+                shard_stat_loads: Vec::new(),
+                runtime_load: ServerRuntimeLoad {
+                    queue_depth: 3,
+                    ..ServerRuntimeLoad::default()
+                },
+                shard_states: Vec::new(),
+            })
+            .status
+            .ok);
+        let before = located(&meta, "node-a");
+
+        assert!(meta
+            .update_server(UpdateServerRequest {
+                server_addr: "node-a".to_string(),
+                location: "us-east/dc1/az2/rack9".to_string(),
+            })
+            .status
+            .ok);
+
+        let after = located(&meta, "node-a");
+        assert_eq!(after.location, "us-east/dc1/az2/rack9");
+        assert_eq!(after.last_heartbeat_ms, before.last_heartbeat_ms);
+        assert_eq!(after.boot_time_ms, 4_242);
+        assert_eq!(after.binary_version, "v9");
+        assert_eq!(after.shard_loads, before.shard_loads);
+        assert_eq!(after.runtime_load.queue_depth, 3);
+        assert_eq!(after.state, MetaEntityState::Normal);
+    }
+
+    #[test]
+    fn relabelling_bumps_the_topology_version() {
+        // Placement is derived from location on every topology read, so without
+        // this bump clients keep serving from the placement the old label implied.
+        let meta = relabel_meta(&[("node-a", "rack-1")]);
+        let before = meta.stats().topology_version;
+        assert!(meta
+            .update_server(UpdateServerRequest {
+                server_addr: "node-a".to_string(),
+                location: "rack-2".to_string(),
+            })
+            .status
+            .ok);
+        assert!(meta.stats().topology_version > before);
+    }
+
+    #[test]
+    fn relabelling_moves_where_replicas_land() {
+        // The payoff. Four servers crammed into one availability unit can only
+        // spread replicas across racks; relabelling one into a second unit lets
+        // placement reach for the wider split.
+        let meta = relabel_meta(&[
+            ("a1", "us-east/dc1/az1/rack1"),
+            ("a2", "us-east/dc1/az1/rack2"),
+            ("a3", "us-east/dc1/az1/rack3"),
+            ("a4", "us-east/dc1/az1/rack4"),
+        ]);
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        assert!(meta
+            .add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "orders".to_string(),
+                first_shard_id: 1,
+                shard_count: 1,
+                replica_count: 2,
+                partition_version: 0,
+                serving_options: TableServingOptions::default(),
+            })
+            .status
+            .ok);
+
+        let units = |meta: &SingleNodeMeta| {
+            let topology = meta.get_table_topology(GetTableTopologyRequest {
+                namespace: "ns".to_string(),
+                table_name: "orders".to_string(),
+                old_topology_version: 0,
+            });
+            topology.shards[0]
+                .replicas
+                .iter()
+                .map(|addr| Location::parse(&located(meta, addr).location).ancestor(3).to_path())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+
+        // Everything is in az1, so both replicas must share it.
+        assert_eq!(units(&meta).len(), 1);
+
+        assert!(meta
+            .update_server(UpdateServerRequest {
+                server_addr: "a2".to_string(),
+                location: "us-east/dc1/az2/rack1".to_string(),
+            })
+            .status
+            .ok);
+
+        // Now the shard can span two units, and does.
+        assert_eq!(units(&meta).len(), 2);
+    }
+
+    #[test]
+    fn relabelling_rejects_an_unknown_or_frozen_server() {
+        let meta = relabel_meta(&[("node-a", "rack-1")]);
+        assert_eq!(
+            meta.update_server(UpdateServerRequest {
+                server_addr: "ghost".to_string(),
+                location: "rack-2".to_string(),
+            })
+            .status
+            .code,
+            "server_not_found"
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert!(meta.freeze_stale_resources(0).status.ok);
+        assert_eq!(
+            meta.update_server(UpdateServerRequest {
+                server_addr: "node-a".to_string(),
+                location: "rack-2".to_string(),
+            })
+            .status
+            .code,
+            "resource_frozen"
+        );
+    }
+
+    #[test]
+    fn relabelling_to_the_same_location_is_not_modified() {
+        // So a config-reconciler running this on a loop does not bump the
+        // topology version on every pass and invalidate every client's cache.
+        let meta = relabel_meta(&[("node-a", "rack-1")]);
+        let before = meta.stats().topology_version;
+        assert_eq!(
+            meta.update_server(UpdateServerRequest {
+                server_addr: "node-a".to_string(),
+                location: "rack-1".to_string(),
+            })
+            .status
+            .code,
+            "not_modified"
+        );
+        assert_eq!(meta.stats().topology_version, before);
+    }
+
+    #[test]
+    fn a_relabel_survives_mutation_log_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("relabel-mutations.jsonl");
+        {
+            let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+            meta.register_server(RegisterServerRequest {
+                server_addr: "node-a".to_string(),
+                node_id: 1,
+                location: "rack-1".to_string(),
+                binary_version: "v1".to_string(),
+            });
+            assert!(meta
+                .update_server(UpdateServerRequest {
+                    server_addr: "node-a".to_string(),
+                    location: "rack-9".to_string(),
+                })
+                .status
+                .ok);
+        }
+        let recovered = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert_eq!(located(&recovered, "node-a").location, "rack-9");
     }
 
     #[test]

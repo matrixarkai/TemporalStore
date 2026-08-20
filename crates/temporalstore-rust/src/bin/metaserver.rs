@@ -20,7 +20,7 @@ use temporalstore_rust::meta::{
     ProxyHeartbeatRequest, PublishShardSnapshotRequest, RegisterProxyRequest,
     RegisterServerRequest, RegisterShardRequest, SafeModePolicy, ServerHeartbeatRequest,
     ShardCheckOptions, ShardChecker, ShardReassignment, ShardReassignmentReason,
-    SingleNodeMeta, StateChangeRequest, TopologyVersionRequest,
+    SingleNodeMeta, StateChangeRequest, TopologyVersionRequest, UpdateServerRequest,
     UpdateTableRequest,
 };
 use temporalstore_rust::raft::{
@@ -1423,6 +1423,9 @@ fn handle(
                 }
             })
         }
+        ("POST", "/servers/update") => parse_or(&request.body, |req: UpdateServerRequest| {
+            json_response(200, &backend_call!(meta, update_server, req))
+        }),
         ("POST", "/servers/freeze") => parse_or(&request.body, |req: StateChangeRequest| {
             backend_call!(meta, freeze_server, req)
         }),

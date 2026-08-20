@@ -149,6 +149,12 @@ impl MetaRaftCluster {
         }
     }
 
+    pub fn update_server(&self, request: crate::meta::UpdateServerRequest) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::UpdateServer(request)),
+        }
+    }
+
     pub fn freeze_server(&self, request: StateChangeRequest) -> AckResponse {
         AckResponse {
             status: self.mutation_status(MetaMutation::FreezeServer(request)),
