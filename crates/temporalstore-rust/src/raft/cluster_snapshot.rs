@@ -883,7 +883,7 @@ impl RaftCluster {
                 .find(|entry| entry.index == snapshot.last_included_index)
                 .map(|entry| entry.term == snapshot.last_included_term)
                 .unwrap_or(false);
-            if raft_snapshot_boundary_truncate_on() && !boundary_matches {
+            if !boundary_matches {
                 node.log.clear();
             } else {
                 node.log

@@ -461,79 +461,14 @@ impl RaftClusterInner {
             .count())
     }
 
-    pub(super) fn elect_leader(&mut self, node_id: RaftNodeId) -> Result<(), RaftError> {
-        if raft_quorum_election_on() {
-            return self.elect_leader_quorum_round(node_id);
-        }
-        if self.config.prohibits_election {
-            for node in self.nodes.values_mut() {
-                node.pipeline_state.election_rejections =
-                    node.pipeline_state.election_rejections.saturating_add(1);
-            }
-            return Err(RaftError::ElectionProhibited);
-        }
-        let required = self.required_majority();
-        let live = self.live_quorum_participants();
-        if live < required {
-            return Err(RaftError::NoMajority { live, required });
-        }
-        if let Some((live, required)) = self.joint_majority_failure() {
-            return Err(RaftError::NoMajority { live, required });
-        }
-        if !self
-            .nodes
-            .get(&node_id)
-            .map(|node| node.alive && node.replica_role.can_be_leader())
-            .unwrap_or(false)
-        {
-            return Err(RaftError::NodeNotFound(node_id));
-        }
-        if !self.candidate_log_would_win(node_id)? {
-            let candidate_commit_index = self
-                .nodes
-                .get(&node_id)
-                .map(|node| node.commit_index)
-                .unwrap_or_default();
-            return Err(RaftError::ReplicaLagging {
-                replica_id: node_id,
-                replica_commit_index: candidate_commit_index,
-                leader_commit_index: self.leader_commit_index(),
-            });
-        }
-        self.leader_id = node_id;
-        let next_term = self
-            .nodes
-            .values()
-            .map(|node| node.current_term)
-            .max()
-            .unwrap_or_default()
-            + 1;
-        for node in self.nodes.values_mut() {
-            node.role = if node.id == node_id {
-                RaftRole::Leader
-            } else {
-                RaftRole::Follower
-            };
-            node.current_term = next_term;
-            node.voted_for = if node.id == node_id {
-                Some(node_id)
-            } else {
-                None
-            };
-        }
-        self.election_elapsed_tick = 0;
-        self.renew_leader_lease();
-        Ok(())
-    }
-
     /// R5: promote `node_id` only after a DURABLE per-term quorum RequestVote round grants it a
-    /// majority — instead of promoting from a local snapshot. This mirrors the receiver rules
+    /// majority. This mirrors the receiver rules
     /// already implemented in `receive_vote_request` (single vote per term via `voted_for`,
     /// leader-completeness log-freshness), but drives them across every voter and gates
     /// promotion on the collected grant count. A partitioned candidate whose granting voters
     /// fall short of majority cannot elect, so two disjoint partitions can never each promote a
     /// leader for the same term.
-    fn elect_leader_quorum_round(&mut self, node_id: RaftNodeId) -> Result<(), RaftError> {
+    pub(super) fn elect_leader(&mut self, node_id: RaftNodeId) -> Result<(), RaftError> {
         if self.config.prohibits_election {
             for node in self.nodes.values_mut() {
                 node.pipeline_state.election_rejections =

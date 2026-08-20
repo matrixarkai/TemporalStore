@@ -187,9 +187,14 @@ pub const DATA_RAFT_CODEC_VERSION: u32 = 1;
 const DATA_RAFT_LOG_HEADER_LEN: usize = 56;
 const DATA_RAFT_COMMAND_HEADER_LEN: usize = 40;
 
-/// Read a boolean gate env var (`1`/`true`/`yes`/`on`). Every replication-safety hardening in
-/// this module is gated OFF by default so the shipped behavior stays byte-identical until the
-/// operator opts in; the gated tests set the flag explicitly.
+/// Read a boolean gate env var (`1`/`true`/`yes`/`on`), default OFF.
+///
+/// The replication-SAFETY properties (quorum election, durable pre-vote persistence, applied-read
+/// freshness, §7 snapshot-boundary truncation) are no longer gated -- they are what makes this
+/// Raft, not options, and shipping them dark meant the default build was the only configuration
+/// nobody tested. What remains behind this helper is genuinely optional: an optimization whose
+/// cost profile an operator may not want, or a hardening that is not yet complete enough to be
+/// the default. Each surviving gate documents which of the two it is.
 fn raft_env_flag_on(name: &str) -> bool {
     matches!(
         std::env::var(name)
@@ -215,34 +220,18 @@ fn raft_env_flag_default_on(name: &str) -> bool {
     )
 }
 
-/// R8: §7 snapshot-install boundary-term truncation. When on, a snapshot install whose
-/// boundary entry does not term-match the local log discards the ENTIRE log instead of
-/// retaining a possibly-divergent tail.
-fn raft_snapshot_boundary_truncate_on() -> bool {
-    raft_env_flag_on("TS_RAFT_SNAPSHOT_BOUNDARY_TRUNCATE")
-}
-
-/// R9: durably persist the incremented term + a self-vote before advertising a RequestVote.
-fn raft_persist_vote_before_request_on() -> bool {
-    raft_env_flag_on("TS_RAFT_PERSIST_VOTE_BEFORE_REQUEST")
-}
-
-/// R3: gate reads on `applied_index` (reject/await unapplied-but-committed state) rather than
-/// bounding on commit-lag alone.
-fn raft_applied_read_safety_on() -> bool {
-    raft_env_flag_on("TS_RAFT_APPLIED_READ_SAFETY")
-}
-
 /// R4: after an election, withhold read-index/lease reads until the new leader has committed a
 /// no-op entry in its own term (leader-ready barrier).
+///
+/// STILL GATED, deliberately. Raft releases this barrier by having a new leader append a no-op
+/// entry at its own term the moment it is elected (§8). This implementation never appends one:
+/// `leader_has_committed_current_term` can only be satisfied by a CLIENT write landing at the new
+/// term. Enabling the gate unconditionally would therefore reject every leader-served
+/// read-index/lease read from the end of an election until the next write commits -- indefinitely
+/// on an idle cluster. Promoting this gate requires appending the election no-op first, which is a
+/// new `Command` variant and thus a wire-format change for `#[serde(tag = "kind")]` peers.
 fn raft_leader_ready_barrier_on() -> bool {
     raft_env_flag_on("TS_RAFT_LEADER_READY_BARRIER")
-}
-
-/// R5: require a durable per-term quorum RequestVote round (a candidate must collect a
-/// majority of granted votes) before promotion, instead of promoting from a local view.
-fn raft_quorum_election_on() -> bool {
-    raft_env_flag_on("TS_RAFT_QUORUM_ELECTION")
 }
 
 /// S2: snapshot the engine STATE IMAGE (exported index + page slabs) instead of every committed

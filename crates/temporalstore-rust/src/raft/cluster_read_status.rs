@@ -59,7 +59,7 @@ impl RaftCluster {
         // commit_index == leader_commit while its state machine has only applied a prefix of
         // that (applied_index < commit_index), which would serve HALF-APPLIED state as fresh.
         // Gate the read on applied_index reaching the leader's committed frontier.
-        if raft_applied_read_safety_on() && node.applied_index < leader_commit_index {
+        if node.applied_index < leader_commit_index {
             return Err(RaftError::ReplicaApplyLagging {
                 replica_id: node_id,
                 replica_applied_index: node.applied_index,
@@ -651,5 +651,38 @@ impl RaftCluster {
             .ok_or(RaftError::NodeNotFound(node_id))?;
         node.applied_index = applied_index;
         Ok(())
+    }
+
+    /// Replace a node's in-memory log wholesale. Test-only: lets a case construct a divergent
+    /// log tail (entries from a superseded branch) that cannot be produced through the normal
+    /// append path, which is what the §7 snapshot-boundary truncation has to discard.
+    #[cfg(test)]
+    pub(crate) fn set_node_log_for_test(
+        &self,
+        node_id: RaftNodeId,
+        entries: Vec<RaftLogEntry>,
+    ) -> Result<(), RaftError> {
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        let node = inner
+            .nodes
+            .get_mut(&node_id)
+            .ok_or(RaftError::NodeNotFound(node_id))?;
+        node.log = entries;
+        Ok(())
+    }
+
+    /// The `(index, term)` pairs currently in a node's log, in log order. Test-only observation
+    /// point for truncation behavior.
+    #[cfg(test)]
+    pub(crate) fn node_log_index_terms_for_test(
+        &self,
+        node_id: RaftNodeId,
+    ) -> Result<Vec<(u64, u64)>, RaftError> {
+        let inner = self.inner.read().expect("raft cluster lock poisoned");
+        let node = inner
+            .nodes
+            .get(&node_id)
+            .ok_or(RaftError::NodeNotFound(node_id))?;
+        Ok(node.log.iter().map(|e| (e.index, e.term)).collect())
     }
 }

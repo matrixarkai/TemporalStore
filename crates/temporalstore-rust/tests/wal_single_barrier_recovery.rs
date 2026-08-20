@@ -65,12 +65,11 @@ fn recover_ok(root: &str, keys: &str) {
 }
 
 // Single-barrier helpers: the TRUE single barrier (per-write data-page fdatasync also deferred)
-// with base-only recovery -- now the DEFAULT. TS_WAL_SINGLE_BARRIER=1 is left set as an explicit
-// intent marker (it resolves to the same default behavior). Each phase runs in its own subprocess.
+// with base-only recovery -- the unconditional write/recovery path. Each phase runs in its own
+// subprocess.
 fn populate_sb(root: &str, keys: &str, flush_at: Option<&str>) {
     let mut cmd = Command::new(bin());
-    cmd.env("TS_WAL_SINGLE_BARRIER", "1")
-        .args(["--mode", "populate", "--root", root, "--keys", keys]);
+    cmd.args(["--mode", "populate", "--root", root, "--keys", keys]);
     if let Some(f) = flush_at {
         cmd.args(["--flush-at", f]);
     }
@@ -83,7 +82,6 @@ fn populate_sb(root: &str, keys: &str, flush_at: Option<&str>) {
 
 fn powerloss_sb(root: &str, scope: &str) {
     let out = Command::new(bin())
-        .env("TS_WAL_SINGLE_BARRIER", "1")
         .args(["--mode", "powerloss", "--root", root, "--scope", scope])
         .output()
         .expect("powerloss_sb should run");
@@ -96,7 +94,6 @@ fn powerloss_sb(root: &str, scope: &str) {
 
 fn recover_sb_ok(root: &str, keys: &str) {
     let out = Command::new(bin())
-        .env("TS_WAL_SINGLE_BARRIER", "1")
         .args(["--mode", "recover", "--root", root, "--keys", keys])
         .output()
         .expect("recover_sb should run");
@@ -129,8 +126,7 @@ fn single_barrier_data_page_loss_after_dump_rebuilds_from_wal() {
 
 fn populate_counter_sb(root: &str, incrs: &str, flush_at: Option<&str>) {
     let mut cmd = Command::new(bin());
-    cmd.env("TS_WAL_SINGLE_BARRIER", "1")
-        .args(["--mode", "populate-counter", "--root", root, "--keys", incrs]);
+    cmd.args(["--mode", "populate-counter", "--root", root, "--keys", incrs]);
     if let Some(f) = flush_at {
         cmd.args(["--flush-at", f]);
     }
@@ -140,7 +136,6 @@ fn populate_counter_sb(root: &str, incrs: &str, flush_at: Option<&str>) {
 
 fn recover_counter_sb_ok(root: &str, expected: &str) {
     let out = Command::new(bin())
-        .env("TS_WAL_SINGLE_BARRIER", "1")
         .args(["--mode", "recover-counter", "--root", root, "--keys", expected])
         .output()
         .expect("recover-counter should run");
@@ -178,7 +173,6 @@ fn single_barrier_full_page_loss_no_dump_rebuilds_from_wal() {
 
 fn populate_feature(root: &str) {
     let out = Command::new(bin())
-        .env("TS_WAL_SINGLE_BARRIER", "1")
         .env("TS_GROUP_COMMIT", "1")
         .args(["--mode", "populate-feature", "--root", root])
         .output()
@@ -191,7 +185,6 @@ fn populate_feature(root: &str) {
 
 fn recover_feature_ok(root: &str) {
     let out = Command::new(bin())
-        .env("TS_WAL_SINGLE_BARRIER", "1")
         .args(["--mode", "recover-feature", "--root", root])
         .output()
         .expect("recover-feature should run");
