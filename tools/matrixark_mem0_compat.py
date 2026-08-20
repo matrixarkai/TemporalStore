@@ -70,7 +70,7 @@ def _reshape_search_results(res: Json) -> Json:
     ``ref_hash`` / a hash of the text) and ``metadata`` carries the remaining ref fields. Unknown
     shapes yield ``{"results": []}``.
 
-    TWO pack shapes are accepted, because this is where mem0 parity silently broke: the shim was
+    TWO pack shapes are accepted, because this is where the mem0 surface silently broke: the shim was
     written against flat ``selected_refs``, but a ContextPack now serves its refs GROUPED --
     ``groups: [{"type": "event"|"entity", "n": N, "items": [{"text", ...}]}]`` -- and no key named
     ``selected_refs`` appears at all. Every ``Memory.search()`` call therefore returned
