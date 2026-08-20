@@ -144,6 +144,7 @@ fn context_models_match_keys_timeline_pages_and_filters() {
         valid_from_ms: 1_000,
         confidence: 0.97,
         source_event_hashes: vec![5],
+        vector: Vec::new(),
     };
     let entity_upsert = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -207,6 +208,7 @@ fn context_models_match_keys_timeline_pages_and_filters() {
         source_ref: "src://a".to_string(),
         related_node_hashes: vec![42],
         compact_attrs: vec![1, 2, 3],
+        vector: Vec::new(),
     };
     let mut event_b = event_a.clone();
     event_b.event_id_hash = 6;
@@ -327,6 +329,7 @@ fn context_models_match_keys_timeline_pages_and_filters() {
         source_ref: "cursor://701".to_string(),
         related_node_hashes: vec![42],
         compact_attrs: Vec::new(),
+        vector: Vec::new(),
     };
     let extracted = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -409,6 +412,7 @@ fn context_models_match_keys_timeline_pages_and_filters() {
                 source_ref: "cursor://701".to_string(),
                 related_node_hashes: vec![43],
                 compact_attrs: Vec::new(),
+                vector: Vec::new(),
             },
             indexes: ContextExtractedEventIndexes {
                 scope_hash: 3001,
@@ -558,6 +562,7 @@ fn context_query_events_applies_limit_after_filter_like_native() {
         source_ref: "s".to_string(),
         related_node_hashes: vec![42],
         compact_attrs: vec![],
+        vector: Vec::new(),
     };
     // 100 low-confidence events at earlier timestamps, then 5 high-confidence ones later.
     for i in 0..100u64 {
@@ -773,6 +778,7 @@ fn context_tree_embedding_summary_and_compression_match_round_trip() {
                     level: 1,
                     text: text.to_string(),
                     valid_from_ms,
+                    vector: Vec::new(),
                 },
             },
         });
@@ -893,6 +899,7 @@ fn context_temporal_compression_builds_replayable_summary_without_deleting_sourc
                     source_ref: String::new(),
                     related_node_hashes: Vec::new(),
                     compact_attrs: Vec::new(),
+                    vector: Vec::new(),
                 },
                 first_write_only: false,
                 cold_storage: false,
@@ -988,6 +995,7 @@ fn context_temporal_compression_and_raw_backfill_use_cold_storage_without_cache_
                     source_ref: "backfill://raw-query".to_string(),
                     related_node_hashes: Vec::new(),
                     compact_attrs: Vec::new(),
+                    vector: Vec::new(),
                 },
                 first_write_only: false,
                 cold_storage: true,
@@ -1334,6 +1342,7 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
                 source_ref: String::new(),
                 related_node_hashes: Vec::new(),
                 compact_attrs: Vec::new(),
+                vector: Vec::new(),
             },
             first_write_only: false,
             cold_storage: false,
@@ -1355,6 +1364,7 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
                 level: 1,
                 text: "compact summary".to_string(),
                 valid_from_ms: 52,
+                vector: Vec::new(),
             },
         },
         Command::CommonDelete {

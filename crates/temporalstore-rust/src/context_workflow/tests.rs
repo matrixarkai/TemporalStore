@@ -1755,6 +1755,7 @@ fn upsert_raw_context_node(
                     source_ref: String::new(),
                     related_node_hashes: Vec::new(),
                     compact_attrs: Vec::new(),
+                    vector: Vec::new(),
                 },
                 first_write_only: false,
                 cold_storage: false,

@@ -1571,6 +1571,7 @@ pub(crate) fn extract_context_gated(
             source_ref: String::new(),
             related_node_hashes: Vec::new(),
             compact_attrs: Vec::new(),
+            vector: Vec::new(),
         },
     );
     let index_ref = ContextIndexRef {
@@ -1594,12 +1595,14 @@ pub(crate) fn extract_context_gated(
         level: 1,
         text: l0.clone(),
         valid_from_ms: timestamp_ms,
+        vector: Vec::new(),
     };
     let summary_l1 = emit_l1.then(|| ContextSummary {
         node_hash,
         level: 2,
         text: l1.clone(),
         valid_from_ms: timestamp_ms,
+        vector: Vec::new(),
     });
     let mut embedding_inputs: Vec<(&str, u64, u32, &str)> =
         vec![("node_l0", node_hash, 1, l0.as_str())];
@@ -2612,6 +2615,7 @@ fn empty_event() -> ContextEvent {
         source_ref: String::new(),
         related_node_hashes: Vec::new(),
         compact_attrs: Vec::new(),
+        vector: Vec::new(),
     }
 }
 
