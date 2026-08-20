@@ -95,6 +95,17 @@ impl ProxyService {
                 }
             }
             Ok(response) => {
+                // The metaserver REACHED us and said no -- the proxy was dropped, re-scoped,
+                // or is otherwise not the owner of what it thinks it owns. Drop the local
+                // namespace/config authority so it stops acting on a grant that has been
+                // withdrawn; the next accepted heartbeat hands back the real one, and until
+                // then reporting an empty namespace is what makes the metaserver mark the
+                // config changed and re-send it.
+                //
+                // Note this is the EXPLICIT-rejection branch only. A transport failure lands
+                // in `Err` below and deliberately changes nothing: an unreachable or slow
+                // metaserver must not cost every proxy its configuration.
+                self.clear_config_authority();
                 self.record_service_discovery_error(&response.status);
                 response
             }
@@ -117,8 +128,29 @@ impl ProxyService {
         let service = self.clone();
         let interval = Duration::from_millis(interval_ms.max(1));
         thread::spawn(move || loop {
+            let started = std::time::Instant::now();
             let _ = service.heartbeat_to_meta();
-            thread::sleep(interval);
+            let elapsed = started.elapsed();
+            // Fixed RATE, not a fixed gap. Sleeping a whole interval AFTER the beat makes the
+            // real period `interval + beat_duration`, so the heartbeat rate degrades exactly
+            // when the metaserver is slow -- which is precisely when the liveness margin
+            // matters. With a 5s control-plane budget one slow beat would stretch a 10s
+            // interval to 15s and eat the margin the metaserver allows before declaring this
+            // proxy dead.
+            //
+            // A beat slower than the whole interval sleeps not at all, matching the reference
+            // loop. That does not hammer a struggling metaserver: the request rate is bounded
+            // by the beat duration itself, which is what is already slow.
+            if let Some(remaining) = interval.checked_sub(elapsed) {
+                thread::sleep(remaining);
+            } else {
+                service
+                    .inner
+                    .stats
+                    .write()
+                    .expect("proxy stats lock poisoned")
+                    .heartbeat_slow_total += 1;
+            }
         })
     }
 
@@ -171,6 +203,21 @@ impl ProxyService {
             options.drop_percent = response.drop_percent;
         }
         let _ = self.update_options_report(options);
+    }
+
+    /// Forget the namespace/config this proxy believes it was granted. Called when the
+    /// metaserver explicitly rejects a heartbeat. Serving policy is deliberately left alone:
+    /// the metaserver drives that through `serving_mode`, and a rejection is not by itself an
+    /// instruction to start or stop serving.
+    pub(super) fn clear_config_authority(&self) {
+        let options = self.options();
+        if options.namespace.is_empty() && options.config_version == 0 {
+            return;
+        }
+        let mut cleared = options;
+        cleared.namespace = String::new();
+        cleared.config_version = 0;
+        let _ = self.update_options_report(cleared);
     }
 
     pub(super) fn record_service_discovery_heartbeat(&self, status: &Status) {
