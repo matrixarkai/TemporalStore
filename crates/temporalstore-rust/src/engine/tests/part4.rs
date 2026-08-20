@@ -1308,9 +1308,13 @@ fn bucket_dump_manifest_prune_keeps_latest_parent_chain_and_removes_obsolete_for
     .unwrap();
 
     let plan = engine.bucket_dump_manifest_prune_plan(1);
-    assert!(plan.retained_manifest_ids.contains(&parent.manifest_id));
+    // Retention keeps the NEWEST manifest and nothing else. The parent is a complete,
+    // self-contained index that nothing recovers through, so with no cursor pinning it, it is
+    // prunable just like the off-chain fork.
     assert!(plan.retained_manifest_ids.contains(&child.manifest_id));
-    assert_eq!(plan.prunable_manifest_ids, vec![fork.manifest_id.clone()]);
+    assert!(!plan.retained_manifest_ids.contains(&parent.manifest_id));
+    assert!(plan.prunable_manifest_ids.contains(&parent.manifest_id));
+    assert!(plan.prunable_manifest_ids.contains(&fork.manifest_id));
     assert_eq!(
         plan.prunable_marker_manifest_ids,
         vec![fork.manifest_id.clone()]
@@ -1332,15 +1336,22 @@ fn bucket_dump_manifest_prune_keeps_latest_parent_chain_and_removes_obsolete_for
     let report = lifecycle
         .manifest_prune_report
         .expect("lifecycle should apply manifest prune");
-    assert_eq!(report.removed_manifest_ids, vec![fork.manifest_id.clone()]);
+    // Retention keeps the newest manifest only, so the obsolete fork AND the older parent are
+    // both removed -- with no follower cursor or snapshot ref supplied, nothing pins them.
+    assert!(report.removed_manifest_ids.contains(&fork.manifest_id));
+    assert!(report.removed_manifest_ids.contains(&parent.manifest_id));
     assert_eq!(report.removed_marker_files, 1);
-    assert_eq!(
-        lifecycle.manifest_prune_plan.prunable_manifest_ids,
-        vec![fork.manifest_id.clone()]
-    );
-    assert!(bucket_dump_manifest_path(&engine.index_dir, 1, &parent.manifest_id).exists());
-    assert!(bucket_dump_manifest_path(&engine.index_dir, 1, &child.manifest_id).exists());
+    assert!(!bucket_dump_manifest_path(&engine.index_dir, 1, &parent.manifest_id).exists());
     assert!(!bucket_dump_manifest_path(&engine.index_dir, 1, &fork.manifest_id).exists());
+    let surviving = list_bucket_dump_manifests_at(&engine.index_dir, 1).unwrap();
+    assert_eq!(
+        surviving.len(),
+        1,
+        "only the newest manifest survives, got {surviving:?}"
+    );
+    // Pruning detaches the survivor from its removed parent, so a dangling parent link keeps
+    // meaning corruption rather than ordinary history.
+    assert!(surviving[0].parent_manifest_id.is_none());
 }
 
 #[test]
@@ -1465,10 +1476,11 @@ fn bucket_dump_manifest_prune_is_blocked_by_lagging_follower_cursor() {
     engine.persist_bucket_dump_manifest(&fork).unwrap();
 
     let no_cursor = engine.bucket_dump_manifest_prune_plan(1);
-    assert_eq!(
-        no_cursor.prunable_manifest_ids,
-        vec![fork.manifest_id.clone()]
-    );
+    // Without a cursor only the newest manifest is retained, so both the older parent and the
+    // off-chain fork are prunable.
+    assert!(no_cursor.prunable_manifest_ids.contains(&fork.manifest_id));
+    assert!(no_cursor.prunable_manifest_ids.contains(&parent.manifest_id));
+    assert!(!no_cursor.prunable_manifest_ids.contains(&child.manifest_id));
 
     let lagging_cursor = BucketDumpFollowerReplayCursor {
         follower_id: "follower-a".to_string(),
@@ -1478,11 +1490,13 @@ fn bucket_dump_manifest_prune_is_blocked_by_lagging_follower_cursor() {
     };
     let blocked =
         engine.bucket_dump_manifest_prune_plan_with_follower_cursors(1, vec![lagging_cursor.clone()]);
-    assert!(blocked.prunable_manifest_ids.is_empty());
-    assert!(blocked.retained_manifest_ids.contains(&fork.manifest_id));
+    // The lagging cursor pins the manifest it would replay from, so that manifest is retained
+    // and reported as the thing blocking the prune.
     assert_eq!(blocked.follower_blocks.len(), 1);
     assert_eq!(blocked.follower_blocks[0].follower_id, "follower-a");
-    assert_eq!(blocked.follower_blocks[0].manifest_id, fork.manifest_id);
+    let anchored = blocked.follower_blocks[0].manifest_id.clone();
+    assert!(blocked.retained_manifest_ids.contains(&anchored));
+    assert!(!blocked.prunable_manifest_ids.contains(&anchored));
     assert!(blocked
         .reasons
         .contains(&"follower_cursor_blocks_prune".to_string()));
@@ -1495,10 +1509,11 @@ fn bucket_dump_manifest_prune_is_blocked_by_lagging_follower_cursor() {
             ..lagging_cursor
         }],
     );
-    assert_eq!(
-        caught_up.prunable_manifest_ids,
-        vec![fork.manifest_id.clone()]
-    );
+    // Once the cursor catches up to the newest manifest it pins nothing older, so every older
+    // manifest -- the parent and the off-chain fork -- becomes prunable again.
+    assert!(caught_up.prunable_manifest_ids.contains(&fork.manifest_id));
+    assert!(caught_up.prunable_manifest_ids.contains(&parent.manifest_id));
+    assert!(!caught_up.prunable_manifest_ids.contains(&child.manifest_id));
 }
 
 #[test]
@@ -1536,10 +1551,10 @@ fn bucket_dump_manifest_prune_is_blocked_by_raft_snapshot_reference() {
     engine.persist_bucket_dump_manifest(&fork).unwrap();
 
     let no_snapshot = engine.bucket_dump_manifest_prune_plan(1);
-    assert_eq!(
-        no_snapshot.prunable_manifest_ids,
-        vec![fork.manifest_id.clone()]
-    );
+    // Same as the follower case: only the newest manifest is retained without a pin.
+    assert!(no_snapshot.prunable_manifest_ids.contains(&fork.manifest_id));
+    assert!(no_snapshot.prunable_manifest_ids.contains(&parent.manifest_id));
+    assert!(!no_snapshot.prunable_manifest_ids.contains(&child.manifest_id));
 
     let snapshot_ref = BucketDumpRaftSnapshotRef {
         snapshot_id: "raft-snapshot-0007".to_string(),
@@ -1554,8 +1569,10 @@ fn bucket_dump_manifest_prune_is_blocked_by_raft_snapshot_reference() {
         Vec::<BucketDumpFollowerReplayCursor>::new(),
         vec![snapshot_ref.clone()],
     );
-    assert!(blocked.prunable_manifest_ids.is_empty());
+    // The snapshot ref pins the manifest it would install from; anything else older is still
+    // prunable, since only the newest manifest is retained unconditionally.
     assert!(blocked.retained_manifest_ids.contains(&fork.manifest_id));
+    assert!(!blocked.prunable_manifest_ids.contains(&fork.manifest_id));
     assert_eq!(blocked.raft_snapshot_blocks.len(), 1);
     assert_eq!(
         blocked.raft_snapshot_blocks[0].snapshot_id,
@@ -1578,10 +1595,11 @@ fn bucket_dump_manifest_prune_is_blocked_by_raft_snapshot_reference() {
             ..snapshot_ref
         }],
     );
-    assert_eq!(
-        advanced.prunable_manifest_ids,
-        vec![fork.manifest_id.clone()]
-    );
+    // Once the snapshot ref advances to the newest manifest it pins nothing older, so both the
+    // parent and the off-chain fork become prunable again.
+    assert!(advanced.prunable_manifest_ids.contains(&fork.manifest_id));
+    assert!(advanced.prunable_manifest_ids.contains(&parent.manifest_id));
+    assert!(!advanced.prunable_manifest_ids.contains(&child.manifest_id));
 }
 
 // shared-corpus: storage_wal_index_gc_generation_retention

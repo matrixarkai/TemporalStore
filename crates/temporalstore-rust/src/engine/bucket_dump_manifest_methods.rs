@@ -415,6 +415,32 @@ impl TemporalEngine {
                 removed_manifest_ids.push(manifest_id.clone());
             }
         }
+        // Pruning an ancestor leaves whatever survives pointing at a manifest that is no
+        // longer there, which `bucket_dump_manifest_chain_issues` would report as
+        // `missing_parent_manifest` -- indistinguishable from real corruption. Detach the
+        // survivors whose parent we just removed, so a dangling link keeps meaning exactly one
+        // thing. Nothing reconstructs through the chain (each manifest embeds a complete
+        // index), so dropping the link loses no recovery capability.
+        if !removed_manifest_ids.is_empty() {
+            let removed = removed_manifest_ids.iter().cloned().collect::<BTreeSet<_>>();
+            if let Ok(surviving) = list_bucket_dump_manifests_at(&self.index_dir, shard_id) {
+                for mut manifest in surviving {
+                    let parent_pruned = manifest
+                        .parent_manifest_id
+                        .as_ref()
+                        .is_some_and(|parent| removed.contains(parent));
+                    if !parent_pruned {
+                        continue;
+                    }
+                    manifest.parent_manifest_id = None;
+                    manifest.dump_generation_id = bucket_dump_generation_id(&manifest);
+                    if let Ok(checksum) = bucket_dump_manifest_checksum(&manifest) {
+                        manifest.checksum = checksum;
+                        let _ = self.persist_bucket_dump_manifest(&manifest);
+                    }
+                }
+            }
+        }
         let mut removed_marker_files = 0usize;
         if let Ok(marker_files) = bucket_dump_install_marker_files_at(&self.index_dir, shard_id) {
             let prunable_marker_manifest_ids = plan
