@@ -2798,6 +2798,9 @@ fn verify_metaserver_scheduler_control_plane() {
     let frozen = meta.freeze_server(temporalstore_rust::StateChangeRequest {
         endpoint: "127.0.0.1:27113".to_string(),
         freeze_cooldown_ms: 30_000,
+        // The wire default, which is what this case carried before the field existed --
+        // naming it keeps the behaviour rather than reclassifying it as an operator freeze.
+        reason: Default::default(),
     });
     assert!(frozen.status.ok, "{frozen:?}");
     let safe_mode = meta.safe_mode_report();
