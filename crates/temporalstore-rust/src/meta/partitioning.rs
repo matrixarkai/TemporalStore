@@ -84,6 +84,11 @@ pub(super) fn build_shards(state: &MetaState, table: &TableMetaInfo) -> Vec<Tabl
                 &right.server_addr,
             ))
     });
+    // Every live server's parsed location, used to size the separation ladder.
+    let candidate_locations = normal_servers
+        .iter()
+        .map(|candidate| Location::parse(&candidate.location))
+        .collect::<Vec<_>>();
     let bucket_count = 1_u64 << 30;
     let mut shards = Vec::new();
     for offset in 0..table.shard_count {
@@ -94,7 +99,11 @@ pub(super) fn build_shards(state: &MetaState, table: &TableMetaInfo) -> Vec<Tabl
         let mut seen_replicas = BTreeSet::new();
         let mut used_locations = BTreeSet::new();
         let mut used_hosts = BTreeSet::new();
+        let mut placed_locations: Vec<Location> = Vec::new();
         if let Some(location) = state.shards.get(&shard_id) {
+            if let Some(server) = state.servers.get(&location.server_addr) {
+                placed_locations.push(Location::parse(&server.location));
+            }
             push_replica(
                 state,
                 &mut replicas,
@@ -104,28 +113,42 @@ pub(super) fn build_shards(state: &MetaState, table: &TableMetaInfo) -> Vec<Tabl
                 &location.server_addr,
             );
         }
-        for candidate in &normal_servers {
+        // Spread replicas as far apart as the topology allows: try the widest
+        // separation first (a different top-level domain) and only narrow when
+        // nothing qualifies. Comparing whole location strings, as this used to,
+        // treats two racks in one availability unit as "different locations" and
+        // happily puts both replicas of a shard inside it.
+        for separation in separation_ladder(&candidate_locations) {
             if replicas.len() >= table.replica_count as usize {
                 break;
             }
-            if seen_replicas.contains(&candidate.server_addr) {
-                continue;
+            for candidate in &normal_servers {
+                if replicas.len() >= table.replica_count as usize {
+                    break;
+                }
+                if seen_replicas.contains(&candidate.server_addr) {
+                    continue;
+                }
+                let candidate_location = Location::parse(&candidate.location);
+                if !separated_from(&placed_locations, &candidate_location, separation) {
+                    continue;
+                }
+                let host = server_host(&candidate.server_addr);
+                if !host.is_empty() && used_hosts.contains(&host) {
+                    continue;
+                }
+                if !candidate_location.is_empty() {
+                    placed_locations.push(candidate_location);
+                }
+                push_replica(
+                    state,
+                    &mut replicas,
+                    &mut seen_replicas,
+                    &mut used_locations,
+                    &mut used_hosts,
+                    &candidate.server_addr,
+                );
             }
-            if !candidate.location.is_empty() && used_locations.contains(&candidate.location) {
-                continue;
-            }
-            let host = server_host(&candidate.server_addr);
-            if !host.is_empty() && used_hosts.contains(&host) {
-                continue;
-            }
-            push_replica(
-                state,
-                &mut replicas,
-                &mut seen_replicas,
-                &mut used_locations,
-                &mut used_hosts,
-                &candidate.server_addr,
-            );
         }
         for candidate in &normal_servers {
             if replicas.len() >= table.replica_count as usize {

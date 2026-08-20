@@ -23,6 +23,7 @@ mod table_ops;
 mod topology_helpers;
 mod auto_rebalance;
 mod failure_detector;
+mod location;
 mod placement_rebalance;
 mod raft_failover;
 mod shard_check;
@@ -40,6 +41,7 @@ pub use self::failure_detector::{
 pub use self::placement_rebalance::{
     compute_placement_aware_rebalance, PlacementTarget, ShardPlacement,
 };
+pub use self::location::{separated_from, separation_ladder, Location};
 pub use self::raft_failover::{compute_raft_failover_triggers, RaftFailoverTrigger};
 pub use self::shard_check::{
     ShardCheckOptions, ShardCheckReport, ShardChecker, ShardDivergence,
@@ -1421,6 +1423,74 @@ mod tests {
             .find(|server| server.server_addr == "node-a")
             .expect("registered");
         assert!(!server.reboot_detected);
+    }
+
+    #[test]
+    fn replicas_spread_across_availability_units_not_just_racks() {
+        // Four servers, two availability units, two racks each. Comparing whole
+        // location strings makes rack1 and rack2 of az1 look like "different
+        // locations", so both replicas of a shard land inside az1 and losing
+        // that unit loses both. Placement must reach for az2 instead.
+        let meta = SingleNodeMeta::default();
+        for (addr, location) in [
+            ("a1", "us-east/dc1/az1/rack1"),
+            ("a2", "us-east/dc1/az1/rack2"),
+            ("b1", "us-east/dc1/az2/rack1"),
+            ("b2", "us-east/dc1/az2/rack2"),
+        ] {
+            assert!(meta
+                .register_server(RegisterServerRequest {
+                    server_addr: addr.to_string(),
+                    node_id: 1,
+                    location: location.to_string(),
+                    binary_version: "v1".to_string(),
+                })
+                .status
+                .ok);
+        }
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        assert!(meta
+            .add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "orders".to_string(),
+                first_shard_id: 1,
+                shard_count: 1,
+                replica_count: 2,
+                partition_version: 0,
+                serving_options: TableServingOptions::default(),
+            })
+            .status
+            .ok);
+
+        let topology = meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            old_topology_version: 0,
+        });
+        assert!(topology.status.ok);
+        assert_eq!(topology.shards.len(), 1);
+        let replicas = &topology.shards[0].replicas;
+        assert_eq!(replicas.len(), 2, "expected two replicas, got {replicas:?}");
+
+        let units = replicas
+            .iter()
+            .map(|addr| {
+                let server = meta
+                    .list_servers()
+                    .servers
+                    .into_iter()
+                    .find(|server| &server.server_addr == addr)
+                    .expect("replica is a registered server");
+                Location::parse(&server.location).ancestor(3).to_path()
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            units.len(),
+            2,
+            "both replicas landed in the same availability unit: {units:?}"
+        );
     }
 
     #[test]

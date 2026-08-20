@@ -295,13 +295,27 @@ fn build_index(
     for target in live_servers {
         all.insert(target.server_addr.clone());
     }
-    for target in live_servers {
-        if !target.location.is_empty() {
-            eligible_sets
-                .entry(target.location.clone())
-                .or_default()
-                .insert(target.server_addr.clone());
+    // A preference is matched by hierarchical containment rather than string
+    // equality, so a table pinned to `dc1` accepts any server beneath it -- with
+    // exact matching, only a single rack could ever be named.
+    let parsed_targets = live_servers
+        .iter()
+        .map(|target| (target, Location::parse(&target.location)))
+        .collect::<Vec<_>>();
+    let mut wanted_locations = BTreeSet::new();
+    for placement in shard_placement.values() {
+        if !placement.preferred_location.is_empty() {
+            wanted_locations.insert(placement.preferred_location.clone());
         }
+    }
+    for wanted in wanted_locations {
+        let pattern = Location::parse(&wanted);
+        let matching = parsed_targets
+            .iter()
+            .filter(|(_, location)| location.belongs_to(&pattern))
+            .map(|(target, _)| target.server_addr.clone())
+            .collect::<BTreeSet<_>>();
+        eligible_sets.insert(wanted, matching);
     }
 
     let mut shard_eligible = BTreeMap::new();
@@ -583,6 +597,89 @@ mod tests {
         assert_eq!(
             moves(&plans),
             vec![(1, "a2", ShardReassignmentReason::OwnerUnavailable)]
+        );
+    }
+
+    #[test]
+    fn a_preference_can_name_a_whole_datacenter() {
+        // With exact string matching this is impossible to express: a table
+        // could only ever be pinned to one rack. Any server beneath dc1 now
+        // qualifies, and one outside it does not.
+        let plans = compute_placement_aware_rebalance(
+            &owners(&[(1, "dead")]),
+            &placement(&[(1, "ns.orders", "us-east/dc1")]),
+            &targets(&[
+                ("a1", "us-east/dc1/az1/rack1"),
+                ("a2", "us-east/dc1/az2/rack9"),
+                ("b1", "us-east/dc2/az1/rack1"),
+            ]),
+            AutoRebalanceOptions {
+                balance_load: false,
+                ..AutoRebalanceOptions::default()
+            },
+        );
+        assert_eq!(plans.len(), 1);
+        assert!(
+            plans[0].to_server == "a1" || plans[0].to_server == "a2",
+            "must land inside dc1, got {}",
+            plans[0].to_server
+        );
+    }
+
+    #[test]
+    fn a_shard_outside_its_preferred_datacenter_is_pulled_back_into_it() {
+        let plans = compute_placement_aware_rebalance(
+            &owners(&[(1, "b1")]),
+            &placement(&[(1, "ns.orders", "us-east/dc1")]),
+            &targets(&[
+                ("a1", "us-east/dc1/az1/rack1"),
+                ("b1", "us-east/dc2/az1/rack1"),
+            ]),
+            AutoRebalanceOptions {
+                balance_load: false,
+                ..AutoRebalanceOptions::default()
+            },
+        );
+        assert_eq!(
+            moves(&plans),
+            vec![(1, "a1", ShardReassignmentReason::LocationViolation)]
+        );
+    }
+
+    #[test]
+    fn a_deeper_preference_still_pins_to_one_rack() {
+        // The narrow case keeps working: naming every level pins exactly.
+        let plans = compute_placement_aware_rebalance(
+            &owners(&[(1, "dead")]),
+            &placement(&[(1, "ns.orders", "us-east/dc1/az2/rack9")]),
+            &targets(&[
+                ("a1", "us-east/dc1/az1/rack1"),
+                ("a2", "us-east/dc1/az2/rack9"),
+            ]),
+            AutoRebalanceOptions {
+                balance_load: false,
+                ..AutoRebalanceOptions::default()
+            },
+        );
+        assert_eq!(
+            moves(&plans),
+            vec![(1, "a2", ShardReassignmentReason::OwnerUnavailable)]
+        );
+    }
+
+    #[test]
+    fn a_preference_no_live_server_matches_falls_back_to_anywhere() {
+        // Same guard as before, now evaluated hierarchically: dc9 is empty, so
+        // the shard is placed rather than stranded.
+        let plans = compute_placement_aware_rebalance(
+            &owners(&[(1, "dead")]),
+            &placement(&[(1, "ns.orders", "us-east/dc9")]),
+            &targets(&[("a1", "us-east/dc1/az1/rack1")]),
+            AutoRebalanceOptions::default(),
+        );
+        assert_eq!(
+            moves(&plans),
+            vec![(1, "a1", ShardReassignmentReason::OwnerUnavailable)]
         );
     }
 
