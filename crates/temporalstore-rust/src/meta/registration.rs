@@ -80,6 +80,67 @@ impl SingleNodeMeta {
         }
     }
 
+    /// Relabel a registered server's location in place.
+    ///
+    /// Until now `location` could only be set at registration, so correcting a
+    /// mislabelled node meant making it re-register -- which resets its
+    /// heartbeat timestamp, its reported shard states, its runtime load and its
+    /// freeze bookkeeping, and is refused outright while the node is in freeze
+    /// cooldown. That is a disruptive way to fix a label, and it needs the
+    /// datanode's cooperation, so an operator could not do it at all.
+    ///
+    /// The label is not cosmetic: since locations became hierarchical they drive
+    /// replica spread and table pinning, so a wrong one actively degrades
+    /// placement. This changes the label and nothing else, and bumps the
+    /// topology version so clients pick up the placement that follows from it.
+    pub fn update_server(&self, request: UpdateServerRequest) -> AckResponse {
+        self.record_mutation(MetaMutation::UpdateServer(request.clone()));
+        self.apply_update_server(request)
+    }
+
+    pub(super) fn apply_update_server(&self, request: UpdateServerRequest) -> AckResponse {
+        let mut state = self.inner.write().expect("meta lock poisoned");
+        let Some(server) = state.servers.get(&request.server_addr) else {
+            return AckResponse {
+                status: Status::error("server_not_found", "server not found"),
+            };
+        };
+        // Matches the reference: a server that is not serving is not relabelled.
+        // Its placement is not being consulted anyway, and an operator who wants
+        // to relabel a frozen node can unfreeze it first.
+        if server.state != MetaEntityState::Normal {
+            return AckResponse {
+                status: Status::error(
+                    "resource_frozen",
+                    "only a serving server can be relabelled",
+                ),
+            };
+        }
+        if server.location == request.location {
+            return AckResponse {
+                status: Status::error("not_modified", "server location is unchanged"),
+            };
+        }
+
+        let previous = server.location.clone();
+        state
+            .servers
+            .get_mut(&request.server_addr)
+            .expect("server exists after validation")
+            .location = request.location.clone();
+        // Placement is derived from location on every topology read, so bumping
+        // the version is what makes the new label take effect for clients.
+        record_topology_event(
+            &mut state,
+            "update_server",
+            format!("server:{}", request.server_addr),
+            format!("location={},previous_location={previous}", request.location),
+        );
+        AckResponse {
+            status: Status::ok(),
+        }
+    }
+
     pub fn server_heartbeat(&self, request: ServerHeartbeatRequest) -> ServerHeartbeatResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
         state.counters.server_heartbeat_total += 1;
