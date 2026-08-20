@@ -360,7 +360,19 @@ impl ProductionRaftRuntime {
         let stop_thread = Arc::clone(&stop);
         let handle = thread::spawn(move || {
             let mut last_heartbeat = InstantCompat::now();
+            let mut last_tick = InstantCompat::now();
             while !stop_thread.load(Ordering::SeqCst) {
+                // Move the cluster's clock forward by the time that actually passed. The
+                // recovery timeouts -- stalled snapshot send, offline peer, abandoned leader
+                // transfer -- are refreshed from here and from nowhere else, so a clock that
+                // never advances leaves them unable to fire: a snapshot send that stalls keeps
+                // its peer flagged as sending, and every proposal to that peer is rejected with
+                // backpressure until the process restarts.
+                let elapsed_ms = last_tick.elapsed().as_millis() as u64;
+                if elapsed_ms > 0 {
+                    cluster.advance_time_ms(elapsed_ms);
+                    last_tick = InstantCompat::now();
+                }
                 let _ = cluster.tick_election();
                 if last_heartbeat.elapsed() >= heartbeat_interval {
                     if cluster.leader_id() == local_node_id {
