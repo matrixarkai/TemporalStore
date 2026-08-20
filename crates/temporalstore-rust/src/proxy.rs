@@ -860,12 +860,20 @@ impl ProxyService {
     }
 
     pub fn open_table(&self, request: ProxyOpenTableRequest) -> ProxyOpenTableResponse {
-        if let Some(status) = self.check_account_scope(&request.namespace) {
-            return ProxyOpenTableResponse {
-                status,
-                options: None,
-            };
-        }
+        // Opening a table is a metaserver round-trip, so it is real work and belongs inside
+        // the concurrency envelope. Without a slot, a caller could issue unbounded concurrent
+        // open_table calls and never touch `max_inflight_requests` -- the quota exists to
+        // bound the work in flight, and this was work it could not see. It counts as a read:
+        // it mutates nothing on the data path.
+        let _admitted = match self.admit_open_table(&request.namespace) {
+            Ok(guard) => guard,
+            Err(status) => {
+                return ProxyOpenTableResponse {
+                    status,
+                    options: None,
+                }
+            }
+        };
         let pin_primary_default = self.options().pin_primary_reads;
         match self
             .client()
@@ -1224,6 +1232,27 @@ impl ProxyService {
     /// metaserver has granted this proxy.
     pub fn config_snapshot(&self) -> ProxyOptions {
         self.options()
+    }
+
+    /// Admission for `open_table`: account scope, serving mode, then an in-flight slot. There
+    /// is no `Command` here, so the drop percentage -- which keys on a command's routing key --
+    /// does not apply; a dropped tenant is still refused when it tries to execute.
+    fn admit_open_table(&self, namespace: &str) -> Result<ProxyInflightGuard<'_>, Status> {
+        let options = self.options();
+        if let Some(status) = proxy_account_rejection(&options, namespace) {
+            return Err(self.reject(status, ProxyRejectionKind::Account));
+        }
+        if let Some(status) = proxy_serving_rejection(&options, false) {
+            return Err(self.reject(status, ProxyRejectionKind::Policy));
+        }
+        self.inner
+            .inflight
+            .try_acquire(
+                false,
+                options.max_inflight_requests,
+                options.max_inflight_write_requests,
+            )
+            .map_err(|rejection| self.reject(rejection.status(), ProxyRejectionKind::Inflight))
     }
 
     pub(super) fn inflight_snapshot(&self) -> (u64, u64) {
@@ -2485,6 +2514,78 @@ mod tests {
         let kept = unreachable.config_snapshot();
         assert_eq!(kept.namespace, "granted-ns");
         assert_eq!(kept.config_version, 7);
+    }
+    #[test]
+    fn open_table_is_bounded_by_the_inflight_quota() {
+        let proxy = scoped_proxy(ProxyOptions {
+            max_inflight_requests: 1,
+            ..ProxyOptions::default()
+        });
+
+        // Opening a table is a metaserver round-trip, so it must consume a slot. Holding the
+        // only one means the next open is refused rather than making an unbounded number of
+        // concurrent metaserver calls.
+        let held = proxy
+            .admit(None, std::slice::from_ref(&read_command()))
+            .expect("first request is admitted");
+        assert_eq!(proxy.inflight_snapshot(), (1, 0));
+
+        let refused = proxy.open_table(ProxyOpenTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "t".to_string(),
+            pin_primary: None,
+            replica_read_policy: None,
+        });
+        assert_eq!(refused.status.code, "proxy_inflight_quota_exceeded");
+        assert!(refused.options.is_none());
+        assert_eq!(proxy.policy_report().inflight_rejections, 1);
+
+        // The slot is released with the guard, and open_table releases its own slot too --
+        // otherwise a single open would permanently consume capacity.
+        drop(held);
+        assert_eq!(proxy.inflight_snapshot(), (0, 0));
+        let attempted = proxy.open_table(ProxyOpenTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "t".to_string(),
+            pin_primary: None,
+            replica_read_policy: None,
+        });
+        assert_ne!(attempted.status.code, "proxy_inflight_quota_exceeded");
+        assert_eq!(
+            proxy.inflight_snapshot(),
+            (0, 0),
+            "open_table must not leak its slot"
+        );
+    }
+
+    #[test]
+    fn open_table_is_refused_while_the_proxy_is_drained() {
+        let drained = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::NotServing,
+            ..ProxyOptions::default()
+        });
+        let response = drained.open_table(ProxyOpenTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "t".to_string(),
+            pin_primary: None,
+            replica_read_policy: None,
+        });
+        assert_eq!(response.status.code, "proxy_not_serving");
+
+        // A read-only proxy still opens tables: reads are still served, and open_table does
+        // not write anything.
+        let readonly = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::Readonly,
+            ..ProxyOptions::default()
+        });
+        let response = readonly.open_table(ProxyOpenTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "t".to_string(),
+            pin_primary: None,
+            replica_read_policy: None,
+        });
+        assert_ne!(response.status.code, "proxy_not_serving");
+        assert_ne!(response.status.code, "proxy_write_disabled");
     }
     #[test]
     fn proxy_policy_blocks_writes_not_serving_and_drop_percent() {
