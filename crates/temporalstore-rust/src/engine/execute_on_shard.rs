@@ -1580,11 +1580,17 @@ pub(crate) fn execute_on_shard(
             // context_models_match_keys_timeline_pages_and_filters keeps this
             // key shape aligned with the context event timeline contract.
             let timeline_key = context_timeline_key(event.primary_time_ms(), event.event_id_hash);
+            let event_id_hash = event.event_id_hash;
             let series = shard.context_events.entry(object_key.clone()).or_default();
-            if !(first_write_only && series.contains_key(&timeline_key)) {
+            // Idempotence now tests the EVENT ID, which is what first_write_only actually means:
+            // the same event written twice. Testing the timeline key made two different events
+            // that collided in the low FANOUT bits of one millisecond look like a rewrite.
+            if !(first_write_only && series.contains_key(&event_id_hash)) {
                 let value = context_bytes(&event);
                 let routing_bucket =
                     page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
+                // The PAGE stays timestamp-keyed: pages pack by time, and the load path recovers
+                // the timeline key from the packed point. Only the index key changes.
                 if let Ok(addresses) = append_timestamped_kv_pages(
                     cache,
                     page_store,
@@ -1598,8 +1604,13 @@ pub(crate) fn execute_on_shard(
                     routing_bucket,
                     async_storage && !cold_storage,
                 ) {
-                    for (timestamp_ms, address) in addresses {
-                        series.insert(timestamp_ms, address);
+                    for (stored_timeline_key, address) in addresses {
+                        series.insert(event_id_hash, address);
+                        shard
+                            .context_event_timeline
+                            .entry(object_key.clone())
+                            .or_default()
+                            .insert(stored_timeline_key, event_id_hash);
                         mutated = true;
                     }
                 }
@@ -1760,13 +1771,11 @@ pub(crate) fn execute_on_shard(
             let events = shard
                 .context_events
                 .get(&object_key)
-                .map(|series| {
+                .map(|_series| {
                     let mut page_cache = HashMap::new();
-                    series
-                        .range(
-                            context_timeline_start(start_time_ms)
-                                ..context_timeline_end(end_time_ms),
-                        )
+                    // Range the TIME INDEX, not the primary map: the primary is keyed by event
+                    // id hash now, so a time window is not contiguous in it.
+                    context_event_time_range(shard, &object_key, start_time_ms, end_time_ms)
                         .rev()
                         // Bound the SCAN (kMaxLimit), NOT the result: the caller's
                         // `limit` must be applied AFTER filtering (LimitOrDefault runs
@@ -1778,7 +1787,7 @@ pub(crate) fn execute_on_shard(
                                 cache,
                                 page_store,
                                 shard_id,
-                                *timeline_key,
+                                timeline_key,
                                 address,
                                 &mut page_cache,
                             )
@@ -2535,16 +2544,17 @@ pub(crate) fn execute_on_shard(
             let mut selected = shard
                 .context_events
                 .get(&context_event_key(tenant_hash, node_hash))
-                .map(|series| {
-                    series
-                        .range(
-                            context_timeline_start(source_start_ms)
-                                ..context_timeline_end(source_end_ms),
-                        )
+                .map(|_series| {
+                    context_event_time_range(
+                        shard,
+                        &context_event_key(tenant_hash, node_hash),
+                        source_start_ms,
+                        source_end_ms,
+                    )
                         .filter_map(|(timeline_key, address)| {
                             read_context_value_cold::<ContextEvent>(
                                 page_store,
-                                *timeline_key,
+                                timeline_key,
                                 address,
                             )
                         })

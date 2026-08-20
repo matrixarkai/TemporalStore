@@ -95,8 +95,23 @@ pub(super) struct ShardState {
     pub(super) feature_rollups: HashMap<String, RollupEntry>,
     #[serde(default)]
     pub(super) context_nodes: HashMap<String, BlockAddress>,
+    // Keyed by EVENT ID HASH, aligning events with entities/embeddings so update and delete
+    // address one event directly in log n instead of scanning the node's whole series (mem0
+    // delete carries the event id, not the time, so it previously had no way to locate one).
     #[serde(default)]
     pub(super) context_events: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    // Time index over the same events: timeline_key -> event_id_hash, where timeline_key stays
+    // timestamp_ms * CONTEXT_TIMELINE_FANOUT + (id % FANOUT). The primary map above is ordered
+    // by hash, which is effectively random, so a time window is no longer a contiguous range in
+    // it -- and 13 sites scan events by time window (context_timeline_start/end). Those range
+    // over this index and dereference into the primary, keeping time reads at log n + k rather
+    // than degrading them to a full series scan to make deletes cheaper.
+    //
+    // Rebuilt at load from the same page decode the event load path already performs, so it
+    // costs no extra on-disk state; it is serialized with the index like the primary because
+    // ShardState is snapshotted whole.
+    #[serde(default)]
+    pub(super) context_event_timeline: HashMap<String, BTreeMap<u64, u64>>,
     #[serde(default)]
     pub(super) context_indexes: HashMap<String, BTreeMap<u64, BlockAddress>>,
     #[serde(default)]

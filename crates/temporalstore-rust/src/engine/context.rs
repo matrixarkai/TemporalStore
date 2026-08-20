@@ -266,6 +266,37 @@ pub(super) fn context_timeline_key(timestamp_ms: u64, disambiguator: u64) -> u64
         .saturating_add(disambiguator % CONTEXT_TIMELINE_FANOUT)
 }
 
+/// Events of one node within a time window, oldest first, as (timeline_key, address).
+///
+/// The primary event map is keyed by event id hash so update and delete can address a single
+/// event in log n. Hash order is effectively random, so a time window is not a contiguous range
+/// there; it is a contiguous range in `context_event_timeline`, which maps timeline_key ->
+/// event id. This ranges over that index and dereferences each hit into the primary map, so a
+/// time-windowed read stays log n + k instead of scanning the node's entire series.
+///
+/// Returns a DoubleEndedIterator because every caller reads newest-first (`.rev()`): retrieval
+/// wants recent, serving-relevant context before cold history.
+pub(super) fn context_event_time_range<'a>(
+    shard: &'a super::state::ShardState,
+    object_key: &str,
+    start_time_ms: u64,
+    end_time_ms: u64,
+) -> impl DoubleEndedIterator<Item = (u64, &'a BlockAddress)> + 'a {
+    let series = shard.context_events.get(object_key);
+    let start = context_timeline_start(start_time_ms);
+    let end = context_timeline_end(end_time_ms);
+    shard
+        .context_event_timeline
+        .get(object_key)
+        .into_iter()
+        .flat_map(move |timeline| timeline.range(start..end))
+        .filter_map(move |(timeline_key, event_id_hash)| {
+            series
+                .and_then(|series| series.get(event_id_hash))
+                .map(|address| (*timeline_key, address))
+        })
+}
+
 pub(super) fn context_timeline_start(timestamp_ms: u64) -> u64 {
     timestamp_ms.saturating_mul(CONTEXT_TIMELINE_FANOUT)
 }
