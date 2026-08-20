@@ -964,13 +964,26 @@ pub(super) fn traverse_context_tree(
             children.sort_by_key(|child_ref| (child_ref.updated_at_ms, child_ref.child_hash));
             children.truncate(child_limit);
             for child in children {
+                // Address the embedding the way WRITERS store it. This passed the child's raw
+                // node hash, but every writer stores under
+                // context_embedding_ref_hash(tenant, owner, level) -- a hash of those three --
+                // which can never equal a bare node hash. So the lookup missed for every child,
+                // `continue` fired every iteration, and the cosine scoring below was
+                // unreachable. The test did not catch it because it wrote its embedding under
+                // the raw node hash too, constructing the data the way this READER expected
+                // rather than the way writers actually write it.
+                let ref_hash = crate::context_workflow::context_embedding_ref_hash(
+                    tenant_hash,
+                    child.child_hash,
+                    "node_l0",
+                );
                 let Some(embedding) = load_context_embedding(
                     cache,
                     page_store,
                     shard_id,
                     shard,
                     tenant_hash,
-                    child.child_hash,
+                    ref_hash,
                 ) else {
                     continue;
                 };

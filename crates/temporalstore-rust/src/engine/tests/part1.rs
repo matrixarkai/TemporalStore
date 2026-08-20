@@ -730,7 +730,15 @@ fn context_tree_embedding_summary_and_compression_match_round_trip() {
             if refs.len() == 2 && refs[0].child_hash == GPU
     ));
 
-    for (ref_hash, first, second) in [(GPU, 1.0, 0.0), (COST, 0.0, 1.0)] {
+    // Store these the way PRODUCTION writers do -- under
+    // context_embedding_ref_hash(tenant, node, level), not under the raw node hash. Writing
+    // them under the node hash is what let the traversal reader's addressing bug pass here for
+    // as long as it did: the test built the data to match the reader instead of the writer, so
+    // reader and writer could disagree indefinitely without any test noticing.
+    for (node_hash, first, second) in [(GPU, 1.0, 0.0), (COST, 0.0, 1.0)] {
+        let ref_hash = crate::context_workflow::context_embedding_ref_hash(
+            TENANT, node_hash, "node_l0",
+        );
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::ContextUpsertEmbedding {
