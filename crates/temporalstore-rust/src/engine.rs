@@ -48,6 +48,7 @@ mod bucket_store;
 mod control_rollup;
 mod hll;
 mod hot_page_spill;
+mod block_in_wal;
 mod state;
 
 // shared-corpus: storage_bucket_first_physical_index storage_object_manager_bucketstore_runtime_authority storage_model_layout_compaction_policies storage_merged_dump_load_lifecycle storage_object_manager_cold_hot_reload storage_page_address_disk_cache_shared_store_fallback
@@ -504,8 +505,25 @@ impl TemporalEngine {
                         .map(|record| Some(record.sequence))
                 } else {
                     self.wal_store
-                        .append_with_sync(request.shard_id, command, sync)
-                        .map(|_| None)
+                        .append_with_sync_reporting(request.shard_id, command, sync)
+                        .map(|(record, log_id)| {
+                            // Register the value against the object id the write derived, which
+                            // is what the stored address carries -- so a read finds its record
+                            // by identity rather than by when it happened.
+                            if block_in_wal::enabled() {
+                                if let Some(object_id) =
+                                    block_in_wal::object_id_for(request.shard_id, &record.command)
+                                {
+                                    block_in_wal::register(
+                                        request.shard_id,
+                                        object_id,
+                                        log_id,
+                                        &self.wal_store,
+                                    );
+                                }
+                            }
+                            None
+                        })
                 };
                 match append_result {
                     Ok(deferred_seq) => {
@@ -2515,6 +2533,18 @@ fn read_page_bytes(
     if address.page_slab_id == HOT_PAGE_SLAB_ID {
         if let Some(real_address) = hot_page_spill::lookup_spilled(shard_id, address.offset) {
             if let Ok(bytes) = page_store.read(&real_address) {
+                let _ = cache.put(cache_key, bytes.clone());
+                return Some(bytes);
+            }
+        }
+        // Nothing spilled, so the value exists only in its WAL record -- which is where it has
+        // been all along. Read it back by the log id the write registered. Tried after the
+        // spill redirect because a spilled copy is a direct block-store read, while this one
+        // parses a log record.
+        if block_in_wal::enabled() {
+            if let Some(bytes) =
+                address.object_id.and_then(|object_id| block_in_wal::read_value(shard_id, object_id))
+            {
                 let _ = cache.put(cache_key, bytes.clone());
                 return Some(bytes);
             }
