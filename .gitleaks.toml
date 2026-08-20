@@ -16,6 +16,7 @@ useDefault = true
 description = "Test fixtures, local onebox test config, and public AWS resource identifiers (no production secrets)."
 paths = [
   "tools/test_matrixark_access_governance\\.py",
+  "tools/test_matrixark_v1_gateway\\.py",
   "test/onebox/.*\\.ya?ml",
   "docs/.*[Aa][Ww][Ss].*\\.md",
   "docs/aws_data_raft_replication.*\\.md",
