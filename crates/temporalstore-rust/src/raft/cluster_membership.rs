@@ -317,13 +317,22 @@ impl RaftCluster {
             .ok_or(RaftError::LeaderUnavailable)?;
         let leader_log = leader.log.clone();
         let leader_commit_index = leader.commit_index;
+        // P6: in a deployed cluster each process owns ONE node, and the peers held here are
+        // shadows -- the real followers catch up over AppendEntries in their own processes.
+        // Applying into a shadow drives that node's engine WAL and costs a durability barrier
+        // per follower per write, which measured as two of every three applies. Keep the log and
+        // commit bookkeeping, skip the apply.
+        let skip_shadow_apply = inner
+            .local_node_id
+            .map(|local| local != node_id)
+            .unwrap_or(false);
         let node = inner
             .nodes
             .get_mut(&node_id)
             .ok_or(RaftError::NodeNotFound(node_id))?;
         node.log = leader_log;
         node.commit_index = leader_commit_index;
-        if node.replica_role.can_serve_data() {
+        if node.replica_role.can_serve_data() && !skip_shadow_apply {
             apply_committed(node);
         }
         inner.membership_evidence.learner_catchup_count = inner

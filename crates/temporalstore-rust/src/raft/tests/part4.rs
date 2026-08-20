@@ -2375,17 +2375,146 @@ fn node_wal_record_count(root: &std::path::Path, shard: ShardId, node: RaftNodeI
         .unwrap_or(0)
 }
 
-/// P3 core: a DEPLOYED process owns one node but keeps a full cluster view, so the default
-/// persist fsyncs a record for every peer. With `TS_RAFT_PERSIST_LOCAL_ONLY` on and the runtime
-/// having declared which node we are, only OUR record may grow -- peers persist their own
-/// hard-state before answering an RPC, so the leader writing it buys no Raft safety. Durability
-/// of the local node is unchanged, which is what the first assertion pins.
+/// The counterpart to the local-node persist test: with NO local node declared -- the in-process
+/// form, which genuinely hosts every node -- all three must still be persisted. This is what
+/// makes the narrowing safe to apply unconditionally: it is reachable only once a runtime says
+/// one node per process.
+#[test]
+fn persist_covers_every_node_when_no_local_node_is_declared() {
+    let _serial = PART4_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+
+    let base: Vec<u64> = (1..=3)
+        .map(|n| node_wal_record_count(dir.path(), 1, n))
+        .collect();
+    for i in 0..10 {
+        cluster
+            .propose(Command::StringSet {
+                key: format!("all-nodes-{i}"),
+                value: b"v".to_vec(),
+            })
+            .unwrap();
+    }
+    let after: Vec<u64> = (1..=3)
+        .map(|n| node_wal_record_count(dir.path(), 1, n))
+        .collect();
+
+    for node in 0..3 {
+        assert!(
+            after[node] > base[node],
+            "node {} must still be persisted when no local node is declared: {} -> {}",
+            node + 1,
+            base[node],
+            after[node]
+        );
+    }
+}
+
+/// P6 core: a committed entry was applied into EVERY node held by this process, and each node
+/// owns its own `TemporalEngine` -- so a deployed leader drove three engine WALs, and took three
+/// barriers, per write. Once the local node is declared, only its engine is applied into. This
+/// also pins the consequence, which is a refusal rather than a wrong answer: a read aimed at a
+/// peer's in-process shadow is rejected as apply-lagging, never served from un-applied state.
+/// No deployed read path aims there -- the server routes reads at the leader (which is the local
+/// node on the leader's own process) or explicitly at the local node.
+#[test]
+fn apply_scoped_to_local_node_leaves_peer_engines_unapplied() {
+    let _serial = PART4_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+    cluster.set_local_node_id(1);
+
+    cluster
+        .propose(Command::StringSet {
+            key: "apply-local".to_string(),
+            value: b"v".to_vec(),
+        })
+        .unwrap();
+
+    let read = |node| {
+        cluster.read_from_replica(
+            node,
+            Command::StringGet {
+                key: "apply-local".to_string(),
+            },
+        )
+    };
+    assert_eq!(
+        read(1).unwrap(),
+        CommandResponse::Bytes {
+            value: Some(b"v".to_vec())
+        },
+        "the local node must still apply committed entries"
+    );
+    for peer in [2, 3] {
+        let err = read(peer).expect_err("a peer's shadow engine must not answer this read");
+        assert!(
+            matches!(
+                err,
+                RaftError::ReplicaApplyLagging { replica_id, .. } if replica_id == peer
+            ),
+            "peer {peer} must refuse the read as apply-lagging rather than answer from
+             un-applied state, got {err:?}"
+        );
+    }
+}
+
+/// Counterpart to the above: with no local node declared, every node still applies, so the
+/// in-process cluster that existing tests use is unchanged.
+#[test]
+fn apply_covers_every_node_when_no_local_node_is_declared() {
+    let _serial = PART4_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+
+    cluster
+        .propose(Command::StringSet {
+            key: "apply-all".to_string(),
+            value: b"v".to_vec(),
+        })
+        .unwrap();
+
+    for node in [1, 2, 3] {
+        assert_eq!(
+            cluster
+                .read_from_replica(
+                    node,
+                    Command::StringGet {
+                        key: "apply-all".to_string(),
+                    },
+                )
+                .unwrap(),
+            CommandResponse::Bytes {
+                value: Some(b"v".to_vec())
+            },
+            "node {node} must apply when no local node is declared"
+        );
+    }
+}
+
+/// P3 core: a DEPLOYED process owns one node but keeps a full cluster view, so the persist loop
+/// fsyncs a record for every peer. Once the runtime has declared which node we are, only OUR
+/// record may grow -- peers persist their own hard state before answering an RPC, so the leader
+/// writing it buys no Raft safety. Durability of the local node is unchanged, which is what the
+/// first assertion pins.
 #[test]
 fn persist_local_only_writes_just_this_nodes_record() {
     let _serial = PART4_ENV_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _gate = EnvFlagGuard::set("TS_RAFT_PERSIST_LOCAL_ONLY");
     let dir = tempfile::tempdir().unwrap();
     let cluster =
         RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
