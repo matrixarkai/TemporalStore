@@ -151,6 +151,20 @@ impl ShardHealth {
     }
 }
 
+/// The shards this server reports itself as actually serving.
+///
+/// Uses the same classification the divergence check does, so "serving" means
+/// the same thing to both: a shard mid-load or one the node has given up on is
+/// not being served, and `readonly` is.
+pub fn serving_shards(server: &ServerMetaInfo) -> BTreeSet<ShardId> {
+    server
+        .shard_states
+        .iter()
+        .filter(|state| matches!(ShardHealth::classify(state), ShardHealth::Serving(_)))
+        .map(|state| state.shard_id)
+        .collect()
+}
+
 /// Stateful reconciler: pure comparison plus a rate-limit window.
 #[derive(Debug, Clone)]
 pub struct ShardChecker {

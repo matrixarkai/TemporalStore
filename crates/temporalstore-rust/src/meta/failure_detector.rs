@@ -155,6 +155,16 @@ pub struct ConvictionPolicy {
     /// tiers fail for different reasons and an operator may want to hold the
     /// routing tier steady while letting datanode conviction run.
     pub convict_proxies: bool,
+    /// Refuse to convict a server when doing so would leave some shard with no
+    /// live server serving it.
+    ///
+    /// Conviction is decided entirely on heartbeat evidence, which says nothing
+    /// about what the server is holding. Freezing the last live holder of a
+    /// shard makes that shard unroutable, and then hands auto-rebalance a shard
+    /// to "recover" onto a node that has none of its data. Off by default: a
+    /// node that is genuinely gone is not serving the shard either, and holding
+    /// the conviction back keeps a dead node in the topology.
+    pub forbid_orphaning_shards: bool,
 }
 
 impl Default for ConvictionPolicy {
@@ -167,6 +177,7 @@ impl Default for ConvictionPolicy {
             convict_enabled: true,
             convict_on_reboot: true,
             convict_proxies: true,
+            forbid_orphaning_shards: false,
         }
     }
 }
@@ -188,6 +199,11 @@ pub struct ConvictionCandidate {
     /// from silence, so it is trustworthy even while the detector is paused.
     #[serde(default)]
     pub rebooted: bool,
+    /// Shards this candidate is currently serving, used by the orphan guard to
+    /// work out what freezing it would cost. Empty for proxies, which serve no
+    /// shards.
+    #[serde(default)]
+    pub serving_shards: Vec<ShardId>,
 }
 
 /// The damage assessment for one location.
@@ -216,6 +232,15 @@ pub struct ConvictionPlan {
     /// so the restart is visible even when it is not acted on.
     #[serde(default)]
     pub rebooted: Vec<String>,
+    /// Servers the orphan guard held back, ordered by address: convicting them
+    /// would have left a shard with nobody serving it.
+    #[serde(default)]
+    pub held_by_orphan_guard: Vec<String>,
+    /// The shards that would have been left unserved, ordered by id. Non-empty
+    /// here is worth an alert even when the guard is off: it means the cluster
+    /// is one conviction away from losing a shard entirely.
+    #[serde(default)]
+    pub orphaned_shards: Vec<ShardId>,
 }
 
 impl ConvictionPlan {
@@ -290,7 +315,72 @@ pub fn plan_conviction(
     plan.convict.sort();
     plan.held_by_safe_mode.sort();
     plan.rebooted.sort();
+    apply_orphan_guard(&mut plan, candidates, policy);
     plan
+}
+
+/// Pull back any conviction that would leave a shard with nobody serving it.
+///
+/// Runs after safe mode, and over the whole round rather than one server at a
+/// time: two servers each holding the only two copies of a shard are individually
+/// safe to freeze and collectively not. When a shard would be orphaned, *every*
+/// candidate serving it is pulled back, which guarantees the shard keeps a holder
+/// in a single deterministic pass.
+///
+/// The orphaned shards are recorded whether or not the guard is enabled. A
+/// cluster one conviction away from losing a shard is worth surfacing even when
+/// the policy has chosen to convict anyway.
+fn apply_orphan_guard(
+    plan: &mut ConvictionPlan,
+    candidates: &[ConvictionCandidate],
+    policy: ConvictionPolicy,
+) {
+    if plan.convict.is_empty() {
+        return;
+    }
+    let convicting = plan.convict.iter().cloned().collect::<BTreeSet<_>>();
+
+    // Who would still be serving each shard once this round's convictions land.
+    // A candidate that is already abnormal is not serving anything either.
+    let mut survivors: BTreeMap<ShardId, usize> = BTreeMap::new();
+    let mut doomed: BTreeMap<ShardId, Vec<&str>> = BTreeMap::new();
+    for candidate in candidates {
+        let losing = candidate.abnormal || convicting.contains(&candidate.server_addr);
+        for shard_id in &candidate.serving_shards {
+            if losing {
+                if convicting.contains(&candidate.server_addr) {
+                    doomed
+                        .entry(*shard_id)
+                        .or_default()
+                        .push(candidate.server_addr.as_str());
+                }
+            } else {
+                *survivors.entry(*shard_id).or_default() += 1;
+            }
+        }
+    }
+
+    let mut orphaned = Vec::new();
+    let mut pull_back = BTreeSet::new();
+    for (shard_id, holders) in doomed {
+        if survivors.get(&shard_id).copied().unwrap_or_default() > 0 {
+            continue;
+        }
+        orphaned.push(shard_id);
+        for holder in holders {
+            pull_back.insert(holder.to_string());
+        }
+    }
+    orphaned.sort();
+    orphaned.dedup();
+    plan.orphaned_shards = orphaned;
+
+    if !policy.forbid_orphaning_shards || pull_back.is_empty() {
+        return;
+    }
+    plan.convict.retain(|addr| !pull_back.contains(addr));
+    plan.held_by_orphan_guard = pull_back.into_iter().collect();
+    plan.held_by_orphan_guard.sort();
 }
 
 /// Damage severity for one location. Ratios are compared without integer
@@ -513,6 +603,9 @@ impl MetaFailureDetector {
                 location: server.location.as_str(),
                 state: server.state,
                 last_heartbeat_ms: server.last_heartbeat_ms,
+                serving_shards: super::shard_check::serving_shards(server)
+                    .into_iter()
+                    .collect(),
                 // Not gated on the detector being active: a changed boot time is
                 // direct evidence the process restarted, not an inference drawn
                 // from silence, so the stall guard does not apply to it.
@@ -579,6 +672,7 @@ impl MetaFailureDetector {
                         && serving
                         && self.diagnose(subject.addr, now_ms) == Diagnosis::Failed,
                     rebooted: serving && subject.rebooted,
+                    serving_shards: subject.serving_shards.clone(),
                 }
             })
             .collect::<Vec<_>>();
@@ -594,6 +688,8 @@ struct ConvictionSubject<'a> {
     state: MetaEntityState,
     last_heartbeat_ms: u64,
     rebooted: bool,
+    /// Shards this subject is serving. Always empty for proxies.
+    serving_shards: Vec<ShardId>,
 }
 
 fn proxy_subjects(proxies: &[ProxyMetaInfo]) -> Vec<ConvictionSubject<'_>> {
@@ -605,6 +701,7 @@ fn proxy_subjects(proxies: &[ProxyMetaInfo]) -> Vec<ConvictionSubject<'_>> {
             state: proxy.state,
             last_heartbeat_ms: proxy.last_heartbeat_ms,
             rebooted: false,
+            serving_shards: Vec::new(),
         })
         .collect()
 }
@@ -630,6 +727,12 @@ pub struct AdaptiveConvictionReport {
     /// True when the detector was paused this round (it had only just started,
     /// or it stalled), so no server could be convicted whatever its silence.
     pub detector_paused: bool,
+    /// Servers the orphan guard held back this round.
+    #[serde(default)]
+    pub held_by_orphan_guard: Vec<String>,
+    /// Shards that a conviction this round would have left unserved.
+    #[serde(default)]
+    pub orphaned_shards: Vec<ShardId>,
 }
 
 impl SingleNodeMeta {
@@ -673,6 +776,8 @@ impl SingleNodeMeta {
                     held_by_safe_mode: plan.held_by_safe_mode,
                     damage: plan.damage,
                     rebooted: plan.rebooted,
+                    held_by_orphan_guard: plan.held_by_orphan_guard,
+                    orphaned_shards: plan.orphaned_shards,
                     detector_paused,
                 };
             }
@@ -686,6 +791,8 @@ impl SingleNodeMeta {
             held_by_safe_mode: plan.held_by_safe_mode,
             damage: plan.damage,
             rebooted: plan.rebooted,
+            held_by_orphan_guard: plan.held_by_orphan_guard,
+            orphaned_shards: plan.orphaned_shards,
             detector_paused,
         }
     }
@@ -732,6 +839,8 @@ impl SingleNodeMeta {
                     held_by_safe_mode: plan.held_by_safe_mode,
                     damage: plan.damage,
                     rebooted: plan.rebooted,
+                    held_by_orphan_guard: plan.held_by_orphan_guard,
+                    orphaned_shards: plan.orphaned_shards,
                     detector_paused,
                 };
             }
@@ -745,6 +854,8 @@ impl SingleNodeMeta {
             held_by_safe_mode: plan.held_by_safe_mode,
             damage: plan.damage,
             rebooted: plan.rebooted,
+            held_by_orphan_guard: plan.held_by_orphan_guard,
+            orphaned_shards: plan.orphaned_shards,
             detector_paused,
         }
     }
@@ -771,8 +882,18 @@ impl SingleNodeMeta {
         let mut server_detector = MetaFailureDetector::new(options);
         let mut proxy_detector = MetaFailureDetector::new(options);
         thread::spawn(move || loop {
-            let _ =
+            let report =
                 meta.convict_stale_servers_adaptive(&mut server_detector, policy, safe_mode.clone());
+            if !report.orphaned_shards.is_empty() {
+                // Worth an alert either way: the cluster is one conviction away
+                // from having a shard nobody serves.
+                tracing::warn!(
+                    orphaned_shards = ?report.orphaned_shards,
+                    held_back = ?report.held_by_orphan_guard,
+                    guard_enabled = policy.forbid_orphaning_shards,
+                    "conviction would leave shards with no live holder"
+                );
+            }
             let _ =
                 meta.convict_stale_proxies_adaptive(&mut proxy_detector, policy, safe_mode.clone());
             thread::sleep(interval);
@@ -821,6 +942,14 @@ mod tests {
             abnormal,
             failed,
             rebooted: false,
+            serving_shards: Vec::new(),
+        }
+    }
+
+    fn serving(addr: &str, location: &str, failed: bool, shards: &[ShardId]) -> ConvictionCandidate {
+        ConvictionCandidate {
+            serving_shards: shards.to_vec(),
+            ..candidate(addr, location, false, failed)
         }
     }
 
@@ -1186,6 +1315,195 @@ mod tests {
         proxy_detector.begin_round(now);
         assert!(proxy_detector.phi("shared-addr", now).is_none());
         assert!(server_detector.phi("shared-addr", now).is_some());
+    }
+
+    /// The orphan guard is about what a server holds, not how much of a location
+    /// is failing, so these isolate it from safe mode.
+    fn orphan_policy(forbid: bool) -> ConvictionPolicy {
+        ConvictionPolicy {
+            safe_mode_enabled: false,
+            forbid_orphaning_shards: forbid,
+            ..ConvictionPolicy::default()
+        }
+    }
+
+    #[test]
+    fn the_last_live_holder_of_a_shard_is_not_convicted() {
+        // Conviction is decided on heartbeats alone, which say nothing about
+        // what the server is holding. Freezing this one makes shard 1
+        // unroutable and then hands auto-rebalance a shard to "recover" onto a
+        // node with none of its data.
+        let plan = plan_conviction(
+            &[
+                serving("node-a", "rack-1", true, &[1]),
+                serving("node-b", "rack-1", false, &[2]),
+            ],
+            orphan_policy(true),
+        );
+        assert!(plan.convict.is_empty());
+        assert_eq!(plan.held_by_orphan_guard, vec!["node-a"]);
+        assert_eq!(plan.orphaned_shards, vec![1]);
+    }
+
+    #[test]
+    fn a_shard_with_another_live_holder_is_convictable() {
+        let plan = plan_conviction(
+            &[
+                serving("node-a", "rack-1", true, &[1]),
+                serving("node-b", "rack-1", false, &[1]),
+            ],
+            orphan_policy(true),
+        );
+        assert_eq!(plan.convict, vec!["node-a"]);
+        assert!(plan.held_by_orphan_guard.is_empty());
+        assert!(plan.orphaned_shards.is_empty());
+    }
+
+    #[test]
+    fn two_servers_holding_the_only_copies_are_both_pulled_back() {
+        // Each is individually safe to freeze -- the other still holds the
+        // shard -- and freezing both loses it. A per-server check cannot see
+        // this; the guard has to reason over the whole round.
+        let plan = plan_conviction(
+            &[
+                serving("node-a", "rack-1", true, &[1]),
+                serving("node-b", "rack-1", true, &[1]),
+                serving("node-c", "rack-1", false, &[2]),
+            ],
+            orphan_policy(true),
+        );
+        assert!(plan.convict.is_empty());
+        assert_eq!(plan.held_by_orphan_guard, vec!["node-a", "node-b"]);
+        assert_eq!(plan.orphaned_shards, vec![1]);
+    }
+
+    #[test]
+    fn a_server_holding_one_doomed_and_one_safe_shard_is_still_pulled_back() {
+        // Shard 2 has a survivor, shard 1 does not, and the server holds both.
+        let plan = plan_conviction(
+            &[
+                serving("node-a", "rack-1", true, &[1, 2]),
+                serving("node-b", "rack-1", false, &[2]),
+            ],
+            orphan_policy(true),
+        );
+        assert!(plan.convict.is_empty());
+        assert_eq!(plan.held_by_orphan_guard, vec!["node-a"]);
+        assert_eq!(plan.orphaned_shards, vec![1]);
+    }
+
+    #[test]
+    fn an_orphan_is_reported_even_when_the_guard_is_off() {
+        // Off is the default: a node that is genuinely gone is not serving the
+        // shard either, and holding the conviction back keeps a dead node in the
+        // topology. But being one conviction away from losing a shard is worth
+        // surfacing regardless.
+        let plan = plan_conviction(
+            &[serving("node-a", "rack-1", true, &[1])],
+            orphan_policy(false),
+        );
+        assert_eq!(plan.convict, vec!["node-a"]);
+        assert!(plan.held_by_orphan_guard.is_empty());
+        assert_eq!(plan.orphaned_shards, vec![1]);
+    }
+
+    #[test]
+    fn an_already_frozen_holder_does_not_count_as_a_survivor() {
+        // node-b is frozen, so it is not serving shard 1 whatever it last
+        // reported. Treating it as a holder would let the guard wave through a
+        // conviction that does orphan the shard.
+        let frozen_holder = ConvictionCandidate {
+            abnormal: true,
+            serving_shards: vec![1],
+            ..candidate("node-b", "rack-1", true, false)
+        };
+        let plan = plan_conviction(
+            &[serving("node-a", "rack-1", true, &[1]), frozen_holder],
+            orphan_policy(true),
+        );
+        assert!(plan.convict.is_empty());
+        assert_eq!(plan.held_by_orphan_guard, vec!["node-a"]);
+    }
+
+    #[test]
+    fn a_server_serving_nothing_is_convicted_normally() {
+        let plan = plan_conviction(
+            &[
+                serving("node-a", "rack-1", true, &[]),
+                serving("node-b", "rack-1", false, &[1]),
+            ],
+            orphan_policy(true),
+        );
+        assert_eq!(plan.convict, vec!["node-a"]);
+        assert!(plan.orphaned_shards.is_empty());
+    }
+
+    #[test]
+    fn safe_mode_still_takes_precedence_over_the_orphan_guard() {
+        // Safe mode already held the whole location, so there is nothing for the
+        // guard to pull back and no orphan to report.
+        let plan = plan_conviction(
+            &[
+                serving("node-a", "rack-1", true, &[1]),
+                serving("node-b", "rack-1", true, &[1]),
+            ],
+            ConvictionPolicy {
+                forbid_orphaning_shards: true,
+                ..ConvictionPolicy::default()
+            },
+        );
+        assert!(plan.convict.is_empty());
+        assert_eq!(plan.held_by_safe_mode, vec!["node-a", "node-b"]);
+        assert!(plan.held_by_orphan_guard.is_empty());
+        assert!(plan.orphaned_shards.is_empty());
+    }
+
+    #[test]
+    fn plan_round_reads_the_serving_set_from_the_heartbeat() {
+        // End to end: the guard's input comes from what the datanode reported,
+        // classified the same way the divergence check classifies it.
+        let mut detector = MetaFailureDetector::new(options());
+        let policy = orphan_policy(true);
+        let mut now = 10_000;
+        let with_shard = |addr: &str, heartbeat: u64| {
+            let mut server = server(addr, "rack-1", MetaEntityState::Normal, heartbeat);
+            server.shard_states = vec![ServerShardServingState {
+                shard_id: 1,
+                serving_state: "serving".to_string(),
+                worker_index: 0,
+                worker_threads: 1,
+                loaded: true,
+                readonly: false,
+                load_version: 1,
+                table_name: "ns/orders".to_string(),
+                shard_uri: String::new(),
+                start_routing_bucket: 0,
+                end_routing_bucket: u32::MAX,
+                total_records: 0,
+                storage_bytes: 0,
+                cache_memory_bytes: 0,
+                storage: ShardCanonicalStorageStats::default(),
+                block_store_bytes_written: 0,
+                wal_sequence: 0,
+                dirty_object_count: 0,
+                dirty_bucket_count: 0,
+            }];
+            server
+        };
+        for _ in 0..40 {
+            detector.plan_round(&[with_shard("a", now)], now, policy);
+            now += 1_000;
+        }
+        // "a" is the only holder of shard 1 and has gone quiet.
+        let quiet_since = now - 1_000;
+        let mut plan = ConvictionPlan::default();
+        for _ in 0..20 {
+            plan = detector.plan_round(&[with_shard("a", quiet_since)], now, policy);
+            now += 1_000;
+        }
+        assert!(plan.convict.is_empty(), "the only holder must not be frozen");
+        assert_eq!(plan.held_by_orphan_guard, vec!["a"]);
+        assert_eq!(plan.orphaned_shards, vec![1]);
     }
 
     #[test]
