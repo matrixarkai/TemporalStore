@@ -36,6 +36,7 @@ fn main() {
         max_inflight_requests: env_u64("TS_PROXY_MAX_INFLIGHT_REQUESTS", 0),
         max_inflight_write_requests: env_u64("TS_PROXY_MAX_INFLIGHT_WRITE_REQUESTS", 0),
         pin_primary_reads: env_bool("TS_PROXY_PIN_PRIMARY_READS", true),
+        heartbeat_timeout_ms: env_u64("TS_PROXY_HEARTBEAT_TIMEOUT_MS", 5_000),
         context_first_shard_id: env_u64("TS_PROXY_CONTEXT_FIRST_SHARD", 1),
         context_shard_count: env_u64("TS_PROXY_CONTEXT_SHARD_COUNT", 1),
         context_io_timeout_ms: env_u64("TS_PROXY_CONTEXT_IO_TIMEOUT_MS", 30_000),

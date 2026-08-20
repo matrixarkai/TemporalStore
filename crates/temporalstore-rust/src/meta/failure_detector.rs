@@ -1169,6 +1169,8 @@ mod tests {
             frozen_since_ms: 0,
             freeze_cooldown_until_ms: 0,
             binary_version: "test".to_string(),
+            boot_time_ms: 0,
+            restart_count: 0,
         }
     }
 

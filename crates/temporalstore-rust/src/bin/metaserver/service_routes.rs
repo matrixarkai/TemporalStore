@@ -265,6 +265,7 @@ fn handle_heartbeat_service_route(
                     proxy_heartbeat,
                     ProxyHeartbeatRequest {
                         proxy_addr,
+                        boot_time_ms: req.boot_time_us / 1_000,
                         namespace,
                         config_version: req.config_version,
                         binary_version: req.binary_version,

@@ -367,6 +367,14 @@ pub struct RegisterProxyRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyHeartbeatRequest {
     pub proxy_addr: String,
+    /// Milliseconds-since-epoch when this proxy process started. Lets the
+    /// metaserver see a RESTART: the address is unchanged and the heartbeats
+    /// never stop, so without this an in-place reboot is invisible and a proxy
+    /// that came back with an empty route cache and a reset config looks
+    /// identical to one that has been up for days. Datanodes already report it
+    /// (`ServerHeartbeatRequest::boot_time_ms`); proxies were the gap.
+    #[serde(default)]
+    pub boot_time_ms: u64,
     #[serde(default)]
     pub namespace: String,
     #[serde(default)]
@@ -403,6 +411,14 @@ pub struct ProxyMetaInfo {
     #[serde(default)]
     pub freeze_reason: FreezeReason,
     pub binary_version: String,
+    /// Boot time last reported by this proxy; `0` when it has never reported one.
+    /// Mirrors `ServerMetaInfo::boot_time_ms`.
+    #[serde(default)]
+    pub boot_time_ms: u64,
+    /// How many times this proxy has come back with a different boot time while
+    /// still registered -- i.e. observed in-place restarts.
+    #[serde(default)]
+    pub restart_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1833,6 +1849,7 @@ mod tests {
         assert_eq!(
             meta.proxy_heartbeat(ProxyHeartbeatRequest {
                 proxy_addr: "cooldown-proxy".to_string(),
+                boot_time_ms: 0,
                 namespace: "ns".to_string(),
                 config_version: 1,
                 binary_version: "v".to_string(),
@@ -2572,6 +2589,52 @@ mod tests {
     }
 
     #[test]
+    fn metaserver_counts_proxy_restarts_from_boot_time() {
+        let meta = SingleNodeMeta::default();
+        assert!(meta
+            .register_proxy(RegisterProxyRequest {
+                proxy_addr: "127.0.0.1:17000".to_string(),
+                namespace: "ns".to_string(),
+                location: String::new(),
+                config_version: 1,
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok);
+
+        let beat = |boot_time_ms: u64| {
+            meta.proxy_heartbeat(ProxyHeartbeatRequest {
+                proxy_addr: "127.0.0.1:17000".to_string(),
+                boot_time_ms,
+                namespace: "ns".to_string(),
+                config_version: 1,
+                binary_version: "v1".to_string(),
+            })
+        };
+        let recorded = || {
+            meta.list_proxies()
+                .proxies
+                .into_iter()
+                .find(|proxy| proxy.proxy_addr == "127.0.0.1:17000")
+                .expect("proxy is registered")
+        };
+
+        assert!(beat(1_000).status.ok);
+        assert_eq!(recorded().boot_time_ms, 1_000);
+        assert_eq!(recorded().restart_count, 0);
+
+        assert!(beat(1_000).status.ok);
+        assert_eq!(recorded().restart_count, 0);
+
+        assert!(beat(2_000).status.ok);
+        assert_eq!(recorded().boot_time_ms, 2_000);
+        assert_eq!(recorded().restart_count, 1);
+
+        assert!(beat(0).status.ok);
+        assert_eq!(recorded().boot_time_ms, 2_000);
+        assert_eq!(recorded().restart_count, 1);
+    }
+    #[test]
     fn metaserver_tracks_proxy_heartbeat_config_changes() {
         let meta = SingleNodeMeta::default();
         meta.register_proxy(RegisterProxyRequest {
@@ -2582,6 +2645,7 @@ mod tests {
             binary_version: "v".to_string(),
         });
         let response = meta.proxy_heartbeat(ProxyHeartbeatRequest {
+            boot_time_ms: 0,
             proxy_addr: "p1".to_string(),
             namespace: "ns".to_string(),
             config_version: 2,
@@ -2601,6 +2665,7 @@ mod tests {
         });
         assert!(frozen.status.ok, "{frozen:?}");
         let response = meta.proxy_heartbeat(ProxyHeartbeatRequest {
+            boot_time_ms: 0,
             proxy_addr: "p1".to_string(),
             namespace: "ns".to_string(),
             config_version: 3,

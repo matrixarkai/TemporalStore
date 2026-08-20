@@ -1871,6 +1871,10 @@ struct HeartbeatProxyRequest {
     config_version: u64,
     #[serde(default)]
     binary_version: String,
+    /// Boot time in MICROseconds, as the legacy wire shape reports it. Normalised to
+    /// milliseconds before it reaches the meta layer.
+    #[serde(default)]
+    boot_time_us: u64,
 }
 
 #[derive(Debug, serde::Deserialize)]
