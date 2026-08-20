@@ -27,6 +27,16 @@ impl MetaBackend {
         Ok(Self::Single(meta))
     }
 
+    /// Prometheus text for the background subsystems. Empty for the raft
+    /// backend, which does not drive them -- every one of those loops declines
+    /// to start against it.
+    fn subsystem_prometheus(&self) -> String {
+        match self {
+            Self::Single(meta) => meta.subsystem_metrics().prometheus(),
+            Self::Raft(_) => String::new(),
+        }
+    }
+
     fn raft_status(&self) -> Option<RaftClusterStatus> {
         match self {
             Self::Single(_) => None,

@@ -47,6 +47,19 @@ pub enum ShardReassignmentReason {
     LocationViolation,
 }
 
+impl ShardReassignmentReason {
+    /// Stable label for metrics and logs. Matches the serde representation, so
+    /// a dashboard and a JSON payload name the same cause the same way.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OwnerUnavailable => "owner_unavailable",
+            Self::Rebalance => "rebalance",
+            Self::LocationViolation => "location_violation",
+            Self::OwnerDiverged => "owner_diverged",
+        }
+    }
+}
+
 /// A single planned shard ownership change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShardReassignment {
@@ -239,6 +252,18 @@ impl SingleNodeMeta {
     /// the new owner. This is the metaserver-driven counterpart to a datanode
     /// self-registering a shard.
     pub fn reassign_shard(&self, shard_id: ShardId, to_server: &str) -> AckResponse {
+        self.reassign_shard_with_reason(shard_id, to_server, "unspecified")
+    }
+
+    /// Reassign a shard, recording why it moved so `/metrics` can distinguish a
+    /// rebalance from an evacuation or a divergence repair.
+    pub fn reassign_shard_with_reason(
+        &self,
+        shard_id: ShardId,
+        to_server: &str,
+        reason: &str,
+    ) -> AckResponse {
+        self.metrics.record_reassignment(reason);
         self.record_mutation(MetaMutation::RegisterShard(RegisterShardRequest {
             shard_id,
             server_addr: to_server.to_string(),
