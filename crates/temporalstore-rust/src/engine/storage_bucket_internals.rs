@@ -1011,9 +1011,20 @@ pub(super) fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePag
                 .map(|address| live_page_entry(key.clone(), "context_audit", None, address)),
         );
     }
-    entries.extend(shard.context_entities.iter().map(|(key, address)| {
-        live_page_entry(key.clone(), "context_entity", None, address.clone())
-    }));
+    // Entities live grouped by node in memory but persist one entry per entity, under the same
+    // `ctx:entity:{tenant}:{node}:{entity_hash}` key as before the fold -- the collection key
+    // plus the BTree key reproduce it exactly. Keeping the on-disk key per entity is what makes
+    // this change format-compatible in both directions.
+    for (collection_key, series) in &shard.context_entities {
+        entries.extend(series.iter().map(|(entity_hash, address)| {
+            live_page_entry(
+                format!("{collection_key}:{entity_hash}"),
+                "context_entity",
+                None,
+                address.clone(),
+            )
+        }));
+    }
     for (key, series) in &shard.context_children {
         entries.extend(
             unique_timestamped_kv_page_addresses(series)
@@ -1021,9 +1032,18 @@ pub(super) fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePag
                 .map(|address| live_page_entry(key.clone(), "context_child", None, address)),
         );
     }
-    entries.extend(shard.context_embeddings.iter().map(|(key, address)| {
-        live_page_entry(key.clone(), "context_embedding", None, address.clone())
-    }));
+    // Persist one entry per embedding under the pre-fold key `ctx:embedding:{tenant}:{ref}`,
+    // rebuilt from the collection key plus the BTree key, so the on-disk shape is unchanged.
+    for (collection_key, series) in &shard.context_embeddings {
+        entries.extend(series.iter().map(|(ref_hash, address)| {
+            live_page_entry(
+                format!("{collection_key}:{ref_hash}"),
+                "context_embedding",
+                None,
+                address.clone(),
+            )
+        }));
+    }
     for (key, series) in &shard.context_summaries {
         entries.extend(
             unique_timestamped_kv_page_addresses(series)
@@ -1595,9 +1615,9 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut context_events = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut context_indexes = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut context_audits = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
-    let mut context_entities = HashMap::new();
+    let mut context_entities = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut context_children = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
-    let mut context_embeddings = HashMap::new();
+    let mut context_embeddings = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut context_summaries = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut context_compressions = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
 
@@ -1701,7 +1721,14 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             }
             "context_entity" => {
                 saw_context_entities = true;
-                context_entities.insert(entry.object_key, entry.address);
+                if let Some((collection_key, entity_hash)) =
+                    split_context_entity_key(&entry.object_key)
+                {
+                    context_entities
+                        .entry(collection_key)
+                        .or_insert_with(BTreeMap::new)
+                        .insert(entity_hash, entry.address);
+                }
             }
             "context_child" => {
                 saw_context_children = true;
@@ -1716,7 +1743,14 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             }
             "context_embedding" => {
                 saw_context_embeddings = true;
-                context_embeddings.insert(entry.object_key, entry.address);
+                if let Some((collection_key, ref_hash)) =
+                    split_context_embedding_key(&entry.object_key)
+                {
+                    context_embeddings
+                        .entry(collection_key)
+                        .or_insert_with(BTreeMap::new)
+                        .insert(ref_hash, entry.address);
+                }
             }
             "context_summary" => {
                 saw_context_summaries = true;

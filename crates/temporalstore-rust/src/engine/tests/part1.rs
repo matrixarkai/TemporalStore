@@ -153,10 +153,17 @@ fn context_models_match_keys_timeline_pages_and_filters() {
         },
     });
     assert!(entity_upsert.status.ok);
+    // The collection key, matching the event contract asserted below ("ctx:event:11:42").
+    // Entities are grouped by node in shard state now, so the object key a command reports has
+    // to be the key that state is stored under -- every key-driven mechanism in engine.rs
+    // (key-state capture/apply, tombstone removal, membership) looks it up directly. The
+    // per-entity key "ctx:entity:11:42:7001" still exists where it must: as the page object id,
+    // so two entities of one node cannot share a page, and as the persisted entry key, which is
+    // what keeps the on-disk format identical across this change.
     assert!(matches!(
         entity_upsert.response,
         CommandResponse::ContextObjectKey { ref object_key }
-            if object_key == "ctx:entity:11:42:7001"
+            if object_key == "ctx:entity:11:42"
     ));
     let entity_get = engine.execute(ExecuteRequest {
         shard_id: 1,

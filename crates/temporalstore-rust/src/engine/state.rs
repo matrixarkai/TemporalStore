@@ -125,12 +125,30 @@ pub(super) struct ShardState {
     // the oldest pending window idempotently (stable compression id per window).
     #[serde(skip)]
     pub(super) context_compression_watermark: HashMap<String, u64>,
+    // Entities are grouped by their OWNING NODE, not one map key per entity: the key is
+    // `ctx:entity:{tenant}:{node}` (context_entity_collection_key) and the BTreeMap holds every
+    // entity of that node. The inner u64 is the ENTITY HASH, not a timestamp -- unlike
+    // context_events/indexes/audits, which are time-keyed. That keeps upsert as an overwrite of
+    // one slot (an entity has one current value; its history is the separate
+    // context_entity_update_audit series) while making a node's entities enumerable, which the
+    // per-entity key shape could not do: a HashMap cannot prefix-scan, so ContextQueryEntities
+    // had to be handed every entity_hash by its caller.
     #[serde(default)]
-    pub(super) context_entities: HashMap<String, BlockAddress>,
+    pub(super) context_entities: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    // No migration field is needed: the PERSISTED entry still carries the per-entity key
+    // `ctx:entity:{tenant}:{node}:{entity_hash}`, which the load path splits back into
+    // (collection key, entity hash). The on-disk shape is unchanged in both directions, so an
+    // index written before this fold loads natively and one written after it stays readable by
+    // an older binary.
     #[serde(default)]
     pub(super) context_children: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    // Grouped like context_entities, but by TENANT rather than node: a ContextEmbedding carries
+    // only ref_hash (itself hash(tenant, node, label)), so the node it belongs to cannot be
+    // recovered from the record and cannot be the group key without a schema change. The inner
+    // u64 is the ref hash, so upsert overwrites one slot -- an embedding has one current vector.
+    // Key: `ctx:embedding:{tenant}` (context_embedding_collection_key).
     #[serde(default)]
-    pub(super) context_embeddings: HashMap<String, BlockAddress>,
+    pub(super) context_embeddings: HashMap<String, BTreeMap<u64, BlockAddress>>,
     #[serde(default)]
     pub(super) context_summaries: HashMap<String, BTreeMap<u64, BlockAddress>>,
     #[serde(default)]

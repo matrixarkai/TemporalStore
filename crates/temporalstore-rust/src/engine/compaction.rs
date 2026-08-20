@@ -87,9 +87,25 @@ pub(super) fn model_compaction_policy_reports(
             "control_state"
         } else if shard.context_nodes.contains_key(key) {
             "context_node"
-        } else if shard.context_entities.contains_key(key) {
+        } else if split_context_entity_key(key)
+            .map(|(collection_key, entity_hash)| {
+                shard
+                    .context_entities
+                    .get(&collection_key)
+                    .is_some_and(|series| series.contains_key(&entity_hash))
+            })
+            .unwrap_or(false)
+        {
             "context_entity"
-        } else if shard.context_embeddings.contains_key(key) {
+        } else if split_context_embedding_key(key)
+            .map(|(collection_key, ref_hash)| {
+                shard
+                    .context_embeddings
+                    .get(&collection_key)
+                    .is_some_and(|series| series.contains_key(&ref_hash))
+            })
+            .unwrap_or(false)
+        {
             "context_embedding"
         } else {
             "string"
@@ -332,8 +348,11 @@ pub(super) fn compaction_model_layout_reports(
     ));
     reports.push(compaction_layout_from_addresses(
         "context_entity",
-        shard.context_entities.len(),
-        shard.context_entities.values().cloned(),
+        shard.context_entities.values().map(BTreeMap::len).sum(),
+        shard
+            .context_entities
+            .values()
+            .flat_map(|series| series.values().cloned()),
         &slab_page_counts,
         None,
     ));
@@ -344,8 +363,11 @@ pub(super) fn compaction_model_layout_reports(
     ));
     reports.push(compaction_layout_from_addresses(
         "context_embedding",
-        shard.context_embeddings.len(),
-        shard.context_embeddings.values().cloned(),
+        shard.context_embeddings.values().map(BTreeMap::len).sum(),
+        shard
+            .context_embeddings
+            .values()
+            .flat_map(|series| series.values().cloned()),
         &slab_page_counts,
         None,
     ));

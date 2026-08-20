@@ -75,12 +75,56 @@ pub(super) fn context_entity_key(tenant_hash: u64, node_hash: u64, entity_hash: 
     format!("ctx:entity:{tenant_hash}:{node_hash}:{entity_hash}")
 }
 
+/// Split a persisted per-entity key back into (collection key, entity hash).
+///
+/// The index stores entities grouped by node, but the PERSISTED page entry still carries the
+/// per-entity key `ctx:entity:{tenant}:{node}:{entity_hash}` -- that is what keeps the on-disk
+/// shape identical across this fold in both directions. Load calls this to rebuild the grouping.
+/// Returns None for a key that does not carry a numeric entity hash, so a malformed or
+/// foreign-shaped entry is skipped rather than folded under a wrong node.
+pub(super) fn split_context_entity_key(object_key: &str) -> Option<(String, u64)> {
+    let (collection_key, entity_hash) = object_key.rsplit_once(':')?;
+    if !collection_key.starts_with("ctx:entity:") {
+        return None;
+    }
+    // The collection key itself ends in the node hash, so it must still hold four segments
+    // (ctx, entity, tenant, node) once the entity hash is removed -- otherwise this key WAS a
+    // collection key and splitting it would silently reinterpret the node hash as an entity.
+    if collection_key.split(':').count() != 4 {
+        return None;
+    }
+    Some((collection_key.to_string(), entity_hash.parse::<u64>().ok()?))
+}
+
 pub(super) fn context_entity_collection_key(tenant_hash: u64, node_hash: u64) -> String {
     format!("ctx:entity:{tenant_hash}:{node_hash}")
 }
 
 pub(super) fn context_child_key(tenant_hash: u64, parent_hash: u64) -> String {
     format!("ctx:child:{tenant_hash}:{parent_hash}")
+}
+
+pub(super) fn context_embedding_collection_key(tenant_hash: u64) -> String {
+    format!("ctx:embedding:{tenant_hash}")
+}
+
+/// Split a persisted per-embedding key into (collection key, ref hash).
+///
+/// Mirrors `split_context_entity_key`: the index groups embeddings, but the persisted entry keeps
+/// the per-embedding key `ctx:embedding:{tenant}:{ref_hash}`, which is what keeps the on-disk
+/// shape identical in both directions across this fold.
+pub(super) fn split_context_embedding_key(object_key: &str) -> Option<(String, u64)> {
+    let (collection_key, ref_hash) = object_key.rsplit_once(':')?;
+    if !collection_key.starts_with("ctx:embedding:") {
+        return None;
+    }
+    // ctx, embedding, tenant -- three segments once the ref hash is removed. A key that already
+    // IS a collection key has only two and must not be split, or the tenant hash would be
+    // reinterpreted as a ref.
+    if collection_key.split(':').count() != 3 {
+        return None;
+    }
+    Some((collection_key.to_string(), ref_hash.parse::<u64>().ok()?))
 }
 
 pub(super) fn context_embedding_key(tenant_hash: u64, ref_hash: u64) -> String {
@@ -727,7 +771,8 @@ pub(super) fn load_context_embedding(
 ) -> Option<ContextEmbedding> {
     shard
         .context_embeddings
-        .get(&context_embedding_key(tenant_hash, ref_hash))
+        .get(&context_embedding_collection_key(tenant_hash))
+        .and_then(|series| series.get(&ref_hash))
         .and_then(|address| {
             read_page_bytes(cache, page_store, shard_id, address)
                 .and_then(|bytes| context_from_bytes::<ContextEmbedding>(&bytes))

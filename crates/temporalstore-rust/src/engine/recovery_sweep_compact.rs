@@ -497,7 +497,10 @@ impl TemporalEngine {
             &self.cache,
             shard_id,
             "context_embedding",
-            shard.context_embeddings.values_mut(),
+            shard
+                .context_embeddings
+                .values_mut()
+                .flat_map(|series| series.values_mut()),
             &mut rewrite_stats,
         )?;
         for series in shard.context_summaries.values_mut() {
@@ -525,7 +528,10 @@ impl TemporalEngine {
             &self.cache,
             shard_id,
             "context_entity",
-            shard.context_entities.values_mut(),
+            shard
+                .context_entities
+                .values_mut()
+                .flat_map(|series| series.values_mut()),
             &mut rewrite_stats,
         )?;
             Ok(())
