@@ -21,6 +21,7 @@ impl ProxyService {
             ("account_rejection", stats.account_rejections),
             ("inflight_rejection", stats.inflight_rejections),
             ("heartbeat", stats.heartbeat_total),
+            ("heartbeat_slow", stats.heartbeat_slow_total),
             ("auto_register", stats.auto_register_total),
         ] {
             push_proxy_metric(

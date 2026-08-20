@@ -205,6 +205,10 @@ pub struct ProxyStats {
     pub account_rejections: u64,
     pub inflight_rejections: u64,
     pub heartbeat_total: u64,
+    /// Beats whose round-trip consumed the whole interval, so the loop had no time left to
+    /// sleep. A rising count means the heartbeat period is being set by metaserver latency
+    /// rather than by the configured interval.
+    pub heartbeat_slow_total: u64,
     pub auto_register_total: u64,
 }
 
@@ -1214,6 +1218,12 @@ impl ProxyService {
     ) -> (u16, Vec<u8>) {
         let status = self.reject(status, kind);
         crate::http::json_response(proxy_rejection_http_status(&status.code), &status)
+    }
+
+    /// Read-only view of the live options, for tests and callers that need to see what the
+    /// metaserver has granted this proxy.
+    pub fn config_snapshot(&self) -> ProxyOptions {
+        self.options()
     }
 
     pub(super) fn inflight_snapshot(&self) -> (u64, u64) {
@@ -2438,6 +2448,44 @@ mod tests {
         assert!(restarted.info().boot_time_ms >= info.boot_time_ms);
     }
 
+    #[test]
+    fn proxy_forgets_config_when_the_metaserver_rejects_it_but_not_when_it_is_unreachable() {
+        // Explicit rejection: the metaserver answered and said no. The proxy must stop acting
+        // on a grant that has been withdrawn.
+        let rejected = ProxyService::new(ProxyOptions {
+            meta_addr: "127.0.0.1:1".to_string(),
+            namespace: "granted-ns".to_string(),
+            config_version: 7,
+            ..ProxyOptions::default()
+        });
+        rejected.clear_config_authority();
+        let after = rejected.config_snapshot();
+        assert!(after.namespace.is_empty());
+        assert_eq!(after.config_version, 0);
+
+        // Clearing twice is a no-op, so a proxy that is being rejected every few milliseconds
+        // does not churn its config version on every beat.
+        let before_version = proxy_config_version(&rejected.config_snapshot());
+        rejected.clear_config_authority();
+        assert_eq!(
+            proxy_config_version(&rejected.config_snapshot()),
+            before_version
+        );
+
+        // Transport failure: an unreachable metaserver must NOT cost the proxy its config.
+        // heartbeat_to_meta against a dead address takes the Err branch.
+        let unreachable = ProxyService::new(ProxyOptions {
+            meta_addr: "127.0.0.1:1".to_string(),
+            namespace: "granted-ns".to_string(),
+            config_version: 7,
+            ..ProxyOptions::default()
+        });
+        let response = unreachable.heartbeat_to_meta();
+        assert!(!response.status.ok);
+        let kept = unreachable.config_snapshot();
+        assert_eq!(kept.namespace, "granted-ns");
+        assert_eq!(kept.config_version, 7);
+    }
     #[test]
     fn proxy_policy_blocks_writes_not_serving_and_drop_percent() {
         let readonly = ProxyService::new(ProxyOptions {
