@@ -413,6 +413,86 @@ fn context_extract_gates_l1_for_thin_sources() {
     assert_eq!(rich.embedding_generation.requested_vector_count, 3);
 }
 
+#[test]
+fn context_extract_stores_embedding_vectors_on_the_records_themselves() {
+    // Step 2 of the embedding fold populates event and summary records with their own vector,
+    // alongside the separate ContextEmbedding rows readers still use. Nothing READS the inline
+    // field yet, so without this assertion "population" could be silently writing empty vectors
+    // and every existing test would still pass.
+    let engine = test_engine();
+    let report = extract_context(
+        &engine,
+        ContextExtractRequest {
+            shard_id: 1,
+            tenant_hash: 77,
+            source_kind: ContextSourceKind::Chat,
+            source_id: "inline-vector".to_string(),
+            title: "note".to_string(),
+            body: "Checkout failed during payment. The risk score spiked sharply.                    The fraud team paused the account."
+                .to_string(),
+            timestamp_ms: 7,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(report.status.ok, "{:?}", report.status);
+    // Rich body -> L1 is warranted, so all three vectors exist: node_l0, node_l1, event_text.
+    assert_eq!(report.embedding_generation.requested_vector_count, 3);
+
+    let events = match engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQueryEvents {
+                tenant_hash: 77,
+                node_hash: report.node.node_hash,
+                start_time_ms: 0,
+                end_time_ms: 4_000_000_000_000,
+                limit: None,
+                max_scan: None,
+                current_valid_only: false,
+                as_of_ms: 0,
+                kinds: Vec::new(),
+                statuses: Vec::new(),
+                min_confidence: 0.0,
+                min_importance: 0.0,
+            },
+        })
+        .response
+    {
+        CommandResponse::ContextEvents { events, .. } => events,
+        other => panic!("expected events, got {other:?}"),
+    };
+    let stored = events.first().expect("the extract wrote an event");
+    assert!(
+        !stored.vector.is_empty(),
+        "event was stored without its inline vector"
+    );
+
+    let summaries = match engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQuerySummaries {
+                tenant_hash: 77,
+                node_hash: report.node.node_hash,
+                level: 1,
+                as_of_ms: 4_000_000_000_000,
+                limit: None,
+            },
+        })
+        .response
+    {
+        CommandResponse::ContextSummaries { summaries, .. } => summaries,
+        other => panic!("expected summaries, got {other:?}"),
+    };
+    assert!(!summaries.is_empty(), "the extract wrote no summaries");
+    for summary in &summaries {
+        assert!(
+            !summary.vector.is_empty(),
+            "summary level {} was stored without its inline vector",
+            summary.level
+        );
+    }
+}
+
 // shared-corpus: context_compression_secondary_index_query_debug_flow
 #[test]
 fn context_workflow_extracts_retrieves_and_injects_mock_context() {

@@ -703,6 +703,7 @@ impl ContextWire for ContextEvent {
         encode_fixed32_field(&mut out, 7, self.importance.to_bits());
         encode_bytes_field(&mut out, 8, self.text.as_bytes());
         encode_varint_field(&mut out, 9, self.primary_time_ms());
+        encode_vector_field(&mut out, &self.vector);
         out
     }
 
@@ -748,6 +749,9 @@ impl ContextWire for ContextEvent {
                 (9, 0) => value.ingestion_time_ms = decode_varint(bytes, &mut cursor)?,
                 (9, 5) => value.importance = f32::from_bits(decode_fixed32(bytes, &mut cursor)?),
                 (10, 2) => value.text = decode_string(bytes, &mut cursor)?,
+                (CONTEXT_VECTOR_FIELD, 2) => {
+                    value.vector = unpack_f32_vector(&decode_bytes(bytes, &mut cursor)?)
+                }
                 (11, 2) => value.source_ref = decode_string(bytes, &mut cursor)?,
                 (12, 0) => value
                     .related_node_hashes
@@ -955,6 +959,7 @@ impl ContextWire for ContextEntity {
         for source_event_hash in &self.source_event_hashes {
             encode_varint_field(&mut out, 9, *source_event_hash);
         }
+        encode_vector_field(&mut out, &self.vector);
         out
     }
 
@@ -996,6 +1001,9 @@ impl ContextWire for ContextEntity {
                             .source_event_hashes
                             .push(decode_varint(&packed, &mut packed_cursor)?);
                     }
+                }
+                (CONTEXT_VECTOR_FIELD, 2) => {
+                    value.vector = unpack_f32_vector(&decode_bytes(bytes, &mut cursor)?)
                 }
                 (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
             }
@@ -1088,6 +1096,7 @@ impl ContextWire for ContextSummary {
         encode_varint_field(&mut out, 3, u64::from(self.level));
         encode_bytes_field(&mut out, 4, self.text.as_bytes());
         encode_varint_field(&mut out, 5, self.valid_from_ms);
+        encode_vector_field(&mut out, &self.vector);
         out
     }
 
@@ -1107,6 +1116,9 @@ impl ContextWire for ContextSummary {
                 (3, 0) => value.level = u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?,
                 (4, 2) => value.text = decode_string(bytes, &mut cursor)?,
                 (5, 0) => value.valid_from_ms = decode_varint(bytes, &mut cursor)?,
+                (CONTEXT_VECTOR_FIELD, 2) => {
+                    value.vector = unpack_f32_vector(&decode_bytes(bytes, &mut cursor)?)
+                }
                 (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
             }
         }
@@ -1641,6 +1653,38 @@ pub enum Command {
         #[serde(default)]
         compression_limit: Option<usize>,
     },
+}
+
+/// Field number carrying the inline embedding vector on ContextEvent/Entity/Summary.
+///
+/// These three types have HAND-WRITTEN protobuf codecs; a serde field alone is invisible to
+/// them and is silently dropped on persist -- the struct is populated in memory and the value
+/// is gone by the time it reaches a page, with no error anywhere. 20 is clear of every field
+/// number the three messages already use.
+const CONTEXT_VECTOR_FIELD: u64 = 20;
+
+/// f32 vector -> packed little-endian bytes. Explicit LE, not native, so a page written on one
+/// architecture decodes on another.
+fn pack_f32_vector(vector: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(vector.len() * 4);
+    for value in vector {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    out
+}
+
+fn unpack_f32_vector(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect()
+}
+
+fn encode_vector_field(out: &mut Vec<u8>, vector: &[f32]) {
+    if vector.is_empty() {
+        return;
+    }
+    encode_bytes_field(out, CONTEXT_VECTOR_FIELD, &pack_f32_vector(vector));
 }
 
 fn encode_varint_field(out: &mut Vec<u8>, field_number: u64, value: u64) {
