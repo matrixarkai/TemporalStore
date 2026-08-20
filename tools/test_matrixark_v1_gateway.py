@@ -486,8 +486,8 @@ def _extract_streamed_body(conn):
 class EnforcedAuthTest(unittest.TestCase):
     """MATRIXARK_AUTH_ENFORCED=1: hashed per-tenant keys, demo rejected, tenant identity pinned."""
 
-    KEY_A = "sk_live_tenantA_secret"
-    KEY_B = "sk_live_tenantB_secret"
+    KEY_A = "testkey_tenantA_secret"
+    KEY_B = "testkey_tenantB_secret"
 
     def setUp(self):
         self.s = _FakeServer()
@@ -643,11 +643,11 @@ class EnforcedScopeEnforcementTest(unittest.TestCase):
     """MATRIXARK_AUTH_ENFORCED=1: per-key `scopes` + `allowed_user_ids`/`allowed_session_ids`
     enforced at the edge. 401 = missing/invalid/expired key; 403 = valid key, wrong scope/user."""
 
-    RETRIEVE_KEY = "sk_live_retrieve_only"
-    INGEST_KEY = "sk_live_ingest_only"
-    FULL_KEY = "sk_live_full_scopes"
-    USER_KEY = "sk_live_user_locked"
-    SESSION_KEY = "sk_live_session_locked"
+    RETRIEVE_KEY = "testkey_retrieve_only"
+    INGEST_KEY = "testkey_ingest_only"
+    FULL_KEY = "testkey_full_scopes"
+    USER_KEY = "testkey_user_locked"
+    SESSION_KEY = "testkey_session_locked"
 
     _ALL_SCOPES = ["context:ingest", "context:retrieve", "context:feedback", "context:replay"]
 
@@ -781,12 +781,12 @@ class EnforcedScopeEnforcementTest(unittest.TestCase):
 
     def test_bad_key_still_401(self):
         st, _, _ = drive(self.app, path="/v1/ingest", body={"records": [1]},
-                         headers=self._bearer("sk_live_nope"))
+                         headers=self._bearer("testkey_nope"))
         self.assertEqual(401, st)
 
     def test_expired_key_still_401(self):
         # A JSONL keystore record whose expires_at_ms is in the past is skipped -> 401 (not 403).
-        expired_key = "sk_live_expired"
+        expired_key = "testkey_expired"
         record = {
             "record_type": "matrixark_api_key",
             "api_key_hash": gw._secret_hash(expired_key),
@@ -813,7 +813,7 @@ class EnforcedScopeEnforcementTest(unittest.TestCase):
     def test_legacy_plain_keystore_is_unrestricted(self):
         # Plain {sha256: {tenant_id, account_id}} form (no `scopes`) -> UNRESTRICTED: every route
         # allowed, exactly as before per-key scopes existed.
-        legacy_key = "sk_live_legacy_plain"
+        legacy_key = "testkey_legacy_plain"
         store = {gw._secret_hash(legacy_key): {"tenant_id": "t", "account_id": "acct"}}
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
             json.dump(store, fh)
@@ -920,10 +920,10 @@ class McpPerToolScopeTest(unittest.TestCase):
     user/session locks apply to the call's `params.arguments.scope`. Legacy/dev keys stay
     unrestricted; missing/bad keys still 401."""
 
-    RETRIEVE_KEY = "sk_live_mcp_retrieve_only"
-    INGEST_KEY = "sk_live_mcp_ingest_only"
-    DATA_KEY = "sk_live_mcp_data_only"          # all context scopes, NO admin scope
-    USER_KEY = "sk_live_mcp_user_locked"
+    RETRIEVE_KEY = "testkey_mcp_retrieve_only"
+    INGEST_KEY = "testkey_mcp_ingest_only"
+    DATA_KEY = "testkey_mcp_data_only"          # all context scopes, NO admin scope
+    USER_KEY = "testkey_mcp_user_locked"
 
     _DATA_SCOPES = ["context:ingest", "context:retrieve", "context:feedback", "context:replay"]
 
@@ -1027,14 +1027,14 @@ class McpPerToolScopeTest(unittest.TestCase):
         self.assertEqual([], self.s.handled)
 
     def test_bad_key_still_401(self):
-        st, _, _ = self._mcp(self._call("matrixark_retrieve", {"query": "x"}), "sk_live_nope")
+        st, _, _ = self._mcp(self._call("matrixark_retrieve", {"query": "x"}), "testkey_nope")
         self.assertEqual(401, st)
 
     # ---- backward compatibility ----------------------------------------------------------------
     def test_legacy_plain_keystore_mcp_unrestricted(self):
         # Legacy plain {sha256: {tenant_id, account_id}} (scopes=None) -> /v1/mcp UNRESTRICTED:
         # even an admin tool dispatches, exactly as before per-tool gating existed.
-        legacy_key = "sk_live_mcp_legacy"
+        legacy_key = "testkey_mcp_legacy"
         store = {gw._secret_hash(legacy_key): {"tenant_id": "t", "account_id": "acct"}}
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
             json.dump(store, fh)
@@ -1068,8 +1068,8 @@ class UsageMeterTest(unittest.TestCase):
     (total + ingest/retrieve split + bytes + last_used); the /v1/admin/api_key_usage read is admin-
     scope gated; dev/anonymous traffic is never metered; a metering failure never breaks a request."""
 
-    DATA_KEY = "sk_live_usage_data"          # context scopes only, NO admin scope
-    ADMIN_KEY = "sk_live_usage_admin"        # carries admin:api_key -> may read usage
+    DATA_KEY = "testkey_usage_data"          # context scopes only, NO admin scope
+    ADMIN_KEY = "testkey_usage_admin"        # carries admin:api_key -> may read usage
 
     _DATA_SCOPES = ["context:ingest", "context:retrieve"]
 
@@ -1194,9 +1194,9 @@ class QuotaEnforcementTest(unittest.TestCase):
     requests per window, then 429 quota_exceeded; a key with no quota is unlimited; dev/anonymous
     traffic is never limited; a forced quota-check error never blocks a legitimate request."""
 
-    QUOTA_KEY = "sk_live_quota_3"        # request_quota=3 (lifetime window)
-    WINDOW_KEY = "sk_live_quota_window"  # request_quota=2, quota_window=100s
-    FREE_KEY = "sk_live_no_quota"        # no quota -> unlimited
+    QUOTA_KEY = "quota-key-for-tests"        # request_quota=3 (lifetime window)
+    WINDOW_KEY = "window-key-for-tests"  # request_quota=2, quota_window=100s
+    FREE_KEY = "free-key-for-tests"        # no quota -> unlimited
 
     def _hashed(self):
         return {

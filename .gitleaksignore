@@ -1,0 +1,13 @@
+# Reviewed findings that are not secrets, ignored by exact fingerprint
+# (commit:file:rule:line) so the scanner keeps full strength everywhere else.
+#
+# A fingerprint pins one occurrence in one commit. It cannot hide a later leak in
+# the same file, which is what a path entry in .gitleaks.toml would do -- that is
+# why these live here instead.
+#
+# Gateway quota-test fixture: a fake api key in a unittest.TestCase, hashed
+# through the gateway's own key-hashing helper to build a test keystore. It was
+# flagged for wearing the prefix that denotes a production secret key; the
+# working tree no longer does. History is not rewritten on a public repository
+# to erase a fake fixture, so the historical occurrence is acknowledged here.
+fbf41d4f5c64426496016936e6b3ebcbeecbff24:tools/test_matrixark_v1_gateway.py:generic-api-key:1197
