@@ -511,26 +511,15 @@ fn read_via_server_raft(
     // APPLIED up to that index could answer with stale/half-applied state. Wait for the target
     // to apply through the returned read_index before serving. Gated so default behavior is
     // unchanged.
-    if raft_applied_read_safety_enabled() {
-        cluster.wait_for_applied_index(
-            target_node_id,
-            read_index_response.read_index,
-            state.read_policy.read_index_timeout_ms,
-        )?;
-    }
+    // R3: a replica can hold commit_index == leader_commit while its state machine has applied
+    // only a prefix of that. Wait for apply to reach the read index before serving, so the read
+    // never returns half-applied state as fresh.
+    cluster.wait_for_applied_index(
+        target_node_id,
+        read_index_response.read_index,
+        state.read_policy.read_index_timeout_ms,
+    )?;
     cluster.read_from_replica(target_node_id, command)
-}
-
-/// R3 gate mirror for the server read path (see `raft::raft_applied_read_safety_on`).
-fn raft_applied_read_safety_enabled() -> bool {
-    matches!(
-        std::env::var("TS_RAFT_APPLIED_READ_SAFETY")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
 }
 
 fn command_response(

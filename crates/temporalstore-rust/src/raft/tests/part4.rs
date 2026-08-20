@@ -2131,7 +2131,6 @@ impl Drop for EnvFlagGuard {
 /// not answer a follower read with that half-applied state as if it were fresh.
 #[test]
 fn r3_replica_with_applied_below_commit_does_not_serve_unapplied_as_fresh() {
-    let _guard = EnvFlagGuard::set("TS_RAFT_APPLIED_READ_SAFETY");
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
     cluster
         .propose(Command::StringSet {
@@ -2188,7 +2187,6 @@ fn r3_replica_with_applied_below_commit_does_not_serve_unapplied_as_fresh() {
 /// disjoint partitions can never both promote a leader.
 #[test]
 fn r5_quorum_election_requires_majority_and_minority_cannot_elect() {
-    let _guard = EnvFlagGuard::set("TS_RAFT_QUORUM_ELECTION");
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
 
     // Healthy quorum: node 2 collects a majority of grants and is promoted.
@@ -2531,7 +2529,6 @@ fn raft_wal_coalesce_preserves_committed_entries_across_restart() {
 #[test]
 fn raft_wal_coalesce_keeps_hard_state_vote_durable_before_request() {
     let _coalesce = EnvFlagGuard::set("TS_RAFT_WAL_COALESCE");
-    let _vote = EnvFlagGuard::set("TS_RAFT_PERSIST_VOTE_BEFORE_REQUEST");
     let dir = tempfile::tempdir().unwrap();
     let term_before;
     {
@@ -2640,3 +2637,137 @@ fn raft_propose_serialize_commits_concurrent_proposals_in_order() {
 }
 
 
+
+fn r8_branch_entry(index: u64, term: u64, value: &str) -> RaftLogEntry {
+    RaftLogEntry {
+        term,
+        index,
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "k".to_string(),
+            value: value.as_bytes().to_vec(),
+        },
+    }
+}
+
+/// R8 (Raft §7): a snapshot install whose boundary entry does NOT term-match the local log must
+/// discard the entire log. The entries following a divergent boundary belong to an uncommitted,
+/// superseded branch; retaining them folds that dead branch onto the snapshot's state.
+#[test]
+fn r8_snapshot_install_with_divergent_boundary_discards_whole_log() {
+    let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+    cluster
+        .propose(Command::StringSet {
+            key: "k".to_string(),
+            value: b"v1".to_vec(),
+        })
+        .unwrap();
+    cluster
+        .propose(Command::StringSet {
+            key: "k".to_string(),
+            value: b"v2".to_vec(),
+        })
+        .unwrap();
+    assert_eq!(cluster.commit_index(3).unwrap(), 2);
+
+    // Rewrite node 3's log as a SUPERSEDED branch: the boundary index (2) carries term 1, and
+    // indexes 3-4 sit past it on that same dead branch.
+    cluster
+        .set_node_log_for_test(
+            3,
+            vec![
+                r8_branch_entry(1, 1, "v1"),
+                r8_branch_entry(2, 1, "v2"),
+                r8_branch_entry(3, 1, "dead-branch-3"),
+                r8_branch_entry(4, 1, "dead-branch-4"),
+            ],
+        )
+        .unwrap();
+
+    // A snapshot from the WINNING branch: same boundary index (2), different term (5).
+    cluster
+        .install_snapshot(
+            3,
+            RaftSnapshot {
+                shard_id: 1,
+                last_included_term: 5,
+                last_included_index: 2,
+                external_snapshot_ref: None,
+                entries: vec![r8_branch_entry(2, 5, "winning")],
+                state_image: None,
+            },
+        )
+        .unwrap();
+
+    assert!(
+        cluster.node_log_index_terms_for_test(3).unwrap().is_empty(),
+        "divergent boundary term must discard the whole log, got {:?}",
+        cluster.node_log_index_terms_for_test(3).unwrap()
+    );
+    assert_eq!(
+        cluster
+            .read_from_replica(
+                3,
+                Command::StringGet {
+                    key: "k".to_string(),
+                },
+            )
+            .unwrap(),
+        CommandResponse::Bytes {
+            value: Some(b"winning".to_vec())
+        },
+        "state must come from the snapshot, not the superseded branch"
+    );
+}
+
+/// R8 is CONDITIONAL, not a blanket truncation: when the boundary entry term-matches the
+/// snapshot, the log tail past the boundary is a legitimate continuation and must be retained.
+#[test]
+fn r8_snapshot_install_with_matching_boundary_retains_tail() {
+    let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+    cluster
+        .propose(Command::StringSet {
+            key: "k".to_string(),
+            value: b"v1".to_vec(),
+        })
+        .unwrap();
+    cluster
+        .propose(Command::StringSet {
+            key: "k".to_string(),
+            value: b"v2".to_vec(),
+        })
+        .unwrap();
+
+    // Boundary (index 2) is at term 1, and so is the snapshot -- the tail is a real continuation.
+    cluster
+        .set_node_log_for_test(
+            3,
+            vec![
+                r8_branch_entry(1, 1, "v1"),
+                r8_branch_entry(2, 1, "v2"),
+                r8_branch_entry(3, 1, "tail-3"),
+                r8_branch_entry(4, 1, "tail-4"),
+            ],
+        )
+        .unwrap();
+
+    cluster
+        .install_snapshot(
+            3,
+            RaftSnapshot {
+                shard_id: 1,
+                last_included_term: 1,
+                last_included_index: 2,
+                external_snapshot_ref: None,
+                entries: vec![r8_branch_entry(2, 1, "v2")],
+                state_image: None,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        cluster.node_log_index_terms_for_test(3).unwrap(),
+        vec![(3, 1), (4, 1)],
+        "a term-matching boundary must retain the tail past the snapshot"
+    );
+}
