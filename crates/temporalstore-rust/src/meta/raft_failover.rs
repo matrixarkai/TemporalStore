@@ -96,6 +96,7 @@ mod tests {
 
     fn server(addr: &str, node_id: u64, state: MetaEntityState) -> ServerMetaInfo {
         ServerMetaInfo {
+            freeze_reason: FreezeReason::Unspecified,
             server_addr: addr.to_string(),
             node_id,
             location: "zone-a".to_string(),

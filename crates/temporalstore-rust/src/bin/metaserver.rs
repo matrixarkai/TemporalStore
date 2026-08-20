@@ -12,7 +12,8 @@ use temporalstore_rust::http::{
 };
 use temporalstore_rust::meta::{
     AckResponse, AddNamespaceRequest, AddTableRequest, AutoRebalanceOptions, ConvictionPolicy,
-    DeleteTableRequest, FailureDetectorOptions, FreezeStaleServersRequest, GetShardResponse,
+    DeleteTableRequest, FailureDetectorOptions, FreezeReason, FreezeStaleServersRequest,
+    GetShardResponse,
     FreezeAgingOptions, MetaRetentionOptions,
     GetTableTopologyRequest, LoadFinishRequest,
     MetaSnapshot, MetaSnapshotFileRequest, MetaSnapshotFileResponse, MetaSnapshotResponse,
@@ -1420,6 +1421,9 @@ fn handle(
         ("POST", "/servers/freeze") => parse_or(&request.body, |req: StateChangeRequest| {
             backend_call!(meta, freeze_server, req)
         }),
+        ("POST", "/servers/unfreeze") => parse_or(&request.body, |req: StateChangeRequest| {
+            json_response(200, &backend_call!(meta, unfreeze_server, req))
+        }),
         ("POST", "/servers/drop") => parse_or(&request.body, |req: StateChangeRequest| {
             backend_call!(meta, drop_server, req)
         }),
@@ -1434,6 +1438,9 @@ fn handle(
         ("GET", "/proxies") => json_response(200, &backend_call!(meta, list_proxies)),
         ("POST", "/proxies/freeze") => parse_or(&request.body, |req: StateChangeRequest| {
             backend_call!(meta, freeze_proxy, req)
+        }),
+        ("POST", "/proxies/unfreeze") => parse_or(&request.body, |req: StateChangeRequest| {
+            json_response(200, &backend_call!(meta, unfreeze_proxy, req))
         }),
         ("POST", "/proxies/drop") => parse_or(&request.body, |req: StateChangeRequest| {
             backend_call!(meta, drop_proxy, req)
@@ -1977,6 +1984,7 @@ mod tests {
             binary_version: "v1".to_string(),
         });
         meta.freeze_proxy(StateChangeRequest {
+            reason: FreezeReason::Unspecified,
             endpoint: "metrics-proxy-a".to_string(),
             freeze_cooldown_ms: 0,
         });
@@ -2060,6 +2068,7 @@ mod tests {
             binary_version: "v1".to_string(),
         });
         meta.freeze_proxy(StateChangeRequest {
+            reason: FreezeReason::Unspecified,
             endpoint: "proxy-route-a".to_string(),
             freeze_cooldown_ms: 0,
         });
@@ -2107,6 +2116,7 @@ mod tests {
         assert!(snapshot_path.exists());
 
         meta.drop_proxy(StateChangeRequest {
+            reason: FreezeReason::Unspecified,
             endpoint: "proxy-route-a".to_string(),
             freeze_cooldown_ms: 0,
         });
@@ -2306,6 +2316,7 @@ mod tests {
                 method: "POST".to_string(),
                 path: "/servers/drop".to_string(),
                 body: serde_json::to_vec(&StateChangeRequest {
+                    reason: FreezeReason::Unspecified,
                     endpoint: "raft-server-a".to_string(),
                     freeze_cooldown_ms: 0,
                 })

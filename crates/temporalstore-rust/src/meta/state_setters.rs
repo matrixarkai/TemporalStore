@@ -25,7 +25,11 @@ impl SingleNodeMeta {
             MetaEntityState::Dropped => {
                 self.record_mutation(MetaMutation::DropServer(request.clone()));
             }
-            MetaEntityState::Normal => {}
+            // Recorded like any other state change: an unfreeze that is not
+            // replayed would be silently undone by mutation-log recovery.
+            MetaEntityState::Normal => {
+                self.record_mutation(MetaMutation::UnfreezeServer(request.clone()));
+            }
         }
         self.apply_set_server_state(request, next)
     }
@@ -47,10 +51,12 @@ impl SingleNodeMeta {
             MetaEntityState::Frozen => {
                 server.frozen_since_ms = now;
                 server.freeze_cooldown_until_ms = now.saturating_add(request.freeze_cooldown_ms);
+                server.freeze_reason = request.reason;
             }
             MetaEntityState::Normal => {
                 server.frozen_since_ms = 0;
                 server.freeze_cooldown_until_ms = 0;
+                server.freeze_reason = FreezeReason::Unspecified;
             }
             MetaEntityState::Dropped => {}
         }
@@ -59,7 +65,7 @@ impl SingleNodeMeta {
             &mut state,
             "server_state",
             format!("server:{}", request.endpoint),
-            format!("state={}", next.as_str()),
+            format!("state={},reason={}", next.as_str(), request.reason.as_str()),
         );
         AckResponse {
             status: Status::ok(),
@@ -85,7 +91,9 @@ impl SingleNodeMeta {
             MetaEntityState::Dropped => {
                 self.record_mutation(MetaMutation::DropProxy(request.clone()));
             }
-            MetaEntityState::Normal => {}
+            MetaEntityState::Normal => {
+                self.record_mutation(MetaMutation::UnfreezeProxy(request.clone()));
+            }
         }
         self.apply_set_proxy_state(request, next)
     }
@@ -107,10 +115,12 @@ impl SingleNodeMeta {
             MetaEntityState::Frozen => {
                 proxy.frozen_since_ms = now;
                 proxy.freeze_cooldown_until_ms = now.saturating_add(request.freeze_cooldown_ms);
+                proxy.freeze_reason = request.reason;
             }
             MetaEntityState::Normal => {
                 proxy.frozen_since_ms = 0;
                 proxy.freeze_cooldown_until_ms = 0;
+                proxy.freeze_reason = FreezeReason::Unspecified;
             }
             MetaEntityState::Dropped => {}
         }
@@ -119,7 +129,7 @@ impl SingleNodeMeta {
             &mut state,
             "proxy_state",
             format!("proxy:{}", request.endpoint),
-            format!("state={}", next.as_str()),
+            format!("state={},reason={}", next.as_str(), request.reason.as_str()),
         );
         AckResponse {
             status: Status::ok(),

@@ -22,12 +22,32 @@ impl SingleNodeMeta {
                     status: Status::error("resource_frozen", "server is in freeze cooldown"),
                 };
             }
+            // A conviction the convicted node can undo by asking is not a
+            // conviction. The freeze cooldown alone does not cover this: it
+            // defaults to zero, so re-registering immediately returns the server
+            // to Normal and the failure detector's decision is erased by the
+            // very node it was about. An operator unfreeze is the way back.
+            if existing.state == MetaEntityState::Frozen
+                && existing.freeze_reason.is_conviction()
+                && self.forbid_self_clearing_conviction
+            {
+                return AckResponse {
+                    status: Status::error(
+                        "conviction_requires_unfreeze",
+                        format!(
+                            "server was frozen by the metaserver ({}); an operator must unfreeze it",
+                            existing.freeze_reason.as_str()
+                        ),
+                    ),
+                };
+            }
         }
         let now = now_ms();
         let server_addr = request.server_addr.clone();
         state.servers.insert(
             server_addr.clone(),
             ServerMetaInfo {
+                freeze_reason: FreezeReason::Unspecified,
                 server_addr: request.server_addr,
                 node_id: request.node_id,
                 location: request.location,
@@ -152,10 +172,25 @@ impl SingleNodeMeta {
                     status: Status::error("resource_frozen", "proxy is in freeze cooldown"),
                 };
             }
+            if existing.state == MetaEntityState::Frozen
+                && existing.freeze_reason.is_conviction()
+                && self.forbid_self_clearing_conviction
+            {
+                return AckResponse {
+                    status: Status::error(
+                        "conviction_requires_unfreeze",
+                        format!(
+                            "proxy was frozen by the metaserver ({}); an operator must unfreeze it",
+                            existing.freeze_reason.as_str()
+                        ),
+                    ),
+                };
+            }
         }
         state.proxies.insert(
             request.proxy_addr.clone(),
             ProxyMetaInfo {
+                freeze_reason: FreezeReason::Unspecified,
                 proxy_addr: request.proxy_addr,
                 namespace: request.namespace,
                 location: request.location,

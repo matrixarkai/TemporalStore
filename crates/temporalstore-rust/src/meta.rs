@@ -52,6 +52,46 @@ pub use self::retention::{
     RetentionCandidate,
 };
 
+/// Why a resource was frozen.
+///
+/// Freezing recorded no reason at all, so the metaserver could not tell an
+/// operator taking a node out for maintenance from the failure detector
+/// convicting one that stopped answering — even though the two want opposite
+/// recovery behaviour. A maintenance freeze ends when the operator says so; a
+/// conviction should not end merely because the convicted node asked.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FreezeReason {
+    /// No reason was recorded. Either the resource is not frozen, or it was
+    /// frozen before reasons existed.
+    #[default]
+    Unspecified,
+    /// An operator froze it explicitly, typically for maintenance.
+    Operator,
+    /// The failure detector convicted it for going silent.
+    Unresponsive,
+    /// The metaserver observed it restart in place, so it no longer holds what
+    /// the metaserver believes it holds.
+    Restarted,
+}
+
+impl FreezeReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Operator => "operator",
+            Self::Unresponsive => "unresponsive",
+            Self::Restarted => "restarted",
+        }
+    }
+
+    /// True when the metaserver, not an operator, decided this resource was
+    /// unhealthy. These are the freezes a resource must not clear for itself.
+    pub fn is_conviction(self) -> bool {
+        matches!(self, Self::Unresponsive | Self::Restarted)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MetaEntityState {
@@ -240,6 +280,9 @@ pub struct ServerMetaInfo {
     pub frozen_since_ms: u64,
     #[serde(default)]
     pub freeze_cooldown_until_ms: u64,
+    /// Why this server was frozen, or `Unspecified` when it is not.
+    #[serde(default)]
+    pub freeze_reason: FreezeReason,
     pub boot_time_ms: u64,
     /// The boot time the metaserver anchored on for this server: the first
     /// non-zero boot time it heartbeated after registering. `boot_time_ms`
@@ -356,6 +399,9 @@ pub struct ProxyMetaInfo {
     pub frozen_since_ms: u64,
     #[serde(default)]
     pub freeze_cooldown_until_ms: u64,
+    /// Why this proxy was frozen, or `Unspecified` when it is not.
+    #[serde(default)]
+    pub freeze_reason: FreezeReason,
     pub binary_version: String,
 }
 
@@ -594,6 +640,11 @@ pub struct ListProxiesResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StateChangeRequest {
+    /// Why the resource is being frozen. Absent from the wire it reads as
+    /// `Unspecified`; the admin routes set `Operator` explicitly, since a
+    /// request arriving there is operator-driven by definition.
+    #[serde(default)]
+    pub reason: FreezeReason,
     pub endpoint: String,
     #[serde(default)]
     pub freeze_cooldown_ms: u64,
@@ -683,8 +734,10 @@ pub enum MetaMutation {
     UnfreezeTable(DeleteTableRequest),
     FinishLoad(LoadFinishRequest),
     FreezeServer(StateChangeRequest),
+    UnfreezeServer(StateChangeRequest),
     DropServer(StateChangeRequest),
     FreezeProxy(StateChangeRequest),
+    UnfreezeProxy(StateChangeRequest),
     DropProxy(StateChangeRequest),
 }
 
@@ -836,6 +889,11 @@ pub struct SingleNodeMeta {
     inner: Arc<RwLock<MetaState>>,
     boot_time_ms: u64,
     mutation_log: Option<LocalMetaMutationLog>,
+    /// When set, a resource the metaserver convicted cannot register its way
+    /// back into service; only an explicit unfreeze returns it. Off by default
+    /// because today's automatic recovery is load-bearing for deployments
+    /// running with a zero freeze cooldown.
+    forbid_self_clearing_conviction: bool,
 }
 
 impl Default for SingleNodeMeta {
@@ -847,11 +905,23 @@ impl Default for SingleNodeMeta {
             })),
             boot_time_ms: now_ms(),
             mutation_log: None,
+            forbid_self_clearing_conviction: false,
         }
     }
 }
 
 impl SingleNodeMeta {
+    /// Refuse to let a resource the metaserver convicted register its way back
+    /// into service; only an explicit unfreeze returns it. Off by default.
+    pub fn with_conviction_lock(mut self, forbid: bool) -> Self {
+        self.forbid_self_clearing_conviction = forbid;
+        self
+    }
+
+    /// True when a convicted resource cannot clear its own freeze.
+    pub fn conviction_lock_enabled(&self) -> bool {
+        self.forbid_self_clearing_conviction
+    }
 
     pub fn register(&self, request: RegisterShardRequest) -> RegisterShardResponse {
         self.record_mutation(MetaMutation::RegisterShard(request.clone()));
@@ -963,6 +1033,14 @@ impl SingleNodeMeta {
                     .status
             }
             MetaMutation::FinishLoad(request) => self.apply_finish_load(request).status,
+            MetaMutation::UnfreezeServer(request) => {
+                self.apply_set_server_state(request, MetaEntityState::Normal)
+                    .status
+            }
+            MetaMutation::UnfreezeProxy(request) => {
+                self.apply_set_proxy_state(request, MetaEntityState::Normal)
+                    .status
+            }
             MetaMutation::FreezeServer(request) => {
                 self.apply_set_server_state(request, MetaEntityState::Frozen)
                     .status
@@ -1252,6 +1330,7 @@ mod tests {
 
         assert!(
             meta.freeze_server(StateChangeRequest {
+                reason: FreezeReason::Unspecified,
                 endpoint: "server-a".to_string(),
                 freeze_cooldown_ms: 0,
             })
@@ -1260,6 +1339,7 @@ mod tests {
         );
         assert!(
             meta.freeze_proxy(StateChangeRequest {
+                reason: FreezeReason::Unspecified,
                 endpoint: "proxy-a".to_string(),
                 freeze_cooldown_ms: 0,
             })
@@ -1423,6 +1503,187 @@ mod tests {
             .find(|server| server.server_addr == "node-a")
             .expect("registered");
         assert!(!server.reboot_detected);
+    }
+
+    fn register(meta: &SingleNodeMeta, addr: &str) -> AckResponse {
+        meta.register_server(RegisterServerRequest {
+            server_addr: addr.to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+        })
+    }
+
+    fn server_state(meta: &SingleNodeMeta, addr: &str) -> ServerMetaInfo {
+        meta.list_servers()
+            .servers
+            .into_iter()
+            .find(|server| server.server_addr == addr)
+            .expect("registered")
+    }
+
+    #[test]
+    fn a_freeze_records_why_it_happened() {
+        let meta = SingleNodeMeta::default();
+        register(&meta, "node-a");
+        register(&meta, "node-b");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        // The detector's own freeze is a conviction.
+        assert!(meta.freeze_stale_resources(0).status.ok);
+        assert_eq!(
+            server_state(&meta, "node-a").freeze_reason,
+            FreezeReason::Unresponsive
+        );
+        assert!(server_state(&meta, "node-a").freeze_reason.is_conviction());
+
+        // An operator freeze is not.
+        assert!(meta.unfreeze_server(unfreeze_request("node-b")).status.ok);
+        assert!(meta
+            .freeze_server(StateChangeRequest {
+                endpoint: "node-b".to_string(),
+                freeze_cooldown_ms: 0,
+                reason: FreezeReason::Operator,
+            })
+            .status
+            .ok);
+        assert_eq!(
+            server_state(&meta, "node-b").freeze_reason,
+            FreezeReason::Operator
+        );
+        assert!(!server_state(&meta, "node-b").freeze_reason.is_conviction());
+    }
+
+    fn unfreeze_request(addr: &str) -> StateChangeRequest {
+        StateChangeRequest {
+            endpoint: addr.to_string(),
+            freeze_cooldown_ms: 0,
+            reason: FreezeReason::Unspecified,
+        }
+    }
+
+    #[test]
+    fn a_convicted_server_cannot_register_its_way_back_into_service() {
+        // Without this the freeze cooldown is the only guard, and it defaults to
+        // zero -- so the convicted node clears the metaserver's decision simply
+        // by asking, and conviction is advisory.
+        let meta = SingleNodeMeta::default().with_conviction_lock(true);
+        register(&meta, "node-a");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert!(meta.freeze_stale_resources(0).status.ok);
+
+        let rejected = register(&meta, "node-a");
+        assert!(!rejected.status.ok);
+        assert_eq!(rejected.status.code, "conviction_requires_unfreeze");
+        assert_eq!(
+            server_state(&meta, "node-a").state,
+            MetaEntityState::Frozen
+        );
+
+        // An operator unfreeze is the way back, and afterwards the node
+        // registers normally again.
+        assert!(meta.unfreeze_server(unfreeze_request("node-a")).status.ok);
+        assert_eq!(server_state(&meta, "node-a").state, MetaEntityState::Normal);
+        assert_eq!(
+            server_state(&meta, "node-a").freeze_reason,
+            FreezeReason::Unspecified
+        );
+        assert!(register(&meta, "node-a").status.ok);
+    }
+
+    #[test]
+    fn without_the_lock_a_convicted_server_still_recovers_by_registering() {
+        // The default path is unchanged: this is the automatic recovery that
+        // deployments running a zero freeze cooldown depend on.
+        let meta = SingleNodeMeta::default();
+        register(&meta, "node-a");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert!(meta.freeze_stale_resources(0).status.ok);
+        assert!(register(&meta, "node-a").status.ok);
+        assert_eq!(server_state(&meta, "node-a").state, MetaEntityState::Normal);
+    }
+
+    #[test]
+    fn an_operator_freeze_is_not_locked_against_re_registration() {
+        // The lock is about the metaserver's own verdicts. A maintenance freeze
+        // already has an operator in the loop, and the freeze cooldown is the
+        // knob for holding a node out.
+        let meta = SingleNodeMeta::default().with_conviction_lock(true);
+        register(&meta, "node-a");
+        assert!(meta
+            .freeze_server(StateChangeRequest {
+                endpoint: "node-a".to_string(),
+                freeze_cooldown_ms: 0,
+                reason: FreezeReason::Operator,
+            })
+            .status
+            .ok);
+        assert!(register(&meta, "node-a").status.ok);
+    }
+
+    #[test]
+    fn a_restarted_server_is_locked_out_under_its_own_reason() {
+        let meta = SingleNodeMeta::default().with_conviction_lock(true);
+        register(&meta, "node-a");
+        assert!(meta
+            .freeze_server(StateChangeRequest {
+                endpoint: "node-a".to_string(),
+                freeze_cooldown_ms: 0,
+                reason: FreezeReason::Restarted,
+            })
+            .status
+            .ok);
+        let rejected = register(&meta, "node-a");
+        assert_eq!(rejected.status.code, "conviction_requires_unfreeze");
+        assert!(rejected.status.message.contains("restarted"));
+    }
+
+    #[test]
+    fn a_convicted_proxy_is_locked_out_too() {
+        let meta = SingleNodeMeta::default().with_conviction_lock(true);
+        let register_proxy = || {
+            meta.register_proxy(RegisterProxyRequest {
+                proxy_addr: "proxy-a".to_string(),
+                namespace: "ns".to_string(),
+                location: "rack-1".to_string(),
+                config_version: 1,
+                binary_version: "v1".to_string(),
+            })
+        };
+        register_proxy();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert!(meta.freeze_stale_resources(0).status.ok);
+        assert_eq!(
+            register_proxy().status.code,
+            "conviction_requires_unfreeze"
+        );
+        assert!(meta.unfreeze_proxy(unfreeze_request("proxy-a")).status.ok);
+        assert!(register_proxy().status.ok);
+    }
+
+    #[test]
+    fn an_unfreeze_survives_mutation_log_replay() {
+        // Unfreeze was previously the one state change that recorded no
+        // mutation, so recovery would have silently re-frozen the resource.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("unfreeze-mutations.jsonl");
+        {
+            let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+            register(&meta, "node-a");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            assert!(meta.freeze_stale_resources(0).status.ok);
+            assert!(meta.unfreeze_server(unfreeze_request("node-a")).status.ok);
+            assert_eq!(server_state(&meta, "node-a").state, MetaEntityState::Normal);
+        }
+        let recovered = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert_eq!(
+            server_state(&recovered, "node-a").state,
+            MetaEntityState::Normal
+        );
+        assert_eq!(
+            server_state(&recovered, "node-a").freeze_reason,
+            FreezeReason::Unspecified
+        );
     }
 
     #[test]
@@ -2334,6 +2595,7 @@ mod tests {
         assert_eq!(meta.list_proxies().proxies[0].binary_version, "v2");
 
         let frozen = meta.freeze_proxy(StateChangeRequest {
+            reason: FreezeReason::Unspecified,
             endpoint: "p1".to_string(),
             freeze_cooldown_ms: 0,
         });
@@ -2426,6 +2688,7 @@ mod tests {
             serving_options: crate::meta::TableServingOptions::default(),
         });
         meta.freeze_proxy(StateChangeRequest {
+            reason: FreezeReason::Unspecified,
             endpoint: "proxy-does-not-exist".to_string(),
             freeze_cooldown_ms: 0,
         });
@@ -2640,6 +2903,7 @@ mod tests {
         assert_eq!(stale.status.code, "stale_load_version");
 
         meta.freeze_server(StateChangeRequest {
+            reason: FreezeReason::Unspecified,
             endpoint: "s1".to_string(),
             freeze_cooldown_ms: 0,
         });
@@ -2729,6 +2993,7 @@ mod tests {
         );
         assert!(
             meta.freeze_proxy(StateChangeRequest {
+                reason: FreezeReason::Unspecified,
                 endpoint: "proxy-a".to_string(),
                 freeze_cooldown_ms: 0,
             })
@@ -2867,6 +3132,7 @@ mod tests {
             binary_version: "v1".to_string(),
         });
         meta.freeze_proxy(StateChangeRequest {
+            reason: FreezeReason::Unspecified,
             endpoint: "proxy-a".to_string(),
             freeze_cooldown_ms: 0,
         });
@@ -2933,10 +3199,12 @@ mod tests {
         let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
 
         let missing_server = meta.freeze_server(StateChangeRequest {
+            reason: FreezeReason::Unspecified,
             endpoint: "missing-server".to_string(),
             freeze_cooldown_ms: 0,
         });
         let missing_proxy = meta.drop_proxy(StateChangeRequest {
+            reason: FreezeReason::Unspecified,
             endpoint: "missing-proxy".to_string(),
             freeze_cooldown_ms: 0,
         });

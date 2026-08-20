@@ -3384,6 +3384,7 @@ mod tests {
             binary_version: "v-meta".to_string(),
         });
         meta.freeze_proxy(crate::meta::StateChangeRequest {
+            reason: crate::meta::FreezeReason::Unspecified,
             endpoint: "proxy-frozen-policy".to_string(),
             freeze_cooldown_ms: 0,
         });

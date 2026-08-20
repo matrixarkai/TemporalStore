@@ -519,6 +519,7 @@ impl SingleNodeMeta {
             let response = self.drop_proxy(StateChangeRequest {
                 endpoint: addr.clone(),
                 freeze_cooldown_ms: 0,
+                reason: FreezeReason::Unspecified,
             });
             if !response.status.ok {
                 return FreezeAgingReport {
@@ -549,6 +550,7 @@ impl SingleNodeMeta {
             let response = self.drop_server(StateChangeRequest {
                 endpoint: addr.clone(),
                 freeze_cooldown_ms: 0,
+                reason: FreezeReason::Unspecified,
             });
             if !response.status.ok {
                 return FreezeAgingReport {
@@ -1067,6 +1069,7 @@ mod tests {
         });
         assert!(meta
             .drop_server(StateChangeRequest {
+                reason: FreezeReason::Unspecified,
                 endpoint: "node-a".to_string(),
                 freeze_cooldown_ms: 0,
             })
@@ -1074,6 +1077,7 @@ mod tests {
             .ok);
         assert!(meta
             .drop_proxy(StateChangeRequest {
+                reason: FreezeReason::Unspecified,
                 endpoint: "proxy-a".to_string(),
                 freeze_cooldown_ms: 0,
             })
@@ -1120,6 +1124,7 @@ mod tests {
         };
         register();
         meta.drop_server(StateChangeRequest {
+            reason: FreezeReason::Unspecified,
             endpoint: "node-a".to_string(),
             freeze_cooldown_ms: 0,
         });
@@ -1146,6 +1151,7 @@ mod tests {
             binary_version: "v1".to_string(),
         });
         meta.drop_server(StateChangeRequest {
+            reason: FreezeReason::Unspecified,
             endpoint: "node-a".to_string(),
             freeze_cooldown_ms: 0,
         });

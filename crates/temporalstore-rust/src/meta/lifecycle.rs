@@ -139,6 +139,8 @@ impl SingleNodeMeta {
             let response = self.freeze_server(StateChangeRequest {
                 endpoint: endpoint.clone(),
                 freeze_cooldown_ms: policy.server_freeze_cooldown_ms,
+                // The metaserver decided this, not an operator.
+                reason: FreezeReason::Unresponsive,
             });
             if !response.status.ok {
                 return StaleResourceReport {
@@ -189,6 +191,7 @@ impl SingleNodeMeta {
             let response = self.freeze_proxy(StateChangeRequest {
                 endpoint: endpoint.clone(),
                 freeze_cooldown_ms: policy.proxy_freeze_cooldown_ms,
+                reason: FreezeReason::Unresponsive,
             });
             if !response.status.ok {
                 return StaleResourceReport {
@@ -260,12 +263,28 @@ impl SingleNodeMeta {
         self.set_server_state(request, MetaEntityState::Frozen)
     }
 
+    /// Return a frozen server to service.
+    ///
+    /// Until now the only way out of a freeze was for the server to re-register,
+    /// which meant an operator had no lever at all and a convicted node cleared
+    /// its own conviction. This is that lever: it is always available, whatever
+    /// the freeze reason, because an operator must be able to overrule the
+    /// metaserver.
+    pub fn unfreeze_server(&self, request: StateChangeRequest) -> AckResponse {
+        self.set_server_state(request, MetaEntityState::Normal)
+    }
+
     pub fn drop_server(&self, request: StateChangeRequest) -> AckResponse {
         self.set_server_state(request, MetaEntityState::Dropped)
     }
 
     pub fn freeze_proxy(&self, request: StateChangeRequest) -> AckResponse {
         self.set_proxy_state(request, MetaEntityState::Frozen)
+    }
+
+    /// Return a frozen proxy to service. See [`Self::unfreeze_server`].
+    pub fn unfreeze_proxy(&self, request: StateChangeRequest) -> AckResponse {
+        self.set_proxy_state(request, MetaEntityState::Normal)
     }
 
     pub fn drop_proxy(&self, request: StateChangeRequest) -> AckResponse {

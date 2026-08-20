@@ -89,6 +89,7 @@ fn handle_manage_service_route(
                     StateChangeRequest {
                         endpoint: heartbeat_server_addr(&req),
                         freeze_cooldown_ms: 0,
+                        reason: FreezeReason::Operator,
                     }
                 )
             })
@@ -101,6 +102,7 @@ fn handle_manage_service_route(
                     StateChangeRequest {
                         endpoint: heartbeat_server_addr(&req),
                         freeze_cooldown_ms: 0,
+                        reason: FreezeReason::Operator,
                     }
                 )
             })
@@ -132,6 +134,7 @@ fn handle_manage_service_route(
                     meta,
                     freeze_proxy,
                     StateChangeRequest {
+                        reason: FreezeReason::Unspecified,
                         endpoint: heartbeat_proxy_addr(&req),
                         freeze_cooldown_ms: 0,
                     }
@@ -144,6 +147,7 @@ fn handle_manage_service_route(
                     meta,
                     drop_proxy,
                     StateChangeRequest {
+                        reason: FreezeReason::Unspecified,
                         endpoint: heartbeat_proxy_addr(&req),
                         freeze_cooldown_ms: 0,
                     }
@@ -241,6 +245,7 @@ fn handle_heartbeat_service_route(
                     meta,
                     drop_server,
                     StateChangeRequest {
+                        reason: FreezeReason::Unspecified,
                         endpoint,
                         freeze_cooldown_ms: 0,
                     }
@@ -274,6 +279,7 @@ fn handle_heartbeat_service_route(
                     meta,
                     drop_proxy,
                     StateChangeRequest {
+                        reason: FreezeReason::Unspecified,
                         endpoint,
                         freeze_cooldown_ms: 0,
                     }
@@ -475,6 +481,7 @@ fn handle_master_service_route(
                     meta,
                     drop_server,
                     StateChangeRequest {
+                        reason: FreezeReason::Unspecified,
                         endpoint: master_server_addr(&req),
                         freeze_cooldown_ms: 0,
                     }
