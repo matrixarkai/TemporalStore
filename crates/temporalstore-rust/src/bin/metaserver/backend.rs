@@ -16,6 +16,14 @@ impl MetaBackend {
             .map(SingleNodeMeta::with_mutation_log)
             .transpose()?
             .unwrap_or_default();
+        // With this on, a datanode the metaserver convicted cannot re-register
+        // its way back to Normal; an operator has to unfreeze it. Off by default
+        // because the automatic recovery it removes is load-bearing wherever the
+        // freeze cooldown is left at zero.
+        let meta = meta.with_conviction_lock(env_bool(
+            "TS_META_FORBID_SELF_CLEARING_CONVICTION",
+            false,
+        ));
         Ok(Self::Single(meta))
     }
 

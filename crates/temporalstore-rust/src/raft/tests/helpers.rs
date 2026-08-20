@@ -310,6 +310,7 @@ pub(super) fn topology_for_shard(
 
 pub(super) fn server_meta(addr: &str, node_id: u64, state: MetaEntityState) -> ServerMetaInfo {
     ServerMetaInfo {
+        freeze_reason: crate::meta::FreezeReason::Unspecified,
         server_addr: addr.to_string(),
         node_id,
         location: "zone-a".to_string(),

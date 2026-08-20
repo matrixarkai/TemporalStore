@@ -661,9 +661,17 @@ impl SingleNodeMeta {
 
         let mut frozen_servers = Vec::new();
         for endpoint in &plan.convict {
+            // A restart and a silence are both convictions, but an operator
+            // reading `/servers` wants to know which one happened.
+            let reason = if plan.rebooted.contains(endpoint) {
+                FreezeReason::Restarted
+            } else {
+                FreezeReason::Unresponsive
+            };
             let response = self.freeze_server(StateChangeRequest {
                 endpoint: endpoint.clone(),
                 freeze_cooldown_ms: safe_mode.server_freeze_cooldown_ms,
+                reason,
             });
             if !response.status.ok {
                 return AdaptiveConvictionReport {
@@ -723,6 +731,8 @@ impl SingleNodeMeta {
             let response = self.freeze_proxy(StateChangeRequest {
                 endpoint: endpoint.clone(),
                 freeze_cooldown_ms: safe_mode.proxy_freeze_cooldown_ms,
+                // A proxy carries no boot anchor, so silence is the only cause.
+                reason: FreezeReason::Unresponsive,
             });
             if !response.status.ok {
                 return AdaptiveConvictionReport {
@@ -795,6 +805,7 @@ mod tests {
 
     fn server(addr: &str, location: &str, state: MetaEntityState, heartbeat_ms: u64) -> ServerMetaInfo {
         ServerMetaInfo {
+            freeze_reason: FreezeReason::Unspecified,
             server_addr: addr.to_string(),
             node_id: 0,
             location: location.to_string(),
@@ -1019,6 +1030,7 @@ mod tests {
 
     fn proxy(addr: &str, location: &str, state: MetaEntityState, heartbeat_ms: u64) -> ProxyMetaInfo {
         ProxyMetaInfo {
+            freeze_reason: FreezeReason::Unspecified,
             proxy_addr: addr.to_string(),
             namespace: "ns".to_string(),
             location: location.to_string(),

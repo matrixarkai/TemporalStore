@@ -155,6 +155,12 @@ impl MetaRaftCluster {
         }
     }
 
+    pub fn unfreeze_server(&self, request: StateChangeRequest) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::UnfreezeServer(request)),
+        }
+    }
+
     pub fn drop_server(&self, request: StateChangeRequest) -> AckResponse {
         AckResponse {
             status: self.mutation_status(MetaMutation::DropServer(request)),
@@ -164,6 +170,12 @@ impl MetaRaftCluster {
     pub fn freeze_proxy(&self, request: StateChangeRequest) -> AckResponse {
         AckResponse {
             status: self.mutation_status(MetaMutation::FreezeProxy(request)),
+        }
+    }
+
+    pub fn unfreeze_proxy(&self, request: StateChangeRequest) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::UnfreezeProxy(request)),
         }
     }
 
@@ -218,6 +230,7 @@ impl MetaRaftCluster {
                 let status = self.freeze_server(StateChangeRequest {
                     endpoint: server.server_addr.clone(),
                     freeze_cooldown_ms: policy.server_freeze_cooldown_ms,
+                    reason: crate::meta::FreezeReason::Unresponsive,
                 });
                 if !status.status.ok {
                     return StaleResourceReport {
@@ -238,6 +251,7 @@ impl MetaRaftCluster {
                 let status = self.freeze_proxy(StateChangeRequest {
                     endpoint: proxy.proxy_addr.clone(),
                     freeze_cooldown_ms: policy.proxy_freeze_cooldown_ms,
+                    reason: crate::meta::FreezeReason::Unresponsive,
                 });
                 if !status.status.ok {
                     return StaleResourceReport {

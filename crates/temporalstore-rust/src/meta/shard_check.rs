@@ -452,6 +452,7 @@ mod tests {
     /// A healthy, reporting server that boots long before any test clock.
     fn server(addr: &str, serving: &[(ShardId, &str)]) -> ServerMetaInfo {
         ServerMetaInfo {
+            freeze_reason: FreezeReason::Unspecified,
             server_addr: addr.to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
