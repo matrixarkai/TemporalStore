@@ -802,7 +802,20 @@ impl LocalWriteAheadLogStore {
         let Some(physical) = self.resolve_log_id(shard_id, log_id)? else {
             return Ok(None);
         };
-        self.read_range(shard_id, physical, size).map(Some)
+        // A caller asking by log id does not know how long the record is, so it asks for an
+        // upper bound. Reading past the end of the file would fail and report the value as
+        // absent -- a read that should have succeeded -- so clamp to what is actually there.
+        let length = {
+            let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+            let path = write_ahead_log_path(&inner.root, shard_id);
+            path.metadata().map(|metadata| metadata.len()).unwrap_or(0)
+        };
+        let available = length.saturating_sub(physical);
+        if available == 0 {
+            return Ok(None);
+        }
+        self.read_range(shard_id, physical, size.min(available))
+            .map(Some)
     }
 
     pub fn gc_before_sequence(

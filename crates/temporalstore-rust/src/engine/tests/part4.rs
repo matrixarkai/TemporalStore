@@ -3503,3 +3503,64 @@ fn sampled_eviction_scan_volume_does_not_grow_with_the_store() {
         "sampled scan should not grow with the store, got {small_sampled} -> {large_sampled}"
     );
 }
+
+/// An async write whose cache entry is dropped before any dump must still read back.
+///
+/// Without this its only durable copy is the WAL record, at an address naming no file, so the
+/// read returns MISSING for a write that was acked -- the hole the spill workaround was added
+/// to paper over. Here the record itself serves the value.
+#[test]
+fn an_evicted_async_write_is_served_from_its_wal_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 2,
+            async_storage: true,
+            ..Config::default()
+        },
+    });
+
+    std::env::set_var("TS_BLOCK_IN_WAL", "1");
+    // The spill path would otherwise mask what is being tested by copying the value to a real
+    // slab on eviction.
+    std::env::set_var("TS_HOT_PAGE_SPILL", "0");
+
+    let key = "block-in-wal-key";
+    let value = b"block-in-wal-value".to_vec();
+    let write = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: key.to_string(),
+            value: value.clone(),
+        },
+    });
+    assert!(write.status.ok, "the write must be acked");
+
+    // Drop every cached copy: the value now exists only in its WAL record.
+    engine.cache().invalidate_shard(1).unwrap();
+
+    let read = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: key.to_string(),
+        },
+    });
+    std::env::remove_var("TS_BLOCK_IN_WAL");
+    std::env::remove_var("TS_HOT_PAGE_SPILL");
+
+    assert_eq!(
+        read.response,
+        CommandResponse::Bytes {
+            value: Some(value)
+        },
+        "an acked write must not read back as missing once its cache entry is gone"
+    );
+}

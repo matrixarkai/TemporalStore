@@ -593,6 +593,9 @@ impl TemporalEngine {
         // the hot pages (and re-spills them as needed), so the live-path redirect map stays
         // bounded across load/unload cycles.
         hot_page_spill::clear_shard(request.shard_id);
+        // Drop this shard's WAL-resident registrations too: they name records in a log this
+        // engine no longer serves, and a reload re-derives them from the WAL anyway.
+        block_in_wal::clear_shard(request.shard_id);
         UnloadShardResponse {
             status: Status::ok(),
         }
