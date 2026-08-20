@@ -33,17 +33,35 @@ jobs:
       REPO: ${{ github.repository }}
     steps:
       - name: Approve as maintainer 1
-        if: ${{ secrets.MAINTAINER_PAT_1 != '' }}
         env:
           GH_TOKEN: ${{ secrets.MAINTAINER_PAT_1 }}
-        run: gh pr review "$PR" --repo "$REPO" --approve --body "Auto-approved by maintainer (bot)." || true
+        run: |
+          # The secrets context is not available to a step-level `if:`, so the token is
+          # checked here instead. Absent token -> this workflow is inert, as intended.
+          if [ -z "$GH_TOKEN" ]; then
+            echo "MAINTAINER_PAT_1 is not configured; nothing to do."
+            exit 0
+          fi
+          gh pr review "$PR" --repo "$REPO" --approve --body "Auto-approved by maintainer (bot)." || true
       - name: Approve as maintainer 2
-        if: ${{ secrets.MAINTAINER_PAT_2 != '' }}
         env:
           GH_TOKEN: ${{ secrets.MAINTAINER_PAT_2 }}
-        run: gh pr review "$PR" --repo "$REPO" --approve --body "Auto-approved by maintainer (bot)." || true
+        run: |
+          # The secrets context is not available to a step-level `if:`, so the token is
+          # checked here instead. Absent token -> this workflow is inert, as intended.
+          if [ -z "$GH_TOKEN" ]; then
+            echo "MAINTAINER_PAT_2 is not configured; nothing to do."
+            exit 0
+          fi
+          gh pr review "$PR" --repo "$REPO" --approve --body "Auto-approved by maintainer (bot)." || true
       - name: Approve as maintainer 3
-        if: ${{ secrets.MAINTAINER_PAT_3 != '' }}
         env:
           GH_TOKEN: ${{ secrets.MAINTAINER_PAT_3 }}
-        run: gh pr review "$PR" --repo "$REPO" --approve --body "Auto-approved by maintainer (bot)." || true
+        run: |
+          # The secrets context is not available to a step-level `if:`, so the token is
+          # checked here instead. Absent token -> this workflow is inert, as intended.
+          if [ -z "$GH_TOKEN" ]; then
+            echo "MAINTAINER_PAT_3 is not configured; nothing to do."
+            exit 0
+          fi
+          gh pr review "$PR" --repo "$REPO" --approve --body "Auto-approved by maintainer (bot)." || true
