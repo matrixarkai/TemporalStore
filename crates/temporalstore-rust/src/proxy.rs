@@ -20,6 +20,7 @@ mod response;
 
 use config::{
     default_context_first_shard_id, default_context_io_timeout_ms, default_context_shard_count,
+    default_heartbeat_timeout_ms,
     default_pin_primary_reads, default_proxy_addr, default_service_registry_ttl_ms, now_ms,
     proxy_client_from_options, proxy_config_version,
 };
@@ -105,6 +106,14 @@ pub struct ProxyOptions {
     /// tenant on `context_first_shard_id` (single-shard deploys).
     #[serde(default = "default_context_shard_count")]
     pub context_shard_count: u64,
+    /// I/O timeout (ms) for control-plane calls to the metaserver: heartbeat,
+    /// auto-register and notify-stop. Deliberately NOT the command `io_timeout_ms`,
+    /// which is sized for a data-path hop and defaults to 200ms. A metaserver
+    /// pausing briefly -- GC, an election, a snapshot install -- would blow that
+    /// budget and make a perfectly healthy proxy miss heartbeats until it is
+    /// declared dead. Liveness must not be decided by a data-path deadline.
+    #[serde(default = "default_heartbeat_timeout_ms")]
+    pub heartbeat_timeout_ms: u64,
     /// I/O timeout (ms) for forwarding a `/context/*` request to the owning
     /// datanode. Larger than the command io_timeout because extraction /
     /// embedding generation runs inline on the datanode.
@@ -138,6 +147,16 @@ impl ProxyOptions {
             max_retries: self.max_retries,
         }
     }
+
+    /// Timeouts for metaserver control-plane calls. Same connect budget, but the
+    /// read budget is the heartbeat one -- see `heartbeat_timeout_ms`.
+    pub(super) fn control_http_options(&self) -> HttpRequestOptions {
+        HttpRequestOptions {
+            connect_timeout_ms: self.connect_timeout_ms,
+            io_timeout_ms: self.heartbeat_timeout_ms.max(self.io_timeout_ms),
+            max_retries: self.max_retries,
+        }
+    }
 }
 
 impl Default for ProxyOptions {
@@ -166,6 +185,7 @@ impl Default for ProxyOptions {
             context_first_shard_id: default_context_first_shard_id(),
             context_shard_count: default_context_shard_count(),
             context_io_timeout_ms: default_context_io_timeout_ms(),
+            heartbeat_timeout_ms: default_heartbeat_timeout_ms(),
         }
     }
 }
@@ -2363,6 +2383,59 @@ mod tests {
         );
         assert_eq!(code, 200);
         assert!(!proxy.policy_report().enforce_ingestion_account);
+    }
+
+    #[test]
+    fn proxy_control_plane_timeout_is_not_the_command_timeout() {
+        // A metaserver that pauses briefly must not cost a healthy proxy its liveness.
+        // The command path is sized for a data hop (200ms); heartbeats get their own budget.
+        let options = ProxyOptions {
+            meta_addr: "127.0.0.1:1".to_string(),
+            ..ProxyOptions::default()
+        };
+        assert_eq!(options.io_timeout_ms, 200);
+        assert_eq!(options.heartbeat_timeout_ms, 5_000);
+        assert_eq!(options.http_options().io_timeout_ms, 200);
+        assert_eq!(options.control_http_options().io_timeout_ms, 5_000);
+
+        // A deployment that widens the command timeout past the heartbeat budget keeps the
+        // wider one -- the control plane is never given LESS room than the data path.
+        let slow_backend = ProxyOptions {
+            io_timeout_ms: 9_000,
+            ..options.clone()
+        };
+        assert_eq!(slow_backend.control_http_options().io_timeout_ms, 9_000);
+
+        // It is part of the config hash, so a rollout can confirm the change landed.
+        assert_ne!(
+            proxy_config_version(&options),
+            proxy_config_version(&ProxyOptions {
+                heartbeat_timeout_ms: 30_000,
+                ..options
+            })
+        );
+    }
+
+    #[test]
+    fn proxy_heartbeat_reports_boot_time_so_a_restart_is_visible() {
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: "127.0.0.1:1".to_string(),
+            proxy_addr: "127.0.0.1:17000".to_string(),
+            ..ProxyOptions::default()
+        });
+        let info = proxy.info();
+        assert!(info.boot_time_ms > 0, "proxy knows when it started");
+
+        // A restarted process reports a different boot time on the same address, which is the
+        // only signal the metaserver gets: the address never changes and the heartbeats never
+        // stop, so without this an in-place reboot is invisible.
+        let restarted = ProxyService::new(ProxyOptions {
+            meta_addr: "127.0.0.1:1".to_string(),
+            proxy_addr: "127.0.0.1:17000".to_string(),
+            ..ProxyOptions::default()
+        });
+        assert_eq!(restarted.info().meta_addr, info.meta_addr);
+        assert!(restarted.info().boot_time_ms >= info.boot_time_ms);
     }
 
     #[test]

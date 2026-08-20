@@ -36,7 +36,7 @@ impl ProxyService {
             &TopologyVersionRequest {
                 old_topology_version,
             },
-            options.http_options(),
+            options.control_http_options(),
         )
         .map_err(|err| Status::error("topology_check_failed", err.to_string()))
     }
@@ -50,6 +50,7 @@ impl ProxyService {
             .heartbeat_total += 1;
         let request = ProxyHeartbeatRequest {
             proxy_addr: options.proxy_addr.clone(),
+            boot_time_ms: self.inner.boot_time_ms,
             namespace: options.namespace.clone(),
             config_version: proxy_config_version(&options),
             binary_version: options.binary_version.clone(),
@@ -58,7 +59,7 @@ impl ProxyService {
             &options.meta_addr,
             "/proxies/heartbeat",
             &request,
-            options.http_options(),
+            options.control_http_options(),
         ) {
             Ok(response) if response.status.ok || response.status.code == "resource_frozen" => {
                 self.record_service_discovery_heartbeat(&response.status);
@@ -71,7 +72,7 @@ impl ProxyService {
                         &options.meta_addr,
                         "/proxies/heartbeat",
                         &request,
-                        options.http_options(),
+                        options.control_http_options(),
                     )
                     .unwrap_or_else(|err| ProxyHeartbeatResponse {
                         status: Status::error("metaserver_error", err.to_string()),
@@ -137,7 +138,7 @@ impl ProxyService {
                 config_version: proxy_config_version(options),
                 binary_version: options.binary_version.clone(),
             },
-            options.http_options(),
+            options.control_http_options(),
         )
         .unwrap_or_else(|err| AckResponse {
             status: Status::error("metaserver_error", err.to_string()),

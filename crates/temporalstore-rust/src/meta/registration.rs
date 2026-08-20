@@ -200,6 +200,8 @@ impl SingleNodeMeta {
                 frozen_since_ms: 0,
                 freeze_cooldown_until_ms: 0,
                 binary_version: request.binary_version,
+                boot_time_ms: 0,
+                restart_count: 0,
             },
         );
         AckResponse {
@@ -231,6 +233,15 @@ impl SingleNodeMeta {
             };
         }
         proxy.last_heartbeat_ms = now_ms();
+        // A changed boot time on an address we already know means the proxy restarted
+        // in place. Heartbeats never stopped, so this is the only signal that its route
+        // cache and config were reset underneath us.
+        if request.boot_time_ms != 0 {
+            if proxy.boot_time_ms != 0 && proxy.boot_time_ms != request.boot_time_ms {
+                proxy.restart_count = proxy.restart_count.saturating_add(1);
+            }
+            proxy.boot_time_ms = request.boot_time_ms;
+        }
         if !request.binary_version.is_empty() {
             proxy.binary_version = request.binary_version;
         }
