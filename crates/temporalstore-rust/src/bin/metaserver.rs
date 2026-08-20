@@ -78,6 +78,7 @@ fn main() {
                 critical_ratio_percent = policy.critical_ratio_percent,
                 safe_mode_enabled = policy.safe_mode_enabled,
                 convict_proxies = policy.convict_proxies,
+                forbid_orphaning_shards = policy.forbid_orphaning_shards,
                 "adaptive failure detection enabled"
             );
             Some(MetaBackground::Single(
@@ -1014,6 +1015,10 @@ fn conviction_policy_from_env() -> ConvictionPolicy {
         convict_enabled: env_bool("TS_META_CONVICT_ENABLED", defaults.convict_enabled),
         convict_on_reboot: env_bool("TS_META_CONVICT_ON_REBOOT", defaults.convict_on_reboot),
         convict_proxies: env_bool("TS_META_CONVICT_PROXIES", defaults.convict_proxies),
+        forbid_orphaning_shards: env_bool(
+            "TS_META_FORBID_ORPHANING_SHARDS",
+            defaults.forbid_orphaning_shards,
+        ),
     }
 }
 
