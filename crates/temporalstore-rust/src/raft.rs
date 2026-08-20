@@ -1139,6 +1139,9 @@ pub struct RaftPeerPipelineRuntimeState {
     pub snapshot_install_rejected: u64,
     pub snapshot_install_rolled_back: u64,
     pub snapshot_install_received_chunks: u64,
+    /// Chunk count as of the last stall check. The send counts as progressing while this
+    /// keeps changing, however long the transfer takes overall.
+    pub snapshot_send_progress_mark: u64,
     pub snapshot_install_total_chunks: u64,
     #[serde(default)]
     pub snapshot_install_progress_per_mille: u64,
@@ -3234,7 +3237,11 @@ impl Default for RaftConfig {
             enable_pre_vote: false,
             prohibits_election: false,
             ignore_witness: false,
-            send_snapshot_timeout_ms: 60_000,
+            // A stall budget, not a transfer budget: the clock resets on every chunk, so
+            // this is how long a send may make NO progress before the peer is released. A
+            // minute of complete silence is a dead transfer, and holding the peer that long
+            // rejects every proposal to it for the same minute.
+            send_snapshot_timeout_ms: 10_000,
             raft_transport_timeout_ms: 1_000,
             wal_sync: false,
             max_segment_bytes: 64 * 1024 * 1024,

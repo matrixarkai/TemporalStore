@@ -36,8 +36,26 @@ impl RaftClusterInner {
             return;
         }
         for node in self.nodes.values_mut() {
-            if !node.pipeline_state.snapshot_sending {
+            // Either flag makes the guard reject a proposal to this peer, so either has to be
+            // able to time out. Watching only the sending flag left a peer stuck installing to
+            // reject proposals forever: the refresh skipped it and reset its clock every pass.
+            let in_transfer = node.pipeline_state.snapshot_sending
+                || node.pipeline_state.snapshot_installing;
+            if !in_transfer {
                 node.pipeline_state.snapshot_send_started_ms = None;
+                node.pipeline_state.snapshot_send_elapsed_ms = 0;
+                node.pipeline_state.snapshot_send_progress_mark = 0;
+                continue;
+            }
+            // Progress resets the clock. Measuring from the start of the send instead would
+            // abort a large transfer that is moving along perfectly well, which is the reason
+            // the timeout had to be set long enough to be useless against a real stall.
+            let progressed = node.pipeline_state.snapshot_install_received_chunks
+                != node.pipeline_state.snapshot_send_progress_mark;
+            if progressed {
+                node.pipeline_state.snapshot_send_progress_mark =
+                    node.pipeline_state.snapshot_install_received_chunks;
+                node.pipeline_state.snapshot_send_started_ms = Some(self.logical_time_ms);
                 node.pipeline_state.snapshot_send_elapsed_ms = 0;
                 continue;
             }
@@ -52,6 +70,7 @@ impl RaftClusterInner {
                 node.pipeline_state.snapshot_sending = false;
                 node.pipeline_state.snapshot_installing = false;
                 node.pipeline_state.snapshot_send_started_ms = None;
+                node.pipeline_state.snapshot_send_progress_mark = 0;
                 node.pipeline_state.snapshot_send_timeouts =
                     node.pipeline_state.snapshot_send_timeouts.saturating_add(1);
                 node.pipeline_state.snapshot_retry_count =
