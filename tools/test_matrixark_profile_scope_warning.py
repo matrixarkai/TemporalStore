@@ -9,6 +9,7 @@ from pathlib import Path
 
 import matrixark_mcp_local_adapter as mcp
 import matrixark_local_adapter_ingest as ing
+import matrixark_mcp_server as mcp_server
 
 
 class ProfileScopeWarningTest(unittest.TestCase):
@@ -54,34 +55,62 @@ class ProfileScopeWarningTest(unittest.TestCase):
         self.assertEqual(1, len(w))  # warned once, not per-call
 
 
-class BatchedIngestWarningTest(unittest.TestCase):
-    def _adapter(self):
-        return mcp.MatrixArkLocalAdapter(Path(tempfile.mkdtemp()) / "events.jsonl")
+class BatchedIngestEquivalenceTest(unittest.TestCase):
+    """A batched ingest must be equivalent to the same messages sent one per call.
 
-    def test_helper_flags_large_batch_only(self):
-        ing._BATCH_MESSAGES_WARNED.clear()
-        self.assertEqual("", ing.warn_if_batched_messages([{"role": "user", "content": "x"}] * 2))
-        self.assertTrue(ing.warn_if_batched_messages([{"role": "user", "content": "x"}] * 12))
+    A warning here used to tell callers a batch retained ~1 raw context_event and lost the
+    rest. That was true until the commit loop stopped skipping messages past source_event_ids;
+    keeping the warning would have pushed callers onto the per-turn path, which produces the
+    identical context records at strictly more per-call bookkeeping. The warning is gone and
+    this asserts the equivalence that replaced it, so a regression cannot restore the loss
+    silently.
+    """
 
-    def test_ingest_large_batch_warns_and_surfaces(self):
-        ing._BATCH_MESSAGES_WARNED.clear()
-        a = self._adapter()
-        with warnings.catch_warnings(record=True) as w:
+    CONVO = [{"role": "user", "content": "I am a robotics engineer at Acme."},
+             {"role": "assistant", "content": "What are you building?"},
+             {"role": "user", "content": "A project called Aurora, a warehouse arm."},
+             {"role": "assistant", "content": "What stack?"},
+             {"role": "user", "content": "Rust for control, Python for planning."},
+             {"role": "user", "content": "The p99 was 27ms on build 4471."}]
+    SCOPE = {"account_id": "acct_local", "tenant_id": "equiv", "user_id": "u",
+             "session_id": "s0", "agent_name": "t"}
+
+    def _run(self, bundled):
+        adapter = mcp.MatrixArkLocalAdapter(Path(tempfile.mkdtemp()) / "events.jsonl")
+        server = mcp_server.MatrixArkMcpServer(adapter, access_mode="dev")
+        batches = [self.CONVO] if bundled else [[m] for m in self.CONVO]
+        for batch in batches:
+            server.call_tool("matrixark_ingest",
+                             {"scope": self.SCOPE, "finalize": True, "messages": batch})
+        server.call_tool("matrixark_session_commit", {"scope": self.SCOPE})
+        return adapter.read_all()
+
+    @staticmethod
+    def _texts(rows):
+        return sorted(str(r.get("text") or "") for r in rows
+                      if r.get("record_type") == "context_event")
+
+    def test_batched_ingest_keeps_every_message(self):
+        texts = " ".join(self._texts(self._run(bundled=True)))
+        for message in self.CONVO:
+            self.assertIn(message["content"], texts)
+
+    def test_batched_matches_per_turn_context_records(self):
+        bundled = self._run(bundled=True)
+        per_turn = self._run(bundled=False)
+        self.assertEqual(self._texts(per_turn), self._texts(bundled))
+        for record_type in ("context_event", "context_entity", "context_embedding",
+                            "context_summary", "context_node"):
+            self.assertEqual(
+                len([r for r in per_turn if r.get("record_type") == record_type]),
+                len([r for r in bundled if r.get("record_type") == record_type]),
+                "%s count differs between batched and per-turn ingest" % record_type)
+
+    def test_no_batched_ingest_warning_is_emitted(self):
+        with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            r = a.ingest({"kind": "message", "scope": {"tenant_id": "t", "user_id": "u", "session_id": "s"},
-                          "messages": [{"role": "user", "content": f"m{i}"} for i in range(12)]})
-        self.assertTrue(any("batched_ingest" in str(x.message) for x in w))
-        self.assertIn("batched_ingest_warning", r)
-
-    def test_per_turn_ingest_is_silent(self):
-        ing._BATCH_MESSAGES_WARNED.clear()
-        a = self._adapter()
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            r = a.ingest({"kind": "message", "scope": {"tenant_id": "t", "user_id": "u", "session_id": "s"},
-                          "messages": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "ok"}]})
-        self.assertFalse(any("batched_ingest" in str(x.message) for x in w))
-        self.assertNotIn("batched_ingest_warning", r)
+            self._run(bundled=True)
+        self.assertFalse([w for w in caught if "batched_ingest" in str(w.message)])
 
 
 if __name__ == "__main__":
