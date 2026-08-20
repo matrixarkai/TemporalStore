@@ -1,6 +1,32 @@
 """_LocalAdapterRetrieveMixin methods split from matrixark_mcp_local_adapter.MatrixArkLocalAdapter (mixin)."""
 from __future__ import annotations
 
+import os as _skill_os
+
+def _skill_chunks_per_skill() -> int:
+    """Sections returned from one skill, ranked against the query (0 = every section).
+
+    A skill is stored one section per heading and each section carries its own embedding, so a
+    40-chapter handbook is 41 independently embedded chunks. Returning all of them put 1385 tokens
+    of operations procedure into a pack answering "what is my favourite drink"; returning the best
+    3 costs ~60 and answers better, because three relevant chapters beat forty of which
+    thirty-seven are noise."""
+    try:
+        return max(0, int(_skill_os.environ.get("MATRIXARK_SKILL_CHUNKS_PER_SKILL", "3")))
+    except (TypeError, ValueError):
+        return 3
+
+
+def _skill_description_always() -> bool:
+    """Whether every visible skill contributes its name + description to the pack.
+
+    A description is ~5-30 tokens, so the model learns a skill EXISTS for very little and its body
+    is fetched only when a chunk actually matches -- which is what makes many skills affordable at
+    once."""
+    return _skill_os.environ.get("MATRIXARK_SKILL_DESCRIPTION_ALWAYS", "1").strip().lower() \
+        not in {"0", "false", "no", "off"}
+
+
 try:
     from tools.matrixark_mcp_registry import skill_visible_in_scope
 except ImportError:  # Direct script execution from tools/.
@@ -1450,6 +1476,11 @@ class _LocalAdapterRetrieveMixin:
             placement_section_hashes = {
                 record.get("section_hash") for record in tree_candidate_records
                 if record.get("record_type") == "skill_section"}
+            # Two tiers: every visible skill's DESCRIPTION always (cheap, so the model knows the
+            # skill exists), and only the best-MATCHING sections of each skill, ranked by the
+            # section's own embedding rather than document order.
+            chunk_budget = _skill_chunks_per_skill()
+            visible_sections_by_skill: Json = {}
             for record in records:
                 if record.get("record_type") != "skill_section":
                     continue
@@ -1458,7 +1489,48 @@ class _LocalAdapterRetrieveMixin:
                 if not skill_visible_in_scope(record, retrieval_scope,
                                               str(record.get("owner_scope") or "")):
                     continue
-                tree_candidate_records.append(record)
+                visible_sections_by_skill.setdefault(
+                    int(record.get("skill_hash") or 0), []).append(record)
+
+            for skill_key, sections in visible_sections_by_skill.items():
+                if chunk_budget > 0 and len(sections) > chunk_budget:
+                    def _section_match(section: Json) -> float:
+                        vector = resource_embedding_vectors.get(section.get("section_hash"))
+                        if not vector:
+                            return 0.0
+                        return float(cosine(query_embedding, vector))
+                    sections = sorted(sections, key=_section_match, reverse=True)[:chunk_budget]
+                tree_candidate_records.extend(sections)
+
+            if _skill_description_always():
+                described = set()
+                for record in records:
+                    if record.get("record_type") != "skill_manifest":
+                        continue
+                    skill_key = int(record.get("skill_hash") or 0)
+                    if skill_key in described:
+                        continue
+                    if not skill_visible_in_scope(record, retrieval_scope,
+                                                  str(record.get("owner_scope") or "")):
+                        continue
+                    description = str(record.get("description") or "").strip()
+                    if not description:
+                        continue
+                    described.add(skill_key)
+                    # Synthesised, never persisted: it carries the cheap metadata tier through the
+                    # same path the real sections take.
+                    tree_candidate_records.append({
+                        "record_type": "skill_section",
+                        "section_hash": stable_hash("skill_description:%d" % skill_key),
+                        "skill_hash": skill_key,
+                        "owner_scope": record.get("owner_scope") or "user",
+                        "heading": str(record.get("name") or ""),
+                        "text": "%s: %s" % (record.get("name") or "skill", description),
+                        "scope": record.get("scope"),
+                        "access_scope": record.get("access_scope"),
+                        "skill_description_only": True,
+                        "updated_at_ms": record.get("updated_at_ms", now_ms()),
+                    })
             tree_prefilter_dropped_count = max(0, len(placement_candidate_records) - len(tree_candidate_records))
             retrieval_scan_stats = {
                 **retrieval_scan_stats,
