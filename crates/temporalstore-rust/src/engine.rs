@@ -383,6 +383,11 @@ impl TemporalEngine {
                 };
             }
         }
+        // Start this write with nothing staged, so a page put aside by a command that never
+        // appended cannot ride along on the next command's record.
+        if block_in_wal::enabled() {
+            block_in_wal::begin_write();
+        }
         let outcome = execute_on_shard(
             &self.cache,
             &self.page_store,
@@ -505,22 +510,27 @@ impl TemporalEngine {
                         .map(|record| Some(record.sequence))
                 } else {
                     self.wal_store
-                        .append_with_sync_reporting(request.shard_id, command, sync)
-                        .map(|(record, log_id)| {
-                            // Register the value against the object id the write derived, which
-                            // is what the stored address carries -- so a read finds its record
-                            // by identity rather than by when it happened.
+                        .append_with_sync_staged(
+                            request.shard_id,
+                            command,
+                            sync,
                             if block_in_wal::enabled() {
-                                if let Some(object_id) =
-                                    block_in_wal::object_id_for(request.shard_id, &record.command)
-                                {
-                                    block_in_wal::register(
-                                        request.shard_id,
-                                        object_id,
-                                        log_id,
-                                        &self.wal_store,
-                                    );
-                                }
+                                block_in_wal::take_staged()
+                            } else {
+                                Vec::new()
+                            },
+                        )
+                        .map(|(record, log_id)| {
+                            // Point every page this record carries at the record, keyed on the
+                            // object id the write derived -- which is what the stored address
+                            // carries, so a read finds it by identity rather than by timing.
+                            if block_in_wal::enabled() {
+                                block_in_wal::register_record(
+                                    request.shard_id,
+                                    &record.staged_pages,
+                                    log_id,
+                                    &self.wal_store,
+                                );
                             }
                             None
                         })
@@ -2364,6 +2374,13 @@ fn append_value(
         band_id: None,
         sha256: None,
     };
+    // Put the page aside for this write's record. It is often derived state rather than the
+    // command's own bytes, so the record has to carry it for a read to serve it back.
+    if block_in_wal::enabled() {
+        if let Some(object_id) = object_id {
+            block_in_wal::stage(object_id, bytes);
+        }
+    }
     let bytes = bytes.to_vec();
     cache.put_memory_only(
         CacheKey::page_with_slot(
@@ -2543,7 +2560,7 @@ fn read_page_bytes(
         // parses a log record.
         if block_in_wal::enabled() {
             if let Some(bytes) =
-                address.object_id.and_then(|object_id| block_in_wal::read_value(shard_id, object_id))
+                address.object_id.and_then(|object_id| block_in_wal::read_page(shard_id, object_id))
             {
                 let _ = cache.put(cache_key, bytes.clone());
                 return Some(bytes);
