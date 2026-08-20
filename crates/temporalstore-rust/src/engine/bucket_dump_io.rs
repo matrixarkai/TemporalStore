@@ -185,25 +185,27 @@ pub(super) fn bucket_dump_manifest_chain_issues(
         .collect()
 }
 
+/// Manifests retained unconditionally: the NEWEST one, and nothing else.
+///
+/// Each manifest embeds a complete, self-contained index (`index_bytes`), and installing one
+/// never walks the parent chain to reconstruct anything -- the chain is lineage metadata, not
+/// a recovery path. So an ancestor is not needed to recover from its descendant.
+///
+/// This used to walk the whole parent chain. Because every manifest is created with its parent
+/// set to the previous one, that retained every manifest ever written: `prunable` was always
+/// empty, dump manifests grew without bound on disk, and the follower-cursor / raft-snapshot
+/// guards were inert -- they can only hold back a manifest that would otherwise be pruned, so
+/// their block counters were structurally stuck at zero.
+///
+/// Anything older is now prunable unless a follower cursor or raft snapshot ref pins it, which
+/// is exactly what those cursors are for.
 pub(super) fn retained_bucket_dump_manifest_ids(manifests: &[BucketDumpManifest]) -> BTreeSet<String> {
-    let by_id = manifests
-        .iter()
-        .map(|manifest| (manifest.manifest_id.clone(), manifest))
-        .collect::<BTreeMap<_, _>>();
-    let mut retained = BTreeSet::new();
-    let mut cursor = manifests
+    manifests
         .iter()
         .max_by_key(|manifest| (manifest.index_log_sequence, manifest.created_unix_ms))
-        .map(|manifest| manifest.manifest_id.clone());
-    while let Some(manifest_id) = cursor {
-        if !retained.insert(manifest_id.clone()) {
-            break;
-        }
-        cursor = by_id
-            .get(&manifest_id)
-            .and_then(|manifest| manifest.parent_manifest_id.clone());
-    }
-    retained
+        .map(|manifest| manifest.manifest_id.clone())
+        .into_iter()
+        .collect()
 }
 
 pub(super) fn bucket_dump_manifest_prune_plan_at(
