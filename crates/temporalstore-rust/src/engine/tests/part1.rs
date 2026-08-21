@@ -7,6 +7,49 @@ use super::*;
 
 // shared-corpus: dynamic_event_replication_mode_selection
 #[test]
+fn stale_shard_index_is_refused_rather_than_decoded_with_the_wrong_key_meaning() {
+    // A pre-rekey index decodes CLEANLY -- context_events is still
+    // HashMap<String, BTreeMap<u64, BlockAddress>> -- while the u64 changed meaning from
+    // timeline_key to event_id_hash. None of that is type-visible, so without a version stamp
+    // the engine would serve an index whose events are unaddressable and whose time-windowed
+    // reads return nothing, raising no error at all.
+    //
+    // Built from a REAL serialized shard rather than hand-written JSON, so the fixture cannot
+    // drift from the struct and quietly stop exercising the decode path.
+    let shard = super::super::state::ShardState::default();
+    let stamped = super::super::stamp_index_format_version(&shard);
+    assert_eq!(
+        stamped.get("index_format_version").and_then(|v| v.as_u64()),
+        Some(u64::from(super::super::SHARD_INDEX_FORMAT_VERSION)),
+        "every write path must stamp the current format version"
+    );
+
+    let current = serde_json::from_value::<super::super::state::ShardState>(stamped.clone())
+        .expect("a stamped index must decode");
+    assert_eq!(
+        current.index_format_version,
+        super::super::SHARD_INDEX_FORMAT_VERSION
+    );
+
+    // Exactly what a file written before the stamp existed looks like.
+    let mut legacy = stamped;
+    legacy
+        .as_object_mut()
+        .expect("index is a json object")
+        .remove("index_format_version");
+    let stale = serde_json::from_value::<super::super::state::ShardState>(legacy)
+        .expect("a stale index still DECODES -- that is the whole problem");
+    assert_eq!(
+        stale.index_format_version, 0,
+        "an index written before the stamp must read as version 0"
+    );
+    assert!(
+        stale.index_format_version < super::super::SHARD_INDEX_FORMAT_VERSION,
+        "the load guard must classify a pre-stamp index as stale and refuse it"
+    );
+}
+
+#[test]
 fn replicated_execute_selects_sync_async_or_raft_without_restart() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
