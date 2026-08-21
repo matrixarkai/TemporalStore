@@ -2017,6 +2017,8 @@ fn ingest_external_benchmark_sources(
             source_ref: String::new(),
             related_node_hashes: Vec::new(),
             compact_attrs: Vec::new(),
+            // No vector on this fixture; empty is what a record without one holds.
+            vector: Vec::new(),
         };
         let index_ref = ContextIndexRef {
             primary_node_hash: node_hash,
