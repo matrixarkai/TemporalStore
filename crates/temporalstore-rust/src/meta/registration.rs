@@ -261,6 +261,7 @@ impl SingleNodeMeta {
             request.proxy_addr.clone(),
             ProxyMetaInfo {
                 freeze_reason: FreezeReason::Unspecified,
+                group: String::new(),
                 proxy_addr: request.proxy_addr,
                 namespace: request.namespace,
                 location: request.location,
@@ -316,14 +317,43 @@ impl SingleNodeMeta {
             proxy.binary_version = request.binary_version;
         }
         let serving_mode = proxy_serving_mode_for_state(proxy.state).to_string();
-        let config_changed = proxy.namespace != request.namespace
-            || proxy.config_version > request.config_version
-            || proxy.state != MetaEntityState::Normal;
+        let proxy_addr = proxy.proxy_addr.clone();
+        let fallback_namespace = proxy.namespace.clone();
+        let fallback_version = proxy.config_version;
+        let stale_state = proxy.state != MetaEntityState::Normal;
+        // The attached group is the authority on what this proxy serves, so the
+        // heartbeat is where a reassignment -- or a release back to idle --
+        // reaches the proxy.
+        let (group_changed, namespace, config_version) = Self::proxy_group_config(
+            &state,
+            &proxy_addr,
+            &request.namespace,
+            request.config_version,
+        );
+        let attached = state
+            .proxies
+            .get(&proxy_addr)
+            .map(|proxy| !proxy.group.is_empty())
+            .unwrap_or(false);
+        let (namespace, config_version) = if attached {
+            (namespace, config_version)
+        } else {
+            // No group: fall back to whatever the proxy was configured with, so
+            // a deployment that does not use groups behaves exactly as before.
+            (fallback_namespace.clone(), fallback_version)
+        };
+        let config_changed = if attached {
+            group_changed
+        } else {
+            fallback_namespace != request.namespace
+                || fallback_version > request.config_version
+                || stale_state
+        };
         ProxyHeartbeatResponse {
             status: Status::ok(),
             config_changed,
-            namespace: proxy.namespace.clone(),
-            config_version: proxy.config_version,
+            namespace,
+            config_version,
             serving_mode,
             drop_percent: 0,
         }

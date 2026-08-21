@@ -222,6 +222,28 @@ impl MetaRaftCluster {
         }
     }
 
+    pub fn put_proxy_group(&self, request: crate::meta::PutProxyGroupRequest) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::PutProxyGroup(request)),
+        }
+    }
+
+    pub fn drop_proxy_group(&self, request: crate::meta::DropProxyGroupRequest) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::DropProxyGroup(request)),
+        }
+    }
+
+    pub fn list_proxy_groups(&self) -> crate::meta::ListProxyGroupsResponse {
+        self.read_meta().map_or_else(
+            |status| crate::meta::ListProxyGroupsResponse {
+                status,
+                groups: Vec::new(),
+            },
+            |meta| meta.list_proxy_groups(),
+        )
+    }
+
     pub fn freeze_proxy(&self, request: StateChangeRequest) -> AckResponse {
         AckResponse {
             status: self.mutation_status(MetaMutation::FreezeProxy(request)),

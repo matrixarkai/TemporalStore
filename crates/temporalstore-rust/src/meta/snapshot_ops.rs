@@ -52,6 +52,7 @@ impl SingleNodeMeta {
             shards: snapshot.shards,
             servers: snapshot.servers,
             proxies: snapshot.proxies,
+            proxy_groups: snapshot.proxy_groups,
             namespaces: snapshot.namespaces,
             tables,
             counters: counters_from_stats(&snapshot.stats),
@@ -89,6 +90,7 @@ impl MetaSnapshot {
             shards: state.shards.clone(),
             servers: state.servers.clone(),
             proxies: state.proxies.clone(),
+            proxy_groups: state.proxy_groups.clone(),
             namespaces: state.namespaces.clone(),
             tables: state
                 .tables
