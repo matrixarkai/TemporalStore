@@ -75,12 +75,56 @@ pub(super) fn context_entity_key(tenant_hash: u64, node_hash: u64, entity_hash: 
     format!("ctx:entity:{tenant_hash}:{node_hash}:{entity_hash}")
 }
 
+/// Split a persisted per-entity key back into (collection key, entity hash).
+///
+/// The index stores entities grouped by node, but the PERSISTED page entry still carries the
+/// per-entity key `ctx:entity:{tenant}:{node}:{entity_hash}` -- that is what keeps the on-disk
+/// shape identical across this fold in both directions. Load calls this to rebuild the grouping.
+/// Returns None for a key that does not carry a numeric entity hash, so a malformed or
+/// foreign-shaped entry is skipped rather than folded under a wrong node.
+pub(super) fn split_context_entity_key(object_key: &str) -> Option<(String, u64)> {
+    let (collection_key, entity_hash) = object_key.rsplit_once(':')?;
+    if !collection_key.starts_with("ctx:entity:") {
+        return None;
+    }
+    // The collection key itself ends in the node hash, so it must still hold four segments
+    // (ctx, entity, tenant, node) once the entity hash is removed -- otherwise this key WAS a
+    // collection key and splitting it would silently reinterpret the node hash as an entity.
+    if collection_key.split(':').count() != 4 {
+        return None;
+    }
+    Some((collection_key.to_string(), entity_hash.parse::<u64>().ok()?))
+}
+
 pub(super) fn context_entity_collection_key(tenant_hash: u64, node_hash: u64) -> String {
     format!("ctx:entity:{tenant_hash}:{node_hash}")
 }
 
 pub(super) fn context_child_key(tenant_hash: u64, parent_hash: u64) -> String {
     format!("ctx:child:{tenant_hash}:{parent_hash}")
+}
+
+pub(super) fn context_embedding_collection_key(tenant_hash: u64) -> String {
+    format!("ctx:embedding:{tenant_hash}")
+}
+
+/// Split a persisted per-embedding key into (collection key, ref hash).
+///
+/// Mirrors `split_context_entity_key`: the index groups embeddings, but the persisted entry keeps
+/// the per-embedding key `ctx:embedding:{tenant}:{ref_hash}`, which is what keeps the on-disk
+/// shape identical in both directions across this fold.
+pub(super) fn split_context_embedding_key(object_key: &str) -> Option<(String, u64)> {
+    let (collection_key, ref_hash) = object_key.rsplit_once(':')?;
+    if !collection_key.starts_with("ctx:embedding:") {
+        return None;
+    }
+    // ctx, embedding, tenant -- three segments once the ref hash is removed. A key that already
+    // IS a collection key has only two and must not be split, or the tenant hash would be
+    // reinterpreted as a ref.
+    if collection_key.split(':').count() != 3 {
+        return None;
+    }
+    Some((collection_key.to_string(), ref_hash.parse::<u64>().ok()?))
 }
 
 pub(super) fn context_embedding_key(tenant_hash: u64, ref_hash: u64) -> String {
@@ -220,6 +264,37 @@ pub(super) fn context_timeline_key(timestamp_ms: u64, disambiguator: u64) -> u64
     timestamp_ms
         .saturating_mul(CONTEXT_TIMELINE_FANOUT)
         .saturating_add(disambiguator % CONTEXT_TIMELINE_FANOUT)
+}
+
+/// Events of one node within a time window, oldest first, as (timeline_key, address).
+///
+/// The primary event map is keyed by event id hash so update and delete can address a single
+/// event in log n. Hash order is effectively random, so a time window is not a contiguous range
+/// there; it is a contiguous range in `context_event_timeline`, which maps timeline_key ->
+/// event id. This ranges over that index and dereferences each hit into the primary map, so a
+/// time-windowed read stays log n + k instead of scanning the node's entire series.
+///
+/// Returns a DoubleEndedIterator because every caller reads newest-first (`.rev()`): retrieval
+/// wants recent, serving-relevant context before cold history.
+pub(super) fn context_event_time_range<'a>(
+    shard: &'a super::state::ShardState,
+    object_key: &str,
+    start_time_ms: u64,
+    end_time_ms: u64,
+) -> impl DoubleEndedIterator<Item = (u64, &'a BlockAddress)> + 'a {
+    let series = shard.context_events.get(object_key);
+    let start = context_timeline_start(start_time_ms);
+    let end = context_timeline_end(end_time_ms);
+    shard
+        .context_event_timeline
+        .get(object_key)
+        .into_iter()
+        .flat_map(move |timeline| timeline.range(start..end))
+        .filter_map(move |(timeline_key, event_id_hash)| {
+            series
+                .and_then(|series| series.get(event_id_hash))
+                .map(|address| (*timeline_key, address))
+        })
 }
 
 pub(super) fn context_timeline_start(timestamp_ms: u64) -> u64 {
@@ -727,7 +802,8 @@ pub(super) fn load_context_embedding(
 ) -> Option<ContextEmbedding> {
     shard
         .context_embeddings
-        .get(&context_embedding_key(tenant_hash, ref_hash))
+        .get(&context_embedding_collection_key(tenant_hash))
+        .and_then(|series| series.get(&ref_hash))
         .and_then(|address| {
             read_page_bytes(cache, page_store, shard_id, address)
                 .and_then(|bytes| context_from_bytes::<ContextEmbedding>(&bytes))
@@ -888,13 +964,26 @@ pub(super) fn traverse_context_tree(
             children.sort_by_key(|child_ref| (child_ref.updated_at_ms, child_ref.child_hash));
             children.truncate(child_limit);
             for child in children {
+                // Address the embedding the way WRITERS store it. This passed the child's raw
+                // node hash, but every writer stores under
+                // context_embedding_ref_hash(tenant, owner, level) -- a hash of those three --
+                // which can never equal a bare node hash. So the lookup missed for every child,
+                // `continue` fired every iteration, and the cosine scoring below was
+                // unreachable. The test did not catch it because it wrote its embedding under
+                // the raw node hash too, constructing the data the way this READER expected
+                // rather than the way writers actually write it.
+                let ref_hash = crate::context_workflow::context_embedding_ref_hash(
+                    tenant_hash,
+                    child.child_hash,
+                    "node_l0",
+                );
                 let Some(embedding) = load_context_embedding(
                     cache,
                     page_store,
                     shard_id,
                     shard,
                     tenant_hash,
-                    child.child_hash,
+                    ref_hash,
                 ) else {
                     continue;
                 };

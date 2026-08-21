@@ -1011,9 +1011,20 @@ pub(super) fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePag
                 .map(|address| live_page_entry(key.clone(), "context_audit", None, address)),
         );
     }
-    entries.extend(shard.context_entities.iter().map(|(key, address)| {
-        live_page_entry(key.clone(), "context_entity", None, address.clone())
-    }));
+    // Entities live grouped by node in memory but persist one entry per entity, under the same
+    // `ctx:entity:{tenant}:{node}:{entity_hash}` key as before the fold -- the collection key
+    // plus the BTree key reproduce it exactly. Keeping the on-disk key per entity is what makes
+    // this change format-compatible in both directions.
+    for (collection_key, series) in &shard.context_entities {
+        entries.extend(series.iter().map(|(entity_hash, address)| {
+            live_page_entry(
+                format!("{collection_key}:{entity_hash}"),
+                "context_entity",
+                None,
+                address.clone(),
+            )
+        }));
+    }
     for (key, series) in &shard.context_children {
         entries.extend(
             unique_timestamped_kv_page_addresses(series)
@@ -1021,9 +1032,18 @@ pub(super) fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePag
                 .map(|address| live_page_entry(key.clone(), "context_child", None, address)),
         );
     }
-    entries.extend(shard.context_embeddings.iter().map(|(key, address)| {
-        live_page_entry(key.clone(), "context_embedding", None, address.clone())
-    }));
+    // Persist one entry per embedding under the pre-fold key `ctx:embedding:{tenant}:{ref}`,
+    // rebuilt from the collection key plus the BTree key, so the on-disk shape is unchanged.
+    for (collection_key, series) in &shard.context_embeddings {
+        entries.extend(series.iter().map(|(ref_hash, address)| {
+            live_page_entry(
+                format!("{collection_key}:{ref_hash}"),
+                "context_embedding",
+                None,
+                address.clone(),
+            )
+        }));
+    }
     for (key, series) in &shard.context_summaries {
         entries.extend(
             unique_timestamped_kv_page_addresses(series)
@@ -1593,11 +1613,12 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut control_state = HashMap::<String, BTreeMap<u64, i64>>::new();
     let mut control_state_pages = HashMap::new();
     let mut context_events = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
+    let mut context_event_timeline = HashMap::<String, BTreeMap<u64, u64>>::new();
     let mut context_indexes = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut context_audits = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
-    let mut context_entities = HashMap::new();
+    let mut context_entities = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut context_children = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
-    let mut context_embeddings = HashMap::new();
+    let mut context_embeddings = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut context_summaries = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut context_compressions = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
 
@@ -1668,11 +1689,12 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             }
             "context_event" => {
                 saw_context_events = true;
-                insert_timestamped_secondary_view(
+                insert_context_event_views(
                     page_store,
                     warm_shard,
                     &mut warm_batch,
                     &mut context_events,
+                    &mut context_event_timeline,
                     entry.object_key,
                     entry.address,
                 );
@@ -1701,7 +1723,14 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             }
             "context_entity" => {
                 saw_context_entities = true;
-                context_entities.insert(entry.object_key, entry.address);
+                if let Some((collection_key, entity_hash)) =
+                    split_context_entity_key(&entry.object_key)
+                {
+                    context_entities
+                        .entry(collection_key)
+                        .or_insert_with(BTreeMap::new)
+                        .insert(entity_hash, entry.address);
+                }
             }
             "context_child" => {
                 saw_context_children = true;
@@ -1716,7 +1745,14 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             }
             "context_embedding" => {
                 saw_context_embeddings = true;
-                context_embeddings.insert(entry.object_key, entry.address);
+                if let Some((collection_key, ref_hash)) =
+                    split_context_embedding_key(&entry.object_key)
+                {
+                    context_embeddings
+                        .entry(collection_key)
+                        .or_insert_with(BTreeMap::new)
+                        .insert(ref_hash, entry.address);
+                }
             }
             "context_summary" => {
                 saw_context_summaries = true;
@@ -1777,6 +1813,19 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     if saw_context_events {
         let persisted = std::mem::take(&mut shard.context_events);
         shard.context_events = reconcile_timestamped_series_membership(&persisted, context_events);
+        // The time index is derived state: rebuild it wholesale from what the pages actually
+        // carried rather than reconciling it, so it can never reference an event id that
+        // membership reconciliation just dropped from the primary map.
+        shard.context_event_timeline = context_event_timeline;
+        shard.context_event_timeline.retain(|object_key, index| {
+            match shard.context_events.get(object_key) {
+                None => false,
+                Some(series) => {
+                    index.retain(|_, event_id_hash| series.contains_key(event_id_hash));
+                    !index.is_empty()
+                }
+            }
+        });
     }
     if saw_context_indexes {
         let persisted = std::mem::take(&mut shard.context_indexes);
@@ -1868,6 +1917,64 @@ pub(super) fn insert_timestamped_secondary_view(
         // one for a shared timestamp, and the value silently reverted to the old page's bytes on
         // reload. Keep the NEWEST page (highest address generation) per timestamp.
         match series.entry(timestamp_ms) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(address.clone());
+            }
+            std::collections::btree_map::Entry::Occupied(mut slot) => {
+                if address.generation.unwrap_or(0) >= slot.get().generation.unwrap_or(0) {
+                    slot.insert(address.clone());
+                }
+            }
+        }
+    }
+}
+
+/// Rebuild the event primary map AND its time index from a physical page.
+///
+/// Events are keyed by event id hash, which -- unlike a timestamp -- is not recoverable from the
+/// packed point header. It lives inside the encoded ContextEvent, so this decodes each point's
+/// value rather than reading only its timestamp. The alternative, keying recovered events by
+/// timeline key, would rebuild a map the read path can no longer address and silently strand
+/// every event after a page-recovery load.
+///
+/// Newest-page-wins is preserved for the same reason it exists in the timestamped view: one
+/// logical record can physically live in several pages, and reconstruction visits pages in
+/// slab/offset order, not write order.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn insert_context_event_views(
+    page_store: &LocalBlockStore,
+    warm_shard: Option<ShardId>,
+    warm_batch: &mut Vec<(CacheKey, Vec<u8>)>,
+    events: &mut HashMap<String, BTreeMap<u64, BlockAddress>>,
+    timeline: &mut HashMap<String, BTreeMap<u64, u64>>,
+    object_key: String,
+    address: BlockAddress,
+) {
+    let bytes = page_store.read(&address).ok();
+    if let (Some(shard_id), Some(bytes)) = (warm_shard, bytes.as_ref()) {
+        let key = CacheKey::page_with_slot(
+            shard_id,
+            address.page_slab_id,
+            address.offset,
+            address.length,
+            address.routing_bucket,
+        );
+        warm_batch.push((key, bytes.clone()));
+    }
+    let points = bytes
+        .and_then(|bytes| match decode_feature_page_strict(&bytes) {
+            PackedFeaturePageDecode::Packed(points) => Some(points),
+            PackedFeaturePageDecode::Legacy | PackedFeaturePageDecode::Corrupt(_) => None,
+        })
+        .unwrap_or_default();
+    let series = events.entry(object_key.clone()).or_default();
+    let index = timeline.entry(object_key).or_default();
+    for point in points {
+        let Some(event) = super::context::context_from_bytes::<ContextEvent>(&point.value) else {
+            continue;
+        };
+        index.insert(point.timestamp_ms, event.event_id_hash);
+        match series.entry(event.event_id_hash) {
             std::collections::btree_map::Entry::Vacant(slot) => {
                 slot.insert(address.clone());
             }

@@ -2315,21 +2315,15 @@ fn collect_live_page_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
     for series in shard.context_audits.values() {
         ids.extend(series.values().map(|address| address.page_slab_id));
     }
-    ids.extend(
-        shard
-            .context_entities
-            .values()
-            .map(|address| address.page_slab_id),
-    );
+    for series in shard.context_entities.values() {
+        ids.extend(series.values().map(|address| address.page_slab_id));
+    }
     for series in shard.context_children.values() {
         ids.extend(series.values().map(|address| address.page_slab_id));
     }
-    ids.extend(
-        shard
-            .context_embeddings
-            .values()
-            .map(|address| address.page_slab_id),
-    );
+    for series in shard.context_embeddings.values() {
+        ids.extend(series.values().map(|address| address.page_slab_id));
+    }
     for series in shard.context_summaries.values() {
         ids.extend(series.values().map(|address| address.page_slab_id));
     }
@@ -2673,9 +2667,9 @@ fn object_manager_stats(
             + shard.context_events.len()
             + shard.context_indexes.len()
             + shard.context_audits.len()
-            + shard.context_entities.len()
+            + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
             + shard.context_children.len()
-            + shard.context_embeddings.len()
+            + shard.context_embeddings.values().map(BTreeMap::len).sum::<usize>()
             + shard.context_summaries.len()
             + shard.context_compressions.len();
         let object_count = bucket_object_count.max(secondary_object_count);
@@ -2700,13 +2694,13 @@ fn object_manager_stats(
                 .values()
                 .map(BTreeMap::len)
                 .sum::<usize>()
-            + shard.context_entities.len()
+            + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
             + shard
                 .context_children
                 .values()
                 .map(BTreeMap::len)
                 .sum::<usize>()
-            + shard.context_embeddings.len()
+            + shard.context_embeddings.values().map(BTreeMap::len).sum::<usize>()
             + shard
                 .context_summaries
                 .values()
@@ -2759,9 +2753,9 @@ fn object_manager_stats(
         + shard.context_events.len()
         + shard.context_indexes.len()
         + shard.context_audits.len()
-        + shard.context_entities.len()
+        + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
         + shard.context_children.len()
-        + shard.context_embeddings.len()
+        + shard.context_embeddings.values().map(BTreeMap::len).sum::<usize>()
         + shard.context_summaries.len()
         + shard.context_compressions.len();
     let page_ref_count = shard.strings.len()
@@ -2784,13 +2778,13 @@ fn object_manager_stats(
             .values()
             .map(BTreeMap::len)
             .sum::<usize>()
-        + shard.context_entities.len()
+        + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
         + shard
             .context_children
             .values()
             .map(BTreeMap::len)
             .sum::<usize>()
-        + shard.context_embeddings.len()
+        + shard.context_embeddings.values().map(BTreeMap::len).sum::<usize>()
         + shard
             .context_summaries
             .values()

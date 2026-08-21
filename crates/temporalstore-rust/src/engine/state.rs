@@ -95,8 +95,23 @@ pub(super) struct ShardState {
     pub(super) feature_rollups: HashMap<String, RollupEntry>,
     #[serde(default)]
     pub(super) context_nodes: HashMap<String, BlockAddress>,
+    // Keyed by EVENT ID HASH, aligning events with entities/embeddings so update and delete
+    // address one event directly in log n instead of scanning the node's whole series (mem0
+    // delete carries the event id, not the time, so it previously had no way to locate one).
     #[serde(default)]
     pub(super) context_events: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    // Time index over the same events: timeline_key -> event_id_hash, where timeline_key stays
+    // timestamp_ms * CONTEXT_TIMELINE_FANOUT + (id % FANOUT). The primary map above is ordered
+    // by hash, which is effectively random, so a time window is no longer a contiguous range in
+    // it -- and 13 sites scan events by time window (context_timeline_start/end). Those range
+    // over this index and dereference into the primary, keeping time reads at log n + k rather
+    // than degrading them to a full series scan to make deletes cheaper.
+    //
+    // Rebuilt at load from the same page decode the event load path already performs, so it
+    // costs no extra on-disk state; it is serialized with the index like the primary because
+    // ShardState is snapshotted whole.
+    #[serde(default)]
+    pub(super) context_event_timeline: HashMap<String, BTreeMap<u64, u64>>,
     #[serde(default)]
     pub(super) context_indexes: HashMap<String, BTreeMap<u64, BlockAddress>>,
     #[serde(default)]
@@ -125,12 +140,30 @@ pub(super) struct ShardState {
     // the oldest pending window idempotently (stable compression id per window).
     #[serde(skip)]
     pub(super) context_compression_watermark: HashMap<String, u64>,
+    // Entities are grouped by their OWNING NODE, not one map key per entity: the key is
+    // `ctx:entity:{tenant}:{node}` (context_entity_collection_key) and the BTreeMap holds every
+    // entity of that node. The inner u64 is the ENTITY HASH, not a timestamp -- unlike
+    // context_events/indexes/audits, which are time-keyed. That keeps upsert as an overwrite of
+    // one slot (an entity has one current value; its history is the separate
+    // context_entity_update_audit series) while making a node's entities enumerable, which the
+    // per-entity key shape could not do: a HashMap cannot prefix-scan, so ContextQueryEntities
+    // had to be handed every entity_hash by its caller.
     #[serde(default)]
-    pub(super) context_entities: HashMap<String, BlockAddress>,
+    pub(super) context_entities: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    // No migration field is needed: the PERSISTED entry still carries the per-entity key
+    // `ctx:entity:{tenant}:{node}:{entity_hash}`, which the load path splits back into
+    // (collection key, entity hash). The on-disk shape is unchanged in both directions, so an
+    // index written before this fold loads natively and one written after it stays readable by
+    // an older binary.
     #[serde(default)]
     pub(super) context_children: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    // Grouped like context_entities, but by TENANT rather than node: a ContextEmbedding carries
+    // only ref_hash (itself hash(tenant, node, label)), so the node it belongs to cannot be
+    // recovered from the record and cannot be the group key without a schema change. The inner
+    // u64 is the ref hash, so upsert overwrites one slot -- an embedding has one current vector.
+    // Key: `ctx:embedding:{tenant}` (context_embedding_collection_key).
     #[serde(default)]
-    pub(super) context_embeddings: HashMap<String, BlockAddress>,
+    pub(super) context_embeddings: HashMap<String, BTreeMap<u64, BlockAddress>>,
     #[serde(default)]
     pub(super) context_summaries: HashMap<String, BTreeMap<u64, BlockAddress>>,
     #[serde(default)]

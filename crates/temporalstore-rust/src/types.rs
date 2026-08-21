@@ -284,6 +284,20 @@ pub struct ContextEvent {
     // Deprecated hot-schema field: use ContextCompressionEvent/debug sidecars instead.
     #[serde(default, skip_serializing)]
     pub compact_attrs: Vec<u8>,
+    // Inline embedding vector, folded from the separate ContextEmbedding record.
+    //
+    // Every embedding is 1:1 with its owner -- measured on one ingest: event_text 6 to 6 events,
+    // entity_state + profile_entity_state 6 to 6 entities, session_l0 + batch_l0 2 to 2
+    // summaries -- so a separate record per vector costs a key, a BlockAddress and a page to
+    // store something with exactly one owner. Retrieval fetches the vector to score a candidate
+    // and then the text to pack it; inline, that is ONE read, and the text is ~50 bytes against
+    // ~1536 for the vector, about 3% of a fetch already paid for.
+    //
+    // Default-empty and skipped when empty: a record written before the fold decodes with no
+    // vector and readers fall back to the ContextEmbedding record, so this can be populated
+    // before any reader migrates off ref_hash addressing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vector: Vec<f32>,
 }
 
 impl ContextEvent {
@@ -401,6 +415,20 @@ pub struct ContextEntity {
     pub confidence: f32,
     #[serde(default)]
     pub source_event_hashes: Vec<u64>,
+    // Inline embedding vector, folded from the separate ContextEmbedding record.
+    //
+    // Every embedding is 1:1 with its owner -- measured on one ingest: event_text 6 to 6 events,
+    // entity_state + profile_entity_state 6 to 6 entities, session_l0 + batch_l0 2 to 2
+    // summaries -- so a separate record per vector costs a key, a BlockAddress and a page to
+    // store something with exactly one owner. Retrieval fetches the vector to score a candidate
+    // and then the text to pack it; inline, that is ONE read, and the text is ~50 bytes against
+    // ~1536 for the vector, about 3% of a fetch already paid for.
+    //
+    // Default-empty and skipped when empty: a record written before the fold decodes with no
+    // vector and readers fall back to the ContextEmbedding record, so this can be populated
+    // before any reader migrates off ref_hash addressing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vector: Vec<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -421,13 +449,27 @@ pub struct ContextEmbedding {
     pub updated_at_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ContextSummary {
     pub node_hash: u64,
     pub level: u32,
     #[serde(default)]
     pub text: String,
     pub valid_from_ms: u64,
+    // Inline embedding vector, folded from the separate ContextEmbedding record.
+    //
+    // Every embedding is 1:1 with its owner -- measured on one ingest: event_text 6 to 6 events,
+    // entity_state + profile_entity_state 6 to 6 entities, session_l0 + batch_l0 2 to 2
+    // summaries -- so a separate record per vector costs a key, a BlockAddress and a page to
+    // store something with exactly one owner. Retrieval fetches the vector to score a candidate
+    // and then the text to pack it; inline, that is ONE read, and the text is ~50 bytes against
+    // ~1536 for the vector, about 3% of a fetch already paid for.
+    //
+    // Default-empty and skipped when empty: a record written before the fold decodes with no
+    // vector and readers fall back to the ContextEmbedding record, so this can be populated
+    // before any reader migrates off ref_hash addressing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vector: Vec<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -661,6 +703,7 @@ impl ContextWire for ContextEvent {
         encode_fixed32_field(&mut out, 7, self.importance.to_bits());
         encode_bytes_field(&mut out, 8, self.text.as_bytes());
         encode_varint_field(&mut out, 9, self.primary_time_ms());
+        encode_vector_field(&mut out, &self.vector);
         out
     }
 
@@ -681,6 +724,7 @@ impl ContextWire for ContextEvent {
             source_ref: String::new(),
             related_node_hashes: Vec::new(),
             compact_attrs: Vec::new(),
+            vector: Vec::new(),
         };
         while cursor < bytes.len() {
             let tag = decode_varint(bytes, &mut cursor)?;
@@ -705,6 +749,9 @@ impl ContextWire for ContextEvent {
                 (9, 0) => value.ingestion_time_ms = decode_varint(bytes, &mut cursor)?,
                 (9, 5) => value.importance = f32::from_bits(decode_fixed32(bytes, &mut cursor)?),
                 (10, 2) => value.text = decode_string(bytes, &mut cursor)?,
+                (CONTEXT_VECTOR_FIELD, 2) => {
+                    value.vector = unpack_f32_vector(&decode_bytes(bytes, &mut cursor)?)
+                }
                 (11, 2) => value.source_ref = decode_string(bytes, &mut cursor)?,
                 (12, 0) => value
                     .related_node_hashes
@@ -912,6 +959,7 @@ impl ContextWire for ContextEntity {
         for source_event_hash in &self.source_event_hashes {
             encode_varint_field(&mut out, 9, *source_event_hash);
         }
+        encode_vector_field(&mut out, &self.vector);
         out
     }
 
@@ -927,6 +975,7 @@ impl ContextWire for ContextEntity {
             valid_from_ms: 0,
             confidence: 0.0,
             source_event_hashes: Vec::new(),
+            vector: Vec::new(),
         };
         while cursor < bytes.len() {
             let tag = decode_varint(bytes, &mut cursor)?;
@@ -952,6 +1001,9 @@ impl ContextWire for ContextEntity {
                             .source_event_hashes
                             .push(decode_varint(&packed, &mut packed_cursor)?);
                     }
+                }
+                (CONTEXT_VECTOR_FIELD, 2) => {
+                    value.vector = unpack_f32_vector(&decode_bytes(bytes, &mut cursor)?)
                 }
                 (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
             }
@@ -1044,6 +1096,7 @@ impl ContextWire for ContextSummary {
         encode_varint_field(&mut out, 3, u64::from(self.level));
         encode_bytes_field(&mut out, 4, self.text.as_bytes());
         encode_varint_field(&mut out, 5, self.valid_from_ms);
+        encode_vector_field(&mut out, &self.vector);
         out
     }
 
@@ -1054,6 +1107,7 @@ impl ContextWire for ContextSummary {
             level: 0,
             text: String::new(),
             valid_from_ms: 0,
+            vector: Vec::new(),
         };
         while cursor < bytes.len() {
             let tag = decode_varint(bytes, &mut cursor)?;
@@ -1062,6 +1116,9 @@ impl ContextWire for ContextSummary {
                 (3, 0) => value.level = u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?,
                 (4, 2) => value.text = decode_string(bytes, &mut cursor)?,
                 (5, 0) => value.valid_from_ms = decode_varint(bytes, &mut cursor)?,
+                (CONTEXT_VECTOR_FIELD, 2) => {
+                    value.vector = unpack_f32_vector(&decode_bytes(bytes, &mut cursor)?)
+                }
                 (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
             }
         }
@@ -1596,6 +1653,38 @@ pub enum Command {
         #[serde(default)]
         compression_limit: Option<usize>,
     },
+}
+
+/// Field number carrying the inline embedding vector on ContextEvent/Entity/Summary.
+///
+/// These three types have HAND-WRITTEN protobuf codecs; a serde field alone is invisible to
+/// them and is silently dropped on persist -- the struct is populated in memory and the value
+/// is gone by the time it reaches a page, with no error anywhere. 20 is clear of every field
+/// number the three messages already use.
+const CONTEXT_VECTOR_FIELD: u64 = 20;
+
+/// f32 vector -> packed little-endian bytes. Explicit LE, not native, so a page written on one
+/// architecture decodes on another.
+fn pack_f32_vector(vector: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(vector.len() * 4);
+    for value in vector {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    out
+}
+
+fn unpack_f32_vector(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect()
+}
+
+fn encode_vector_field(out: &mut Vec<u8>, vector: &[f32]) {
+    if vector.is_empty() {
+        return;
+    }
+    encode_bytes_field(out, CONTEXT_VECTOR_FIELD, &pack_f32_vector(vector));
 }
 
 fn encode_varint_field(out: &mut Vec<u8>, field_number: u64, value: u64) {
@@ -2150,6 +2239,7 @@ mod tests {
             valid_from_ms: 1_000,
             confidence: 0.97,
             source_event_hashes: vec![5, 6],
+            vector: Vec::new(),
         };
         assert_eq!(
             ContextEntity::decode_context_proto_value(&entity.encode_context_proto_value()),
@@ -2181,6 +2271,7 @@ mod tests {
             level: 1,
             text: "summary".to_string(),
             valid_from_ms: 1_000,
+            vector: Vec::new(),
         };
         assert_eq!(
             ContextSummary::decode_context_proto_value(&summary.encode_context_proto_value()),

@@ -247,6 +247,7 @@ pub fn ingest_resource_skill_context(
             valid_from_ms: extract.event.event_time_ms,
             confidence: 1.0,
             source_event_hashes: vec![extract.event.event_id_hash],
+            vector: Vec::new(),
         };
         let compression = ContextCompressionEvent {
             compression_id_hash: stable_hash64(&format!(

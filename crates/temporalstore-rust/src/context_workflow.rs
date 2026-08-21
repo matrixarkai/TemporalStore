@@ -1554,7 +1554,7 @@ pub(crate) fn extract_context_gated(
         l1_ref: l1.clone(),
         raw_metadata_ref: request.source_id.clone(),
     };
-    let event = context_event_with_storage_keys(
+    let mut event = context_event_with_storage_keys(
         node_hash,
         ContextEvent {
             event_id_hash,
@@ -1571,6 +1571,7 @@ pub(crate) fn extract_context_gated(
             source_ref: String::new(),
             related_node_hashes: Vec::new(),
             compact_attrs: Vec::new(),
+            vector: Vec::new(),
         },
     );
     let index_ref = ContextIndexRef {
@@ -1589,17 +1590,19 @@ pub(crate) fn extract_context_gated(
         propagate_depth: 1,
     };
 
-    let summary_l0 = ContextSummary {
+    let mut summary_l0 = ContextSummary {
         node_hash,
         level: 1,
         text: l0.clone(),
         valid_from_ms: timestamp_ms,
+        vector: Vec::new(),
     };
-    let summary_l1 = emit_l1.then(|| ContextSummary {
+    let mut summary_l1 = emit_l1.then(|| ContextSummary {
         node_hash,
         level: 2,
         text: l1.clone(),
         valid_from_ms: timestamp_ms,
+        vector: Vec::new(),
     });
     let mut embedding_inputs: Vec<(&str, u64, u32, &str)> =
         vec![("node_l0", node_hash, 1, l0.as_str())];
@@ -1693,6 +1696,33 @@ pub(crate) fn extract_context_gated(
         });
         embedding_commands
     };
+
+    // Step 2 of the embedding fold: carry the event's vector on the event record itself,
+    // alongside the separate ContextEmbedding row that readers still address by ref_hash.
+    // Dual-write on purpose -- ref_hash is a one-way hash of (tenant, owner, level), so no
+    // reader can reach an owner record from it, and the separate rows cannot be dropped until
+    // every reader is migrated to (owner, level) addressing. Populating first means that
+    // migration can be verified against records that already carry their vector, instead of
+    // flipping storage and addressing in one step.
+    //
+    // Left empty when embedding was deferred (provider failure): the node is marked
+    // embedding-dirty and the async drainer attaches vectors later, so an empty vector here
+    // means "not yet", never "none". skip_serializing_if keeps that costing nothing on disk.
+    if !embedding_deferred {
+        // embedding_inputs order is node_l0, [node_l1], event_text -- the same order the
+        // ContextEmbedding rows above index into, so the vectors line up with their owners:
+        // index 0 is the L0 summary, index 1 the L1 summary when emitted, and the event last.
+        if let Some(vector) = embedding_vectors.first() {
+            summary_l0.vector = vector.clone();
+        }
+        if let (Some(summary), Some(vector)) = (summary_l1.as_mut(), embedding_vectors.get(1)) {
+            summary.vector = vector.clone();
+        }
+        let event_vector_index = if emit_l1 { 2 } else { 1 };
+        if let Some(vector) = embedding_vectors.get(event_vector_index) {
+            event.vector = vector.clone();
+        }
+    }
 
     let mut commands = vec![
         Command::ContextUpsertNode {
@@ -2612,6 +2642,7 @@ fn empty_event() -> ContextEvent {
         source_ref: String::new(),
         related_node_hashes: Vec::new(),
         compact_attrs: Vec::new(),
+        vector: Vec::new(),
     }
 }
 

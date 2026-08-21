@@ -144,6 +144,7 @@ fn context_models_match_keys_timeline_pages_and_filters() {
         valid_from_ms: 1_000,
         confidence: 0.97,
         source_event_hashes: vec![5],
+        vector: Vec::new(),
     };
     let entity_upsert = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -153,10 +154,17 @@ fn context_models_match_keys_timeline_pages_and_filters() {
         },
     });
     assert!(entity_upsert.status.ok);
+    // The collection key, matching the event contract asserted below ("ctx:event:11:42").
+    // Entities are grouped by node in shard state now, so the object key a command reports has
+    // to be the key that state is stored under -- every key-driven mechanism in engine.rs
+    // (key-state capture/apply, tombstone removal, membership) looks it up directly. The
+    // per-entity key "ctx:entity:11:42:7001" still exists where it must: as the page object id,
+    // so two entities of one node cannot share a page, and as the persisted entry key, which is
+    // what keeps the on-disk format identical across this change.
     assert!(matches!(
         entity_upsert.response,
         CommandResponse::ContextObjectKey { ref object_key }
-            if object_key == "ctx:entity:11:42:7001"
+            if object_key == "ctx:entity:11:42"
     ));
     let entity_get = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -200,6 +208,7 @@ fn context_models_match_keys_timeline_pages_and_filters() {
         source_ref: "src://a".to_string(),
         related_node_hashes: vec![42],
         compact_attrs: vec![1, 2, 3],
+        vector: Vec::new(),
     };
     let mut event_b = event_a.clone();
     event_b.event_id_hash = 6;
@@ -320,6 +329,7 @@ fn context_models_match_keys_timeline_pages_and_filters() {
         source_ref: "cursor://701".to_string(),
         related_node_hashes: vec![42],
         compact_attrs: Vec::new(),
+        vector: Vec::new(),
     };
     let extracted = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -402,6 +412,7 @@ fn context_models_match_keys_timeline_pages_and_filters() {
                 source_ref: "cursor://701".to_string(),
                 related_node_hashes: vec![43],
                 compact_attrs: Vec::new(),
+                vector: Vec::new(),
             },
             indexes: ContextExtractedEventIndexes {
                 scope_hash: 3001,
@@ -551,6 +562,7 @@ fn context_query_events_applies_limit_after_filter_like_native() {
         source_ref: "s".to_string(),
         related_node_hashes: vec![42],
         compact_attrs: vec![],
+        vector: Vec::new(),
     };
     // 100 low-confidence events at earlier timestamps, then 5 high-confidence ones later.
     for i in 0..100u64 {
@@ -718,7 +730,15 @@ fn context_tree_embedding_summary_and_compression_match_round_trip() {
             if refs.len() == 2 && refs[0].child_hash == GPU
     ));
 
-    for (ref_hash, first, second) in [(GPU, 1.0, 0.0), (COST, 0.0, 1.0)] {
+    // Store these the way PRODUCTION writers do -- under
+    // context_embedding_ref_hash(tenant, node, level), not under the raw node hash. Writing
+    // them under the node hash is what let the traversal reader's addressing bug pass here for
+    // as long as it did: the test built the data to match the reader instead of the writer, so
+    // reader and writer could disagree indefinitely without any test noticing.
+    for (node_hash, first, second) in [(GPU, 1.0, 0.0), (COST, 0.0, 1.0)] {
+        let ref_hash = crate::context_workflow::context_embedding_ref_hash(
+            TENANT, node_hash, "node_l0",
+        );
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::ContextUpsertEmbedding {
@@ -766,6 +786,7 @@ fn context_tree_embedding_summary_and_compression_match_round_trip() {
                     level: 1,
                     text: text.to_string(),
                     valid_from_ms,
+                    vector: Vec::new(),
                 },
             },
         });
@@ -886,6 +907,7 @@ fn context_temporal_compression_builds_replayable_summary_without_deleting_sourc
                     source_ref: String::new(),
                     related_node_hashes: Vec::new(),
                     compact_attrs: Vec::new(),
+                    vector: Vec::new(),
                 },
                 first_write_only: false,
                 cold_storage: false,
@@ -981,6 +1003,7 @@ fn context_temporal_compression_and_raw_backfill_use_cold_storage_without_cache_
                     source_ref: "backfill://raw-query".to_string(),
                     related_node_hashes: Vec::new(),
                     compact_attrs: Vec::new(),
+                    vector: Vec::new(),
                 },
                 first_write_only: false,
                 cold_storage: true,
@@ -1327,6 +1350,7 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
                 source_ref: String::new(),
                 related_node_hashes: Vec::new(),
                 compact_attrs: Vec::new(),
+                vector: Vec::new(),
             },
             first_write_only: false,
             cold_storage: false,
@@ -1348,6 +1372,7 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
                 level: 1,
                 text: "compact summary".to_string(),
                 valid_from_ms: 52,
+                vector: Vec::new(),
             },
         },
         Command::CommonDelete {

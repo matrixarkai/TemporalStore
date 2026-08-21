@@ -456,6 +456,7 @@ fn recovery_validates_all_timestamped_kv_page_families() {
                         source_ref: "local://test".to_string(),
                         related_node_hashes: vec![55],
                         compact_attrs: vec![1, 2, 3],
+                        vector: Vec::new(),
                     },
                     first_write_only: false,
                     cold_storage: false,
