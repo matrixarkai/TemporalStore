@@ -304,6 +304,12 @@ pub struct WriteAheadLogGcReport {
     /// Bytes reclaimed from the head of this shard's log over its lifetime, after this pass.
     /// A record's log id minus this is where it now physically lives.
     pub base_offset: u64,
+    /// Bytes rewritten to keep the survivors. Reclaim copies what it keeps, so this -- not
+    /// `records_removed` -- is the cost of the pass, and it tracks the RETAINED size.
+    pub bytes_copied: u64,
+    /// The pass was declined because the copy it required bought too little space. The records
+    /// are untouched and a later pass, once the prefix has grown, will take them.
+    pub skipped_not_worth_rewrite: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1013,6 +1019,38 @@ impl LocalWriteAheadLogStore {
         let split = split.unwrap_or(cursor);
         let removed_bytes = split.saturating_sub(header_len);
         let new_base = base_offset.saturating_add(removed_bytes);
+        let retained_bytes = cursor.saturating_sub(split);
+
+        // Copying the survivors IS the cost of a pass, so reclaiming a sliver off the front of a
+        // large log rewrites almost all of it to buy almost nothing. Decline that and let the
+        // prefix grow: the same copy then frees far more. Nothing is lost by waiting -- the
+        // records stay where they are -- and the condition is self-correcting, because a growing
+        // prefix raises the freed fraction until a pass is worth running.
+        //
+        // Below the copy floor the ratio is meaningless and the rewrite is cheap either way, so
+        // small logs reclaim exactly as they did before.
+        let worth_rewriting = reclaim_is_worth_rewriting(
+            removed_bytes,
+            retained_bytes,
+            reclaim_min_copy_bytes(),
+            reclaim_min_freed_percent(),
+        );
+        if !worth_rewriting {
+            return Ok(WriteAheadLogGcReport {
+                shard_id,
+                retain_from_sequence,
+                effective_retain_from_sequence: effective_retain,
+                clamped_by_block_retention,
+                records_before,
+                records_after: records_before,
+                records_removed: 0,
+                bytes_before,
+                bytes_after: bytes_before,
+                base_offset,
+                bytes_copied: 0,
+                skipped_not_worth_rewrite: true,
+            });
+        }
 
         let temp_path = path.with_extension("jsonl.tmp");
         {
@@ -1050,6 +1088,8 @@ impl LocalWriteAheadLogStore {
             base_offset: new_base,
             effective_retain_from_sequence: effective_retain,
             clamped_by_block_retention,
+            bytes_copied: retained_bytes,
+            skipped_not_worth_rewrite: false,
         })
     }
 
@@ -1417,6 +1457,42 @@ fn cached_wal_base(
     let base = read_wal_base(&path)?;
     inner.base_by_shard.insert(shard_id, base);
     Ok(base)
+}
+
+/// Whether a reclaim pass buys enough space to justify the copy it requires.
+///
+/// `removed_bytes` is what the pass would free; `retained_bytes` is what it must rewrite to do
+/// so. Below `min_copy_bytes` the rewrite is cheap and the ratio is a meaningless measure of a
+/// small log, so the pass always proceeds; above it the pass must free at least `min_freed_percent`
+/// of what it copies.
+fn reclaim_is_worth_rewriting(
+    removed_bytes: u64,
+    retained_bytes: u64,
+    min_copy_bytes: u64,
+    min_freed_percent: u32,
+) -> bool {
+    retained_bytes <= min_copy_bytes
+        || removed_bytes.saturating_mul(100)
+            >= retained_bytes.saturating_mul(u64::from(min_freed_percent))
+}
+
+/// TS_WAL_RECLAIM_MIN_COPY_BYTES: below this much retained data, always reclaim. The rewrite is
+/// cheap at that size and the freed fraction is a meaningless measure of a small log.
+fn reclaim_min_copy_bytes() -> u64 {
+    std::env::var("TS_WAL_RECLAIM_MIN_COPY_BYTES")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(64 * 1024 * 1024)
+}
+
+/// TS_WAL_RECLAIM_MIN_FREED_PERCENT: above the copy floor, how much a pass must free as a
+/// percentage of what it would have to copy before the rewrite is worth running at all.
+fn reclaim_min_freed_percent() -> u32 {
+    std::env::var("TS_WAL_RECLAIM_MIN_FREED_PERCENT")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .filter(|percent| *percent > 0)
+        .unwrap_or(25)
 }
 
 fn read_wal_base(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
@@ -2526,5 +2602,53 @@ mod tests {
             !encoded.contains("staged_pages"),
             "an empty staged list must be skipped entirely, got {encoded}"
         );
+    }
+
+    /// A pass that must rewrite a large log to free a sliver of it is declined.
+    ///
+    /// Reclaim copies what it KEEPS, so its cost tracks the retained size. The case this exists
+    /// for is measured: one pass copied 19.6 MB of survivors to free 3.8 MB, which is 19.4% --
+    /// under the 25% default, so it is declined and the prefix is left to grow.
+    #[test]
+    fn reclaim_declines_a_rewrite_that_frees_too_little() {
+        const MB: u64 = 1024 * 1024;
+        let floor = 8 * MB;
+
+        // The measured case: 3.8 MB freed for a 19.6 MB copy.
+        assert!(!reclaim_is_worth_rewriting(3_800_000, 19_600_000, floor, 25));
+        // Exactly at the threshold is worth running -- 25% of 20 MB is 5 MB.
+        assert!(reclaim_is_worth_rewriting(5 * MB, 20 * MB, floor, 25));
+        // A hair under is not.
+        assert!(!reclaim_is_worth_rewriting(5 * MB - 1, 20 * MB, floor, 25));
+        // Freeing nothing never justifies a rewrite.
+        assert!(!reclaim_is_worth_rewriting(0, 20 * MB, floor, 25));
+    }
+
+    /// Below the copy floor a pass always runs, so small logs reclaim exactly as they did before
+    /// the guard existed. This is what keeps the change inert for the whole existing suite.
+    #[test]
+    fn reclaim_below_the_copy_floor_always_runs() {
+        const MB: u64 = 1024 * 1024;
+        let floor = 64 * MB;
+
+        // A ratio that would be declined on a large log proceeds on a small one.
+        assert!(reclaim_is_worth_rewriting(1, 32 * MB, floor, 25));
+        assert!(reclaim_is_worth_rewriting(0, 0, floor, 25));
+        // Once the copy exceeds the floor, the ratio governs again.
+        assert!(!reclaim_is_worth_rewriting(1, 64 * MB + 1, floor, 25));
+    }
+
+    /// The condition is self-correcting: a declined pass becomes worthwhile as the prefix grows,
+    /// so declining does not let the log grow without bound.
+    #[test]
+    fn a_declined_reclaim_becomes_worthwhile_as_the_prefix_grows() {
+        const MB: u64 = 1024 * 1024;
+        let floor = 8 * MB;
+        let retained = 100 * MB;
+
+        assert!(!reclaim_is_worth_rewriting(5 * MB, retained, floor, 25));
+        assert!(!reclaim_is_worth_rewriting(20 * MB, retained, floor, 25));
+        // The prefix has grown past a quarter of what the pass must copy.
+        assert!(reclaim_is_worth_rewriting(25 * MB, retained, floor, 25));
     }
 }
