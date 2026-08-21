@@ -339,6 +339,10 @@ impl SingleNodeMeta {
         let meta = self.clone();
         let interval = Duration::from_millis(interval_ms.max(1));
         thread::spawn(move || loop {
+            if meta.is_meta_change_muted() {
+                thread::sleep(interval);
+                continue;
+            }
             let _ = meta.purge_expired_meta(options);
             thread::sleep(interval);
         })
@@ -576,6 +580,10 @@ impl SingleNodeMeta {
         let meta = self.clone();
         let interval = Duration::from_millis(interval_ms.max(1));
         thread::spawn(move || loop {
+            if meta.is_meta_change_muted() {
+                thread::sleep(interval);
+                continue;
+            }
             let _ = meta.age_frozen_meta(options);
             thread::sleep(interval);
         })

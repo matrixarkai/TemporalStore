@@ -197,6 +197,13 @@ impl MetaRaftCluster {
         }
     }
 
+    /// Mute or resume metadata change across the raft group.
+    pub fn set_meta_change_muted(&self, muted: bool) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::SetMetaChangeMuted(muted)),
+        }
+    }
+
     pub fn freeze_server(&self, request: StateChangeRequest) -> AckResponse {
         AckResponse {
             status: self.mutation_status(MetaMutation::FreezeServer(request)),
@@ -387,6 +394,7 @@ impl MetaRaftCluster {
     pub fn info(&self) -> MetaInfo {
         self.read_meta().map_or_else(
             |status| MetaInfo {
+                meta_change_muted: false,
                 status,
                 stats: MetaStats::default(),
                 boot_time_ms: 0,

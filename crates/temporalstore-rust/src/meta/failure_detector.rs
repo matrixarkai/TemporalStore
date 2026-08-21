@@ -896,6 +896,10 @@ impl SingleNodeMeta {
         let mut server_detector = MetaFailureDetector::new(options);
         let mut proxy_detector = MetaFailureDetector::new(options);
         thread::spawn(move || loop {
+            if meta.is_meta_change_muted() {
+                thread::sleep(interval);
+                continue;
+            }
             let report =
                 meta.convict_stale_servers_adaptive(&mut server_detector, policy, safe_mode.clone());
             if !report.orphaned_shards.is_empty() {

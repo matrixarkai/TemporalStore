@@ -7,6 +7,10 @@ use super::*;
 
 impl SingleNodeMeta {
     pub(super) fn set_server_state(&self, request: StateChangeRequest, next: MetaEntityState) -> AckResponse {
+        // Covers freeze, unfreeze and drop for servers in one place.
+        if let Some(status) = self.meta_change_refusal() {
+            return AckResponse { status };
+        }
         if !self
             .inner
             .read()
@@ -73,6 +77,9 @@ impl SingleNodeMeta {
     }
 
     pub(super) fn set_proxy_state(&self, request: StateChangeRequest, next: MetaEntityState) -> AckResponse {
+        if let Some(status) = self.meta_change_refusal() {
+            return AckResponse { status };
+        }
         if !self
             .inner
             .read()

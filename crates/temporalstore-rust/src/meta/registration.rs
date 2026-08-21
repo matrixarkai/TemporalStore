@@ -7,6 +7,9 @@ use super::*;
 
 impl SingleNodeMeta {
     pub fn register_server(&self, request: RegisterServerRequest) -> AckResponse {
+        if let Some(status) = self.meta_change_refusal() {
+            return AckResponse { status };
+        }
         self.record_mutation(MetaMutation::RegisterServer(request.clone()));
         self.apply_register_server(request)
     }
@@ -94,6 +97,9 @@ impl SingleNodeMeta {
     /// placement. This changes the label and nothing else, and bumps the
     /// topology version so clients pick up the placement that follows from it.
     pub fn update_server(&self, request: UpdateServerRequest) -> AckResponse {
+        if let Some(status) = self.meta_change_refusal() {
+            return AckResponse { status };
+        }
         self.record_mutation(MetaMutation::UpdateServer(request.clone()));
         self.apply_update_server(request)
     }
@@ -218,6 +224,9 @@ impl SingleNodeMeta {
     }
 
     pub fn register_proxy(&self, request: RegisterProxyRequest) -> AckResponse {
+        if let Some(status) = self.meta_change_refusal() {
+            return AckResponse { status };
+        }
         self.record_mutation(MetaMutation::RegisterProxy(request.clone()));
         self.apply_register_proxy(request)
     }
@@ -321,6 +330,9 @@ impl SingleNodeMeta {
     }
 
     pub fn add_namespace(&self, request: AddNamespaceRequest) -> AckResponse {
+        if let Some(status) = self.meta_change_refusal() {
+            return AckResponse { status };
+        }
         self.record_mutation(MetaMutation::AddNamespace(request.clone()));
         self.apply_add_namespace(request)
     }

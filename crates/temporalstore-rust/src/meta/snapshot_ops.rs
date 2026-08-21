@@ -62,6 +62,9 @@ impl SingleNodeMeta {
             // Carried across the install so a peer keeps ageing the tombstones
             // it inherits instead of restarting every one of their clocks.
             dropped_since_ms: snapshot.dropped_since_ms,
+            // An operator's mute must survive a snapshot install, or a peer
+            // taking over quietly resumes the change they stopped.
+            meta_change_muted: snapshot.meta_change_muted,
             frozen_since_ms: snapshot.frozen_since_ms,
         })
     }
@@ -97,6 +100,7 @@ impl MetaSnapshot {
             topology_version: state.topology_version,
             scheduler_finish_generations: state.scheduler_finish_generations.clone(),
             dropped_since_ms: state.dropped_since_ms.clone(),
+            meta_change_muted: state.meta_change_muted,
             frozen_since_ms: state.frozen_since_ms.clone(),
         }
     }
