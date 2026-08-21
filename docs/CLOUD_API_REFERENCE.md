@@ -270,4 +270,4 @@ curl -sS $BASE/retrieve -H "authorization: Bearer $KEY" -H 'content-type: applic
 curl -sS -X PUT --data-binary @report.pdf $BASE/blob/acme/report.pdf -H "authorization: Bearer $KEY"
 ```
 
-See also: `docs/DEPLOY_CLOUD_API.md` (deployment + AWS), `docker-compose.cloud-api.yml`.
+See also: `docs/DEPLOY_CLOUD_API.md` (deployment + AWS), `docker/docker-compose.cloud-api.yml`.

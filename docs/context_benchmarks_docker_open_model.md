@@ -9,7 +9,7 @@ The repo also includes a Hugging Face Transformers endpoint for the exact
 `matrixark-native-oss-context` text-reader profile. It serves the OpenAI-compatible
 `/v1/models` and `/v1/chat/completions` APIs from
 `tools/openai_compatible_hf_reader.py`, defaults to `google/flan-t5-small`, and
-is packaged by `Dockerfile.context-oss-reader`.
+is packaged by `docker/Dockerfile.context-oss-reader`.
 
 Claim level: packaged open-model benchmark path. This page does not present production parity or
 VikingMem paper-comparable evidence by itself. Those labels require a mounted real dataset, a
@@ -77,8 +77,8 @@ bash tools/run_context_benchmarks_oss_reader_endpoint.sh
 To build the same endpoint in Docker:
 
 ```bash
-docker-compose -f docker-compose.context-benchmarks.yml build hf-reader
-docker-compose -f docker-compose.context-benchmarks.yml up -d hf-reader
+docker-compose -f docker/docker-compose.context-benchmarks.yml build hf-reader
+docker-compose -f docker/docker-compose.context-benchmarks.yml up -d hf-reader
 ```
 
 When the endpoint is already running, execute the full dataset benchmark path
@@ -171,7 +171,7 @@ Packaging checks passed:
 ```bash
 bash -n tools/run_hf_oss_reader_endpoint.sh
 python3 -m py_compile tools/openai_compatible_hf_reader.py
-docker-compose -f docker-compose.context-benchmarks.yml config
+docker-compose -f docker/docker-compose.context-benchmarks.yml config
 ```
 
 The live run failed closed before any benchmark score because the requested model
@@ -242,8 +242,8 @@ These thresholds are defined in
 The compose file exposes Ollama on the host at port `11434` by default:
 
 ```bash
-docker compose -f docker-compose.context-benchmarks.yml up -d open-reader
-docker compose -f docker-compose.context-benchmarks.yml exec -T open-reader ollama pull qwen2.5:0.5b
+docker compose -f docker/docker-compose.context-benchmarks.yml up -d open-reader
+docker compose -f docker/docker-compose.context-benchmarks.yml exec -T open-reader ollama pull qwen2.5:0.5b
 python3 tools/run_live_oss_reader_validation.py \
   --dataset locomo \
   --input /tmp/locomo10.json \
@@ -258,7 +258,7 @@ Validation on 2026-06-20:
 
 ```bash
 bash -n tools/run_context_benchmarks_docker_open_model.sh
-docker-compose -f docker-compose.context-benchmarks.yml config
+docker-compose -f docker/docker-compose.context-benchmarks.yml config
 TEMPORALSTORE_BENCHMARK_INPUT_DIR=/tmp \
 TEMPORALSTORE_BENCHMARK_REPORT_DIR=/tmp/temporalstore_context_benchmark_reports \
 bash tools/run_context_benchmarks_docker_open_model.sh

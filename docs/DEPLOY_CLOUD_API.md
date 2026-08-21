@@ -126,7 +126,7 @@ A storage-quota signal from the backend surfaces as `507 {"error":"storage_quota
 ## Local: `docker compose up`
 
 ```bash
-docker compose -f docker-compose.cloud-api.yml up --build
+docker compose -f docker/docker-compose.cloud-api.yml up --build
 # gateway on :8080, datanode on :17102, metaserver on :17101, proxy on :17100
 
 curl -s http://127.0.0.1:8080/v1/healthz

@@ -33,7 +33,7 @@ export MATRIXARK_METADATA_AUTO_INIT=1        # create schema on startup, or pre-
 </code></pre>
 <p>Equivalent manual command:</p>
 <pre><code>
-docker compose -f docker-compose.matrixark-metadata.yml up -d
+docker compose -f docker/docker-compose.matrixark-metadata.yml up -d
 export MATRIXARK_METADATA_BACKEND=mysql
 export MATRIXARK_METADATA_DSN=&#x27;mysql://matrixark:matrixark_password@127.0.0.1:3307/matrixark&#x27;
 export MATRIXARK_METADATA_AUTO_INIT=1
