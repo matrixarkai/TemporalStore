@@ -1184,7 +1184,30 @@ class _TemporalDirectBackendMixin:
         return records
 
     def _with_latest_context_state_records(self, records: list[Json]) -> list[Json]:
-        return compact_latest_context_state_records(list(records) + self._load_latest_context_state_records())
+        """Fold the latest-state store into a native read and collapse it for serving.
+
+        This runs on the RETRIEVAL hot path as well as the memory API, so it deliberately does
+        only the last of the serving pipeline's three stages. The two the memory API also needs
+        -- latest-value collapse and the tombstone sweep -- are applied one level up, in
+        `MatrixArkTemporalStoreDirectAdapter._read_all_compacted`.
+
+        That split is not stylistic. Applying them here reads better (deleted content would
+        also stay out of the retrieval candidate set, as on the JSONL backend) but it changes
+        the candidate set retrieval hands the proxy, and measured against a 16-memory store
+        the proxy then wedged: the sixth retrieve stopped responding for 120s and every one
+        after it was rejected on the pack lane after 40s, with the gateway's whole data path
+        stuck behind it. On the same store with the same binary, the split version answers
+        12/12 retrieves in 165-322ms. Deleted content briefly surviving in retrieval scoring
+        is a smaller problem than a gateway that stops answering, so the sweep stays on the
+        memory-API read until the proxy side is understood.
+        """
+        try:
+            from tools.matrixark_mcp_latest_context_state import expand_record_bundles
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_latest_context_state import expand_record_bundles
+        return compact_latest_context_state_records(
+            expand_record_bundles(records) + self._load_latest_context_state_records()
+        )
 
     def _latest_context_state_records_for_candidate_scan(
         self,
