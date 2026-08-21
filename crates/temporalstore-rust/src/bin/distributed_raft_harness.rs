@@ -1289,6 +1289,8 @@ fn runtime_options(
     local_node_id: RaftNodeId,
 ) -> ProductionRaftRuntimeOptions {
     ProductionRaftRuntimeOptions {
+        // Off, as in the tests: a chaos run is seconds long.
+        snapshot_check_interval_ms: 0,
         engine: ProductionRaftEngineKind::TemporalRaft,
         shard_id: options.shard_id,
         local_node_id,

@@ -2315,6 +2315,8 @@ fn start_server_raft_from_env(
     // loader in scope here, so the `[raft]` file equivalents are not read at this layer.)
     let raft_config = raft_config_from_env();
     let runtime = ProductionRaftRuntime::start(ProductionRaftRuntimeOptions {
+        // The cadence the metaserver already uses; 0 disables the check.
+        snapshot_check_interval_ms: env_u64("TS_RAFT_SNAPSHOT_CHECK_INTERVAL_MS", 30_000),
         engine: ProductionRaftEngineKind::TemporalRaft,
         shard_id: raft_shard_id,
         local_node_id,
@@ -3546,6 +3548,8 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let runtime = ProductionRaftRuntime::start(ProductionRaftRuntimeOptions {
+            // The cadence the metaserver already uses; 0 disables the check.
+            snapshot_check_interval_ms: env_u64("TS_RAFT_SNAPSHOT_CHECK_INTERVAL_MS", 30_000),
             engine: ProductionRaftEngineKind::TemporalRaft,
             shard_id: 1,
             local_node_id,
