@@ -1184,39 +1184,7 @@ class _TemporalDirectBackendMixin:
         return records
 
     def _with_latest_context_state_records(self, records: list[Json]) -> list[Json]:
-        """Run the serving pipeline over the native record log.
-
-        This is the native read choke point, the counterpart of the JSONL adapter's
-        `_read_all_compacted`. It used to run only the LAST of the pipeline's three stages,
-        `compact_latest_context_state_records`, which left two behaviours missing on every
-        native backend:
-
-          * `compact_latest_value_records` collapses records that share a latest-value key.
-            For a `context_event` that key is the `event_id_hash`, and the ingest pipeline
-            persists an event row twice -- once on the hot path (`extraction_phase:
-            hot_path`, parent `context_node`) and again when extraction commits
-            (`extraction_phase: final`, parent `context_segment`). Without this stage BOTH
-            rows serve, so `get_all` reported one memory as two.
-          * `apply_memory_tombstones` is what makes a forget/delete actually remove
-            anything. Without it a forget returned an accurate `removed_count` and then
-            served every one of those records right back.
-
-        `compact_and_apply_tombstones` composes all three in the one order that is correct
-        for both orphan sweeping and supersede (see its docstring); running the stages here
-        rather than at `read_all` keeps the deleted content out of the retrieval candidate
-        set too, exactly as on the JSONL backend. Both added stages fast-path a log with no
-        duplicate keys / no tombstone, and all three are idempotent, which matters because
-        this method is re-applied to already-processed cached records.
-        """
-        try:
-            from tools.matrixark_mcp_latest_context_state import expand_record_bundles
-            from tools.matrixark_mcp_local_adapter import compact_and_apply_tombstones
-        except ModuleNotFoundError:  # Direct script execution from tools/.
-            from matrixark_mcp_latest_context_state import expand_record_bundles
-            from matrixark_mcp_local_adapter import compact_and_apply_tombstones
-        return compact_and_apply_tombstones(
-            expand_record_bundles(records) + self._load_latest_context_state_records()
-        )
+        return compact_latest_context_state_records(list(records) + self._load_latest_context_state_records())
 
     def _latest_context_state_records_for_candidate_scan(
         self,

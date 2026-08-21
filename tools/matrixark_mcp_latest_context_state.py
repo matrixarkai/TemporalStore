@@ -21,29 +21,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 
-def expand_record_bundles(records: list[Json]) -> list[Json]:
-    """Flatten bundled appends into their constituent records.
-
-    A bundled append stores ``{"record_bundle": [rec, rec, ...]}`` as ONE hash field. The
-    wrapper carries no ``record_type``; the type every reader filters on lives on the
-    records inside it. Readers walking the raw entries therefore saw a typeless wrapper and
-    skipped it, so a bundled ``context_event`` was invisible to get / get_all / update /
-    history even though it was durably stored. The JSONL adapter appends records
-    individually and never bundles, which is why the same reader code worked there.
-
-    Idempotent: unbundled records pass through untouched.
-    """
-    expanded: list[Json] = []
-    for record in records:
-        if isinstance(record, dict):
-            bundle = record.get("record_bundle")
-            if isinstance(bundle, list):
-                expanded.extend(inner for inner in bundle if isinstance(inner, dict))
-                continue
-        expanded.append(record)
-    return expanded
-
-
 def latest_context_state_storage_key(storage_prefix: str) -> str:
     return f"{storage_prefix}:context_latest_state"
 
@@ -131,9 +108,7 @@ class LatestContextStateAdapterMixin:
         return records
 
     def _with_latest_context_state_records(self, records: list[Json]) -> list[Json]:
-        return compact_latest_context_state_records(
-            expand_record_bundles(records) + self._load_latest_context_state_records()
-        )
+        return compact_latest_context_state_records(list(records) + self._load_latest_context_state_records())
 
     def _latest_context_state_records_for_candidate_scan(
         self,
