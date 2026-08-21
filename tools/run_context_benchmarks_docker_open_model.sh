@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-COMPOSE_FILE="${ROOT}/docker-compose.context-benchmarks.yml"
+COMPOSE_FILE="${ROOT}/docker/docker-compose.context-benchmarks.yml"
 MODEL="${TEMPORALSTORE_READER_MODEL:-qwen2.5:0.5b}"
 READER_IMAGE="${TEMPORALSTORE_READER_IMAGE:-ollama/ollama:0.3.14}"
 REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY="${TEMPORALSTORE_REQUIRE_FULL_RUST_REPLAY:-0}"

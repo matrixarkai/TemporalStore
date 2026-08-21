@@ -13,8 +13,8 @@ services:
 
   hf-reader:
     build:
-      context: .
-      dockerfile: Dockerfile.context-oss-reader
+      context: ..
+      dockerfile: docker/Dockerfile.context-oss-reader
     environment:
       TEMPORALSTORE_READER_MODEL: "${TEMPORALSTORE_READER_MODEL:-google/flan-t5-small}"
       TEMPORALSTORE_HF_READER_HOST: "0.0.0.0"

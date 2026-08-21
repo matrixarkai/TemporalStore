@@ -7,7 +7,7 @@
 #                                        ▲
 #                                  cloud-api  (this repo's tools/matrixark_v1_gateway.py, :8080)
 #
-#   docker compose -f docker-compose.cloud-api.yml up --build
+#   docker compose -f docker/docker-compose.cloud-api.yml up --build
 #   curl -s http://127.0.0.1:8080/v1/healthz
 #   curl -s http://127.0.0.1:8080/v1/ingest \
 #     -H 'authorization: Bearer sk_live_demo' -H 'content-type: application/json' \
@@ -73,7 +73,7 @@ services:
 
   cloud-api:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile.cloud-api
     image: temporalstore-cloud-api:latest
     depends_on:
