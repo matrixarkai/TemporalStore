@@ -278,7 +278,21 @@ class Memory:
         Extra kwargs are ignored for mem0 signature compatibility. Returns the
         parsed ``/v1/ingest`` response."""
         normalized = _normalize_messages(messages, provider)
-        body: Json = {"kind": "message", "messages": normalized}
+        # finalize so extraction runs INLINE and the memory is searchable when add returns.
+        # Without it the gateway treats this as a streaming ingest and schedules an
+        # idle-commit on a debounce (stream_idle_commit_timeout_ms, 1000ms by default),
+        # so add -> search inside that window returns {"results": []} while get_all already
+        # shows the memory. That eventual-consistency window is right for streaming
+        # callers and wrong for mem0, whose add is synchronous by contract: a user
+        # migrating from mem0 would conclude their memories had vanished.
+        #
+        # Measured: search immediately after add returned [] and returned the memory
+        # 1.5s later, unchanged, purely from the debounce elapsing.
+        #
+        # Pass finalize=False for the streaming behaviour (cheaper add, retrievable after
+        # the debounce).
+        body: Json = {"kind": "message", "messages": normalized,
+                      "finalize": bool(kw.get("finalize", True))}
         scope = _scope_from_identity(user_id, agent_id, run_id)
         if scope:
             body["scope"] = scope
