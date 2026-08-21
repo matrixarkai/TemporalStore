@@ -260,28 +260,6 @@ fn raft_propose_serialize_on() -> bool {
     raft_env_flag_default_on("TS_RAFT_PROPOSE_SERIALIZE")
 }
 
-/// P3 (local-only durability): a DEPLOYED raft process runs exactly one node but keeps a full
-/// cluster view, so `wal_records()` emits a record per peer and `persist_configured_wal` fsyncs
-/// every one of them. A leader has no duty to make its peers' hard-state durable -- each node
-/// persists its own before answering an RPC, and peer state is re-learned from AppendEntries on
-/// restart. When this is on AND the runtime told us which node we are, persist only that record.
-/// Default OFF -> byte-identical. Has no effect on the in-process test cluster, which genuinely
-/// hosts every node and leaves `local_node_id` as None.
-fn raft_persist_local_only_on() -> bool {
-    raft_env_flag_on("TS_RAFT_PERSIST_LOCAL_ONLY")
-}
-
-/// P4 (one barrier per propose): a single propose calls `persist_configured_wal` several times
-/// as the log appends and then the commit index advances, so each write pays several barriers.
-/// Only the FINAL state has to be durable before the ack -- an intermediate state is subsumed by
-/// it, and a crash before the ack simply drops an unacked entry. When on, nested persists record
-/// that a barrier is owed and ONE persist flushes before the response is returned. Enabled only
-/// while the propose serialize lock is held, so exactly one writer can own the deferral.
-/// Default OFF -> byte-identical.
-fn raft_persist_defer_on() -> bool {
-    raft_env_flag_on("TS_RAFT_PERSIST_DEFER")
-}
-
 /// Fingerprint of the DURABILITY-relevant subset of a WAL record. `pipeline_state` and
 /// `read_safety_state` are cleared before hashing because they are volatile (reinitialised on
 /// election / re-driven on restart) and pure metrics respectively -- excluding them is what lets
@@ -3769,28 +3747,36 @@ struct RaftClusterInner {
     last_durable_fingerprint: BTreeMap<RaftNodeId, u64>,
     /// P2: serialize proposes into the log in order under `TS_RAFT_PROPOSE_SERIALIZE`.
     propose_serialize: Arc<Mutex<()>>,
-    /// P3: which node THIS process is, when the deployed runtime tells us. None for the
-    /// in-process test cluster (which hosts every node). Gates `TS_RAFT_PERSIST_LOCAL_ONLY`.
+    /// P3/P6: which node THIS process actually is, when the deployed runtime declares it.
+    /// `None` for the in-process test cluster, which genuinely hosts every node -- so both of
+    /// the local-only narrowings key off this and are inert there.
     local_node_id: Option<RaftNodeId>,
-    /// P4: while set, `persist_configured_wal` records that a barrier is owed instead of taking
-    /// one; `flush_deferred_persist` takes the single real barrier before the propose acks.
-    persist_deferred: bool,
+    /// P4: the thread currently owing durability barriers instead of taking them, set for the
+    /// span of one propose. Thread-scoped ON PURPOSE. The propose path releases the cluster
+    /// write lock for its network phase, so another path can persist inside this window -- and
+    /// one of them is the vote grant, which must be durable BEFORE it is answered or a crash
+    /// lets the same term be voted twice and elect two leaders. Only the thread that opened the
+    /// deferral defers; every other path takes its real barrier as before.
+    persist_deferred_owner: Option<std::thread::ThreadId>,
+    /// P4: whether anything was actually deferred, so a propose that persisted nothing flushes
+    /// nothing.
     persist_dirty: bool,
 }
 
 impl RaftCluster {
-    /// Local single-shard Raft model for unit tests and validation harnesses.
-    ///
-    /// Production runtime/deployment paths must use the distributed production
-    /// Raft runtime and are rejected by readiness if they select this local model.
-    /// P3: tell the cluster which node THIS process actually is. Set by the deployed
-    /// production runtime (one node per process); left unset by the in-process test cluster,
-    /// which hosts every node. Only consulted under `TS_RAFT_PERSIST_LOCAL_ONLY`.
+    /// Tell the cluster which node THIS process actually is. Set by the deployed production
+    /// runtime, which hosts exactly one node per process; left unset by the in-process test
+    /// cluster, which hosts every node. Everything scoped to the local node keys off this, so
+    /// leaving it unset preserves whole-cluster behaviour exactly.
     pub fn set_local_node_id(&self, node_id: RaftNodeId) {
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
         inner.local_node_id = Some(node_id);
     }
 
+    /// Local single-shard Raft model for unit tests and validation harnesses.
+    ///
+    /// Production runtime/deployment paths must use the distributed production
+    /// Raft runtime and are rejected by readiness if they select this local model.
     pub fn new_single_shard(
         shard_id: ShardId,
         node_ids: impl IntoIterator<Item = RaftNodeId>,
@@ -3834,7 +3820,7 @@ impl RaftCluster {
                 last_durable_fingerprint: BTreeMap::new(),
                 propose_serialize: Arc::new(Mutex::new(())),
                 local_node_id: None,
-                persist_deferred: false,
+                persist_deferred_owner: None,
                 persist_dirty: false,
             })),
         })
@@ -3957,7 +3943,7 @@ impl RaftCluster {
                 last_durable_fingerprint: BTreeMap::new(),
                 propose_serialize: Arc::new(Mutex::new(())),
                 local_node_id: None,
-                persist_deferred: false,
+                persist_deferred_owner: None,
                 persist_dirty: false,
             })),
         })
@@ -4048,10 +4034,22 @@ impl RaftCluster {
         }
 
         let mut leader_response = CommandResponse::Empty;
+        // P6: every `RaftNode` owns a `TemporalEngine`, so applying a committed entry into every
+        // node held by this process drives one engine WAL -- and one durability barrier -- per
+        // node. In a deployed process the peers are shadows: the real ones apply in their own
+        // processes off AppendEntries, so these applies are pure cost. Apply only into our own
+        // engine. Log and commit bookkeeping still advance for every node; only the apply and
+        // its barrier are skipped. Read before the mutable borrow below.
+        let apply_local_only = inner.local_node_id;
         for node in inner.nodes.values_mut().filter(|node| node.alive) {
             node.commit_index = entry.index;
             if !node.replica_role.can_serve_data() {
                 continue;
+            }
+            if let Some(local) = apply_local_only {
+                if node.id != local {
+                    continue;
+                }
             }
             if let Some(response) = apply_committed(node) {
                 if node.id == leader_id {
@@ -4159,9 +4157,11 @@ impl RaftCluster {
         let _propose_guard = propose_gate
             .as_ref()
             .map(|gate| gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
-        // P4: the propose lock makes us the only writer, so nested persists can record that a
-        // barrier is owed and let one flush below cover the final state -- before the ack.
-        let deferring = raft_persist_defer_on() && _propose_guard.is_some();
+        // P4: the propose lock makes us the only proposer, so nested persists can record that a
+        // barrier is owed and let one flush below cover the final state -- before the ack. Still
+        // conditioned on actually holding that lock: without it there can be several proposers,
+        // and a shared deferral would then have no single owner.
+        let deferring = _propose_guard.is_some();
         if deferring {
             self.inner
                 .write()

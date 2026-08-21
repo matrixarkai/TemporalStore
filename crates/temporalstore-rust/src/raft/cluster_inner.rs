@@ -600,8 +600,10 @@ impl RaftClusterInner {
     }
 
     pub(super) fn persist_configured_wal(&mut self) -> Result<(), RaftError> {
-        // P4: a barrier is owed, not skipped -- flush_deferred_persist takes it before the ack.
-        if self.persist_deferred {
+        // P4: this thread owes a barrier rather than skipping one -- `flush_deferred_persist`
+        // takes it before the propose acks. Only the thread that opened the deferral defers, so
+        // a vote grant or heartbeat racing this propose still fsyncs before it answers.
+        if self.persist_deferred_owner == Some(std::thread::current().id()) {
             self.persist_dirty = true;
             return Ok(());
         }
@@ -615,9 +617,12 @@ impl RaftClusterInner {
         let max_segment_bytes = self.config.max_segment_bytes;
         let min_keep_segment_num = self.config.min_keep_segment_num as usize;
         let coalesce = raft_wal_coalesce_on();
-        // P3: a deployed process owns exactly one node; persisting a peer's hard-state buys no
-        // Raft safety (the peer fsyncs its own before answering) and costs a barrier per peer.
-        let local_only = if raft_persist_local_only_on() { self.local_node_id } else { None };
+        // P3: a deployed process owns exactly one node but keeps a full cluster view, so
+        // `wal_records()` emits a record per peer and this loop fsyncs every one of them. A
+        // leader owes its peers no durability: each persists its own hard state before answering
+        // an RPC, and re-learns the rest from AppendEntries on restart. Persist only our own
+        // record. Unset -- the in-process test cluster -- keeps persisting every node.
+        let local_only = self.local_node_id;
         for (node_id, record) in self.wal_records() {
             if let Some(local) = local_only {
                 if node_id != local {
@@ -656,15 +661,17 @@ impl RaftClusterInner {
         Ok(())
     }
 
-    /// P4: start owing barriers instead of taking them. Caller must hold the propose lock.
+    /// P4: start owing barriers on THIS thread instead of taking them. The caller must hold the
+    /// propose lock, which is what makes this thread the only proposer for the span.
     pub(super) fn begin_deferred_persist(&mut self) {
-        self.persist_deferred = true;
+        self.persist_deferred_owner = Some(std::thread::current().id());
         self.persist_dirty = false;
     }
 
-    /// P4: take the single real barrier covering everything deferred since `begin_deferred_persist`.
+    /// P4: take the one real barrier covering everything deferred since `begin_deferred_persist`.
+    /// Called before the propose acks, on the success and the failure path alike.
     pub(super) fn flush_deferred_persist(&mut self) -> Result<(), RaftError> {
-        self.persist_deferred = false;
+        self.persist_deferred_owner = None;
         if !self.persist_dirty {
             return Ok(());
         }
