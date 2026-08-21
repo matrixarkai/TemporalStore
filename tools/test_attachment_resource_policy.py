@@ -35,14 +35,25 @@ def ingest(policy):
     if policy:
         args["raw_storage_policy"] = policy
     server.call_tool("matrixark_ingest", args)
-    # the import runs on a background worker; wait for it to settle
-    deadline = time.time() + 120
+    # The import runs on a background worker. Waiting for the FIRST chunk and sleeping a fixed
+    # interval is not enough: under suite load the worker is still emitting records when the
+    # sleep expires, and the assertions then see a half-written import. Wait for the record
+    # count to stop changing instead, so the test tracks the worker rather than the clock.
+    deadline = time.time() + 180
+    stable_for = 0
+    previous = -1
     while time.time() < deadline:
         rows = adapter.read_all()
-        if any(r.get("record_type") in ("resource_chunk", "resource_manifest") for r in rows):
-            time.sleep(3)
-            break
-        time.sleep(2)
+        started = any(r.get("record_type") in ("resource_chunk", "resource_manifest")
+                      or r.get("record_type") == "resource_import_task" for r in rows)
+        if started and len(rows) == previous:
+            stable_for += 1
+            if stable_for >= 3:
+                break
+        else:
+            stable_for = 0
+        previous = len(rows)
+        time.sleep(1)
     return adapter.read_all()
 
 

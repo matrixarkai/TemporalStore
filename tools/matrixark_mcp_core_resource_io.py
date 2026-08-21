@@ -33,7 +33,7 @@ try:  # resource-parser helpers (core imports these inside a try/except too)
 except ImportError:
     from matrixark_resource_parser import content_hash, normalize_parse_warnings
 
-__all__ = ['deployment_scope_from_args', 'resource_storage_mode_from_args', 'resource_chunk_materialization_enabled', 'ATTACHMENT_RESOURCE_POLICY', 'bound_resource_event_text', 'RESOURCE_EVENT_TEXT_CHARS', 'is_s3_uri', 'parse_s3_uri', 'is_matrixobject_uri', 'parse_matrixobject_uri', 'is_temporalstore_uri', 'parse_temporalstore_uri', '_cloud_resource_bucket', '_cloud_resource_prefix', '_s3_client', '_aws_cli_s3_cp', 'upload_file_to_s3', 'download_s3_to_file', '_resource_object_key', '_archive_directory_for_upload', 'resolve_raw_resource_for_ingest', 'infer_resource_suffix', 'rewrite_chunk_uris', 'cleanup_temp_paths', 'aggregate_parse_warnings_from_chunks']
+__all__ = ['deployment_scope_from_args', 'resource_storage_mode_from_args', 'resource_chunk_materialization_enabled', 'ATTACHMENT_RESOURCE_POLICY', 'bound_resource_event_text', 'bounded_buffer_envelope', 'RESOURCE_EVENT_TEXT_CHARS', 'is_s3_uri', 'parse_s3_uri', 'is_matrixobject_uri', 'parse_matrixobject_uri', 'is_temporalstore_uri', 'parse_temporalstore_uri', '_cloud_resource_bucket', '_cloud_resource_prefix', '_s3_client', '_aws_cli_s3_cp', 'upload_file_to_s3', 'download_s3_to_file', '_resource_object_key', '_archive_directory_for_upload', 'resolve_raw_resource_for_ingest', 'infer_resource_suffix', 'rewrite_chunk_uris', 'cleanup_temp_paths', 'aggregate_parse_warnings_from_chunks']
 
 
 def deployment_scope_from_args(args: Json, envelope: Json) -> str:
@@ -122,6 +122,44 @@ def bound_resource_event_text(kind: str, text: str, raw_uri: str) -> str:
     return "{}\n\n[{} of {} chars; full content in the resource chunks and at {}]".format(
         text[:limit], limit, len(text), pointer,
     )
+
+def bounded_buffer_envelope(envelope: Json) -> Json:
+    """A copy of `envelope` safe to store in a session_buffer_event.
+
+    The buffer record embeds the whole envelope, so a resource ingest kept its document a
+    third time there -- 1.06x source on a 66.2 KB file, the last full copy after the chunk
+    records and the event text.
+
+    Only message CONTENT is bounded, and only for resource/skill kinds. Everything the commit
+    path actually reads off the buffered envelope is preserved untouched: metadata, hook_type,
+    codex_event, and each message's role -- messages_from_event_record() reads
+    envelope["messages"] for role counting, so the list shape and roles must survive.
+
+    Returns a COPY. The caller's envelope is still feeding chunk parsing downstream, and
+    resource_text is derived from that same messages list, so mutating it in place would
+    truncate the document rather than its duplicate storage.
+    """
+    if envelope.get("kind") not in {"resource", "skill"}:
+        return envelope
+    limit = RESOURCE_EVENT_TEXT_CHARS
+    messages = envelope.get("messages")
+    if limit <= 0 or not isinstance(messages, list):
+        return envelope
+    bounded = []
+    for message in messages:
+        if not isinstance(message, dict):
+            bounded.append(message)
+            continue
+        content = str(message.get("content") or "")
+        if len(content) <= limit:
+            bounded.append(message)
+            continue
+        trimmed = dict(message)
+        trimmed["content"] = content[:limit] + "\n\n[bounded: " + str(len(content)) + " chars; full content in the resource chunks]"
+        bounded.append(trimmed)
+    copied = dict(envelope)
+    copied["messages"] = bounded
+    return copied
 
 def is_s3_uri(value: str) -> bool:
     return value.startswith("s3://")
