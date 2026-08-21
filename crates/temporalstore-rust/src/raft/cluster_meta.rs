@@ -155,6 +155,48 @@ impl MetaRaftCluster {
         }
     }
 
+    pub fn notify_server_stop(&self, request: crate::meta::NotifyStopRequest) -> AckResponse {
+        let serving = self
+            .list_servers()
+            .servers
+            .into_iter()
+            .find(|server| server.server_addr == request.endpoint);
+        match serving {
+            None => AckResponse {
+                status: Status::error("server_not_found", "server not found"),
+            },
+            Some(server) if server.state != MetaEntityState::Normal => AckResponse {
+                status: Status::error("not_modified", "server is already out of service"),
+            },
+            Some(_) => self.freeze_server(StateChangeRequest {
+                endpoint: request.endpoint,
+                freeze_cooldown_ms: 0,
+                reason: crate::meta::FreezeReason::Stopping,
+            }),
+        }
+    }
+
+    pub fn notify_proxy_stop(&self, request: crate::meta::NotifyStopRequest) -> AckResponse {
+        let serving = self
+            .list_proxies()
+            .proxies
+            .into_iter()
+            .find(|proxy| proxy.proxy_addr == request.endpoint);
+        match serving {
+            None => AckResponse {
+                status: Status::error("proxy_not_found", "proxy not found"),
+            },
+            Some(proxy) if proxy.state != MetaEntityState::Normal => AckResponse {
+                status: Status::error("not_modified", "proxy is already out of service"),
+            },
+            Some(_) => self.drop_proxy(StateChangeRequest {
+                endpoint: request.endpoint,
+                freeze_cooldown_ms: 0,
+                reason: crate::meta::FreezeReason::Stopping,
+            }),
+        }
+    }
+
     pub fn freeze_server(&self, request: StateChangeRequest) -> AckResponse {
         AckResponse {
             status: self.mutation_status(MetaMutation::FreezeServer(request)),

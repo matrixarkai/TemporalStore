@@ -274,6 +274,65 @@ impl SingleNodeMeta {
         self.set_server_state(request, MetaEntityState::Normal)
     }
 
+    /// Take a server out of service because it announced its own shutdown.
+    ///
+    /// Without this a clean shutdown is indistinguishable from a crash: the node
+    /// simply stops heartbeating, and the metaserver waits out the whole
+    /// detection window before reacting. Every read routed to that node during
+    /// the window fails, and a rolling deploy pays that cost once per node.
+    ///
+    /// Idempotent: a server that is already out of service reports
+    /// `not_modified` rather than failing, so a shutdown hook that retries or
+    /// races the failure detector does not produce spurious errors.
+    pub fn notify_server_stop(&self, request: NotifyStopRequest) -> AckResponse {
+        {
+            let state = self.inner.read().expect("meta lock poisoned");
+            let Some(server) = state.servers.get(&request.endpoint) else {
+                return AckResponse {
+                    status: Status::error("server_not_found", "server not found"),
+                };
+            };
+            if server.state != MetaEntityState::Normal {
+                return AckResponse {
+                    status: Status::error("not_modified", "server is already out of service"),
+                };
+            }
+        }
+        self.freeze_server(StateChangeRequest {
+            endpoint: request.endpoint,
+            freeze_cooldown_ms: 0,
+            // No cooldown and not a conviction: this node is expected back.
+            reason: FreezeReason::Stopping,
+        })
+    }
+
+    /// Take a proxy out of service because it announced its own shutdown.
+    ///
+    /// A proxy is dropped rather than frozen, matching the reference. It holds
+    /// no data, so there is nothing to preserve by keeping a tombstone in the
+    /// routing set -- and leaving it frozen would keep it in the damage
+    /// accounting the conviction gate reads.
+    pub fn notify_proxy_stop(&self, request: NotifyStopRequest) -> AckResponse {
+        {
+            let state = self.inner.read().expect("meta lock poisoned");
+            let Some(proxy) = state.proxies.get(&request.endpoint) else {
+                return AckResponse {
+                    status: Status::error("proxy_not_found", "proxy not found"),
+                };
+            };
+            if proxy.state != MetaEntityState::Normal {
+                return AckResponse {
+                    status: Status::error("not_modified", "proxy is already out of service"),
+                };
+            }
+        }
+        self.drop_proxy(StateChangeRequest {
+            endpoint: request.endpoint,
+            freeze_cooldown_ms: 0,
+            reason: FreezeReason::Stopping,
+        })
+    }
+
     pub fn drop_server(&self, request: StateChangeRequest) -> AckResponse {
         self.set_server_state(request, MetaEntityState::Dropped)
     }

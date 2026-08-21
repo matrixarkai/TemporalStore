@@ -73,6 +73,9 @@ pub enum FreezeReason {
     /// The metaserver observed it restart in place, so it no longer holds what
     /// the metaserver believes it holds.
     Restarted,
+    /// It announced its own shutdown, so it was taken out of service before the
+    /// failure detector could notice the silence.
+    Stopping,
 }
 
 impl FreezeReason {
@@ -82,12 +85,16 @@ impl FreezeReason {
             Self::Operator => "operator",
             Self::Unresponsive => "unresponsive",
             Self::Restarted => "restarted",
+            Self::Stopping => "stopping",
         }
     }
 
     /// True when the metaserver, not an operator, decided this resource was
     /// unhealthy. These are the freezes a resource must not clear for itself.
     pub fn is_conviction(self) -> bool {
+        // `Stopping` is deliberately absent. A node that announced its own
+        // shutdown is expected back, and locking it out of re-registration
+        // would turn every clean restart into an operator ticket.
         matches!(self, Self::Unresponsive | Self::Restarted)
     }
 }
@@ -662,6 +669,12 @@ pub struct UpdateServerRequest {
     /// The new location. May be empty, which means "unlabelled, place anywhere".
     #[serde(default)]
     pub location: String,
+}
+
+/// A resource announcing that it is shutting down.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NotifyStopRequest {
+    pub endpoint: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1988,6 +2001,179 @@ mod tests {
         }
         let recovered = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
         assert_eq!(located(&recovered, "node-a").location, "rack-9");
+    }
+
+    fn stop_meta() -> SingleNodeMeta {
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "node-a".to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+        });
+        meta.register_proxy(RegisterProxyRequest {
+            proxy_addr: "proxy-a".to_string(),
+            namespace: "ns".to_string(),
+            location: "rack-1".to_string(),
+            config_version: 1,
+            binary_version: "v1".to_string(),
+        });
+        meta
+    }
+
+    fn stop(endpoint: &str) -> NotifyStopRequest {
+        NotifyStopRequest {
+            endpoint: endpoint.to_string(),
+        }
+    }
+
+    fn stopped_server(meta: &SingleNodeMeta) -> ServerMetaInfo {
+        meta.list_servers()
+            .servers
+            .into_iter()
+            .find(|server| server.server_addr == "node-a")
+            .expect("registered")
+    }
+
+    #[test]
+    fn announcing_a_stop_beats_the_failure_detector() {
+        // The point of the whole thing. A clean shutdown is otherwise
+        // indistinguishable from a crash: the node stops heartbeating and the
+        // metaserver waits out the detection window, routing reads to a process
+        // that has already exited.
+        let meta = stop_meta();
+
+        // The detector is not going to help: the heartbeat is fresh, so a sweep
+        // with a realistic window leaves the node serving.
+        assert!(meta.freeze_stale_resources(30_000).status.ok);
+        assert_eq!(stopped_server(&meta).state, MetaEntityState::Normal);
+
+        // Announcing the stop takes it out immediately.
+        assert!(meta.notify_server_stop(stop("node-a")).status.ok);
+        let server = stopped_server(&meta);
+        assert_eq!(server.state, MetaEntityState::Frozen);
+        assert_eq!(server.freeze_reason, FreezeReason::Stopping);
+    }
+
+    #[test]
+    fn a_stopping_server_is_not_a_conviction_and_can_come_back() {
+        // A node that announced its own shutdown is expected back. Treating the
+        // freeze as a conviction would turn every clean restart into an operator
+        // ticket under the self-clearing lock.
+        assert!(!FreezeReason::Stopping.is_conviction());
+
+        let meta = SingleNodeMeta::default().with_conviction_lock(true);
+        meta.register_server(RegisterServerRequest {
+            server_addr: "node-a".to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+        });
+        assert!(meta.notify_server_stop(stop("node-a")).status.ok);
+
+        // It restarts and registers again; the lock does not stand in its way.
+        assert!(meta
+            .register_server(RegisterServerRequest {
+                server_addr: "node-a".to_string(),
+                node_id: 1,
+                location: "rack-1".to_string(),
+                binary_version: "v2".to_string(),
+            })
+            .status
+            .ok);
+        assert_eq!(stopped_server(&meta).state, MetaEntityState::Normal);
+    }
+
+    #[test]
+    fn announcing_a_stop_drops_a_proxy_rather_than_freezing_it() {
+        // A proxy holds no data, so there is nothing to preserve by keeping a
+        // frozen tombstone -- and a frozen proxy stays in the damage accounting
+        // the conviction gate reads.
+        let meta = stop_meta();
+        assert!(meta.notify_proxy_stop(stop("proxy-a")).status.ok);
+        let proxy = meta
+            .list_proxies()
+            .proxies
+            .into_iter()
+            .find(|proxy| proxy.proxy_addr == "proxy-a")
+            .expect("registered");
+        assert_eq!(proxy.state, MetaEntityState::Dropped);
+    }
+
+    #[test]
+    fn announcing_a_stop_twice_is_not_an_error() {
+        // A shutdown hook may retry, or race the failure detector. Neither
+        // should produce a spurious failure in a node's last log line.
+        let meta = stop_meta();
+        assert!(meta.notify_server_stop(stop("node-a")).status.ok);
+        assert_eq!(
+            meta.notify_server_stop(stop("node-a")).status.code,
+            "not_modified"
+        );
+        assert!(meta.notify_proxy_stop(stop("proxy-a")).status.ok);
+        assert_eq!(
+            meta.notify_proxy_stop(stop("proxy-a")).status.code,
+            "not_modified"
+        );
+    }
+
+    #[test]
+    fn announcing_a_stop_for_an_unknown_endpoint_is_rejected() {
+        let meta = stop_meta();
+        assert_eq!(
+            meta.notify_server_stop(stop("ghost")).status.code,
+            "server_not_found"
+        );
+        assert_eq!(
+            meta.notify_proxy_stop(stop("ghost")).status.code,
+            "proxy_not_found"
+        );
+    }
+
+    #[test]
+    fn a_stop_leaves_no_freeze_cooldown_behind() {
+        // The node is coming back; a cooldown would delay its return for no
+        // reason, since nothing about it was judged unhealthy.
+        let meta = stop_meta();
+        assert!(meta.notify_server_stop(stop("node-a")).status.ok);
+        // A zero cooldown is stored as "expires now" rather than as zero, so
+        // assert the behaviour that matters: the window is not in the future,
+        // and the node can register again the moment it comes back.
+        assert!(stopped_server(&meta).freeze_cooldown_until_ms <= now_ms());
+        assert!(meta
+            .register_server(RegisterServerRequest {
+                server_addr: "node-a".to_string(),
+                node_id: 1,
+                location: "rack-1".to_string(),
+                binary_version: "v2".to_string(),
+            })
+            .status
+            .ok);
+    }
+
+    #[test]
+    fn a_stop_survives_mutation_log_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("stop-mutations.jsonl");
+        {
+            let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+            meta.register_server(RegisterServerRequest {
+                server_addr: "node-a".to_string(),
+                node_id: 1,
+                location: "rack-1".to_string(),
+                binary_version: "v1".to_string(),
+            });
+            assert!(meta.notify_server_stop(stop("node-a")).status.ok);
+        }
+        let recovered = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        let server = recovered
+            .list_servers()
+            .servers
+            .into_iter()
+            .find(|server| server.server_addr == "node-a")
+            .expect("registered");
+        assert_eq!(server.state, MetaEntityState::Frozen);
+        assert_eq!(server.freeze_reason, FreezeReason::Stopping);
     }
 
     #[test]
