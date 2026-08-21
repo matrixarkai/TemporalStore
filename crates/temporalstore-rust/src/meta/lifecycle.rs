@@ -351,6 +351,9 @@ impl SingleNodeMeta {
     }
 
     pub fn finish_load(&self, request: LoadFinishRequest) -> AckResponse {
+        if let Some(status) = self.meta_change_refusal() {
+            return AckResponse { status };
+        }
         self.record_mutation(MetaMutation::FinishLoad(request.clone()));
         self.apply_finish_load(request)
     }

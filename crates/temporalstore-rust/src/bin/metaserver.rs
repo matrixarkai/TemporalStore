@@ -818,6 +818,10 @@ fn start_auto_rebalance_loop(
         max_retries: 1,
     };
     std::thread::spawn(move || loop {
+        if meta.is_meta_change_muted() {
+            std::thread::sleep(interval);
+            continue;
+        }
         run_auto_rebalance_round(&meta, balance_load, placement_aware, http_options);
         std::thread::sleep(interval);
     })
@@ -946,6 +950,10 @@ fn start_shard_divergence_loop(
     };
     let mut checker = ShardChecker::new(options);
     std::thread::spawn(move || loop {
+        if meta.is_meta_change_muted() {
+            std::thread::sleep(interval);
+            continue;
+        }
         let (report, moves) = meta.check_shard_divergence(&mut checker);
         if !report.diverged.is_empty() {
             warn!(
@@ -1436,6 +1444,12 @@ fn handle(
             parse_or(&request.body, |req: NotifyStopRequest| {
                 json_response(200, &backend_call!(meta, notify_proxy_stop, req))
             })
+        }
+        ("POST", "/meta/mute") => {
+            json_response(200, &backend_call!(meta, set_meta_change_muted, true))
+        }
+        ("POST", "/meta/resume") => {
+            json_response(200, &backend_call!(meta, set_meta_change_muted, false))
         }
         ("POST", "/servers/freeze") => parse_or(&request.body, |req: StateChangeRequest| {
             backend_call!(meta, freeze_server, req)

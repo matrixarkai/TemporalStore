@@ -86,7 +86,9 @@ impl SingleNodeMeta {
     }
 
     pub fn info(&self) -> MetaInfo {
+        let meta_change_muted = self.is_meta_change_muted();
         MetaInfo {
+            meta_change_muted,
             status: Status::ok(),
             stats: self.stats(),
             boot_time_ms: self.boot_time_ms,

@@ -263,6 +263,11 @@ impl SingleNodeMeta {
         to_server: &str,
         reason: &str,
     ) -> AckResponse {
+        // Checked before the metric: a refused reassignment did not happen, so
+        // counting it would overstate what the rebalancer actually did.
+        if let Some(status) = self.meta_change_refusal() {
+            return AckResponse { status };
+        }
         self.metrics.record_reassignment(reason);
         self.record_mutation(MetaMutation::RegisterShard(RegisterShardRequest {
             shard_id,

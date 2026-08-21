@@ -745,6 +745,9 @@ pub struct MetaInfo {
     pub stats: MetaStats,
     pub boot_time_ms: u64,
     pub durable_mutation_log: bool,
+    /// Whether recorded metadata mutations are currently refused.
+    #[serde(default)]
+    pub meta_change_muted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -781,6 +784,12 @@ pub enum MetaMutation {
     FreezeProxy(StateChangeRequest),
     UnfreezeProxy(StateChangeRequest),
     DropProxy(StateChangeRequest),
+    /// Mute or resume metadata change. Recorded like any other mutation so it
+    /// replays in order and reaches raft peers; the guard is deliberately not
+    /// applied during replay, because the log only ever contains mutations that
+    /// were accepted live, and a mute entry flips the flag at exactly the point
+    /// the original sequence did.
+    SetMetaChangeMuted(bool),
 }
 
 #[derive(Debug, Clone)]
@@ -875,6 +884,13 @@ pub(crate) struct MetaState {
     /// expressible; retention ages against this. Kept beside the resources
     /// rather than inside them so the wire types are unchanged.
     dropped_since_ms: BTreeMap<String, u64>,
+    /// While set, the metaserver refuses every recorded metadata mutation.
+    ///
+    /// This is an incident lever: every automatic subsystem is otherwise gated
+    /// by an environment variable, so the only way to stop the metaserver making
+    /// changes was to restart it with different configuration -- during exactly
+    /// the incident where a restart is least welcome.
+    meta_change_muted: bool,
     /// When each frozen table was frozen, keyed `table:<namespace.table>`.
     /// Servers and proxies carry `frozen_since_ms` on the resource itself;
     /// tables do not, and adding a field there would touch every
@@ -902,6 +918,11 @@ pub struct MetaSnapshot {
     /// every tombstone's clock.
     #[serde(default)]
     pub dropped_since_ms: BTreeMap<String, u64>,
+    /// Whether metadata change was muted when this snapshot was taken. Carried
+    /// so a peer installing it does not silently resume a mute an operator put
+    /// in place.
+    #[serde(default)]
+    pub meta_change_muted: bool,
     /// Freeze timestamps for the frozen tables in this snapshot, so a peer that
     /// installs it keeps ageing them instead of restarting their clocks.
     #[serde(default)]
@@ -976,6 +997,9 @@ impl SingleNodeMeta {
     }
 
     pub fn register(&self, request: RegisterShardRequest) -> RegisterShardResponse {
+        if let Some(status) = self.meta_change_refusal() {
+            return RegisterShardResponse { status };
+        }
         self.record_mutation(MetaMutation::RegisterShard(request.clone()));
         self.apply_register(request)
     }
@@ -1022,6 +1046,9 @@ impl SingleNodeMeta {
     }
 
     pub fn publish_shard_snapshot(&self, request: PublishShardSnapshotRequest) -> AckResponse {
+        if let Some(status) = self.meta_change_refusal() {
+            return AckResponse { status };
+        }
         self.record_mutation(MetaMutation::PublishShardSnapshot(request.clone()));
         self.apply_publish_shard_snapshot(request)
     }
@@ -1056,6 +1083,48 @@ impl SingleNodeMeta {
     }
 
 
+
+    /// True while recorded metadata mutations are being refused.
+    pub fn is_meta_change_muted(&self) -> bool {
+        self.inner
+            .read()
+            .expect("meta lock poisoned")
+            .meta_change_muted
+    }
+
+    /// The refusal every guarded entry point returns while muted, or `None` when
+    /// metadata change is flowing normally.
+    fn meta_change_refusal(&self) -> Option<Status> {
+        self.is_meta_change_muted().then(|| {
+            Status::error(
+                "meta_change_muted",
+                "metadata change is muted; resume it before making changes",
+            )
+        })
+    }
+
+    /// Mute or resume metadata change.
+    ///
+    /// Never guarded by the mute itself -- an operator must always be able to
+    /// resume -- and recorded so it survives restart and reaches raft peers.
+    pub fn set_meta_change_muted(&self, muted: bool) -> AckResponse {
+        self.record_mutation(MetaMutation::SetMetaChangeMuted(muted));
+        self.apply_set_meta_change_muted(muted)
+    }
+
+    pub(crate) fn apply_set_meta_change_muted(&self, muted: bool) -> AckResponse {
+        let mut state = self.inner.write().expect("meta lock poisoned");
+        state.meta_change_muted = muted;
+        record_topology_event(
+            &mut state,
+            "meta_change_mute",
+            "cluster".to_string(),
+            format!("muted={muted}"),
+        );
+        AckResponse {
+            status: Status::ok(),
+        }
+    }
 
     fn record_mutation(&self, mutation: MetaMutation) {
         if let Some(log) = &self.mutation_log {
@@ -1094,6 +1163,9 @@ impl SingleNodeMeta {
                     .status
             }
             MetaMutation::UpdateServer(request) => self.apply_update_server(request).status,
+            MetaMutation::SetMetaChangeMuted(muted) => {
+                self.apply_set_meta_change_muted(muted).status
+            }
             MetaMutation::FreezeServer(request) => {
                 self.apply_set_server_state(request, MetaEntityState::Frozen)
                     .status
@@ -2186,6 +2258,174 @@ mod tests {
             .expect("registered");
         assert_eq!(server.state, MetaEntityState::Frozen);
         assert_eq!(server.freeze_reason, FreezeReason::Stopping);
+    }
+
+    fn muted_meta_with_a_server() -> SingleNodeMeta {
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "node-a".to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+        });
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        assert!(meta.set_meta_change_muted(true).status.ok);
+        meta
+    }
+
+    #[test]
+    fn muting_refuses_every_recorded_mutation() {
+        let meta = muted_meta_with_a_server();
+        assert!(meta.is_meta_change_muted());
+
+        for (what, status) in [
+            (
+                "freeze_server",
+                meta.freeze_server(StateChangeRequest {
+                    endpoint: "node-a".to_string(),
+                    freeze_cooldown_ms: 0,
+                    reason: FreezeReason::Operator,
+                })
+                .status,
+            ),
+            (
+                "add_table",
+                meta.add_table(AddTableRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "orders".to_string(),
+                    first_shard_id: 1,
+                    shard_count: 1,
+                    replica_count: 1,
+                    partition_version: 0,
+                    serving_options: TableServingOptions::default(),
+                })
+                .status,
+            ),
+            (
+                "register_server",
+                meta.register_server(RegisterServerRequest {
+                    server_addr: "node-b".to_string(),
+                    node_id: 2,
+                    location: "rack-1".to_string(),
+                    binary_version: "v1".to_string(),
+                })
+                .status,
+            ),
+            (
+                "reassign_shard",
+                meta.reassign_shard(1, "node-a").status,
+            ),
+        ] {
+            assert!(!status.ok, "{what} should have been refused");
+            assert_eq!(status.code, "meta_change_muted", "{what}");
+        }
+
+        // Nothing landed: the fleet is exactly as it was.
+        assert_eq!(meta.list_servers().servers.len(), 1);
+        assert_eq!(
+            meta.list_servers().servers[0].state,
+            MetaEntityState::Normal
+        );
+        assert!(meta.list_tables().tables.is_empty());
+    }
+
+    #[test]
+    fn muting_does_not_touch_reads_or_heartbeats() {
+        // The mute gates recorded mutations. A heartbeat records none -- it is
+        // liveness, not a metadata change -- and muting it would blind the
+        // failure detector to the very fleet the operator is inspecting.
+        let meta = muted_meta_with_a_server();
+        assert!(meta
+            .server_heartbeat(ServerHeartbeatRequest {
+                server_addr: "node-a".to_string(),
+                boot_time_ms: 1,
+                binary_version: "v1".to_string(),
+                shard_loads: Vec::new(),
+                shard_stat_loads: Vec::new(),
+                runtime_load: ServerRuntimeLoad::default(),
+                shard_states: Vec::new(),
+            })
+            .status
+            .ok);
+        assert!(meta.list_servers().status.ok);
+        assert!(meta.list_namespaces().status.ok);
+        assert!(meta.stats().shard_count == 0);
+    }
+
+    #[test]
+    fn a_muted_metaserver_will_not_admit_a_restarting_datanode() {
+        // The sharp edge, asserted so it is a decision rather than a surprise:
+        // registration is a recorded mutation, so while muted a node that
+        // restarts cannot rejoin until an operator resumes.
+        let meta = muted_meta_with_a_server();
+        let rejoin = meta.register_server(RegisterServerRequest {
+            server_addr: "node-a".to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v2".to_string(),
+        });
+        assert_eq!(rejoin.status.code, "meta_change_muted");
+    }
+
+    #[test]
+    fn resume_is_never_itself_muted() {
+        // An operator must always be able to undo this, or the lever is a trap.
+        let meta = muted_meta_with_a_server();
+        assert!(meta.set_meta_change_muted(false).status.ok);
+        assert!(!meta.is_meta_change_muted());
+        assert!(meta
+            .freeze_server(StateChangeRequest {
+                endpoint: "node-a".to_string(),
+                freeze_cooldown_ms: 0,
+                reason: FreezeReason::Operator,
+            })
+            .status
+            .ok);
+    }
+
+    #[test]
+    fn meta_info_reports_whether_change_is_muted() {
+        let meta = SingleNodeMeta::default();
+        assert!(!meta.info().meta_change_muted);
+        meta.set_meta_change_muted(true);
+        assert!(meta.info().meta_change_muted);
+    }
+
+    #[test]
+    fn a_mute_survives_mutation_log_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("mute-mutations.jsonl");
+        {
+            let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+            meta.register_server(RegisterServerRequest {
+                server_addr: "node-a".to_string(),
+                node_id: 1,
+                location: "rack-1".to_string(),
+                binary_version: "v1".to_string(),
+            });
+            assert!(meta.set_meta_change_muted(true).status.ok);
+        }
+        let recovered = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert!(recovered.is_meta_change_muted());
+        // The registration recorded before the mute still replayed: the guard
+        // applies to live calls, not to replaying a log of accepted changes.
+        assert_eq!(recovered.list_servers().servers.len(), 1);
+    }
+
+    #[test]
+    fn a_mute_survives_a_snapshot_round_trip() {
+        // Otherwise a peer installing the snapshot quietly resumes the change an
+        // operator stopped.
+        let meta = SingleNodeMeta::default();
+        meta.set_meta_change_muted(true);
+        let snapshot = meta.export_snapshot();
+        assert!(snapshot.meta_change_muted);
+
+        let restored = SingleNodeMeta::default();
+        assert!(restored.install_snapshot(snapshot).status.ok);
+        assert!(restored.is_meta_change_muted());
     }
 
     #[test]

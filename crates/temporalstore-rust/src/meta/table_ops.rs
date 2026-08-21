@@ -7,6 +7,9 @@ use super::*;
 
 impl SingleNodeMeta {
     pub fn add_table(&self, request: AddTableRequest) -> AckResponse {
+        if let Some(status) = self.meta_change_refusal() {
+            return AckResponse { status };
+        }
         self.record_mutation(MetaMutation::AddTable(request.clone()));
         self.apply_add_table(request)
     }
@@ -73,6 +76,9 @@ impl SingleNodeMeta {
     }
 
     pub fn delete_table(&self, request: DeleteTableRequest) -> AckResponse {
+        if let Some(status) = self.meta_change_refusal() {
+            return AckResponse { status };
+        }
         self.record_mutation(MetaMutation::DeleteTable(request.clone()));
         self.apply_delete_table(request)
     }
@@ -113,16 +119,25 @@ impl SingleNodeMeta {
     }
 
     pub fn freeze_table(&self, request: DeleteTableRequest) -> AckResponse {
+        if let Some(status) = self.meta_change_refusal() {
+            return AckResponse { status };
+        }
         self.record_mutation(MetaMutation::FreezeTable(request.clone()));
         self.apply_set_table_state(request, MetaEntityState::Frozen)
     }
 
     pub fn unfreeze_table(&self, request: DeleteTableRequest) -> AckResponse {
+        if let Some(status) = self.meta_change_refusal() {
+            return AckResponse { status };
+        }
         self.record_mutation(MetaMutation::UnfreezeTable(request.clone()));
         self.apply_set_table_state(request, MetaEntityState::Normal)
     }
 
     pub fn update_table(&self, request: UpdateTableRequest) -> AckResponse {
+        if let Some(status) = self.meta_change_refusal() {
+            return AckResponse { status };
+        }
         self.record_mutation(MetaMutation::UpdateTable(request.clone()));
         self.apply_update_table(request)
     }
