@@ -613,6 +613,8 @@ fn runtime_options_from_env() -> ProductionRaftRuntimeOptions {
         env_bool("TS_RAFT_ALLOW_PLAINTEXT", true),
     );
     ProductionRaftRuntimeOptions {
+        // The cadence the metaserver already uses; 0 disables the check.
+        snapshot_check_interval_ms: env_u64("TS_RAFT_SNAPSHOT_CHECK_INTERVAL_MS", 30_000),
         engine: ProductionRaftEngineKind::TemporalRaft,
         shard_id,
         local_node_id,
@@ -692,6 +694,8 @@ mod tests {
     fn test_runtime_for_node(local_node_id: RaftNodeId) -> ProductionRaftRuntime {
         let dir = tempfile::tempdir().unwrap().into_path();
         ProductionRaftRuntime::start(ProductionRaftRuntimeOptions {
+            // The cadence the metaserver already uses; 0 disables the check.
+            snapshot_check_interval_ms: env_u64("TS_RAFT_SNAPSHOT_CHECK_INTERVAL_MS", 30_000),
             engine: ProductionRaftEngineKind::TemporalRaft,
             shard_id: 55,
             local_node_id,
