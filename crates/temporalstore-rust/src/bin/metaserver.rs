@@ -1932,6 +1932,9 @@ fn env_bool(name: &str, default: bool) -> bool {
 
 fn runtime_options_from_env() -> ProductionMetaRaftRuntimeOptions {
     ProductionMetaRaftRuntimeOptions {
+        // Checking is cheap; the byte threshold in RaftConfig decides whether a
+        // snapshot is actually taken. Set to 0 to stop checking altogether.
+        snapshot_check_interval_ms: env_u64("TS_META_RAFT_SNAPSHOT_CHECK_INTERVAL_MS", 30_000),
         engine: ProductionRaftEngineKind::TemporalRaft,
         local_node_id: env_u64("TS_META_RAFT_NODE_ID", 1),
         nodes: parse_meta_raft_nodes(),
@@ -2279,6 +2282,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let snapshot_path = dir.path().join("meta-raft-route-snapshot.json");
         let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+            snapshot_check_interval_ms: 0,
             engine: ProductionRaftEngineKind::TemporalRaft,
             local_node_id: 1,
             nodes: vec![
@@ -2404,6 +2408,7 @@ mod tests {
         assert_eq!(servers.servers[0].state, MetaEntityState::Normal);
 
         let restored_runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+            snapshot_check_interval_ms: 0,
             engine: ProductionRaftEngineKind::TemporalRaft,
             local_node_id: 1,
             nodes: vec![
@@ -3480,6 +3485,7 @@ mod tests {
     #[test]
     fn raft_backed_metaserver_scheduler_drives_lifecycle_workflow() {
         let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+            snapshot_check_interval_ms: 0,
             engine: ProductionRaftEngineKind::TemporalRaft,
             local_node_id: 1,
             nodes: vec![

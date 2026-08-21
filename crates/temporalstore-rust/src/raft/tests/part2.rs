@@ -1231,6 +1231,7 @@ fn production_raft_mode_uses_temporal_raft_ready_path_when_adapter_is_enabled() 
 fn production_raft_runtime_validates_security_timer_and_chaos_contracts() {
     let dir = tempfile::tempdir().unwrap();
     let options = ProductionRaftRuntimeOptions {
+        snapshot_check_interval_ms: 0,
         engine: ProductionRaftEngineKind::TemporalRaft,
         shard_id: 91,
         local_node_id: 1,
@@ -1456,6 +1457,7 @@ fn production_raft_runtime_replicates_over_separate_http_nodes() {
     let mut runtimes = Vec::new();
     for node in &nodes {
         let runtime = ProductionRaftRuntime::start(ProductionRaftRuntimeOptions {
+            snapshot_check_interval_ms: 0,
             engine: ProductionRaftEngineKind::TemporalRaft,
             shard_id: 193,
             local_node_id: node.node_id,

@@ -350,6 +350,7 @@ impl ProductionRaftRuntime {
             max_retries: self.options.rpc.max_retries,
         };
         let rpc_options = self.options.rpc;
+        let snapshot_check_interval = self.options.snapshot_check_interval_ms;
         let auth_token = self
             .options
             .security
@@ -361,7 +362,27 @@ impl ProductionRaftRuntime {
         let handle = thread::spawn(move || {
             let mut last_heartbeat = InstantCompat::now();
             let mut last_tick = InstantCompat::now();
+            let mut last_snapshot_check = InstantCompat::now();
             while !stop_thread.load(Ordering::SeqCst) {
+                if snapshot_check_interval > 0
+                    && last_snapshot_check.elapsed()
+                        >= Duration::from_millis(snapshot_check_interval)
+                {
+                    // Cheap unless the byte threshold is crossed, and it errors
+                    // on a follower -- only the leader compacts.
+                    if let Ok(report) = cluster.maybe_trigger_snapshot() {
+                        if report.triggered {
+                            tracing::info!(
+                                kind = "data",
+                                applied_index = report.applied_index,
+                                applied_log_bytes = report.applied_log_bytes,
+                                max_applied_log_bytes = report.max_applied_log_bytes,
+                                "raft: compacted the applied log into a snapshot"
+                            );
+                        }
+                    }
+                    last_snapshot_check = InstantCompat::now();
+                }
                 // Move the cluster's clock forward by the time that actually passed. The
                 // recovery timeouts -- stalled snapshot send, offline peer, abandoned leader
                 // transfer -- are refreshed from here and from nowhere else, so a clock that
@@ -452,6 +473,14 @@ pub struct ProductionMetaRaftRuntimeOptions {
     pub election_tick_ms: u64,
     pub failure_detector_interval_ms: u64,
     pub stale_server_after_ms: u64,
+    /// How often the timer loop asks whether the applied raft log has grown past
+    /// [`RaftConfig::max_applied_log_bytes`] and should be compacted into a
+    /// snapshot. Zero disables the check.
+    ///
+    /// Nothing used to ask. `maybe_trigger_snapshot` was implemented, and the
+    /// config already said to compact at a threshold, but no loop ever called
+    /// it -- so the log grew for the life of the process.
+    pub snapshot_check_interval_ms: u64,
 }
 
 impl ProductionMetaRaftRuntimeOptions {
@@ -683,12 +712,33 @@ impl ProductionMetaRaftRuntime {
         let failure_detector_interval =
             Duration::from_millis(self.options.failure_detector_interval_ms);
         let stale_server_after_ms = self.options.stale_server_after_ms;
+        let snapshot_check_interval = self.options.snapshot_check_interval_ms;
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = Arc::clone(&stop);
         let handle = thread::spawn(move || {
             let mut last_heartbeat = InstantCompat::now();
             let mut last_failure_detector = InstantCompat::now();
+            let mut last_snapshot_check = InstantCompat::now();
             while !stop_thread.load(Ordering::SeqCst) {
+                if snapshot_check_interval > 0
+                    && last_snapshot_check.elapsed()
+                        >= Duration::from_millis(snapshot_check_interval)
+                {
+                    // Cheap unless the byte threshold is crossed, and it errors
+                    // on a follower -- only the leader compacts.
+                    if let Ok(report) = cluster.maybe_trigger_snapshot() {
+                        if report.triggered {
+                            tracing::info!(
+                                kind = "meta",
+                                applied_index = report.applied_index,
+                                applied_log_bytes = report.applied_log_bytes,
+                                max_applied_log_bytes = report.max_applied_log_bytes,
+                                "raft: compacted the applied log into a snapshot"
+                            );
+                        }
+                    }
+                    last_snapshot_check = InstantCompat::now();
+                }
                 if last_heartbeat.elapsed() >= heartbeat_interval {
                     let _ = cluster.failover_primary();
                     let _ = cluster.catch_up_live_followers();

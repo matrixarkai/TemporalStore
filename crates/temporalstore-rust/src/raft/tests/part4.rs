@@ -617,6 +617,7 @@ fn metaserver_raft_freeze_stale_server_is_replicated_mutation() {
 #[test]
 fn production_meta_raft_runtime_ticks_failover_and_failure_detection() {
     let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+        snapshot_check_interval_ms: 0,
         engine: ProductionRaftEngineKind::TemporalRaft,
         local_node_id: 10,
         nodes: vec![
@@ -678,6 +679,7 @@ fn production_meta_raft_runtime_ticks_failover_and_failure_detection() {
 #[test]
 fn production_meta_raft_runtime_matches_multinode_control_and_fault_contract() {
     let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+        snapshot_check_interval_ms: 0,
         engine: ProductionRaftEngineKind::TemporalRaft,
         local_node_id: 10,
         nodes: vec![
@@ -753,6 +755,7 @@ fn production_meta_raft_runtime_matches_multinode_control_and_fault_contract() {
 #[test]
 fn metaserver_owns_data_raft_membership_workflow() {
     let meta = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+        snapshot_check_interval_ms: 0,
         engine: ProductionRaftEngineKind::TemporalRaft,
         local_node_id: 10,
         nodes: vec![
@@ -945,6 +948,7 @@ fn meta_owned_membership_report_covers_networked_scheduler_contract() {
 #[test]
 fn metaserver_membership_workflow_requires_meta_majority() {
     let meta = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+        snapshot_check_interval_ms: 0,
         engine: ProductionRaftEngineKind::TemporalRaft,
         local_node_id: 10,
         nodes: vec![
@@ -1320,6 +1324,90 @@ fn metaserver_snapshot_bootstraps_lagging_meta_replica() {
         })
     );
     assert_eq!(meta.commit_index(12).unwrap(), 1);
+}
+
+/// Start a meta raft runtime whose applied log is over the compaction threshold
+/// the moment anything is written, with `snapshot_check_interval_ms` as given.
+fn meta_runtime_for_snapshot_wiring(
+    snapshot_check_interval_ms: u64,
+    base_port: u16,
+) -> ProductionMetaRaftRuntime {
+    ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+        snapshot_check_interval_ms,
+        engine: ProductionRaftEngineKind::TemporalRaft,
+        local_node_id: 10,
+        nodes: vec![
+            ProductionRaftNode {
+                node_id: 10,
+                addr: format!("127.0.0.1:{base_port}"),
+            },
+            ProductionRaftNode {
+                node_id: 11,
+                addr: format!("127.0.0.1:{}", base_port + 1),
+            },
+            ProductionRaftNode {
+                node_id: 12,
+                addr: format!("127.0.0.1:{}", base_port + 2),
+            },
+        ],
+        config: RaftConfig {
+            max_applied_log_bytes: 1,
+            ..RaftConfig::default()
+        },
+        heartbeat_interval_ms: 5,
+        election_tick_ms: 2,
+        failure_detector_interval_ms: 10_000,
+        stale_server_after_ms: 0,
+    })
+    .unwrap()
+}
+
+#[test]
+fn meta_raft_timer_loop_compacts_the_applied_log() {
+    // The wiring this exercises did not exist: `maybe_trigger_snapshot` was
+    // implemented and the config asked for compaction at a byte threshold, but
+    // no loop ever called it, so the log grew for the life of the process.
+    let runtime = meta_runtime_for_snapshot_wiring(2, 17111);
+    runtime.cluster().register(RegisterShardRequest {
+        shard_id: 41,
+        server_addr: "server-timer-compaction".to_string(),
+    });
+    let timer = runtime.start_timer_loop();
+    std::thread::sleep(std::time::Duration::from_millis(400));
+
+    // One observation, and it discriminates: the loop having already compacted
+    // leaves nothing new to apply. Had nothing called it, this same first call
+    // would report `triggered` against the threshold instead.
+    let report = runtime.cluster().maybe_trigger_snapshot().unwrap();
+    timer.stop();
+    assert!(
+        !report.triggered,
+        "the timer loop should have compacted already, got {report:?}"
+    );
+    assert_eq!(report.reason, "no_new_applied_logs");
+    assert!(report.last_snapshot_index >= 1);
+}
+
+#[test]
+fn a_zero_snapshot_check_interval_leaves_the_log_alone() {
+    // The negative control. Without it the test above could pass for reasons
+    // that have nothing to do with the timer loop.
+    let runtime = meta_runtime_for_snapshot_wiring(0, 17121);
+    runtime.cluster().register(RegisterShardRequest {
+        shard_id: 42,
+        server_addr: "server-timer-disabled".to_string(),
+    });
+    let timer = runtime.start_timer_loop();
+    std::thread::sleep(std::time::Duration::from_millis(400));
+
+    let report = runtime.cluster().maybe_trigger_snapshot().unwrap();
+    timer.stop();
+    assert!(
+        report.triggered,
+        "nothing should have compacted with checking disabled, got {report:?}"
+    );
+    assert_eq!(report.reason, "applied_log_bytes_threshold");
+    assert_eq!(report.last_snapshot_index, 0);
 }
 
 #[test]

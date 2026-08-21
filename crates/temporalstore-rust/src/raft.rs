@@ -2176,6 +2176,14 @@ pub struct ProductionRaftRuntimeOptions {
     pub election_tick_ms: u64,
     pub max_catchup_entries_per_heartbeat: u64,
     pub allow_plaintext_for_local_chaos: bool,
+    /// How often the timer loop asks whether the applied raft log has grown past
+    /// [`RaftConfig::max_applied_log_bytes`] and should be compacted into a
+    /// snapshot. Zero disables the check.
+    ///
+    /// Nothing used to ask. `maybe_trigger_snapshot` was implemented, and the
+    /// config already said to compact at a threshold, but no loop ever called
+    /// it -- so the log grew for the life of the process.
+    pub snapshot_check_interval_ms: u64,
 }
 
 
