@@ -562,8 +562,15 @@ impl TemporalEngine {
                 format!("slot dump references missing page segments: {missing:?}"),
             ));
         }
-        let restored = serde_json::from_slice::<ShardState>(&manifest.index_bytes)
+        let mut restored = serde_json::from_slice::<ShardState>(&manifest.index_bytes)
             .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
+        // `hashes` is `skip_serializing`, so a freshly deserialized index never carries it.
+        // Without this the model-maps lifecycle below sees no hash objects while the
+        // bucket-index derivation does, and every shard holding a hash key is rejected.
+        // Only the unserialized maps are rebuilt: the serialized ones must stay exactly as
+        // decoded, or the cross-check would repair the very tampering it exists to catch.
+        rebuild_unserialized_model_maps_from_bucket_index(&mut restored);
+        let restored = restored;
         let manifest_buckets = manifest.bucket_ids.iter().copied().collect::<BTreeSet<_>>();
         if manifest_buckets.len() != manifest.bucket_ids.len()
             || manifest.bucket_ids != manifest_buckets.iter().copied().collect::<Vec<_>>()
@@ -1258,6 +1265,12 @@ impl TemporalEngine {
         }
         let mut restored = serde_json::from_slice::<ShardState>(&manifest.index_bytes)
             .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
+        // Rebuild the unserialized model maps from the durable bucket index BEFORE rebuilding
+        // ownership. `rebuild_bucket_page_ownership` clears the bucket map and repopulates it
+        // from the model maps, so running it against a state whose `hashes` map never survived
+        // serialization would drop every hash page from the restored index -- and that index is
+        // what gets persisted durably below.
+        rebuild_unserialized_model_maps_from_bucket_index(&mut restored);
         rebuild_bucket_page_ownership(manifest.shard_id, &mut restored, 0, u32::MAX);
         let restored_index_bytes = serialize_index(&restored);
         self.persist_bucket_dump_install_marker(manifest, "prepare")

@@ -2166,6 +2166,23 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
             key: "runtime-live".to_string(),
         },
     });
+    // `runtime-live` is 352 bytes and this engine's memory tier is 256, so reading it back
+    // spills straight to disk and leaves the memory cache empty -- the pressure snapshot then
+    // reports cache_memory_bytes = 0 no matter how warm the shard actually is. Touch a value
+    // that fits, so the assertion below measures a warm memory tier rather than the tier size.
+    runtime.execute(ExecuteRequest {
+        shard_id: 8,
+        command: Command::StringSet {
+            key: "runtime-small".to_string(),
+            value: b"s".to_vec(),
+        },
+    });
+    runtime.execute(ExecuteRequest {
+        shard_id: 8,
+        command: Command::StringGet {
+            key: "runtime-small".to_string(),
+        },
+    });
 
     let manager = runtime.start_storage_manager_runtime(StorageManagerRuntimeOptions {
         interval_ms: 5,

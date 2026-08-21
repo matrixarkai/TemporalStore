@@ -749,7 +749,11 @@ fn context_retrieval_limits_namespace_fanout_with_summary_and_locality_plan() {
     assert_eq!(report.fanout_plan.event_expanded_nodes, 1);
     assert_eq!(report.fanout_plan.skipped_node_count, 4);
     assert!(report.fanout_plan.fanout_reduced);
-    assert_eq!(report.node_count, 1);
+    // The fanout limit bounds EVENT expansion -- the expensive path -- not summary
+    // breadth. All 5 namespace candidates contribute their (cheap) summary, so
+    // node_count tracks summary_candidate_nodes; only 1 node is expanded to events and
+    // the other 4 are skipped, which is what the assertions above pin down.
+    assert_eq!(report.node_count, 5);
     assert_eq!(report.event_count, 1);
     assert!(report
         .fanout_plan

@@ -883,6 +883,33 @@ pub(super) fn promote_model_maps_to_bucket_index_authority(
     true
 }
 
+/// Rebuild ONLY the model maps that are `skip_serializing` -- today just `hashes` -- from the
+/// durable bucket index. A freshly deserialized index never carries them, so anything deriving
+/// state from the model maps would see a shard with no hash objects at all.
+///
+/// Deliberately narrow: the serialized maps are left exactly as decoded. Rebuilding those from
+/// the bucket index too would overwrite whatever the index actually said, which is precisely
+/// the disagreement a manifest cross-check exists to detect -- a tampered `strings` object_id
+/// would be silently repaired instead of rejected.
+pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut ShardState) {
+    if shard.bucket_index.bucket_map.is_empty() {
+        return;
+    }
+    let mut hashes = HashMap::<String, HashMap<String, BlockAddress>>::new();
+    for entry in collect_bucket_index_live_page_entries(shard) {
+        if entry.deleted || entry.kind != "hash" {
+            continue;
+        }
+        hashes
+            .entry(entry.object_key)
+            .or_default()
+            .insert(entry.component.unwrap_or_default(), entry.address);
+    }
+    if !hashes.is_empty() {
+        shard.hashes = hashes;
+    }
+}
+
 pub(super) fn collect_bucket_index_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
     let mut entries = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {

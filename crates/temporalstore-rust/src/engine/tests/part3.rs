@@ -179,10 +179,36 @@ fn control_api_reads_and_scans_index_log_stream() {
     // authoritative complete image.
     let served: serde_json::Value =
         serde_json::from_slice(&engine.export_index_bytes(1).unwrap()).unwrap();
-    assert_eq!(
-        served["hashes"]["h"]["f"]["page_segment_id"],
-        serde_json::json!(0)
-    );
+    // `hashes` is deliberately NOT serialized (`skip_serializing`): it is rebuildable from
+    // the durable bucket index on load, and duplicating those page references in every
+    // checkpoint is what made large context backfills tens of MB heavier. Assert the hash
+    // write through that authority -- the bucket index -- rather than through a map the
+    // served index no longer carries.
+    // The bucket-index page entries serialize under abbreviated field names on some builds
+    // and full names on others, so accept either: what is being asserted is that the hash
+    // write is recorded with the right page address, not how the fields are spelled.
+    let hash_page = served["slot_index"]["slot_map"]
+        .as_object()
+        .expect("served index carries the bucket map")
+        .values()
+        .filter_map(|bucket| {
+            bucket
+                .get("page_index")
+                .or_else(|| bucket.get("p"))
+                .and_then(|pages| pages.as_object())
+        })
+        .flat_map(|pages| pages.values())
+        .find(|page| {
+            let key = page.get("object_key").or_else(|| page.get("k"));
+            let component = page.get("component").or_else(|| page.get("c"));
+            key == Some(&serde_json::json!("h")) && component == Some(&serde_json::json!("f"))
+        })
+        .expect("the hash h/f write is recorded in the bucket index");
+    let address = hash_page
+        .get("address")
+        .or_else(|| hash_page.get("a"))
+        .expect("the recorded page carries its address");
+    assert_eq!(address["page_segment_id"], serde_json::json!(0));
     assert!(served["strings"].get("k1").is_some());
 }
 
