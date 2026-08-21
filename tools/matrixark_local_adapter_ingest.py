@@ -1041,7 +1041,18 @@ class _LocalAdapterIngestMixin:
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
-            for chunk, vector in zip(parsed_chunks, chunk_vectors):
+            # Attachments keep their manifest and raw URI -- listed, addressable and fetchable
+            # on demand -- but skip chunk materialization. Measured on one 66.2 KB document the
+            # chunks cost 7.05x the source: 60 resource_chunk records at 3.75x plus 76
+            # embeddings at 2.93x. Those vectors were 32-dim deterministic ones; a 384-dim
+            # encoder takes the same file toward 40x. For a file fetched rarely or never that is
+            # the wrong trade, and there was no way to decline it -- raw_storage_policy was
+            # written into records and read back for display, but nothing branched on its value.
+            #
+            # The manifest above is written either way, so the resource stays discoverable and
+            # its chunk_count still reports what the file WOULD chunk into.
+            materialize_chunks = resource_chunk_materialization_enabled(args, envelope)
+            for chunk, vector in zip(parsed_chunks if materialize_chunks else [], chunk_vectors):
                 resource_chunk_hashes.append(chunk.chunk_hash)
                 source_locator = source_locator_from_ref(chunk.source_ref, raw_uri)
                 chunk_metadata_source = {**chunk.metadata, "source_locator": source_locator}
