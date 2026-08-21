@@ -280,4 +280,170 @@ mod tests {
         };
         assert_eq!(with_block.encode_to_vec(), vec![0x6a, 0x02, b'a', b'b']);
     }
+
+    /// What a write costs on disk, in the shape the log uses today versus the binary one.
+    ///
+    /// The value of a write is stored as an array of decimal numbers when the record is JSON,
+    /// so every byte of user data becomes three or four characters before framing, metadata and
+    /// key names are counted at all. This measures both on identical content so the cost is a
+    /// number rather than an impression.
+    #[test]
+    fn record_encoding_cost_per_byte_written() {
+        use crate::types::Command;
+
+        for value_len in [64usize, 128, 1024, 4096] {
+            let value = vec![b'v'; value_len];
+            let key = "scale-key-000000000";
+
+            // As written today: a JSON document, then the integrity frame around it.
+            let json_record = serde_json::json!({
+                "shard_id": 1,
+                "sequence": 1,
+                "command": { "kind": "string_set", "key": key, "value": value },
+                "metadata": {
+                    "version": 1,
+                    "timestamp_ms": 1_787_270_070_192u64,
+                    "items": [{
+                        "item_kind": "kv",
+                        "model": "string",
+                        "object_key": key,
+                        "slot_id": 8539,
+                        "deleted": false,
+                        "meta_log": false,
+                        "block_log": false
+                    }]
+                }
+            });
+            let json_bytes = serde_json::to_vec(&json_record).unwrap();
+            let json_framed = crate::log_framing::encode_line(&json_bytes);
+
+            // The binary shape: one record carrying the same write, length-prefixed and
+            // checksummed by the shared framing.
+            let binary_record = WalRecord {
+                version: WAL_RECORD_VERSION,
+                sequence: 1,
+                items: vec![WalItem {
+                    routing_bucket: 8539,
+                    object_key: key.as_bytes().to_vec(),
+                    model_id: 1,
+                    key: key.as_bytes().to_vec(),
+                    value: value.clone(),
+                    timestamp_ms: 1_787_270_070_192,
+                    ..Default::default()
+                }],
+            };
+            let binary_framed = encode_framed(&binary_record);
+
+            let json_ratio = json_framed.len() as f64 / value_len as f64;
+            let binary_ratio = binary_framed.len() as f64 / value_len as f64;
+            println!(
+                "  value {value_len:>5}B -> json {:>7}B ({json_ratio:>5.2}x)   binary {:>6}B ({binary_ratio:>5.2}x)   {:>5.1}x smaller",
+                json_framed.len(),
+                binary_framed.len(),
+                json_framed.len() as f64 / binary_framed.len() as f64
+            );
+
+            // The binary record must never be the larger of the two.
+            assert!(
+                binary_framed.len() < json_framed.len(),
+                "binary encoding should be smaller at {value_len}B"
+            );
+        }
+
+        // Guard the headline: a small write costs several times its own size as JSON.
+        let value = vec![b'v'; 128];
+        let json = serde_json::to_vec(&serde_json::json!({
+            "shard_id": 1, "sequence": 1,
+            "command": { "kind": "string_set", "key": "scale-key-000000000", "value": value },
+        }))
+        .unwrap();
+        assert!(
+            json.len() > value.len() * 3,
+            "a 128B value should cost more than 3x as JSON, got {}B",
+            json.len()
+        );
+    }
+
+    /// What a write costs on disk, in the shape the log uses today versus the binary one.
+    ///
+    /// The value of a write is stored as an array of decimal numbers when the record is JSON,
+    /// so every byte of user data becomes three or four characters before framing, metadata and
+    /// key names are counted at all. This measures both on identical content so the cost is a
+    /// number rather than an impression.
+    #[test]
+    fn record_encoding_cost_per_byte_written() {
+        use crate::types::Command;
+
+        for value_len in [64usize, 128, 1024, 4096] {
+            let value = vec![b'v'; value_len];
+            let key = "scale-key-000000000";
+
+            // As written today: a JSON document, then the integrity frame around it.
+            let json_record = serde_json::json!({
+                "shard_id": 1,
+                "sequence": 1,
+                "command": { "kind": "string_set", "key": key, "value": value },
+                "metadata": {
+                    "version": 1,
+                    "timestamp_ms": 1_787_270_070_192u64,
+                    "items": [{
+                        "item_kind": "kv",
+                        "model": "string",
+                        "object_key": key,
+                        "slot_id": 8539,
+                        "deleted": false,
+                        "meta_log": false,
+                        "block_log": false
+                    }]
+                }
+            });
+            let json_bytes = serde_json::to_vec(&json_record).unwrap();
+            let json_framed = crate::log_framing::encode_line(&json_bytes);
+
+            // The binary shape: one record carrying the same write, length-prefixed and
+            // checksummed by the shared framing.
+            let binary_record = WalRecord {
+                version: WAL_RECORD_VERSION,
+                sequence: 1,
+                items: vec![WalItem {
+                    routing_bucket: 8539,
+                    object_key: key.as_bytes().to_vec(),
+                    model_id: 1,
+                    key: key.as_bytes().to_vec(),
+                    value: value.clone(),
+                    timestamp_ms: 1_787_270_070_192,
+                    ..Default::default()
+                }],
+            };
+            let binary_framed = encode_framed(&binary_record);
+
+            let json_ratio = json_framed.len() as f64 / value_len as f64;
+            let binary_ratio = binary_framed.len() as f64 / value_len as f64;
+            println!(
+                "  value {value_len:>5}B -> json {:>7}B ({json_ratio:>5.2}x)   binary {:>6}B ({binary_ratio:>5.2}x)   {:>5.1}x smaller",
+                json_framed.len(),
+                binary_framed.len(),
+                json_framed.len() as f64 / binary_framed.len() as f64
+            );
+
+            // The binary record must never be the larger of the two.
+            assert!(
+                binary_framed.len() < json_framed.len(),
+                "binary encoding should be smaller at {value_len}B"
+            );
+        }
+
+        // Guard the headline: a small write costs several times its own size as JSON.
+        let value = vec![b'v'; 128];
+        let json = serde_json::to_vec(&serde_json::json!({
+            "shard_id": 1, "sequence": 1,
+            "command": { "kind": "string_set", "key": "scale-key-000000000", "value": value },
+        }))
+        .unwrap();
+        assert!(
+            json.len() > value.len() * 3,
+            "a 128B value should cost more than 3x as JSON, got {}B",
+            json.len()
+        );
+    }
 }
