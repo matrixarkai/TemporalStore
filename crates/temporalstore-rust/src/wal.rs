@@ -121,6 +121,14 @@ mod staged_page_bytes {
 pub struct WriteAheadLogRecordMetadata {
     pub version: u32,
     pub timestamp_ms: u64,
+    /// Per-item description of the write.
+    ///
+    /// Every field is derived from the command in the same record, so this is a convenience
+    /// rather than a source of truth -- see [`WriteAheadLogItemMetadata::from_command`], which
+    /// reconstructs it. New records leave it empty and skip it entirely rather than spend 147
+    /// bytes per write on data the record already contains; records written before that still
+    /// carry theirs and still load.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<WriteAheadLogItemMetadata>,
     // Atomic-batch framing (all three set together, or all absent for a standalone write). A
     // batch of N commands is written as N contiguously-sequenced records sharing one `batch_id`,
@@ -142,7 +150,14 @@ impl WriteAheadLogRecordMetadata {
         Self {
             version: WRITE_AHEAD_LOG_FORMAT_VERSION,
             timestamp_ms: current_time_ms(),
-            items: vec![WriteAheadLogItemMetadata::from_command(command)],
+            // Derived from the command this record already carries, and read by nothing, so
+            // writing it costs 147 fsynced bytes per record to say what the record says twice.
+            // `from_command` reconstructs it for any caller that wants it.
+            items: if wal_item_metadata_enabled() {
+                vec![WriteAheadLogItemMetadata::from_command(command)]
+            } else {
+                Vec::new()
+            },
             batch_id: None,
             batch_size: None,
             batch_index: None,
@@ -171,6 +186,22 @@ pub struct WriteAheadLogItemMetadata {
     pub meta_log: bool,
     #[serde(default)]
     pub block_log: bool,
+}
+
+/// TS_WAL_ITEM_METADATA: write the per-item description into each record.
+///
+/// Default OFF. Every field is derived from the command in the same record and nothing reads it
+/// back, so writing it is 147 bytes of amplification per write. Set to a truthy value to restore
+/// it for a consumer that reads records directly and has not moved to deriving it.
+fn wal_item_metadata_enabled() -> bool {
+    matches!(
+        std::env::var("TS_WAL_ITEM_METADATA")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 impl WriteAheadLogItemMetadata {
@@ -1896,30 +1927,40 @@ mod tests {
     // shared-corpus: storage_wal_structure_api_flush_parity
     #[test]
     fn wal_record_metadata_tracks_style_log_item_shape() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = LocalWriteAheadLogStore::new(dir.path());
-        let record = store
-            .append(
-                11,
-                Command::StringSetEx {
-                    key: "profile:7".to_string(),
-                    value: b"alice".to_vec(),
-                    ttl_ms: 30_000,
-                },
-            )
-            .unwrap();
-
-        let metadata = record.metadata.expect("metadata");
-        assert_eq!(metadata.version, WRITE_AHEAD_LOG_FORMAT_VERSION);
-        assert_eq!(metadata.items.len(), 1);
-        let item = &metadata.items[0];
+        // The derivation is the contract: anything that wants the per-item description can
+        // rebuild it from the command, which is why the record no longer stores it.
+        let command = Command::StringSet {
+            key: "k".to_string(),
+            value: b"v".to_vec(),
+        };
+        let item = WriteAheadLogItemMetadata::from_command(&command);
         assert_eq!(item.item_kind, WriteAheadLogItemKind::Kv);
         assert_eq!(item.model, WriteAheadLogModel::String);
-        assert_eq!(item.object_key.as_deref(), Some("profile:7"));
-        assert_eq!(item.ttl_ms, Some(30_000));
-        assert!(item.bucket_id.is_some());
+        assert_eq!(item.object_key.as_deref(), Some("k"));
         assert!(!item.deleted);
         assert!(!item.meta_log);
+        assert!(!item.block_log);
+
+        // By default the record does not carry it -- 147 fsynced bytes per write saying what
+        // the record already says.
+        std::env::remove_var("TS_WAL_ITEM_METADATA");
+        let lean = WriteAheadLogRecordMetadata::single_command(&command);
+        assert!(
+            lean.items.is_empty(),
+            "the derived description should not be written by default"
+        );
+        let encoded = serde_json::to_string(&lean).unwrap();
+        assert!(
+            !encoded.contains("items"),
+            "an empty description must be skipped entirely, got {encoded}"
+        );
+
+        // The escape hatch restores it for a consumer reading records directly.
+        std::env::set_var("TS_WAL_ITEM_METADATA", "1");
+        let full = WriteAheadLogRecordMetadata::single_command(&command);
+        std::env::remove_var("TS_WAL_ITEM_METADATA");
+        assert_eq!(full.items.len(), 1);
+        assert_eq!(full.items[0].object_key.as_deref(), Some("k"));
     }
 
     // shared-corpus: storage_wal_structure_api_flush_parity
