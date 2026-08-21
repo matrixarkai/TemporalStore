@@ -20,7 +20,7 @@ use temporalstore_rust::meta::{
     ProxyHeartbeatRequest, PublishShardSnapshotRequest, RegisterProxyRequest,
     RegisterServerRequest, RegisterShardRequest, SafeModePolicy, ServerHeartbeatRequest,
     ShardCheckOptions, ShardChecker, ShardReassignment, ShardReassignmentReason,
-    NotifyStopRequest, SingleNodeMeta, StateChangeRequest, TopologyVersionRequest, UpdateServerRequest,
+    DropProxyGroupRequest, NotifyStopRequest, ProxyCalibrationOptions, PutProxyGroupRequest, SingleNodeMeta, StateChangeRequest, TopologyVersionRequest, UpdateServerRequest,
     UpdateTableRequest,
 };
 use temporalstore_rust::raft::{
@@ -253,6 +253,37 @@ fn main() {
             }
             MetaBackend::Raft(_) => {
                 warn!("TS_META_RETENTION_GC ignored: raft backend owns its own meta state");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    // Proxy capacity calibration: keep every declared proxy group at its target
+    // by attaching idle proxies and releasing surplus. OFF by default
+    // (TS_META_PROXY_CALIBRATION) because it reassigns which namespace a proxy
+    // serves. Only the single-node backend is auto-driven here.
+    let _proxy_calibration = if env_bool("TS_META_PROXY_CALIBRATION", false) {
+        match &backend {
+            MetaBackend::Single(meta) => {
+                let interval_ms =
+                    env_u64("TS_META_PROXY_CALIBRATION_INTERVAL_MS", detector_interval_ms);
+                let defaults = ProxyCalibrationOptions::default();
+                let options = ProxyCalibrationOptions {
+                    max_changes_per_round: env_u64(
+                        "TS_META_PROXY_CALIBRATION_MAX_CHANGES",
+                        defaults.max_changes_per_round as u64,
+                    ) as usize,
+                };
+                info!(
+                    interval_ms,
+                    max_changes_per_round = options.max_changes_per_round,
+                    "proxy calibration enabled"
+                );
+                Some(meta.start_proxy_calibration_loop(options, interval_ms))
+            }
+            MetaBackend::Raft(_) => {
+                warn!("TS_META_PROXY_CALIBRATION ignored: raft backend owns its own meta state");
                 None
             }
         }
@@ -1468,6 +1499,15 @@ fn handle(
                 backend_call!(meta, proxy_heartbeat, req)
             })
         }
+        ("POST", "/proxy_groups") => parse_or(&request.body, |req: PutProxyGroupRequest| {
+            json_response(200, &backend_call!(meta, put_proxy_group, req))
+        }),
+        ("POST", "/proxy_groups/delete") | ("DELETE", "/proxy_groups") => {
+            parse_or(&request.body, |req: DropProxyGroupRequest| {
+                json_response(200, &backend_call!(meta, drop_proxy_group, req))
+            })
+        }
+        ("GET", "/proxy_groups") => json_response(200, &backend_call!(meta, list_proxy_groups)),
         ("GET", "/proxies") => json_response(200, &backend_call!(meta, list_proxies)),
         ("POST", "/proxies/freeze") => parse_or(&request.body, |req: StateChangeRequest| {
             backend_call!(meta, freeze_proxy, req)

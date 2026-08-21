@@ -28,6 +28,7 @@ mod placement_rebalance;
 mod raft_failover;
 mod shard_check;
 mod retention;
+mod proxy_groups;
 mod subsystem_metrics;
 use self::partitioning::*;
 use self::topology_helpers::*;
@@ -46,6 +47,11 @@ pub use self::location::{separated_from, separation_ladder, Location};
 pub use self::raft_failover::{compute_raft_failover_triggers, RaftFailoverTrigger};
 pub use self::shard_check::{
     ShardCheckOptions, ShardCheckReport, ShardChecker, ShardDivergence,
+};
+pub use self::proxy_groups::{
+    plan_proxy_calibration, DropProxyGroupRequest, ListProxyGroupsResponse, ProxyAttachment,
+    ProxyCalibrationOptions, ProxyCalibrationPlan, ProxyCalibrationReport, ProxyGroupInfo,
+    ProxyGroupShortfall, PutProxyGroupRequest,
 };
 pub use self::subsystem_metrics::{SubsystemMetrics, TIER_PROXY, TIER_SERVER};
 pub use self::retention::{
@@ -408,6 +414,13 @@ pub struct ProxyHeartbeatResponse {
 pub struct ProxyMetaInfo {
     pub proxy_addr: String,
     pub namespace: String,
+    /// The proxy group this proxy is attached to, or empty when it is idle.
+    ///
+    /// Assigned by the metaserver rather than declared by the proxy, so the
+    /// cluster owns the assignment and can repair it. `namespace` above follows
+    /// from the group while attached.
+    #[serde(default)]
+    pub group: String,
     pub location: String,
     pub state: MetaEntityState,
     pub config_version: u64,
@@ -784,6 +797,9 @@ pub enum MetaMutation {
     FreezeProxy(StateChangeRequest),
     UnfreezeProxy(StateChangeRequest),
     DropProxy(StateChangeRequest),
+    PutProxyGroup(PutProxyGroupRequest),
+    DropProxyGroup(DropProxyGroupRequest),
+    SetProxyGroup(ProxyAttachment),
     /// Mute or resume metadata change. Recorded like any other mutation so it
     /// replays in order and reaches raft peers; the guard is deliberately not
     /// applied during replay, because the log only ever contains mutations that
@@ -871,6 +887,7 @@ pub(crate) struct MetaState {
     shards: HashMap<ShardId, ShardLocation>,
     servers: BTreeMap<String, ServerMetaInfo>,
     proxies: BTreeMap<String, ProxyMetaInfo>,
+    proxy_groups: BTreeMap<String, ProxyGroupInfo>,
     namespaces: BTreeMap<String, MetaEntityState>,
     tables: BTreeMap<String, TableRecord>,
     counters: MetaCounters,
@@ -906,6 +923,11 @@ pub struct MetaSnapshot {
     pub shards: HashMap<ShardId, ShardLocation>,
     pub servers: BTreeMap<String, ServerMetaInfo>,
     pub proxies: BTreeMap<String, ProxyMetaInfo>,
+    /// Declared proxy capacity. Carried so a peer installing this snapshot
+    /// knows what the routing tier is supposed to look like, not just what it
+    /// currently is.
+    #[serde(default)]
+    pub proxy_groups: BTreeMap<String, ProxyGroupInfo>,
     pub namespaces: BTreeMap<String, MetaEntityState>,
     pub tables: Vec<TableMetaInfo>,
     pub stats: MetaStats,
@@ -1165,6 +1187,15 @@ impl SingleNodeMeta {
             MetaMutation::UpdateServer(request) => self.apply_update_server(request).status,
             MetaMutation::SetMetaChangeMuted(muted) => {
                 self.apply_set_meta_change_muted(muted).status
+            }
+            MetaMutation::PutProxyGroup(request) => {
+                self.apply_put_proxy_group(request).status
+            }
+            MetaMutation::DropProxyGroup(request) => {
+                self.apply_drop_proxy_group(request).status
+            }
+            MetaMutation::SetProxyGroup(request) => {
+                self.apply_set_proxy_group(request).status
             }
             MetaMutation::FreezeServer(request) => {
                 self.apply_set_server_state(request, MetaEntityState::Frozen)
