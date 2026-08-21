@@ -335,6 +335,8 @@ fn write_context_records(engine: &TemporalEngine) -> usize {
                     source_ref: String::new(),
                     related_node_hashes: Vec::new(),
                     compact_attrs: Vec::new(),
+                    // No vector on this fixture; empty is what a record without one holds.
+                    vector: Vec::new(),
                 },
                 first_write_only: true,
                 cold_storage: false,
@@ -363,6 +365,8 @@ fn write_context_records(engine: &TemporalEngine) -> usize {
                 level: 1,
                 text: "Native TemporalStore summary mapped to embedding evidence.".to_string(),
                 valid_from_ms: 2_020,
+                // No vector on this fixture; empty is what a record without one holds.
+                vector: Vec::new(),
             },
         },
     }));
@@ -422,6 +426,8 @@ fn append_context_records_after_restart(engine: &TemporalEngine) -> usize {
                     source_ref: String::new(),
                     related_node_hashes: Vec::new(),
                     compact_attrs: Vec::new(),
+                    // No vector on this fixture; empty is what a record without one holds.
+                    vector: Vec::new(),
                 },
                 first_write_only: true,
                 cold_storage: false,
@@ -449,6 +455,8 @@ fn append_context_records_after_restart(engine: &TemporalEngine) -> usize {
                 level: 1,
                 text: "Post restart monotonic summary append.".to_string(),
                 valid_from_ms: 3_300,
+                // No vector on this fixture; empty is what a record without one holds.
+                vector: Vec::new(),
             },
         },
     }));

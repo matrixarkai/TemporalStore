@@ -22,6 +22,8 @@ fn cold_event(event_id_hash: u64, event_time_ms: u64, text: &str) -> ContextEven
         source_ref: "backfill://raw".to_string(),
         related_node_hashes: Vec::new(),
         compact_attrs: Vec::new(),
+        // Raw ingestion carries no vector; empty is what a record without one holds.
+        vector: Vec::new(),
     }
 }
 

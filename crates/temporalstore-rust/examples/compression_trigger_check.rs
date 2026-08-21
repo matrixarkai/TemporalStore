@@ -50,6 +50,8 @@ fn write_event(engine: &TemporalEngine, node: u64, ts: u64) {
         source_ref: String::new(),
         related_node_hashes: Vec::new(),
         compact_attrs: Vec::new(),
+        // No vector on this fixture; empty is what a record without one holds.
+        vector: Vec::new(),
     };
     let r = engine
         .execute(ExecuteRequest {
