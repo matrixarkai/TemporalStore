@@ -98,5 +98,39 @@ class AttachmentResourcePolicyTest(unittest.TestCase):
                         % (attachment, len(DOC)))
 
 
+class ResourceEventTextBoundTest(unittest.TestCase):
+    """A resource must not store its whole document as event text as well as in its chunks."""
+
+    def test_resource_event_text_is_bounded(self):
+        rows = ingest(None)
+        events = [r for r in rows if r.get("record_type") == "context_event"
+                  and r.get("source_kind") == "resource"]
+        self.assertTrue(events, "no resource context_event was written")
+        for event in events:
+            self.assertLess(
+                len(str(event.get("text") or "")), len(DOC) // 4,
+                "resource event still carries the whole document (%d of %d chars)"
+                % (len(str(event.get("text") or "")), len(DOC)))
+
+    def test_the_document_itself_is_untouched(self):
+        """The bound is on the RECORD, never on the input -- chunks derive from the same
+        messages list, so clipping the input would truncate the document instead of
+        deduplicating its storage."""
+        rows = ingest(None)
+        joined = "".join(str(r.get("text") or "") for r in rows
+                         if r.get("record_type") == "resource_chunk")
+        for n in range(0, 60, 7):
+            self.assertIn("Section %d" % n, joined,
+                          "section %d vanished from the chunks -- the document was truncated" % n)
+
+    def test_message_ingest_text_is_not_bounded(self):
+        """Only resource/skill kinds are bounded; an ordinary message keeps its full text."""
+        from matrixark_mcp_core_resource_io import bound_resource_event_text
+        long_text = "x" * 50000
+        self.assertEqual(long_text, bound_resource_event_text("message", long_text, ""))
+        self.assertLess(len(bound_resource_event_text("resource", long_text, "file://a")),
+                        len(long_text))
+
+
 if __name__ == "__main__":
     unittest.main()

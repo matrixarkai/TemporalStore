@@ -516,6 +516,20 @@ class _LocalAdapterIngestMixin:
         )
         self._observe_model_latency("extraction", (time.perf_counter() - extraction_started_perf) * 1000.0)
         text = text_from_messages(envelope["messages"])
+        # A resource/skill document already lives in its chunk records and behind its raw URI, so
+        # carrying it a THIRD time as event text is pure duplication -- measured at 1.05x source
+        # on a 66.2 KB file. Bound the event text only.
+        #
+        # It must not be done by clipping envelope["messages"]: resource_text, and therefore every
+        # chunk, is derived from that same list, so clipping there would truncate the DOCUMENT
+        # instead of deduplicating its storage.
+        #
+        # This is the assignment the hot-path event actually reads. An identical assignment exists
+        # earlier for a different branch, and bounding only that one has no effect here -- this
+        # line overwrites it before the event record is built.
+        text = bound_resource_event_text(
+            envelope["kind"], text, str(envelope.get("metadata", {}).get("raw_uri") or "")
+        )
         event_id_hash = stable_hash(
             f"{envelope['kind']}:{text}:{envelope['scope']}:{envelope['ingestion_time_ms']}"
         )

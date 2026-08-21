@@ -33,7 +33,7 @@ try:  # resource-parser helpers (core imports these inside a try/except too)
 except ImportError:
     from matrixark_resource_parser import content_hash, normalize_parse_warnings
 
-__all__ = ['deployment_scope_from_args', 'resource_storage_mode_from_args', 'resource_chunk_materialization_enabled', 'ATTACHMENT_RESOURCE_POLICY', 'is_s3_uri', 'parse_s3_uri', 'is_matrixobject_uri', 'parse_matrixobject_uri', 'is_temporalstore_uri', 'parse_temporalstore_uri', '_cloud_resource_bucket', '_cloud_resource_prefix', '_s3_client', '_aws_cli_s3_cp', 'upload_file_to_s3', 'download_s3_to_file', '_resource_object_key', '_archive_directory_for_upload', 'resolve_raw_resource_for_ingest', 'infer_resource_suffix', 'rewrite_chunk_uris', 'cleanup_temp_paths', 'aggregate_parse_warnings_from_chunks']
+__all__ = ['deployment_scope_from_args', 'resource_storage_mode_from_args', 'resource_chunk_materialization_enabled', 'ATTACHMENT_RESOURCE_POLICY', 'bound_resource_event_text', 'RESOURCE_EVENT_TEXT_CHARS', 'is_s3_uri', 'parse_s3_uri', 'is_matrixobject_uri', 'parse_matrixobject_uri', 'is_temporalstore_uri', 'parse_temporalstore_uri', '_cloud_resource_bucket', '_cloud_resource_prefix', '_s3_client', '_aws_cli_s3_cp', 'upload_file_to_s3', 'download_s3_to_file', '_resource_object_key', '_archive_directory_for_upload', 'resolve_raw_resource_for_ingest', 'infer_resource_suffix', 'rewrite_chunk_uris', 'cleanup_temp_paths', 'aggregate_parse_warnings_from_chunks']
 
 
 def deployment_scope_from_args(args: Json, envelope: Json) -> str:
@@ -92,6 +92,36 @@ def resource_chunk_materialization_enabled(args: Json, envelope: Json) -> bool:
     ).strip().lower()
     return value != ATTACHMENT_RESOURCE_POLICY
 
+
+RESOURCE_EVENT_TEXT_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_EVENT_TEXT_CHARS", "4096"))
+
+
+def bound_resource_event_text(kind: str, text: str, raw_uri: str) -> str:
+    """Bound the context_event text for a resource/skill ingest; messages are left untouched.
+
+    A resource ingest stored its whole document three times: in the chunk records, in the
+    context_event, and inside the session_buffer_event envelope. Measured on a 66.2 KB file the
+    event alone was 1.05x source.
+
+    The event is not where a resource's content belongs -- chunks are the retrievable form and
+    the raw URI the durable one -- so the event keeps a leading excerpt plus a pointer to the
+    full content.
+
+    This must NOT be done by clipping envelope["messages"]: resource_text, and therefore every
+    chunk, is derived from that same list, so clipping there would truncate the DOCUMENT rather
+    than deduplicate its storage. The bound belongs on the record, not on the input.
+
+    Set MATRIXARK_RESOURCE_EVENT_TEXT_CHARS=0 to store the full text.
+    """
+    if kind not in {"resource", "skill"}:
+        return text
+    limit = RESOURCE_EVENT_TEXT_CHARS
+    if limit <= 0 or len(text) <= limit:
+        return text
+    pointer = raw_uri or "the stored resource"
+    return "{}\n\n[{} of {} chars; full content in the resource chunks and at {}]".format(
+        text[:limit], limit, len(text), pointer,
+    )
 
 def is_s3_uri(value: str) -> bool:
     return value.startswith("s3://")
