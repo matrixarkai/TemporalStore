@@ -406,6 +406,7 @@ impl SingleNodeMeta {
         };
         let mut report = checker.check(&shard_owners, &servers, now);
         let moves = checker.plan_moves(&mut report, &shard_owners, &live_servers);
+        self.metrics.record_divergence(&report);
         if !report.diverged.is_empty() {
             let mut state = self.inner.write().expect("meta lock poisoned");
             for divergence in &report.diverged {

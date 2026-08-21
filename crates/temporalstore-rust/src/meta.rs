@@ -28,6 +28,7 @@ mod placement_rebalance;
 mod raft_failover;
 mod shard_check;
 mod retention;
+mod subsystem_metrics;
 use self::partitioning::*;
 use self::topology_helpers::*;
 pub use self::auto_rebalance::{
@@ -46,6 +47,7 @@ pub use self::raft_failover::{compute_raft_failover_triggers, RaftFailoverTrigge
 pub use self::shard_check::{
     ShardCheckOptions, ShardCheckReport, ShardChecker, ShardDivergence,
 };
+pub use self::subsystem_metrics::{SubsystemMetrics, TIER_PROXY, TIER_SERVER};
 pub use self::retention::{
     plan_freeze_aging, plan_meta_retention, FreezeAgingOptions, FreezeAgingPlan,
     FreezeAgingReport, MetaRetentionOptions, MetaRetentionPlan, MetaRetentionReport,
@@ -934,6 +936,10 @@ pub struct SingleNodeMeta {
     /// because today's automatic recovery is load-bearing for deployments
     /// running with a zero freeze cooldown.
     forbid_self_clearing_conviction: bool,
+    /// Where the background subsystems record what each round did, so `/metrics`
+    /// can report it. Shared by clone, so every handle to this meta writes to
+    /// and reads from the same recorder.
+    metrics: SubsystemMetrics,
 }
 
 impl Default for SingleNodeMeta {
@@ -946,6 +952,7 @@ impl Default for SingleNodeMeta {
             boot_time_ms: now_ms(),
             mutation_log: None,
             forbid_self_clearing_conviction: false,
+            metrics: SubsystemMetrics::new(),
         }
     }
 }
@@ -961,6 +968,11 @@ impl SingleNodeMeta {
     /// True when a convicted resource cannot clear its own freeze.
     pub fn conviction_lock_enabled(&self) -> bool {
         self.forbid_self_clearing_conviction
+    }
+
+    /// The recorder the background subsystems write their round outcomes into.
+    pub fn subsystem_metrics(&self) -> &SubsystemMetrics {
+        &self.metrics
     }
 
     pub fn register(&self, request: RegisterShardRequest) -> RegisterShardResponse {

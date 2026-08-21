@@ -910,7 +910,8 @@ fn drive_reassignments(
                 }
             }
         }
-        let ack = meta.reassign_shard(plan.shard_id, &plan.to_server);
+        let ack =
+            meta.reassign_shard_with_reason(plan.shard_id, &plan.to_server, plan.reason.as_str());
         if ack.status.ok {
             info!(
                 shard_id = plan.shard_id,
@@ -1511,6 +1512,9 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
     let scheduler_snapshot = scheduler.snapshot();
     let scheduler_executions = scheduler.executions();
     let mut out = String::new();
+    // What the background subsystems did, so conviction, divergence, retention
+    // and freeze aging are observable without scraping logs.
+    out.push_str(&meta.subsystem_prometheus());
 
     out.push_str("# HELP temporalstore_meta_requests_total Metaserver request counters by kind.\n");
     out.push_str("# TYPE temporalstore_meta_requests_total counter\n");
@@ -2047,6 +2051,12 @@ mod tests {
         assert_eq!(code, 200);
         let metrics = String::from_utf8(body).unwrap();
         assert!(metrics.contains("# TYPE temporalstore_meta_requests_total counter"));
+        // The background subsystems report onto the same surface, so an
+        // operator sees conviction, divergence and retention without logs.
+        assert!(metrics.contains("# TYPE temporalstore_meta_convicted_total counter"));
+        assert!(metrics.contains("# TYPE temporalstore_meta_damage_severity gauge"));
+        assert!(metrics.contains("temporalstore_meta_shard_divergence_total 0"));
+        assert!(metrics.contains("temporalstore_meta_retention_blocked 0"));
         assert!(metrics.contains("temporalstore_meta_inventory{kind=\"namespace\"} 1"));
         assert!(metrics.contains("temporalstore_meta_inventory{kind=\"table\"} 1"));
         assert!(metrics

@@ -283,6 +283,7 @@ impl SingleNodeMeta {
     /// table.
     pub fn purge_expired_meta(&self, options: MetaRetentionOptions) -> MetaRetentionReport {
         let plan = self.plan_meta_retention_now(options);
+        self.metrics.record_retention(&plan);
         if plan.is_empty() {
             return MetaRetentionReport {
                 status: Status::ok(),
@@ -506,6 +507,7 @@ impl SingleNodeMeta {
     /// every exported snapshot - forever.
     pub fn age_frozen_meta(&self, options: FreezeAgingOptions) -> FreezeAgingReport {
         let plan = self.plan_freeze_aging_now(options);
+        self.metrics.record_freeze_aging(&plan);
         if plan.is_empty() {
             return FreezeAgingReport {
                 status: Status::ok(),

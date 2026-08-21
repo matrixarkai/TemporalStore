@@ -792,7 +792,7 @@ impl SingleNodeMeta {
             frozen_servers.push(endpoint.clone());
         }
 
-        AdaptiveConvictionReport {
+        let report = AdaptiveConvictionReport {
             status: Status::ok(),
             frozen_servers,
             frozen_proxies: Vec::new(),
@@ -802,7 +802,9 @@ impl SingleNodeMeta {
             held_by_orphan_guard: plan.held_by_orphan_guard,
             orphaned_shards: plan.orphaned_shards,
             detector_paused,
-        }
+        };
+        self.metrics.record_conviction(TIER_SERVER, &report);
+        report
     }
 
     /// Run one adaptive detection round over the proxies and freeze exactly the
@@ -857,7 +859,7 @@ impl SingleNodeMeta {
             frozen_proxies.push(endpoint.clone());
         }
 
-        AdaptiveConvictionReport {
+        let report = AdaptiveConvictionReport {
             status: Status::ok(),
             frozen_servers: Vec::new(),
             frozen_proxies,
@@ -867,7 +869,9 @@ impl SingleNodeMeta {
             held_by_orphan_guard: plan.held_by_orphan_guard,
             orphaned_shards: plan.orphaned_shards,
             detector_paused,
-        }
+        };
+        self.metrics.record_conviction(TIER_PROXY, &report);
+        report
     }
 
     /// Background loop that replaces [`Self::start_failure_detector_loop`] when
