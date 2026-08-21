@@ -255,12 +255,16 @@ fn context_models_match_keys_timeline_pages_and_filters() {
             min_importance: 0.6,
         },
     });
+    // Newest-first: the timeline scan is deliberately `.rev()`ed so retrieval reaches
+    // recent, serving-relevant context without walking cold history first. Both events
+    // share event_time_ms, so the tie breaks on event_id_hash -- 6 ("second") then
+    // 5 ("first").
     assert!(matches!(
         queried.response,
         CommandResponse::ContextEvents { ref object_key, ref events }
             if object_key == "ctx:event:11:42"
                 && events.iter().map(|event| event.text.as_str()).collect::<Vec<_>>()
-                    == vec!["first", "second"]
+                    == vec!["second", "first"]
     ));
 
     let index_ref = ContextIndexRef {

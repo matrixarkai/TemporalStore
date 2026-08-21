@@ -764,6 +764,9 @@ impl DataNodeRuntime {
         let handle = thread::spawn(move || {
             let mut round = 0u64;
             let mut current_backoff_ms = options.initial_backoff_ms;
+            // A cycle whose completion outlived the short wait below. Its report is collected
+            // on a later tick instead of being thrown away -- see the comment at the wait.
+            let mut uncollected_cycle_job: Option<u64> = None;
             loop {
                 let delay_ms =
                     storage_manager_runtime_delay_ms(&options, round, current_backoff_ms);
@@ -795,6 +798,23 @@ impl DataNodeRuntime {
                         .expect("storage manager runtime report lock poisoned");
                     report.paused = false;
                     report.rounds_attempted = report.rounds_attempted.saturating_add(1);
+                }
+                // Collect a cycle that finished after we stopped waiting for it. Without this
+                // the runtime report only ever reflected cycles that completed inside the very
+                // short budget below -- which are precisely the cycles that found nothing to
+                // do. Any cycle that actually dumped buckets or reclaimed WAL outlived the
+                // budget and had its report dropped, so the reported dirty-bucket count,
+                // selected buckets and reclaim floors sat at zero while the manager was busy.
+                if let Some(job_id) = uncollected_cycle_job {
+                    if let Some(cycle) =
+                        wait_for_storage_manager_cycle_completion(&runtime, job_id, 0)
+                    {
+                        let mut report = thread_report
+                            .lock()
+                            .expect("storage manager runtime report lock poisoned");
+                        apply_storage_manager_cycle_to_runtime_report(&mut report, cycle);
+                        uncollected_cycle_job = None;
+                    }
                 }
                 let should_submit = !runtime
                     .inner
@@ -834,6 +854,10 @@ impl DataNodeRuntime {
                         .timeout_ms
                         .max(50)
                         .min(delay_ms.saturating_mul(10).max(50));
+                    // The budget is deliberately tied to the loop interval, not to
+                    // `controller.timeout_ms`, so pause/stop stay responsive. That means a
+                    // working cycle routinely finishes AFTER we stop waiting -- remember it and
+                    // collect it at the top of a later tick rather than losing its report.
                     if let Some(cycle) = wait_for_storage_manager_cycle_completion(
                         &runtime,
                         submitted.job_id,
@@ -843,6 +867,8 @@ impl DataNodeRuntime {
                             .lock()
                             .expect("storage manager runtime report lock poisoned");
                         apply_storage_manager_cycle_to_runtime_report(&mut report, cycle);
+                    } else {
+                        uncollected_cycle_job = Some(submitted.job_id);
                     }
                 }
             }
