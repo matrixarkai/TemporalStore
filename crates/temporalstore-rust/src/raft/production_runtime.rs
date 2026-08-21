@@ -282,6 +282,11 @@ impl ProductionRaftRuntime {
                 }
             }
             _ => {
+                // The append never got a response, so release what it reserved before falling
+                // back to a snapshot.
+                let _ = self
+                    .cluster
+                    .record_append_entries_send_failure(target_id);
                 let snapshot = self.cluster.build_install_snapshot_request(target_id)?;
                 let response = transport.install_snapshot(snapshot)?;
                 if !response.success {
@@ -410,17 +415,57 @@ impl ProductionRaftRuntime {
                             if sent >= max_catchup_entries_per_heartbeat {
                                 break;
                             }
-                            let Ok(request) = cluster.build_append_entries_request(*target_id)
-                            else {
-                                continue;
+                            let request = match cluster.build_append_entries_request(*target_id)
+                            {
+                                Ok(request) => request,
+                                Err(err) => {
+                                    // Skipping here is how a peer silently stops being replicated
+                                    // to, so it must not be silent.
+                                    tracing::warn!(
+                                        kind = "data",
+                                        target_id = *target_id,
+                                        error = %err,
+                                        "raft: could not build append entries for peer"
+                                    );
+                                    continue;
+                                }
                             };
                             let entry_count = request.entries.len() as u64;
-                            if let Ok(response) = transport.append_entries(request) {
-                                let success = response.success;
-                                let _ =
-                                    cluster.record_append_entries_response(*target_id, &response);
-                                if success {
-                                    sent += entry_count.max(1);
+                            match transport.append_entries(request) {
+                                Ok(response) => {
+                                    let success = response.success;
+                                    if !success {
+                                        // A rejection is an Ok response, so this path was silent
+                                        // too: a peer can reject every heartbeat forever and the
+                                        // leader reports it only as "lagging".
+                                        tracing::warn!(
+                                            kind = "data",
+                                            target_id = *target_id,
+                                            reject_reason = ?response.reject_reason,
+                                            peer_match_index = response.match_index,
+                                            peer_term = response.term,
+                                            "raft: peer rejected append entries"
+                                        );
+                                    }
+                                    let _ = cluster
+                                        .record_append_entries_response(*target_id, &response);
+                                    if success {
+                                        sent += entry_count.max(1);
+                                    }
+                                }
+                                // No response at all. Give back what the request reserved --
+                                // otherwise a peer whose process is down accumulates one leaked
+                                // reservation per heartbeat and is never sent to again, including
+                                // after it comes back.
+                                Err(err) => {
+                                    tracing::warn!(
+                                        kind = "data",
+                                        target_id = *target_id,
+                                        error = %err,
+                                        "raft: append entries send to peer failed"
+                                    );
+                                    let _ =
+                                        cluster.record_append_entries_send_failure(*target_id);
                                 }
                             }
                         }

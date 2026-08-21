@@ -6,6 +6,7 @@ use std::fs;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command as ProcessCommand, Stdio};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -239,6 +240,7 @@ fn main() {
     for node in &nodes {
         wait_for_http(&node.addr);
     }
+    let _ = NODE_ADDRS.set(nodes.iter().map(|node| (node.node_id, node.addr.clone())).collect());
     initialize_liveness(&nodes);
 
     let writes = vec![propose(&nodes[0], "secondary-before-restart", "v1")];
@@ -1231,8 +1233,10 @@ fn elect_leader(node: &ProductionRaftNode, leader_id: RaftNodeId) {
     .expect("elect admin request failed");
     assert!(
         response.status.ok,
-        "elect admin request failed: {:?}",
-        response.status
+        "elect of node {leader_id} on node {} failed: {:?};{}",
+        node.node_id,
+        response.status,
+        cluster_wide_status()
     );
 }
 
@@ -1423,6 +1427,46 @@ fn bootstrap_external_snapshot(
     );
 }
 
+/// Every node's address, so a failing wait can ask each one about itself. A replica's own status
+/// describes its peers only as this process's shadows of them, which can be arbitrarily stale.
+static NODE_ADDRS: OnceLock<Vec<(RaftNodeId, String)>> = OnceLock::new();
+
+fn cluster_wide_status() -> String {
+    let Some(addrs) = NODE_ADDRS.get() else {
+        return "(node registry not initialised)".to_string();
+    };
+    addrs
+        .iter()
+        .map(|(node_id, addr)| {
+            let status: Result<RaftClusterStatus, _> =
+                get_json_with_options(addr, "/raft/status", request_options());
+            match status {
+                Ok(status) => {
+                    let peers = status
+                        .nodes
+                        .iter()
+                        .map(|node| {
+                            format!(
+                                "
+      [{}] role={:?} term={} commit={} last_log={} applied={} alive={} lag={}",
+                                node.node_id, node.role, node.current_term, node.commit_index,
+                                node.last_log_index, node.applied_index, node.alive, node.lag
+                            )
+                        })
+                        .collect::<String>();
+                    format!(
+                        "
+  node {node_id} says: leader={} term={} commit={}{peers}",
+                        status.leader_id, status.current_term, status.commit_index
+                    )
+                }
+                Err(err) => format!("
+  node {node_id} status unavailable: {err}"),
+            }
+        })
+        .collect::<String>()
+}
+
 fn wait_for_value(
     node: &ProductionRaftNode,
     node_id: RaftNodeId,
@@ -1435,11 +1479,12 @@ fn wait_for_value(
         if read.value.as_deref() == Some(expected) {
             return read;
         }
-        assert!(
-            Instant::now() < deadline,
-            "node {node_id} did not return {key}={expected}; last response: {:?}",
-            read
-        );
+        if Instant::now() >= deadline {
+            panic!(
+                "node {node_id} did not return {key}={expected}; last response: {read:?};{}",
+                cluster_wide_status()
+            );
+        }
         thread::sleep(Duration::from_millis(50));
     }
 }
