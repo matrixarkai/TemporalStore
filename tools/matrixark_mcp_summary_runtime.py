@@ -614,6 +614,46 @@ def async_summary_progress_records(
         for stage in (completed_followup_stages or ["summary"])
         if str(stage or "")
     ]
+    def progress_identity(task_hash: object, completed: list[str]) -> tuple:
+        """What makes one summary-progress row different from another.
+
+        Deliberately excludes the timestamps and ``summary_dirty_hash``: those change on every
+        refresh, nothing reads the dirty hash back off a task row, and including them would
+        make every row unique and defeat the point.
+        """
+        return (
+            str(task_hash),
+            tuple(sorted(set(completed))),
+            int(node_hash or 0),
+            tuple(sorted(set(generated_summary_types or []))),
+        )
+
+    # Tasks already recorded as summary_completed. Re-stamping a task with a state it is
+    # ALREADY recorded as having reached is the single largest source of rows in the store --
+    # a resident-memory census measured 193 rows for 25 tasks, 168 of them exactly this.
+    # Serving already collapses them (matrixark_pipeline_task_slim, Lever A) but the write
+    # still costs a round trip and permanent growth, and on a record-log backend that growth
+    # is what turns a busy store into one where a retrieve cannot finish. Skip the write when
+    # nothing about the task actually changed; a genuinely new state still lands.
+    already_recorded: set[tuple] = set()
+    for record in records:
+        if record.get("record_type") != "matrixark_async_pipeline_task":
+            continue
+        if str(record.get("status") or "") != "summary_completed":
+            continue
+        if not compatible_scope(candidate_access_scope(record), scope):
+            continue
+        existing_completed = [
+            str(stage)
+            for stage in (
+                record.get("completed_stages")
+                if isinstance(record.get("completed_stages"), list)
+                else []
+            )
+            if str(stage or "")
+        ]
+        already_recorded.add(progress_identity(record.get("task_hash"), existing_completed))
+
     progress_records: list[Json] = []
     for record in records:
         if record.get("record_type") != "matrixark_async_pipeline_task":
@@ -642,6 +682,14 @@ def async_summary_progress_records(
             for stage in (record.get("remaining_stages") if isinstance(record.get("remaining_stages"), list) else [])
             if str(stage or "") and str(stage) not in completed_stage_set
         ]
+        if (
+            progress_identity(
+                record.get("task_hash", stable_hash(f"async_pipeline:{event_id_hash}")),
+                completed,
+            )
+            in already_recorded
+        ):
+            continue  # already recorded in this state; the row would be a pure duplicate
         progress_records.append(
             {
                 **record,
