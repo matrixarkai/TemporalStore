@@ -1242,6 +1242,15 @@ class _LocalAdapterRetrieveMixin:
                         "sparse_score": sparse_score,
                         "embedding_type": record.get("embedding_type"),
                     }
+            elif record_type == "context_event" and record.get("vector"):
+                # Fold step 2, DUAL-READ: an owner record may carry its own vector. setdefault so
+                # a separate context_embedding record always wins when both exist -- with both
+                # present the two are identical by construction (the dual-write test asserts
+                # equality), so this changes nothing today. It is what lets step 3 drop the
+                # separate records without retrieval losing its vectors.
+                event_embedding_vectors.setdefault(record["event_id_hash"], record["vector"])
+            elif record_type == "context_entity" and record.get("vector"):
+                entity_embedding_vectors.setdefault(record["entity_hash"], record["vector"])
             elif record_type == "context_embedding" and record.get("embedding_type") == "event_text":
                 event_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
             elif record_type == "context_embedding" and record.get("embedding_type") in {"entity_state", "profile_entity_state"}:
