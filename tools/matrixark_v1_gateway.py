@@ -167,6 +167,8 @@ _DATA_ROUTES: dict[str, Tuple[str, str]] = {
     "/v1/memories": ("matrixark_get_all", "retrieve"),
     # mem0 users(): which users/agents/runs hold memories. A read, gated like get_all.
     "/v1/users": ("matrixark_list_users", "retrieve"),
+    # One resource/skill's stored text, paged. A read, gated like the other listings.
+    "/v1/resource/content": ("matrixark_get_resource_content", "retrieve"),
     # update = supersede (ingest an amended version + tombstone the old id): gates on context:ingest.
     "/v1/update": ("matrixark_update_memory", "ingest"),
     # get (GET /v1/memory/<id>) and history (GET /v1/memory/<id>/history) are handled by dedicated

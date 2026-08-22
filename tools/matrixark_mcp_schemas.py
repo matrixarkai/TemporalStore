@@ -1164,6 +1164,23 @@ TOOLS: list[Json] = [
         },
     },
     {
+        "name": "matrixark_get_resource_content",
+        "description": "Return one resource's or skill's stored text, in order and a page at a time (chunk_offset / chunk_limit / max_chars).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "resource_hash": {"type": "integer", "description": "The resource to read (alias: skill_hash)."},
+                "skill_hash": {"type": "integer", "description": "The skill to read (alias: resource_hash)."},
+                "chunk_offset": {"type": "integer", "description": "First chunk to return; use next_chunk_offset to page."},
+                "chunk_limit": {"type": "integer", "description": "Maximum chunks in this response."},
+                "max_chars": {"type": "integer", "description": "Maximum characters in this response."},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
         "name": "matrixark_list_users",
         "description": "List the users/agents/runs that hold memories (mem0 users). Excludes subjects whose memories were all forgotten or expired.",
         "inputSchema": {

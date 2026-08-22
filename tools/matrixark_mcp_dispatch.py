@@ -316,6 +316,15 @@ def dispatch_matrixark_tool(server: Any, name: str, args: Json, hook: Json | Non
         )
         response = {**result, "access": args.get("_matrixark_auth", {})}
         return server._finalize_write_response(name, args, identity, hook, response)
+    if name == "matrixark_get_resource_content":
+        result = server.adapter.get_resource_content(args)
+        server.access.append_audit(
+            "resource.get_content", identity, status="ok",
+            details={"resource_hash": result.get("resource_hash"),
+                     "returned_chunks": result.get("returned_chunks"),
+                     "has_more": result.get("has_more")},
+        )
+        return {**result, "access": args.get("_matrixark_auth", {})}
     if name == "matrixark_list_users":
         result = server.adapter.list_memory_subjects(args)
         server.access.append_audit("context.list_users", identity, status="ok", details={"count": result.get("count")})

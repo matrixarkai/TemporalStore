@@ -383,6 +383,7 @@ MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_reset": {"context:forget"},
     "matrixark_get_all": {"context:retrieve"},
     "matrixark_list_users": {"context:retrieve"},
+    "matrixark_get_resource_content": {"context:retrieve"},
     "matrixark_get_memory": {"context:retrieve"},
     "matrixark_get_memory_by_key": {"context:retrieve"},
     "matrixark_update_memory": {"context:ingest"},

@@ -974,6 +974,100 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                 break
         return {"results": results, "count": len(results)}
 
+    def _purge_scope_in_engine(self, scope: Json) -> Json:
+        """Ask the engine to physically remove every record matching `scope`.
+
+        Shared by forget (one subject) and reset (the whole tenant). The engine refuses an
+        under-specified scope -- it requires a non-zero tenant_hash or an explicit subject
+        dimension -- so an empty scope cannot be turned into "delete everything" by accident.
+        """
+        purger = getattr(self._client, "matrixark_forget_scope", None)
+        if not callable(purger):
+            return {"ok": False, "error": "engine does not expose matrixark_forget_scope"}
+        try:
+            purged = purger(
+                count_key=self._count_key,
+                record_hash_key=self._record_hash_key,
+                shard_size=self._shard_size,
+                scope=scope,
+            )
+        except Exception as exc:  # noqa: BLE001 - the tombstone stands; report the engine half.
+            return {"ok": False, "error": str(exc)}
+        self._drop_direct_record_cache()
+        return {
+            "ok": True,
+            "records_removed": purged.get("matrixark_forget_records_removed"),
+            "fields_deleted": purged.get("matrixark_forget_fields_deleted"),
+            "fields_rewritten": purged.get("matrixark_forget_fields_rewritten"),
+            "shards_scanned": purged.get("matrixark_forget_shards_scanned"),
+        }
+
+    def reset(self, args: Json, hook: Json | None = None) -> Json:
+        """Wipe the tenant in the ENGINE as well as in the serving view.
+
+        Same defect as forget, same cause: the inherited implementation writes a tombstone that
+        only the Python serving pipeline honours, so `get_all` returned 0 while `/v1/retrieve` --
+        assembled inside the engine -- went on serving the tenant's memories verbatim. Measured
+        before this: get_all=0 and the reset canary still retrievable.
+
+        Scoped to the caller's tenant, never wider. The engine's own guard would refuse an
+        under-specified scope anyway, but the tenant hash is resolved here rather than trusting
+        whatever the request carried.
+        """
+        result = super().reset(args, hook)
+        scope = dict(optional_object(args, "scope"))
+        tenant_hash, _ = self._resolve_subject_hashes(scope)
+        if not tenant_hash:
+            return result
+        # Tenant-wide on purpose: drop the user/session dimensions so this matches every record in
+        # the tenant, which is what reset means -- and keep the tenant hash, which is what stops it
+        # matching anything else.
+        engine_scope = {k: v for k, v in scope.items()
+                        if k not in ("user_id", "session_id", "agent_id", "user_hash",
+                                     "session_hash", "scope_key", "_explicit_scope_keys")}
+        engine_scope["tenant_hash"] = tenant_hash
+        result["engine_purge"] = self._purge_scope_in_engine(engine_scope)
+        return result
+
+    def forget(self, args: Json, hook: Json | None = None) -> Json:
+        """Forget the subject in the ENGINE as well as in the serving view.
+
+        The inherited implementation writes a durable tombstone, and every read that goes through
+        the Python serving pipeline honours it -- `get_all` returns 0 immediately. `/v1/retrieve`
+        does not go through that pipeline: on a native backend the engine assembles the context
+        pack itself, and the engine has no idea the tombstone exists. So a forgotten memory kept
+        coming back from retrieve, verbatim, while every check that asked `/v1/memories` reported
+        a clean wipe:
+
+            before forget:  get_all=2, retrieve contains the subject's secret = True
+            forget:         http 200, removed_count 54
+            after forget:   get_all=0, retrieve contains the secret = STILL True
+
+        Deleting data has to mean deleting it on every read path. The engine has had
+        `matrixark_forget_scope` all along -- it removes the subject's records, refuses an
+        under-specified scope that would match everything, commits one durable batch, and clears
+        its scan caches so a later retrieve cannot re-serve from cache -- and nothing called it.
+
+        The tombstone is still written first, and deliberately: it is the durable, auditable record
+        of the forget, it makes the serving view correct even if the engine call fails, and its
+        order-aware semantics are what let a subject be re-ingested afterwards. The engine purge is
+        what makes the deletion real.
+        """
+        result = super().forget(args, hook)
+        try:
+            from tools.matrixark_mcp_core_identity import identity_hashes
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_core_identity import identity_hashes
+        scope = dict(optional_object(args, "scope"))
+        # The engine matches records by scope, so it needs the SUBJECT's own hashes rather than
+        # whatever the caller's request happened to carry.
+        user_id = str(scope.get("user_id") or "")
+        if user_id:
+            scope.update(identity_hashes(str(scope.get("account_id") or ""),
+                                         str(scope.get("tenant_id") or ""), user_id=user_id))
+        result["engine_purge"] = self._purge_scope_in_engine(scope)
+        return result
+
     def append(self, record: Json) -> None:
         self.append_many([record])
 
@@ -2704,6 +2798,28 @@ class MatrixArkRustProxyClient:
 
     def scan_hash(self, key: str) -> Json:
         return self._call_json("scan_hash", key=key)
+
+    def matrixark_forget_scope(
+        self,
+        *,
+        count_key: str,
+        record_hash_key: str,
+        shard_size: int,
+        scope: Json,
+    ) -> Json:
+        """Physically remove a subject's records in the engine.
+
+        The engine refuses an under-specified scope, so this cannot be used to wipe a store by
+        accident; it rewrites each hash field to its survivors, commits one durable batch, and
+        clears the engine's scan/hgetall caches.
+        """
+        return self._call_json(
+            "matrixark_forget_scope",
+            count_key=count_key,
+            record_hash_key=record_hash_key,
+            shard_size=shard_size,
+            scope=scope,
+        )
 
     def matrixark_scan_candidates(
         self,
