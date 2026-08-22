@@ -835,6 +835,13 @@ impl LocalWriteAheadLogStore {
             if next_offset > end_offset || total + read as u64 > max_bytes {
                 break;
             }
+            // Refuse a corrupt record here, where it is being read. This used to happen only as a
+            // side effect of walking the whole file to find the log's end; that walk no longer
+            // reads everything, and a guarantee that depends on unrelated work is not a guarantee.
+            // A blank line carries nothing to verify and is passed through as before.
+            if !line.iter().all(|byte| byte.is_ascii_whitespace()) {
+                decode_wal_line(&line)?;
+            }
             records.push((offset, line));
             offset = next_offset;
             total += read as u64;
@@ -1549,6 +1556,16 @@ fn read_wal_base(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
     }
 }
 
+/// The sequence the log last reached, found by reading its END rather than all of it.
+///
+/// A restart needs this before it can append. Reading and decoding every record made the cost grow
+/// with the whole log -- about 83 ms per megabyte, forever -- when the answer is in the last
+/// record. This walks backward to the last complete one instead.
+///
+/// A trailing write with no newline is a torn tail: it is truncated away, exactly as before, and
+/// nothing at or below the last complete record is ever cut. A corrupt record in the MIDDLE is no
+/// longer reported here, since reaching it meant decoding everything; replay still refuses it, and
+/// replay is the path that would act on it.
 fn last_wal_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, WriteAheadLogError> {
     let path = write_ahead_log_path(root, shard_id);
     if !path.exists() {
@@ -1556,47 +1573,86 @@ fn last_wal_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, WriteAhea
     }
     let (_, header_len) = read_wal_base(&path)?;
     let file = OpenOptions::new().read(true).write(true).open(&path)?;
-    let mut reader = BufReader::new(file.try_clone()?);
-    reader.seek(SeekFrom::Start(header_len))?;
-    let mut last = 0;
-    // Offsets here are physical, and the tail-truncation below cuts the file at `good_offset`,
-    // so both start past the header rather than at zero -- truncating to 0 would discard it.
-    let mut offset = header_len;
-    let mut good_offset = header_len;
-    loop {
-        let mut line = Vec::new();
-        let read = reader.read_until(b'\n', &mut line)?;
-        if read == 0 {
-            break;
+    let len = file.metadata()?.len();
+    if len <= header_len {
+        return Ok(0);
+    }
+
+    // Pull in the tail, growing the window until it holds a whole record. Records are small and
+    // the first window almost always suffices; the loop is for the ones that are not.
+    let mut window = 64 * 1024u64;
+    let (line, good_offset) = loop {
+        let window_start = header_len.max(len.saturating_sub(window));
+        let mut reader = BufReader::new(file.try_clone()?);
+        reader.seek(SeekFrom::Start(window_start))?;
+        let mut data = vec![0u8; (len - window_start) as usize];
+        reader.read_exact(&mut data)?;
+
+        // Everything after the final newline was never finished being written.
+        let Some(last_newline) = data.iter().rposition(|byte| *byte == b'\n') else {
+            if window_start == header_len {
+                // Not one complete record in the file: the whole body is a torn write.
+                break (None, header_len);
+            }
+            window = window.saturating_mul(4);
+            continue;
+        };
+        let good_offset = window_start + last_newline as u64 + 1;
+
+        // Walk back over any blank lines to the last record that actually says something.
+        let mut line_end = last_newline;
+        loop {
+            let line_start = data[..line_end]
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map(|index| index + 1);
+            let (line_start, reached_the_front) = match line_start {
+                Some(index) => (index, false),
+                None => (0usize, true),
+            };
+            let candidate = &data[line_start..line_end];
+            if !candidate.iter().all(|byte| byte.is_ascii_whitespace()) {
+                break;
+            }
+            if line_start == 0 {
+                if reached_the_front && window_start > header_len {
+                    // The blank run may continue below this window.
+                    line_end = usize::MAX;
+                    break;
+                }
+                // Blank all the way back to the start: no record in this log.
+                return Ok(0);
+            }
+            line_end = line_start - 1;
         }
-        offset = offset.saturating_add(read as u64);
-        if !line.ends_with(b"\n") {
-            break;
-        }
-        if line.iter().all(|byte| byte.is_ascii_whitespace()) {
-            good_offset = offset;
+        if line_end == usize::MAX {
+            window = window.saturating_mul(4);
             continue;
         }
-        // A fully newline-terminated line that fails to decode is COMMITTED corruption, not a
-        // torn tail: WAL records are single-line JSON with no embedded newline, so a complete
-        // (\n-terminated) line is a complete write. `decode_wal_line` verifies the per-record
-        // length + SHA-256 digest envelope (crate::log_framing) and returns `Corruption` on a
-        // value-preserving bit-flip; a legacy unframed record still decodes as before. Surface
-        // it as an error instead of breaking -- treating interior corruption as end-of-log
-        // would set_len the file down to the last good record, silently dropping every durable
-        // record after the corrupt one and defeating the strict replay-continuity DataLoss
-        // guard (ReplayWal refuses the load on a digest failure / hole rather than trimming). A
-        // genuine torn tail lacks the trailing '\n' and is still handled by the break above.
-        let record = decode_wal_line(&line)?;
-        last = last.max(record.sequence);
-        good_offset = offset;
-    }
-    if good_offset < offset || good_offset < file.metadata()?.len() {
+
+        let line_start = data[..line_end]
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map(|index| index + 1);
+        match line_start {
+            Some(index) => break (Some(data[index..line_end].to_vec()), good_offset),
+            None if window_start == header_len => {
+                break (Some(data[..line_end].to_vec()), good_offset)
+            }
+            // The record starts before the window: widen and look again.
+            None => window = window.saturating_mul(4),
+        }
+    };
+
+    if good_offset < len {
         file.set_len(good_offset)?;
         file.sync_all()?;
         sync_parent_dir(&path)?;
     }
-    Ok(last)
+    let Some(line) = line else {
+        return Ok(0);
+    };
+    Ok(decode_wal_line(&line)?.sequence)
 }
 
 fn current_time_ms() -> u64 {
@@ -2951,5 +3007,173 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// How long it takes to find the end of the log, as the log grows.
+    ///
+    /// Learning the last sequence is what a restart needs before it can append. Today that reads
+    /// and decodes every record, so the cost tracks the size of the whole log rather than the size
+    /// of its tail -- and a log is not bounded by how much of it is interesting.
+    #[test]
+    fn finding_the_end_of_the_log_as_it_grows() {
+        for records in [1_000u64, 5_000, 20_000] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            for index in 0..records {
+                store
+                    .append_with_sync(
+                        1,
+                        Command::StringSet {
+                            key: format!("key-{index:08}"),
+                            value: vec![118u8; 128],
+                        },
+                        false,
+                    )
+                    .unwrap();
+            }
+            let bytes = std::fs::metadata(write_ahead_log_path(dir.path(), 1))
+                .unwrap()
+                .len();
+
+            let started = std::time::Instant::now();
+            let rounds = 5;
+            let mut last = 0;
+            for _ in 0..rounds {
+                last = last_wal_sequence_at(dir.path(), 1).unwrap();
+            }
+            let micros = started.elapsed().as_secs_f64() * 1e6 / rounds as f64;
+            assert_eq!(last, records, "it should find the real end");
+            println!(
+                "  {records:>6} records ({:>8} B): {micros:>9.0} us to find the end  ({:.2} us per 1k records)",
+                bytes,
+                micros / (records as f64 / 1000.0)
+            );
+        }
+    }
+
+    /// A record larger than the first tail window is still found.
+    ///
+    /// The search starts with a 64 KiB window and widens until it holds a whole record. Nothing
+    /// else in the suite writes a record big enough to need that, so this is the test for it.
+    #[test]
+    fn the_end_is_found_even_when_the_last_record_is_huge() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        store
+            .append_with_sync(
+                1,
+                Command::StringSet {
+                    key: "small".to_string(),
+                    value: b"v".to_vec(),
+                },
+                false,
+            )
+            .unwrap();
+        // Comfortably past the first window, and past the second as well once encoded.
+        store
+            .append_with_sync(
+                1,
+                Command::StringSet {
+                    key: "huge".to_string(),
+                    value: vec![118u8; 400 * 1024],
+                },
+                false,
+            )
+            .unwrap();
+        drop(store);
+
+        let reopened = LocalWriteAheadLogStore::new(dir.path());
+        let next = reopened
+            .append_with_sync(
+                1,
+                Command::StringSet {
+                    key: "after".to_string(),
+                    value: b"v".to_vec(),
+                },
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            next.sequence, 3,
+            "the sequence must continue after a record wider than the search window"
+        );
+    }
+
+    /// A trailing write that never finished is cut, and nothing above it is.
+    #[test]
+    fn a_torn_trailing_write_is_cut_back_to_the_last_whole_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        for index in 0..3 {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index}"),
+                        value: b"v".to_vec(),
+                    },
+                    false,
+                )
+                .unwrap();
+        }
+        drop(store);
+
+        // A write that stopped partway: bytes with no newline after them.
+        let path = write_ahead_log_path(dir.path(), 1);
+        let whole = std::fs::read(&path).unwrap();
+        let mut torn = whole.clone();
+        torn.extend_from_slice(b"#tsf2 99 deadbeef {\"s\":1,\"q\":4,\"c\"");
+        std::fs::write(&path, &torn).unwrap();
+
+        let reopened = LocalWriteAheadLogStore::new(dir.path());
+        let next = reopened
+            .append_with_sync(
+                1,
+                Command::StringSet {
+                    key: "after".to_string(),
+                    value: b"v".to_vec(),
+                },
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            next.sequence, 4,
+            "the torn write should be gone and the sequence continue from the last whole record"
+        );
+        let after = std::fs::read(&path).unwrap();
+        assert!(
+            after.starts_with(&whole),
+            "every record that was complete must still be there, byte for byte"
+        );
+    }
+
+    /// Blank lines at the end do not hide the last record.
+    #[test]
+    fn blank_lines_after_the_last_record_are_stepped_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        for index in 0..2 {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index}"),
+                        value: b"v".to_vec(),
+                    },
+                    false,
+                )
+                .unwrap();
+        }
+        drop(store);
+        let path = write_ahead_log_path(dir.path(), 1);
+        let mut padded = std::fs::read(&path).unwrap();
+        padded.extend_from_slice(b"\n\n   \n");
+        std::fs::write(&path, padded).unwrap();
+
+        assert_eq!(
+            last_wal_sequence_at(dir.path(), 1).unwrap(),
+            2,
+            "blank trailing lines should be stepped over, not read as the end of the log"
+        );
     }
 }
