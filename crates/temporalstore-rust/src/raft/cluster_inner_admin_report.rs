@@ -63,6 +63,7 @@ impl RaftClusterInner {
                     append_requests: pipeline.append_requests,
                     append_accepted: pipeline.append_accepted,
                     append_rejected: pipeline.append_rejected,
+                    append_send_failures: pipeline.append_send_failures,
                     inflight_entries: pipeline.inflight_entries,
                     inflight_bytes: pipeline.inflight_bytes,
                     append_queue_depth: pipeline.append_queue_depth,

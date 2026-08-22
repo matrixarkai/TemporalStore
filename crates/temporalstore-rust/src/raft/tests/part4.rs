@@ -2988,3 +2988,158 @@ fn r8_snapshot_install_with_matching_boundary_retains_tail() {
         "a term-matching boundary must retain the tail past the snapshot"
     );
 }
+
+/// A peer whose sends keep failing must not be locked out of replication forever.
+///
+/// Building an AppendEntries request reserves inflight capacity against the target, and a response
+/// -- success or rejection -- releases it. A send that never reaches the peer produces no response.
+/// Without releasing that reservation the leader leaks one per attempt, and once the peer is over
+/// its inflight limit every future request for it is refused: it cannot catch up, because nothing
+/// is sent to it, and so it cannot drain the reservation, because that only drains on catching up.
+///
+/// That is a follower whose process dies while the leader keeps heartbeating at it: when it comes
+/// back the leader never speaks to it again. It then serves reads from a stale log while reporting
+/// no lag, because the only leader it can compare itself against is its own stale shadow.
+#[test]
+fn a_peer_whose_sends_fail_is_not_locked_out_of_replication() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+
+    // Node 3's process is down, so it falls behind what the majority commits.
+    cluster.set_alive(3, false).unwrap();
+    for index in 0..4 {
+        cluster
+            .propose(Command::StringSet {
+                key: format!("committed-{index}"),
+                value: b"v".to_vec(),
+            })
+            .unwrap();
+    }
+
+    // The leader heartbeats at the dead process. Every send fails, exactly as the timer loop sees
+    // it: a request is built, the send returns an error, and no response is ever recorded.
+    let limit = RaftConfig::default().max_inflights_replicate.max(1);
+    for _ in 0..(limit * 4) {
+        if cluster.build_append_entries_request(3).is_ok() {
+            cluster.record_append_entries_send_failure(3).unwrap();
+        }
+    }
+
+    // Node 3 is back. The leader must still be willing to send to it.
+    let outcome = cluster.build_append_entries_request(3);
+    assert!(
+        outcome.is_ok(),
+        "a peer must not be permanently excluded from replication by failed sends; got {outcome:?}"
+    );
+    let request = outcome.unwrap();
+    assert!(
+        !request.entries.is_empty(),
+        "the request should carry the entries the peer is missing, got {request:?}"
+    );
+}
+
+/// A failed send leaves the reservation exactly as a response would have: released.
+///
+/// The counterpart is the accumulation the backpressure limit depends on, which is unchanged --
+/// consecutive builds with no response and no failure still reserve, and still eventually refuse.
+#[test]
+fn a_failed_send_releases_its_reservation() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+    cluster.set_alive(3, false).unwrap();
+    for index in 0..4 {
+        cluster
+            .propose(Command::StringSet {
+                key: format!("committed-{index}"),
+                value: b"v".to_vec(),
+            })
+            .unwrap();
+    }
+
+    // Reserve right up to the limit, the way repeated un-answered sends do.
+    let limit = RaftConfig::default().max_inflights_replicate.max(1);
+    let mut refused = false;
+    for _ in 0..(limit * 4) {
+        if cluster.build_append_entries_request(3).is_err() {
+            refused = true;
+            break;
+        }
+    }
+    assert!(
+        refused,
+        "un-answered builds should accumulate into backpressure -- that guard is deliberate"
+    );
+
+    // Reporting the send failure releases it, and the very next build succeeds.
+    cluster.record_append_entries_send_failure(3).unwrap();
+    cluster
+        .build_append_entries_request(3)
+        .expect("a released reservation should let the next request through");
+}
+
+/// A rejected AppendEntries must make the next attempt ask about an EARLIER entry.
+///
+/// That retreat is the only way two diverged logs ever agree again. The leader lowers `next_index`
+/// on a rejection, but the request builder used to derive `prev_log_index` from this process's
+/// shadow of the peer, which a rejection does not move -- so every retry asked about the same
+/// index and was rejected again. A follower whose log disagreed with the leader could never be
+/// repaired: it rejected every heartbeat forever while the leader reported it as alive and merely
+/// lagging, and it went on serving reads from its stale log.
+#[test]
+fn a_rejected_append_retreats_to_an_earlier_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+
+    // The peer keeps up for a while, so the leader has a real position for it...
+    for index in 0..3 {
+        cluster
+            .propose(Command::StringSet {
+                key: format!("early-{index}"),
+                value: b"v".to_vec(),
+            })
+            .unwrap();
+    }
+    // ...and then falls behind.
+    cluster.set_alive(3, false).unwrap();
+    for index in 0..3 {
+        cluster
+            .propose(Command::StringSet {
+                key: format!("later-{index}"),
+                value: b"v".to_vec(),
+            })
+            .unwrap();
+    }
+
+    let first = cluster.build_append_entries_request(3).unwrap();
+    assert!(
+        first.prev_log_index > 1,
+        "the peer needs somewhere to retreat to for this to mean anything, got {}",
+        first.prev_log_index
+    );
+
+    // The peer says its log does not match at that point.
+    cluster
+        .record_append_entries_response(
+            3,
+            &AppendEntriesResponse {
+                term: first.term,
+                success: false,
+                match_index: first.prev_log_index,
+                reject_reason: Some("log_mismatch".to_string()),
+            },
+        )
+        .unwrap();
+
+    let second = cluster.build_append_entries_request(3).unwrap();
+    assert!(
+        second.prev_log_index < first.prev_log_index,
+        "a rejection must lower the point the next request asks about, but it stayed at {} --          the retry is identical, so the peer can never converge",
+        second.prev_log_index
+    );
+}

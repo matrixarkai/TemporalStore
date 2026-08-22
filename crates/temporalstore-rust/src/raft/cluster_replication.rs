@@ -153,7 +153,13 @@ impl RaftCluster {
                 });
             }
         }
-        let available_entries = entry_limit.saturating_sub(current_inflight_entries);
+        // Never build a batch larger than a receiver will accept in one request: a follower
+        // refuses anything over its apply limit, so a bigger batch is not throughput, it is a
+        // request that can only be rejected.
+        let apply_limit = inner.config.max_inflights_apply_task.max(1);
+        let available_entries = entry_limit
+            .saturating_sub(current_inflight_entries)
+            .min(apply_limit);
         let available_bytes = byte_limit.saturating_sub(current_inflight_bytes);
         let leader = inner
             .nodes
@@ -168,8 +174,18 @@ impl RaftCluster {
             .get(&target_id)
             .ok_or(RaftError::NodeNotFound(target_id))?;
         let enable_reorder_queue = inner.config.enable_reorder_queue;
-        let target_last_index = node_last_log_or_snapshot_index(target);
-        let prev_log_index = target_last_index.min(node_last_log_or_snapshot_index(leader));
+        let leader_last_index = node_last_log_or_snapshot_index(leader);
+        // Where to resume from. `next_index` is the peer's own answer -- lowered by every
+        // rejection, set from the peer's match index on success -- so it is what makes a mismatch
+        // converge. Falling back to the local shadow of the peer is only for a peer that has not
+        // answered yet, because the shadow does not move when a peer rejects, and asking about the
+        // same index forever is exactly how a diverged follower stays stuck.
+        let target_next_index = target.pipeline_state.next_index;
+        let prev_log_index = if target_next_index > 0 {
+            target_next_index.saturating_sub(1).min(leader_last_index)
+        } else {
+            node_last_log_or_snapshot_index(target).min(leader_last_index)
+        };
         let prev_log_term =
             node_term_at_log_or_snapshot_index(leader, prev_log_index).unwrap_or_default();
         let mut entries = Vec::new();
@@ -264,9 +280,57 @@ impl RaftCluster {
         } else {
             target.pipeline_state.append_rejected =
                 target.pipeline_state.append_rejected.saturating_add(1);
-            target.pipeline_state.next_index =
-                target.pipeline_state.next_index.saturating_sub(1).max(1);
+            // Retreat only when the peer is telling us the logs disagree. A peer that refused
+            // because the request was too big to apply at once has the prefix we sent; going
+            // further back would only make the next request bigger and refused again.
+            if Self::rejection_means_logs_disagree(response.reject_reason.as_deref()) {
+                target.pipeline_state.next_index =
+                    target.pipeline_state.next_index.saturating_sub(1).max(1);
+            }
         }
+        inner.persist_configured_wal()
+    }
+
+    /// Whether a rejection means the two logs disagree about a prefix, which is the only thing
+    /// retreating to an earlier entry can repair.
+    ///
+    /// The others are refusals of THIS request, not of the position: too many entries to apply at
+    /// once, too many bytes, a stale term, the wrong shard. Retreating on those sends more next
+    /// time, so it turns a transient refusal into a permanent one. An unrecognised reason retreats,
+    /// which is the conservative reading and what the code did for every reason before.
+    fn rejection_means_logs_disagree(reject_reason: Option<&str>) -> bool {
+        !matches!(
+            reject_reason,
+            Some("apply_inflight_backpressure")
+                | Some("apply_batch_backpressure")
+                | Some("stale_term")
+                | Some("shard_mismatch")
+        )
+    }
+
+    /// Release what a request reserved when the send failed outright.
+    ///
+    /// A response -- success or rejection -- clears the reservation. A send that never reaches the
+    /// peer produces no response, so without this the reservation is held forever, and once enough
+    /// have leaked the peer is refused by its own backpressure limit on every future attempt. It
+    /// cannot catch up (nothing is sent to it) and so cannot drain the reservation (which only
+    /// drains on catching up), which makes the exclusion permanent.
+    pub fn record_append_entries_send_failure(
+        &self,
+        target_id: RaftNodeId,
+    ) -> Result<(), RaftError> {
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        let target = inner
+            .nodes
+            .get_mut(&target_id)
+            .ok_or(RaftError::NodeNotFound(target_id))?;
+        target.pipeline_state.inflight_entries = 0;
+        target.pipeline_state.inflight_bytes = 0;
+        target.pipeline_state.append_queue_depth = 0;
+        target.pipeline_state.append_send_failures = target
+            .pipeline_state
+            .append_send_failures
+            .saturating_add(1);
         inner.persist_configured_wal()
     }
 

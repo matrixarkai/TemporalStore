@@ -656,6 +656,10 @@ pub struct MatrixRaftPeerPipelineState {
     pub reorder_dropped_packages: u64,
     #[serde(default)]
     pub stale_term_rejections: u64,
+    /// Sends to this peer that failed outright, producing no response at all. Each one released a
+    /// reservation that would otherwise have been held forever.
+    #[serde(default)]
+    pub append_send_failures: u64,
     pub snapshot_sending: bool,
     pub snapshot_installing: bool,
     pub snapshot_installed_index: u64,
@@ -1106,6 +1110,10 @@ pub struct RaftPeerPipelineRuntimeState {
     pub reorder_dropped_packages: u64,
     #[serde(default)]
     pub stale_term_rejections: u64,
+    /// Sends to this peer that failed outright, producing no response. Each released a reservation
+    /// that would otherwise have been held forever.
+    #[serde(default)]
+    pub append_send_failures: u64,
     pub snapshot_sending: bool,
     pub snapshot_installing: bool,
     pub snapshot_installed_index: u64,
@@ -4340,7 +4348,10 @@ impl RaftCluster {
                     let _ = self.record_append_entries_response(target_id, &response);
                     failed_targets.push(target_id);
                 }
-                Err(_) => failed_targets.push(target_id),
+                Err(_) => {
+                    let _ = self.record_append_entries_send_failure(target_id);
+                    failed_targets.push(target_id);
+                }
             }
         }
         while let Ok((target_id, result)) = rx.try_recv() {
@@ -4358,6 +4369,7 @@ impl RaftCluster {
                     }
                 }
                 Err(_) => {
+                    let _ = self.record_append_entries_send_failure(target_id);
                     if !failed_targets.contains(&target_id) {
                         failed_targets.push(target_id);
                     }
