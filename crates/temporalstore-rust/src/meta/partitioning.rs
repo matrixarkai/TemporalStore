@@ -100,6 +100,26 @@ pub(super) fn build_shards(state: &MetaState, table: &TableMetaInfo) -> Vec<Tabl
         let mut used_locations = BTreeSet::new();
         let mut used_hosts = BTreeSet::new();
         let mut placed_locations: Vec<Location> = Vec::new();
+        // A shard that is not serving gets no placement at all. Skipping only
+        // its recorded owner is not enough: the candidate scan below would pick
+        // a primary for it anyway, and it would stay routable.
+        let serving = state
+            .shards
+            .get(&shard_id)
+            .map(|location| location.state == MetaEntityState::Normal)
+            .unwrap_or(true);
+        if !serving {
+            shards.push(TableShard {
+                shard_id,
+                start_bucket,
+                end_bucket,
+                primary: None,
+                replicas: Vec::new(),
+                primary_endpoint: None,
+                replica_endpoints: Vec::new(),
+            });
+            continue;
+        }
         if let Some(location) = state.shards.get(&shard_id) {
             if let Some(server) = state.servers.get(&location.server_addr) {
                 placed_locations.push(Location::parse(&server.location));

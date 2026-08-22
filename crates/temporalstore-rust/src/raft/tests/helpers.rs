@@ -284,7 +284,7 @@ pub(super) fn topology_for_shard(
             table_id: 1,
             namespace: "ns".to_string(),
             table_name: "table".to_string(),
-            state: MetaEntityState::Normal,
+            state: crate::meta::MetaEntityState::Normal,
             topology_version: 1,
             first_shard_id: shard_id,
             shard_count: 1,

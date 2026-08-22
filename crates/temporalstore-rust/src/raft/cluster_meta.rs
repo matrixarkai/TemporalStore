@@ -204,6 +204,30 @@ impl MetaRaftCluster {
         }
     }
 
+    pub fn freeze_shard(&self, request: crate::meta::ShardStateRequest) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::SetShardState(
+                request,
+                MetaEntityState::Frozen,
+            )),
+        }
+    }
+
+    pub fn unfreeze_shard(&self, request: crate::meta::ShardStateRequest) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::SetShardState(
+                request,
+                MetaEntityState::Normal,
+            )),
+        }
+    }
+
+    pub fn drop_shard(&self, request: crate::meta::ShardStateRequest) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::DropShard(request)),
+        }
+    }
+
     pub fn freeze_server(&self, request: StateChangeRequest) -> AckResponse {
         AckResponse {
             status: self.mutation_status(MetaMutation::FreezeServer(request)),
