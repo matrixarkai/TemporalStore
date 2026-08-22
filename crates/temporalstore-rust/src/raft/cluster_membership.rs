@@ -340,7 +340,8 @@ impl RaftCluster {
             .learner_catchup_count
             .saturating_add(1);
         let config = inner.config.clone();
-        refresh_all_pipeline_states(&mut inner.nodes, leader_id, &config);
+        let local_node_id_for_refresh = inner.local_node_id;
+        refresh_all_pipeline_states(&mut inner.nodes, leader_id, local_node_id_for_refresh, &config);
         inner.persist_configured_wal()?;
         Ok(())
     }

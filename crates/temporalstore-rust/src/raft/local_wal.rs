@@ -36,6 +36,8 @@ impl LocalRaftWal {
             sequence: recovery.valid_records as u64 + 1,
             checksum: raft_wal_checksum(record)?,
             record: record.clone(),
+            // The single-file (non-segmented) path always writes full records.
+            delta: None,
         };
         let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
         serde_json::to_writer(&mut file, &envelope).map_err(io::Error::other)?;
@@ -103,14 +105,77 @@ impl LocalRaftWal {
             .expect("cursor seeded above");
 
         let sequence = cursor.next_sequence;
-        let envelope = RaftWalEnvelope {
-            sequence,
-            checksum: raft_wal_checksum(record)?,
-            record: record.clone(),
+
+        // The record Raft hands us always carries the node's WHOLE log. Writing that on
+        // every append makes each append cost O(log length) and the WAL O(n^2) overall,
+        // which shows up as write latency that climbs with the log. Write the entries
+        // that are actually new instead, and re-base with a full record only when a
+        // delta could not be folded back (start of a segment, or the log moved under us).
+        let delta_enabled = raft_wal_delta_entries_enabled();
+        let log_first_index = record
+            .entries
+            .first()
+            .map(|entry| entry.index)
+            .unwrap_or_default();
+        let log_last_index = record
+            .entries
+            .last()
+            .map(|entry| entry.index)
+            .unwrap_or_default();
+        let log_last_term = record
+            .entries
+            .last()
+            .map(|entry| entry.term)
+            .unwrap_or_default();
+        // A delta is only sound while the log still contains the exact entry we last
+        // wrote, at the same term. A conflict overwrite (raft truncating a divergent
+        // suffix) or a snapshot compaction (dropping a prefix) breaks that.
+        let delta_safe = delta_enabled
+            && cursor.has_base
+            && cursor.persisted_last_index > 0
+            && log_last_index >= cursor.persisted_last_index
+            && log_first_index > 0
+            && log_first_index <= cursor.persisted_last_index
+            && record.entries.iter().any(|entry| {
+                entry.index == cursor.persisted_last_index && entry.term == cursor.persisted_last_term
+            });
+
+        let encode = |as_delta: bool| -> io::Result<Vec<u8>> {
+            let envelope = if as_delta {
+                let from_index = cursor.persisted_last_index;
+                let mut delta_record = record.clone();
+                delta_record.entries.retain(|entry| entry.index > from_index);
+                // Telemetry counters are not durability-relevant (the fingerprint zeroes
+                // them), and they were more than half the bytes of every record. Recovery
+                // keeps whatever the base record carried.
+                delta_record.pipeline_state = RaftPeerPipelineRuntimeState::default();
+                delta_record.read_safety_state = RaftReadSafetyRuntimeState::default();
+                RaftWalEnvelope {
+                    sequence,
+                    checksum: raft_wal_checksum(&delta_record)?,
+                    record: delta_record,
+                    delta: Some(RaftWalEntryDelta {
+                        from_index,
+                        log_first_index,
+                        log_last_index,
+                    }),
+                }
+            } else {
+                RaftWalEnvelope {
+                    sequence,
+                    checksum: raft_wal_checksum(record)?,
+                    record: record.clone(),
+                    delta: None,
+                }
+            };
+            let mut buf = Vec::new();
+            serde_json::to_writer(&mut buf, &envelope).map_err(io::Error::other)?;
+            buf.push(b'\n');
+            Ok(buf)
         };
-        let mut encoded = Vec::new();
-        serde_json::to_writer(&mut encoded, &envelope).map_err(io::Error::other)?;
-        encoded.push(b'\n');
+
+        let mut wrote_base = !delta_safe;
+        let mut encoded = encode(delta_safe)?;
 
         let mut active_segment_id = cursor
             .segments
@@ -122,9 +187,23 @@ impl LocalRaftWal {
             .last()
             .map(|segment| segment.bytes)
             .unwrap_or_default();
-        let rotate = active_len > 0 && active_len + encoded.len() as u64 > max_segment_bytes;
+        // Every segment opens with a full base record, so pruning whole segments can
+        // never orphan a delta. Rotation still honours `max_segment_bytes`; it is only
+        // clamped up to one base record so a segment can always hold the record that
+        // opens it.
+        let rotate_threshold = if delta_enabled {
+            max_segment_bytes.max(cursor.base_bytes)
+        } else {
+            max_segment_bytes
+        };
+        let rotate = active_len > 0 && active_len + encoded.len() as u64 > rotate_threshold;
         if rotate {
             active_segment_id += 1;
+            if !wrote_base {
+                // Opening a new segment: it must start self-sufficient.
+                encoded = encode(false)?;
+                wrote_base = true;
+            }
         }
         let active_path = self.node_segment_path(shard_id, node_id, active_segment_id);
 
@@ -173,6 +252,12 @@ impl LocalRaftWal {
         }
         // One more record is now durable on disk.
         cursor.next_sequence = cursor.next_sequence.saturating_add(1);
+        if wrote_base {
+            cursor.base_bytes = encoded.len() as u64;
+            cursor.has_base = true;
+        }
+        cursor.persisted_last_index = log_last_index;
+        cursor.persisted_last_term = log_last_term;
 
         // Prune the oldest segments, keeping at least `min_keep_segments`. Removing a
         // segment drops its records from the retained window, so the next sequence
@@ -222,6 +307,13 @@ impl LocalRaftWal {
             released_segment_count: runtime_state.released_segment_count,
             last_fsync_elapsed_ms: runtime_state.last_fsync_elapsed_ms,
             slow_fsync_backpressure_observed: runtime_state.slow_fsync_backpressure_observed,
+            // A freshly seeded cursor has written nothing in this process, so the first
+            // append re-bases. That keeps recovery independent of whatever the previous
+            // process had in memory.
+            base_bytes: 0,
+            persisted_last_index: 0,
+            persisted_last_term: 0,
+            has_base: false,
         })
     }
 
@@ -315,7 +407,38 @@ impl LocalRaftWal {
                     break;
                 }
                 valid_records += 1;
-                last_record = Some(envelope.record);
+                last_record = match envelope.delta {
+                    // A base record replaces everything before it outright.
+                    None => Some(envelope.record),
+                    Some(delta) => {
+                        // Fold the appended entries onto the running record. Entries above
+                        // `from_index` were superseded (conflict overwrite), and anything
+                        // below `log_first_index` was compacted away.
+                        let mut merged = envelope.record;
+                        let appended = std::mem::take(&mut merged.entries);
+                        let base = last_record;
+                        // An incremental record omits the volatile telemetry blocks; carry
+                        // the base's forward rather than resetting them to zero.
+                        if let Some(base) = base.as_ref() {
+                            if merged.pipeline_state == RaftPeerPipelineRuntimeState::default() {
+                                merged.pipeline_state = base.pipeline_state.clone();
+                            }
+                            if merged.read_safety_state == RaftReadSafetyRuntimeState::default() {
+                                merged.read_safety_state = base.read_safety_state.clone();
+                            }
+                        }
+                        let mut entries = base
+                            .map(|base| base.entries)
+                            .unwrap_or_default();
+                        entries.retain(|entry| entry.index <= delta.from_index);
+                        entries.extend(appended);
+                        if delta.log_first_index > 0 {
+                            entries.retain(|entry| entry.index >= delta.log_first_index);
+                        }
+                        merged.entries = entries;
+                        Some(merged)
+                    }
+                };
                 valid_until = offset + line_len;
                 offset += line_len;
             }
