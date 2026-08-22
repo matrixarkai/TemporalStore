@@ -1155,6 +1155,18 @@ fn propose(node: &ProductionRaftNode, key: &str, value: &str) -> WriteSummary {
     }
 }
 
+/// Conditions that clear once the group settles, rather than a failed operation.
+///
+/// Leadership is decided by real elections now, so "no leader right now" is one of them: an
+/// election is in flight, or a leader that briefly lost contact with a majority stood down and
+/// another is about to be chosen.
+fn is_transient_admin_error(status: &Status) -> bool {
+    status.code == "raft_error"
+        && (status.message.contains("leader is not available")
+            || status.message.contains("not leader")
+            || status.message.contains("not enough live replicas"))
+}
+
 fn is_transient_proposal_error(status: &Status) -> bool {
     status.code == "raft_error"
         && (status.message.contains("not enough live replicas")
@@ -1208,30 +1220,54 @@ fn block_peer(node: &ProductionRaftNode, peer_id: RaftNodeId, blocked: bool) {
     );
 }
 
-/// Make `leader_id` the leader and wait for the rest of the cluster to see it.
+/// Settle on a leader the whole group agrees about, preferring `preferred` when it can lead.
 ///
-/// The election runs on the candidate's own process, which is the only one holding the candidate's
-/// real log; the other nodes are not asked to simulate it against their stale shadows of the
-/// candidate, they observe the result over AppendEntries as they would in production.
-fn establish_leader(nodes: &[ProductionRaftNode], leader_id: RaftNodeId) {
-    elect_leader(node_by_id(nodes, leader_id), leader_id);
-    for node in nodes.iter().filter(|node| node.node_id != leader_id) {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            let observed: Result<RaftClusterStatus, _> =
-                get_json_with_options(&node.addr, "/raft/status", request_options());
-            if matches!(observed, Ok(status) if status.leader_id == leader_id) {
-                break;
+/// Leadership is decided by real elections, so asking a node to lead is a nudge, not an
+/// instruction: the group may already be choosing someone else, and a leader that loses contact
+/// with a majority stands down by itself. Insisting on a particular node would be asserting
+/// something the system does not promise. Returns whichever node the group settled on.
+fn establish_leader(nodes: &[ProductionRaftNode], preferred: RaftNodeId) -> RaftNodeId {
+    // Best effort: the election that decides this runs between the processes.
+    let _ = try_elect_leader(node_by_id(nodes, preferred), preferred);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let observed: Vec<Option<RaftNodeId>> = nodes
+            .iter()
+            .map(|node| {
+                get_json_with_options::<RaftClusterStatus>(
+                    &node.addr,
+                    "/raft/status",
+                    request_options(),
+                )
+                .ok()
+                .filter(|status| status.leader_id != 0)
+                .map(|status| status.leader_id)
+            })
+            .collect();
+        if let Some(Some(first)) = observed.first().copied() {
+            if observed.iter().all(|seen| *seen == Some(first)) {
+                return first;
             }
-            assert!(
-                Instant::now() < deadline,
-                "node {} never observed node {leader_id} as leader;{}",
-                node.node_id,
-                cluster_wide_status()
-            );
-            thread::sleep(Duration::from_millis(50));
         }
+        assert!(
+            Instant::now() < deadline,
+            "the group never agreed on a leader (saw {observed:?});{}",
+            cluster_wide_status()
+        );
+        thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Ask a node to lead, reporting whether it could rather than asserting that it did.
+fn try_elect_leader(node: &ProductionRaftNode, leader_id: RaftNodeId) -> bool {
+    post_json_with_options::<_, AdminLivenessResponse>(
+        &node.addr,
+        "/raft/admin/elect",
+        &AdminElectRequest { node_id: leader_id },
+        request_options(),
+    )
+    .map(|response| response.status.ok)
+    .unwrap_or(false)
 }
 
 fn elect_leader(node: &ProductionRaftNode, leader_id: RaftNodeId) {
@@ -1297,15 +1333,29 @@ fn apply_membership_to_nodes(
     nodes
         .iter()
         .map(|node| {
-            let response: RaftMembershipApplyResponse = post_json_with_options(
-                &node.addr,
-                "/raft/membership/apply",
-                &RaftMembershipApplyRequest {
-                    voters: voters.to_vec(),
-                },
-                request_options(),
-            )
-            .expect("membership apply request failed");
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let response: RaftMembershipApplyResponse = loop {
+                let response: RaftMembershipApplyResponse = post_json_with_options(
+                    &node.addr,
+                    "/raft/membership/apply",
+                    &RaftMembershipApplyRequest {
+                        voters: voters.to_vec(),
+                    },
+                    request_options(),
+                )
+                .expect("membership apply request failed");
+                if response.status.ok || !is_transient_admin_error(&response.status) {
+                    break response;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "membership apply on node {} never found a leader: {:?};{}",
+                    node.node_id,
+                    response.status,
+                    cluster_wide_status()
+                );
+                thread::sleep(Duration::from_millis(50));
+            };
             assert!(
                 response.status.ok,
                 "membership apply on node {} failed: {:?}",
