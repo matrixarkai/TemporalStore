@@ -28,6 +28,13 @@ ENABLE_SUMMARY_REFRESH_AUDIT = os.environ.get("MATRIXARK_SUMMARY_REFRESH_AUDIT",
 ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS = os.environ.get("MATRIXARK_SUMMARY_DIRTY_DEBUG_FIELDS", "0").strip().lower() in {"1", "true", "yes"}
 SUMMARY_REFRESH_INTERVAL_MS = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_INTERVAL_MS", "1000"))
 SUMMARY_REFRESH_LIMIT = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_LIMIT", "64"))
+# Largest share of wall-clock the background summary refresher may occupy. A refresh pass
+# costs O(store) -- it reads the whole record log and writes the refreshed summaries back
+# through the same proxy lane the request path uses -- so at a fixed interval a pass that
+# grows past that interval turns the loop into a permanent occupant of the lane. See
+# MatrixArkMcpServer._next_summary_refresh_delay_s.
+SUMMARY_REFRESH_MAX_DUTY = float(os.environ.get("MATRIXARK_SUMMARY_REFRESH_MAX_DUTY", "0.2"))
+SUMMARY_REFRESH_MAX_BACKOFF_MS = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_MAX_BACKOFF_MS", "300000"))
 
 BACKEND_READINESS_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_TIMEOUT_MS", "30000"))
 BACKEND_READINESS_BACKOFF_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_BACKOFF_MS", "200"))
@@ -46,6 +53,22 @@ def matrixark_production_profile_enabled() -> bool:
 
 
 def python_hot_cache_allowed(*, backend_label: str = "") -> bool:
+    """Whether the record cache may serve a read. Native backends are excluded BY POLICY.
+
+    The cache itself is safe on any backend: it is validated by the record COUNT read fresh from
+    the store on every call, and the record log is append-only -- a delete is a tombstone append --
+    so any write anywhere moves the count and the entry misses. The mutable half, the
+    latest-context-state store, is never cached; it is re-read and re-folded even on a hit.
+
+    It is nonetheless off for the native backends on purpose, matching
+    `native_candidate_prefilter_required`: TemporalStore serving is meant to read through native
+    pushdown rather than a Python-side cache. `test_python_hot_cache_default_policy` pins that.
+
+    Turning it on is a measured, one-variable win if a deployment wants it --
+    MATRIXARK_ALLOW_PYTHON_HOT_CACHE=1. Over the mem0 surface, 4 users x a 10-turn conversation:
+    get_all 1491->326 ms, get 1677->402 ms, update 5050->1218 ms, users 1512->475 ms,
+    batch_update 7782->3144 ms, search 710->510 ms, with all 15 APIs still correct on both arms.
+    """
     if MATRIXARK_ALLOW_PYTHON_HOT_CACHE:
         return MATRIXARK_ALLOW_PYTHON_HOT_CACHE in {"1", "true", "yes"}
     return backend_label == "local"

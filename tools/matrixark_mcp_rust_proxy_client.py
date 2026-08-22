@@ -48,6 +48,7 @@ try:
         close_proxy_lanes,
         close_proxy_process,
         ensure_lane_process,
+        proxy_stderr_tail,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import Json, MatrixArkError
@@ -84,6 +85,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         close_proxy_lanes,
         close_proxy_process,
         ensure_lane_process,
+        proxy_stderr_tail,
     )
 
 
@@ -179,12 +181,14 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
             self._lane_cursors[group] = index + 1
         return group, lanes[index]
 
-    def _read_json_line(self, proc: subprocess.Popen[str], op: str) -> Json:
+    def _read_json_line(self, proc: subprocess.Popen[str], op: str, lane: Json | None = None) -> Json:
         assert proc.stdout is not None
         deadline = time.monotonic() + max(2.0, self.request_timeout_ms / 1000.0 + 2.0)
         while time.monotonic() < deadline:
             if proc.poll() is not None:
-                stderr = proc.stderr.read() if proc.stderr else ""
+                # The drain thread owns proc.stderr; reading it here would race it and, before
+                # the drain existed, could block. Quote what the drain captured instead.
+                stderr = proxy_stderr_tail(lane)
                 if op == "shutdown" and proc.returncode == 0:
                     return {"ok": True, "status": "shutdown"}
                 raise MatrixArkError(f"Rust TemporalStore {op} process exited ({proc.returncode}): {stderr[-1000:]}")
@@ -241,12 +245,7 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
                 except BrokenPipeError as exc:
                     lane["proc"] = None
                     returncode = proc.poll()
-                    stderr = ""
-                    try:
-                        if proc.stderr is not None:
-                            stderr = proc.stderr.read() or ""
-                    except Exception:
-                        stderr = ""
+                    stderr = proxy_stderr_tail(lane)
                     self._close_proc(proc)
                     detail = f"Rust TemporalStore {op} pipe closed"
                     if returncode is not None:
@@ -254,7 +253,7 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
                     if stderr:
                         detail += f": {stderr[-1000:]}"
                     raise MatrixArkError(detail) from exc
-                response = self._read_json_line(proc, op)
+                response = self._read_json_line(proc, op, lane)
         except Exception:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             self._record_call_metrics(op, kwargs, None, elapsed_ms, failed=True, lane=group, wait_ms=wait_ms)

@@ -130,6 +130,15 @@ m.reset()                                    # wipe the caller's whole tenant
 | `delete_all(user_id=…)`         | `POST /v1/forget`                | subject = `scope.user_id`; server requires `confirm == user_id` (exact match, no wildcard). The shim sets `confirm` for you. Returns the count removed. |
 | `get_all(user_id=…, limit=…)`   | `GET`/`POST /v1/memories`        | Lists a subject's active memories; forgotten/deleted memories are excluded. |
 | `reset()`                       | `POST /v1/reset`                 | Wipes the caller's tenant. Guarded by an explicit `confirm` — the shim sends the literal `"RESET"`; the server also accepts the resolved `tenant_id`. |
+| `batch_update(memories)`        | one `POST /v1/update` per entry  | Takes mem0's shape — `[{memory_id, text?, metadata?}]`, `text` mapped onto `data` — capped at 1000 entries. **Not atomic**: an update here is a supersede with no cross-memory transaction behind it, so entries are applied in order and a failure is reported per memory (`{"results": [...], "updated": n, "failed": [...]}`) instead of aborting the rest. |
+| `batch_delete(memories)`        | one `POST /v1/delete` per entry  | `[{memory_id}]`, or a bare list of ids. Capped at 1000, same non-atomic reporting as `batch_update`. |
+| `users(limit=…)`                | `POST /v1/users`                 | The users / agents / runs that **hold** memories, in mem0's `{"results": [{"type", "name"}]}` shape, with a `memory_count` on users. A subject whose memories were all forgotten or expired is not listed — this answers "who has memories", not "who was provisioned" (the admin user list is that other thing). Gated on `context:retrieve`, and scoped to the caller's tenant. |
+
+`add()` **finalizes by default**, which is what makes it read-after-write: a `get_all` / `search`
+issued straight after `add` sees the memory, as on mem0. Pass `finalize=False` to stream a
+conversation in and let the idle commit close it — cheaper per call, but the memory only becomes
+visible once a debounce elapses, and every further write to the same scope pushes that debounce
+out, so a burst of un-finalized `add` calls can stay invisible for as long as the burst lasts.
 
 Scope gates (enforced-mode keys): `forget`/`delete`/`reset` require
 `context:forget`; `update` requires `context:ingest`; `get_all`/`get`/`history`

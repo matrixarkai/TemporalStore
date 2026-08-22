@@ -5,10 +5,25 @@
 
 from __future__ import annotations
 
+import collections
 import queue
 import socket
+import threading
 import time
 from pathlib import PurePosixPath
+
+try:  # the proxy stderr drain is shared with the standalone proxy client
+    from tools.matrixark_mcp_rust_proxy_process import (
+        PROXY_STDERR_TAIL_LINES,
+        _drain_proxy_stderr,
+        proxy_stderr_tail,
+    )
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_rust_proxy_process import (
+        PROXY_STDERR_TAIL_LINES,
+        _drain_proxy_stderr,
+        proxy_stderr_tail,
+    )
 
 try:
     from tools.matrixark_mcp_core import *
@@ -356,6 +371,23 @@ try:  # mixin
 except ImportError:
     from matrixark_temporal_direct_retrieve import _TemporalDirectRetrieveMixin
 
+def matrixark_storage_mode_label(adapter: Any) -> str:
+    """The storage mode a native adapter is actually running, for metrics/diagnostics."""
+    if getattr(adapter, "_matrixark_proxy_mode", False):
+        return "temporalstore-native-proxy"
+    return "temporalstore-native"
+
+
+# Scope fields that are DERIVED from an identity rather than naming one. When re-scoping a
+# request from the caller to some other subject, these have to go: they are already computed for
+# the caller, and leaving them in means the subject filter silently resolves back to the caller.
+# That is not theoretical -- it made `users()` report the caller's memory count for every user and
+# never drop a user whose memories had all been forgotten.
+_SUBJECT_RESCOPE_DROP = frozenset({
+    "session_id", "agent_id", "user_hash", "session_hash", "scope_key", "_explicit_scope_keys",
+})
+
+
 class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirectBackendMixin, _TemporalDirectWriteMixin, _TemporalDirectReadMixin, _TemporalDirectRetrieveMixin):
     """MatrixArk adapter backed by TemporalStore proxy or direct SDK.
 
@@ -365,6 +397,582 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
     embedded/local path; MATRIXARK_TEMPORALSTORE_NATIVE_PROXY_ENDPOINT selects the
     proxy boundary.
     """
+
+    def read_all(self) -> list[Json]:
+        """Read through the native record log, not MatrixArkLocalAdapter's JSONL log.
+
+        `MatrixArkLocalAdapter` precedes the direct mixins in this class's MRO and also
+        defines `read_all`, so its JSONL implementation won here -- and on a native backend
+        there is no JSONL log, so it returned ZERO records. Every reader built on read_all
+        (get / get_all / update / history / keyed recall) therefore read empty while the
+        records sat durably in the record log; the same inherited method is correct on the
+        JSONL backend, which is why only the native backends looked broken.
+
+        Only `read_all` collided: `read_all_without_disk_fallback_recovery` is defined solely
+        on `_TemporalDirectReadMixin` and already resolved correctly, so delegating to it
+        reproduces the direct read exactly without reordering bases (which would silently
+        move every other method both classes define).
+
+        The live-view post-processing MUST be kept: `MatrixArkLocalAdapter.read_all` does not
+        just read, it filters the log down to live records. Delegating to the raw direct read
+        alone silently drops that -- forget/delete tombstones stop being honoured (the subject's
+        records stay visible after a forget) and a TTL record never expires, because expiry is
+        enforced on read and is never cached.
+
+        The body is deliberately identical to `MatrixArkLocalAdapter.read_all`; only the
+        `_read_all_compacted` beneath it differs per backend.
+        """
+        try:
+            from tools.matrixark_mcp_local_adapter import filter_live_memory_records
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_local_adapter import filter_live_memory_records
+        records = self._read_all_compacted()
+        return filter_live_memory_records(records)
+
+    def _read_all_compacted(self) -> list[Json]:
+        """The compacted, tombstone-swept view -- WITHOUT the expiry/retention filter.
+
+        The seam between "compacted" and "live" exists because some callers need to see records
+        the live view hides: `sweep_expired_memories` has to find the expired rows in order to
+        tombstone them, and would reclaim nothing if handed a view they had already been filtered
+        out of. Overriding it here rather than only `read_all` is what makes the three memory
+        paths built on it work on a native backend -- keyed upsert (`_apply_identity_upsert`),
+        the retention-cutoff scope resolver, and the expiry sweep. All three called the inherited
+        JSONL implementation, which returns `[]` as soon as `_local_jsonl_enabled` is False, so on
+        every native backend keyed upsert silently never ran: a second ingest under the same
+        `identity_key` found no existing record to supersede and both values stayed live.
+
+        The two extra serving-pipeline stages are applied HERE rather than inside
+        `_with_latest_context_state_records`, which the retrieval hot path also goes through:
+
+          * `compact_latest_value_records` collapses records sharing a latest-value key. For a
+            `context_event` that key is the `event_id_hash`, and ingest persists an event row
+            twice -- once on the hot path (`extraction_phase: hot_path`) and again when
+            extraction commits (`final`). Without it both rows serve and `get_all` reports one
+            memory as two.
+          * `apply_memory_tombstones` is what makes forget / delete / reset remove anything.
+            Without it a forget writes its tombstone, reports an accurate `removed_count`, and
+            then serves every one of those records right back.
+
+        `compact_and_apply_tombstones` composes all three in the one order correct for both
+        orphan sweeping and supersede (see its docstring). Both added stages fast-path a log
+        with no duplicate keys / no tombstone, and all three are idempotent -- which matters,
+        because the result feeds a cache this method is called against repeatedly.
+        """
+        try:
+            from tools.matrixark_mcp_local_adapter import compact_and_apply_tombstones
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_local_adapter import compact_and_apply_tombstones
+        self._recover_serving_from_disk_fallback_if_needed(reason="read_all")
+        return compact_and_apply_tombstones(self.read_all_without_disk_fallback_recovery())
+
+    def _read_raw_records(self) -> list[Json]:
+        """The native record log in append order -- NOT compacted, NOT tombstone-filtered.
+
+        Same MRO collision as `read_all`: `MatrixArkLocalAdapter._read_raw_records` reads the
+        JSONL shards and returns `[]` the moment `_local_jsonl_enabled` is False, which is
+        exactly what every native backend sets. `history` is built on this method -- it is
+        deliberately the RAW log, because the change history of a memory is the tombstones and
+        superseded rows that the live view exists to hide -- so on a native backend history
+        reported an empty log for a memory that plainly had one.
+
+        The delete-before-extract guard in `session_commit` also reads through here. It asks
+        whether a pending event survived the tombstone sweep and treats a tombstone-free log as
+        "keep everything", so an empty result made it silently inert on native backends rather
+        than wrong; with a real log behind it the guard now does its job there too.
+
+        Deliberately does NOT fold in `_load_latest_context_state_records()`: that store holds
+        the compacted latest state, which is the opposite of an append history, and none of it
+        is a `context_event` or a tombstone.
+
+        Deliberately does NOT take `_records_lock` either. That lock guards the serving-record
+        cache, and this method reads nothing from it -- but taking it would put a thread inside
+        `_records_lock` while it waits on the proxy client's lane semaphore, while the serving
+        read holds a lane slot and waits on `_records_lock`. Two threads, opposite order: a real
+        inversion, and nothing here needs the lock, since each call reads a fresh count and its
+        records straight from the backend.
+
+        To be precise about what was and was not observed: dropping this lock did NOT resolve the
+        gateway wedge it was first suspected of causing. That wedge was the background summary
+        refresher holding the single shared proxy lane (see `next_summary_refresh_delay_s`). The
+        inversion above is a hazard on the code's own terms, not a diagnosis of that incident.
+        """
+        try:
+            from tools.matrixark_mcp_latest_context_state import expand_record_bundles
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_latest_context_state import expand_record_bundles
+        self._recover_serving_from_disk_fallback_if_needed(reason="read_raw_records")
+        count = self._get_count()
+        if count > 0:
+            records = self._load_records_by_count(count)
+        else:
+            records = self._load_records(self._get_index())
+        return expand_record_bundles(records)
+
+    def _idempotency_index_key(self) -> str:
+        return f"{self._storage_prefix}:idempotency_index"
+
+    def _idempotency_index_ready_key(self) -> str:
+        return f"{self._storage_prefix}:idempotency_index_ready"
+
+    @staticmethod
+    def _idempotency_index_field(key_hash: int) -> str:
+        # Fixed width, so a field is never a prefix of another and ordering stays stable.
+        return f"{int(key_hash):020d}"
+
+    def _ensure_idempotency_index(self) -> None:
+        """Make the keyed index cover what the log already holds, exactly once per store.
+
+        Without this a miss could not be trusted. A store written before the index existed has
+        idempotency records in the log and nothing in the index, so "absent from the index" would
+        not mean "absent from the store", and a replay would be missed -- the one thing the
+        idempotency record exists to prevent. Backfilling once and persisting a marker makes a
+        miss authoritative from then on, and keeps a restart or a second worker from repeating it.
+        """
+        if getattr(self, "_idempotency_index_built", False):
+            return
+        try:
+            if self._client.get_string(self._idempotency_index_ready_key()):
+                self._idempotency_index_built = True
+                return
+        except Exception:  # noqa: BLE001 - an unreadable marker just means "build it".
+            pass
+        import json as _json
+
+        entries: list[Json] = []
+        index_key = self._idempotency_index_key()
+        for record in self.read_all():
+            if not isinstance(record, dict) or record.get("record_type") != "matrixark_idempotency":
+                continue
+            key_hash = record.get("key_hash")
+            if key_hash is None:
+                continue
+            entries.append({
+                "key": index_key,
+                "field": self._idempotency_index_field(int(key_hash)),
+                "value": _json.dumps(record, separators=(",", ":"), default=str),
+            })
+        if entries:
+            self._client.batch_hset(entries)
+        self._client.put_string(self._idempotency_index_ready_key(), "1")
+        self._idempotency_index_built = True
+
+    def find_idempotency_record(self, key_hash: int) -> Json | None:
+        """Point-lookup, instead of walking the whole record log to answer one key.
+
+        `MatrixArkLocalAdapter.find_idempotency_record` scans `reversed(self.read_all())`. On the
+        JSONL backend that walks an in-memory list; on a native backend `read_all()` is a full
+        record-log read shipped over the proxy and re-run through the serving pipeline. The request
+        policy asks this twice per tool call -- once to replay, once before storing -- and an ingest
+        is two tool calls, so ONE ingest paid four full-store reads purely to answer "have I seen
+        this key". That is most of why ingest latency climbed with the number of records held.
+
+        The log stays the source of truth: `append_idempotency_record` still appends the record and
+        additionally writes the keyed entry, so durability, replay and history are unchanged.
+        """
+        self._ensure_idempotency_index()
+        import json as _json
+
+        try:
+            raw = self._client.hget(self._idempotency_index_key(), self._idempotency_index_field(key_hash))
+        except Exception:  # noqa: BLE001 - scan rather than wrongly report "never seen".
+            return self.find_idempotency_record_in_log(key_hash)
+        if not raw:
+            return None
+        try:
+            record = _json.loads(raw)
+        except (TypeError, ValueError):
+            return self.find_idempotency_record_in_log(key_hash)
+        return record if isinstance(record, dict) else None
+
+    def append_idempotency_record(self, *, key_hash: int, tool_name: str, raw_key: str, identity: Json, response: Json) -> None:
+        """Append the record to the log AND index it, so the next lookup is a point read.
+
+        The indexed value is built with the same builder the log record uses rather than read
+        back out of the log, because reading it back would be the very full-store scan this
+        exists to remove.
+        """
+        super().append_idempotency_record(
+            key_hash=key_hash, tool_name=tool_name, raw_key=raw_key, identity=identity, response=response,
+        )
+        try:
+            from tools.matrixark_mcp_local_idempotency import build_idempotency_record
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_local_idempotency import build_idempotency_record
+        import json as _json
+
+        self._ensure_idempotency_index()
+        record = build_idempotency_record(
+            key_hash=key_hash, tool_name=tool_name, raw_key=raw_key, identity=identity, response=response,
+        )
+        try:
+            self._client.hset(
+                self._idempotency_index_key(),
+                self._idempotency_index_field(key_hash),
+                _json.dumps(record, separators=(",", ":"), default=str),
+            )
+        except Exception:  # noqa: BLE001 - the log already holds it; the index rebuilds from there.
+            pass
+
+    def find_idempotency_record_in_log(self, key_hash: int) -> Json | None:
+        """The scanning lookup, kept addressable as the fallback and for tests."""
+        return super().find_idempotency_record(key_hash)
+
+    def _node_embedding_index_key(self) -> str:
+        return f"{self._storage_prefix}:node_embedding_index"
+
+    def _node_embedding_index_ready_key(self) -> str:
+        return f"{self._storage_prefix}:node_embedding_index_ready"
+
+    @staticmethod
+    def _node_embedding_index_field(node_hash: int, model_ref: str) -> str:
+        return f"{model_ref}:{int(node_hash):020d}"
+
+    def _ensure_node_embedding_index(self) -> None:
+        """Backfill the keyed index from the log once per store, then trust it.
+
+        Same reasoning as the idempotency index: a store written before this index existed has
+        node embeddings in the log and nothing in the index, so a miss would not mean "absent"
+        and every node would be re-embedded. The marker is persisted so a restart or a second
+        worker does not repeat the backfill -- which matters here because the native adapters
+        deliberately start their context-node caches EMPTY and never load them from the store.
+        """
+        if getattr(self, "_node_embedding_index_built", False):
+            return
+        try:
+            if self._client.get_string(self._node_embedding_index_ready_key()):
+                self._node_embedding_index_built = True
+                return
+        except Exception:  # noqa: BLE001 - an unreadable marker just means "build it".
+            pass
+        entries: list[Json] = []
+        index_key = self._node_embedding_index_key()
+        for record in self.read_all():
+            if (
+                not isinstance(record, dict)
+                or record.get("record_type") != "context_embedding"
+                or record.get("ref_type") != "node"
+                or record.get("embedding_type") != "context_node"
+                or record.get("ref_hash") is None
+                or not isinstance(record.get("vector"), list)
+                or not record.get("vector")
+            ):
+                continue
+            try:
+                ref_hash = int(record.get("ref_hash"))
+            except (TypeError, ValueError):
+                continue
+            entries.append({
+                "key": index_key,
+                "field": self._node_embedding_index_field(ref_hash, str(record.get("model_ref") or "")),
+                "value": "1",
+            })
+        if entries:
+            self._client.batch_hset(entries)
+        self._client.put_string(self._node_embedding_index_ready_key(), "1")
+        self._node_embedding_index_built = True
+
+    def _existing_node_embedding_refs(self, current_model_ref: str) -> set[int]:
+        """One small keyed scan instead of a full record-log read.
+
+        The inherited implementation walks `read_all()` to collect the node hashes that already
+        have an embedding. On a native backend that is a full record-log read over the proxy, and
+        `ensure_context_node_path` runs THREE times per ingest, so it was the largest remaining
+        O(store) cost on the ingest path. This index holds one tiny entry per embedded node rather
+        than every record in the store.
+        """
+        self._ensure_node_embedding_index()
+        scanner = getattr(self._client, "scan_hash", None)
+        if not callable(scanner):
+            return super()._existing_node_embedding_refs(current_model_ref)
+        try:
+            response = scanner(self._node_embedding_index_key())
+        except Exception:  # noqa: BLE001 - re-embedding is worse than one slow read.
+            return super()._existing_node_embedding_refs(current_model_ref)
+        rows = response.get("records") if isinstance(response, dict) else []
+        prefix = f"{current_model_ref}:"
+        refs: set[int] = set()
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            field = str(row.get("field") or "")
+            if not field.startswith(prefix):
+                continue
+            try:
+                refs.add(int(field[len(prefix):]))
+            except (TypeError, ValueError):
+                continue
+        return refs
+
+    def _record_node_embedding_ref(self, node_hash: int, current_model_ref: str) -> None:
+        self._ensure_node_embedding_index()
+        try:
+            self._client.hset(
+                self._node_embedding_index_key(),
+                self._node_embedding_index_field(node_hash, current_model_ref),
+                "1",
+            )
+        except Exception:  # noqa: BLE001 - the log still has it; the index rebuilds from there.
+            pass
+
+    def refresh_summaries(self, args: Json) -> Json:
+        """Skip the cross-scope background pass when the store has not changed since the last one.
+
+        The background refresher calls this with an EMPTY scope on a timer. The first thing the
+        pass does is `read_all()` -- a full record-log read -- and on a native backend that read
+        goes over the proxy and holds the single shared lane for its whole duration. Measured on a
+        99 MB store that is minutes, during which every request queues on the lane and is rejected
+        on backpressure, with NO client load and nothing to refresh. Spacing the passes out cannot
+        help: the cost is inside one pass, not between them.
+
+        Dirty state only changes when records are appended, and the record count is a single point
+        read. So if the count is exactly what it was before the last pass AND that pass found
+        nothing to refresh, this pass would read the whole store to reach the same conclusion --
+        skip it. The `refreshed_count == 0` half matters: a pass that hit its node limit left work
+        behind, and must be allowed to run again even though nothing new was written.
+
+        Deliberately scoped to the empty-scope background caller. The pre-retrieval refresh passes
+        a real scope and is on the request path already, so it is left exactly as it was.
+        """
+        scope = args.get("scope") if isinstance(args, dict) else None
+        if scope:
+            return super().refresh_summaries(args)
+        token = None
+        try:
+            token = int(self._get_count())
+        except Exception:  # noqa: BLE001 - no cheap token available, just do the pass.
+            token = None
+        last_token, last_refreshed = self._load_summary_pass_state()
+        if token is not None and token == last_token and last_refreshed == 0:
+            return {"refreshed_count": 0, "status": "unchanged", "skipped": True}
+        result = super().refresh_summaries(args)
+        # Record the count as it was BEFORE the pass: a pass that refreshes something appends, so
+        # the count moves and the next pass runs regardless.
+        try:
+            refreshed = int((result or {}).get("refreshed_count") or 0)
+        except (TypeError, ValueError):
+            refreshed = None
+        self._store_summary_pass_state(token, refreshed)
+        return result
+
+    def _summary_pass_state_key(self) -> str:
+        return f"{self._storage_prefix}:summary_pass_state"
+
+    def _load_summary_pass_state(self) -> tuple[int | None, int | None]:
+        """The record count and outcome of the last completed background pass.
+
+        Held in the store, not just on the instance, so a RESTART does not force one full-store
+        pass. That pass is minutes long on a large store and holds the single shared proxy lane
+        for its whole duration, so an in-memory-only token turns every restart into a window
+        where the gateway answers nothing -- which is exactly what it looked like before this
+        was persisted.
+        """
+        cached = getattr(self, "_summary_pass_state", None)
+        if cached is not None:
+            return cached
+        token: int | None = None
+        refreshed: int | None = None
+        try:
+            raw = self._client.get_string(self._summary_pass_state_key())
+        except Exception:  # noqa: BLE001 - unreadable state just means "run the pass".
+            raw = ""
+        if raw and ":" in raw:
+            left, _, right = raw.partition(":")
+            try:
+                token, refreshed = int(left), int(right)
+            except (TypeError, ValueError):
+                token, refreshed = None, None
+        self._summary_pass_state = (token, refreshed)
+        return self._summary_pass_state
+
+    def _store_summary_pass_state(self, token: int | None, refreshed: int | None) -> None:
+        self._summary_pass_state = (token, refreshed)
+        if token is None or refreshed is None:
+            return
+        try:
+            self._client.put_string(self._summary_pass_state_key(), f"{token}:{refreshed}")
+        except Exception:  # noqa: BLE001 - the instance copy still short-circuits this process.
+            pass
+
+    def backend_metrics(self) -> Json:
+        """Describe the backend this adapter actually uses.
+
+        Without this the direct adapter inherits `MatrixArkLocalAdapter.backend_metrics`, which
+        hardcodes `mode: "local-jsonl"` and reports `event_log` -- and on a native backend that
+        path is the `-unused-` sentinel file the adapter never writes to. So a native deployment
+        asking for backend metrics was told it was running the JSONL backend, and pointed at a
+        file that does not exist. The subclass used by `temporalstore-rust` already overrides
+        this; `temporalstore-direct` is the backend that was left reporting the wrong engine.
+
+        Kept cheap on purpose: a metrics call must not become a full-store read, so the only
+        store access is the record count, which is a single point read.
+        """
+        metrics: Json = {
+            "mode": matrixark_storage_mode_label(self),
+            "storage_prefix": getattr(self, "_storage_prefix", ""),
+            "namespace": getattr(self, "_namespace", ""),
+            "table": getattr(self, "_table", ""),
+        }
+        try:
+            metrics["record_count"] = int(self._get_count())
+        except Exception:  # noqa: BLE001 - metrics must never be the thing that fails.
+            metrics["record_count"] = None
+        for name in ("health", "readiness", "metrics_snapshot"):
+            probe = getattr(self._client, name, None)
+            if not callable(probe):
+                continue
+            try:
+                metrics[name] = probe()
+            except Exception as exc:  # noqa: BLE001
+                metrics[name] = {"ok": False, "error": str(exc)}
+        return {
+            "backend": self._backend_label(),
+            "metrics_format": "json",
+            "metrics": metrics,
+        }
+
+    def _subject_index_key(self) -> str:
+        return f"{self._storage_prefix}:memory_subject_index"
+
+    def _subject_index_ready_key(self) -> str:
+        return f"{self._storage_prefix}:memory_subject_index_ready"
+
+    def _ensure_subject_index(self) -> None:
+        """Backfill the subject index from the log once per store, behind a persisted marker.
+
+        Same shape as the idempotency and node-embedding indexes: without the backfill a store
+        written before this existed would list no subjects at all, and without persisting the
+        marker every restart would re-read the whole log to rebuild it.
+        """
+        if getattr(self, "_subject_index_built", False):
+            return
+        try:
+            if self._client.get_string(self._subject_index_ready_key()):
+                self._subject_index_built = True
+                return
+        except Exception:  # noqa: BLE001 - an unreadable marker just means "build it".
+            pass
+        entries: list[Json] = []
+        index_key = self._subject_index_key()
+        for record in self.read_all():
+            for kind, name in self.memory_subjects_in_record(record):
+                entries.append({"key": index_key, "field": f"{kind}:{name}", "value": "1"})
+        if entries:
+            self._client.batch_hset(entries)
+        self._client.put_string(self._subject_index_ready_key(), "1")
+        self._subject_index_built = True
+
+    def _index_memory_subjects(self, records: list[Json]) -> None:
+        """Note any NEW subject these records introduce.
+
+        Called on the append path, so it has to stay close to free. The set of subjects is tiny
+        and changes almost never, so an in-process set of the ones already written means a steady
+        stream of writes for known subjects costs nothing, and only a genuinely new user / agent
+        / run pays a single hset.
+        """
+        known = getattr(self, "_subject_index_seen", None)
+        if known is None:
+            known = self._subject_index_seen = set()
+        fresh = []
+        for record in records:
+            for subject in self.memory_subjects_in_record(record):
+                if subject not in known:
+                    known.add(subject)
+                    fresh.append(subject)
+        if not fresh:
+            return
+        self._ensure_subject_index()
+        index_key = self._subject_index_key()
+        try:
+            self._client.batch_hset([
+                {"key": index_key, "field": f"{kind}:{name}", "value": "1"} for kind, name in fresh
+            ])
+        except Exception:  # noqa: BLE001 - the log still holds the truth; the index rebuilds.
+            for subject in fresh:
+                known.discard(subject)
+
+    @staticmethod
+    def _subject_scope(base_scope: Json, user_id: str) -> Json:
+        """The caller's scope re-pointed at another subject, with that subject's OWN hashes.
+
+        A request scope carries identity fields DERIVED from the caller -- `user_hash`,
+        `session_hash`, `scope_key` -- and `get_all` filters on the hashes, never on `user_id`.
+        So swapping only `user_id` leaves the caller's `user_hash` in place and the lookup
+        resolves straight back to the caller; dropping the hashes instead yields `user_hash == 0`,
+        which reads as "no subject filter" and returns the whole tenant. Both were observed:
+        every user reported the same memory count, and a user whose memories had all been
+        forgotten never dropped out of `users()`.
+
+        The hashes have to be recomputed for the subject, by the same function the ingest path
+        uses, so they match what is actually stored.
+        """
+        try:
+            from tools.matrixark_mcp_core_identity import identity_hashes
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_core_identity import identity_hashes
+        account_id = str(base_scope.get("account_id") or "")
+        tenant_id = str(base_scope.get("tenant_id") or "")
+        scope = {k: v for k, v in base_scope.items() if k not in _SUBJECT_RESCOPE_DROP}
+        scope["user_id"] = user_id
+        scope.update(identity_hashes(account_id, tenant_id, user_id=user_id))
+        return scope
+
+    def list_memory_subjects(self, args: Json) -> Json:
+        """The keyed subject index, instead of reading the whole log to collect scopes.
+
+        The inherited implementation walks `read_all()`. On a native backend that is a full
+        record-log read over the proxy, and `users()` is exactly the kind of call an operator
+        loops over, so it must not be O(store).
+
+        The index is add-only, so it can name a subject whose memories have since all been
+        forgotten or expired. mem0's `users()` means "who has memories", so the live view decides:
+        the count comes from a scoped `get_all`, and a subject with none is dropped. That keeps
+        the expensive part proportional to the number of SUBJECTS, not to the size of the store.
+        """
+        self._ensure_subject_index()
+        limit = args.get("limit") if isinstance(args, dict) else None
+        limit = int(limit) if isinstance(limit, int) and limit > 0 else 0
+        scanner = getattr(self._client, "scan_hash", None)
+        if not callable(scanner):
+            return super().list_memory_subjects(args)
+        try:
+            response = scanner(self._subject_index_key())
+        except Exception:  # noqa: BLE001
+            return super().list_memory_subjects(args)
+        rows = response.get("records") if isinstance(response, dict) else []
+        subjects: list[tuple[str, str]] = []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            field = str(row.get("field") or "")
+            kind, _, name = field.partition(":")
+            if kind and name:
+                subjects.append((kind, name))
+        # The subject's memories have to be counted in the CALLER's scope. A bare
+        # {"user_id": name} carries no account/tenant, so the subject filter resolves to nothing
+        # and get_all returns the whole tenant -- every user then reports the same count and a
+        # user whose memories were all forgotten never drops out of the list.
+        base_scope = dict(args.get("scope") or {}) if isinstance(args, dict) else {}
+        results: list[Json] = []
+        for kind, name in sorted(set(subjects)):
+            if kind != "user":
+                # Only a user is addressable by get_all here, so agents/runs are reported without
+                # a live count rather than with a wrong one.
+                results.append({"type": kind, "name": name})
+                continue
+            scope = self._subject_scope(base_scope, name)
+            try:
+                listed = self.get_all({"scope": scope})
+            except Exception:  # noqa: BLE001
+                results.append({"type": kind, "name": name})
+                continue
+            memories = listed.get("memories") or listed.get("items") or listed.get("results") or []
+            if not memories:
+                continue
+            results.append({"type": kind, "name": name, "memory_count": len(memories)})
+            if limit and len(results) >= limit:
+                break
+        return {"results": results, "count": len(results)}
 
     def append(self, record: Json) -> None:
         self.append_many([record])
@@ -395,9 +1003,29 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         # this class); the fast direct-ingest path calls _append_many_materialized
         # itself (never append), so there is no double write. Disable with
         # MATRIXARK_DIRECT_SERVING_APPEND_TO_BACKEND=0 as an escape hatch.
-        materialized = materialize_serving_record_batch(records)
+        #
+        # Per-ingestion stamping runs HERE, in the same order as
+        # MatrixArkLocalAdapter.append_many, because it was being skipped entirely on every
+        # native backend. `_stamp_ingest_fields` is what puts `expires_at_ms`/`ephemeral` and
+        # `identity_key`/`truth_class`/`truth_rank` onto the records; without it an
+        # `ttl_seconds` ingest stored a record that nothing would ever expire, an
+        # `identity_key` ingest stored a record keyed recall could not find (404) and
+        # keyed-upsert never superseded, and a tenant that switched a record kind off still
+        # had it written. Policy runs on the RAW records, before serving materialization
+        # strips the scope a context_embedding row carries -- afterwards there is no tenant
+        # left to attribute it to.
+        #
+        # `_apply_serving_dedup` is deliberately NOT applied here: its summary-dirty
+        # coalescing calls read_all(), which on a native backend is a full record-log read on
+        # every append batch. It only removes redundant pending markers -- a size
+        # optimization, not correctness -- and paying an O(store) read per ingest to get it
+        # is the wrong trade on this path.
+        materialized = self._stamp_ingest_fields(materialize_serving_record_batch(records))
         if not materialized:
             return
+        # Index subjects from the RAW records: serving materialization strips the scope off some
+        # rows, and a subject with no scope left cannot be attributed to anyone.
+        self._index_memory_subjects(records)
         if self._queue_batched_records(materialized):
             return
         append_backend = getattr(self, "_append_many_materialized", None)
@@ -1355,6 +1983,23 @@ class MatrixArkRustProxyClient:
             bufsize=1,
             env=env,
         )
+        # Drain stderr from the moment the proxy starts. Nothing read this pipe outside the
+        # error paths, which only run once the process has exited or its stdin has broken -- so
+        # a proxy that logged past the 64KB pipe buffer blocked forever inside its next stderr
+        # write. It stopped answering, sat near-idle because it was blocked rather than working,
+        # held its lane, and never recovered; downstream that looked like one request hanging to
+        # its timeout and every later one rejected on the lane. The busier the proxy, the sooner
+        # it happened. Bounded deque, daemon thread: the error paths still quote the tail.
+        sink: collections.deque = collections.deque(maxlen=PROXY_STDERR_TAIL_LINES)
+        lane["stderr_tail"] = sink
+        drain = threading.Thread(
+            target=_drain_proxy_stderr,
+            args=(lane["proc"], sink),
+            name="matrixark-proxy-stderr-drain",
+            daemon=True,
+        )
+        lane["stderr_drain"] = drain
+        drain.start()
         return lane["proc"]
 
     def _lane_group_for_op(self, op: str) -> str:
@@ -1383,12 +2028,13 @@ class MatrixArkRustProxyClient:
             self._lane_cursors[group] = index + 1
         return group, lanes[index]
 
-    def _read_json_line(self, proc: subprocess.Popen[str], op: str) -> Json:
+    def _read_json_line(self, proc: subprocess.Popen[str], op: str, lane: Json | None = None) -> Json:
         assert proc.stdout is not None
         deadline = time.monotonic() + max(2.0, self.request_timeout_ms / 1000.0 + 2.0)
         while time.monotonic() < deadline:
             if proc.poll() is not None:
-                stderr = proc.stderr.read() if proc.stderr else ""
+                # The drain thread owns proc.stderr; read what it captured, never the pipe.
+                stderr = proxy_stderr_tail(lane)
                 if op == "shutdown" and proc.returncode == 0:
                     return {"ok": True, "status": "shutdown"}
                 raise MatrixArkError(f"Rust TemporalStore {op} process exited ({proc.returncode}): {stderr[-1000:]}")
@@ -1460,12 +2106,7 @@ class MatrixArkRustProxyClient:
                 except BrokenPipeError as exc:
                     lane["proc"] = None
                     returncode = proc.poll()
-                    stderr = ""
-                    try:
-                        if proc.stderr is not None:
-                            stderr = proc.stderr.read() or ""
-                    except Exception:
-                        stderr = ""
+                    stderr = proxy_stderr_tail(lane)
                     self._close_proc(proc)
                     detail = f"Rust TemporalStore {op} pipe closed"
                     if returncode is not None:
@@ -1473,7 +2114,7 @@ class MatrixArkRustProxyClient:
                     if stderr:
                         detail += f": {stderr[-1000:]}"
                     raise MatrixArkError(detail) from exc
-                response = self._read_json_line(proc, op)
+                response = self._read_json_line(proc, op, lane)
         except Exception:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             self._record_call_metrics(op, kwargs, None, elapsed_ms, failed=True, lane=group, wait_ms=wait_ms)

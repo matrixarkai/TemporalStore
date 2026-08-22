@@ -80,6 +80,7 @@ try:
     )
     from tools.matrixark_mcp_schemas import TOOLS
     from tools.matrixark_mcp_stream_materialize import flush_due_scopes
+    from tools.matrixark_mcp_summary_runtime import next_summary_refresh_delay_s
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
         MATRIXARK_ALLOW_LOCAL_BACKEND,
@@ -134,6 +135,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
     from matrixark_mcp_schemas import TOOLS
     from matrixark_mcp_stream_materialize import flush_due_scopes
+    from matrixark_mcp_summary_runtime import next_summary_refresh_delay_s
 
 
 __all__ = [
@@ -301,10 +303,15 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
             f"matrixark summary refresher started interval_ms={SUMMARY_REFRESH_INTERVAL_MS} limit={self._summary_refresh_limit}"
         )
 
+    def _next_summary_refresh_delay_s(self, last_pass_s: float) -> float:
+        """Delay before the next refresh pass -- see `next_summary_refresh_delay_s`."""
+        return next_summary_refresh_delay_s(self._summary_refresh_interval_s, last_pass_s)
+
     def _summary_refresh_loop(self) -> None:
-        while not self._summary_stop.wait(self._summary_refresh_interval_s):
+        delay_s = self._summary_refresh_interval_s
+        while not self._summary_stop.wait(delay_s):
+            started_perf = time.perf_counter()
             try:
-                started_perf = time.perf_counter()
                 result = self.adapter.refresh_summaries({"scope": {}, "limit": self._summary_refresh_limit})
                 self.metrics.observe_operation("summary_refresh", "ok", (time.perf_counter() - started_perf) * 1000.0)
                 refreshed_count = int(result.get("refreshed_count") or 0)
@@ -313,6 +320,7 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
             except Exception as exc:
                 self.metrics.observe_operation("summary_refresh", "error", 0.0, timeout=is_retryable_temporalstore_error(exc))
                 _mcp_debug_log(f"matrixark summary refresh loop failed: {exc}")
+            delay_s = self._next_summary_refresh_delay_s(time.perf_counter() - started_perf)
 
     def ensure_stream_materialize_worker(self) -> None:
         """Start the background stream-materializer loop (idempotent, per-process).

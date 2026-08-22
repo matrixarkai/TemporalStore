@@ -19,6 +19,8 @@ try:
         TIME_COMPRESSION_WINDOW_EVENTS,
         ENABLE_SUMMARY_REFRESH_AUDIT,
         EMBEDDING_LINEAGE_DEBUG_FIELDS,
+        SUMMARY_REFRESH_MAX_BACKOFF_MS,
+        SUMMARY_REFRESH_MAX_DUTY,
         candidate_index_terms,
         candidate_access_scope,
         context_index_posting_record,
@@ -45,6 +47,8 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         TIME_COMPRESSION_WINDOW_EVENTS,
         ENABLE_SUMMARY_REFRESH_AUDIT,
         EMBEDDING_LINEAGE_DEBUG_FIELDS,
+        SUMMARY_REFRESH_MAX_BACKOFF_MS,
+        SUMMARY_REFRESH_MAX_DUTY,
         candidate_index_terms,
         candidate_access_scope,
         context_index_posting_record,
@@ -80,6 +84,33 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         node_summary_dirty_records,
         pending_dirty_node_records,
     )
+
+
+def next_summary_refresh_delay_s(interval_s: float, last_pass_s: float) -> float:
+    """How long the background refresher should wait before its next pass.
+
+    A pass is O(store): `refresh_dirty_node_summaries` reads the entire record log and then
+    writes the refreshed summaries back through the SAME proxy lane the request path uses. In
+    shared_process_mode that lane is one process behind one permit shared by every write, read
+    and control op, so waiting a FIXED interval between passes is only safe while a pass is
+    cheap. Once a pass costs longer than the interval -- which happens as soon as the store
+    holds a real number of records -- the loop is running essentially all the time and holds
+    that permit for most of every second. Foreground requests then queue on the semaphore,
+    block until the request timeout, and are rejected on lane backpressure from then on.
+    Nothing recovers, because the store only grows and each pass is slower than the last.
+
+    Waiting in proportion to what the pass actually cost caps the loop at
+    SUMMARY_REFRESH_MAX_DUTY of wall-clock however large the store gets, leaving the rest for
+    the request path. A pass that finishes inside `interval_s` keeps that interval, so the cheap
+    common case is unchanged, and a duty outside (0, 1) degrades to the fixed interval rather
+    than dividing by zero.
+    """
+    max_duty = SUMMARY_REFRESH_MAX_DUTY
+    if interval_s <= 0 or not (0.0 < max_duty < 1.0):
+        return interval_s
+    # `last_pass_s` of work at `max_duty` occupancy implies this much idle time after it.
+    idle_needed_s = max(0.0, last_pass_s) * (1.0 - max_duty) / max_duty
+    return max(interval_s, min(idle_needed_s, SUMMARY_REFRESH_MAX_BACKOFF_MS / 1000.0))
 
 
 def compact_summary_embedding_record(record: Json) -> Json:

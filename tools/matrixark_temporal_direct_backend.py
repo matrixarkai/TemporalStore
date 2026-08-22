@@ -1184,7 +1184,38 @@ class _TemporalDirectBackendMixin:
         return records
 
     def _with_latest_context_state_records(self, records: list[Json]) -> list[Json]:
-        return compact_latest_context_state_records(list(records) + self._load_latest_context_state_records())
+        """Fold the latest-state store into a native read and collapse it for serving.
+
+        This runs on the RETRIEVAL hot path as well as the memory API, so it deliberately does
+        only the last of the serving pipeline's three stages. The two the memory API also needs
+        -- latest-value collapse and the tombstone sweep -- are applied one level up, in
+        `MatrixArkTemporalStoreDirectAdapter._read_all_compacted`.
+
+        The split was originally introduced because applying the stages here appeared to wedge
+        the proxy -- a retrieve hanging 120s and every later one rejected on the lane at 40s.
+        THAT ATTRIBUTION WAS WRONG, and is recorded here so it is not repeated. The wedge was
+        the background summary refresher: it ran a full-store pass on a fixed 1000 ms timer and
+        wrote the result back through the same single-permit proxy lane the request path uses,
+        so it starved every request as soon as a pass outlasted the interval. A one-variable
+        control settled it -- same rig, refresher off, 8/8 retrieves in 179-263 ms; refresher on
+        with a fixed interval, the wedge; refresher on with a cost-proportional delay, 8/8 in
+        229-760 ms. See `next_summary_refresh_delay_s`.
+
+        So the split is now a COST choice, not a safety one: these two stages are O(n) and this
+        method is on the retrieval hot path, where the memory API's needs do not apply. Moving
+        them here would also keep deleted content out of the retrieval candidate set, as on the
+        JSONL backend, which is the one behavioural argument for doing it -- deleted content can
+        still influence retrieval scoring until the memory-API read sweeps it. That is worth
+        revisiting on its own merits and with its own measurement; it is no longer blocked by an
+        unexplained wedge.
+        """
+        try:
+            from tools.matrixark_mcp_latest_context_state import expand_record_bundles
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_latest_context_state import expand_record_bundles
+        return compact_latest_context_state_records(
+            expand_record_bundles(records) + self._load_latest_context_state_records()
+        )
 
     def _latest_context_state_records_for_candidate_scan(
         self,
