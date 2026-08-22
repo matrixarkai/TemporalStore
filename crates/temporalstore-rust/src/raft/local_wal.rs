@@ -143,13 +143,29 @@ impl LocalRaftWal {
         let encode = |as_delta: bool| -> io::Result<Vec<u8>> {
             let envelope = if as_delta {
                 let from_index = cursor.persisted_last_index;
-                let mut delta_record = record.clone();
-                delta_record.entries.retain(|entry| entry.index > from_index);
-                // Telemetry counters are not durability-relevant (the fingerprint zeroes
-                // them), and they were more than half the bytes of every record. Recovery
-                // keeps whatever the base record carried.
-                delta_record.pipeline_state = RaftPeerPipelineRuntimeState::default();
-                delta_record.read_safety_state = RaftReadSafetyRuntimeState::default();
+                // Only the entries above `from_index`, taken as a slice. Cloning the record
+                // and filtering afterwards allocated the whole log on every append, which is
+                // the cost incremental records exist to remove.
+                let tail_start = record
+                    .entries
+                    .partition_point(|entry| entry.index <= from_index);
+                let delta_record = RaftWalRecord {
+                    hard_state: record.hard_state.clone(),
+                    membership: record.membership.clone(),
+                    replica_role: record.replica_role,
+                    joint_membership: record.joint_membership.clone(),
+                    latest_external_snapshot_ref: record.latest_external_snapshot_ref.clone(),
+                    installed_snapshot: record.installed_snapshot.clone(),
+                    apply_snapshot_fence: record.apply_snapshot_fence.clone(),
+                    storage_apply_fence: record.storage_apply_fence.clone(),
+                    // Telemetry counters are not durability-relevant (the fingerprint zeroes
+                    // them), and they were more than half the bytes of every record. Recovery
+                    // keeps whatever the base record carried.
+                    pipeline_state: RaftPeerPipelineRuntimeState::default(),
+                    read_safety_state: RaftReadSafetyRuntimeState::default(),
+                    membership_evidence: record.membership_evidence.clone(),
+                    entries: record.entries[tail_start..].to_vec(),
+                };
                 RaftWalEnvelope {
                     sequence,
                     checksum: raft_wal_checksum(&delta_record)?,
