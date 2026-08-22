@@ -66,7 +66,7 @@ impl ProxyService {
                     .read()
                     .expect("proxy options lock poisoned")
                     .clone();
-                json_response(200, &options)
+                json_response(200, &*options)
             }
             ("POST", "/proxy/config") | ("POST", "/ProxyService/UpdateConfig") => {
                 match parse_json::<ProxyOptions>(&request.body) {
