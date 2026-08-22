@@ -327,6 +327,7 @@ fn start_meta(meta_addr: String, routes: Arc<RwLock<HashMap<ShardId, String>>>) 
                         .expect("route map lock poisoned")
                         .get(&shard_id)
                         .map(|server_addr| ShardLocation {
+                            state: crate::meta::MetaEntityState::Normal,
                             shard_id,
                             server_addr: server_addr.clone(),
                             latest_snapshot: None,

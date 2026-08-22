@@ -239,11 +239,7 @@ impl SingleNodeMeta {
             .filter(|server| server.state == MetaEntityState::Normal)
             .map(|server| server.server_addr.clone())
             .collect::<BTreeSet<_>>();
-        let shard_owners = state
-            .shards
-            .values()
-            .map(|location| (location.shard_id, location.server_addr.clone()))
-            .collect::<BTreeMap<_, _>>();
+        let shard_owners = serving_shard_owners(&state);
         compute_auto_rebalance(&shard_owners, &live_servers, options)
     }
 
@@ -281,6 +277,7 @@ impl SingleNodeMeta {
         state.shards.insert(
             shard_id,
             ShardLocation {
+                state: MetaEntityState::Normal,
                 shard_id,
                 server_addr: to_server.to_string(),
                 latest_snapshot,

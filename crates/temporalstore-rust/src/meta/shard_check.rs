@@ -390,11 +390,9 @@ impl SingleNodeMeta {
         let now = now_ms();
         let (shard_owners, servers, live_servers) = {
             let state = self.inner.read().expect("meta lock poisoned");
-            let shard_owners = state
-                .shards
-                .values()
-                .map(|location| (location.shard_id, location.server_addr.clone()))
-                .collect::<BTreeMap<_, _>>();
+            // A frozen shard is out of service on purpose, so its owner not
+            // serving it is expected rather than divergence.
+            let shard_owners = serving_shard_owners(&state);
             let servers = state.servers.values().cloned().collect::<Vec<_>>();
             let live_servers = state
                 .servers

@@ -19,7 +19,7 @@ use temporalstore_rust::meta::{
     MetaSnapshot, MetaSnapshotFileRequest, MetaSnapshotFileResponse, MetaSnapshotResponse,
     ProxyHeartbeatRequest, PublishShardSnapshotRequest, RegisterProxyRequest,
     RegisterServerRequest, RegisterShardRequest, SafeModePolicy, ServerHeartbeatRequest,
-    ShardCheckOptions, ShardChecker, ShardReassignment, ShardReassignmentReason,
+    ShardCheckOptions, ShardChecker, ShardStateRequest, ShardReassignment, ShardReassignmentReason,
     DropProxyGroupRequest, NotifyStopRequest, ProxyCalibrationOptions, PutProxyGroupRequest, SingleNodeMeta, StateChangeRequest, TopologyVersionRequest, UpdateServerRequest,
     UpdateTableRequest,
 };
@@ -1425,6 +1425,15 @@ fn handle(
                 .unwrap_or_default();
             json_response(200, &backend_call!(meta, get, shard_id))
         }
+        ("POST", "/shards/freeze") => parse_or(&request.body, |req: ShardStateRequest| {
+            json_response(200, &backend_call!(meta, freeze_shard, req))
+        }),
+        ("POST", "/shards/unfreeze") => parse_or(&request.body, |req: ShardStateRequest| {
+            json_response(200, &backend_call!(meta, unfreeze_shard, req))
+        }),
+        ("POST", "/shards/drop") => parse_or(&request.body, |req: ShardStateRequest| {
+            json_response(200, &backend_call!(meta, drop_shard, req))
+        }),
         ("POST", "/shards/snapshot") | ("POST", "/publish_shard_snapshot") => {
             parse_or(&request.body, |req: PublishShardSnapshotRequest| {
                 backend_call!(meta, publish_shard_snapshot, req)

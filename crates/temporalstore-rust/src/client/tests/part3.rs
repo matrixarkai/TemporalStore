@@ -366,6 +366,7 @@ fn table_routes_keys_to_shards_and_pipeline_splits_batches() {
                         &GetShardResponse {
                             status: Status::ok(),
                             location: Some(ShardLocation {
+                                state: crate::meta::MetaEntityState::Normal,
                                 shard_id,
                                 server_addr: server_addr_for_meta.clone(),
                                 latest_snapshot: None,
