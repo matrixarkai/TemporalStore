@@ -185,21 +185,35 @@ impl ProxyService {
         }
     }
 
-    /// Resolve the datanode that owns `shard_id` via the metaserver topology, or
+    /// Resolve the datanode that owns `shard_id` through the client's route cache, or
     /// an HTTP error response ready to return.
     fn context_shard_addr(&self, shard_id: ShardId) -> Result<String, (u16, Vec<u8>)> {
-        match self.get_shard(shard_id, true) {
-            Ok(response) => match response.location {
-                Some(location) => Ok(location.server_addr),
-                None => Err(crate::http::json_response(
+        // Drop routes the metaserver has moved, then resolve through the proxy's shared
+        // client: the same route cache, topology invalidation and continuous-failure check
+        // that every command entry point uses.
+        //
+        // This used to be a direct `/shards/{id}` GET, which is the one routing path in the
+        // proxy that was written by hand, and so the one that had none of the above. The
+        // invalidation is not optional here: a proxy fronting the context gateway serves
+        // only these three routes and never calls `execute`, so nothing else on it would
+        // ever notice a shard had moved.
+        self.invalidate_cached_routes_if_meta_changed();
+        match self.client().shard_primary_addr(shard_id, false) {
+            Ok(server_addr) => Ok(server_addr),
+            Err(err) => {
+                self.inner
+                    .stats
+                    .write()
+                    .expect("proxy stats lock poisoned")
+                    .metaserver_errors += 1;
+                Err(crate::http::json_response(
                     502,
                     &Status::error(
                         "metaserver_error",
-                        format!("shard {shard_id} has no registered datanode"),
+                        format!("shard {shard_id} route lookup failed: {err}"),
                     ),
-                )),
-            },
-            Err(status) => Err(crate::http::json_response(502, &status)),
+                ))
+            }
         }
     }
 
@@ -219,6 +233,11 @@ impl ProxyService {
                     .write()
                     .expect("proxy stats lock poisoned")
                     .backend_errors += 1;
+                // Report the failure against the address so a datanode that keeps failing
+                // stops being served from the route cache. Forwarding by hand means this
+                // accounting has to be done by hand too -- without it the continuous-failure
+                // check only ever saw command traffic, and never the gateway's.
+                self.client().note_backend_failure(server_addr);
                 crate::http::json_response(
                     502,
                     &Status::error(
