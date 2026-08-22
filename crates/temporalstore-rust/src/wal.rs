@@ -35,6 +35,14 @@ impl From<crate::log_framing::FramingError> for WriteAheadLogError {
     }
 }
 
+fn current_write_ahead_log_format_version() -> u32 {
+    WRITE_AHEAD_LOG_FORMAT_VERSION
+}
+
+fn is_current_write_ahead_log_format_version(version: &u32) -> bool {
+    *version == WRITE_AHEAD_LOG_FORMAT_VERSION
+}
+
 /// Decode one raw WAL line (framed or legacy-unframed) into a [`WriteAheadLogRecord`],
 /// verifying the per-record integrity envelope when present. Used by every WAL reader
 /// (`last_wal_sequence_at`, `scan` consumers, GC, `info`) so a value-preserving bit-flip in a
@@ -46,10 +54,21 @@ pub fn decode_wal_line(line: &[u8]) -> Result<WriteAheadLogRecord, WriteAheadLog
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WriteAheadLogRecord {
+    // The names below are deliberately short. They are repeated in every record for the life of
+    // the log, and on a small write they cost more than the data does; the alias on each keeps
+    // every record already written readable.
+    #[serde(rename = "s", alias = "shard_id")]
     pub shard_id: ShardId,
+    #[serde(rename = "q", alias = "sequence")]
     pub sequence: u64,
+    #[serde(rename = "c", alias = "command")]
     pub command: Command,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "m",
+        alias = "metadata",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub metadata: Option<WriteAheadLogRecordMetadata>,
     /// Pages this write produced, carried in the record that records the write.
     ///
@@ -57,7 +76,12 @@ pub struct WriteAheadLogRecord {
     /// rebuilt from the command alone. Carrying it here is what lets a read serve the page back
     /// out of the log. Empty and skipped for every write that stages nothing, so records
     /// written without this are byte-identical to before.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        rename = "p",
+        alias = "staged_pages",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub staged_pages: Vec<StagedPage>,
 }
 
@@ -119,7 +143,16 @@ mod staged_page_bytes {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WriteAheadLogRecordMetadata {
+    /// Omitted while it is the current version: a record that does not say otherwise is current,
+    /// and saying so in every record costs more than the statement is worth.
+    #[serde(
+        rename = "v",
+        alias = "version",
+        default = "current_write_ahead_log_format_version",
+        skip_serializing_if = "is_current_write_ahead_log_format_version"
+    )]
     pub version: u32,
+    #[serde(rename = "t", alias = "timestamp_ms")]
     pub timestamp_ms: u64,
     /// Per-item description of the write.
     ///
@@ -128,7 +161,12 @@ pub struct WriteAheadLogRecordMetadata {
     /// reconstructs it. New records leave it empty and skip it entirely rather than spend 147
     /// bytes per write on data the record already contains; records written before that still
     /// carry theirs and still load.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        rename = "i",
+        alias = "items",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub items: Vec<WriteAheadLogItemMetadata>,
     // Atomic-batch framing (all three set together, or all absent for a standalone write). A
     // batch of N commands is written as N contiguously-sequenced records sharing one `batch_id`,
@@ -2717,5 +2755,136 @@ mod tests {
         }
         // Leave the process on the default for whatever test runs next.
         crate::bytes_serde::set_array_shape_for_measurement(false);
+    }
+
+    /// What is left in a small record once the payload stops being the problem.
+    ///
+    /// Prints one real record's bytes and attributes them, so the next decision about the format
+    /// is made against a breakdown rather than an impression.
+    #[test]
+    fn small_record_byte_breakdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        store
+            .append_with_sync(
+                1,
+                Command::StringSet {
+                    key: "bench-key-00000000".to_string(),
+                    value: vec![118u8; 64],
+                },
+                false,
+            )
+            .unwrap();
+        let raw = std::fs::read(write_ahead_log_path(dir.path(), 1)).unwrap();
+        let line = String::from_utf8_lossy(&raw);
+        let line = line.trim_end();
+        println!("  whole record ({} B):", line.len() + 1);
+        println!("    {line}");
+
+        let payload_start = line
+            .match_indices(' ')
+            .nth(2)
+            .map(|(index, _)| index + 1)
+            .unwrap_or(0);
+        let frame = payload_start + 1; // + the newline
+        let payload = &line[payload_start..];
+        let value_chars = payload
+            .split("\"value\":\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .map(str::len)
+            .unwrap_or(0);
+        let metadata = payload
+            .find("\"m\":")
+            .map(|start| payload[start..].len() - 1)
+            .unwrap_or(0);
+        let key_chars = "bench-key-00000000".len();
+        let structure = payload.len() - value_chars - metadata - key_chars;
+
+        println!("    frame + newline : {frame:>4} B");
+        println!("    field names etc : {structure:>4} B");
+        println!("    the key         : {key_chars:>4} B");
+        println!("    the value       : {value_chars:>4} B  (64 B of data)");
+        println!("    metadata block  : {metadata:>4} B");
+        println!("    total           : {:>4} B for 64 B of user data", line.len() + 1);
+    }
+
+
+    /// A record written with the long field names still loads.
+    ///
+    /// The rename is only safe because every field keeps an alias for what it was called, and
+    /// nothing rewrites logs already on disk. This is that promise, in the shape the previous code
+    /// actually wrote -- including the format version, which new records leave out.
+    #[test]
+    fn a_record_with_the_long_field_names_still_loads() {
+        let written_before = concat!(
+            r#"{"shard_id":1,"sequence":7,"command":{"kind":"string_set","key":"k","#,
+            r#""value":[104,105]},"metadata":{"version":1,"timestamp_ms":1787429651961}}"#
+        );
+        let record: WriteAheadLogRecord =
+            serde_json::from_str(written_before).expect("the long field names must still load");
+
+        assert_eq!(record.shard_id, 1);
+        assert_eq!(record.sequence, 7);
+        assert_eq!(
+            record.command,
+            Command::StringSet {
+                key: "k".to_string(),
+                value: b"hi".to_vec(),
+            }
+        );
+        let metadata = record.metadata.expect("the metadata block should load");
+        assert_eq!(metadata.version, WRITE_AHEAD_LOG_FORMAT_VERSION);
+        assert_eq!(metadata.timestamp_ms, 1_787_429_651_961);
+    }
+
+    /// A record that omits the version is read as the current one.
+    ///
+    /// New records leave it out precisely because that is what its absence means; if the default
+    /// were zero instead, every new record would read back claiming an unknown format.
+    #[test]
+    fn an_omitted_version_reads_as_the_current_one() {
+        let record: WriteAheadLogRecord = serde_json::from_str(
+            r#"{"s":1,"q":2,"c":{"kind":"string_get","key":"k"},"m":{"t":17}}"#,
+        )
+        .expect("a record without a version must load");
+        assert_eq!(
+            record.metadata.expect("metadata").version,
+            WRITE_AHEAD_LOG_FORMAT_VERSION,
+            "a record that does not name a version is the current one"
+        );
+    }
+
+    /// The short names really are what gets written, and a written record reads back unchanged.
+    #[test]
+    fn a_written_record_round_trips_through_the_short_names() {
+        let record = WriteAheadLogRecord {
+            shard_id: 3,
+            sequence: 11,
+            command: Command::StringSet {
+                key: "round-trip".to_string(),
+                value: vec![0u8, 127, 255],
+            },
+            metadata: Some(WriteAheadLogRecordMetadata {
+                version: WRITE_AHEAD_LOG_FORMAT_VERSION,
+                timestamp_ms: 42,
+                items: Vec::new(),
+                batch_id: None,
+                batch_size: None,
+                batch_index: None,
+            }),
+            staged_pages: Vec::new(),
+        };
+        let encoded = serde_json::to_string(&record).unwrap();
+        assert!(
+            !encoded.contains("shard_id") && !encoded.contains("timestamp_ms"),
+            "the long names should not be written any more, got {encoded}"
+        );
+        assert!(
+            !encoded.contains("version"),
+            "the current version should be left out, got {encoded}"
+        );
+        let decoded: WriteAheadLogRecord = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, record, "a record must survive its own encoding");
     }
 }
