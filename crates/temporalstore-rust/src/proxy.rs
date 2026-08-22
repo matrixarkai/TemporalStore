@@ -21,6 +21,7 @@ mod response;
 use config::{
     default_context_first_shard_id, default_context_io_timeout_ms, default_context_shard_count,
     default_heartbeat_timeout_ms,
+    default_topology_check_interval_ms,
     default_pin_primary_reads, default_proxy_addr, default_service_registry_ttl_ms, now_ms,
     proxy_client_from_options, proxy_config_version,
 };
@@ -114,6 +115,20 @@ pub struct ProxyOptions {
     /// declared dead. Liveness must not be decided by a data-path deadline.
     #[serde(default = "default_heartbeat_timeout_ms")]
     pub heartbeat_timeout_ms: u64,
+    /// Shortest interval (ms) between metaserver topology checks on the request path.
+    ///
+    /// Every command entry point asks the metaserver "has topology changed" before it
+    /// routes. That is a synchronous round-trip, and it ran on EVERY request, so the
+    /// metaserver sat in the request path of all proxy traffic and its latency was added
+    /// to every operation. Checking once per interval instead bounds how long a topology
+    /// change can go unnoticed, in exchange for not paying a round-trip per request.
+    ///
+    /// Set to 0 to check on every request, which is the older behaviour exactly.
+    ///
+    /// A stale route is not the only safety net: a request to a backend that has stopped
+    /// serving the shard fails, and the failure path force-refreshes the route.
+    #[serde(default = "default_topology_check_interval_ms")]
+    pub topology_check_interval_ms: u64,
     /// I/O timeout (ms) for forwarding a `/context/*` request to the owning
     /// datanode. Larger than the command io_timeout because extraction /
     /// embedding generation runs inline on the datanode.
@@ -186,6 +201,7 @@ impl Default for ProxyOptions {
             context_shard_count: default_context_shard_count(),
             context_io_timeout_ms: default_context_io_timeout_ms(),
             heartbeat_timeout_ms: default_heartbeat_timeout_ms(),
+            topology_check_interval_ms: default_topology_check_interval_ms(),
         }
     }
 }
@@ -217,6 +233,9 @@ pub struct ProxyStats {
     /// sleep. A rising count means the heartbeat period is being set by metaserver latency
     /// rather than by the configured interval.
     pub heartbeat_slow_total: u64,
+    /// Topology checks not made because one was made within `topology_check_interval_ms`.
+    /// This is the count of metaserver round-trips kept off the request path.
+    pub topology_checks_skipped: u64,
     pub auto_register_total: u64,
 }
 
@@ -809,6 +828,9 @@ struct ProxyInner {
     service_discovery: RwLock<ProxyServiceDiscoveryState>,
     inflight: ProxyInflight,
     boot_time_ms: u64,
+    /// Wall-clock ms of the last topology check, 0 for "never". Read and written on the
+    /// request path, so an atomic rather than a lock.
+    last_topology_check_ms: std::sync::atomic::AtomicU64,
 }
 
 impl ProxyService {
@@ -822,6 +844,7 @@ impl ProxyService {
                 service_discovery: RwLock::default(),
                 inflight: ProxyInflight::default(),
                 boot_time_ms: now_ms(),
+                last_topology_check_ms: std::sync::atomic::AtomicU64::new(0),
             }),
         }
     }
@@ -1291,8 +1314,47 @@ impl ProxyService {
         if self.client().route_cache_size() == 0 {
             return;
         }
+        if !self.topology_check_is_due() {
+            self.inner
+                .stats
+                .write()
+                .expect("proxy stats lock poisoned")
+                .topology_checks_skipped += 1;
+            return;
+        }
         let _ = self.client().invalidate_routes_from_meta_topology();
         self.sync_client_stats();
+    }
+
+    /// Whether enough time has passed to ask the metaserver about topology again.
+    ///
+    /// Claims the slot as a side effect, so concurrent requests do not all decide they are
+    /// due and issue the same round-trip. Losing that race means skipping a check that
+    /// another thread is making right now, which is the correct outcome.
+    fn topology_check_is_due(&self) -> bool {
+        let interval = self.options().topology_check_interval_ms;
+        if interval == 0 {
+            return true;
+        }
+        let now = now_ms();
+        let last = self
+            .inner
+            .last_topology_check_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        // `now < last` only if the wall clock went backwards; treat that as due rather than
+        // locking the check out until the clock catches up.
+        if last != 0 && now >= last && now.saturating_sub(last) < interval {
+            return false;
+        }
+        self.inner
+            .last_topology_check_ms
+            .compare_exchange(
+                last,
+                now,
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            )
+            .is_ok()
     }
 
     fn inc_bad_request(&self) {
@@ -1779,6 +1841,9 @@ mod tests {
         let proxy = ProxyService::new(ProxyOptions {
             meta_addr: test_addr(18_330),
             route_cache_ttl_ms: 60_000,
+            // This test moves a shard and immediately re-requests, so it wants a topology
+            // check on every request. Zero is exactly the pre-interval behaviour.
+            topology_check_interval_ms: 0,
             ..ProxyOptions::default()
         });
         assert!(
@@ -3866,6 +3931,110 @@ mod tests {
     }
 
     #[test]
+    fn topology_check_stays_off_the_request_path() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let topo_posts = std::sync::Arc::new(AtomicUsize::new(0));
+
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        start_server(test_addr(18_384), engine.clone());
+
+        let meta = crate::meta::SingleNodeMeta::default();
+        meta.register_server(crate::meta::RegisterServerRequest {
+            server_addr: test_addr(18_384),
+            node_id: 1,
+            location: "zone-a".to_string(),
+            binary_version: "v-a".to_string(),
+        });
+        meta.register(RegisterShardRequest {
+            shard_id: 1,
+            server_addr: test_addr(18_384),
+        });
+
+        let addr = test_addr(18_385);
+        let tp = topo_posts.clone();
+        let m = meta.clone();
+        std::thread::spawn(move || {
+            serve(&addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("GET", path) if path.starts_with("/shards/") => {
+                        let shard_id =
+                            path.trim_start_matches("/shards/").parse().unwrap_or_default();
+                        json_response(200, &m.get(shard_id))
+                    }
+                    ("POST", "/tables/topology") => {
+                        let req = parse_json::<GetTableTopologyRequest>(&request.body).unwrap();
+                        json_response(200, &m.get_table_topology(req))
+                    }
+                    ("POST", "/meta/topology_version") => {
+                        tp.fetch_add(1, Ordering::SeqCst);
+                        let req = parse_json::<TopologyVersionRequest>(&request.body).unwrap();
+                        json_response(200, &m.topology_version_report(req))
+                    }
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+        wait_for_http(&test_addr(18_384));
+        wait_for_http(&test_addr(18_385));
+
+        let run = |options: ProxyOptions| {
+            let proxy = ProxyService::new(options);
+            for i in 0..10 {
+                assert!(
+                    proxy
+                        .execute(ExecuteRequest {
+                            shard_id: 1,
+                            command: Command::StringSet {
+                                key: format!("k{i}"),
+                                value: b"v".to_vec(),
+                            },
+                        })
+                        .status
+                        .ok
+                );
+            }
+        };
+
+        // Default interval: the burst shares one check instead of paying a metaserver
+        // round-trip each. This is the whole point -- the metaserver was synchronously in
+        // the path of every request, and its latency was added to every operation.
+        topo_posts.store(0, Ordering::SeqCst);
+        run(ProxyOptions {
+            meta_addr: test_addr(18_385),
+            route_cache_ttl_ms: 60_000,
+            ..ProxyOptions::default()
+        });
+        let throttled = topo_posts.load(Ordering::SeqCst);
+        assert!(
+            throttled <= 2,
+            "10 requests inside the interval should share a check, made {throttled}"
+        );
+
+        // Zero restores the older behaviour exactly, for anyone who wants a check per
+        // request. Asserted so the escape hatch cannot rot.
+        topo_posts.store(0, Ordering::SeqCst);
+        run(ProxyOptions {
+            meta_addr: test_addr(18_385),
+            route_cache_ttl_ms: 60_000,
+            topology_check_interval_ms: 0,
+            ..ProxyOptions::default()
+        });
+        let every = topo_posts.load(Ordering::SeqCst);
+        assert!(
+            every >= 8,
+            "with the interval at zero every request should check, made only {every}"
+        );
+    }
+
+    #[test]
     fn route_cache_serves_repeat_requests_instead_of_re_resolving() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let shard_gets = std::sync::Arc::new(AtomicUsize::new(0));
@@ -4196,6 +4365,12 @@ mod tests {
             shard_id: 1,
             server_addr: test_addr(18_375),
         });
+
+        // Deliberately NOT disabling the topology check interval here: wait it out instead,
+        // so this covers what a deployment actually runs rather than an escape hatch.
+        std::thread::sleep(std::time::Duration::from_millis(
+            ProxyOptions::default().topology_check_interval_ms + 25,
+        ));
 
         let moved_body = serde_json::to_vec(&serde_json::json!({
             "scope": {"tenant_id": "team-alpha", "account_id": "acct_42"},
