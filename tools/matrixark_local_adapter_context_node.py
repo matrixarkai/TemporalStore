@@ -54,18 +54,16 @@ class _LocalAdapterContextNodeMixin:
             return self.default_shared_context_node_path(envelope.get("scope", {}), kind=str(envelope.get("kind") or "resource"), sharing_scope=sharing_scope)
         return self.default_session_node_path(envelope.get("scope", {}))
 
-    def ensure_context_node_path(self, *, node_path: list[str], scope: Json, updated_at_ms: int) -> Json:
-        prefixes = node_prefixes(node_path)
-        if not prefixes:
-            return {"nodes_created": 0, "child_refs_created": 0, "node_hashes": []}
+    def _existing_node_embedding_refs(self, current_model_ref: str) -> set[int]:
+        """Node hashes that already have a usable `context_node` embedding for this model.
 
-        compact_scope = serving_scope_ref(scope)
-        self._ensure_context_node_cache_loaded()
-        existing_nodes = self._context_node_hashes
-        existing_child_refs = self._context_child_ref_hashes
-        current_model = embedding_model_name()
-        current_model_ref = embedding_model_ref_for_name(current_model)
-        existing_node_embeddings: set[int] = set()
+        Walking the whole log is fine on the JSONL backend, where `read_all()` is an in-memory
+        list. It is NOT fine on a native backend, where `read_all()` is a full record-log read
+        shipped over the proxy and re-run through the serving pipeline -- and
+        `ensure_context_node_path` runs three times per ingest. The native adapter overrides this
+        with a keyed lookup; see `MatrixArkTemporalStoreDirectAdapter._existing_node_embedding_refs`.
+        """
+        refs: set[int] = set()
         for record in self.read_all():
             if (
                 record.get("record_type") != "context_embedding"
@@ -81,9 +79,30 @@ class _LocalAdapterContextNodeMixin:
             ):
                 continue
             try:
-                existing_node_embeddings.add(int(record.get("ref_hash")))
+                refs.add(int(record.get("ref_hash")))
             except (TypeError, ValueError):
                 continue
+        return refs
+
+    def _record_node_embedding_ref(self, node_hash: int, current_model_ref: str) -> None:
+        """Note that a node embedding now exists. No-op here; the log IS the record.
+
+        The native adapter overrides this to keep its keyed index current.
+        """
+        return None
+
+    def ensure_context_node_path(self, *, node_path: list[str], scope: Json, updated_at_ms: int) -> Json:
+        prefixes = node_prefixes(node_path)
+        if not prefixes:
+            return {"nodes_created": 0, "child_refs_created": 0, "node_hashes": []}
+
+        compact_scope = serving_scope_ref(scope)
+        self._ensure_context_node_cache_loaded()
+        existing_nodes = self._context_node_hashes
+        existing_child_refs = self._context_child_ref_hashes
+        current_model = embedding_model_name()
+        current_model_ref = embedding_model_ref_for_name(current_model)
+        existing_node_embeddings = self._existing_node_embedding_refs(current_model_ref)
         node_hashes: list[int] = []
         nodes_created = 0
         child_refs_created = 0
@@ -131,6 +150,7 @@ class _LocalAdapterContextNodeMixin:
                     })
                 )
                 existing_node_embeddings.add(node_hash)
+                self._record_node_embedding_ref(node_hash, current_model_ref)
                 node_embeddings_created += 1
             if parent_path:
                 child_ref_hash = stable_hash(f"child:{parent_hash}:{node_hash}")

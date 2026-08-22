@@ -56,12 +56,29 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
 
 
+def direct_cache_scope(target: Any) -> str:
+    """The identity of the store a cache entry belongs to.
+
+    `_storage_prefix` alone is NOT that identity: it defaults to "matrixark:mcp" for every
+    adapter, while the store a client actually talks to is separated by namespace and table. Two
+    adapters over different stores in one process therefore share a cache key, and whichever
+    wrote last wins -- one store serving another store's records. It has been latent because the
+    record cache was off for native backends; turning it on makes it reachable, so the key names
+    the store.
+    """
+    return "%s|%s|%s" % (
+        str(getattr(target, "_namespace", "") or ""),
+        str(getattr(target, "_table", "") or ""),
+        str(getattr(target, "_storage_prefix", "") or ""),
+    )
+
+
 def direct_record_load_lock(target: Any) -> threading.RLock:
     with _DIRECT_RECORD_CACHE_LOCK:
-        lock = _DIRECT_RECORD_LOAD_LOCKS.get(target._storage_prefix)
+        lock = _DIRECT_RECORD_LOAD_LOCKS.get(direct_cache_scope(target))
         if lock is None:
             lock = threading.RLock()
-            _DIRECT_RECORD_LOAD_LOCKS[target._storage_prefix] = lock
+            _DIRECT_RECORD_LOAD_LOCKS[direct_cache_scope(target)] = lock
         return lock
 
 
@@ -69,7 +86,7 @@ def get_direct_record_cache(target: Any, count: int) -> list[Json] | None:
     if not target.python_hot_cache_enabled():
         return None
     with _DIRECT_RECORD_CACHE_LOCK:
-        cached = _DIRECT_RECORD_CACHE.get(target._storage_prefix)
+        cached = _DIRECT_RECORD_CACHE.get(direct_cache_scope(target))
         if cached is None:
             return None
         cached_count, records = cached
@@ -82,10 +99,10 @@ def put_direct_record_cache(target: Any, count: int, records: list[Json]) -> Non
     if not target.python_hot_cache_enabled():
         return
     with _DIRECT_RECORD_CACHE_LOCK:
-        if len(_DIRECT_RECORD_CACHE) >= _DIRECT_RECORD_CACHE_MAX_PREFIXES and target._storage_prefix not in _DIRECT_RECORD_CACHE:
+        if len(_DIRECT_RECORD_CACHE) >= _DIRECT_RECORD_CACHE_MAX_PREFIXES and direct_cache_scope(target) not in _DIRECT_RECORD_CACHE:
             oldest = next(iter(_DIRECT_RECORD_CACHE))
             _DIRECT_RECORD_CACHE.pop(oldest, None)
-        _DIRECT_RECORD_CACHE[target._storage_prefix] = (count, list(records))
+        _DIRECT_RECORD_CACHE[direct_cache_scope(target)] = (count, list(records))
 
 
 def drop_direct_record_cache(target: Any) -> None:
@@ -93,7 +110,7 @@ def drop_direct_record_cache(target: Any) -> None:
     target._records_cache = None
     target._index_cache = None
     with _DIRECT_RECORD_CACHE_LOCK:
-        _DIRECT_RECORD_CACHE.pop(target._storage_prefix, None)
+        _DIRECT_RECORD_CACHE.pop(direct_cache_scope(target), None)
     with target._retrieval_candidate_cache_lock:
         target._retrieval_candidate_cache.clear()
 

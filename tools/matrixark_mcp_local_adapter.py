@@ -5074,6 +5074,43 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             "updated_at_ms": best.get("updated_at_ms"),
         }
 
+    # mem0 calls these "users", but the list is really every identity that holds memories:
+    # a user, an agent, or a run (a session here). The tuple is (mem0 type, scope field).
+    MEMORY_SUBJECT_FIELDS = (("user", "user_id"), ("agent", "agent_id"), ("run", "session_id"))
+
+    @classmethod
+    def memory_subjects_in_record(cls, record: Json) -> list[tuple[str, str]]:
+        """The (type, name) identities a single record attributes memory to."""
+        scope = record.get("scope") if isinstance(record, dict) else None
+        if not isinstance(scope, dict):
+            return []
+        found = []
+        for kind, field in cls.MEMORY_SUBJECT_FIELDS:
+            value = str(scope.get(field) or "").strip()
+            if value:
+                found.append((kind, value))
+        return found
+
+    def list_memory_subjects(self, args: Json) -> Json:
+        """Every user / agent / run that holds at least one live memory (mem0 ``users``).
+
+        Derived from the live view, so a subject whose memories were all forgotten or expired
+        stops being listed -- which is the point: mem0's `users()` answers "who has memories",
+        not "who was ever provisioned". The account-level user list answers that other question
+        and is deliberately not reused here.
+        """
+        limit = args.get("limit") if isinstance(args, dict) else None
+        limit = int(limit) if isinstance(limit, int) and limit > 0 else 0
+        seen: dict[tuple[str, str], int] = {}
+        for record in self.read_all():
+            for subject in self.memory_subjects_in_record(record):
+                seen[subject] = seen.get(subject, 0) + 1
+        results = [{"type": kind, "name": name, "memory_count": count}
+                   for (kind, name), count in sorted(seen.items())]
+        if limit:
+            results = results[:limit]
+        return {"results": results, "count": len(results)}
+
     def get_all(self, args: Json) -> Json:
         """List a scope's active (non-forgotten, non-deleted) memories (mem0 ``get_all(user_id=...)``).
         Projects live ``context_event`` records for the subject scope to ``{id, memory, ...}``. Because

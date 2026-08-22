@@ -1164,6 +1164,18 @@ TOOLS: list[Json] = [
         },
     },
     {
+        "name": "matrixark_list_users",
+        "description": "List the users/agents/runs that hold memories (mem0 users). Excludes subjects whose memories were all forgotten or expired.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "limit": {"type": "integer", "description": "Optional cap on the number of subjects returned."},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
         "name": "matrixark_reset",
         "description": "Wipe ALL memory for the caller's tenant (mem0 reset). Guarded by confirm == tenant_id or the literal 'RESET'.",
         "inputSchema": {

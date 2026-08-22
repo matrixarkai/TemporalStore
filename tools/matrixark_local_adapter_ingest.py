@@ -85,6 +85,21 @@ def warn_if_profile_scope_missing(scope) -> str:
 _BATCH_MESSAGES_WARNED: set = set()
 BATCH_MESSAGES_WARN_THRESHOLD = int(os.environ.get("MATRIXARK_BATCH_MESSAGES_WARN_THRESHOLD", "6"))
 
+# Ingest fields that come from the CALLER rather than from extraction -- the exact set
+# MatrixArkLocalAdapter._stamp_ingest_fields puts on a `context_event`. Extraction cannot rebuild
+# them, so a commit that rewrites an existing event row has to carry them over (see the use below).
+# An explicit allowlist on purpose: the rewrite is meant to replace the extraction's own view of the
+# event, and inheriting anything broader would let a stale earlier row overrule a fresh
+# classification.
+CALLER_SUPPLIED_EVENT_FIELDS = (
+    "identity_key",
+    "truth_class",
+    "truth_rank",
+    "expires_at",
+    "expires_at_ms",
+    "ephemeral",
+)
+
 
 def warn_if_batched_messages(messages) -> str:
     """Warn when one message-ingest call carries many messages.
@@ -2094,6 +2109,43 @@ class _LocalAdapterIngestMixin:
                     continue
                 segment_hashes_by_position.setdefault(message_index, []).append(segment_hash)
                 segment_hash_by_position.setdefault(message_index, segment_hash)
+        # Fields the CALLER supplied on the original ingest. When extraction commits it REWRITES the
+        # `context_event` row for an id that already exists, building it from the extraction result
+        # alone -- and latest-value compaction then serves that newer row. Anything the caller put on
+        # the original row and the extractor does not reproduce is therefore silently dropped at read
+        # time: an `identity_key` ingest became unfindable by keyed recall and stopped superseding,
+        # and a `ttl_seconds` ingest became a record nothing would ever expire. They survived only
+        # when extraction ran inside the ingest call, because `_stamp_ingest_fields` is scoped to it
+        # -- so an in-process sync ingest looked correct while the same request through the gateway,
+        # where finalize commits separately, lost them. Carry them across the rewrite.
+        inherited_event_fields: dict[int, Json] = {}
+        if derive_from_existing_events and source_event_ids:
+            wanted_event_ids: set[int] = set()
+            for source_event_id in source_event_ids:
+                try:
+                    wanted_event_ids.add(int(source_event_id))
+                except (TypeError, ValueError):
+                    continue
+            # `prior_records` is the live view already loaded for prior context; only pay for a read
+            # when the caller asked to skip that. Reading the LIVE view rather than the raw log is
+            # deliberate -- a deleted row must not hand its identity key to its replacement.
+            lookup_records = prior_records if prior_records else self.read_all()
+            for prior_record in lookup_records:
+                if str(prior_record.get("record_type") or "") != "context_event":
+                    continue
+                try:
+                    prior_event_id = int(prior_record.get("event_id_hash"))
+                except (TypeError, ValueError):
+                    continue
+                if prior_event_id not in wanted_event_ids:
+                    continue
+                carried = {
+                    field: prior_record[field]
+                    for field in CALLER_SUPPLIED_EVENT_FIELDS
+                    if prior_record.get(field) is not None
+                }
+                if carried:
+                    inherited_event_fields[prior_event_id] = carried
         if derive_from_existing_events:
             for index, message in enumerate(envelope["messages"]):
                 if index >= len(source_event_ids):
@@ -2224,6 +2276,8 @@ class _LocalAdapterIngestMixin:
                     "extraction_phase": extraction_phase,
                     "final_session_boundary": final_session_boundary,
                     "extraction_context_event_ids": extraction_context_event_ids,
+                    # Last, so the caller's own fields win over anything above that shares a name.
+                    **inherited_event_fields.get(event_id_hash, {}),
                 }
                 event_memory_layer = candidate_memory_layer_name(event_record)
                 if event_memory_layer:

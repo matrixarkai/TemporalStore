@@ -35,6 +35,10 @@ resolution is reused verbatim from ``matrixark_ingest_client`` so ``base_url`` /
 """
 from __future__ import annotations
 
+# mem0 documents a ceiling of 1000 memories per batch call; refuse past it rather than
+# quietly issuing an unbounded number of requests.
+MEM0_BATCH_LIMIT = 1000
+
 from typing import Any, Optional
 
 try:  # top-level (run from tools/) ...
@@ -259,7 +263,7 @@ class Memory:
             metadata: Optional[Json] = None, provider: Optional[str] = None,
             expires_at: Optional[float] = None, ttl: Optional[float] = None,
             identity_key: Optional[str] = None, truth_class: Optional[str] = None,
-            **kw: Any) -> Json:
+            finalize: bool = True, **kw: Any) -> Json:
         """Ingest ``messages`` (mem0 ``add``). Maps ``run_id`` -> ``session_id``
         and ``agent_id`` -> ``scope.agent_id``; accepts a bare string.
 
@@ -275,6 +279,16 @@ class Memory:
         auto-expired at read time and excluded from summaries; ``identity_key``
         + ``truth_class`` drive the keyed-upsert truth-rank guard (a higher/equal
         rank supersedes the prior value for that key; a lower rank is rejected).
+        ``finalize`` (default ``True``) commits the ingest before returning, which
+        is what makes ``add`` read-after-write: a ``get_all`` / ``search`` issued
+        straight afterwards sees the memory, as it does on mem0. Without it the
+        ingest is a streaming write that only becomes visible once a debounce
+        elapses, and because every further write to the same scope pushes that
+        debounce out, a burst of ``add`` calls can stay invisible for as long as
+        the burst lasts -- which reads as data loss in code written against mem0.
+        Pass ``finalize=False`` deliberately to stream a conversation in and let
+        the idle commit close it, which is cheaper per call.
+
         Extra kwargs are ignored for mem0 signature compatibility. Returns the
         parsed ``/v1/ingest`` response."""
         normalized = _normalize_messages(messages, provider)
@@ -292,7 +306,7 @@ class Memory:
         # Pass finalize=False for the streaming behaviour (cheaper add, retrievable after
         # the debounce).
         body: Json = {"kind": "message", "messages": normalized,
-                      "finalize": bool(kw.get("finalize", True))}
+                      "finalize": bool(finalize)}
         scope = _scope_from_identity(user_id, agent_id, run_id)
         if scope:
             body["scope"] = scope
@@ -416,6 +430,76 @@ class Memory:
         body: Json = {"memory_id": str(memory_id)}
         return _post_json(self._base_url, self._api_key, "/v1/delete", body, self._timeout)
 
+    def batch_update(self, memories: Any, **kw: Any) -> Json:
+        """Update many memories in one call (mem0 ``batch_update``).
+
+        Takes mem0's shape: a list of dicts with ``memory_id`` (required) and ``text`` and/or
+        ``metadata``. ``text`` is mem0's name for the field this API calls ``data``, so it is
+        mapped; either name is accepted here.
+
+        NOT atomic. mem0's batch endpoint is a single server-side request, but MatrixArk's update
+        is a supersede (ingest the amended version, tombstone the old id) with no cross-memory
+        transaction behind it, so this issues one update per entry and reports what happened to
+        each. Callers who need all-or-nothing must not use this. Entries are attempted in order
+        and one failure does not stop the rest -- the failures are returned rather than raised, so
+        a partial batch is visible instead of silently half-applied.
+        """
+        entries = list(memories or [])
+        if len(entries) > MEM0_BATCH_LIMIT:
+            raise ValueError(
+                f"batch_update accepts at most {MEM0_BATCH_LIMIT} memories, got {len(entries)}"
+            )
+        results: list[Json] = []
+        failed: list[Json] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise ValueError("each batch_update entry must be a dict with a memory_id")
+            memory_id = entry.get("memory_id")
+            if not memory_id:
+                raise ValueError("each batch_update entry requires memory_id")
+            body: Json = {"memory_id": str(memory_id)}
+            data = entry.get("text", entry.get("data"))
+            if data is not None:
+                body["data"] = data
+            if entry.get("metadata") is not None:
+                body["metadata"] = entry["metadata"]
+            try:
+                response = _post_json(self._base_url, self._api_key, "/v1/update", body, self._timeout)
+            except Exception as exc:  # noqa: BLE001 - report, do not abort the rest of the batch
+                failed.append({"memory_id": str(memory_id), "error": repr(exc)})
+                continue
+            results.append({"memory_id": str(memory_id), "result": response})
+        return {"results": results, "updated": len(results), "failed": failed}
+
+    def batch_delete(self, memories: Any, **kw: Any) -> Json:
+        """Delete many memories in one call (mem0 ``batch_delete``).
+
+        Takes mem0's shape: a list of dicts with ``memory_id``. A bare list of ids is accepted too,
+        because it is the obvious thing to reach for and rejecting it helps nobody.
+
+        NOT atomic, for the same reason as `batch_update`: one delete per entry, failures reported
+        per memory rather than raised, so a partial batch is visible.
+        """
+        entries = list(memories or [])
+        if len(entries) > MEM0_BATCH_LIMIT:
+            raise ValueError(
+                f"batch_delete accepts at most {MEM0_BATCH_LIMIT} memories, got {len(entries)}"
+            )
+        results: list[Json] = []
+        failed: list[Json] = []
+        for entry in entries:
+            memory_id = entry.get("memory_id") if isinstance(entry, dict) else entry
+            if not memory_id:
+                raise ValueError("each batch_delete entry requires memory_id")
+            try:
+                response = _post_json(self._base_url, self._api_key, "/v1/delete",
+                                      {"memory_id": str(memory_id)}, self._timeout)
+            except Exception as exc:  # noqa: BLE001 - report, do not abort the rest of the batch
+                failed.append({"memory_id": str(memory_id), "error": repr(exc)})
+                continue
+            results.append({"memory_id": str(memory_id), "result": response})
+        return {"results": results, "deleted": len(results), "failed": failed}
+
     def delete_all(self, *, user_id: Optional[str] = None, agent_id: Optional[str] = None,
                    run_id: Optional[str] = None, **kw: Any) -> Json:
         """Delete ALL memory for a subject (mem0 ``delete_all(user_id=...)``). Maps identity kwargs to
@@ -438,6 +522,19 @@ class Memory:
         if limit is not None:
             body["limit"] = int(limit)
         return _post_json(self._base_url, self._api_key, "/v1/memories", body, self._timeout)
+
+    def users(self, *, limit: Optional[int] = None, **kw: Any) -> Json:
+        """List the users / agents / runs that hold memories (mem0 ``users``).
+
+        Returns mem0's shape, ``{"results": [{"type": "user", "name": "alice"}, ...]}``, with a
+        ``memory_count`` added for users. "Holds memories" is the live view: a subject whose
+        memories were all forgotten or have expired is not listed, which is what mem0's users()
+        means -- it is not a list of provisioned accounts.
+        """
+        body: Json = {}
+        if limit is not None:
+            body["limit"] = int(limit)
+        return _post_json(self._base_url, self._api_key, "/v1/users", body, self._timeout)
 
     def reset(self, *, confirm: str = "RESET", **kw: Any) -> Json:
         """Wipe ALL memory for the caller's tenant (mem0 ``reset``). Posts to ``/v1/reset`` with an
