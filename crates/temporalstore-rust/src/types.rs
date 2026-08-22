@@ -1182,15 +1182,18 @@ pub enum Command {
     },
     StringSet {
         key: String,
+        #[serde(with = "crate::bytes_serde")]
         value: Vec<u8>,
     },
     StringSetEx {
         key: String,
+        #[serde(with = "crate::bytes_serde")]
         value: Vec<u8>,
         ttl_ms: u64,
     },
     StringSetConditional {
         key: String,
+        #[serde(with = "crate::bytes_serde")]
         value: Vec<u8>,
         #[serde(default)]
         ttl_ms: Option<u64>,
@@ -1206,6 +1209,7 @@ pub enum Command {
     HashSet {
         key: String,
         field: String,
+        #[serde(with = "crate::bytes_serde")]
         value: Vec<u8>,
     },
     HashGet {
@@ -1218,6 +1222,7 @@ pub enum Command {
     },
     HashMultiSet {
         key: String,
+        #[serde(with = "crate::bytes_serde::pairs")]
         entries: Vec<(String, Vec<u8>)>,
     },
     HashIncrBy {
@@ -1237,6 +1242,7 @@ pub enum Command {
     },
     SetAdd {
         key: String,
+        #[serde(with = "crate::bytes_serde")]
         member: Vec<u8>,
     },
     SetMembers {
@@ -1244,6 +1250,7 @@ pub enum Command {
     },
     SetRemove {
         key: String,
+        #[serde(with = "crate::bytes_serde")]
         member: Vec<u8>,
     },
     FeatureAppend {
@@ -1320,6 +1327,7 @@ pub enum Command {
     ControlStateChangeAdd {
         key: String,
         timestamp_ms: u64,
+        #[serde(with = "crate::bytes_serde")]
         value: Vec<u8>,
         #[serde(default)]
         precision_ms: Option<u64>,
@@ -1389,6 +1397,7 @@ pub enum Command {
     #[serde(alias = "control_state_fol_set")]
     ControlStateSelectionSet {
         key: String,
+        #[serde(with = "crate::bytes_serde")]
         value: Vec<u8>,
         occur_time_ms: u64,
         ttl_ms: u64,
