@@ -98,9 +98,23 @@ fn control_api_reads_and_scans_wal_stream() {
         size: 4096,
     });
     assert!(stream.status.ok);
-    let text = String::from_utf8(stream.data).unwrap();
-    assert!(text.contains("\"sequence\":1"));
-    assert!(text.contains("\"sequence\":2"));
+    // Decode the records rather than matching on how a field is spelled: the endpoint returns
+    // the log's records, and that is what should be asserted.
+    let sequences: Vec<u64> = stream
+        .data
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            crate::wal::decode_wal_line(line)
+                .expect("the stream should carry decodable records")
+                .sequence
+        })
+        .collect();
+    assert_eq!(
+        sequences,
+        vec![1, 2],
+        "the stream should carry both records, in order"
+    );
 
     let scan = engine.scan_stream(ScanStreamRequest {
         shard_id: 1,
