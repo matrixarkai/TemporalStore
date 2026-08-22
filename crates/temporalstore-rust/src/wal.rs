@@ -2887,4 +2887,69 @@ mod tests {
         let decoded: WriteAheadLogRecord = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, record, "a record must survive its own encoding");
     }
+
+    /// Barriers taken per durable write, as concurrency rises.
+    ///
+    /// A durable write costs an fsync, and the fsync dominates it -- so the lever on throughput is
+    /// how many writes share one barrier. A ratio near 1.0 means every writer paid for its own; the
+    /// lower it goes, the better concurrent writers are being coalesced.
+    #[test]
+    fn durable_write_barriers_per_write_under_concurrency() {
+        use std::sync::Arc;
+
+        for writers in [1usize, 2, 4, 8, 16] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Arc::new(LocalWriteAheadLogStore::new(dir.path()));
+            let per_writer = 40u64;
+            let started = std::time::Instant::now();
+            let mut handles = Vec::new();
+            for writer in 0..writers {
+                let store = Arc::clone(&store);
+                handles.push(std::thread::spawn(move || {
+                    for index in 0..per_writer {
+                        store
+                            .append_with_sync(
+                                1,
+                                Command::StringSet {
+                                    key: format!("w{writer}-{index:06}"),
+                                    value: vec![118u8; 128],
+                                },
+                                true,
+                            )
+                            .unwrap();
+                    }
+                }));
+            }
+            for handle in handles {
+                handle.join().unwrap();
+            }
+            let elapsed = started.elapsed();
+            let total = writers as u64 * per_writer;
+            let stats = store.raw_stats(1);
+            let per_write = stats.syncs as f64 / total as f64;
+            println!(
+                "  {writers:>2} writers: {total:>4} writes, {:>4} barriers = {per_write:.2} per write, {:>7.0} writes/s, {:>7.1} us/write",
+                stats.syncs,
+                total as f64 / elapsed.as_secs_f64(),
+                elapsed.as_secs_f64() * 1e6 / total as f64
+            );
+
+            // One barrier per write is the ceiling -- more than that would mean a durable write
+            // paid for someone else's fsync as well as its own.
+            assert!(
+                stats.syncs <= total,
+                "{writers} writers took {} barriers for {total} writes",
+                stats.syncs
+            );
+            if writers >= 8 {
+                // Measured at 0.20 and 0.17 on an idle machine; this only has to catch coalescing
+                // being switched off or broken, which shows up as 1.00 at every concurrency.
+                assert!(
+                    per_write < 0.9,
+                    "concurrent writers should share barriers, but {writers} writers took \
+                     {per_write:.2} per write -- that is one each, so nothing is being coalesced"
+                );
+            }
+        }
+    }
 }
