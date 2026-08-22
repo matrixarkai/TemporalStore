@@ -800,6 +800,8 @@ pub enum MetaMutation {
     PutProxyGroup(PutProxyGroupRequest),
     DropProxyGroup(DropProxyGroupRequest),
     SetProxyGroup(ProxyAttachment),
+    /// Freeze, unfreeze or drop a whole namespace.
+    SetNamespaceState(AddNamespaceRequest, MetaEntityState),
     /// Mute or resume metadata change. Recorded like any other mutation so it
     /// replays in order and reaches raft peers; the guard is deliberately not
     /// applied during replay, because the log only ever contains mutations that
@@ -1185,6 +1187,9 @@ impl SingleNodeMeta {
                     .status
             }
             MetaMutation::UpdateServer(request) => self.apply_update_server(request).status,
+            MetaMutation::SetNamespaceState(request, next) => {
+                self.apply_set_namespace_state(request, next).status
+            }
             MetaMutation::SetMetaChangeMuted(muted) => {
                 self.apply_set_meta_change_muted(muted).status
             }
@@ -2457,6 +2462,173 @@ mod tests {
         let restored = SingleNodeMeta::default();
         assert!(restored.install_snapshot(snapshot).status.ok);
         assert!(restored.is_meta_change_muted());
+    }
+
+    /// A namespace with two serving tables on one node.
+    fn namespaced_meta() -> SingleNodeMeta {
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "node-a".to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+        });
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "tenant".to_string(),
+        });
+        for (index, table_name) in ["orders", "events"].into_iter().enumerate() {
+            meta.add_table(AddTableRequest {
+                namespace: "tenant".to_string(),
+                table_name: table_name.to_string(),
+                first_shard_id: index as ShardId + 1,
+                shard_count: 1,
+                replica_count: 1,
+                partition_version: 0,
+                serving_options: TableServingOptions::default(),
+            });
+            meta.register(RegisterShardRequest {
+                shard_id: index as ShardId + 1,
+                server_addr: "node-a".to_string(),
+            });
+        }
+        meta
+    }
+
+    fn namespace(name: &str) -> AddNamespaceRequest {
+        AddNamespaceRequest {
+            namespace: name.to_string(),
+        }
+    }
+
+    fn topology_status(meta: &SingleNodeMeta, table_name: &str) -> Status {
+        meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "tenant".to_string(),
+            table_name: table_name.to_string(),
+            old_topology_version: 0,
+        })
+        .status
+    }
+
+    #[test]
+    fn freezing_a_namespace_stops_every_table_in_it() {
+        // The lever an operator reaches for is the tenant, not the table.
+        let meta = namespaced_meta();
+        assert!(topology_status(&meta, "orders").ok);
+        assert!(topology_status(&meta, "events").ok);
+
+        assert!(meta.freeze_namespace(namespace("tenant")).status.ok);
+        assert_eq!(topology_status(&meta, "orders").code, "resource_frozen");
+        assert_eq!(topology_status(&meta, "events").code, "resource_frozen");
+
+        assert!(meta.unfreeze_namespace(namespace("tenant")).status.ok);
+        assert!(topology_status(&meta, "orders").ok);
+        assert!(topology_status(&meta, "events").ok);
+    }
+
+    #[test]
+    fn a_table_cannot_be_created_into_a_frozen_namespace() {
+        // Otherwise a table created after the freeze serves straight through it,
+        // and the freeze does not mean what it says.
+        let meta = namespaced_meta();
+        assert!(meta.freeze_namespace(namespace("tenant")).status.ok);
+        let response = meta.add_table(AddTableRequest {
+            namespace: "tenant".to_string(),
+            table_name: "late".to_string(),
+            first_shard_id: 9,
+            shard_count: 1,
+            replica_count: 1,
+            partition_version: 0,
+            serving_options: TableServingOptions::default(),
+        });
+        assert_eq!(response.status.code, "resource_frozen");
+    }
+
+    #[test]
+    fn a_namespace_that_still_holds_a_table_is_not_dropped() {
+        // Dropping the namespace out from under a live table would leave the
+        // table addressable by name but unreachable through its namespace.
+        let meta = namespaced_meta();
+        assert_eq!(
+            meta.drop_namespace(namespace("tenant")).status.code,
+            "namespace_not_empty"
+        );
+
+        for table_name in ["orders", "events"] {
+            assert!(
+                meta.delete_table(DeleteTableRequest {
+                    namespace: "tenant".to_string(),
+                    table_name: table_name.to_string(),
+                })
+                .status
+                .ok
+            );
+        }
+        assert!(meta.drop_namespace(namespace("tenant")).status.ok);
+    }
+
+    #[test]
+    fn a_dropped_namespace_can_be_brought_back() {
+        // Dropping is a tombstone, not an erasure, so it stays recoverable up
+        // until retention forgets it.
+        let meta = SingleNodeMeta::default();
+        meta.add_namespace(namespace("tenant"));
+        assert!(meta.drop_namespace(namespace("tenant")).status.ok);
+        assert_eq!(
+            meta.list_namespaces().namespaces[0].state,
+            MetaEntityState::Dropped
+        );
+        assert!(meta.unfreeze_namespace(namespace("tenant")).status.ok);
+        assert_eq!(
+            meta.list_namespaces().namespaces[0].state,
+            MetaEntityState::Normal
+        );
+    }
+
+    #[test]
+    fn namespace_state_changes_are_rejected_when_unknown_or_unchanged() {
+        let meta = namespaced_meta();
+        assert_eq!(
+            meta.freeze_namespace(namespace("nope")).status.code,
+            "namespace_not_found"
+        );
+        assert!(meta.freeze_namespace(namespace("tenant")).status.ok);
+        assert_eq!(
+            meta.freeze_namespace(namespace("tenant")).status.code,
+            "not_modified"
+        );
+    }
+
+    #[test]
+    fn a_muted_metaserver_will_not_change_a_namespace() {
+        let meta = namespaced_meta();
+        assert!(meta.set_meta_change_muted(true).status.ok);
+        assert_eq!(
+            meta.freeze_namespace(namespace("tenant")).status.code,
+            "meta_change_muted"
+        );
+    }
+
+    #[test]
+    fn namespace_state_survives_snapshot_and_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("namespace-mutations.jsonl");
+        {
+            let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+            meta.add_namespace(namespace("tenant"));
+            assert!(meta.freeze_namespace(namespace("tenant")).status.ok);
+            let snapshot = meta.export_snapshot();
+            let restored = SingleNodeMeta::default();
+            assert!(restored.install_snapshot(snapshot).status.ok);
+            assert_eq!(
+                restored.list_namespaces().namespaces[0].state,
+                MetaEntityState::Frozen
+            );
+        }
+        let recovered = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert_eq!(
+            recovered.list_namespaces().namespaces[0].state,
+            MetaEntityState::Frozen
+        );
     }
 
     #[test]

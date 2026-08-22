@@ -1521,6 +1521,17 @@ fn handle(
         ("POST", "/namespaces") => parse_or(&request.body, |req: AddNamespaceRequest| {
             backend_call!(meta, add_namespace, req)
         }),
+        ("POST", "/namespaces/freeze") => parse_or(&request.body, |req: AddNamespaceRequest| {
+            backend_call!(meta, freeze_namespace, req)
+        }),
+        ("POST", "/namespaces/unfreeze") => parse_or(&request.body, |req: AddNamespaceRequest| {
+            backend_call!(meta, unfreeze_namespace, req)
+        }),
+        ("POST", "/namespaces/delete") | ("DELETE", "/namespaces") => {
+            parse_or(&request.body, |req: AddNamespaceRequest| {
+                backend_call!(meta, drop_namespace, req)
+            })
+        }
         ("GET", "/namespaces") => json_response(200, &backend_call!(meta, list_namespaces)),
         ("POST", "/tables") => parse_or(&request.body, |req: AddTableRequest| {
             backend_call!(meta, add_table, req)

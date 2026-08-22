@@ -31,6 +31,21 @@ impl SingleNodeMeta {
             };
         }
         let mut state = self.inner.write().expect("meta lock poisoned");
+        // Creating a table into a namespace that is not serving would reopen
+        // exactly the hole a namespace freeze exists to close.
+        match state.namespaces.get(&request.namespace).copied() {
+            Some(MetaEntityState::Frozen) => {
+                return AckResponse {
+                    status: Status::error("resource_frozen", "namespace is frozen"),
+                };
+            }
+            Some(MetaEntityState::Dropped) => {
+                return AckResponse {
+                    status: Status::error("namespace_not_found", "namespace is dropped"),
+                };
+            }
+            _ => {}
+        }
         state.counters.table_create_total += 1;
         state
             .namespaces
