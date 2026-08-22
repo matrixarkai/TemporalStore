@@ -3143,3 +3143,52 @@ fn a_rejected_append_retreats_to_an_earlier_entry() {
         second.prev_log_index
     );
 }
+
+/// A reply carrying a newer term makes the leader step down.
+///
+/// A node that was isolated keeps calling elections, so it rejoins with a term far ahead of the
+/// leader's and refuses every append as a stale term -- correctly. If the leader ignores the term
+/// in that reply it stays leader at the old term and keeps sending the same doomed request, so the
+/// rejoining node can never be reintegrated and goes on serving reads missing committed data.
+#[test]
+fn a_reply_from_a_newer_term_makes_the_leader_step_down() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+    cluster
+        .propose(Command::StringSet {
+            key: "committed".to_string(),
+            value: b"v".to_vec(),
+        })
+        .unwrap();
+    let leader_term = cluster.status().current_term;
+
+    // The peer was isolated and called elections of its own while away.
+    cluster
+        .record_append_entries_response(
+            3,
+            &AppendEntriesResponse {
+                term: leader_term + 5,
+                success: false,
+                match_index: 0,
+                reject_reason: Some("stale_term".to_string()),
+            },
+        )
+        .unwrap();
+
+    let status = cluster.status();
+    assert!(
+        status.current_term >= leader_term + 5,
+        "the leader must adopt the newer term, stayed at {}",
+        status.current_term
+    );
+    let still_leader = status
+        .nodes
+        .iter()
+        .any(|node| node.node_id == 1 && node.role == RaftRole::Leader);
+    assert!(
+        !still_leader,
+        "the leader must step down rather than keep sending requests that can only be refused"
+    );
+}

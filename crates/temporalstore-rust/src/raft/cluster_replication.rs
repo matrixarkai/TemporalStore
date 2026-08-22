@@ -266,6 +266,25 @@ impl RaftCluster {
         response: &AppendEntriesResponse,
     ) -> Result<(), RaftError> {
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        // A reply from a newer term means this leader is stale -- step down rather than keep
+        // sending requests that can only be refused. A peer that was isolated returns with a term
+        // well ahead of ours, and without this it rejects every append forever while we stay
+        // leader at the old term, so it can never rejoin.
+        let local_leader_id = inner.leader_id;
+        let stepped_down = inner
+            .nodes
+            .get_mut(&local_leader_id)
+            .map(|leader| {
+                if response.term > leader.current_term {
+                    leader.current_term = response.term;
+                    leader.voted_for = None;
+                    leader.role = RaftRole::Follower;
+                    true
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false);
         let target = inner
             .nodes
             .get_mut(&target_id)
@@ -273,6 +292,11 @@ impl RaftCluster {
         target.pipeline_state.inflight_entries = 0;
         target.pipeline_state.inflight_bytes = 0;
         target.pipeline_state.append_queue_depth = 0;
+        if stepped_down {
+            target.current_term = target.current_term.max(response.term);
+            inner.persist_configured_wal()?;
+            return Ok(());
+        }
         if response.success {
             target.pipeline_state.match_index =
                 target.pipeline_state.match_index.max(response.match_index);
