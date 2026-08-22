@@ -59,6 +59,12 @@ pub(super) fn proxy_client_from_options(options: &ProxyOptions) -> TemporalStore
         // hash, while the client refreshed unconditionally. Setting it to false changed
         // nothing and said nothing.
         refresh_route_on_backend_error: options.refresh_route_on_backend_error,
+        // Where this proxy is. The client falls back to it when a table does not name its
+        // own `preferred_location`, and that value is what `choose_cached_route` uses to
+        // pick a replica -- so without it a proxy configured with a location got no locality
+        // preference at all and read cross-zone. The proxy already reported this location to
+        // the metaserver and in its own status; it just never reached the thing that routes.
+        local_location: options.location.clone(),
         ..ClientOptions::default()
     })
 }
