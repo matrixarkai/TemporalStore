@@ -387,6 +387,21 @@ impl RaftCluster {
         let leader_id = request.leader_id;
         let term = request.term;
         let leader_commit = request.leader_commit;
+        // Contact from the leader proves it is alive, whatever we go on to decide about its
+        // entries. A follower marks its leader down when its election timer expires, and until
+        // now only an ACCEPTED append marked it back up -- so a follower that is merely behind,
+        // which rejects appends while it catches up, held a healthy leader as down and refused
+        // every operation that needs one.
+        let heard_from_the_leader = inner
+            .nodes
+            .get(&target_id)
+            .map(|node| term >= node.current_term)
+            .unwrap_or(false);
+        if heard_from_the_leader && leader_id != target_id {
+            if let Some(leader) = inner.nodes.get_mut(&leader_id) {
+                leader.alive = true;
+            }
+        }
         let received_entries = entries.len() as u64;
         let received_bytes = entries
             .iter()

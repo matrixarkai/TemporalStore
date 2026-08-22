@@ -3337,3 +3337,56 @@ fn preparing_a_pre_vote_does_not_raise_the_term() {
         "asking twenty-five times must leave every term where it was"
     );
 }
+
+/// A follower that REFUSES an append still learns its leader is alive.
+///
+/// A follower marks its leader down when its election timer expires, and only an accepted append
+/// used to mark it back up. A follower that is merely behind rejects appends while it catches up,
+/// so it held a healthy leader as down indefinitely -- and every operation needing a leader, a
+/// membership change among them, was refused with "leader is not available" while the leader was
+/// leading a healthy majority.
+#[test]
+fn a_rejected_append_still_proves_the_leader_is_alive() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+    cluster
+        .propose(Command::StringSet {
+            key: "committed".to_string(),
+            value: b"v".to_vec(),
+        })
+        .unwrap();
+
+    // Node 3 timed out waiting and wrote its leader off, the way the election timer does.
+    cluster.set_alive(1, false).unwrap();
+
+    // The leader speaks to it, but from a point their logs do not agree on, so it is refused.
+    let response = cluster
+        .receive_append_entries(AppendEntriesRequest {
+            rpc: None,
+            shard_id: 1,
+            term: cluster.status().current_term,
+            leader_id: 1,
+            target_id: 3,
+            prev_log_index: 9,
+            prev_log_term: 9,
+            entries: Vec::new(),
+            leader_commit: 1,
+        })
+        .unwrap();
+    assert!(
+        !response.success,
+        "this append should be refused, or the test proves nothing: {response:?}"
+    );
+
+    let leader_alive = cluster
+        .status()
+        .nodes
+        .iter()
+        .any(|node| node.node_id == 1 && node.alive);
+    assert!(
+        leader_alive,
+        "being spoken to by the leader is proof it is alive, even when we refuse what it sent"
+    );
+}
