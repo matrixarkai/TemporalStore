@@ -3958,6 +3958,165 @@ mod tests {
     }
 
     #[test]
+    fn context_route_lookup_uses_the_shared_route_cache() {
+        // The context routes are the whole of the gateway's traffic, and every one of them
+        // used to resolve its shard with a direct `/shards/{id}` GET -- no cache, no TTL, no
+        // backend-failure accounting. That put a metaserver round-trip in front of every
+        // ingest, extract and retrieve, and put the metaserver in the request path of all of
+        // them, while the command path had been caching the identical lookup all along.
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        start_context_server(test_addr(18_372), engine.clone());
+        start_meta(test_addr(18_373), test_addr(18_372));
+        wait_for_http(&test_addr(18_373));
+        wait_for_http(&test_addr(18_372));
+
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_373),
+            route_cache_ttl_ms: 60_000,
+            context_first_shard_id: 1,
+            context_shard_count: 1,
+            ..ProxyOptions::default()
+        });
+
+        let body = serde_json::to_vec(&serde_json::json!({
+            "scope": {"tenant_id": "team-alpha", "account_id": "acct_42"},
+            "messages": [{"role": "user", "content": "route cache check"}]
+        }))
+        .unwrap();
+        for attempt in 0..3 {
+            let (code, _) = proxy.handle(HttpRequest {
+                method: "POST".to_string(),
+                path: "/context/ingest".to_string(),
+                body: body.clone(),
+            });
+            assert_eq!(code, 200, "context ingest {attempt} should succeed");
+        }
+
+        let report = proxy.preflight_report();
+        // One resolve for the first request; the other two come from the cache. Before this
+        // the count would have been three lookups and an empty cache, because the context
+        // path never went through the client that owns the cache.
+        assert_eq!(
+            report.client.route_refreshes, 1,
+            "three context requests should resolve the shard once, saw {} refreshes",
+            report.client.route_refreshes
+        );
+        assert!(
+            report.client.route_cache_hits >= 2,
+            "the last two requests should be cache hits, saw {}",
+            report.client.route_cache_hits
+        );
+        assert_eq!(
+            report.client.route_cache_size, 1,
+            "the context lookup should populate the shared route cache"
+        );
+    }
+
+    #[test]
+    fn context_route_cache_is_invalidated_when_the_shard_moves() {
+        // Caching the context route is only safe if something notices the shard moving. A
+        // proxy fronting the context gateway serves these three routes and nothing else --
+        // it never calls execute -- so if the context path did not check topology itself,
+        // nothing on that proxy ever would, and it would keep sending the gateway to the old
+        // datanode for the whole of route_cache_ttl_ms.
+        let dir_a = tempfile::tempdir().unwrap();
+        let engine_a = TemporalEngine::with_local_dirs(
+            1024,
+            dir_a.path().join("cache"),
+            dir_a.path().join("pages"),
+            dir_a.path().join("indexes"),
+        );
+        engine_a.load_shard(1);
+        start_context_server(test_addr(18_374), engine_a.clone());
+
+        let dir_b = tempfile::tempdir().unwrap();
+        let engine_b = TemporalEngine::with_local_dirs(
+            1024,
+            dir_b.path().join("cache"),
+            dir_b.path().join("pages"),
+            dir_b.path().join("indexes"),
+        );
+        engine_b.load_shard(1);
+        start_context_server(test_addr(18_375), engine_b.clone());
+
+        let meta = crate::meta::SingleNodeMeta::default();
+        meta.register_server(crate::meta::RegisterServerRequest {
+            server_addr: test_addr(18_374),
+            node_id: 1,
+            location: "zone-a".to_string(),
+            binary_version: "v-a".to_string(),
+        });
+        meta.register(RegisterShardRequest {
+            shard_id: 1,
+            server_addr: test_addr(18_374),
+        });
+        start_meta_service(test_addr(18_376), meta.clone());
+        wait_for_http(&test_addr(18_374));
+        wait_for_http(&test_addr(18_375));
+        wait_for_http(&test_addr(18_376));
+
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_376),
+            route_cache_ttl_ms: 60_000,
+            context_first_shard_id: 1,
+            context_shard_count: 1,
+            ..ProxyOptions::default()
+        });
+
+        let body = serde_json::to_vec(&serde_json::json!({
+            "scope": {"tenant_id": "team-alpha", "account_id": "acct_42"},
+            "messages": [{"role": "user", "content": "before the move"}]
+        }))
+        .unwrap();
+        let ingest = |body: Vec<u8>| {
+            proxy.handle(HttpRequest {
+                method: "POST".to_string(),
+                path: "/context/ingest".to_string(),
+                body,
+            })
+        };
+
+        let (code, _) = ingest(body.clone());
+        assert_eq!(code, 200);
+        let before = proxy.preflight_report();
+        assert_eq!(before.client.route_refreshes, 1, "first request resolves once");
+
+        // The shard moves to the second datanode.
+        meta.register_server(crate::meta::RegisterServerRequest {
+            server_addr: test_addr(18_375),
+            node_id: 2,
+            location: "zone-b".to_string(),
+            binary_version: "v-b".to_string(),
+        });
+        meta.register(RegisterShardRequest {
+            shard_id: 1,
+            server_addr: test_addr(18_375),
+        });
+
+        let moved_body = serde_json::to_vec(&serde_json::json!({
+            "scope": {"tenant_id": "team-alpha", "account_id": "acct_42"},
+            "messages": [{"role": "user", "content": "after the move"}]
+        }))
+        .unwrap();
+        let (code, _) = ingest(moved_body);
+        assert_eq!(code, 200);
+
+        let after = proxy.preflight_report();
+        assert!(
+            after.client.route_refreshes > before.client.route_refreshes,
+            "the context path must re-resolve after the shard moves, refreshes stayed at {}",
+            after.client.route_refreshes
+        );
+    }
+
+    #[test]
     fn proxy_routes_high_level_context_ingest_and_retrieve_by_tenant() {
         use crate::context_workflow::{ContextIngestExtractReport, ContextRetrieveReport};
 
