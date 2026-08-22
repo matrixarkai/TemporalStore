@@ -6,6 +6,19 @@
 use super::*;
 use std::collections::BTreeSet;
 
+/// Whether the server a shard is registered to is in service.
+///
+/// An unknown address counts as serving: a route can outlive the server record
+/// it names, and treating that as out of service would silently unroute shards
+/// the metaserver simply has not heard about yet.
+fn owner_is_serving(state: &MetaState, server_addr: &str) -> bool {
+    state
+        .servers
+        .get(server_addr)
+        .map(|server| server.state == MetaEntityState::Normal)
+        .unwrap_or(true)
+}
+
 pub(super) fn build_shards(state: &MetaState, table: &TableMetaInfo) -> Vec<TableShard> {
     #[derive(Debug)]
     struct PlacementCandidate {
@@ -100,7 +113,15 @@ pub(super) fn build_shards(state: &MetaState, table: &TableMetaInfo) -> Vec<Tabl
         let mut used_locations = BTreeSet::new();
         let mut used_hosts = BTreeSet::new();
         let mut placed_locations: Vec<Location> = Vec::new();
-        if let Some(location) = state.shards.get(&shard_id) {
+        // The owner is the one entry that reaches the replica list without
+        // passing the Normal filter the candidate scan applies. A server that
+        // was frozen or dropped is not serving, so naming it is telling a client
+        // to read from somewhere that is deliberately out of service.
+        let owner = state
+            .shards
+            .get(&shard_id)
+            .filter(|location| owner_is_serving(state, &location.server_addr));
+        if let Some(location) = owner {
             if let Some(server) = state.servers.get(&location.server_addr) {
                 placed_locations.push(Location::parse(&server.location));
             }
@@ -163,11 +184,18 @@ pub(super) fn build_shards(state: &MetaState, table: &TableMetaInfo) -> Vec<Tabl
                 &candidate.server_addr,
             );
         }
-        let primary = state
-            .shards
-            .get(&shard_id)
-            .map(|location| location.server_addr.clone())
-            .or_else(|| replicas.first().cloned());
+        let primary = match state.shards.get(&shard_id) {
+            // A recorded owner that is not serving leaves the shard with no
+            // primary. Falling through to the candidate scan would nominate a
+            // server that never loaded this shard, and a client that followed
+            // the nomination would read an empty shard and believe it.
+            Some(location) => {
+                owner_is_serving(state, &location.server_addr).then(|| location.server_addr.clone())
+            }
+            // No owner recorded yet: propose a placement, which is how a new
+            // table gets one before anything registers.
+            None => replicas.first().cloned(),
+        };
         let primary_endpoint = primary
             .as_ref()
             .map(|server_addr| server_endpoint(state, server_addr));
