@@ -78,6 +78,12 @@ pub struct ClientOptions {
     pub meta_sync_jitter_percent: u8,
     pub local_location: String,
     pub drop_percent: u8,
+    /// Re-resolve a shard's route and retry once when its backend fails, rather than
+    /// surfacing the error against the address we already had. This is what recovers a
+    /// request whose shard has moved, so it defaults ON; turning it off is for deployments
+    /// that would rather see the failure immediately than pay a metaserver round-trip and a
+    /// second attempt on every backend blip.
+    pub refresh_route_on_backend_error: bool,
 }
 
 impl ClientOptions {
@@ -125,6 +131,7 @@ impl Default for ClientOptions {
             meta_sync_jitter_percent: 20,
             local_location: String::new(),
             drop_percent: 0,
+            refresh_route_on_backend_error: true,
         }
     }
 }
@@ -661,6 +668,12 @@ struct BackendFailureState {
 impl TemporalStoreClient {
     pub fn new(proxy_addr: impl Into<String>) -> Self {
         Self::with_options(ClientOptions::proxy(proxy_addr))
+    }
+
+    /// The options this client is actually running with. Useful for confirming that a
+    /// configured knob was carried through rather than merely accepted.
+    pub fn client_options(&self) -> ClientOptions {
+        self.inner.options.clone()
     }
 
     pub fn with_options(options: ClientOptions) -> Self {

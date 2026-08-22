@@ -1263,6 +1263,12 @@ impl ProxyService {
             .map_err(|rejection| self.reject(rejection.status(), ProxyRejectionKind::Inflight))
     }
 
+    /// The options the proxy actually handed its client, so callers (and tests) can see what
+    /// was carried through rather than what was merely configured.
+    pub fn client_options_snapshot(&self) -> crate::client::ClientOptions {
+        self.client().client_options()
+    }
+
     pub(super) fn inflight_snapshot(&self) -> (u64, u64) {
         self.inner.inflight.snapshot()
     }
@@ -2640,6 +2646,31 @@ mod tests {
         let (code, _) = post(&drained, "/context/ingest", context_ingest_body("acct", "t"));
         assert_eq!(code, 503);
         assert_eq!(drained.preflight_report().stats.context_ingest_requests, 1);
+    }
+    #[test]
+    fn refresh_route_on_backend_error_flag_reaches_the_client() {
+        // The proxy accepted this option, defaulted it, read it from the environment and
+        // folded it into the config hash -- while never passing it to the client, which
+        // refreshed unconditionally. Setting it to false changed nothing and reported
+        // nothing. Pin that it is actually carried now.
+        let on = ProxyOptions {
+            meta_addr: "127.0.0.1:1".to_string(),
+            ..ProxyOptions::default()
+        };
+        assert!(on.refresh_route_on_backend_error, "default stays on");
+
+        let off = ProxyOptions {
+            refresh_route_on_backend_error: false,
+            ..on.clone()
+        };
+        // It already moved the config hash, which is how a rollout notices the change; the
+        // point of this test is the half that was missing.
+        assert_ne!(proxy_config_version(&on), proxy_config_version(&off));
+
+        let proxy_on = ProxyService::new(on);
+        let proxy_off = ProxyService::new(off);
+        assert!(proxy_on.client_options_snapshot().refresh_route_on_backend_error);
+        assert!(!proxy_off.client_options_snapshot().refresh_route_on_backend_error);
     }
     #[test]
     fn proxy_policy_blocks_writes_not_serving_and_drop_percent() {
