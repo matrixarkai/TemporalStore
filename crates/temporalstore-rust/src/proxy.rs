@@ -2687,6 +2687,36 @@ mod tests {
         assert!(!proxy_off.client_options_snapshot().refresh_route_on_backend_error);
     }
     #[test]
+    fn proxy_location_reaches_replica_selection() {
+        // The proxy has always accepted a location, reported it to the metaserver and shown
+        // it in its own status -- but never handed it to the client, whose `local_location`
+        // is the fallback used when a table does not name a preferred_location, and which is
+        // what actually picks a replica. So a proxy told it lives in zone-a read cross-zone.
+        let located = ProxyService::new(ProxyOptions {
+            meta_addr: "127.0.0.1:1".to_string(),
+            location: "zone-a".to_string(),
+            ..ProxyOptions::default()
+        });
+        assert_eq!(located.client_options_snapshot().local_location, "zone-a");
+
+        // An unset location stays unset rather than inventing a preference.
+        let unlocated = ProxyService::new(ProxyOptions {
+            meta_addr: "127.0.0.1:1".to_string(),
+            ..ProxyOptions::default()
+        });
+        assert!(unlocated.client_options_snapshot().local_location.is_empty());
+
+        // A config push that changes the location has to reach the client too, otherwise the
+        // proxy would report one location and route by another.
+        let _ = located.update_options_report(ProxyOptions {
+            meta_addr: "127.0.0.1:1".to_string(),
+            location: "zone-b".to_string(),
+            config_version: 99,
+            ..ProxyOptions::default()
+        });
+        assert_eq!(located.client_options_snapshot().local_location, "zone-b");
+    }
+    #[test]
     fn proxy_policy_blocks_writes_not_serving_and_drop_percent() {
         let readonly = ProxyService::new(ProxyOptions {
             meta_addr: "127.0.0.1:1".to_string(),
