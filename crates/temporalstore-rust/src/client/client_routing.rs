@@ -299,14 +299,19 @@ impl TemporalStoreClient {
             .location
             .ok_or_else(|| ClientError::Status("route missing".to_string()))?
             .server_addr;
+        // Stamp the topology this route was resolved against. Without it the route is
+        // version 0 = unknown, the staleness check treats unknown as stale, and the entry is
+        // dropped on the very next request -- which is why the cache never returned a hit.
+        let mut cached = CachedRoute::for_shard(shard_id, server_addr.clone(), "shard_lookup");
+        cached.topology_version = self
+            .inner
+            .known_topology_version
+            .load(std::sync::atomic::Ordering::Relaxed);
         self.inner
             .routes
             .lock()
             .expect("client route cache lock poisoned")
-            .insert(
-                shard_id,
-                CachedRoute::for_shard(shard_id, server_addr.clone(), "shard_lookup"),
-            );
+            .insert(shard_id, cached);
         self.inner
             .stats
             .lock()
