@@ -668,9 +668,7 @@ fn run_partition_phase(nodes: &[ProductionRaftNode]) -> PartitionSummary {
         .find(|node| node.node_id == 1)
         .expect("leader should exist");
     initialize_liveness(nodes);
-    for node in nodes {
-        elect_leader(node, leader.node_id);
-    }
+    establish_leader(nodes, leader.node_id);
     for follower in nodes
         .iter()
         .filter(|node| node.node_id != leader.node_id && node.node_id != isolated_node)
@@ -717,9 +715,7 @@ fn run_partition_phase(nodes: &[ProductionRaftNode]) -> PartitionSummary {
         block_peer(isolated, peer.node_id, false);
     }
     initialize_liveness(nodes);
-    for node in nodes {
-        elect_leader(node, leader.node_id);
-    }
+    establish_leader(nodes, leader.node_id);
     wait_for_local_catch_up(isolated, isolated_node);
     let healed_read = wait_for_value(isolated, isolated_node, "partition-majority", "v-partition");
     PartitionSummary {
@@ -770,9 +766,7 @@ fn run_lagging_follower_phase(nodes: &[ProductionRaftNode]) -> LaggingFollowerSu
         block_peer(follower, peer.node_id, false);
     }
     initialize_liveness(nodes);
-    for node in nodes {
-        elect_leader(node, leader.node_id);
-    }
+    establish_leader(nodes, leader.node_id);
     wait_for_local_catch_up(follower, follower_node);
     let catchup_reads = (0..3)
         .map(|index| {
@@ -954,12 +948,7 @@ fn run_rolling_restart_phase(
                 .expect("rolling restart should have a surviving leader candidate")
                 .node_id;
             active_leader_id = promoted_leader_id;
-            for survivor in nodes
-                .iter()
-                .filter(|node| node.node_id != restarted_node_id)
-            {
-                elect_leader(survivor, promoted_leader_id);
-            }
+            elect_leader(node_by_id(nodes, promoted_leader_id), promoted_leader_id);
             let failover = trigger_failover(node_by_id(nodes, promoted_leader_id));
             assert!(
                 failover.status.ok,
@@ -973,9 +962,7 @@ fn run_rolling_restart_phase(
         wait_for_http(&restarted.addr);
         initialize_liveness(nodes);
         let active_leader = node_by_id(nodes, active_leader_id);
-        for node in nodes {
-            elect_leader(node, active_leader_id);
-        }
+        establish_leader(nodes, active_leader_id);
         if restarted_node_id != active_leader_id {
             elect_leader(active_leader, active_leader_id);
             wait_for_local_catch_up(restarted, restarted_node_id);
@@ -995,9 +982,7 @@ fn run_rolling_restart_phase(
 
         if restarting_active_leader && active_leader_id != leader_node_id {
             wait_for_local_catch_up(original_leader, leader_node_id);
-            for node in nodes {
-                elect_leader(node, leader_node_id);
-            }
+            establish_leader(nodes, leader_node_id);
             active_leader_id = leader_node_id;
         }
     }
@@ -1221,6 +1206,32 @@ fn block_peer(node: &ProductionRaftNode, peer_id: RaftNodeId, blocked: bool) {
         "block peer admin request failed: {:?}",
         response.status
     );
+}
+
+/// Make `leader_id` the leader and wait for the rest of the cluster to see it.
+///
+/// The election runs on the candidate's own process, which is the only one holding the candidate's
+/// real log; the other nodes are not asked to simulate it against their stale shadows of the
+/// candidate, they observe the result over AppendEntries as they would in production.
+fn establish_leader(nodes: &[ProductionRaftNode], leader_id: RaftNodeId) {
+    elect_leader(node_by_id(nodes, leader_id), leader_id);
+    for node in nodes.iter().filter(|node| node.node_id != leader_id) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let observed: Result<RaftClusterStatus, _> =
+                get_json_with_options(&node.addr, "/raft/status", request_options());
+            if matches!(observed, Ok(status) if status.leader_id == leader_id) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "node {} never observed node {leader_id} as leader;{}",
+                node.node_id,
+                cluster_wide_status()
+            );
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
 }
 
 fn elect_leader(node: &ProductionRaftNode, leader_id: RaftNodeId) {
