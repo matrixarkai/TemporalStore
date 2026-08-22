@@ -30,6 +30,22 @@ pub enum HttpError {
     BadResponse(String),
 }
 
+impl HttpError {
+    /// Whether this error proves the request never reached the server.
+    ///
+    /// Only a refused connection proves it: the peer rejected the TCP handshake, so not one
+    /// byte of the request was sent. Everything else -- a read timeout above all -- means
+    /// the server stopped answering, which is not the same as never having heard the
+    /// request. That distinction is what decides whether a write may be sent again.
+    ///
+    /// Deliberately conservative. A connect timeout is indistinguishable from a read
+    /// timeout here (both surface as `TimedOut`), so it is treated as "unknown" and a write
+    /// is not repeated after one.
+    pub fn request_never_reached_the_server(&self) -> bool {
+        matches!(self, HttpError::Io(err) if err.kind() == ErrorKind::ConnectionRefused)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HttpRequestOptions {
     pub connect_timeout_ms: u64,

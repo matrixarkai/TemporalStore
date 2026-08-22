@@ -3931,6 +3931,69 @@ mod tests {
     }
 
     #[test]
+    fn a_write_whose_outcome_is_unknown_is_not_sent_twice() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // A datanode that accepts the request and then stops answering. That is the case
+        // that matters: the connection succeeded, the request was delivered, and the client
+        // is left not knowing whether it was applied.
+        let hits = std::sync::Arc::new(AtomicUsize::new(0));
+        let slow = test_addr(18_390);
+        let h = hits.clone();
+        let slow_for_thread = slow.clone();
+        std::thread::spawn(move || {
+            serve(&slow_for_thread, move |_request| {
+                h.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(500));
+                json_response(200, &Status::ok())
+            })
+            .unwrap();
+        });
+        start_meta(test_addr(18_391), slow.clone());
+        wait_for_http(&test_addr(18_391));
+
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_391),
+            route_cache_ttl_ms: 60_000,
+            connect_timeout_ms: 200,
+            io_timeout_ms: 120,
+            ..ProxyOptions::default()
+        });
+
+        hits.store(0, Ordering::SeqCst);
+        let _ = proxy.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "counted".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        // Leave time for a second attempt to land, so this fails loudly rather than racing.
+        std::thread::sleep(Duration::from_millis(400));
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "a write that timed out must not be sent again -- the timeout says the datanode              stopped answering, not that it never received the write"
+        );
+
+        // A read is a different matter: repeating it cannot change anything, so the
+        // refresh-and-retry still applies. Pinned so the guard cannot quietly widen.
+        hits.store(0, Ordering::SeqCst);
+        let _ = proxy.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "counted".to_string(),
+            },
+        });
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(
+            hits.load(Ordering::SeqCst) >= 2,
+            "a read should still be retried after a backend failure, saw {}",
+            hits.load(Ordering::SeqCst)
+        );
+    }
+
+    #[test]
     fn topology_check_stays_off_the_request_path() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let topo_posts = std::sync::Arc::new(AtomicUsize::new(0));
