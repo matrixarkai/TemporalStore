@@ -649,7 +649,14 @@ class _LocalAdapterRetrievalMixin:
                 "node_path": node_path,
                 "scope": envelope["scope"],
                 "status": "pending",
-                "envelope": envelope,
+                # A resource/skill document is already in its chunk records and behind its
+                # raw URI; embedding the full envelope here kept a third copy (1.06x source
+                # on a 66.2 KB file). Only message CONTENT is bounded, and on a COPY --
+                # the live envelope still feeds chunk parsing, and resource_text derives
+                # from that same list, so trimming it in place would truncate the document.
+                # Roles, metadata, hook_type and codex_event survive untouched: the commit
+                # path reads those off the buffered envelope.
+                "envelope": bounded_buffer_envelope(envelope),
                 "agent_hook": hook,
                 **source_lineage,
                 "created_at_ms": envelope["ingestion_time_ms"],

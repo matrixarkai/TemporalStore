@@ -1396,8 +1396,32 @@ fn eager_cache_warm_on_load() -> bool {
     )
 }
 
+/// Current on-disk shape of a shard index.
+///
+/// 1 = pre-rekey: context_events keyed by timeline_key.
+/// 2 = context_events keyed by event_id_hash, with context_event_timeline carrying time order.
+///
+/// Bump this whenever a field's MEANING changes, not only when its type does -- a same-typed
+/// reinterpretation is the case that decodes cleanly and serves wrong data.
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 2;
+
+/// Serialize a shard index, stamping the current format version.
+///
+/// Stamped here rather than held on the struct so ShardState keeps its derived Default: an
+/// in-memory shard would otherwise default the field to 0 and write itself out looking legacy.
+pub(super) fn stamp_index_format_version(shard: &ShardState) -> serde_json::Value {
+    let mut value = serde_json::to_value(shard).expect("shard index should serialize");
+    if let Some(map) = value.as_object_mut() {
+        map.insert(
+            "index_format_version".to_string(),
+            serde_json::Value::from(SHARD_INDEX_FORMAT_VERSION),
+        );
+    }
+    value
+}
+
 fn serialize_index(shard: &ShardState) -> Vec<u8> {
-    serde_json::to_vec(shard).expect("shard index should serialize")
+    serde_json::to_vec(&stamp_index_format_version(shard)).expect("shard index should serialize")
 }
 
 /// Collect the served-index delta items for exactly the object keys a single write

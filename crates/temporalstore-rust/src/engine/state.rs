@@ -36,6 +36,19 @@ pub(super) struct ContextDirtyEntry {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(super) struct ShardState {
+    /// On-disk shape of this index. 0 means "written before the stamp existed".
+    ///
+    /// The index is a serialized ShardState, so a change to what a field MEANS -- not just its
+    /// type -- makes an older file decode into the right shape with the wrong contents, silently.
+    /// That is exactly what keying context_events by event id did: a pre-rekey index decodes with
+    /// timeline keys sitting in the event-id slot and an empty context_event_timeline, so every
+    /// time-windowed read returns nothing and no error is raised anywhere.
+    ///
+    /// Stamped on write by serialize_index; checked on load by load_index_inner, which refuses a
+    /// stale index rather than trusting it -- a refusal falls back to WAL replay, which rebuilds
+    /// both maps correctly through insert_context_event_views.
+    #[serde(default)]
+    pub(super) index_format_version: u32,
     pub(super) expires_at_ms: HashMap<String, u64>,
     pub(super) strings: HashMap<String, BlockAddress>,
     pub(super) hashes: HashMap<String, HashMap<String, BlockAddress>>,

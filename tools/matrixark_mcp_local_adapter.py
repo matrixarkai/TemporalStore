@@ -600,6 +600,61 @@ def should_promote_session_entity_to_profile(entity: Json) -> bool:
     return bool(entity)
 
 
+# Embedding ref_type -> the owner record type and the field its ref_hash matches. Verified by
+# value on a live ingest: an event_text embedding's ref_hash equals the context_event's
+# event_id_hash, entity_state equals entity_hash, session_l0 equals summary_hash, node equals
+# node_hash. Unlike the Rust engine -- where ref_hash is a one-way hash of (tenant, owner, level)
+# and the owner cannot be recovered from it -- python addresses embeddings by the owner's OWN
+# hash, which is what makes this join possible at all.
+INLINE_VECTOR_OWNER_BY_REF_TYPE = {
+    "event": ("context_event", "event_id_hash"),
+    "entity": ("context_entity", "entity_hash"),
+    "summary": ("context_summary", "summary_hash"),
+    "node": ("context_node", "node_hash"),
+}
+
+
+def attach_inline_embedding_vectors(records: list[Json]) -> list[Json]:
+    """Copy each embedding's vector onto its owner record, keeping the embedding record too.
+
+    Step 1 of folding embeddings into their owners: DUAL-WRITE. Every reader still joins through
+    (ref_type, ref_hash), so nothing changes behaviourally; the owners simply start carrying the
+    vector so readers can be migrated next against records that already have it.
+
+    Only owners appended in the SAME batch are matched. An embedding written in a later batch
+    than its owner leaves the owner without an inline vector, which is why the separate records
+    must stay until reader migration is done and measured -- an inline vector is "present or
+    not yet", never authoritative on its own.
+    """
+    vectors: dict[tuple[str, Any], Any] = {}
+    for record in records:
+        if record.get("record_type") != "context_embedding":
+            continue
+        vector = record.get("vector")
+        ref_hash = record.get("ref_hash")
+        if not vector or ref_hash in (None, ""):
+            continue
+        vectors[(str(record.get("ref_type") or ""), ref_hash)] = vector
+    if not vectors:
+        return records
+    for record in records:
+        owner = next(
+            (
+                (ref_type, field)
+                for ref_type, (record_type, field) in INLINE_VECTOR_OWNER_BY_REF_TYPE.items()
+                if record_type == record.get("record_type")
+            ),
+            None,
+        )
+        if owner is None or record.get("vector"):
+            continue
+        ref_type, field = owner
+        vector = vectors.get((ref_type, record.get(field)))
+        if vector:
+            record["vector"] = vector
+    return records
+
+
 def compact_context_embedding_record(record: Json) -> Json:
     return compact_hot_context_embedding_record(record)
 
@@ -3995,6 +4050,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         self._maintain_event_membership_after_append(records)
 
     def append_many(self, records: list[Json]) -> None:
+        # Fold step 1: copy each embedding's vector onto its owner record, before the policy
+        # and dedup passes below reshape the batch.
+        records = attach_inline_embedding_vectors(records)
         records = self._apply_serving_dedup(
             self._stamp_ingest_fields(materialize_serving_record_batch(records))
         )

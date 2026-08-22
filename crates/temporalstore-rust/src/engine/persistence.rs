@@ -182,7 +182,23 @@ impl TemporalEngine {
         // deltas below.
         let mut shard = match read {
             Ok(bytes) => match serde_json::from_slice::<ShardState>(&bytes) {
-                Ok(shard) => shard,
+                Ok(shard) => {
+                    // Refuse an index written in an older on-disk shape. A stale index decodes
+                    // CLEANLY -- the types are unchanged -- while a field's meaning has moved
+                    // under it, so trusting it serves wrong data with no error anywhere. The
+                    // concrete case: before version 2, context_events was keyed by timeline_key;
+                    // it is keyed by event_id_hash now, so a v1 index yields timeline keys in the
+                    // event-id slot and an empty context_event_timeline, and every time-windowed
+                    // read silently returns nothing.
+                    //
+                    // Refusing is treated exactly like a corrupt or absent index: the caller
+                    // falls back to WAL replay, which rebuilds both maps correctly through
+                    // insert_context_event_views. Slower, and correct.
+                    if shard.index_format_version < super::SHARD_INDEX_FORMAT_VERSION {
+                        return Ok(None);
+                    }
+                    shard
+                }
                 Err(_) => return Ok(None),
             },
             Err(_) => ShardState::default(),

@@ -516,6 +516,20 @@ class _LocalAdapterIngestMixin:
         )
         self._observe_model_latency("extraction", (time.perf_counter() - extraction_started_perf) * 1000.0)
         text = text_from_messages(envelope["messages"])
+        # A resource/skill document already lives in its chunk records and behind its raw URI, so
+        # carrying it a THIRD time as event text is pure duplication -- measured at 1.05x source
+        # on a 66.2 KB file. Bound the event text only.
+        #
+        # It must not be done by clipping envelope["messages"]: resource_text, and therefore every
+        # chunk, is derived from that same list, so clipping there would truncate the DOCUMENT
+        # instead of deduplicating its storage.
+        #
+        # This is the assignment the hot-path event actually reads. An identical assignment exists
+        # earlier for a different branch, and bounding only that one has no effect here -- this
+        # line overwrites it before the event record is built.
+        text = bound_resource_event_text(
+            envelope["kind"], text, str(envelope.get("metadata", {}).get("raw_uri") or "")
+        )
         event_id_hash = stable_hash(
             f"{envelope['kind']}:{text}:{envelope['scope']}:{envelope['ingestion_time_ms']}"
         )
@@ -1041,7 +1055,18 @@ class _LocalAdapterIngestMixin:
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
-            for chunk, vector in zip(parsed_chunks, chunk_vectors):
+            # Attachments keep their manifest and raw URI -- listed, addressable and fetchable
+            # on demand -- but skip chunk materialization. Measured on one 66.2 KB document the
+            # chunks cost 7.05x the source: 60 resource_chunk records at 3.75x plus 76
+            # embeddings at 2.93x. Those vectors were 32-dim deterministic ones; a 384-dim
+            # encoder takes the same file toward 40x. For a file fetched rarely or never that is
+            # the wrong trade, and there was no way to decline it -- raw_storage_policy was
+            # written into records and read back for display, but nothing branched on its value.
+            #
+            # The manifest above is written either way, so the resource stays discoverable and
+            # its chunk_count still reports what the file WOULD chunk into.
+            materialize_chunks = resource_chunk_materialization_enabled(args, envelope)
+            for chunk, vector in zip(parsed_chunks if materialize_chunks else [], chunk_vectors):
                 resource_chunk_hashes.append(chunk.chunk_hash)
                 source_locator = source_locator_from_ref(chunk.source_ref, raw_uri)
                 chunk_metadata_source = {**chunk.metadata, "source_locator": source_locator}
