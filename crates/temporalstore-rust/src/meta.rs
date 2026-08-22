@@ -800,6 +800,11 @@ pub enum MetaMutation {
     PutProxyGroup(PutProxyGroupRequest),
     DropProxyGroup(DropProxyGroupRequest),
     SetProxyGroup(ProxyAttachment),
+    /// One applied retention round. The *outcome* is recorded rather than the
+    /// intent to run a round, because retention is computed from the wall clock
+    /// and re-planning it during replay would purge a different set. Replaying
+    /// the concrete list forgets exactly what the live round forgot.
+    PurgeMeta(MetaRetentionPlan),
     /// Mute or resume metadata change. Recorded like any other mutation so it
     /// replays in order and reaches raft peers; the guard is deliberately not
     /// applied during replay, because the log only ever contains mutations that
@@ -1212,6 +1217,10 @@ impl SingleNodeMeta {
             MetaMutation::DropProxy(request) => {
                 self.apply_set_proxy_state(request, MetaEntityState::Dropped)
                     .status
+            }
+            MetaMutation::PurgeMeta(plan) => {
+                self.apply_meta_purge(&plan);
+                Status::ok()
             }
         }
     }
