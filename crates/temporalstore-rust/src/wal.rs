@@ -2651,4 +2651,71 @@ mod tests {
         // The prefix has grown past a quarter of what the pass must copy.
         assert!(reclaim_is_worth_rewriting(25 * MB, retained, floor, 25));
     }
+
+    /// What a write costs on disk and in time, comparing the two payload shapes in ONE run.
+    ///
+    /// Both are measured back to back in the same process, alternating, because a timing taken
+    /// from a separate run on a shared machine mostly measures what else was running then. The
+    /// byte counts are deterministic; the timings are not, so they are reported as a ratio
+    /// between two shapes measured together rather than as absolute figures.
+    #[test]
+    fn payload_shape_footprint_and_latency() {
+        fn run(array_shape: bool, value_len: usize, records: u64) -> (u64, f64) {
+            crate::bytes_serde::set_array_shape_for_measurement(array_shape);
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            let started = std::time::Instant::now();
+            for index in 0..records {
+                store
+                    .append_with_sync(
+                        1,
+                        Command::StringSet {
+                            key: format!("bench-key-{index:08}"),
+                            value: vec![118u8; value_len],
+                        },
+                        false,
+                    )
+                    .unwrap();
+            }
+            let micros = started.elapsed().as_secs_f64() * 1e6 / records as f64;
+            let bytes = std::fs::metadata(write_ahead_log_path(dir.path(), 1))
+                .unwrap()
+                .len();
+            (bytes, micros)
+        }
+
+        let median = |mut values: Vec<f64>| {
+            values.sort_by(|left, right| left.partial_cmp(right).unwrap());
+            values[values.len() / 2]
+        };
+
+        for value_len in [64usize, 256, 1024, 4096] {
+            let records = 200u64;
+            let (array_bytes, _) = run(true, value_len, records);
+            let (encoded_bytes, _) = run(false, value_len, records);
+            let mut array_us = Vec::new();
+            let mut encoded_us = Vec::new();
+            // Alternate, so a burst of load on the machine lands on both and not just one.
+            for _ in 0..3 {
+                array_us.push(run(true, value_len, records).1);
+                encoded_us.push(run(false, value_len, records).1);
+            }
+            let array_us = median(array_us);
+            let encoded_us = median(encoded_us);
+            let user = records * value_len as u64;
+            println!(
+                "  value {value_len:>5}B: array {array_bytes:>9} B ({:.2}x user, {array_us:>7.1} us/write)   encoded {encoded_bytes:>9} B ({:.2}x user, {encoded_us:>7.1} us/write)   -> {:.2}x smaller, {:.2}x faster",
+                array_bytes as f64 / user as f64,
+                encoded_bytes as f64 / user as f64,
+                array_bytes as f64 / encoded_bytes as f64,
+                array_us / encoded_us
+            );
+            assert!(
+                encoded_bytes < array_bytes,
+                "the encoded shape must be smaller at {value_len}B"
+            );
+        }
+        // Leave the process on the default for whatever test runs next.
+        crate::bytes_serde::set_array_shape_for_measurement(false);
+    }
 }
