@@ -515,15 +515,40 @@ impl ProductionRaftRuntime {
                         if stale_leader != local_node_id && stale_leader != 0 {
                             let _ = cluster.set_alive(stale_leader, false);
                         }
+                        let transport = RaftRpcRuntime::with_auth_token(
+                            AuthenticatedRaftTransport::new(
+                                HttpRaftTransport::with_options(peer_map.clone(), http_options),
+                                auth_token.clone(),
+                            ),
+                            rpc_options,
+                            Some(auth_token.clone()),
+                        );
+                        // Ask before committing to an election. Raising the term is what forces a
+                        // healthy leader to stand down, so a node that cannot reach a majority
+                        // must never do it: otherwise one unreachable node walks its term up on a
+                        // timer and disrupts the cluster every time it is heard from again.
+                        let could_win = match cluster.prepare_pre_vote(local_node_id) {
+                            Ok(probe) => {
+                                let mut would_grant = 1usize; // itself
+                                for target_id in &peer_ids {
+                                    let mut request = probe.clone();
+                                    request.target_id = *target_id;
+                                    if let Ok(response) = transport.request_vote(request) {
+                                        if response.vote_granted {
+                                            would_grant += 1;
+                                        }
+                                    }
+                                }
+                                would_grant >= majority_size
+                            }
+                            Err(_) => false,
+                        };
+                        if !could_win {
+                            let _ = cluster.tick_election();
+                            thread::sleep(election_tick);
+                            continue;
+                        }
                         if let Ok(template) = cluster.prepare_campaign(local_node_id) {
-                            let transport = RaftRpcRuntime::with_auth_token(
-                                AuthenticatedRaftTransport::new(
-                                    HttpRaftTransport::with_options(peer_map.clone(), http_options),
-                                    auth_token.clone(),
-                                ),
-                                rpc_options,
-                                Some(auth_token.clone()),
-                            );
                             // The self-vote was made durable by prepare_campaign.
                             let mut grants = 1usize;
                             let mut highest_term = template.term;

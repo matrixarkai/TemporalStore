@@ -63,6 +63,48 @@ impl RaftCluster {
     /// Step one of a networked election: bump this node's term, record its self-vote,
     /// and get both durable BEFORE any vote is requested. Returns the RequestVote to
     /// send to each peer (`target_id` is filled in per peer by the caller).
+    /// Build the question: would you vote for me, at the term I would use?
+    ///
+    /// Read-only on purpose. The term is not raised and no vote is recorded, so asking costs
+    /// nothing and losing costs nothing. Only [`Self::prepare_campaign`] commits to an election.
+    pub fn prepare_pre_vote(&self, candidate_id: RaftNodeId) -> Result<VoteRequest, RaftError> {
+        let inner = self.inner.read().expect("raft cluster lock poisoned");
+        if inner.config.prohibits_election {
+            return Err(RaftError::ElectionProhibited);
+        }
+        if !inner
+            .nodes
+            .get(&candidate_id)
+            .map(|node| node.alive && node.replica_role.can_be_leader())
+            .unwrap_or(false)
+        {
+            return Err(RaftError::NodeNotFound(candidate_id));
+        }
+        let candidate = inner
+            .nodes
+            .get(&candidate_id)
+            .ok_or(RaftError::NodeNotFound(candidate_id))?;
+        let last_log_index = node_last_log_or_snapshot_index(candidate);
+        let last_log_term =
+            node_term_at_log_or_snapshot_index(candidate, last_log_index).unwrap_or_default();
+        Ok(VoteRequest {
+            rpc: None,
+            shard_id: inner.shard_id,
+            term: inner
+                .nodes
+                .values()
+                .map(|node| node.current_term)
+                .max()
+                .unwrap_or_default()
+                .saturating_add(1),
+            candidate_id,
+            target_id: candidate_id,
+            last_log_index,
+            last_log_term,
+            pre_vote: true,
+        })
+    }
+
     pub fn prepare_campaign(&self, candidate_id: RaftNodeId) -> Result<VoteRequest, RaftError> {
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
         if inner.config.prohibits_election {
@@ -107,6 +149,7 @@ impl RaftCluster {
         inner.election_elapsed_tick = 0;
         inner.persist_configured_wal()?;
         Ok(VoteRequest {
+            pre_vote: false,
             rpc: None,
             shard_id,
             term,

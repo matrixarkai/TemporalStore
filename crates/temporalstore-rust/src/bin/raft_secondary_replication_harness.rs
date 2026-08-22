@@ -816,6 +816,7 @@ fn run_network_vote_phase(
         &target.addr,
         "/raft/request_vote",
         &VoteRequest {
+            pre_vote: false,
             rpc: Some(raft_rpc("wrong-token", "unauthorized-vote")),
             shard_id,
             term: target_node_status.current_term + 1,
@@ -837,6 +838,7 @@ fn run_network_vote_phase(
         &target.addr,
         "/raft/request_vote",
         &VoteRequest {
+            pre_vote: false,
             rpc: Some(raft_rpc(auth_token, "stale-vote")),
             shard_id,
             term: target_node_status.current_term + 1,
@@ -871,6 +873,7 @@ fn run_network_vote_phase(
         &target.addr,
         "/raft/request_vote",
         &VoteRequest {
+            pre_vote: false,
             rpc: Some(raft_rpc(auth_token, "valid-vote")),
             shard_id,
             term: refreshed_target.current_term + 1,
