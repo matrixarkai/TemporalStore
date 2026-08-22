@@ -526,6 +526,7 @@ fn metaserver_raft_replicates_full_metadata_mutation_api() {
     }
 
     let topology = meta.get_table_topology(GetTableTopologyRequest {
+        client_location: String::new(),
         namespace: "feature".to_string(),
         table_name: "user_seq".to_string(),
         old_topology_version: 0,
@@ -549,6 +550,7 @@ fn metaserver_raft_replicates_full_metadata_mutation_api() {
         assert_eq!(meta.commit_index(node_id).unwrap(), 5);
     }
     let updated_topology = meta.get_table_topology(GetTableTopologyRequest {
+        client_location: String::new(),
         namespace: "feature".to_string(),
         table_name: "user_seq".to_string(),
         old_topology_version: 0,
@@ -580,6 +582,7 @@ fn metaserver_raft_replicates_full_metadata_mutation_api() {
         assert_eq!(meta.commit_index(node_id).unwrap(), 7);
     }
     let dropped_topology = meta.get_table_topology(GetTableTopologyRequest {
+        client_location: String::new(),
         namespace: "feature".to_string(),
         table_name: "user_seq".to_string(),
         old_topology_version: 0,

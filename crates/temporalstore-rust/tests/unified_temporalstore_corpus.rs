@@ -2748,6 +2748,7 @@ fn verify_metaserver_scheduler_control_plane() {
     );
 
     let topology = meta.get_table_topology(GetTableTopologyRequest {
+        client_location: String::new(),
         namespace: "ns".to_string(),
         table_name: "meta_parts".to_string(),
         old_topology_version: 0,
