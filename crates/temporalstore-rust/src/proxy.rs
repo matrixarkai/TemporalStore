@@ -204,6 +204,14 @@ pub struct ProxyStats {
     pub admission_rejections: u64,
     pub account_rejections: u64,
     pub inflight_rejections: u64,
+    /// `/context/*` traffic, counted per route. These are the only routes the context
+    /// gateway calls, so without them a proxy saturated by gateway traffic reports
+    /// `execute` and `batch_execute` at zero and looks idle. They are counted separately
+    /// because their costs differ by orders of magnitude: ingest is a fast-ack buffered
+    /// write, extract runs extraction on the data node, retrieve is a read.
+    pub context_ingest_requests: u64,
+    pub context_extract_requests: u64,
+    pub context_retrieve_requests: u64,
     pub heartbeat_total: u64,
     /// Beats whose round-trip consumed the whole interval, so the loop had no time left to
     /// sleep. A rising count means the heartbeat period is being set by metaserver latency
@@ -2586,6 +2594,52 @@ mod tests {
         });
         assert_ne!(response.status.code, "proxy_not_serving");
         assert_ne!(response.status.code, "proxy_write_disabled");
+    }
+    #[test]
+    fn context_routes_are_counted_so_gateway_traffic_is_visible() {
+        let proxy = scoped_proxy(ProxyOptions::default());
+
+        // These three routes are the only ones the context gateway calls. Without their own
+        // counters a proxy saturated by gateway traffic reports execute/batch_execute at zero
+        // and reads as idle.
+        let _ = post(&proxy, "/context/ingest", context_ingest_body("acct", "t"));
+        let _ = post(&proxy, "/context/ingest", context_ingest_body("acct", "t"));
+        let _ = post(&proxy, "/context/extract", context_ingest_body("acct", "t"));
+        let _ = post(
+            &proxy,
+            "/context/retrieve",
+            serde_json::to_vec(&json!({
+                "scope": {"account_id": "acct", "tenant_id": "t", "session_id": "s1"},
+                "query": "q",
+            }))
+            .unwrap(),
+        );
+
+        let stats = proxy.preflight_report().stats;
+        assert_eq!(stats.context_ingest_requests, 2);
+        assert_eq!(stats.context_extract_requests, 1);
+        assert_eq!(stats.context_retrieve_requests, 1);
+        // Counted separately from command traffic, not folded into it.
+        assert_eq!(stats.execute_requests, 0);
+
+        let metrics = proxy.prometheus_metrics();
+        assert!(metrics.contains("temporalstore_proxy_requests_total{kind=\"context_ingest\"} 2"));
+        assert!(metrics.contains("temporalstore_proxy_requests_total{kind=\"context_extract\"} 1"));
+        assert!(metrics.contains("temporalstore_proxy_requests_total{kind=\"context_retrieve\"} 1"));
+    }
+
+    #[test]
+    fn context_requests_are_counted_even_when_refused() {
+        // Offered load is what an operator needs to see. A proxy rejecting everything is
+        // still being asked for work, and a counter that only advanced on success would make
+        // a fully-drained proxy look idle rather than overloaded.
+        let drained = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::NotServing,
+            ..ProxyOptions::default()
+        });
+        let (code, _) = post(&drained, "/context/ingest", context_ingest_body("acct", "t"));
+        assert_eq!(code, 503);
+        assert_eq!(drained.preflight_report().stats.context_ingest_requests, 1);
     }
     #[test]
     fn proxy_policy_blocks_writes_not_serving_and_drop_percent() {
