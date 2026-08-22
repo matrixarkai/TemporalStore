@@ -797,7 +797,12 @@ pub struct ProxyService {
 
 #[derive(Debug)]
 struct ProxyInner {
-    options: RwLock<ProxyOptions>,
+    /// Behind an `Arc` so reading the live options is a refcount bump rather than a deep
+    /// copy. `ProxyOptions` carries six heap strings, and `options()` is called on the
+    /// request path -- admission reads it for every command and every `/context/*` call --
+    /// so cloning it per request meant six allocations to look at a handful of scalars.
+    /// Writers swap in a whole new `Arc`, so a reader never observes a half-updated config.
+    options: RwLock<Arc<ProxyOptions>>,
     client: RwLock<TemporalStoreClient>,
     last_client_stats: RwLock<ClientStats>,
     stats: RwLock<ProxyStats>,
@@ -811,7 +816,7 @@ impl ProxyService {
         Self {
             inner: Arc::new(ProxyInner {
                 client: RwLock::new(proxy_client_from_options(&options)),
-                options: RwLock::new(options),
+                options: RwLock::new(Arc::new(options)),
                 last_client_stats: RwLock::default(),
                 stats: RwLock::default(),
                 service_discovery: RwLock::default(),
@@ -1022,7 +1027,7 @@ impl ProxyService {
         };
         let current = self.options();
         if !supplied.contains_key("ingestion_account") {
-            options.ingestion_account = current.ingestion_account;
+            options.ingestion_account = current.ingestion_account.clone();
         }
         if !supplied.contains_key("enforce_ingestion_account") {
             options.enforce_ingestion_account = current.enforce_ingestion_account;
@@ -1073,7 +1078,7 @@ impl ProxyService {
             .inner
             .options
             .write()
-            .expect("proxy options lock poisoned") = options;
+            .expect("proxy options lock poisoned") = Arc::new(options);
         report.applied = true;
         report.reason = "config_changed".to_string();
         report
@@ -1135,12 +1140,21 @@ impl ProxyService {
         *last = current;
     }
 
-    fn options(&self) -> ProxyOptions {
-        self.inner
-            .options
-            .read()
-            .expect("proxy options lock poisoned")
-            .clone()
+    /// The live options. Cheap: clones an `Arc`, not the six strings inside it. Callers that
+    /// need to MUTATE take an owned copy explicitly via `options_owned`.
+    fn options(&self) -> Arc<ProxyOptions> {
+        Arc::clone(
+            &self
+                .inner
+                .options
+                .read()
+                .expect("proxy options lock poisoned"),
+        )
+    }
+
+    /// An owned, mutable copy of the live options, for the config-update paths.
+    fn options_owned(&self) -> ProxyOptions {
+        (*self.options()).clone()
     }
 
     fn reject(&self, status: Status, kind: ProxyRejectionKind) -> Status {
@@ -1239,7 +1253,7 @@ impl ProxyService {
     /// Read-only view of the live options, for tests and callers that need to see what the
     /// metaserver has granted this proxy.
     pub fn config_snapshot(&self) -> ProxyOptions {
-        self.options()
+        self.options_owned()
     }
 
     /// Admission for `open_table`: account scope, serving mode, then an in-flight slot. There

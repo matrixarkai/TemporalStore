@@ -9,7 +9,7 @@ impl ProxyService {
         let options = self.options();
         ProxyInfo {
             status: Status::ok(),
-            meta_addr: options.meta_addr,
+            meta_addr: options.meta_addr.clone(),
             route_cache_size: self.client().route_cache_size(),
             stats: *self.inner.stats.read().expect("proxy stats lock poisoned"),
             boot_time_ms: self.inner.boot_time_ms,
@@ -98,9 +98,9 @@ impl ProxyService {
         let policy = self.policy_report();
         ProxyPreflightReport {
             status,
-            meta_addr: options.meta_addr,
-            proxy_addr: options.proxy_addr,
-            namespace: options.namespace,
+            meta_addr: options.meta_addr.clone(),
+            proxy_addr: options.proxy_addr.clone(),
+            namespace: options.namespace.clone(),
             config_version,
             route_cache_size,
             authoritative_topology_version,
@@ -191,7 +191,7 @@ impl ProxyService {
         let listen_port = proxy_addr_port(&options.proxy_addr);
         ProxyPortsReport {
             listen_addr: options.proxy_addr.clone(),
-            announce_addr: options.proxy_addr,
+            announce_addr: options.proxy_addr.clone(),
             listen_port,
             announce_port: listen_port,
         }
@@ -202,8 +202,8 @@ impl ProxyService {
         ProxyConsulNamesReport {
             legacy_consul_in_scope: false,
             rust_service_registry_names: self.rust_service_registry_names_with_options(&options),
-            namespace: options.namespace,
-            location: options.location,
+            namespace: options.namespace.clone(),
+            location: options.location.clone(),
         }
     }
 

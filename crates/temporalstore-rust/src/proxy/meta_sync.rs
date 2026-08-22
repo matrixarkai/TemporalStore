@@ -189,7 +189,7 @@ impl ProxyService {
         if !response.config_changed && !policy_changed {
             return;
         }
-        let mut options = self.options();
+        let mut options = self.options_owned();
         if !response.namespace.is_empty() {
             options.namespace = response.namespace.clone();
         }
@@ -214,7 +214,7 @@ impl ProxyService {
         if options.namespace.is_empty() && options.config_version == 0 {
             return;
         }
-        let mut cleared = options;
+        let mut cleared = (*options).clone();
         cleared.namespace = String::new();
         cleared.config_version = 0;
         let _ = self.update_options_report(cleared);
