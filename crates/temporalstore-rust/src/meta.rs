@@ -2459,6 +2459,116 @@ mod tests {
         assert!(restored.is_meta_change_muted());
     }
 
+    fn drop_of(endpoint: &str) -> StateChangeRequest {
+        StateChangeRequest {
+            endpoint: endpoint.to_string(),
+            freeze_cooldown_ms: 0,
+            reason: FreezeReason::Unspecified,
+        }
+    }
+
+    fn drop_clock(meta: &SingleNodeMeta, key: &str) -> Option<u64> {
+        meta.export_snapshot().dropped_since_ms.get(key).copied()
+    }
+
+    #[test]
+    fn a_server_that_comes_back_starts_a_fresh_drop_clock() {
+        // stamp_dropped_since keeps the first time it is given, deliberately, so
+        // that re-dropping an already dropped resource cannot restart the clock.
+        // That is right for drop-then-drop and wrong across a revival: a server
+        // dropped, brought back, and dropped again much later would inherit the
+        // original time and be collected on the next round with no grace at all.
+        let meta = SingleNodeMeta::default();
+        let register = || {
+            meta.register_server(RegisterServerRequest {
+                server_addr: "node-a".to_string(),
+                node_id: 1,
+                location: "rack-1".to_string(),
+                binary_version: "v1".to_string(),
+            })
+        };
+        register();
+        assert!(meta.drop_server(drop_of("node-a")).status.ok);
+        assert!(drop_clock(&meta, "server:node-a").is_some());
+
+        register();
+        assert_eq!(
+            drop_clock(&meta, "server:node-a"),
+            None,
+            "the drop clock outlived the drop"
+        );
+    }
+
+    #[test]
+    fn a_proxy_that_comes_back_starts_a_fresh_drop_clock() {
+        let meta = SingleNodeMeta::default();
+        let register = || {
+            meta.register_proxy(RegisterProxyRequest {
+                proxy_addr: "proxy-a".to_string(),
+                namespace: String::new(),
+                location: "rack-1".to_string(),
+                config_version: 0,
+                binary_version: "v1".to_string(),
+            })
+        };
+        register();
+        assert!(meta.drop_proxy(drop_of("proxy-a")).status.ok);
+        assert!(drop_clock(&meta, "proxy:proxy-a").is_some());
+
+        register();
+        assert_eq!(drop_clock(&meta, "proxy:proxy-a"), None);
+    }
+
+    #[test]
+    fn a_revived_server_dropped_again_is_not_collected_immediately() {
+        // The whole point of the clock: a resource dropped a moment ago is
+        // inside its retention window and must be kept.
+        let meta = SingleNodeMeta::default();
+        let register = || {
+            meta.register_server(RegisterServerRequest {
+                server_addr: "node-a".to_string(),
+                node_id: 1,
+                location: "rack-1".to_string(),
+                binary_version: "v1".to_string(),
+            })
+        };
+        register();
+        assert!(meta.drop_server(drop_of("node-a")).status.ok);
+        register();
+        assert!(meta.drop_server(drop_of("node-a")).status.ok);
+
+        let plan = meta.plan_meta_retention_now(MetaRetentionOptions {
+            // An hour of grace. The second drop just happened, so nothing is
+            // eligible -- unless it is still being aged from the first one.
+            server_retention_ms: 60 * 60 * 1_000,
+            proxy_retention_ms: 60 * 60 * 1_000,
+            table_retention_ms: 60 * 60 * 1_000,
+            ..MetaRetentionOptions::default()
+        });
+        assert!(
+            plan.servers.is_empty(),
+            "a server dropped a moment ago was already eligible: {plan:?}"
+        );
+    }
+
+    #[test]
+    fn re_dropping_without_a_revival_still_keeps_the_first_clock() {
+        // The other direction, which the change must not break: repeatedly
+        // dropping an already dropped server cannot hold off collection.
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "node-a".to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+        });
+        assert!(meta.drop_server(drop_of("node-a")).status.ok);
+        let first = drop_clock(&meta, "server:node-a").expect("stamped");
+        // The second drop is refused outright, and must leave the clock alone.
+        meta.drop_server(drop_of("node-a"));
+        assert_eq!(drop_clock(&meta, "server:node-a"), Some(first));
+    }
+
     #[test]
     fn metaserver_safe_mode_cooldown_blocks_rejoin_and_round_trips() {
         let dir = tempfile::tempdir().unwrap();

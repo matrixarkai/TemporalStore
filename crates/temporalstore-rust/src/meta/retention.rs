@@ -1147,6 +1147,16 @@ mod tests {
         });
         assert!(report.plan.is_empty());
         assert_eq!(meta.list_servers().servers.len(), 1);
+        // Not collected while serving is guaranteed by the candidate filter on
+        // its own. What actually has to be true is that the clock is gone, so
+        // the next drop starts a fresh one.
+        assert!(
+            !meta
+                .export_snapshot()
+                .dropped_since_ms
+                .contains_key("server:node-a"),
+            "the drop clock outlived the drop"
+        );
     }
 
     #[test]
