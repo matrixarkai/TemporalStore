@@ -187,6 +187,27 @@ impl SingleNodeMeta {
                     status: Status::error("bad_request", "shard_count cannot shrink"),
                 };
             }
+            // Bucket ranges are derived from shard_count on every read, so
+            // raising it renumbers the whole key space -- and nothing rehashes.
+            // The data for the buckets that moved is still on the old shard,
+            // while the routing table now sends those keys to a shard that has
+            // never seen them, so the reads come back as misses rather than as
+            // errors. partition_version and first_shard_id are already pinned
+            // after creation for the same reason; this is the third knob that
+            // moves keys.
+            //
+            // Growth before anything registers is the legitimate case -- fixing
+            // the shard count of a table that is not yet holding anything -- and
+            // stays allowed.
+            if shard_count != existing.shard_count && table_owns_registered_shards(&state, &existing)
+            {
+                return AckResponse {
+                    status: Status::error(
+                        "shards_registered",
+                        "shard_count cannot change once the table's shards are registered:                          the key range of every existing shard would move, and nothing                          redistributes the data that moved with it",
+                    ),
+                };
+            }
         }
         if let Some(partition_version) = request.partition_version {
             if partition_version != existing.partition_version {
@@ -250,4 +271,14 @@ impl SingleNodeMeta {
             status: Status::ok(),
         }
     }
+}
+
+/// Whether any of a table's shards has been registered to a server, which is
+/// the metaserver's evidence that the table is holding data.
+fn table_owns_registered_shards(state: &MetaState, table: &TableMetaInfo) -> bool {
+    (0..table.shard_count).any(|offset| {
+        table_shard_id(table, offset)
+            .map(|shard_id| state.shards.contains_key(&shard_id))
+            .unwrap_or(false)
+    })
 }
