@@ -974,6 +974,7 @@ fn raft_transport_rejects_stale_append_entries_and_behind_vote() {
 
     let vote_response = cluster
         .request_vote(VoteRequest {
+            pre_vote: false,
             rpc: None,
             shard_id: 1,
             term: cluster.hard_state(2).unwrap().current_term + 1,
@@ -1119,6 +1120,7 @@ fn append_entries_higher_term_clears_stale_vote() {
     // Node 3 grants its term-5 vote to candidate 1.
     let granted = cluster
         .receive_vote_request(VoteRequest {
+            pre_vote: false,
             rpc: None,
             shard_id: 1,
             term: 5,
@@ -1150,6 +1152,7 @@ fn append_entries_higher_term_clears_stale_vote() {
     // carried-over voted_for=1 rejected this as "already_voted".
     let regrant = cluster
         .receive_vote_request(VoteRequest {
+            pre_vote: false,
             rpc: None,
             shard_id: 1,
             term: 6,
@@ -1178,6 +1181,7 @@ fn install_snapshot_clears_stale_vote_on_term_raise() {
     // Node 3 grants a term-3 vote to candidate 1.
     let granted = cluster
         .receive_vote_request(VoteRequest {
+            pre_vote: false,
             rpc: None,
             shard_id: 1,
             term: 3,
@@ -1224,6 +1228,7 @@ fn install_snapshot_clears_stale_vote_on_term_raise() {
     // A DIFFERENT candidate can now win node 3's vote in term 5.
     let regrant = cluster
         .receive_vote_request(VoteRequest {
+            pre_vote: false,
             rpc: None,
             shard_id: 1,
             term: 5,
@@ -1712,6 +1717,7 @@ fn request_vote_higher_term_resets_prior_vote_before_decision() {
 
     let first_vote = cluster
         .request_vote(VoteRequest {
+            pre_vote: false,
             rpc: None,
             shard_id: 1,
             term: 3,
@@ -1726,6 +1732,7 @@ fn request_vote_higher_term_resets_prior_vote_before_decision() {
 
     let higher_term_vote = cluster
         .request_vote(VoteRequest {
+            pre_vote: false,
             rpc: None,
             shard_id: 1,
             term: 4,
@@ -1752,6 +1759,7 @@ fn request_vote_higher_term_updates_term_even_when_candidate_log_is_behind() {
         .unwrap();
     let response = cluster
         .request_vote(VoteRequest {
+            pre_vote: false,
             rpc: None,
             shard_id: 1,
             term: 5,

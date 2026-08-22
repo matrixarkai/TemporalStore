@@ -679,6 +679,7 @@ impl RaftCluster {
         };
         inner.persist_configured_wal()?;
         Ok(VoteRequest {
+            pre_vote: false,
             rpc: None,
             shard_id,
             term: election_term,
@@ -721,6 +722,26 @@ impl RaftCluster {
                 term: node.current_term,
                 vote_granted: false,
                 reject_reason: Some("target_not_voter".to_string()),
+            });
+        }
+        if request.pre_vote {
+            // Answer, and change nothing: no term adopted, no vote recorded, nothing persisted.
+            // That is what makes a pre-vote safe to lose, and what stops a node that cannot reach
+            // anyone from walking its term up on a timer.
+            let local_last_index = node_last_log_or_snapshot_index(node);
+            let local_last_term =
+                node_term_at_log_or_snapshot_index(node, local_last_index).unwrap_or_default();
+            let would_grant = request.term > node.current_term
+                && (request.last_log_term, request.last_log_index)
+                    >= (local_last_term, local_last_index);
+            if !would_grant {
+                node.pipeline_state.pre_vote_rejections =
+                    node.pipeline_state.pre_vote_rejections.saturating_add(1);
+            }
+            return Ok(VoteResponse {
+                term: node.current_term,
+                vote_granted: would_grant,
+                reject_reason: (!would_grant).then(|| "pre_vote_declined".to_string()),
             });
         }
         if request.term < node.current_term {

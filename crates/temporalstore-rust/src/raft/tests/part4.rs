@@ -3192,3 +3192,148 @@ fn a_reply_from_a_newer_term_makes_the_leader_step_down() {
         "the leader must step down rather than keep sending requests that can only be refused"
     );
 }
+
+/// Answering a pre-vote changes nothing about the node that answers.
+///
+/// That is the whole property. A node that cannot reach the cluster campaigns on a timer, and if
+/// asking raised terms or recorded votes, one unreachable node would drag a healthy cluster
+/// through an election every time it tried.
+#[test]
+fn a_pre_vote_does_not_move_the_term_or_spend_the_vote() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+    let term_before = cluster.status().current_term;
+
+    let answer = cluster
+        .receive_vote_request(VoteRequest {
+            rpc: None,
+            shard_id: 1,
+            term: term_before + 40,
+            candidate_id: 3,
+            target_id: 2,
+            last_log_index: 0,
+            last_log_term: 0,
+            pre_vote: true,
+        })
+        .unwrap();
+    assert!(
+        answer.vote_granted,
+        "an up-to-date candidate at a newer term should be told yes: {answer:?}"
+    );
+
+    let term_after = cluster
+        .status()
+        .nodes
+        .iter()
+        .find(|node| node.node_id == 2)
+        .map(|node| node.current_term)
+        .unwrap();
+    assert_eq!(
+        term_after, term_before,
+        "answering a pre-vote must not adopt the term it asks about"
+    );
+
+    // And no vote was spent: a different candidate can still win that term for real.
+    let real = cluster
+        .receive_vote_request(VoteRequest {
+            rpc: None,
+            shard_id: 1,
+            term: term_before + 40,
+            candidate_id: 1,
+            target_id: 2,
+            last_log_index: 0,
+            last_log_term: 0,
+            pre_vote: false,
+        })
+        .unwrap();
+    assert!(
+        real.vote_granted,
+        "the pre-vote must not have recorded a vote, so this real one should be granted: {real:?}"
+    );
+}
+
+/// A candidate whose log is behind is told no, and still nothing moves.
+#[test]
+fn a_pre_vote_from_a_behind_candidate_is_declined() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+    for index in 0..3 {
+        cluster
+            .propose(Command::StringSet {
+                key: format!("committed-{index}"),
+                value: b"v".to_vec(),
+            })
+            .unwrap();
+    }
+    let term_before = cluster
+        .status()
+        .nodes
+        .iter()
+        .find(|node| node.node_id == 2)
+        .map(|node| node.current_term)
+        .unwrap();
+
+    let answer = cluster
+        .receive_vote_request(VoteRequest {
+            rpc: None,
+            shard_id: 1,
+            term: term_before + 40,
+            candidate_id: 3,
+            target_id: 2,
+            last_log_index: 0,
+            last_log_term: 0,
+            pre_vote: true,
+        })
+        .unwrap();
+    assert!(
+        !answer.vote_granted,
+        "a candidate missing committed entries must be told no: {answer:?}"
+    );
+    let term_after = cluster
+        .status()
+        .nodes
+        .iter()
+        .find(|node| node.node_id == 2)
+        .map(|node| node.current_term)
+        .unwrap();
+    assert_eq!(
+        term_after, term_before,
+        "a declined pre-vote must not move the term either"
+    );
+}
+
+/// Preparing the question does not raise the asker's own term.
+///
+/// A node that never gets a majority of yes answers repeats this forever, so if preparing it cost
+/// a term, an isolated node would still walk its term upward exactly as before.
+#[test]
+fn preparing_a_pre_vote_does_not_raise_the_term() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+    let before = cluster.status().current_term;
+    for _ in 0..25 {
+        let probe = cluster.prepare_pre_vote(2).expect("a voter can ask");
+        assert!(probe.pre_vote, "the request must be marked as a question");
+        assert!(
+            probe.term > before,
+            "it should ask about the term it would use"
+        );
+    }
+    let after = cluster
+        .status()
+        .nodes
+        .iter()
+        .map(|node| node.current_term)
+        .max()
+        .unwrap();
+    assert_eq!(
+        after, before,
+        "asking twenty-five times must leave every term where it was"
+    );
+}
