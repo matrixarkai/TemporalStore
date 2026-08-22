@@ -204,6 +204,33 @@ impl MetaRaftCluster {
         }
     }
 
+    pub fn freeze_namespace(&self, request: AddNamespaceRequest) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::SetNamespaceState(
+                request,
+                MetaEntityState::Frozen,
+            )),
+        }
+    }
+
+    pub fn unfreeze_namespace(&self, request: AddNamespaceRequest) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::SetNamespaceState(
+                request,
+                MetaEntityState::Normal,
+            )),
+        }
+    }
+
+    pub fn drop_namespace(&self, request: AddNamespaceRequest) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::SetNamespaceState(
+                request,
+                MetaEntityState::Dropped,
+            )),
+        }
+    }
+
     pub fn freeze_server(&self, request: StateChangeRequest) -> AckResponse {
         AckResponse {
             status: self.mutation_status(MetaMutation::FreezeServer(request)),
