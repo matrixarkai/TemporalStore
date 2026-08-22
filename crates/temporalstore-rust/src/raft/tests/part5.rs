@@ -326,7 +326,7 @@ fn promoted_leader_can_reach_peers_it_knows_nothing_about() {
     {
         let mut inner = cluster.inner.write().unwrap();
         let config = inner.config.clone();
-        refresh_all_pipeline_states(&mut inner.nodes, 2, &config);
+        refresh_all_pipeline_states(&mut inner.nodes, 2, None, &config);
     }
 
     for target in [1u64, 3u64] {

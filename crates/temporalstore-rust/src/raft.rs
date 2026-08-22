@@ -4058,7 +4058,7 @@ impl RaftCluster {
                 .pending_joint_consensus_restore_count
                 .saturating_add(1);
         }
-        refresh_all_pipeline_states(&mut nodes, leader_id, &config);
+        refresh_all_pipeline_states(&mut nodes, leader_id, None, &config);
         let leader_lease_deadline_ms = initial_leader_lease_deadline_ms(&config);
         Ok(Self {
             inner: Arc::new(RwLock::new(RaftClusterInner {
@@ -4221,7 +4221,8 @@ impl RaftCluster {
             }
         }
         let config = inner.config.clone();
-        refresh_all_pipeline_states(&mut inner.nodes, leader_id, &config);
+        let local_node_id_for_refresh = inner.local_node_id;
+        refresh_all_pipeline_states(&mut inner.nodes, leader_id, local_node_id_for_refresh, &config);
         inner.renew_leader_lease();
         inner.persist_configured_wal()?;
         Ok(leader_response)
@@ -4914,8 +4915,11 @@ fn merge_membership_evidence(
 fn refresh_all_pipeline_states(
     nodes: &mut BTreeMap<RaftNodeId, RaftNode>,
     leader_id: RaftNodeId,
+    local_node_id: Option<RaftNodeId>,
     config: &RaftConfig,
 ) {
+    // `local_node_id` is set only by the deployed runtime, which hosts exactly ONE node.
+    let deployed = local_node_id.is_some();
     // This runs on every propose and every accepted AppendEntries. Cloning the leader's
     // whole log here and re-scanning all of it per node made each of those O(log length),
     // which is exactly the growth incremental WAL records were meant to remove. The log is
@@ -4925,6 +4929,7 @@ fn refresh_all_pipeline_states(
         return;
     };
     let leader_commit_index = leader.commit_index;
+    let leader_next_index = node_next_log_index(leader);
     let progress = nodes
         .iter()
         .map(|(node_id, node)| {
@@ -4953,7 +4958,15 @@ fn refresh_all_pipeline_states(
     };
     for node in nodes.values_mut() {
         let bytes = inflight_bytes.get(&node.id).copied().unwrap_or_default();
-        refresh_node_pipeline_state(node, leader_id, leader_commit_index, bytes, config);
+        refresh_node_pipeline_state(
+            node,
+            leader_id,
+            leader_commit_index,
+            bytes,
+            leader_next_index,
+            deployed,
+            config,
+        );
     }
 }
 
@@ -4962,6 +4975,8 @@ fn refresh_node_pipeline_state(
     leader_id: RaftNodeId,
     leader_commit_index: u64,
     inflight_bytes: u64,
+    leader_next_index: u64,
+    deployed: bool,
     config: &RaftConfig,
 ) {
     // How far this peer has actually got, as far as THIS leader knows. `commit_index` is
@@ -4988,8 +5003,26 @@ fn refresh_node_pipeline_state(
     // promoted leader's cursor to 1, making every heartbeat look like a full-log catch-up
     // and tripping backpressure. Clamping keeps the in-process model's behaviour, where
     // the shadow log IS the peer's log.
-    node.pipeline_state.next_index = node_next_log_index(node)
-        .max(node.pipeline_state.match_index.saturating_add(1));
+    if deployed && node.id != leader_id {
+        // Deployed, this process hosts ONE node, so a peer's `log` here is an empty
+        // placeholder -- deriving `next_index` from it starts every catch-up at index 1 and
+        // re-ships a log the follower already has. Raft starts a peer optimistically at the
+        // leader's next index and lets rejections walk it back, so only INITIALISE it here;
+        // the send/ack path owns it from then on.
+        // "No progress established yet" is next_index <= 1 with nothing confirmed -- 1 is
+        // the default a fresh RaftNode carries, not evidence that the follower is empty.
+        if node.pipeline_state.match_index == 0 && node.pipeline_state.next_index <= 1 {
+            node.pipeline_state.next_index = leader_next_index;
+        }
+        node.pipeline_state.next_index = node
+            .pipeline_state
+            .next_index
+            .max(node.pipeline_state.match_index.saturating_add(1));
+    } else {
+        // In-process cluster: the shadow log IS the peer's log, so derive as before.
+        node.pipeline_state.next_index = node_next_log_index(node)
+            .max(node.pipeline_state.match_index.saturating_add(1));
+    }
     node.pipeline_state.inflight_entries = inflight_entries;
     node.pipeline_state.inflight_bytes = inflight_bytes;
     node.pipeline_state.append_queue_depth = inflight_entries;

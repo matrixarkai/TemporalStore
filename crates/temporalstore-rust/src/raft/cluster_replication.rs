@@ -368,6 +368,20 @@ impl RaftCluster {
             .iter()
             .map(|entry| command_size_bytes(&entry.command))
             .sum::<u64>();
+        // A leader that is merely out of sync with this follower's log is still ALIVE.
+        // Only a stale-term request (from a superseded leader) leaves the election timer
+        // running. Counting only ACCEPTED appends as contact meant a follower being caught
+        // up kept timing out and campaigning, which bumped the term, which made the
+        // leader's in-flight appends stale, which got them rejected -- catch-up and
+        // election fighting each other instead of converging.
+        let local_current_term = inner
+            .nodes
+            .get(&target_id)
+            .map(|node| node.current_term)
+            .unwrap_or_default();
+        if term >= local_current_term {
+            inner.leader_contact_epoch = inner.leader_contact_epoch.saturating_add(1);
+        }
         let enable_reorder_queue = inner.config.enable_reorder_queue;
         let reorder_window_size = inner.config.reorder_window_size;
         let max_apply_batch_bytes = inner.config.max_apply_batch_bytes;
@@ -600,7 +614,8 @@ impl RaftCluster {
             }
         }
         let config = inner.config.clone();
-        refresh_all_pipeline_states(&mut inner.nodes, leader_id, &config);
+        let local_node_id_for_refresh = inner.local_node_id;
+        refresh_all_pipeline_states(&mut inner.nodes, leader_id, local_node_id_for_refresh, &config);
         inner.renew_leader_lease();
         inner.persist_configured_wal()?;
         Ok(AppendEntriesResponse {
