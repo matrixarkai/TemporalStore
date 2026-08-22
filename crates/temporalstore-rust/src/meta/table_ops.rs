@@ -113,6 +113,16 @@ impl SingleNodeMeta {
             .expect("table exists after state check");
         table.info.state = MetaEntityState::Dropped;
         table.info.topology_version = topology_version;
+        // Servers and proxies are dropped through `apply_set_*_state`, which
+        // stamps for them. Tables have their own path, and without the stamp a
+        // dropped table has no drop time -- so retention, which treats a missing
+        // time as "predates this feature, leave alone", never collects one.
+        stamp_dropped_since(
+            &mut state,
+            &dropped_key("table", &key),
+            MetaEntityState::Dropped,
+            now_ms(),
+        );
         AckResponse {
             status: Status::ok(),
         }

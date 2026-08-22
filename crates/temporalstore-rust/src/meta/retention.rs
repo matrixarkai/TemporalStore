@@ -290,6 +290,21 @@ impl SingleNodeMeta {
                 plan,
             };
         }
+        // Recorded before it is applied, so a restart does not resurrect what
+        // this round forgot. Without this the log still holds the register and
+        // drop of every purged resource, replay brings them all back, and the
+        // GC has to forget them again on every boot.
+        self.record_mutation(MetaMutation::PurgeMeta(plan.clone()));
+        self.apply_meta_purge(&plan);
+        MetaRetentionReport {
+            status: Status::ok(),
+            plan,
+        }
+    }
+
+    /// Forget exactly what `plan` names. Takes the plan rather than recomputing
+    /// one so that replay and the live round agree.
+    pub(crate) fn apply_meta_purge(&self, plan: &MetaRetentionPlan) {
         let mut state = self.inner.write().expect("meta lock poisoned");
         for addr in &plan.proxies {
             state.proxies.remove(addr);
@@ -323,10 +338,6 @@ impl SingleNodeMeta {
                 format!("server:{addr}"),
                 "reason=retention",
             );
-        }
-        MetaRetentionReport {
-            status: Status::ok(),
-            plan,
         }
     }
 
@@ -600,6 +611,207 @@ mod tests {
 
     fn aging(options: FreezeAgingOptions) -> FreezeAgingOptions {
         options
+    }
+
+    /// A meta with a mutation log, holding one dropped server, one dropped
+    /// proxy and one dropped table, all with expired tombstones.
+    fn purgeable(log_path: &std::path::Path) -> crate::meta::SingleNodeMeta {
+        use crate::meta::*;
+        let meta = SingleNodeMeta::with_mutation_log(log_path).unwrap();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "node-a".to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+        });
+        meta.register_proxy(RegisterProxyRequest {
+            proxy_addr: "proxy-a".to_string(),
+            namespace: String::new(),
+            location: "rack-1".to_string(),
+            config_version: 0,
+            binary_version: "v1".to_string(),
+        });
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            first_shard_id: 1,
+            shard_count: 1,
+            replica_count: 1,
+            partition_version: 0,
+            serving_options: TableServingOptions::default(),
+        });
+        let drop_request = |endpoint: &str| StateChangeRequest {
+            endpoint: endpoint.to_string(),
+            freeze_cooldown_ms: 0,
+            reason: FreezeReason::Unspecified,
+        };
+        assert!(meta.drop_server(drop_request("node-a")).status.ok);
+        assert!(meta.drop_proxy(drop_request("proxy-a")).status.ok);
+        assert!(
+            meta.delete_table(DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "orders".to_string(),
+            })
+            .status
+            .ok
+        );
+        meta
+    }
+
+    fn purge_everything() -> MetaRetentionOptions {
+        MetaRetentionOptions {
+            server_retention_ms: 0,
+            proxy_retention_ms: 0,
+            table_retention_ms: 0,
+            ..MetaRetentionOptions::default()
+        }
+    }
+
+    #[test]
+    fn a_dropped_table_is_eventually_forgotten() {
+        // Dropping a table is the one path that does not go through the shared
+        // state setter, so it was the one path that recorded no drop time. A
+        // table with no drop time is never eligible, which left every dropped
+        // table -- and every shard route under it -- in the state and in every
+        // exported snapshot for the life of the cluster.
+        use crate::meta::*;
+        let meta = SingleNodeMeta::default();
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            first_shard_id: 1,
+            shard_count: 1,
+            replica_count: 1,
+            partition_version: 0,
+            serving_options: TableServingOptions::default(),
+        });
+        assert!(
+            meta.delete_table(DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "orders".to_string(),
+            })
+            .status
+            .ok
+        );
+
+        let plan = meta.plan_meta_retention_now(purge_everything());
+        assert_eq!(plan.tables, vec!["ns/orders"]);
+    }
+
+    #[test]
+    fn dropping_a_table_twice_does_not_restart_its_clock() {
+        // The retention clock must measure since the first drop; restarting it
+        // would let a repeated no-op drop keep a table alive indefinitely.
+        use crate::meta::*;
+        let meta = SingleNodeMeta::default();
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            first_shard_id: 1,
+            shard_count: 1,
+            replica_count: 1,
+            partition_version: 0,
+            serving_options: TableServingOptions::default(),
+        });
+        let request = DeleteTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+        };
+        assert!(meta.delete_table(request.clone()).status.ok);
+        let first = meta.export_snapshot().dropped_since_ms["table:ns/orders"];
+        // The second drop is refused, and must leave the clock where it was.
+        assert!(!meta.delete_table(request).status.ok);
+        assert_eq!(
+            meta.export_snapshot().dropped_since_ms["table:ns/orders"],
+            first
+        );
+    }
+
+    #[test]
+    fn a_purge_is_not_undone_by_a_restart() {
+        // The log still holds the register and the drop of everything this
+        // round forgets. If the purge itself is not recorded, replay brings all
+        // of it back and the GC has to forget it again on every boot -- so the
+        // state it exists to bound never actually shrinks.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("purge-mutations.jsonl");
+        {
+            let meta = purgeable(&log_path);
+            let report = meta.purge_expired_meta(purge_everything());
+            assert!(report.status.ok);
+            assert_eq!(report.plan.servers, vec!["node-a"]);
+            assert_eq!(report.plan.proxies, vec!["proxy-a"]);
+            assert_eq!(report.plan.tables, vec!["ns/orders"]);
+            assert!(meta.list_servers().servers.is_empty());
+        }
+
+        let recovered = crate::meta::SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert!(
+            recovered.list_servers().servers.is_empty(),
+            "the purged server came back"
+        );
+        assert!(
+            recovered.list_proxies().proxies.is_empty(),
+            "the purged proxy came back"
+        );
+        assert!(
+            recovered.list_tables().tables.is_empty(),
+            "the purged table came back"
+        );
+    }
+
+    #[test]
+    fn a_replayed_purge_forgets_exactly_what_the_live_round_forgot() {
+        // Retention is computed from the wall clock, so replay must apply the
+        // recorded list rather than re-plan: re-planning at a later `now` would
+        // purge a superset, and at a stricter setting a subset.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("selective-mutations.jsonl");
+        {
+            let meta = purgeable(&log_path);
+            let report = meta.purge_expired_meta(MetaRetentionOptions {
+                // Only the proxy is old enough to forget this round.
+                server_retention_ms: u64::MAX,
+                table_retention_ms: u64::MAX,
+                proxy_retention_ms: 0,
+                ..MetaRetentionOptions::default()
+            });
+            assert_eq!(report.plan.proxies, vec!["proxy-a"]);
+            assert!(report.plan.servers.is_empty());
+        }
+
+        let recovered = crate::meta::SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert!(recovered.list_proxies().proxies.is_empty());
+        assert_eq!(
+            recovered.list_servers().servers.len(),
+            1,
+            "a server the live round kept must survive replay"
+        );
+        assert_eq!(recovered.list_tables().tables.len(), 1);
+    }
+
+    #[test]
+    fn an_empty_round_records_nothing() {
+        // A GC that ticks every minute must not append a log entry per tick,
+        // or the log grows faster than the state it is bounding.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("empty-round-mutations.jsonl");
+        let meta = crate::meta::SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        let before = std::fs::read_to_string(&log_path).unwrap_or_default();
+        for _ in 0..5 {
+            assert!(meta.purge_expired_meta(purge_everything()).status.ok);
+        }
+        let after = std::fs::read_to_string(&log_path).unwrap_or_default();
+        assert_eq!(before, after, "an empty retention round wrote to the log");
     }
 
     #[test]
