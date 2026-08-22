@@ -2459,6 +2459,159 @@ mod tests {
         assert!(restored.is_meta_change_muted());
     }
 
+    /// A two-shard table whose shards are both registered to a live server --
+    /// that is, a table that is holding data.
+    fn live_two_shard_table() -> SingleNodeMeta {
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "node-a".to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+        });
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            first_shard_id: 100,
+            shard_count: 2,
+            replica_count: 1,
+            partition_version: 0,
+            serving_options: TableServingOptions::default(),
+        });
+        for shard_id in [100, 101] {
+            meta.register(RegisterShardRequest {
+                shard_id,
+                server_addr: "node-a".to_string(),
+            });
+        }
+        meta
+    }
+
+    fn bucket_ranges(meta: &SingleNodeMeta) -> Vec<(ShardId, u64, u64)> {
+        meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            old_topology_version: 0,
+        })
+        .shards
+        .into_iter()
+        .map(|shard| (shard.shard_id, shard.start_bucket, shard.end_bucket))
+        .collect()
+    }
+
+    fn grow_to(meta: &SingleNodeMeta, shard_count: u64) -> Status {
+        meta.update_table(UpdateTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            shard_count: Some(shard_count),
+            replica_count: None,
+            first_shard_id: None,
+            partition_version: None,
+            serving_options: None,
+        })
+        .status
+    }
+
+    #[test]
+    fn a_registered_shards_key_range_never_moves() {
+        // Bucket ranges are derived from shard_count on every read, so raising
+        // it renumbers the whole key space. Nothing rehashes: the data for the
+        // buckets that moved is still sitting on the old shard, while the
+        // routing table now sends those keys to a shard that has never seen
+        // them, and the reads come back as misses rather than errors.
+        let meta = live_two_shard_table();
+        let before = bucket_ranges(&meta);
+        assert_eq!(before.len(), 2);
+
+        grow_to(&meta, 4);
+
+        let after = bucket_ranges(&meta);
+        let (_, start, end) = before[0];
+        let moved = after
+            .iter()
+            .find(|(shard_id, _, _)| *shard_id == before[0].0)
+            .map(|(_, new_start, new_end)| (*new_start, *new_end));
+        assert_eq!(
+            moved,
+            Some((start, end)),
+            "shard {} owned buckets {start}..={end} and now owns {moved:?}",
+            before[0].0
+        );
+    }
+
+    #[test]
+    fn a_key_does_not_change_shard_underneath_the_data() {
+        // The same defect stated as the client sees it: pick a bucket the first
+        // shard owns, and check it still resolves to that shard afterwards.
+        let meta = live_two_shard_table();
+        let before = bucket_ranges(&meta);
+        let probe = before[0].2;
+        let owner_of = |ranges: &[(ShardId, u64, u64)], bucket: u64| {
+            ranges
+                .iter()
+                .find(|(_, start, end)| bucket >= *start && bucket <= *end)
+                .map(|(shard_id, _, _)| *shard_id)
+        };
+        assert_eq!(owner_of(&before, probe), Some(before[0].0));
+
+        grow_to(&meta, 4);
+
+        assert_eq!(
+            owner_of(&bucket_ranges(&meta), probe),
+            Some(before[0].0),
+            "bucket {probe} was rehomed to a shard that has never held it"
+        );
+    }
+
+    #[test]
+    fn growing_a_table_that_already_owns_shards_is_refused() {
+        let meta = live_two_shard_table();
+        assert_eq!(grow_to(&meta, 4).code, "shards_registered");
+        assert_eq!(meta.list_tables().tables[0].shard_count, 2);
+    }
+
+    #[test]
+    fn growing_a_table_before_anything_registers_is_still_allowed() {
+        // The legitimate case, and the one the existing suite covers: correcting
+        // the shard count of a table that is not yet holding anything.
+        let meta = SingleNodeMeta::default();
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            first_shard_id: 100,
+            shard_count: 2,
+            replica_count: 1,
+            partition_version: 0,
+            serving_options: TableServingOptions::default(),
+        });
+        assert!(grow_to(&meta, 4).ok);
+        assert_eq!(meta.list_tables().tables[0].shard_count, 4);
+    }
+
+    #[test]
+    fn a_registered_table_can_still_change_its_other_options() {
+        // The refusal is about shard_count alone: replica count and serving
+        // options do not move any key.
+        let meta = live_two_shard_table();
+        let response = meta.update_table(UpdateTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            shard_count: None,
+            replica_count: Some(2),
+            first_shard_id: None,
+            partition_version: None,
+            serving_options: None,
+        });
+        assert!(response.status.ok, "{response:?}");
+        assert_eq!(meta.list_tables().tables[0].replica_count, 2);
+    }
+
     #[test]
     fn metaserver_safe_mode_cooldown_blocks_rejoin_and_round_trips() {
         let dir = tempfile::tempdir().unwrap();
@@ -3684,10 +3837,6 @@ mod tests {
             location: "zone-a".to_string(),
             binary_version: "v1".to_string(),
         });
-        meta.register(RegisterShardRequest {
-            shard_id: 10,
-            server_addr: "server-a".to_string(),
-        });
         meta.register_proxy(RegisterProxyRequest {
             proxy_addr: "proxy-a".to_string(),
             namespace: "ns".to_string(),
@@ -3724,6 +3873,14 @@ mod tests {
             .status
             .ok
         );
+        // Registered after the table is sized, because shard_count is pinned
+        // once a shard is registered against it. Where this sits is incidental
+        // to what this test checks: the mutation count and the recovered state
+        // are the same either way.
+        meta.register(RegisterShardRequest {
+            shard_id: 10,
+            server_addr: "server-a".to_string(),
+        });
         assert!(
             meta.add_table(AddTableRequest {
                 namespace: "ns".to_string(),
