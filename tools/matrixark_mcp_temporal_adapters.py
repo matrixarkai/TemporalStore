@@ -366,6 +366,114 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
     proxy boundary.
     """
 
+    def read_all(self) -> list[Json]:
+        """Read through the native record log, not MatrixArkLocalAdapter's JSONL log.
+
+        `MatrixArkLocalAdapter` precedes the direct mixins in this class's MRO and also
+        defines `read_all`, so its JSONL implementation won here -- and on a native backend
+        there is no JSONL log, so it returned ZERO records. Every reader built on read_all
+        (get / get_all / update / history / keyed recall) therefore read empty while the
+        records sat durably in the record log; the same inherited method is correct on the
+        JSONL backend, which is why only the native backends looked broken.
+
+        Only `read_all` collided: `read_all_without_disk_fallback_recovery` is defined solely
+        on `_TemporalDirectReadMixin` and already resolved correctly, so delegating to it
+        reproduces the direct read exactly without reordering bases (which would silently
+        move every other method both classes define).
+
+        The live-view filtering MUST be kept: `MatrixArkLocalAdapter.read_all` does not just
+        read, it filters the log down to live records. Delegating to the raw direct read alone
+        silently drops that -- forget/delete tombstones stop being honoured (the subject's
+        records stay visible after a forget) and a TTL record never expires, because expiry is
+        enforced on read and is never cached.
+
+        The body is deliberately identical to `MatrixArkLocalAdapter.read_all`; only the
+        `_read_all_compacted` beneath it differs per backend.
+        """
+        try:
+            from tools.matrixark_mcp_local_adapter import filter_live_memory_records
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_local_adapter import filter_live_memory_records
+        return filter_live_memory_records(self._read_all_compacted())
+
+    def _read_all_compacted(self) -> list[Json]:
+        """The compacted, tombstone-swept view -- WITHOUT the expiry/retention filter.
+
+        The seam between "compacted" and "live" exists because some callers need to see records
+        the live view hides: `sweep_expired_memories` has to find the expired rows in order to
+        tombstone them, and would reclaim nothing if handed a view they had already been filtered
+        out of. Overriding it here rather than only `read_all` is what makes the three memory
+        paths built on it work on a native backend -- keyed upsert (`_apply_identity_upsert`),
+        the retention-cutoff scope resolver, and the expiry sweep. All three called the inherited
+        JSONL implementation, which returns `[]` as soon as `_local_jsonl_enabled` is False, so on
+        every native backend keyed upsert silently never ran: a second ingest under the same
+        `identity_key` found no existing record to supersede and both values stayed live.
+
+        The two extra serving-pipeline stages are applied HERE rather than inside
+        `_with_latest_context_state_records`, which the retrieval hot path also goes through:
+
+          * `compact_latest_value_records` collapses records sharing a latest-value key. For a
+            `context_event` that key is the `event_id_hash`, and ingest persists an event row
+            twice -- once on the hot path (`extraction_phase: hot_path`) and again when
+            extraction commits (`final`). Without it both rows serve and `get_all` reports one
+            memory as two.
+          * `apply_memory_tombstones` is what makes forget / delete / reset remove anything.
+            Without it a forget writes its tombstone, reports an accurate `removed_count`, and
+            then serves every one of those records right back.
+
+        `compact_and_apply_tombstones` composes all three in the one order correct for both
+        orphan sweeping and supersede (see its docstring). Both added stages fast-path a log
+        with no duplicate keys / no tombstone, and all three are idempotent -- which matters,
+        because the result feeds a cache this method is called against repeatedly.
+        """
+        try:
+            from tools.matrixark_mcp_local_adapter import compact_and_apply_tombstones
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_local_adapter import compact_and_apply_tombstones
+        self._recover_serving_from_disk_fallback_if_needed(reason="read_all")
+        return compact_and_apply_tombstones(self.read_all_without_disk_fallback_recovery())
+
+    def _read_raw_records(self) -> list[Json]:
+        """The native record log in append order -- NOT compacted, NOT tombstone-filtered.
+
+        Same MRO collision as `read_all`: `MatrixArkLocalAdapter._read_raw_records` reads the
+        JSONL shards and returns `[]` the moment `_local_jsonl_enabled` is False, which is
+        exactly what every native backend sets. `history` is built on this method -- it is
+        deliberately the RAW log, because the change history of a memory is the tombstones and
+        superseded rows that the live view exists to hide -- so on a native backend history
+        reported an empty log for a memory that plainly had one.
+
+        The delete-before-extract guard in `session_commit` also reads through here. It asks
+        whether a pending event survived the tombstone sweep and treats a tombstone-free log as
+        "keep everything", so an empty result made it silently inert on native backends rather
+        than wrong; with a real log behind it the guard now does its job there too.
+
+        Deliberately does NOT fold in `_load_latest_context_state_records()`: that store holds
+        the compacted latest state, which is the opposite of an append history, and none of it
+        is a `context_event` or a tombstone.
+
+        Deliberately does NOT take `_records_lock` either. That lock guards the serving-record
+        cache, and this method reads nothing from it -- but taking it puts a thread inside
+        `_records_lock` while it waits on the proxy client's lane semaphore, while the serving
+        read holds a lane slot and waits on `_records_lock`. Two threads, opposite order, and
+        the gateway wedges: one request hangs to its timeout, every later one is rejected on the
+        lane, and the proxy sits idle because nothing is being sent to it. `session_commit` reads
+        through here on every ingest, so a gateway interleaving an ingest and a retrieve hits the
+        inversion within a handful of requests. Nothing here needs the lock -- each call reads a
+        fresh count and its records straight from the backend.
+        """
+        try:
+            from tools.matrixark_mcp_latest_context_state import expand_record_bundles
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_latest_context_state import expand_record_bundles
+        self._recover_serving_from_disk_fallback_if_needed(reason="read_raw_records")
+        count = self._get_count()
+        if count > 0:
+            records = self._load_records_by_count(count)
+        else:
+            records = self._load_records(self._get_index())
+        return expand_record_bundles(records)
+
     def append(self, record: Json) -> None:
         self.append_many([record])
 
@@ -395,7 +503,20 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         # this class); the fast direct-ingest path calls _append_many_materialized
         # itself (never append), so there is no double write. Disable with
         # MATRIXARK_DIRECT_SERVING_APPEND_TO_BACKEND=0 as an escape hatch.
-        materialized = materialize_serving_record_batch(records)
+        #
+        # Per-ingestion stamping runs HERE, as it does in MatrixArkLocalAdapter.append_many,
+        # because it was being skipped entirely on every native backend. `_stamp_ingest_fields`
+        # is what puts `expires_at_ms`/`ephemeral` and `identity_key`/`truth_class`/`truth_rank`
+        # onto the records; without it an `ttl_seconds` ingest stored a record that nothing
+        # would ever expire, and an `identity_key` ingest stored a record keyed recall could not
+        # find (404) and keyed-upsert never superseded.
+        #
+        # `_apply_serving_dedup` is deliberately NOT applied here: its summary-dirty
+        # coalescing calls read_all(), which on a native backend is a full record-log read on
+        # every append batch. It only removes redundant pending markers -- a size
+        # optimization, not correctness -- and paying an O(store) read per ingest to get it
+        # is the wrong trade on this path.
+        materialized = self._stamp_ingest_fields(materialize_serving_record_batch(records))
         if not materialized:
             return
         if self._queue_batched_records(materialized):
