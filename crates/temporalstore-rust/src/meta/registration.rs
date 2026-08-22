@@ -72,6 +72,18 @@ impl SingleNodeMeta {
                 shard_states: Vec::new(),
             },
         );
+        // Coming back clears the drop clock. Without this the tombstone
+        // outlives the drop it recorded: `stamp_dropped_since` keeps the first
+        // time it is given, deliberately, so that re-dropping an already
+        // dropped resource cannot restart the clock -- and a resource dropped,
+        // revived, and dropped again months later would inherit the original
+        // time and be collected on the next round with no grace at all.
+        stamp_dropped_since(
+            &mut state,
+            &dropped_key("server", &server_addr),
+            MetaEntityState::Normal,
+            now,
+        );
         record_topology_event(
             &mut state,
             "register_server",
@@ -234,6 +246,7 @@ impl SingleNodeMeta {
     pub(super) fn apply_register_proxy(&self, request: RegisterProxyRequest) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
         state.counters.proxy_register_total += 1;
+        let proxy_addr = request.proxy_addr.clone();
         if let Some(existing) = state.proxies.get(&request.proxy_addr) {
             let now = now_ms();
             if existing.state == MetaEntityState::Frozen && existing.freeze_cooldown_until_ms > now
@@ -274,6 +287,18 @@ impl SingleNodeMeta {
                 boot_time_ms: 0,
                 restart_count: 0,
             },
+        );
+        // Coming back clears the drop clock. Without this the tombstone
+        // outlives the drop it recorded: `stamp_dropped_since` keeps the first
+        // time it is given, deliberately, so that re-dropping an already
+        // dropped resource cannot restart the clock -- and a resource dropped,
+        // revived, and dropped again months later would inherit the original
+        // time and be collected on the next round with no grace at all.
+        stamp_dropped_since(
+            &mut state,
+            &dropped_key("proxy", &proxy_addr),
+            MetaEntityState::Normal,
+            now_ms(),
         );
         AckResponse {
             status: Status::ok(),
