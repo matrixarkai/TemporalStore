@@ -898,12 +898,16 @@ fn raft_rejects_electing_stale_replica_until_it_catches_up() {
         .unwrap();
     cluster.set_alive(3, true).unwrap();
 
+    // A stale candidate is rejected because no voter will grant it -- its log is behind, so
+    // every up-to-date voter refuses and the candidate cannot reach a majority. (It used to be
+    // rejected by a local `candidate_log_would_win` precheck that reported ReplicaLagging; that
+    // precheck read cached peer state and was part of the god-view promotion path, so rejection
+    // is now the real vote round's outcome.) Either way it must NOT become leader.
     assert_eq!(
         cluster.elect_leader(3).unwrap_err(),
-        RaftError::ReplicaLagging {
-            replica_id: 3,
-            replica_commit_index: 0,
-            leader_commit_index: 1,
+        RaftError::NoMajority {
+            live: 1, // its own self-vote only
+            required: 2,
         }
     );
     assert_eq!(cluster.leader_id(), 1);
@@ -1713,7 +1717,10 @@ fn observer_apply_health_reports_local_replica_without_remote_false_lag() {
 fn request_vote_higher_term_resets_prior_vote_before_decision() {
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
     cluster.elect_leader(2).unwrap();
-    assert_eq!(cluster.hard_state(1).unwrap().voted_for, None);
+    // Node 1 granted its vote in the election that promoted node 2, so its per-term `voted_for`
+    // records that grant. (The old promotion path wiped every follower's `voted_for` instead,
+    // which is exactly the per-term vote bookkeeping Raft relies on.)
+    assert_eq!(cluster.hard_state(1).unwrap().voted_for, Some(2));
 
     let first_vote = cluster
         .request_vote(VoteRequest {
