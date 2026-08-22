@@ -524,7 +524,8 @@ impl LocalWriteAheadLogStore {
             let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
             fs::create_dir_all(&inner.root)?;
             let _append_lock = WalAppendLock::acquire(&inner.root, shard_id)?;
-            let last_sequence = resolve_last_sequence_for_append(&mut inner, shard_id)?;
+            let (last_sequence, on_disk_len) =
+                resolve_last_sequence_for_append(&mut inner, shard_id)?;
             inner.last_sequence_by_shard.insert(shard_id, last_sequence);
             let seq = last_sequence.saturating_add(1);
             let rec = WriteAheadLogRecord {
@@ -534,7 +535,7 @@ impl LocalWriteAheadLogStore {
                 command,
                 staged_pages,
             };
-            let report = append_record_locked(&mut inner, &rec, sync && !group)?;
+            let report = append_record_locked(&mut inner, &rec, sync && !group, Some(on_disk_len))?;
             inner.stats.last_sequence = report.current_sequence;
             // Record the file length we just left behind so the next append's fast path can
             // confirm no other writer touched the file (O(1) stat) and skip the full scan.
@@ -578,7 +579,7 @@ impl LocalWriteAheadLogStore {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let _append_lock = WalAppendLock::acquire(&inner.root, shard_id)?;
-        let last_sequence = resolve_last_sequence_for_append(&mut inner, shard_id)?;
+        let (last_sequence, _on_disk_len) = resolve_last_sequence_for_append(&mut inner, shard_id)?;
         inner.last_sequence_by_shard.insert(shard_id, last_sequence);
         let seq = last_sequence.saturating_add(1);
         let rec = WriteAheadLogRecord {
@@ -591,7 +592,7 @@ impl LocalWriteAheadLogStore {
         // sync=false: write the bytes, defer the fdatasync to `commit_barrier`. Same as the
         // group branch of append_with_sync. `last_flushed_sequence` is NOT advanced here (the
         // record is not yet durable); the coalesced barrier advances it once it reaches disk.
-        let report = append_record_locked(&mut inner, &rec, false)?;
+        let report = append_record_locked(&mut inner, &rec, false, None)?;
         inner.stats.last_sequence = report.current_sequence;
         inner.last_sequence_by_shard.insert(shard_id, seq);
         inner
@@ -672,7 +673,7 @@ impl LocalWriteAheadLogStore {
                 // Buffer every record (sync=false); the single durability barrier below covers
                 // the whole batch. append_record_locked keeps last_flushed_sequence honest -- it
                 // only advances on an actual fsync, which happens once, after the loop.
-                let report = append_record_locked(&mut inner, &rec, false)?;
+                let report = append_record_locked(&mut inner, &rec, false, None)?;
                 inner.stats.last_sequence = report.current_sequence;
                 records.push(rec);
             }
@@ -770,7 +771,7 @@ impl LocalWriteAheadLogStore {
                 persistent_bytes: path.metadata().map(|metadata| metadata.len()).unwrap_or(0),
             });
         }
-        let report = append_record_locked(&mut inner, &record, true)?;
+        let report = append_record_locked(&mut inner, &record, true, None)?;
         inner
             .last_sequence_by_shard
             .insert(record.shard_id, record.sequence);
@@ -1347,10 +1348,14 @@ fn wal_fast_append_seq() -> bool {
 /// without the O(records) `last_wal_sequence_at` scan. Otherwise fall back to the full scan (which
 /// also repairs a torn tail via `set_len`), reconcile the verified length against the resulting
 /// on-disk length, and return `max(cache, disk)` exactly as the pre-gate path did.
+///
+/// Also reports the log's length as it was observed, because the caller is about to append at
+/// exactly that offset and the append lock is held across both -- so asking again would be asking
+/// a question already answered.
 fn resolve_last_sequence_for_append(
     inner: &mut WriteAheadLogInner,
     shard_id: ShardId,
-) -> Result<u64, WriteAheadLogError> {
+) -> Result<(u64, u64), WriteAheadLogError> {
     let cached_last_sequence = inner
         .last_sequence_by_shard
         .get(&shard_id)
@@ -1364,7 +1369,7 @@ fn resolve_last_sequence_for_append(
             let path = write_ahead_log_path(&inner.root, shard_id);
             let on_disk_len = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
             if on_disk_len == verified_len {
-                return Ok(cached_last_sequence);
+                return Ok((cached_last_sequence, on_disk_len));
             }
         }
     }
@@ -1377,7 +1382,7 @@ fn resolve_last_sequence_for_append(
         .map(|metadata| metadata.len())
         .unwrap_or(0);
     inner.verified_len_by_shard.insert(shard_id, reconciled_len);
-    Ok(cached_last_sequence.max(disk_last_sequence))
+    Ok((cached_last_sequence.max(disk_last_sequence), reconciled_len))
 }
 
 fn wal_env_flag_on(name: &str) -> bool {
@@ -1448,9 +1453,15 @@ fn append_record_locked(
     inner: &mut WriteAheadLogInner,
     record: &WriteAheadLogRecord,
     sync: bool,
+    known_offset: Option<u64>,
 ) -> Result<WriteAheadLogAppendReport, WriteAheadLogError> {
     let path = write_ahead_log_path(&inner.root, record.shard_id);
-    let offset = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    // The caller has usually just measured this under the same append lock, so taking its answer
+    // costs nothing and asking again costs a stat.
+    let offset = match known_offset {
+        Some(offset) => offset,
+        None => path.metadata().map(|metadata| metadata.len()).unwrap_or(0),
+    };
     // Frame the record with a length + SHA-256 digest so a later value-preserving bit-flip in
     // this committed line is detected on read (see `crate::log_framing`). Offsets/stats below
     // use the real byte length, so framing is transparent to the append report and replication.
@@ -1471,7 +1482,9 @@ fn append_record_locked(
         inner.stats.syncs += 1;
         inner.stats.last_flushed_sequence = record.sequence;
     }
-    let persistent_bytes = path.metadata()?.len();
+    // Ask the handle that was just written, not the path: it is cheaper, and it is the file
+    // this record actually went into rather than whatever the name refers to now.
+    let persistent_bytes = file.metadata()?.len();
     inner.stats.writes += 1;
     inner.stats.bytes_written += bytes.len() as u64;
     inner.stats.persistent_bytes = persistent_bytes;
