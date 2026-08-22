@@ -35,7 +35,7 @@ impl TemporalStoreClient {
         if self.inner.options.meta_addr.is_some() {
             let server_addr = self.resolve_route(request.shard_id, false, None)?;
             return post_json_with_options(&server_addr, "/batch_execute", &request, http_options)
-                .or_else(|_| {
+                .or_else(|err| {
                     let became_continuous = self.record_backend_failure(
                         &server_addr,
                         self.inner.options.topo_error_retry_interval_ms,
@@ -45,6 +45,9 @@ impl TemporalStoreClient {
                         .lock()
                         .expect("client stats lock poisoned")
                         .record_backend_error(became_continuous);
+                    if !self.inner.options.refresh_route_on_backend_error {
+                        return Err(err.into());
+                    }
                     let refreshed = self.resolve_route(request.shard_id, true, None)?;
                     Ok(post_json_with_options(
                         &refreshed,
@@ -126,7 +129,7 @@ impl TemporalStoreClient {
                 preferred_location,
             )?;
             return post_json_with_options(&server_addr, "/execute", &request, http_options)
-                .or_else(|_| {
+                .or_else(|err| {
                     let became_continuous = self.record_backend_failure(
                         &server_addr,
                         continuous_failed_time_ms
@@ -137,6 +140,9 @@ impl TemporalStoreClient {
                         .lock()
                         .expect("client stats lock poisoned")
                         .record_backend_error(became_continuous);
+                    if !self.inner.options.refresh_route_on_backend_error {
+                        return Err(err.into());
+                    }
                     let refreshed = self.resolve_route_with_policy(
                         request.shard_id,
                         true,
@@ -175,7 +181,7 @@ impl TemporalStoreClient {
             let server_addr =
                 self.resolve_route(request.shard_id, false, continuous_failed_time_ms)?;
             return post_json_with_options(&server_addr, "/batch_execute", &request, http_options)
-                .or_else(|_| {
+                .or_else(|err| {
                     let became_continuous = self.record_backend_failure(
                         &server_addr,
                         continuous_failed_time_ms
@@ -186,6 +192,9 @@ impl TemporalStoreClient {
                         .lock()
                         .expect("client stats lock poisoned")
                         .record_backend_error(became_continuous);
+                    if !self.inner.options.refresh_route_on_backend_error {
+                        return Err(err.into());
+                    }
                     let refreshed =
                         self.resolve_route(request.shard_id, true, continuous_failed_time_ms)?;
                     let response = post_json_with_options(

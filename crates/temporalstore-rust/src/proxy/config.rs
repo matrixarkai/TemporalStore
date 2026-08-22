@@ -54,6 +54,11 @@ pub(super) fn proxy_client_from_options(options: &ProxyOptions) -> TemporalStore
         route_cache_ttl_ms: options.route_cache_ttl_ms,
         topo_error_retry_interval_ms: options.backend_continuous_failed_time_ms,
         drop_percent: options.drop_percent.min(100),
+        // Previously never passed through: the proxy accepted this option, defaulted it,
+        // read it from TS_PROXY_REFRESH_ROUTE_ON_BACKEND_ERROR and folded it into the config
+        // hash, while the client refreshed unconditionally. Setting it to false changed
+        // nothing and said nothing.
+        refresh_route_on_backend_error: options.refresh_route_on_backend_error,
         ..ClientOptions::default()
     })
 }
