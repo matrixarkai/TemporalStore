@@ -135,5 +135,72 @@ class ResetReachesEngineTest(ForgetReachesEngineTest):
         self.assertNotIn("engine_purge", out)
 
 
+class _DeleteClient:
+    def __init__(self, fail=False):
+        self.calls = []
+        self.fail = fail
+
+    def matrixark_delete_records(self, *, count_key, record_hash_key, shard_size, record_ids):
+        self.calls.append({"record_ids": record_ids, "shard_size": shard_size})
+        if self.fail:
+            raise RuntimeError("engine unavailable")
+        return {"matrixark_delete_records_removed": 4, "matrixark_delete_fields_deleted": 1,
+                "matrixark_delete_fields_rewritten": 2, "matrixark_delete_ids_requested": len(record_ids)}
+
+
+class DeleteReachesEngineTest(unittest.TestCase):
+    """`delete` had the same hole as forget: get_all dropped while retrieve still served it.
+
+    The identity set is NOT re-derived here. Which records a delete covers is subtle -- the
+    addressed event, its single-source derivatives, and the embeddings/postings pointing at any of
+    them, while MULTI-source derivatives are demoted rather than removed -- so the inherited
+    implementation decides it once and this passes that set through.
+    """
+
+    def setUp(self) -> None:
+        self._orig = adapters.MatrixArkLocalAdapter.delete_memory
+        self.addCleanup(lambda: setattr(adapters.MatrixArkLocalAdapter, "delete_memory", self._orig))
+
+    def _with_result(self, result):
+        adapters.MatrixArkLocalAdapter.delete_memory = lambda s, a, h=None: dict(result)
+
+    def test_passes_the_closure_through_to_the_engine(self) -> None:
+        self._with_result({"deleted": True, "closure_ref_ids": ["11", "22", "33"]})
+        client = _DeleteClient()
+        out = _adapter(client).delete_memory({"memory_id": "11"})
+        self.assertEqual(["11", "22", "33"], client.calls[0]["record_ids"])
+        self.assertTrue(out["engine_purge"]["ok"])
+        self.assertEqual(4, out["engine_purge"]["records_removed"])
+
+    def test_does_not_re_derive_the_closure(self) -> None:
+        """Whatever the inherited implementation decided is what the engine is told -- two copies
+        of that rule in two languages is how they drift apart."""
+        self._with_result({"deleted": True, "closure_ref_ids": ["only-this-one"]})
+        client = _DeleteClient()
+        _adapter(client).delete_memory({"memory_id": "something-else"})
+        self.assertEqual(["only-this-one"], client.calls[0]["record_ids"])
+
+    def test_an_empty_closure_purges_nothing(self) -> None:
+        """A delete that matched nothing must not turn into a wildcard removal."""
+        self._with_result({"deleted": False, "closure_ref_ids": []})
+        client = _DeleteClient()
+        out = _adapter(client).delete_memory({"memory_id": "nope"})
+        self.assertEqual([], client.calls)
+        self.assertNotIn("engine_purge", out)
+
+    def test_an_engine_failure_is_reported_not_swallowed(self) -> None:
+        self._with_result({"deleted": True, "closure_ref_ids": ["11"]})
+        out = _adapter(_DeleteClient(fail=True)).delete_memory({"memory_id": "11"})
+        self.assertFalse(out["engine_purge"]["ok"])
+        self.assertIn("engine unavailable", out["engine_purge"]["error"])
+
+    def test_a_client_without_the_op_degrades_rather_than_raising(self) -> None:
+        class _Old:
+            pass
+        self._with_result({"deleted": True, "closure_ref_ids": ["11"]})
+        out = _adapter(_Old()).delete_memory({"memory_id": "11"})
+        self.assertFalse(out["engine_purge"]["ok"])
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

@@ -4786,6 +4786,11 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             "superseded_count": len(superseded),
             "member_count": len(closure_ref_ids),
             "member_source": member_source,
+            # The identity set this delete covers. Deciding what belongs in it is the subtle part
+            # -- single-source derivatives are removed, multi-source ones are demoted instead --
+            # and it is decided exactly once, here. Reported so a backend can apply the same set
+            # to its own copy without re-deriving the rule and drifting from it.
+            "closure_ref_ids": sorted(closure_ref_ids | {memory_id}),
         }
         self._maybe_auto_purge()
         return result

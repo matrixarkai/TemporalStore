@@ -1002,6 +1002,48 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             "shards_scanned": purged.get("matrixark_forget_shards_scanned"),
         }
 
+    def delete_memory(self, args: Json, hook: Json | None = None) -> Json:
+        """Delete the memory in the ENGINE as well as in the serving view.
+
+        Same hole forget and reset had: the tombstone is honoured by every read that goes through
+        the Python serving pipeline, so `get_all` drops immediately, but `/v1/retrieve` is assembled
+        inside the engine and the engine has never heard of a tombstone. Measured before this: after
+        a delete, get_all went 2 -> 1 while retrieve still served the deleted memory.
+
+        The identity set comes from the inherited implementation rather than being re-derived here.
+        Which records a delete covers is genuinely subtle -- the addressed event, its single-source
+        derivatives, and the embeddings/postings pointing at any of them, while MULTI-source
+        derivatives are demoted rather than removed -- and deciding it twice, in two languages, is
+        how the two copies drift.
+        """
+        result = super().delete_memory(args, hook)
+        ids = [str(item) for item in (result.get("closure_ref_ids") or []) if str(item)]
+        if not ids:
+            return result
+        purger = getattr(self._client, "matrixark_delete_records", None)
+        if not callable(purger):
+            result["engine_purge"] = {"ok": False, "error": "engine does not expose matrixark_delete_records"}
+            return result
+        try:
+            purged = purger(
+                count_key=self._count_key,
+                record_hash_key=self._record_hash_key,
+                shard_size=self._shard_size,
+                record_ids=ids,
+            )
+        except Exception as exc:  # noqa: BLE001 - the tombstone stands; report the engine half.
+            result["engine_purge"] = {"ok": False, "error": str(exc)}
+            return result
+        self._drop_direct_record_cache()
+        result["engine_purge"] = {
+            "ok": True,
+            "records_removed": purged.get("matrixark_delete_records_removed"),
+            "fields_deleted": purged.get("matrixark_delete_fields_deleted"),
+            "fields_rewritten": purged.get("matrixark_delete_fields_rewritten"),
+            "ids_requested": purged.get("matrixark_delete_ids_requested"),
+        }
+        return result
+
     def reset(self, args: Json, hook: Json | None = None) -> Json:
         """Wipe the tenant in the ENGINE as well as in the serving view.
 
@@ -2798,6 +2840,27 @@ class MatrixArkRustProxyClient:
 
     def scan_hash(self, key: str) -> Json:
         return self._call_json("scan_hash", key=key)
+
+    def matrixark_delete_records(
+        self,
+        *,
+        count_key: str,
+        record_hash_key: str,
+        shard_size: int,
+        record_ids: list[str],
+    ) -> Json:
+        """Remove the named records in the engine.
+
+        A deliberately dumb primitive: the caller decides what a delete covers, the engine removes
+        what matches. An empty id list removes nothing.
+        """
+        return self._call_json(
+            "matrixark_delete_records",
+            count_key=count_key,
+            record_hash_key=record_hash_key,
+            shard_size=shard_size,
+            record_ids=[str(item) for item in record_ids],
+        )
 
     def matrixark_forget_scope(
         self,
