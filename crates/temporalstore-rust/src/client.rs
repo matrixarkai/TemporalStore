@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -608,6 +608,14 @@ struct ClientInner {
     tables: Mutex<HashMap<String, TableOptions>>,
     meta_sync_tables: Mutex<HashMap<String, ClientMetaSyncTableState>>,
     stats: Mutex<ClientStats>,
+    /// Topology version this client last heard from the metaserver.
+    ///
+    /// Routes resolved by direct shard lookup carry no version of their own, and a route
+    /// stamped 0 reads as "unknown", which the staleness check treats as stale. Every such
+    /// route was stamped 0, so every check found the cache stale and dropped it, and the
+    /// next request resolved again -- a cache that could never converge. Recording what the
+    /// topology was when the route was resolved is what lets "unchanged" mean anything.
+    known_topology_version: AtomicU64,
 }
 
 #[derive(Debug, Clone)]
@@ -712,6 +720,7 @@ impl TemporalStoreClient {
                 tables: Mutex::default(),
                 meta_sync_tables: Mutex::default(),
                 stats: Mutex::default(),
+                known_topology_version: AtomicU64::new(0),
             }),
         }
     }

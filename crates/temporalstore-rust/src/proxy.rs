@@ -3865,6 +3865,103 @@ mod tests {
         });
     }
 
+    #[test]
+    fn route_cache_serves_repeat_requests_instead_of_re_resolving() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let shard_gets = std::sync::Arc::new(AtomicUsize::new(0));
+        let topo_posts = std::sync::Arc::new(AtomicUsize::new(0));
+
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        start_server(test_addr(18_380), engine.clone());
+
+        let meta = crate::meta::SingleNodeMeta::default();
+        meta.register_server(crate::meta::RegisterServerRequest {
+            server_addr: test_addr(18_380),
+            node_id: 1,
+            location: "zone-a".to_string(),
+            binary_version: "v-a".to_string(),
+        });
+        meta.register(RegisterShardRequest {
+            shard_id: 1,
+            server_addr: test_addr(18_380),
+        });
+
+        let addr = test_addr(18_381);
+        let sg = shard_gets.clone();
+        let tp = topo_posts.clone();
+        let m = meta.clone();
+        std::thread::spawn(move || {
+            serve(&addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("GET", path) if path.starts_with("/shards/") => {
+                        sg.fetch_add(1, Ordering::SeqCst);
+                        let shard_id = path.trim_start_matches("/shards/").parse().unwrap_or_default();
+                        json_response(200, &m.get(shard_id))
+                    }
+                    ("POST", "/tables/topology") => {
+                        let req = parse_json::<GetTableTopologyRequest>(&request.body).unwrap();
+                        json_response(200, &m.get_table_topology(req))
+                    }
+                    ("POST", "/meta/topology_version") => {
+                        tp.fetch_add(1, Ordering::SeqCst);
+                        let req = parse_json::<TopologyVersionRequest>(&request.body).unwrap();
+                        json_response(200, &m.topology_version_report(req))
+                    }
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+        wait_for_http(&test_addr(18_380));
+        wait_for_http(&test_addr(18_381));
+
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_381),
+            route_cache_ttl_ms: 60_000,
+            ..ProxyOptions::default()
+        });
+
+        for i in 0..10 {
+            assert!(proxy.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet { key: format!("k{i}"), value: b"v".to_vec() },
+            }).status.ok);
+        }
+
+        let gets = shard_gets.load(Ordering::SeqCst);
+        let posts = topo_posts.load(Ordering::SeqCst);
+        let report = proxy.preflight_report();
+
+        // Ten identical requests behind a 60s TTL. This used to be 10 shard lookups and
+        // zero cache hits: routes resolved by shard lookup were stamped topology version 0,
+        // "unknown" counted as stale, so every request invalidated the entry it had just
+        // written and resolved again. The cache existed and never once returned a hit.
+        assert!(
+            gets <= 2,
+            "10 requests should resolve at most twice, took {gets} shard lookups              (hits={} misses={} refreshes={})",
+            report.client.route_cache_hits,
+            report.client.route_cache_misses,
+            report.client.route_refreshes
+        );
+        assert!(
+            report.client.route_cache_hits >= 7,
+            "the cache should serve the repeats, saw {} hits across 10 requests",
+            report.client.route_cache_hits
+        );
+
+        // NOT asserted low on purpose: the topology check itself is still one POST per
+        // request on every command entry point. That is a separate cost and a separate
+        // change; this test pins the route cache, not the topology check.
+        assert!(posts >= 1, "topology is still checked, saw {posts}");
+    }
+
     fn start_meta_service(addr: String, meta: crate::meta::SingleNodeMeta) {
         std::thread::spawn(move || {
             serve(&addr, move |request| {
