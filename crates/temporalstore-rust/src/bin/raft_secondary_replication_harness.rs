@@ -19,7 +19,7 @@ use temporalstore_rust::raft::{
 use temporalstore_rust::{
     Command, CommandResponse, DistributedRaftCommandResponse, DistributedRaftProposeRequest,
     DistributedRaftReadRequest, ProductionRaftNode, RaftApplyHealth, RaftClusterStatus,
-    RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId, Status,
+    RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId, RaftRole, Status,
     TemporalRaftDataNodeProcessRolloutReport, TemporalRaftProcessNodeEvidence,
     TemporalRaftProcessOperationalSemanticsEvidence, VoteRequest, VoteResponse,
 };
@@ -1234,17 +1234,27 @@ fn establish_leader(nodes: &[ProductionRaftNode], preferred: RaftNodeId) -> Raft
     let _ = try_elect_leader(node_by_id(nodes, preferred), preferred);
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
+        // Every node must name the same leader AND consider it live and leading -- that is what
+        // an operation needing a leader checks, so anything less leaves the wait satisfied while
+        // the next call still fails.
         let observed: Vec<Option<RaftNodeId>> = nodes
             .iter()
             .map(|node| {
-                get_json_with_options::<RaftClusterStatus>(
+                let status = get_json_with_options::<RaftClusterStatus>(
                     &node.addr,
                     "/raft/status",
                     request_options(),
                 )
-                .ok()
-                .filter(|status| status.leader_id != 0)
-                .map(|status| status.leader_id)
+                .ok()?;
+                if status.leader_id == 0 {
+                    return None;
+                }
+                let leader_is_live = status.nodes.iter().any(|peer| {
+                    peer.node_id == status.leader_id
+                        && peer.alive
+                        && peer.role == RaftRole::Leader
+                });
+                leader_is_live.then_some(status.leader_id)
             })
             .collect();
         if let Some(Some(first)) = observed.first().copied() {
