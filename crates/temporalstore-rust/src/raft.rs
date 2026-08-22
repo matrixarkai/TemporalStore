@@ -267,12 +267,33 @@ fn raft_propose_serialize_on() -> bool {
 /// voted_for, commit_index, the log, membership, snapshots, or the apply/storage fences still
 /// flips the fingerprint and forces a durable persist.
 fn raft_durable_fingerprint(record: &RaftWalRecord) -> u64 {
-    let mut reduced = record.clone();
-    reduced.pipeline_state = RaftPeerPipelineRuntimeState::default();
-    reduced.read_safety_state = RaftReadSafetyRuntimeState::default();
+    // Everything Raft must persist participates, but the log is SUMMARISED rather than
+    // serialised. Hashing every entry made this check -- which runs on every persist, for
+    // every node -- cost O(log length), the very cost incremental WAL records exist to
+    // remove. A raft log only ever grows at the tail or has a suffix replaced, so its
+    // length together with the first and last (index, term) changes whenever it does.
+    let reduced = RaftWalRecord {
+        hard_state: record.hard_state.clone(),
+        membership: record.membership.clone(),
+        replica_role: record.replica_role,
+        joint_membership: record.joint_membership.clone(),
+        latest_external_snapshot_ref: record.latest_external_snapshot_ref.clone(),
+        installed_snapshot: record.installed_snapshot.clone(),
+        apply_snapshot_fence: record.apply_snapshot_fence.clone(),
+        storage_apply_fence: record.storage_apply_fence.clone(),
+        pipeline_state: RaftPeerPipelineRuntimeState::default(),
+        read_safety_state: RaftReadSafetyRuntimeState::default(),
+        membership_evidence: record.membership_evidence.clone(),
+        entries: Vec::new(),
+    };
     let bytes = serde_json::to_vec(&reduced).unwrap_or_default();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     std::hash::Hasher::write(&mut hasher, &bytes);
+    std::hash::Hasher::write_u64(&mut hasher, record.entries.len() as u64);
+    for entry in [record.entries.first(), record.entries.last()].into_iter().flatten() {
+        std::hash::Hasher::write_u64(&mut hasher, entry.index);
+        std::hash::Hasher::write_u64(&mut hasher, entry.term);
+    }
     std::hash::Hasher::finish(&hasher)
 }
 
@@ -1065,13 +1086,28 @@ pub struct RaftWalRecord {
     pub apply_snapshot_fence: RaftApplySnapshotFence,
     #[serde(default)]
     pub storage_apply_fence: RaftStorageApplyFence,
-    #[serde(default)]
+    // Volatile runtime telemetry: excluded from `raft_durable_fingerprint` because it is
+    // not durability-relevant, and omitted from the encoding when it is at its default so
+    // an incremental record does not spend 2.4 KB restating counters.
+    #[serde(default, skip_serializing_if = "RaftPeerPipelineRuntimeState::is_default")]
     pub pipeline_state: RaftPeerPipelineRuntimeState,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "RaftReadSafetyRuntimeState::is_default")]
     pub read_safety_state: RaftReadSafetyRuntimeState,
     #[serde(default)]
     pub membership_evidence: RaftMembershipRuntimeEvidence,
     pub entries: Vec<RaftLogEntry>,
+}
+
+impl RaftPeerPipelineRuntimeState {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+impl RaftReadSafetyRuntimeState {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1229,6 +1265,24 @@ struct RaftWalEnvelope {
     sequence: u64,
     checksum: String,
     record: RaftWalRecord,
+    /// Present on an incremental record: `record.entries` then carries ONLY the log
+    /// entries appended since `from_index`, and recovery folds it onto the most recent
+    /// full ("base") record. Absent on a base record, so a WAL written before this
+    /// field existed still reads back as a sequence of full snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    delta: Option<RaftWalEntryDelta>,
+}
+
+/// Describes how to fold an incremental WAL record onto the running base.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+struct RaftWalEntryDelta {
+    /// The record's `entries` hold only indexes strictly greater than this.
+    from_index: u64,
+    /// First index the node's full log holds after this record (0 when the log is empty).
+    /// Anything below it was compacted away and must be dropped while folding.
+    log_first_index: u64,
+    /// Last index the node's full log holds after this record (0 when the log is empty).
+    log_last_index: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1286,6 +1340,60 @@ struct NodeWalCursor {
     released_segment_count: u64,
     last_fsync_elapsed_ms: u64,
     slow_fsync_backpressure_observed: bool,
+    /// Encoded size of the full record that opened the active segment. Rotation waits
+    /// until the segment is a multiple of it, so the one O(log) base write per segment
+    /// stays a bounded fraction of the bytes that segment costs.
+    base_bytes: u64,
+    /// Last log index already written into the active segment, and the term at that
+    /// index. An incremental record is only sound while the in-memory log still agrees
+    /// with both; a conflict overwrite or a snapshot compaction re-bases instead.
+    persisted_last_index: u64,
+    persisted_last_term: u64,
+    /// False until a full base record has been written into the active segment.
+    has_base: bool,
+}
+
+/// A segment is never rotated below the size of the full record that opens it: a
+/// segment that cannot hold even one base record would re-base on every append, which
+/// is the O(log length) cost incremental records exist to remove. Above that floor the
+/// configured `max_segment_bytes` decides rotation, so retention keeps its meaning and
+/// the base cost is amortised over `max_segment_bytes / delta_size` appends.
+
+/// Consecutive failed AppendEntries before a leader marks a peer down.
+const RAFT_PEER_FAILURE_THRESHOLD: u32 = 3;
+/// Ticks of leader silence a follower tolerates before standing for election.
+const RAFT_ELECTION_TIMEOUT_BASE_TICKS: u64 = 8;
+/// Width of the random spread added to the election timeout.
+const RAFT_ELECTION_TIMEOUT_SPREAD_TICKS: u64 = 12;
+
+/// Draw a fresh election timeout. It must be re-drawn on every attempt: a timeout that is
+/// merely a fixed function of the node id puts two survivors a constant distance apart, so
+/// each one's campaign supersedes the other's brand-new leadership before its first
+/// heartbeat can land, and they trade the term back and forth indefinitely.
+pub(crate) fn randomized_election_timeout_ticks(node_id: RaftNodeId) -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u64(node_id);
+    hasher.write_u128(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or_default(),
+    );
+    RAFT_ELECTION_TIMEOUT_BASE_TICKS + (hasher.finish() % RAFT_ELECTION_TIMEOUT_SPREAD_TICKS)
+}
+
+/// `TS_RAFT_WAL_DELTA_ENTRIES=0` restores the legacy full-log-per-record WAL payload.
+/// Note that a WAL containing incremental records cannot be read by a build that
+/// predates them, so roll the binary forward before flipping this back on.
+fn raft_wal_delta_entries_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        !matches!(
+            std::env::var("TS_RAFT_WAL_DELTA_ENTRIES").ok().as_deref(),
+            Some("0") | Some("false") | Some("off")
+        )
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -3777,6 +3885,15 @@ struct RaftClusterInner {
     /// P4: whether anything was actually deferred, so a propose that persisted nothing flushes
     /// nothing.
     persist_dirty: bool,
+    /// Bumped on every accepted AppendEntries. A follower's timer loop watches it to
+    /// tell "the leader is quiet" from "the leader is fine"; nothing else in the data
+    /// raft path observes leader liveness at all.
+    leader_contact_epoch: u64,
+    /// True for the in-process cluster model, where `tick_election` may promote any
+    /// node from local shadow state. The production runtime clears it: there, an
+    /// election has to be won over the wire, so a local promotion of a *remote* node
+    /// would just make this process disagree with the rest of the group.
+    local_shadow_election: bool,
 }
 
 impl RaftCluster {
@@ -3838,6 +3955,8 @@ impl RaftCluster {
                 local_node_id: None,
                 persist_deferred_owner: None,
                 persist_dirty: false,
+                leader_contact_epoch: 0,
+                local_shadow_election: true,
             })),
         })
     }
@@ -3961,6 +4080,8 @@ impl RaftCluster {
                 local_node_id: None,
                 persist_deferred_owner: None,
                 persist_dirty: false,
+                leader_contact_epoch: 0,
+                local_shadow_election: true,
             })),
         })
     }
@@ -4795,13 +4916,44 @@ fn refresh_all_pipeline_states(
     leader_id: RaftNodeId,
     config: &RaftConfig,
 ) {
+    // This runs on every propose and every accepted AppendEntries. Cloning the leader's
+    // whole log here and re-scanning all of it per node made each of those O(log length),
+    // which is exactly the growth incremental WAL records were meant to remove. The log is
+    // index-ordered, so the bytes still owed to a peer are a suffix: find where that suffix
+    // starts and sum only it, against a borrowed log.
     let Some(leader) = nodes.get(&leader_id) else {
         return;
     };
-    let leader_log = leader.log.clone();
     let leader_commit_index = leader.commit_index;
+    let progress = nodes
+        .iter()
+        .map(|(node_id, node)| {
+            (
+                *node_id,
+                node.commit_index.max(node.pipeline_state.match_index),
+            )
+        })
+        .collect::<Vec<_>>();
+    let inflight_bytes = {
+        let leader_log = &nodes
+            .get(&leader_id)
+            .expect("leader present, checked above")
+            .log;
+        progress
+            .into_iter()
+            .map(|(node_id, known_progress)| {
+                let start = leader_log.partition_point(|entry| entry.index <= known_progress);
+                let bytes = leader_log[start..]
+                    .iter()
+                    .map(|entry| command_size_bytes(&entry.command))
+                    .sum::<u64>();
+                (node_id, bytes)
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
     for node in nodes.values_mut() {
-        refresh_node_pipeline_state(node, leader_id, leader_commit_index, &leader_log, config);
+        let bytes = inflight_bytes.get(&node.id).copied().unwrap_or_default();
+        refresh_node_pipeline_state(node, leader_id, leader_commit_index, bytes, config);
     }
 }
 
@@ -4809,22 +4961,35 @@ fn refresh_node_pipeline_state(
     node: &mut RaftNode,
     leader_id: RaftNodeId,
     leader_commit_index: u64,
-    leader_log: &[RaftLogEntry],
+    inflight_bytes: u64,
     config: &RaftConfig,
 ) {
-    let inflight_entries = leader_commit_index.saturating_sub(node.commit_index);
-    let inflight_bytes = leader_log
-        .iter()
-        .filter(|entry| entry.index > node.commit_index)
-        .map(|entry| command_size_bytes(&entry.command))
-        .sum();
+    // How far this peer has actually got, as far as THIS leader knows. `commit_index` is
+    // a shadow copy that is only ever updated for peers this process replicated to
+    // itself, so a leader that was just promoted still reads 0 there and would conclude
+    // its whole log is in flight -- enough to trip the backpressure limit on its first
+    // append and leave the shard unable to commit. `match_index` is what AppendEntries
+    // responses actually confirm, so take the better of the two.
+    let known_progress = node.commit_index.max(node.pipeline_state.match_index);
+    let inflight_entries = leader_commit_index.saturating_sub(known_progress);
     let snapshot_installed_index = node
         .installed_snapshot
         .as_ref()
         .map(|snapshot| snapshot.last_included_index)
         .unwrap_or_default();
-    node.pipeline_state.match_index = node.commit_index;
-    node.pipeline_state.next_index = node_next_log_index(node);
+    // Never walk a confirmed cursor backwards. `commit_index` here is this process's
+    // shadow copy of the peer, which is 0 for any peer it has not itself replicated to --
+    // a newly promoted leader would otherwise forget everything the send/ack path had
+    // already confirmed and re-ship the whole log on every heartbeat.
+    node.pipeline_state.match_index = node.commit_index.max(node.pipeline_state.match_index);
+    // `match_index` is only ever set from a SUCCESSFUL append, so it is authoritative:
+    // the next entry to send is never below it. Deriving `next_index` purely from the
+    // peer's shadow log (empty on a node this process never replicated to) reset a newly
+    // promoted leader's cursor to 1, making every heartbeat look like a full-log catch-up
+    // and tripping backpressure. Clamping keeps the in-process model's behaviour, where
+    // the shadow log IS the peer's log.
+    node.pipeline_state.next_index = node_next_log_index(node)
+        .max(node.pipeline_state.match_index.saturating_add(1));
     node.pipeline_state.inflight_entries = inflight_entries;
     node.pipeline_state.inflight_bytes = inflight_bytes;
     node.pipeline_state.append_queue_depth = inflight_entries;

@@ -599,6 +599,54 @@ impl RaftClusterInner {
         Ok(())
     }
 
+    /// Install `node_id` as leader at `term` after it won a networked election.
+    /// Unlike `elect_leader` this does not synthesise peer votes from local shadow
+    /// state -- the grants were already collected over the wire.
+    pub(super) fn promote_elected_leader(
+        &mut self,
+        node_id: RaftNodeId,
+        term: u64,
+    ) -> Result<(), RaftError> {
+        if !self.nodes.contains_key(&node_id) {
+            return Err(RaftError::NodeNotFound(node_id));
+        }
+        self.leader_id = node_id;
+        for node in self.nodes.values_mut() {
+            node.role = if node.id == node_id {
+                RaftRole::Leader
+            } else {
+                RaftRole::Follower
+            };
+            node.current_term = node.current_term.max(term);
+        }
+        if let Some(leader) = self.nodes.get_mut(&node_id) {
+            leader.alive = true;
+            leader.voted_for = Some(node_id);
+        }
+        self.election_elapsed_tick = 0;
+        self.renew_leader_lease();
+        // Raft's fresh-leader state: optimistic `next_index`, unknown `match_index`, and
+        // nothing in flight. The first AppendEntries is then a probe that discovers where
+        // each follower really is, and rejections walk `next_index` back. Re-deriving the
+        // pipeline from shadow peer state here instead would immediately re-inflate the
+        // in-flight window and reject that probe.
+        let next_index = self
+            .nodes
+            .get(&node_id)
+            .map(node_next_log_index)
+            .unwrap_or(1);
+        for node in self.nodes.values_mut() {
+            if node.id == node_id {
+                continue;
+            }
+            node.pipeline_state.next_index = next_index;
+            node.pipeline_state.inflight_entries = 0;
+            node.pipeline_state.inflight_bytes = 0;
+            node.pipeline_state.append_queue_depth = 0;
+        }
+        Ok(())
+    }
+
     pub(super) fn persist_configured_wal(&mut self) -> Result<(), RaftError> {
         // P4: this thread owes a barrier rather than skipping one -- `flush_deferred_persist`
         // takes it before the propose acks. Only the thread that opened the deferral defers, so

@@ -117,6 +117,11 @@ impl RaftCluster {
             .get(&inner.leader_id)
             .map(|leader| leader.commit_index)
             .unwrap_or_default();
+        let leader_last_index = inner
+            .nodes
+            .get(&inner.leader_id)
+            .map(node_last_log_or_snapshot_index)
+            .unwrap_or_default();
         if let Some(target) = inner.nodes.get_mut(&target_id) {
             if target.commit_index >= leader_commit_for_drain
                 && (target.pipeline_state.inflight_entries > 0
@@ -130,8 +135,14 @@ impl RaftCluster {
                 target.pipeline_state.append_requests.saturating_add(1);
             current_inflight_entries = target.pipeline_state.inflight_entries;
             current_inflight_bytes = target.pipeline_state.inflight_bytes;
-            if target.pipeline_state.inflight_entries >= entry_limit
-                || target.pipeline_state.inflight_bytes >= byte_limit
+            // A request with nothing to send buffers nothing, so the in-flight limits
+            // do not apply to it. This is the heartbeat -- and the probe a newly promoted
+            // leader sends to find out where a follower really is. Blocking it leaves the
+            // new leader unable to contact anyone, which reads as a leaderless shard.
+            let carries_entries = target.pipeline_state.next_index <= leader_last_index;
+            if carries_entries
+                && (target.pipeline_state.inflight_entries >= entry_limit
+                    || target.pipeline_state.inflight_bytes >= byte_limit)
             {
                 target.pipeline_state.append_rejected =
                     target.pipeline_state.append_rejected.saturating_add(1);
@@ -566,6 +577,9 @@ impl RaftCluster {
             (node.current_term, last_index)
         };
         inner.leader_id = leader_id;
+        // Proof of life from the leader. A follower's timer loop diffs this to decide
+        // whether the leader has gone quiet and it should stand for election.
+        inner.leader_contact_epoch = inner.leader_contact_epoch.saturating_add(1);
         for (node_id, peer) in inner.nodes.iter_mut() {
             if *node_id != leader_id && peer.role == RaftRole::Leader {
                 peer.role = RaftRole::Follower;
@@ -718,6 +732,10 @@ impl RaftCluster {
         node.voted_for = Some(request.candidate_id);
         node.role = RaftRole::Follower;
         let term = node.current_term;
+        // Raft resets the election timer when it grants a vote: granting one means someone
+        // else is already standing, and campaigning against them in the same window is what
+        // turns a split vote into a livelock the cluster never escapes.
+        inner.leader_contact_epoch = inner.leader_contact_epoch.saturating_add(1);
         inner.persist_configured_wal()?;
         Ok(VoteResponse {
             term,

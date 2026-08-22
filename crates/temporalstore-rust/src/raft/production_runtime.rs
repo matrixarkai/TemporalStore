@@ -348,7 +348,11 @@ impl ProductionRaftRuntime {
         let election_tick = Duration::from_millis(self.options.election_tick_ms);
         let max_catchup_entries_per_heartbeat = self.options.max_catchup_entries_per_heartbeat;
         let peer_map = self.options.peer_map();
-        let peer_ids = peer_map.keys().copied().collect::<Vec<_>>();
+        let peer_ids = peer_map
+            .keys()
+            .copied()
+            .filter(|peer_id| *peer_id != self.options.local_node_id)
+            .collect::<Vec<_>>();
         let http_options = HttpRequestOptions {
             connect_timeout_ms: self.options.rpc.deadline_ms,
             io_timeout_ms: self.options.rpc.deadline_ms,
@@ -364,9 +368,27 @@ impl ProductionRaftRuntime {
             .expect("validated production raft auth token");
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = Arc::clone(&stop);
+        // Leadership here is decided by real RequestVote RPCs below, so the in-process
+        // shadow election must not promote anyone: it can only see this process's copy
+        // of peer state and would install a leader the rest of the group never agreed to.
+        cluster.set_local_shadow_election(false);
+        // Consecutive failed AppendEntries before a leader gives up on a peer. Nothing
+        // else in this path ever marks a peer down, so without it `live_voters` and
+        // `has_majority` stay optimistic forever after a peer dies.
+        let peer_failure_threshold = RAFT_PEER_FAILURE_THRESHOLD;
+        // Ticks of leader silence a follower tolerates before standing for election;
+        // re-drawn after every attempt so two survivors do not stay locked in step.
+        // Voters that must acknowledge for this node to keep leading (this node included).
+        let majority_size = self.options.nodes.len() / 2 + 1;
         let handle = thread::spawn(move || {
             let mut last_heartbeat = InstantCompat::now();
             let mut last_tick = InstantCompat::now();
+            let mut last_contact_epoch = cluster.leader_contact_epoch();
+            let mut silent_ticks = 0u64;
+            let mut peer_failures: BTreeMap<RaftNodeId, u32> = BTreeMap::new();
+            let mut force_heartbeat = false;
+            let mut quorum_misses = 0u32;
+            let mut election_timeout_ticks = randomized_election_timeout_ticks(local_node_id);
             let mut last_snapshot_check = InstantCompat::now();
             while !stop_thread.load(Ordering::SeqCst) {
                 if snapshot_check_interval > 0
@@ -388,20 +410,20 @@ impl ProductionRaftRuntime {
                     }
                     last_snapshot_check = InstantCompat::now();
                 }
-                // Move the cluster's clock forward by the time that actually passed. The
-                // recovery timeouts -- stalled snapshot send, offline peer, abandoned leader
-                // transfer -- are refreshed from here and from nowhere else, so a clock that
-                // never advances leaves them unable to fire: a snapshot send that stalls keeps
-                // its peer flagged as sending, and every proposal to that peer is rejected with
-                // backpressure until the process restarts.
+                // Nothing else advances the raft clock in a live process, so without this
+                // every lease / offline / snapshot-send / leader-transfer timeout is
+                // unreachable and the failure detectors that depend on them never fire.
                 let elapsed_ms = last_tick.elapsed().as_millis() as u64;
+                last_tick = InstantCompat::now();
                 if elapsed_ms > 0 {
                     cluster.advance_time_ms(elapsed_ms);
-                    last_tick = InstantCompat::now();
                 }
-                let _ = cluster.tick_election();
-                if last_heartbeat.elapsed() >= heartbeat_interval {
-                    if cluster.leader_id() == local_node_id {
+
+                if cluster.is_local_leader(local_node_id) {
+                    silent_ticks = 0;
+                    last_contact_epoch = cluster.leader_contact_epoch();
+                    if force_heartbeat || last_heartbeat.elapsed() >= heartbeat_interval {
+                        force_heartbeat = false;
                         let transport = RaftRpcRuntime::with_auth_token(
                             AuthenticatedRaftTransport::new(
                                 HttpRaftTransport::with_options(peer_map.clone(), http_options),
@@ -411,6 +433,7 @@ impl ProductionRaftRuntime {
                             Some(auth_token.clone()),
                         );
                         let mut sent = 0;
+                        let mut reached = 1usize; // self
                         for target_id in &peer_ids {
                             if sent >= max_catchup_entries_per_heartbeat {
                                 break;
@@ -434,44 +457,104 @@ impl ProductionRaftRuntime {
                             match transport.append_entries(request) {
                                 Ok(response) => {
                                     let success = response.success;
-                                    if !success {
-                                        // A rejection is an Ok response, so this path was silent
-                                        // too: a peer can reject every heartbeat forever and the
-                                        // leader reports it only as "lagging".
-                                        tracing::warn!(
-                                            kind = "data",
-                                            target_id = *target_id,
-                                            reject_reason = ?response.reject_reason,
-                                            peer_match_index = response.match_index,
-                                            peer_term = response.term,
-                                            "raft: peer rejected append entries"
-                                        );
-                                    }
+                                    let peer_term = response.term;
                                     let _ = cluster
                                         .record_append_entries_response(*target_id, &response);
+                                    peer_failures.insert(*target_id, 0);
+                                    reached += 1;
+                                    let _ = cluster.set_alive(*target_id, true);
                                     if success {
                                         sent += entry_count.max(1);
+                                    } else if peer_term > 0 {
+                                        // A peer that has moved to a newer term has seen a
+                                        // different leader; stand down rather than keep
+                                        // appending as a superseded leader.
+                                        let _ =
+                                            cluster.observe_higher_term(local_node_id, peer_term);
                                     }
                                 }
-                                // No response at all. Give back what the request reserved --
-                                // otherwise a peer whose process is down accumulates one leaked
-                                // reservation per heartbeat and is never sent to again, including
-                                // after it comes back.
-                                Err(err) => {
-                                    tracing::warn!(
-                                        kind = "data",
-                                        target_id = *target_id,
-                                        error = %err,
-                                        "raft: append entries send to peer failed"
-                                    );
-                                    let _ =
-                                        cluster.record_append_entries_send_failure(*target_id);
+                                Err(_) => {
+                                    let failures =
+                                        peer_failures.entry(*target_id).or_insert(0);
+                                    *failures = failures.saturating_add(1);
+                                    if *failures >= peer_failure_threshold {
+                                        let _ = cluster.set_alive(*target_id, false);
+                                    }
                                 }
                             }
                         }
+                        // Check-quorum: a leader that can no longer reach a majority has
+                        // been superseded (or partitioned away) and must stop acting as
+                        // one, otherwise it keeps accepting writes only it can see.
+                        if reached < majority_size {
+                            quorum_misses = quorum_misses.saturating_add(1);
+                            if quorum_misses >= peer_failure_threshold {
+                                quorum_misses = 0;
+                                let _ = cluster.step_down_local(local_node_id);
+                            }
+                        } else {
+                            quorum_misses = 0;
+                        }
+                        last_heartbeat = InstantCompat::now();
                     }
-                    last_heartbeat = InstantCompat::now();
+                } else {
+                    // Follower. A live leader bumps the contact epoch on every accepted
+                    // AppendEntries; when it stalls for a full election timeout, campaign.
+                    let epoch = cluster.leader_contact_epoch();
+                    if epoch != last_contact_epoch {
+                        last_contact_epoch = epoch;
+                        silent_ticks = 0;
+                    } else {
+                        silent_ticks = silent_ticks.saturating_add(1);
+                    }
+                    if silent_ticks >= election_timeout_ticks {
+                        silent_ticks = 0;
+                        election_timeout_ticks =
+                            randomized_election_timeout_ticks(local_node_id);
+                        let stale_leader = cluster.leader_id();
+                        if stale_leader != local_node_id && stale_leader != 0 {
+                            let _ = cluster.set_alive(stale_leader, false);
+                        }
+                        if let Ok(template) = cluster.prepare_campaign(local_node_id) {
+                            let transport = RaftRpcRuntime::with_auth_token(
+                                AuthenticatedRaftTransport::new(
+                                    HttpRaftTransport::with_options(peer_map.clone(), http_options),
+                                    auth_token.clone(),
+                                ),
+                                rpc_options,
+                                Some(auth_token.clone()),
+                            );
+                            // The self-vote was made durable by prepare_campaign.
+                            let mut grants = 1usize;
+                            let mut highest_term = template.term;
+                            for target_id in &peer_ids {
+                                let mut request = template.clone();
+                                request.target_id = *target_id;
+                                if let Ok(response) = transport.request_vote(request) {
+                                    if response.vote_granted {
+                                        grants += 1;
+                                    }
+                                    highest_term = highest_term.max(response.term);
+                                }
+                            }
+                            if highest_term > template.term {
+                                let _ =
+                                    cluster.observe_higher_term(local_node_id, highest_term);
+                            } else if matches!(
+                                cluster.conclude_campaign(local_node_id, template.term, grants),
+                                Ok(true)
+                            ) {
+                                // Won: heartbeat at once, in this same iteration, so the
+                                // peers learn the new leader before their own election
+                                // timeouts fire and supersede it.
+                                force_heartbeat = true;
+                                last_contact_epoch = cluster.leader_contact_epoch();
+                                continue;
+                            }
+                        }
+                    }
                 }
+                let _ = cluster.tick_election();
                 thread::sleep(election_tick);
             }
         });
