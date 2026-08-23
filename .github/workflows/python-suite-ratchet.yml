@@ -1,0 +1,33 @@
+name: Python suite ratchet
+
+# The python test suite is not otherwise run here. That is how nine test files which could not
+# even import went unnoticed: every test in them errored, and nothing reported it.
+#
+# Making the suite a blocking gate today would mean fixing 131 pre-existing failures before
+# anything else could land. This job takes the middle path -- it records what fails today in
+# tools/python_suite_baseline.json and fails only when a change ADDS a failure. Existing
+# failures stay visible, and the baseline shrinks as they are fixed (rerun with --record).
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ratchet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Run the suite against the recorded baseline
+        run: python3 tools/run_python_suite_ratchet.py
