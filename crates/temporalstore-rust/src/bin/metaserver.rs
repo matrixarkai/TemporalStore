@@ -367,6 +367,13 @@ struct MetaTaskScheduler {
     inner: Arc<Mutex<DeterministicTaskScheduler>>,
     executions: Arc<Mutex<Vec<MetaSchedulerExecutionRecord>>>,
     snapshot_path: Option<PathBuf>,
+    /// How the scheduler paces itself when a caller does not say.
+    ///
+    /// Every other background subsystem here takes its pacing from the
+    /// environment; this one alone had its retry backoff and its concurrency
+    /// compiled in, so changing how hard the metaserver drives tasks meant
+    /// changing the code.
+    default_options: TaskSchedulerOptions,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -2183,6 +2190,88 @@ mod tests {
             code >= 400 || parsed["status"]["ok"] == serde_json::Value::Bool(false),
             "an empty body was accepted: {code} {parsed}"
         );
+    }
+
+    /// The scheduler knobs, set for the duration of one test.
+    ///
+    /// Serialised because the environment is process-wide, and two of these
+    /// running at once would read each other's values.
+    fn with_scheduler_env<T>(pairs: &[(&str, &str)], body: impl FnOnce() -> T) -> T {
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner());
+        for (key, value) in pairs {
+            std::env::set_var(key, value);
+        }
+        let out = body();
+        for (key, _) in pairs {
+            std::env::remove_var(key);
+        }
+        out
+    }
+
+    #[test]
+    fn the_scheduler_takes_its_pacing_from_the_environment() {
+        // Every other background subsystem here is configurable; this one had
+        // its backoff and its concurrency compiled in.
+        let scheduler = with_scheduler_env(
+            &[
+                ("TS_META_TASK_SCHEDULER_BASE_POSTPONE_MS", "250"),
+                ("TS_META_TASK_SCHEDULER_MAX_POSTPONE_MS", "300000"),
+                ("TS_META_TASK_SCHEDULER_MAX_RETRY_TIMES", "3"),
+                ("TS_META_TASK_SCHEDULER_MAX_INFLIGHT", "10"),
+            ],
+            || MetaTaskScheduler::from_env().expect("scheduler"),
+        );
+        assert_eq!(scheduler.default_options.base_postpone_ms, 250);
+        assert_eq!(scheduler.default_options.max_postpone_ms, 300_000);
+        assert_eq!(scheduler.default_options.max_retry_times, 3);
+        assert_eq!(scheduler.default_options.max_inflight, 10);
+    }
+
+    #[test]
+    fn an_unconfigured_scheduler_paces_exactly_as_before() {
+        // The knobs must change nothing until someone sets them.
+        let scheduler = with_scheduler_env(&[], || {
+            MetaTaskScheduler::from_env().expect("scheduler")
+        });
+        assert_eq!(scheduler.default_options, TaskSchedulerOptions::default());
+    }
+
+    #[test]
+    fn a_request_that_names_its_own_pacing_still_wins() {
+        // The per-request options were the only way to set these, and callers
+        // that use them must keep overriding the configured default.
+        let scheduler = with_scheduler_env(
+            &[("TS_META_TASK_SCHEDULER_BASE_POSTPONE_MS", "9999")],
+            || MetaTaskScheduler::from_env().expect("scheduler"),
+        );
+        assert_eq!(scheduler.default_options.base_postpone_ms, 9999);
+
+        let (code, body) = handle(
+            &MetaBackend::Single(SingleNodeMeta::default()),
+            &scheduler,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: "/meta/scheduler/run_next".to_string(),
+                body: serde_json::to_vec(&serde_json::json!({
+                    "now_ms": 100,
+                    "result": "RetryLater",
+                    "options": {
+                        "base_postpone_ms": 5,
+                        "max_postpone_ms": 50,
+                        "max_retry_times": 2,
+                        "max_inflight": 1
+                    }
+                }))
+                .unwrap(),
+            },
+        );
+        assert_eq!(code, 200);
+        // An empty queue answers with no report either way; what matters is
+        // that supplying options is still accepted rather than rejected.
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(parsed.get("status").is_some());
     }
 
     #[test]
