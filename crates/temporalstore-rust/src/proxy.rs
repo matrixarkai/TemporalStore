@@ -1463,18 +1463,22 @@ fn proxy_operational_surface_entry(
     }
 }
 
-fn proxy_metrics_families() -> Vec<&'static str> {
-    vec![
-        "temporalstore_proxy_requests_total",
-        "temporalstore_proxy_route_cache_entries",
-        "temporalstore_proxy_route_cache_events_total",
-        "temporalstore_proxy_backend_events_total",
-        "temporalstore_proxy_serving_mode",
-        "temporalstore_proxy_drop_percent",
-        "temporalstore_proxy_metric_family_parity",
-        "temporalstore_proxy_service_registry_state",
-        "temporalstore_proxy_service_registry_events_total",
-    ]
+/// The metric families this proxy actually publishes, read back off the rendered endpoint.
+///
+/// This used to be a hand-written list, and it had fallen eight families behind what the
+/// proxy emits -- every admission metric among them, so anyone building a dashboard from the
+/// report got no in-flight quota, no account enforcement and no read pinning. Reading the
+/// rendered output back means the list cannot be behind by construction.
+pub(super) fn proxy_metric_families_from(rendered: &str) -> Vec<String> {
+    let mut families: Vec<String> = rendered
+        .lines()
+        .filter_map(|line| line.strip_prefix("# TYPE "))
+        .filter_map(|rest| rest.split_whitespace().next())
+        .map(str::to_string)
+        .collect();
+    families.sort();
+    families.dedup();
+    families
 }
 
 fn proxy_metrics_parity_mappings() -> Vec<ProxyMetricFamilyMapping> {
@@ -2495,6 +2499,50 @@ mod tests {
         let body = String::from_utf8_lossy(&body).to_string();
         assert!(!body.contains("proxy_write_disabled"), "{body}");
         assert!(!body.contains("proxy_not_serving"), "{body}");
+    }
+
+    #[test]
+    fn the_metrics_report_lists_exactly_what_the_endpoint_emits() {
+        // The list in this report was written by hand and had fallen eight families behind
+        // the endpoint -- including every admission metric, so a dashboard built from the
+        // report showed no in-flight quota, no account enforcement and no read pinning. It is
+        // now read back off the rendered output, and this pins that it stays that way.
+        let proxy = scoped_proxy(ProxyOptions::default());
+        let emitted = proxy_metric_families_from(&proxy.prometheus_metrics());
+        let report = proxy.metrics_parity_report();
+
+        assert_eq!(
+            report.rust_prometheus_families, emitted,
+            "the report must list what the endpoint actually publishes"
+        );
+        assert!(
+            emitted.len() >= 17,
+            "expected the full family set, saw {}: {emitted:?}",
+            emitted.len()
+        );
+        for family in [
+            "temporalstore_proxy_inflight_requests",
+            "temporalstore_proxy_inflight_limit",
+            "temporalstore_proxy_account_enforcement",
+            "temporalstore_proxy_pin_primary_reads",
+        ] {
+            assert!(
+                report.rust_prometheus_families.iter().any(|f| f == family),
+                "{family} is published but was missing from the report"
+            );
+        }
+
+        // The other half: a mapping that names a family nothing emits is a dashboard wired to
+        // a metric that will never arrive. Derived lists cannot catch that -- mappings carry
+        // external panel names and stay hand-written -- so check them against reality here.
+        for mapping in &report.mappings {
+            assert!(
+                emitted.contains(&mapping.rust_prometheus_family),
+                "mapping for panel {:?} names {:?}, which the endpoint does not emit",
+                mapping.grafana_panel,
+                mapping.rust_prometheus_family
+            );
+        }
     }
 
     #[test]
