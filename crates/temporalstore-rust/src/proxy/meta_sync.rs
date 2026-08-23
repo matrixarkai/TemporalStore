@@ -67,6 +67,19 @@ impl ProxyService {
                 response
             }
             Ok(response) if response.status.code == "not_found" => {
+                // The metaserver does not know this proxy, and registering again is the right
+                // answer -- but not on every single heartbeat. A metaserver that keeps saying
+                // not_found would otherwise take a registration plus a second heartbeat from
+                // every proxy, every interval, which is the heaviest load at the worst moment.
+                if !self.auto_register_is_due() {
+                    self.inner
+                        .stats
+                        .write()
+                        .expect("proxy stats lock poisoned")
+                        .auto_register_throttled += 1;
+                    self.record_service_discovery_error(&response.status);
+                    return response;
+                }
                 if self.auto_register_proxy(&options).status.ok {
                     let response = post_json_with_options::<_, ProxyHeartbeatResponse>(
                         &options.meta_addr,
