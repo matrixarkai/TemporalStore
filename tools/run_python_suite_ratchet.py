@@ -11,6 +11,12 @@ This is the middle path: record what fails now, and fail the build only when a c
 failure. Existing failures stay visible without demanding a cleanup before anything else can
 land, and the baseline shrinks as they are fixed.
 
+The baseline is recorded for the CI RUNNER, not for a developer machine. Which tests fail
+depends on what is installed -- a machine with an old node fails the browser-facing tests that
+CI passes, and one with torch installed passes model tests that CI fails. So a local run will
+usually show a handful of differences in both directions; that is expected, and only CI's result
+gates a merge.
+
 Usage:
     python3 tools/run_python_suite_ratchet.py            # check against the baseline
     python3 tools/run_python_suite_ratchet.py --record   # rewrite the baseline

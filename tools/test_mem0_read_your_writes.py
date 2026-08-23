@@ -26,7 +26,14 @@ os.environ.setdefault("MATRIXARK_REQUIRE_AUTH", "0")
 
 import matrixark_mcp_server as mcp
 import matrixark_mem0_compat as mem0
-import uvicorn
+
+# This drives the REAL gateway over loopback, which needs an ASGI server. Where uvicorn is not
+# installed -- CI installs python only -- skip rather than error: an unrunnable test reported as
+# a failure is indistinguishable from a broken one, and this suite already has enough of those.
+try:
+    import uvicorn
+except ImportError:  # pragma: no cover - depends on the environment, not the code
+    uvicorn = None
 
 try:
     from tools import matrixark_v1_gateway as gw
@@ -52,6 +59,7 @@ def live_gateway():
     return adapter, srv, mem0.Memory(base_url="http://127.0.0.1:%d" % port)
 
 
+@unittest.skipIf(uvicorn is None, "uvicorn is required to serve the real /v1 gateway")
 class Mem0ReadYourWritesTest(unittest.TestCase):
     FACT = "I am a robotics engineer working on Aurora."
 
