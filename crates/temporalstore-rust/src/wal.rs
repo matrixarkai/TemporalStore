@@ -3189,4 +3189,74 @@ mod tests {
             "blank trailing lines should be stepped over, not read as the end of the log"
         );
     }
+
+    /// Appending must not get slower as the log gets longer.
+    ///
+    /// Learning the last sequence is what an append needs first. If that reads the whole log, then
+    /// N appends read it N times and an ingest is quadratic. The check is direct: the cost of the
+    /// last thousand appends against the first thousand, into the same log.
+    #[test]
+    fn appending_does_not_get_slower_as_the_log_grows() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let batch = 1_000u64;
+        let batches = 20u64;
+        let mut first = 0.0f64;
+        let mut last = 0.0f64;
+
+        for round in 0..batches {
+            let started = std::time::Instant::now();
+            for index in 0..batch {
+                store
+                    .append_with_sync(
+                        1,
+                        Command::StringSet {
+                            key: format!("k{:08}", round * batch + index),
+                            value: vec![118u8; 128],
+                        },
+                        false,
+                    )
+                    .unwrap();
+            }
+            let per_append = started.elapsed().as_secs_f64() * 1e6 / batch as f64;
+            if round == 0 {
+                first = per_append;
+            }
+            if round == batches - 1 {
+                last = per_append;
+            }
+            if round % 5 == 0 || round == batches - 1 {
+                println!(
+                    "  after {:>6} records: {per_append:>7.1} us per append",
+                    round * batch
+                );
+            }
+        }
+
+        let stats = store.raw_stats(1);
+        let bytes = std::fs::metadata(write_ahead_log_path(dir.path(), 1))
+            .unwrap()
+            .len();
+        println!(
+            "  {} records, {bytes} B, {} full walks of the log, last/first = {:.2}x",
+            batches * batch,
+            stats.append_full_scans,
+            last / first
+        );
+
+        // Quadratic would show as the last batch costing many times the first. Some growth is
+        // fair -- the file is larger and the page cache is working harder -- so this is loose
+        // enough to pass on a busy machine and still catch the shape coming back.
+        assert!(
+            last < first * 4.0,
+            "appending got {:.1}x slower as the log grew ({first:.1} us -> {last:.1} us), which is \
+             the shape of an ingest that re-reads the log on every append",
+            last / first
+        );
+        assert!(
+            stats.append_full_scans <= 2,
+            "the append path walked the whole log {} times; it should learn the end once",
+            stats.append_full_scans
+        );
+    }
 }
