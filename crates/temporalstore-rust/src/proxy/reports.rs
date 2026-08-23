@@ -167,10 +167,7 @@ impl ProxyService {
                 "<repo>/crates/temporalstore-rust/src/proxy/handle.rs".to_string(),
                 "<repo>/crates/temporalstore-rust/src/proxy/config.rs".to_string(),
             ],
-            rust_prometheus_families: proxy_metrics_families()
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
+            rust_prometheus_families: proxy_metric_families_from(&self.prometheus_metrics()),
             mappings: proxy_metrics_parity_mappings(),
             grafana_panels_ready: true,
             alerts_ready: true,
