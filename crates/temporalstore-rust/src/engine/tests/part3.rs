@@ -1094,7 +1094,7 @@ fn insert_if_absent_keeps_the_first_in_batch_duplicate_timestamp() {
 }
 
 #[test]
-fn feature_write_policy_sequence_batch_ips_dimensions_and_control_state_precision_work() {
+fn feature_write_policy_sequence_batch_dimensions_and_control_state_precision_work() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
 

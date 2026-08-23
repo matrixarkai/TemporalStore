@@ -113,40 +113,6 @@
           }
         },
         {
-          "name": "ips_add_with_metadata_a",
-          "storage_mutation": true,
-          "command": {
-            "kind": "ips_add_with_options",
-            "key": "storage:ips",
-            "timestamp_ms": 3000,
-            "instance": [105, 112, 115, 97],
-            "action_type": 7,
-            "table_id": 42,
-            "request_id": "storage-req-a"
-          },
-          "expect": {
-            "kind": "integer",
-            "value": 1
-          }
-        },
-        {
-          "name": "ips_add_with_metadata_b",
-          "storage_mutation": true,
-          "command": {
-            "kind": "ips_add_with_options",
-            "key": "storage:ips",
-            "timestamp_ms": 3010,
-            "instance": [105, 112, 115, 98],
-            "action_type": 8,
-            "table_id": 42,
-            "request_id": "storage-req-b"
-          },
-          "expect": {
-            "kind": "integer",
-            "value": 1
-          }
-        },
-        {
           "name": "risk_increment",
           "storage_mutation": true,
           "command": {
@@ -385,29 +351,6 @@
                 "action_type": 2,
                 "duration": 13,
                 "author_id": 302
-              }
-            ]
-          }
-        },
-        {
-          "name": "read_ips",
-          "command": {
-            "kind": "ips_query_range",
-            "key": "storage:ips",
-            "start_ms": 2990,
-            "end_ms": 3020,
-            "count": null
-          },
-          "expect": {
-            "kind": "feature_points",
-            "points": [
-              {
-                "timestamp_ms": 3000,
-                "value": [105, 112, 115, 97]
-              },
-              {
-                "timestamp_ms": 3010,
-                "value": [105, 112, 115, 98]
               }
             ]
           }

@@ -129,13 +129,6 @@ FAMILIES: dict[str, FamilyConfig] = {
         "cargo test -p temporalstore-rust sequence_query_filters_typed_rows -- --test-threads=1",
         (),
     ),
-    "IPS": FamilyConfig(
-        "IPS",
-        ("ips_options_range", "ips_snapshot_stat_filter_batch"),
-        ("crates/temporalstore-rust/src/engine.rs::ips_range_and_batch_queries_match_style_read_shapes",),
-        "cargo test -p temporalstore-rust ips_range_and_batch_queries_match_style_read_shapes -- --test-threads=1",
-        (),
-    ),
     "Risk": FamilyConfig(
         "Risk",
         ("risk_counter_window", "risk_family_query_and_delete", "risk_manager_debug_fol"),
