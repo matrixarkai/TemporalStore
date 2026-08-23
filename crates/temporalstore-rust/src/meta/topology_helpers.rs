@@ -304,3 +304,17 @@ pub(super) fn stamp_dropped_since(
         }
     }
 }
+
+/// The shard -> owner map, restricted to shards that are actually being served.
+///
+/// Every planner reads placement through this. A frozen shard is deliberately
+/// out of service, so rebalancing must not move it, the divergence check must
+/// not "repair" it, and it must not appear in a client's topology.
+pub(super) fn serving_shard_owners(state: &MetaState) -> BTreeMap<ShardId, String> {
+    state
+        .shards
+        .values()
+        .filter(|location| location.state == MetaEntityState::Normal)
+        .map(|location| (location.shard_id, location.server_addr.clone()))
+        .collect()
+}
