@@ -39,6 +39,28 @@ impl SingleNodeMeta {
                 unchanged: false,
             };
         }
+        // A namespace freeze covers every table in it, including tables
+        // created after the freeze -- checking the table alone would let one
+        // slip through.
+        match state.namespaces.get(&request.namespace).copied() {
+            Some(MetaEntityState::Dropped) => {
+                return TableTopologyResponse {
+                    status: Status::error("table_not_found", "namespace is dropped"),
+                    table: Some(table.info.clone()),
+                    shards: Vec::new(),
+                    unchanged: false,
+                };
+            }
+            Some(MetaEntityState::Frozen) => {
+                return TableTopologyResponse {
+                    status: Status::error("resource_frozen", "namespace is frozen"),
+                    table: Some(table.info.clone()),
+                    shards: Vec::new(),
+                    unchanged: false,
+                };
+            }
+            _ => {}
+        }
         if request.old_topology_version >= table.info.topology_version {
             return TableTopologyResponse {
                 status: Status::ok(),

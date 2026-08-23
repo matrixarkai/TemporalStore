@@ -408,4 +408,95 @@ impl SingleNodeMeta {
         }
     }
 
+    /// Stop serving everything in a namespace.
+    ///
+    /// The blast radius an operator reaches for is usually a tenant, not one
+    /// table: freezing a namespace table by table takes as many calls as there
+    /// are tables, and races with any table created meanwhile.
+    pub fn freeze_namespace(&self, request: AddNamespaceRequest) -> AckResponse {
+        self.set_namespace_state(request, MetaEntityState::Frozen)
+    }
+
+    /// Return a namespace to service. Also revives a dropped one, which is what
+    /// makes dropping recoverable up until retention forgets it.
+    pub fn unfreeze_namespace(&self, request: AddNamespaceRequest) -> AckResponse {
+        self.set_namespace_state(request, MetaEntityState::Normal)
+    }
+
+    /// Tombstone a namespace. Refused while it still holds a table that is not
+    /// itself dropped, so dropping a namespace cannot strand one.
+    pub fn drop_namespace(&self, request: AddNamespaceRequest) -> AckResponse {
+        self.set_namespace_state(request, MetaEntityState::Dropped)
+    }
+
+    fn set_namespace_state(
+        &self,
+        request: AddNamespaceRequest,
+        next: MetaEntityState,
+    ) -> AckResponse {
+        if let Some(status) = self.meta_change_refusal() {
+            return AckResponse { status };
+        }
+        {
+            let state = self.inner.read().expect("meta lock poisoned");
+            let Some(current) = state.namespaces.get(&request.namespace).copied() else {
+                return AckResponse {
+                    status: Status::error("namespace_not_found", "namespace not found"),
+                };
+            };
+            if current == next {
+                return AckResponse {
+                    status: Status::error("not_modified", "namespace state is unchanged"),
+                };
+            }
+            if next == MetaEntityState::Dropped {
+                let live = state.tables.values().any(|table| {
+                    table.info.namespace == request.namespace
+                        && table.info.state != MetaEntityState::Dropped
+                });
+                if live {
+                    return AckResponse {
+                        status: Status::error(
+                            "namespace_not_empty",
+                            "namespace still holds a table that is not dropped",
+                        ),
+                    };
+                }
+            }
+        }
+        self.record_mutation(MetaMutation::SetNamespaceState(request.clone(), next));
+        self.apply_set_namespace_state(request, next)
+    }
+
+    pub(crate) fn apply_set_namespace_state(
+        &self,
+        request: AddNamespaceRequest,
+        next: MetaEntityState,
+    ) -> AckResponse {
+        let mut state = self.inner.write().expect("meta lock poisoned");
+        let Some(current) = state.namespaces.get_mut(&request.namespace) else {
+            return AckResponse {
+                status: Status::error("namespace_not_found", "namespace not found"),
+            };
+        };
+        *current = next;
+        stamp_dropped_since(
+            &mut state,
+            &dropped_key("namespace", &request.namespace),
+            next,
+            now_ms(),
+        );
+        // Topology is derived on read, so the version bump is what makes clients
+        // notice that a namespace stopped, or resumed, serving.
+        record_topology_event(
+            &mut state,
+            "namespace_state",
+            format!("namespace:{}", request.namespace),
+            format!("state={}", next.as_str()),
+        );
+        AckResponse {
+            status: Status::ok(),
+        }
+    }
+
 }
