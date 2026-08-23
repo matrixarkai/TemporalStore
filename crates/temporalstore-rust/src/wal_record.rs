@@ -348,4 +348,57 @@ mod tests {
             );
         }
     }
+
+    /// What it would cost to carry a payload as bytes rather than as base64.
+    ///
+    /// Base64 is a flat third whatever the bytes are. Escaping just the newline and the escape byte
+    /// costs whatever those two bytes weigh in the data -- near nothing for most payloads, and worse
+    /// than base64 only for data that is mostly newlines. Measured across shapes, including one
+    /// picked to be hostile.
+    #[test]
+    fn what_carrying_a_payload_as_bytes_would_cost() {
+        // Escape 0x0A so the payload can never contain a newline, and 0x1B so the escape is
+        // reversible. Everything else is carried as itself.
+        fn stuffed_len(bytes: &[u8]) -> usize {
+            bytes
+                .iter()
+                .map(|byte| if *byte == b'\n' || *byte == 0x1b { 2 } else { 1 })
+                .sum()
+        }
+        fn base64_len(len: usize) -> usize {
+            len.div_ceil(3) * 4
+        }
+
+        // A cheap deterministic spread of byte values, so the measurement does not depend on a
+        // random seed and does not flatter itself with a single repeated byte.
+        let spread = |len: usize| -> Vec<u8> {
+            (0..len)
+                .map(|index| ((index * 97 + index / 251 * 13) % 256) as u8)
+                .collect()
+        };
+        let text = |len: usize| -> Vec<u8> {
+            (0..len)
+                .map(|index| if index % 64 == 63 { b'\n' } else { b'a' + (index % 26) as u8 })
+                .collect()
+        };
+        let hostile = |len: usize| -> Vec<u8> { vec![b'\n'; len] };
+
+        for (name, make) in [
+            ("every byte value", &spread as &dyn Fn(usize) -> Vec<u8>),
+            ("text, a newline every 64", &text),
+            ("nothing but newlines", &hostile),
+        ] {
+            for len in [1024usize, 4096] {
+                let bytes = make(len);
+                let encoded = base64_len(len);
+                let stuffed = stuffed_len(&bytes);
+                println!(
+                    "  {name:<26} {len:>5}B: base64 {encoded:>6}B ({:.3}x)   as bytes {stuffed:>6}B ({:.3}x)   {:.2}x smaller",
+                    encoded as f64 / len as f64,
+                    stuffed as f64 / len as f64,
+                    encoded as f64 / stuffed as f64
+                );
+            }
+        }
+    }
 }
