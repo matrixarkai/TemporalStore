@@ -255,6 +255,22 @@ impl MetaRaftCluster {
         }
     }
 
+    pub fn reserved_names(&self) -> crate::meta::ReservedNamesResponse {
+        self.read_meta().map_or_else(
+            |status| crate::meta::ReservedNamesResponse {
+                status,
+                reserved: crate::meta::ReservedNames::default(),
+            },
+            |meta| meta.reserved_names(),
+        )
+    }
+
+    pub fn set_reserved_names(&self, reserved: crate::meta::ReservedNames) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::SetReservedNames(reserved)),
+        }
+    }
+
     pub fn freeze_server(&self, request: StateChangeRequest) -> AckResponse {
         AckResponse {
             status: self.mutation_status(MetaMutation::FreezeServer(request)),

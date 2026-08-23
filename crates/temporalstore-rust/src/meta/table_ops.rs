@@ -10,6 +10,13 @@ impl SingleNodeMeta {
         if let Some(status) = self.meta_change_refusal() {
             return AckResponse { status };
         }
+        // A table lands inside a namespace, so a reserved namespace holds back
+        // the tables that would be created in it too.
+        if let Some(status) =
+            self.reserved_name_refusal(&request.namespace, Some(&request.table_name))
+        {
+            return AckResponse { status };
+        }
         self.record_mutation(MetaMutation::AddTable(request.clone()));
         self.apply_add_table(request)
     }
