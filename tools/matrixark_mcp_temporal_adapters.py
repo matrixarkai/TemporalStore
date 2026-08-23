@@ -969,12 +969,24 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         # and get_all returns the whole tenant -- every user then reports the same count and a
         # user whose memories were all forgotten never drops out of the list.
         base_scope = dict(args.get("scope") or {}) if isinstance(args, dict) else {}
+        ordered = sorted(set(subjects))
+        counts = self._subject_counts_in_one_pass(
+            base_scope, [name for kind, name in ordered if kind == "user"]
+        )
         results: list[Json] = []
-        for kind, name in sorted(set(subjects)):
+        for kind, name in ordered:
             if kind != "user":
                 # Only a user is addressable by get_all here, so agents/runs are reported without
                 # a live count rather than with a wrong one.
                 results.append({"type": kind, "name": name})
+                continue
+            if counts is not None:
+                live = counts.get(name, 0)
+                if not live:
+                    continue
+                results.append({"type": kind, "name": name, "memory_count": live})
+                if limit and len(results) >= limit:
+                    break
                 continue
             scope = self._subject_scope(base_scope, name)
             try:
@@ -989,6 +1001,59 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             if limit and len(results) >= limit:
                 break
         return {"results": results, "count": len(results)}
+
+    def _subject_counts_in_one_pass(self, base_scope: Json, names: list[str]) -> dict[str, int] | None:
+        """Live `context_event` count per named user, from ONE read of the record log.
+
+        Replaces one scoped `get_all` per subject. `get_all` filters in Python after reading the
+        whole log, so per-subject reads cost O(subjects x store): 21 full reads of ~450ms for a
+        single `users()` call over 20 subjects, measured.
+
+        The predicate is `get_all`'s, unchanged -- a record belongs to a subject when the tenant
+        and user hashes on its own access scope match the ones the same resolver derives for that
+        subject's scope -- so this is a cheaper way to compute the same answer, not a different
+        answer.
+
+        Returns None, never an empty map, when the subjects cannot be resolved to distinct user
+        hashes. The caller then falls back to the per-subject reads: being slow is recoverable,
+        reporting that nobody has memories is not.
+        """
+        try:
+            from tools.matrixark_mcp_local_adapter import _record_scope_hashes
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_local_adapter import _record_scope_hashes
+        try:
+            tenant_by_user: dict[int, int] = {}
+            name_by_user: dict[int, str] = {}
+            for name in names:
+                tenant_hash, user_hash = self._resolve_subject_hashes(
+                    self._subject_scope(base_scope, name)
+                )
+                if not user_hash or user_hash in name_by_user:
+                    # Unresolvable, or two names landing on one hash: neither can be counted
+                    # apart here, and guessing would attribute one subject's memories to another.
+                    return None
+                name_by_user[user_hash] = name
+                tenant_by_user[user_hash] = tenant_hash
+            if not name_by_user:
+                return {}
+            counts: dict[str, int] = {name: 0 for name in names}
+            for record in self.read_all():
+                if not isinstance(record, dict):
+                    continue
+                if str(record.get("record_type") or "") != "context_event":
+                    continue
+                record_tenant, record_user = _record_scope_hashes(record)
+                name = name_by_user.get(record_user)
+                if name is None:
+                    continue
+                subject_tenant = tenant_by_user.get(record_user) or 0
+                if subject_tenant and record_tenant != subject_tenant:
+                    continue
+                counts[name] += 1
+            return counts
+        except Exception:  # noqa: BLE001 - fall back to the per-subject reads rather than answer wrong.
+            return None
 
     def _purge_scope_in_engine(self, scope: Json) -> Json:
         """Ask the engine to physically remove every record matching `scope`.
