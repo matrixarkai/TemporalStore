@@ -1300,6 +1300,51 @@ impl ProxyService {
             .map_err(|rejection| self.reject(rejection.status(), ProxyRejectionKind::Inflight))
     }
 
+    /// Admission for `GET /shards/{id}`.
+    ///
+    /// This route answers a client asking where a shard lives, and answering means a
+    /// metaserver round-trip. It took no in-flight slot, so it was the one piece of client
+    /// traffic that could not be bounded: `max_inflight_requests` capped execute and the
+    /// context routes while an unbounded number of lookups went straight through to the
+    /// metaserver. A client stampede was amplified onto the metaserver by the very component
+    /// meant to shield it. A drained proxy served them too.
+    ///
+    /// Admitted as a read. There is no namespace on the wire for this route, so account
+    /// scope cannot be checked here -- the shard id alone carries no tenant.
+    fn admit_shard_lookup(&self) -> Result<ProxyInflightGuard<'_>, Status> {
+        let options = self.options();
+        if let Some(status) = proxy_serving_rejection(&options, false) {
+            return Err(self.reject(status, ProxyRejectionKind::Policy));
+        }
+        self.inner
+            .inflight
+            .try_acquire(
+                false,
+                options.max_inflight_requests,
+                options.max_inflight_write_requests,
+            )
+            .map_err(|rejection| self.reject(rejection.status(), ProxyRejectionKind::Inflight))
+    }
+
+    /// Admission for `POST /proxy/topology/refresh`.
+    ///
+    /// Bounded, but deliberately NOT refused while draining. This is how an operator makes a
+    /// proxy pick up a topology change, and a proxy that has been drained is exactly when
+    /// someone needs to do that -- gating it on serving mode would take the tool away at the
+    /// moment it is wanted. What it does need is a ceiling: each call is a metaserver
+    /// round-trip, and nothing stopped a script from issuing them without limit.
+    fn admit_topology_refresh(&self) -> Result<ProxyInflightGuard<'_>, Status> {
+        let options = self.options();
+        self.inner
+            .inflight
+            .try_acquire(
+                false,
+                options.max_inflight_requests,
+                options.max_inflight_write_requests,
+            )
+            .map_err(|rejection| self.reject(rejection.status(), ProxyRejectionKind::Inflight))
+    }
+
     /// The options the proxy actually handed its client, so callers (and tests) can see what
     /// was carried through rather than what was merely configured.
     pub fn client_options_snapshot(&self) -> crate::client::ClientOptions {
@@ -2439,6 +2484,93 @@ mod tests {
         let body = String::from_utf8_lossy(&body).to_string();
         assert!(!body.contains("proxy_write_disabled"), "{body}");
         assert!(!body.contains("proxy_not_serving"), "{body}");
+    }
+
+    #[test]
+    fn shard_lookup_and_topology_refresh_are_bounded_by_the_inflight_quota() {
+        // Both reach the metaserver, and neither took a slot. max_inflight_requests capped
+        // execute and the context routes while an unbounded number of these went straight
+        // through -- so a client stampede was amplified onto the metaserver by the component
+        // whose job is to shield it.
+        let proxy = scoped_proxy(ProxyOptions {
+            max_inflight_requests: 1,
+            ..ProxyOptions::default()
+        });
+        let held = proxy
+            .admit_context(&context_scope("acct", "t"), false)
+            .expect("first request is admitted");
+        assert_eq!(proxy.inflight_snapshot(), (1, 0));
+
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "GET".to_string(),
+            path: "/shards/1".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(code, 429, "a shard lookup must take the quota");
+        assert!(String::from_utf8_lossy(&body).contains("proxy_inflight_quota_exceeded"));
+
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/proxy/topology/refresh".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(code, 429, "a topology refresh must take the quota");
+        assert!(String::from_utf8_lossy(&body).contains("proxy_inflight_quota_exceeded"));
+
+        drop(held);
+        assert_eq!(proxy.inflight_snapshot(), (0, 0));
+
+        // Releasing matters more than acquiring: a slot leaked on the way out would wedge the
+        // proxy shut, which is worse than the unbounded route this replaces. The metaserver
+        // here is unreachable, so these take the error path -- exactly where a leak would hide.
+        for _ in 0..3 {
+            let _ = proxy.handle(HttpRequest {
+                method: "GET".to_string(),
+                path: "/shards/1".to_string(),
+                body: Vec::new(),
+            });
+            let _ = proxy.handle(HttpRequest {
+                method: "POST".to_string(),
+                path: "/proxy/topology/refresh".to_string(),
+                body: Vec::new(),
+            });
+        }
+        assert_eq!(
+            proxy.inflight_snapshot(),
+            (0, 0),
+            "every slot must come back, including on the failure path"
+        );
+    }
+
+    #[test]
+    fn draining_stops_shard_lookups_but_still_allows_a_topology_refresh() {
+        // Drain means stop answering clients, and a shard lookup is a client asking where to
+        // go. A topology refresh is not client traffic -- it is how an operator makes the
+        // proxy notice a change, and a drained proxy is exactly when that is wanted, so it
+        // stays available on purpose.
+        let drained = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::NotServing,
+            ..ProxyOptions::default()
+        });
+
+        let (code, body) = drained.handle(HttpRequest {
+            method: "GET".to_string(),
+            path: "/shards/1".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(code, 503);
+        assert!(String::from_utf8_lossy(&body).contains("proxy_not_serving"));
+
+        let (code, body) = drained.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/proxy/topology/refresh".to_string(),
+            body: Vec::new(),
+        });
+        assert_ne!(code, 503, "an operator must still be able to refresh a drained proxy");
+        assert!(
+            !String::from_utf8_lossy(&body).contains("proxy_not_serving"),
+            "topology refresh must not be gated on serving mode"
+        );
     }
 
     #[test]
