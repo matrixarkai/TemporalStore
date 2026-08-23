@@ -395,6 +395,13 @@ pub struct WriteAheadLogGcReport {
     /// The pass was declined because the copy it required bought too little space. The records
     /// are untouched and a later pass, once the prefix has grown, will take them.
     pub skipped_not_worth_rewrite: bool,
+    /// Whole pieces of the log that went without being copied, because everything in them was
+    /// below the floor.
+    #[serde(default)]
+    pub dropped_segments: usize,
+    /// What those pieces held.
+    #[serde(default)]
+    pub dropped_segment_bytes: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -571,6 +578,7 @@ impl LocalWriteAheadLogStore {
             let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
             fs::create_dir_all(&inner.root)?;
             let _append_lock = WalAppendLock::acquire(&inner.root, shard_id)?;
+            ensure_active_wal_segment(&mut inner, shard_id)?;
             let (last_sequence, on_disk_len) =
                 resolve_last_sequence_for_append(&mut inner, shard_id)?;
             inner.last_sequence_by_shard.insert(shard_id, last_sequence);
@@ -584,20 +592,29 @@ impl LocalWriteAheadLogStore {
             };
             let report = append_record_locked(&mut inner, &rec, sync && !group, Some(on_disk_len))?;
             inner.stats.last_sequence = report.current_sequence;
+            // Where the record landed, in the addressing that survives reclaim -- taken BEFORE any
+            // roll. The record is in the piece being written now; a roll starts a new piece with a
+            // new starting log id, and reading that afterwards would address this record as though
+            // it were in the piece that comes next.
+            let (base, header_len) = cached_wal_base(&mut inner, shard_id)?;
+            log_id = base.saturating_add(report.offset.saturating_sub(header_len));
+            // Roll after the record is written, so the piece being sealed is whole.
+            let rolled = roll_wal_segment_if_due(&mut inner, shard_id)?;
             // Record the file length we just left behind so the next append's fast path can
             // confirm no other writer touched the file (O(1) stat) and skip the full scan.
-            inner
-                .verified_len_by_shard
-                .insert(shard_id, report.persistent_bytes);
+            if !rolled {
+                // After a roll the piece being written is new and its length was recorded by the
+                // roll; the length this record left behind belongs to the piece just sealed.
+                inner
+                    .verified_len_by_shard
+                    .insert(shard_id, report.persistent_bytes);
+            }
             // last_flushed_sequence is advanced by append_record_locked ONLY when the record was
             // actually fsynced (sync=true, non-group). An unconditional overwrite here reported an
             // async / bulk-mode (unsynced) record as durable -- overstating durability, a latent
             // trap for any future reclaim/ack gate that reads it. The group path advances it below
             // after the coalesced barrier actually reaches disk.
             inner.last_sequence_by_shard.insert(shard_id, seq);
-            // Where the record landed, in the addressing space that survives reclaim.
-            let (base, header_len) = cached_wal_base(&mut inner, shard_id)?;
-            log_id = base.saturating_add(report.offset.saturating_sub(header_len));
             record = rec;
             next_sequence = seq;
             // `inner` and `_append_lock` are released here so a concurrent writer can
@@ -834,14 +851,15 @@ impl LocalWriteAheadLogStore {
         size: u64,
     ) -> Result<Vec<u8>, WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
-        let path = write_ahead_log_path(&inner.root, shard_id);
-        let mut file = File::open(path)?;
-        file.seek(SeekFrom::Start(offset))?;
-        let mut bytes = vec![0; size as usize];
-        let read = file.read(&mut bytes)?;
-        bytes.truncate(read);
+        // `offset` is a log id: a position in the log's whole history, not in whichever file
+        // happens to hold it. That is the only position that means anything once the log is in
+        // pieces, and unlike a file offset it survives reclaim.
+        let Some((path, physical)) = locate_log_id(&inner.root, shard_id, offset)? else {
+            return Ok(Vec::new());
+        };
+        let bytes = read_at(&path, physical, size)?;
         inner.stats.reads += 1;
-        inner.stats.bytes_read += read as u64;
+        inner.stats.bytes_read += bytes.len() as u64;
         Ok(bytes)
     }
 
@@ -853,46 +871,56 @@ impl LocalWriteAheadLogStore {
         max_bytes: u64,
     ) -> Result<Vec<(u64, Vec<u8>)>, WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
-        let path = write_ahead_log_path(&inner.root, shard_id);
-        // An absent WAL file is "nothing to scan", not an error. Distinguishing it here lets
-        // recovery treat a missing WAL as "nothing to replay" while still surfacing a genuine
-        // scan/decode failure (corruption) as data loss (see engine::lifecycle replay).
-        if !path.exists() {
+        let segments = wal_segment_paths(&inner.root, shard_id)
+            .into_iter()
+            .filter(|path| path.exists())
+            .collect::<Vec<_>>();
+        // No file at all is "nothing to scan", not an error. Distinguishing it here lets recovery
+        // treat a missing log as "nothing to replay" while still surfacing a genuine decode failure
+        // (corruption) as data loss (see engine::lifecycle replay).
+        if segments.is_empty() {
             inner.stats.scans += 1;
             return Ok(Vec::new());
         }
         let _ = last_wal_sequence_at(&inner.root, shard_id)?;
-        // Start past the reclaim-base header. A caller asking from 0 means "from the first
-        // record"; handing it the header would decode as a corrupt record and be reported as
-        // data loss.
-        let (_, header_len) = read_wal_base(&path)?;
-        let start_offset = start_offset.max(header_len);
-        let mut file = File::open(&path)?;
-        file.seek(SeekFrom::Start(start_offset))?;
-        let mut reader = BufReader::new(file);
-        let mut offset = start_offset;
         let mut total = 0;
         let mut records = Vec::new();
-        loop {
-            let mut line = Vec::new();
-            let read = reader.read_until(b'\n', &mut line)?;
-            if read == 0 {
-                break;
+        'segments: for path in segments {
+            // Each piece says where in the log's history its contents begin, so a record's position
+            // is that plus how far into the piece it sits. Positions are log ids: an offset into
+            // one file would mean nothing to a caller once there is more than one, and would not
+            // survive reclaim.
+            let (base, header_len) = read_wal_base(&path)?;
+            let mut file = File::open(&path)?;
+            file.seek(SeekFrom::Start(header_len))?;
+            let mut reader = BufReader::new(file);
+            let mut log_id = base;
+            loop {
+                let mut line = Vec::new();
+                let read = reader.read_until(b'\n', &mut line)?;
+                if read == 0 {
+                    break;
+                }
+                let next_log_id = log_id.saturating_add(read as u64);
+                if log_id < start_offset {
+                    // Before the window: skip it, but keep counting position.
+                    log_id = next_log_id;
+                    continue;
+                }
+                if next_log_id > end_offset || total + read as u64 > max_bytes {
+                    break 'segments;
+                }
+                // Refuse a corrupt record here, where it is being read. This used to happen only as
+                // a side effect of walking the whole file to find the log's end; that walk no longer
+                // reads everything, and a guarantee that depends on unrelated work is not a
+                // guarantee. A blank line carries nothing to verify and is passed through as before.
+                if !line.iter().all(|byte| byte.is_ascii_whitespace()) {
+                    decode_wal_line(&line)?;
+                }
+                records.push((log_id, line));
+                log_id = next_log_id;
+                total += read as u64;
             }
-            let next_offset = offset.saturating_add(read as u64);
-            if next_offset > end_offset || total + read as u64 > max_bytes {
-                break;
-            }
-            // Refuse a corrupt record here, where it is being read. This used to happen only as a
-            // side effect of walking the whole file to find the log's end; that walk no longer
-            // reads everything, and a guarantee that depends on unrelated work is not a guarantee.
-            // A blank line carries nothing to verify and is passed through as before.
-            if !line.iter().all(|byte| byte.is_ascii_whitespace()) {
-                decode_wal_line(&line)?;
-            }
-            records.push((offset, line));
-            offset = next_offset;
-            total += read as u64;
         }
         inner.stats.scans += 1;
         inner.stats.bytes_read += total;
@@ -976,17 +1004,7 @@ impl LocalWriteAheadLogStore {
         log_id: u64,
     ) -> Result<Option<u64>, WriteAheadLogError> {
         let inner = self.inner.lock().expect("write-ahead log lock poisoned");
-        let path = write_ahead_log_path(&inner.root, shard_id);
-        let (base, header_len) = read_wal_base(&path)?;
-        if log_id < base {
-            return Ok(None);
-        }
-        let physical = header_len.saturating_add(log_id - base);
-        let length = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
-        if physical >= length {
-            return Ok(None);
-        }
-        Ok(Some(physical))
+        Ok(locate_log_id(&inner.root, shard_id, log_id)?.map(|(_, physical)| physical))
     }
 
     /// Log id of a record currently at `physical_offset`. The inverse of [`Self::resolve_log_id`],
@@ -1011,23 +1029,22 @@ impl LocalWriteAheadLogStore {
         log_id: u64,
         size: u64,
     ) -> Result<Option<Vec<u8>>, WriteAheadLogError> {
-        let Some(physical) = self.resolve_log_id(shard_id, log_id)? else {
+        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let Some((path, physical)) = locate_log_id(&inner.root, shard_id, log_id)? else {
             return Ok(None);
         };
-        // A caller asking by log id does not know how long the record is, so it asks for an
-        // upper bound. Reading past the end of the file would fail and report the value as
-        // absent -- a read that should have succeeded -- so clamp to what is actually there.
-        let length = {
-            let inner = self.inner.lock().expect("write-ahead log lock poisoned");
-            let path = write_ahead_log_path(&inner.root, shard_id);
-            path.metadata().map(|metadata| metadata.len()).unwrap_or(0)
-        };
+        // A caller asking by log id does not know how long the record is, so it asks for an upper
+        // bound. Reading past the end of the piece would fail and report the record as absent -- a
+        // read that should have succeeded -- so clamp to what that piece actually holds.
+        let length = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
         let available = length.saturating_sub(physical);
         if available == 0 {
             return Ok(None);
         }
-        self.read_range(shard_id, physical, size.min(available))
-            .map(Some)
+        let bytes = read_at(&path, physical, size.min(available))?;
+        inner.stats.reads += 1;
+        inner.stats.bytes_read += bytes.len() as u64;
+        Ok(Some(bytes))
     }
 
     pub fn gc_before_sequence(
@@ -1037,6 +1054,10 @@ impl LocalWriteAheadLogStore {
     ) -> Result<WriteAheadLogGcReport, WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         fs::create_dir_all(&inner.root)?;
+        // Whole pieces below the floor go without being read or copied. What is left is the piece
+        // being written, which the copy path below handles as it always has.
+        let (dropped_segments, dropped_bytes) =
+            drop_covered_wal_segments(&inner.root, shard_id, retain_from_sequence)?;
         let path = write_ahead_log_path(&inner.root, shard_id);
         if !path.exists() {
             return Ok(WriteAheadLogGcReport {
@@ -1142,6 +1163,8 @@ impl LocalWriteAheadLogStore {
                 base_offset,
                 bytes_copied: 0,
                 skipped_not_worth_rewrite: true,
+                dropped_segments,
+                dropped_segment_bytes: dropped_bytes,
             });
         }
 
@@ -1183,6 +1206,8 @@ impl LocalWriteAheadLogStore {
             clamped_by_block_retention,
             bytes_copied: retained_bytes,
             skipped_not_worth_rewrite: false,
+            dropped_segments,
+            dropped_segment_bytes: dropped_bytes,
         })
     }
 
@@ -1282,8 +1307,247 @@ impl Default for LocalWriteAheadLogStore {
     }
 }
 
+/// Read at most `size` bytes from `path`, starting at `physical`.
+/// Drop whole pieces that hold nothing worth keeping.
+///
+/// A piece whose last record is below the retain floor holds nothing above it -- records are
+/// appended in ascending sequence -- so the whole file goes, and nothing is copied. Stops at the
+/// first piece that still holds something: the pieces are in order, so everything after it does too.
+///
+/// Returns how many pieces went and how many bytes they held.
+fn drop_covered_wal_segments(
+    root: &Path,
+    shard_id: ShardId,
+    retain_from_sequence: u64,
+) -> Result<(usize, u64), WriteAheadLogError> {
+    let active = write_ahead_log_path(root, shard_id);
+    let mut dropped = 0usize;
+    let mut freed = 0u64;
+    for path in wal_segment_paths(root, shard_id) {
+        if path == active || !path.exists() {
+            continue;
+        }
+        let last = last_wal_sequence_in(&path)?;
+        if last == 0 {
+            // Holds no record at all; nothing to keep and nothing to lose.
+        } else if last >= retain_from_sequence {
+            break;
+        }
+        freed = freed.saturating_add(path.metadata().map(|meta| meta.len()).unwrap_or(0));
+        fs::remove_file(&path)?;
+        dropped += 1;
+    }
+    if dropped > 0 {
+        sync_parent_dir(&active)?;
+    }
+    Ok((dropped, freed))
+}
+
+fn read_at(path: &Path, physical: u64, size: u64) -> Result<Vec<u8>, WriteAheadLogError> {
+    let mut file = File::open(path)?;
+    file.seek(SeekFrom::Start(physical))?;
+    let mut bytes = vec![0; size as usize];
+    let read = file.read(&mut bytes)?;
+    bytes.truncate(read);
+    Ok(bytes)
+}
+
+/// TS_WAL_SEGMENT_BYTES: roll the log into a new piece once the one being written passes this.
+///
+/// Zero never rolls, which is one file and the behaviour this has always had. Rolling exists so
+/// reclaim can unlink a whole earlier piece instead of copying the records it keeps into a new
+/// file -- the cost of a reclaim tracks what it KEEPS, so dropping a prefix of a large log
+/// otherwise rewrites nearly all of it.
+fn wal_segment_bytes() -> u64 {
+    if let Some(threshold) = SEGMENT_BYTES_OVERRIDE.with(|value| value.get()) {
+        return threshold;
+    }
+    std::env::var("TS_WAL_SEGMENT_BYTES")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+thread_local! {
+    /// Per-thread override of the rolling threshold.
+    ///
+    /// Per thread, not per process: appending happens on the calling thread, and a test that set a
+    /// process-wide threshold would make every other test running beside it roll too.
+    static SEGMENT_BYTES_OVERRIDE: std::cell::Cell<Option<u64>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Set the rolling threshold for THIS THREAD. The environment variable is the supported way to set
+/// it; this exists so a test can roll without disturbing anything running beside it.
+pub fn set_wal_segment_bytes_for_test(threshold: Option<u64>) {
+    SEGMENT_BYTES_OVERRIDE.with(|value| value.set(threshold));
+}
+
+/// The log id one past everything the sealed pieces hold.
+///
+/// Derived rather than stored: sealing is a rename and creating the next piece is a separate step,
+/// so a crash can land between them. Computing this from what is on disk gives the same answer
+/// either way.
+fn log_id_after_sealed(root: &Path, shard_id: ShardId) -> Result<u64, WriteAheadLogError> {
+    let mut end = 0;
+    for path in wal_segment_paths(root, shard_id) {
+        if path == write_ahead_log_path(root, shard_id) || !path.exists() {
+            continue;
+        }
+        let (base, header_len) = read_wal_base(&path)?;
+        let length = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+        end = end.max(base.saturating_add(length.saturating_sub(header_len)));
+    }
+    Ok(end)
+}
+
+/// Seal the piece being written and start a fresh one, if it has grown past the threshold.
+///
+/// Called with the append lock held, after a record has been made durable, so the piece being
+/// sealed is complete.
+/// Make sure there is a piece to append to, starting where the sealed pieces end.
+///
+/// Sealing is a rename and creating the next piece is a separate step, so a crash can leave sealed
+/// pieces and nothing being written. An absent piece reads as starting at log id zero, which would
+/// hand out log ids the sealed pieces already own. Creating it here, from what is on disk, gives
+/// the same answer whether or not that crash happened.
+fn ensure_active_wal_segment(
+    inner: &mut WriteAheadLogInner,
+    shard_id: ShardId,
+) -> Result<(), WriteAheadLogError> {
+    let path = write_ahead_log_path(&inner.root, shard_id);
+    if path.exists() {
+        return Ok(());
+    }
+    let start = log_id_after_sealed(&inner.root, shard_id)?;
+    if start == 0 {
+        // No sealed pieces: a log that starts at the beginning needs no header, exactly as before.
+        return Ok(());
+    }
+    let header = crate::log_framing::encode_base_header(start);
+    let mut file = File::create(&path)?;
+    file.write_all(&header)?;
+    file.flush()?;
+    file.sync_all()?;
+    sync_parent_dir(&path)?;
+    inner
+        .base_by_shard
+        .insert(shard_id, (start, header.len() as u64));
+    inner
+        .verified_len_by_shard
+        .insert(shard_id, header.len() as u64);
+    Ok(())
+}
+
+fn roll_wal_segment_if_due(
+    inner: &mut WriteAheadLogInner,
+    shard_id: ShardId,
+) -> Result<bool, WriteAheadLogError> {
+    let threshold = wal_segment_bytes();
+    if threshold == 0 {
+        return Ok(false);
+    }
+    let path = write_ahead_log_path(&inner.root, shard_id);
+    let length = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    let (base, header_len) = read_wal_base(&path)?;
+    let holds = length.saturating_sub(header_len);
+    if holds < threshold {
+        return Ok(false);
+    }
+
+    // Seal by rename: atomic, so the piece is either being written or sealed, never neither.
+    let sealed = sealed_wal_path(&inner.root, shard_id, base);
+    fs::rename(&path, &sealed)?;
+    sync_parent_dir(&sealed)?;
+
+    // Start the next piece where this one ended. If a crash lands before this, the next append
+    // derives the same starting point from the sealed pieces.
+    let next_base = base.saturating_add(holds);
+    let mut file = File::create(&path)?;
+    file.write_all(&crate::log_framing::encode_base_header(next_base))?;
+    file.flush()?;
+    file.sync_all()?;
+    sync_parent_dir(&path)?;
+
+    let new_header_len = crate::log_framing::encode_base_header(next_base).len() as u64;
+    inner
+        .base_by_shard
+        .insert(shard_id, (next_base, new_header_len));
+    inner.verified_len_by_shard.insert(shard_id, new_header_len);
+    Ok(true)
+}
+
 fn write_ahead_log_path(root: &Path, shard_id: ShardId) -> PathBuf {
     root.join(format!("shard-{shard_id}.wal.jsonl"))
+}
+
+/// An earlier piece of a shard's log, named by the log id its contents start at.
+///
+/// Zero-padded so the names sort into log order, which is the order the pieces are read in.
+fn sealed_wal_path(root: &Path, shard_id: ShardId, start_log_id: u64) -> PathBuf {
+    root.join(format!("shard-{shard_id}.wal.{start_log_id:020}.jsonl"))
+}
+
+/// Whether this file is an earlier piece of the given shard's log.
+///
+/// The piece being written has no number in its name, so it is not one of these -- an empty middle
+/// section does not parse as a log id.
+fn sealed_wal_start_log_id(path: &Path, shard_id: ShardId) -> Option<u64> {
+    let name = path.file_name()?.to_str()?;
+    let middle = name
+        .strip_prefix(&format!("shard-{shard_id}.wal."))?
+        .strip_suffix(".jsonl")?;
+    middle.parse().ok()
+}
+
+/// Every file that makes up a shard's log, oldest first, with the one being written last.
+///
+/// A log that has never been rolled is one file, and this returns just that -- the same path the
+/// rest of the code has always used.
+fn wal_segment_paths(root: &Path, shard_id: ShardId) -> Vec<PathBuf> {
+    let mut sealed = fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter_map(|path| {
+            sealed_wal_start_log_id(&path, shard_id).map(|start| (start, path))
+        })
+        .collect::<Vec<_>>();
+    sealed.sort_by_key(|(start, _)| *start);
+    let mut paths = sealed.into_iter().map(|(_, path)| path).collect::<Vec<_>>();
+    paths.push(write_ahead_log_path(root, shard_id));
+    paths
+}
+
+/// Where a log id lives: which piece of the log, and how far into it.
+///
+/// `None` when the log id is behind everything still kept -- reclaimed -- or ahead of everything
+/// written.
+fn locate_log_id(
+    root: &Path,
+    shard_id: ShardId,
+    log_id: u64,
+) -> Result<Option<(PathBuf, u64)>, WriteAheadLogError> {
+    for path in wal_segment_paths(root, shard_id) {
+        if !path.exists() {
+            continue;
+        }
+        let (base, header_len) = read_wal_base(&path)?;
+        let length = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+        if length <= header_len {
+            continue;
+        }
+        let holds = length - header_len;
+        if log_id < base {
+            // Behind this piece, and the pieces are in order, so behind the whole log.
+            return Ok(None);
+        }
+        if log_id - base < holds {
+            return Ok(Some((path, header_len + (log_id - base))));
+        }
+    }
+    Ok(None)
 }
 
 struct WalAppendLock {
@@ -1627,12 +1891,26 @@ fn read_wal_base(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
 /// longer reported here, since reaching it meant decoding everything; replay still refuses it, and
 /// replay is the path that would act on it.
 fn last_wal_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, WriteAheadLogError> {
-    let path = write_ahead_log_path(root, shard_id);
+    // Newest first: the piece being written is empty right after a roll, and an empty piece is not
+    // where the log ends. Only the piece being written can have a torn tail -- the sealed ones were
+    // whole when they were renamed -- so this repairs that one and reads the rest.
+    let mut pieces = wal_segment_paths(root, shard_id);
+    pieces.reverse();
+    for piece in pieces {
+        let sequence = last_wal_sequence_in(&piece)?;
+        if sequence > 0 {
+            return Ok(sequence);
+        }
+    }
+    Ok(0)
+}
+
+fn last_wal_sequence_in(path: &Path) -> Result<u64, WriteAheadLogError> {
     if !path.exists() {
         return Ok(0);
     }
-    let (_, header_len) = read_wal_base(&path)?;
-    let file = OpenOptions::new().read(true).write(true).open(&path)?;
+    let (_, header_len) = read_wal_base(path)?;
+    let file = OpenOptions::new().read(true).write(true).open(path)?;
     let len = file.metadata()?.len();
     if len <= header_len {
         return Ok(0);
@@ -1707,7 +1985,7 @@ fn last_wal_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, WriteAhea
     if good_offset < len {
         file.set_len(good_offset)?;
         file.sync_all()?;
-        sync_parent_dir(&path)?;
+        sync_parent_dir(path)?;
     }
     let Some(line) = line else {
         return Ok(0);
@@ -3483,5 +3761,307 @@ mod tests {
                 .sequence,
             payloads.len() as u64 + 1
         );
+    }
+
+    /// A rolled log reads as one log, and its records keep their addresses.
+    #[test]
+    fn a_rolled_log_reads_whole_and_keeps_its_addresses() {
+        set_wal_segment_bytes_for_test(Some(4 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+
+        let mut written = Vec::new();
+        for index in 0..200u64 {
+            let value = format!("value-{index:06}").into_bytes();
+            let (record, log_id) = store
+                .append_with_sync_reporting(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: value.clone(),
+                    },
+                    false,
+                )
+                .unwrap();
+            written.push((record.sequence, log_id, value));
+        }
+
+        // It really did roll, or the rest of this proves nothing.
+        let pieces = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("shard-1.wal."))
+            })
+            .count();
+        assert!(pieces > 1, "the log should be in more than one piece, saw {pieces}");
+
+        // Read as one log, in order, with every record present.
+        let scanned = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        assert_eq!(scanned.len(), written.len(), "every record should be scanned");
+        let mut previous = None;
+        for ((log_id, line), (sequence, _, _)) in scanned.iter().zip(written.iter()) {
+            if let Some(previous) = previous {
+                assert!(*log_id > previous, "log ids should increase across pieces");
+            }
+            previous = Some(*log_id);
+            assert_eq!(decode_wal_line(line).unwrap().sequence, *sequence);
+        }
+
+        // Addresses handed out at append time still resolve, including into sealed pieces.
+        for (_, log_id, value) in &written {
+            let bytes = store
+                .read_at_log_id(1, *log_id, 4096)
+                .unwrap()
+                .unwrap_or_else(|| panic!("log id {log_id} should still resolve"));
+            let end = bytes
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(bytes.len(), |at| at + 1);
+            let record = decode_wal_line(&bytes[..end]).unwrap();
+            match record.command {
+                Command::StringSet { value: found, .. } => {
+                    assert_eq!(&found, value, "log id {log_id} resolved to the wrong record")
+                }
+                other => panic!("unexpected command: {other:?}"),
+            }
+        }
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// A reopened rolled log continues where it left off.
+    #[test]
+    fn a_rolled_log_continues_after_a_reopen() {
+        set_wal_segment_bytes_for_test(Some(2 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        for index in 0..120u64 {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 64],
+                    },
+                    false,
+                )
+                .unwrap();
+        }
+        drop(store);
+
+        let reopened = LocalWriteAheadLogStore::new(dir.path());
+        let next = reopened
+            .append_with_sync(
+                1,
+                Command::StringSet {
+                    key: "after".to_string(),
+                    value: b"v".to_vec(),
+                },
+                false,
+            )
+            .unwrap();
+        assert_eq!(next.sequence, 121, "the sequence should continue across pieces");
+        assert_eq!(
+            reopened.scan(1, 0, u64::MAX, u64::MAX).unwrap().len(),
+            121,
+            "every record should still be there"
+        );
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// A crash between sealing a piece and starting the next one does not reuse an address.
+    ///
+    /// Sealing is a rename; creating the next piece is a separate step. In between there are sealed
+    /// pieces and nothing to append to, and an absent piece reads as starting at log id zero --
+    /// which would hand out addresses the sealed pieces already own, so a reader holding an old
+    /// address would be pointed at a record written later.
+    ///
+    /// What must hold is about addresses that still resolve. Records in the piece that vanished are
+    /// gone, and their addresses are free; records in the sealed pieces are not.
+    #[test]
+    fn a_crash_between_sealing_and_starting_the_next_piece_does_not_reuse_addresses() {
+        set_wal_segment_bytes_for_test(Some(2 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let mut earlier = Vec::new();
+        for index in 0..100u64 {
+            let (_, log_id) = store
+                .append_with_sync_reporting(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 64],
+                    },
+                    false,
+                )
+                .unwrap();
+            earlier.push(log_id);
+        }
+
+        drop(store);
+
+        // The crash: sealed pieces are on disk, the piece being written never made it.
+        let active = write_ahead_log_path(dir.path(), 1);
+        assert!(active.exists());
+        std::fs::remove_file(&active).unwrap();
+
+        let reopened = LocalWriteAheadLogStore::new(dir.path());
+        // Which addresses still resolve, AFTER the crash and BEFORE anything new is written.
+        // Records in the piece that vanished are gone and their addresses are free; these are the
+        // ones that are not. Asking after the append would count the new record's own address.
+        let surviving = earlier
+            .iter()
+            .copied()
+            .filter(|log_id| {
+                reopened
+                    .read_at_log_id(1, *log_id, 4096)
+                    .ok()
+                    .flatten()
+                    .is_some()
+            })
+            .collect::<Vec<_>>();
+
+        let (_, log_id) = reopened
+            .append_with_sync_reporting(
+                1,
+                Command::StringSet {
+                    key: "after".to_string(),
+                    value: b"v".to_vec(),
+                },
+                false,
+            )
+            .unwrap();
+        assert!(
+            !surviving.is_empty(),
+            "the sealed pieces should still be readable, or this proves nothing"
+        );
+        assert!(
+            surviving.iter().all(|survivor| *survivor < log_id),
+            "a record written after the crash took an address that still resolves to an earlier              one: new {log_id}, highest surviving {:?}",
+            surviving.iter().max()
+        );
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// Reclaim drops whole pieces instead of copying the records that stay.
+    ///
+    /// Copying is what made reclaim expensive: the cost tracks what it KEEPS, so dropping a prefix
+    /// of a large log rewrote nearly all of it -- one measured pass copied 19.6 MB to free 3.8 MB.
+    /// A piece whose every record is below the floor needs no copying at all.
+    #[test]
+    fn reclaim_drops_whole_pieces_without_copying_them() {
+        set_wal_segment_bytes_for_test(Some(4 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+
+        let mut ids = Vec::new();
+        for index in 0..300u64 {
+            let (record, log_id) = store
+                .append_with_sync_reporting(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 64],
+                    },
+                    false,
+                )
+                .unwrap();
+            ids.push((record.sequence, log_id));
+        }
+
+        let before: u64 = wal_segment_paths(dir.path(), 1)
+            .iter()
+            .filter_map(|path| path.metadata().ok().map(|meta| meta.len()))
+            .sum();
+
+        // Keep only the last fifty records.
+        let retain_from = 251u64;
+        let report = store.gc_before_sequence(1, retain_from).unwrap();
+
+        assert!(
+            report.dropped_segments > 0,
+            "whole pieces should have gone: {report:?}"
+        );
+        assert!(
+            report.dropped_segment_bytes > 0,
+            "the pieces that went should have held something"
+        );
+        // What matters: the freed space did not have to be paid for in copying.
+        assert!(
+            report.bytes_copied < report.dropped_segment_bytes,
+            "reclaim copied {} bytes to free {} by unlinking -- the copying is what this avoids",
+            report.bytes_copied,
+            report.dropped_segment_bytes
+        );
+
+        let after: u64 = wal_segment_paths(dir.path(), 1)
+            .iter()
+            .filter_map(|path| path.metadata().ok().map(|meta| meta.len()))
+            .sum();
+        assert!(after < before, "the log should be smaller: {before} -> {after}");
+
+        // Everything at or above the floor is still readable, and still says what it said.
+        for (sequence, log_id) in ids.iter().filter(|(sequence, _)| *sequence >= retain_from) {
+            let bytes = store
+                .read_at_log_id(1, *log_id, 4096)
+                .unwrap()
+                .unwrap_or_else(|| panic!("sequence {sequence} should have been kept"));
+            let end = bytes
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(bytes.len(), |at| at + 1);
+            assert_eq!(decode_wal_line(&bytes[..end]).unwrap().sequence, *sequence);
+        }
+
+        // And a scan reads the survivors as one log.
+        let scanned = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        assert!(
+            !scanned.is_empty(),
+            "the records that were kept should still scan"
+        );
+        for (_, line) in &scanned {
+            assert!(
+                decode_wal_line(line).unwrap().sequence >= 1,
+                "every scanned record should decode"
+            );
+        }
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// What reclaim costs with the log in one piece against many.
+    #[test]
+    fn what_reclaim_costs_in_one_piece_against_many() {
+        for segment_bytes in [0u64, 8 * 1024] {
+            set_wal_segment_bytes_for_test(Some(segment_bytes));
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            let records = 2_000u64;
+            for index in 0..records {
+                store
+                    .append_with_sync(
+                        1,
+                        Command::StringSet {
+                            key: format!("k{index:06}"),
+                            value: vec![118u8; 128],
+                        },
+                        false,
+                    )
+                    .unwrap();
+            }
+            let started = std::time::Instant::now();
+            let report = store.gc_before_sequence(1, records - 100).unwrap();
+            let micros = started.elapsed().as_secs_f64() * 1e6;
+            println!(
+                "  piece size {:>6}: {micros:>9.0} us, copied {:>8} B, unlinked {} piece(s) holding {} B",
+                if segment_bytes == 0 { "one".to_string() } else { format!("{segment_bytes}") },
+                report.bytes_copied,
+                report.dropped_segments,
+                report.dropped_segment_bytes
+            );
+        }
+        set_wal_segment_bytes_for_test(None);
     }
 }
