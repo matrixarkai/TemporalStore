@@ -2751,6 +2751,116 @@ mod tests {
     }
 
     #[test]
+    fn spread_still_holds_across_a_fleet_big_enough_to_misalign() {
+        // The scan now indexes into the locations parsed once up front instead
+        // of re-parsing each candidate. That is only correct while the two
+        // vectors stay in step, so this uses a fleet large enough that an
+        // off-by-one would hand a shard two replicas in the same domain.
+        let meta = SingleNodeMeta::default();
+        for index in 0..12u64 {
+            meta.register_server(RegisterServerRequest {
+                server_addr: format!("node-{index:02}"),
+                node_id: index + 1,
+                location: format!("region-{}/zone-{}", index % 3, index),
+                binary_version: "v1".to_string(),
+            });
+        }
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            first_shard_id: 1,
+            shard_count: 8,
+            replica_count: 3,
+            partition_version: 0,
+            serving_options: TableServingOptions::default(),
+        });
+
+        let topology = meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            old_topology_version: 0,
+            client_location: String::new(),
+        });
+        assert_eq!(topology.shards.len(), 8);
+        for shard in &topology.shards {
+            assert_eq!(shard.replicas.len(), 3, "shard {} short", shard.shard_id);
+            let regions = shard
+                .replicas
+                .iter()
+                .map(|addr| {
+                    let index: u64 = addr.trim_start_matches("node-").parse().unwrap();
+                    index % 3
+                })
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(
+                regions.len(),
+                3,
+                "shard {} put two replicas in one region: {:?}",
+                shard.shard_id,
+                shard.replicas
+            );
+        }
+    }
+
+    #[test]
+    fn the_caller_ordering_is_unchanged_by_computing_distance_once() {
+        // The nearest-first sort now works the distance out per replica instead
+        // of inside the comparator. Same order, including the stable tie-break.
+        let meta = SingleNodeMeta::default();
+        for (index, location) in ["east/a", "east/b", "west/c", "east/d"].into_iter().enumerate() {
+            meta.register_server(RegisterServerRequest {
+                server_addr: format!("node-{index}"),
+                node_id: index as u64 + 1,
+                location: location.to_string(),
+                binary_version: "v1".to_string(),
+            });
+        }
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            first_shard_id: 1,
+            shard_count: 1,
+            replica_count: 4,
+            partition_version: 0,
+            serving_options: TableServingOptions::default(),
+        });
+        let ask = |client_location: &str| {
+            meta.get_table_topology(GetTableTopologyRequest {
+                namespace: "ns".to_string(),
+                table_name: "orders".to_string(),
+                old_topology_version: 0,
+                client_location: client_location.to_string(),
+            })
+            .shards[0]
+                .replicas
+                .clone()
+        };
+
+        let far = ask("west/c");
+        assert_eq!(far.first().map(String::as_str), Some("node-2"));
+
+        // Three servers share `east`; among them the order the scan produced
+        // must survive the sort rather than being reshuffled.
+        let near = ask("east/z");
+        let eastern = near
+            .iter()
+            .filter(|addr| addr.as_str() != "node-2")
+            .cloned()
+            .collect::<Vec<_>>();
+        let baseline = ask("")
+            .into_iter()
+            .filter(|addr| addr != "node-2")
+            .collect::<Vec<_>>();
+        assert_eq!(eastern, baseline, "the tie-break stopped being stable");
+    }
+
+    #[test]
     fn metaserver_safe_mode_cooldown_blocks_rejoin_and_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("safe-mode-mutations.jsonl");
