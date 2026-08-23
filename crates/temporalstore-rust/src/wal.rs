@@ -891,6 +891,14 @@ impl LocalWriteAheadLogStore {
             // one file would mean nothing to a caller once there is more than one, and would not
             // survive reclaim.
             let (base, header_len) = read_wal_base(&path)?;
+            // A piece that ends before the window starts holds nothing the caller asked for. Its
+            // start plus its length says where it ends, so skipping it costs a stat rather than a
+            // read of every line in it. This is what makes a windowed scan cost the window: without
+            // it the loop below still reads the whole log and merely declines to return most of it.
+            let piece_len = path.metadata().map(|meta| meta.len()).unwrap_or(0);
+            if base.saturating_add(piece_len.saturating_sub(header_len)) <= start_offset {
+                continue;
+            }
             let mut file = File::open(&path)?;
             file.seek(SeekFrom::Start(header_len))?;
             let mut reader = BufReader::new(file);
@@ -925,6 +933,38 @@ impl LocalWriteAheadLogStore {
         inner.stats.scans += 1;
         inner.stats.bytes_read += total;
         Ok(records)
+    }
+
+    /// Where reading can start, to see every record after `sequence` and no whole piece before it.
+    ///
+    /// Recovery knows a sequence -- the one its durable index already covers -- and needs a
+    /// position to read from. Sequences ascend through the log, so a piece whose last sequence is
+    /// at or below the watermark holds nothing left to replay, and reading can begin at the first
+    /// piece that is not. The answer is conservative: it never skips a record after the watermark,
+    /// and it may include some before it, which the caller already filters.
+    ///
+    /// A log in one piece answers zero, which is what it did before any of this existed.
+    pub fn log_id_after_sequence(
+        &self,
+        shard_id: ShardId,
+        sequence: u64,
+    ) -> Result<u64, WriteAheadLogError> {
+        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let mut start = 0u64;
+        for path in wal_segment_paths(&inner.root, shard_id) {
+            if !path.exists() {
+                continue;
+            }
+            let last = last_wal_sequence_in(&path)?;
+            // An empty piece holds nothing either way; keep looking past it.
+            if last > 0 && last > sequence {
+                return Ok(start);
+            }
+            let (base, header_len) = read_wal_base(&path)?;
+            let piece_len = path.metadata().map(|meta| meta.len()).unwrap_or(0);
+            start = base.saturating_add(piece_len.saturating_sub(header_len));
+        }
+        Ok(start)
     }
 
     pub fn flush(&self, shard_id: ShardId) -> Result<WriteAheadLogFlushReport, WriteAheadLogError> {
@@ -4061,6 +4101,97 @@ mod tests {
                 report.dropped_segments,
                 report.dropped_segment_bytes
             );
+        }
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// Reading from a watermark never skips a record after it.
+    ///
+    /// This is the property recovery depends on. The strict sequence-continuity check downstream
+    /// turns a wrongly-skipped record into a refused load, so the answer must be conservative at
+    /// every watermark, not just convenient ones.
+    #[test]
+    fn reading_from_a_watermark_never_skips_a_record_after_it() {
+        set_wal_segment_bytes_for_test(Some(4 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let records = 400u64;
+        for index in 0..records {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 64],
+                    },
+                    false,
+                )
+                .unwrap();
+        }
+
+        for watermark in 0..=records {
+            let start = store.log_id_after_sequence(1, watermark).unwrap();
+            let seen = store.scan(1, start, u64::MAX, u64::MAX).unwrap();
+            let sequences: Vec<u64> = seen
+                .iter()
+                .map(|(_, line)| decode_wal_line(line).unwrap().sequence)
+                .collect();
+            for expected in (watermark + 1)..=records {
+                assert!(
+                    sequences.contains(&expected),
+                    "watermark {watermark} skipped sequence {expected}, which still had to be replayed"
+                );
+            }
+            // And the first thing read is never past the hole the caller would notice.
+            if let Some(first) = sequences.first() {
+                assert!(
+                    *first <= watermark + 1,
+                    "watermark {watermark} started at sequence {first}, leaving a hole"
+                );
+            }
+        }
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// What a restart reads: from the beginning of the log, against from the watermark.
+    #[test]
+    fn what_a_restart_reads_from_zero_against_from_the_watermark() {
+        for segment_bytes in [0u64, 64 * 1024] {
+            set_wal_segment_bytes_for_test(Some(segment_bytes));
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            let records = 20_000u64;
+            for index in 0..records {
+                store
+                    .append_with_sync(
+                        1,
+                        Command::StringSet {
+                            key: format!("k{index:06}"),
+                            value: vec![118u8; 128],
+                        },
+                        false,
+                    )
+                    .unwrap();
+            }
+            // The durable index already covers all but the last hundred records.
+            let watermark = records - 100;
+
+            let before = std::time::Instant::now();
+            let all = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+            let from_zero = before.elapsed().as_secs_f64() * 1e6;
+
+            let before = std::time::Instant::now();
+            let start = store.log_id_after_sequence(1, watermark).unwrap();
+            let windowed = store.scan(1, start, u64::MAX, u64::MAX).unwrap();
+            let from_watermark = before.elapsed().as_secs_f64() * 1e6;
+
+            println!(
+                "  piece size {:>6}: from zero {from_zero:>9.0} us ({} records read) -> from the watermark {from_watermark:>8.0} us ({} read)",
+                if segment_bytes == 0 { "one".to_string() } else { format!("{segment_bytes}") },
+                all.len(),
+                windowed.len()
+            );
+            assert!(windowed.len() >= 100, "the tail must be there to replay");
         }
         set_wal_segment_bytes_for_test(None);
     }

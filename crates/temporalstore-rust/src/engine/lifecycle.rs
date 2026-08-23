@@ -387,7 +387,16 @@ impl TemporalEngine {
         // the committed WAL tail and defeating the caller's refuse-load-on-DataLoss guard. An
         // absent WAL file is the only "nothing to replay" case, and `scan` already returns an
         // empty vec for it (never an error), so any Err here is a genuine failure -> abort.
-        let records = match self.wal_store.scan(shard_id, 0, u64::MAX, u64::MAX) {
+        // Start reading past the pieces that hold nothing after the watermark. Reading from the
+        // beginning made a restart cost the size of the LOG rather than the size of what was left
+        // to replay: every record was read and integrity-checked, and then nearly all of them were
+        // dropped by the sequence test below. The answer is conservative -- it never skips a record
+        // after the watermark -- so that test still decides what is replayed.
+        let start_at = self
+            .wal_store
+            .log_id_after_sequence(shard_id, watermark)
+            .unwrap_or(0);
+        let records = match self.wal_store.scan(shard_id, start_at, u64::MAX, u64::MAX) {
             Ok(records) => records,
             Err(err) => {
                 return Err(Status::error(
