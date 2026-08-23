@@ -1659,7 +1659,14 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
         ("preference", r"\b(?:i(?:'ll| will)?\s+remember|remembered|noted|got it)[:\s]+(?:that\s+)?(?:you|user)\s+([^.;!?]{2,160})"),
         ("preference", r"\b(?:standing instruction|standing preference|saved preference|persistent instruction)[:\s]+([^.;!?]{2,180})"),
         ("relationship", r"\b(?:friend|partner|mother|father|sister|brother|wife|husband|manager|teammate)\s+([^.;!?]{0,120})"),
-        ("location", r"\b(?:live|lives|moved|moving|located|staying)\s+(?:in|to|at)?\s*([^.;!?]{2,120})"),
+        # The old pattern ran to the end of the sentence, so "I live in Seattle and prefer
+        # metric units" stored the location as "Seattle and prefer metric units" -- wrong, and
+        # it then polluted the profile summary text that carries cross-session memory. Stop at
+        # the clause boundary instead.
+        ("location", r"\b(?:live|lives|moved|moving|located|staying)\s+(?:in|to|at)?\s*"
+                     r"([^.;!?]{2,120}?)"
+                     r"(?=\s+(?:and|but|so|then|because|for|while|which|since|although|though|"
+                     r"however|before|after|when|during|with|to)\b|[.;!?]|$)"),
         ("job_status", r"\b(?:job|role|work|works|position|status)\s+(?:is|as|at|with)?\s*([^.;!?]{2,120})"),
         ("current_plan", r"\b(?:plan|plans|planning|going to|will)\s+([^.;!?]{2,140})"),
         ("current_plan", r"\b(?:you|user)\s+(?:asked|requested|required|requires|need(?:s)?|want(?:s)?)\s+(?:me\s+|codex\s+|us\s+|to\s+)?([^.;!?]{2,160})"),
@@ -1865,6 +1872,57 @@ def entity_retention_priority(entity: Json) -> int:
     return 4
 
 
+DIRECTIVE_STATE_PREFIXES = ("user directive:", "user plan:", "user profile:")
+
+
+def directive_free_state(entity: Json) -> str:
+    """The entity's state with the directive prefix removed, for comparison only."""
+    text = " ".join(str(entity.get("state") or "").lower().split())
+    for prefix in DIRECTIVE_STATE_PREFIXES:
+        if text.startswith(prefix):
+            return text[len(prefix):].strip()
+    return text
+
+
+def drop_directive_duplicates(entities: list[Json]) -> list[Json]:
+    """Drop a directive entity when a plain entity already carries the same fact.
+
+    Two independent extractors fire on one clause: the directive scan turns "prefer metric
+    units" into state "user directive: prefer metric units" named "preference:prefer metric
+    units", and the pattern table turns the same words into state "metric units" named
+    "preference". Their names differ, so the name-keyed dedupe above never saw them as one and
+    the preference was stored twice -- then twice again once it promoted to the profile node.
+
+    The PLAIN entity is the one kept, never the directive. Its name is the bare entity type,
+    which is the stable identity cross-session supersession matches on; the directive's name
+    embeds its own text, so it cannot supersede a later correction and a profile would keep
+    both revisions forever. Removing the plain one instead costs the verb ("prefer") and
+    breaks lineage -- test_profile_preference_correction_supersedes_stale_cross_session_state
+    catches exactly that.
+
+    Only directive-prefixed entities are ever removed, and only when a same-type plain entity's
+    text is literally contained in theirs, so genuinely distinct entities cannot collapse on a
+    substring: project "Aurora" cannot absorb "Aurora v2", neither being a directive.
+    """
+    plain = [
+        (entity.get("entity_type"), directive_free_state(entity))
+        for entity in entities
+        if not str(entity.get("state") or "").lower().startswith(DIRECTIVE_STATE_PREFIXES)
+    ]
+    plain = [(kind, text) for kind, text in plain if len(text) >= 4]
+    if not plain:
+        return entities
+
+    def superseded_by_plain(entity: Json) -> bool:
+        if not str(entity.get("state") or "").lower().startswith(DIRECTIVE_STATE_PREFIXES):
+            return False
+        text = directive_free_state(entity)
+        return any(kind == entity.get("entity_type") and other != text and other in text
+                   for kind, other in plain)
+
+    return [entity for entity in entities if not superseded_by_plain(entity)]
+
+
 def dedupe_entities(entities: list[Json]) -> list[Json]:
     seen = set()
     positions: dict[tuple[Any, str], int] = {}
@@ -1884,6 +1942,7 @@ def dedupe_entities(entities: list[Json]) -> list[Json]:
         seen.add(key)
         positions[key] = len(out)
         out.append(entity)
+    out = drop_directive_duplicates(out)
     ranked = sorted(enumerate(out), key=lambda item: (entity_retention_priority(item[1]), item[0]))
     kept_indexes = {index for index, _entity in ranked[:20]}
     return [entity for index, entity in enumerate(out) if index in kept_indexes]

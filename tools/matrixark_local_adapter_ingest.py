@@ -82,9 +82,6 @@ def warn_if_profile_scope_missing(scope) -> str:
     return msg
 
 
-_BATCH_MESSAGES_WARNED: set = set()
-BATCH_MESSAGES_WARN_THRESHOLD = int(os.environ.get("MATRIXARK_BATCH_MESSAGES_WARN_THRESHOLD", "6"))
-
 # Ingest fields that come from the CALLER rather than from extraction -- the exact set
 # MatrixArkLocalAdapter._stamp_ingest_fields puts on a `context_event`. Extraction cannot rebuild
 # them, so a commit that rewrites an existing event row has to carry them over (see the use below).
@@ -99,28 +96,6 @@ CALLER_SUPPLIED_EVENT_FIELDS = (
     "expires_at_ms",
     "ephemeral",
 )
-
-
-def warn_if_batched_messages(messages) -> str:
-    """Warn when one message-ingest call carries many messages.
-
-    A single ingest call is treated as one turn and retains ~1 raw context_event; the other
-    messages survive only as lossy extractions (segments/summaries), so exact facts in them
-    (hashes/numbers/commands) become unretrievable. Real agent hooks ingest per-turn (1-2
-    messages/call) and are unaffected. This guards bulk/custom callers so raw-message fidelity
-    is not silently lost. Returns the warning string (also surfaced in the ingest result).
-    """
-    n = len(messages) if isinstance(messages, list) else 0
-    if n <= BATCH_MESSAGES_WARN_THRESHOLD:
-        return ""
-    msg = (f"batched_ingest: this ingest call carries {n} messages, but a call is one turn and "
-           "retains ~1 raw context_event; the rest survive only as lossy extractions and their exact "
-           "facts become unretrievable. Ingest per-turn (1-2 messages/call, as the hooks do) to keep "
-           "each message as a retrievable raw event.")
-    if n not in _BATCH_MESSAGES_WARNED:
-        _BATCH_MESSAGES_WARNED.add(n)
-        _warnings.warn(msg, stacklevel=2)
-    return msg
 
 try:  # names owned by the parent module
     from tools.matrixark_mcp_local_adapter import (
@@ -206,9 +181,6 @@ class _LocalAdapterIngestMixin:
         # long-term memory. Warn (once per identity) so profile_scope_missing is never silent.
         self._profile_scope_warning = (
             warn_if_profile_scope_missing(envelope["scope"]) if envelope["kind"] == "message" else ""
-        )
-        self._batch_messages_warning = (
-            warn_if_batched_messages(args.get("messages")) if envelope["kind"] == "message" else ""
         )
         hook = validate_hook(hook)
         source_lineage = context_source_lineage(envelope, hook)
@@ -1726,7 +1698,6 @@ class _LocalAdapterIngestMixin:
             "storage_route": envelope.get("storage_route", {}),
             "hook_captured": hook is not None,
             **({"profile_scope_warning": self._profile_scope_warning} if getattr(self, "_profile_scope_warning", "") else {}),
-            **({"batched_ingest_warning": self._batch_messages_warning} if getattr(self, "_batch_messages_warning", "") else {}),
             "embedding_model": embedding_model_name(),
             "embedding_execution_mode": embedding_execution_mode_name(),
             "embedding_fallback_used": embedding_fallback_used(),
@@ -2147,11 +2118,25 @@ class _LocalAdapterIngestMixin:
                 if carried:
                     inherited_event_fields[prior_event_id] = carried
         if derive_from_existing_events:
+            # The commit path re-emits one event PER MESSAGE, but the sync-accept path writes ONE
+            # pending event for the whole envelope -- so a 10-message batch arrives here with a
+            # single source_event_id. Skipping the messages past that id silently dropped nine of
+            # ten: the re-emitted event reuses source_event_ids[0], and latest-value compaction
+            # then replaced the full 359-char pending event with a 35-char one holding only the
+            # first message. The text survived in the session summary, but events are what
+            # retrieval returns, so those messages became unreachable.
+            #
+            # Messages beyond the supplied ids therefore get an id derived exactly as the
+            # non-derived branch below does, which keeps the id stable for the same batch and
+            # message position instead of discarding the message.
             for index, message in enumerate(envelope["messages"]):
-                if index >= len(source_event_ids):
-                    continue
                 event_text = f"{message['role']}: {message['content']}"
-                event_rows.append((index, message, event_text, int(source_event_ids[index])))
+                if index < len(source_event_ids):
+                    event_id_hash = int(source_event_ids[index])
+                else:
+                    event_id_hash = stable_hash(f"{batch_id_hash}:event:{index}:{event_text}")
+                    event_hashes.append(event_id_hash)
+                event_rows.append((index, message, event_text, event_id_hash))
         else:
             for index, message in enumerate(envelope["messages"]):
                 event_text = f"{message['role']}: {message['content']}"
