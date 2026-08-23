@@ -5275,10 +5275,11 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         if parts.get("a"):
             reingest_scope["agent_hash"] = int(parts["a"])
         reingest_scope["_explicit_scope_keys"] = explicit_keys
+        clean_scope = {key: value for key, value in reingest_scope.items() if value is not None}
         ingested = self.ingest(
             {
                 "messages": [{"role": "user", "content": new_text}],
-                "scope": {key: value for key, value in reingest_scope.items() if value is not None},
+                "scope": clean_scope,
                 "finalize": True,
             },
             hook=hook,
@@ -5312,6 +5313,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             # reports its closure: a backend has to remove its own copy, and re-deriving the rule
             # there would put two versions of it in the tree.
             "closure_ref_ids": superseded_ids,
+            # The scope the replacement was ingested into, so a backend that needs to finish the
+            # write itself does not have to reconstruct it from the old record a second time.
+            "reingest_scope": clean_scope,
         }
 
     def history(self, args: Json) -> Json:

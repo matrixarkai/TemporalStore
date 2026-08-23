@@ -1040,7 +1040,6 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             )
         except Exception as exc:  # noqa: BLE001 - the tombstone stands; report the engine half.
             return {"ok": False, "error": str(exc)}
-        self._invalidate_summary_pass_state()
         self._drop_direct_record_cache()
         return {
             "ok": True,
@@ -1068,59 +1067,24 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         the engine simply never learned about it.
         """
         result = super().update_memory(args, hook)
-        purged = self._purge_record_ids_in_engine(result.get("closure_ref_ids") or [])
-        if purged is not None:
-            result["engine_purge"] = purged
-        return result
-
-    def _purge_record_ids_in_engine(self, ids: list[str]) -> Json | None:
-        """Remove the named records in the engine. Returns None when there is nothing to remove.
-
-        Shared by delete and update. Both address a set of records the caller has already decided
-        on -- an empty set means remove nothing, never "remove everything".
-        """
-        ids = [str(item) for item in (ids or []) if str(item)]
-        if not ids:
-            return None
-        purger = getattr(self._client, "matrixark_delete_records", None)
-        if not callable(purger):
-            return {"ok": False, "error": "engine does not expose matrixark_delete_records"}
-        try:
-            purged = purger(
-                count_key=self._count_key,
-                record_hash_key=self._record_hash_key,
-                shard_size=self._shard_size,
-                record_ids=ids,
-            )
-        except Exception as exc:  # noqa: BLE001 - the tombstone stands; report the engine half.
-            return {"ok": False, "error": str(exc)}
-        self._drop_direct_record_cache()
-        return {
-            "ok": True,
-            "records_removed": purged.get("matrixark_delete_records_removed"),
-            "fields_deleted": purged.get("matrixark_delete_fields_deleted"),
-            "fields_rewritten": purged.get("matrixark_delete_fields_rewritten"),
-            "ids_requested": purged.get("matrixark_delete_ids_requested"),
-        }
-
-    def update_memory(self, args: Json, hook: Json | None = None) -> Json:
-        """Remove the superseded version from the ENGINE as well as from the serving view.
-
-        An update is a supersede: the new text is ingested and the old id tombstoned. `get_all`
-        honours that immediately. `/v1/retrieve` is assembled inside the engine, which has never
-        heard of a tombstone, so the OLD text kept being served -- and because it outranked the new
-        one, a search after a successful update returned the stale value and not the new value at
-        all:
-
-            after update:  get_all = the new text
-                           retrieve = the OLD text, and the new text nowhere in the results
-
-        That is worse than a failed update, because the caller is told it succeeded. The inherited
-        implementation already computes exactly which records the old version covered, and its own
-        comment says the sweep exists "so the old text can't leak via retrieval after the update" --
-        the engine simply never learned about it.
-        """
-        result = super().update_memory(args, hook)
+        # `finalize` is honoured by the DISPATCH layer, which runs session_commit as a second tool
+        # call; `adapter.ingest()` ignores it. update re-ingests through the adapter directly, so
+        # on a native backend the replacement stayed at `extraction_phase: hot_path` /
+        # `status: observed` forever -- read straight out of the engine it had no node_path, while
+        # an ordinary ingest in the same scope reached final/extraction_committed. Retrieval there
+        # serves committed content, so the updated memory was in `get_all` and in no search, while
+        # the value it replaced had been committed and was still being served.
+        #
+        # Only the native path needs this. On the JSONL backend the re-ingest is already
+        # retrievable and committing there BREAKS it -- doing this in the shared implementation
+        # turned `test_update_supersede_retrieve_returns_new` into an empty context pack.
+        reingest_scope = result.get("reingest_scope")
+        if isinstance(reingest_scope, dict) and reingest_scope:
+            try:
+                self.session_commit({"scope": reingest_scope, "force": True,
+                                     "commit_reason": "update_supersede"}, hook=hook)
+            except Exception as exc:  # noqa: BLE001 - durably stored; the idle commit still closes it.
+                result["commit_error"] = str(exc)
         purged = self._purge_record_ids_in_engine(result.get("closure_ref_ids") or [])
         if purged is not None:
             result["engine_purge"] = purged
