@@ -401,4 +401,49 @@ mod tests {
             }
         }
     }
+
+    /// Where a record's bytes are now, and what carrying the value raw would leave.
+    ///
+    /// A JSON document cannot hold bytes, so the value is base64 -- a flat third on top, whatever
+    /// it is. At four kilobytes that dwarfs everything else in the record, which is why the shape
+    /// of the remaining saving is not "the format" but "the payload".
+    #[test]
+    fn where_a_records_bytes_are_now() {
+        use crate::types::Command;
+        use crate::wal::{WriteAheadLogRecord, WriteAheadLogRecordMetadata};
+
+        for value_len in [64usize, 256, 1024, 4096, 16384] {
+            let record = WriteAheadLogRecord {
+                shard_id: 1,
+                sequence: 1,
+                command: Command::StringSet {
+                    key: "scale-key-000000000".to_string(),
+                    value: vec![118u8; value_len],
+                },
+                metadata: Some(WriteAheadLogRecordMetadata {
+                    version: crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION,
+                    timestamp_ms: 1_787_270_070_192,
+                    items: Vec::new(),
+                    batch_id: None,
+                    batch_size: None,
+                    batch_index: None,
+                }),
+                staged_pages: Vec::new(),
+            };
+            let framed = crate::log_framing::encode_line(&serde_json::to_vec(&record).unwrap());
+            // base64 of n bytes is 4 characters per 3, rounded up to a multiple of 4.
+            let encoded_value = value_len.div_ceil(3) * 4;
+            let envelope = framed.len() - encoded_value;
+            let if_raw = envelope + value_len;
+            println!(
+                "  value {value_len:>6}B: record {:>7}B = envelope {:>4}B + payload {:>7}B ({:.2}x) \
+                 -> carrying it raw would be {if_raw:>7}B ({:.2}x)",
+                framed.len(),
+                envelope,
+                encoded_value,
+                framed.len() as f64 / value_len as f64,
+                if_raw as f64 / value_len as f64
+            );
+        }
+    }
 }
