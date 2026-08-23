@@ -322,6 +322,7 @@ fn main() {
         );
     } else {
         let server_registration = RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: advertised_addr.clone(),
             node_id,
             location,

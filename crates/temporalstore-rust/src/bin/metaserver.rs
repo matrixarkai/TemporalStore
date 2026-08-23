@@ -2278,6 +2278,7 @@ mod tests {
     fn metaserver_metrics_expose_inventory_state_and_scheduler() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: "metrics-server-a".to_string(),
             node_id: 1,
             location: "zone-a".to_string(),
@@ -2354,6 +2355,7 @@ mod tests {
         let snapshot_path = dir.path().join("meta-route-snapshot.json");
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: "server-route-a".to_string(),
             node_id: 1,
             location: "zone-a".to_string(),
@@ -2487,6 +2489,7 @@ mod tests {
     fn metaserver_safe_mode_route_reports_frozen_cooldown_resources() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: "safe-server".to_string(),
             node_id: 1,
             location: "zone-a".to_string(),
@@ -2580,6 +2583,7 @@ mod tests {
                 method: "POST".to_string(),
                 path: "/servers/register".to_string(),
                 body: serde_json::to_vec(&RegisterServerRequest {
+                    numa_nodes: Vec::new(),
                     server_addr: "raft-server-a".to_string(),
                     node_id: 11,
                     location: "zone-a".to_string(),
@@ -3026,6 +3030,7 @@ mod tests {
                 method: "POST".to_string(),
                 path: "/servers/register".to_string(),
                 body: serde_json::to_vec(&RegisterServerRequest {
+                    numa_nodes: Vec::new(),
                     server_addr: node_addr.clone(),
                     node_id: 9,
                     location: "zone-a".to_string(),

@@ -1823,6 +1823,7 @@ fn verify_proxy_route_quarantine_recovery() {
     let meta = SingleNodeMeta::default();
     let bad_server = "127.0.0.1:1".to_string();
     meta.register_server(RegisterServerRequest {
+        numa_nodes: Vec::new(),
         server_addr: bad_server.clone(),
         node_id: 1,
         location: "proxy-quarantine-zone".to_string(),
@@ -1861,6 +1862,7 @@ fn verify_proxy_route_quarantine_recovery() {
     std::thread::sleep(Duration::from_millis(10));
 
     meta.register_server(RegisterServerRequest {
+        numa_nodes: Vec::new(),
         server_addr: server_addr.clone(),
         node_id: 2,
         location: "proxy-quarantine-zone".to_string(),
@@ -1981,6 +1983,7 @@ fn verify_proxy_topology_churn_convergence() {
 
     let meta = SingleNodeMeta::default();
     meta.register_server(RegisterServerRequest {
+        numa_nodes: Vec::new(),
         server_addr: server_a.clone(),
         node_id: 1,
         location: "zone-a".to_string(),
@@ -2032,6 +2035,7 @@ fn verify_proxy_topology_churn_convergence() {
     }
 
     meta.register_server(RegisterServerRequest {
+        numa_nodes: Vec::new(),
         server_addr: server_b.clone(),
         node_id: 2,
         location: "zone-b".to_string(),
@@ -2709,6 +2713,7 @@ fn verify_metaserver_scheduler_control_plane() {
         (3, "127.0.0.1:27113", "zone-c"),
     ] {
         meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: addr.to_string(),
             node_id,
             location: location.to_string(),

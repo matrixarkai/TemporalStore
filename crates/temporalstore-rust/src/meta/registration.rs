@@ -54,6 +54,10 @@ impl SingleNodeMeta {
                 server_addr: request.server_addr,
                 node_id: request.node_id,
                 location: request.location,
+                // Re-declared on every registration rather than merged: a
+                // machine that came back with different hardware is describing
+                // itself now, not amending what it said before.
+                numa_nodes: request.numa_nodes,
                 state: MetaEntityState::Normal,
                 last_heartbeat_ms: now,
                 frozen_since_ms: 0,

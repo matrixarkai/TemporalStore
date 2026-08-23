@@ -179,6 +179,29 @@ pub struct AckResponse {
     pub status: Status,
 }
 
+/// One memory/CPU domain of a datanode's hardware.
+///
+/// A server is not uniform: it is some number of domains, each with its own
+/// cores and its own memory. The metaserver had no way to know that, so it
+/// could not tell a machine that is one large domain from a machine that is
+/// four smaller ones -- which is the difference between one big placement
+/// target and four that fail independently for memory pressure.
+///
+/// Recorded here, reported by `/servers`, and carried in snapshots. Placement
+/// still treats a server as one target; this is what a placement that wanted to
+/// be finer-grained would have to read.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NumaNode {
+    /// Index within the reporting server, as the server numbers them.
+    pub id: u64,
+    /// The cores in this domain, in the form the server reports them
+    /// (comma or space separated).
+    #[serde(default)]
+    pub cpu_list: String,
+    #[serde(default)]
+    pub memory_size_mb: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RegisterServerRequest {
     pub server_addr: String,
@@ -188,6 +211,10 @@ pub struct RegisterServerRequest {
     pub location: String,
     #[serde(default)]
     pub binary_version: String,
+    /// The memory/CPU domains this server is made of. Empty from a server that
+    /// does not report them, which is every server built before this existed.
+    #[serde(default)]
+    pub numa_nodes: Vec<NumaNode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -292,6 +319,9 @@ pub struct ServerMetaInfo {
     pub server_addr: String,
     pub node_id: u64,
     pub location: String,
+    /// The hardware shape this server declared when it registered.
+    #[serde(default)]
+    pub numa_nodes: Vec<NumaNode>,
     pub state: MetaEntityState,
     pub last_heartbeat_ms: u64,
     #[serde(default)]
@@ -1441,6 +1471,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         assert!(
             meta.register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
                 server_addr: "127.0.0.1:18001".to_string(),
                 node_id: 1,
                 location: "zone-a".to_string(),
@@ -1554,6 +1585,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         assert!(
             meta.register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
                 server_addr: "server-a".to_string(),
                 node_id: 7,
                 location: "zone-a".to_string(),
@@ -1623,6 +1655,7 @@ mod tests {
     fn metaserver_freezes_stale_servers_from_heartbeat_age() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: "stale".to_string(),
             node_id: 1,
             location: "z".to_string(),
@@ -1642,6 +1675,7 @@ mod tests {
     fn metaserver_failure_detector_loop_freezes_stale_servers_and_proxies() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: "stale-server".to_string(),
             node_id: 1,
             location: "z".to_string(),
@@ -1676,6 +1710,7 @@ mod tests {
         // still believes it serves, and reads routed there will all miss.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
@@ -1718,6 +1753,7 @@ mod tests {
         // Re-registering is how a datanode says it is ready to be trusted again.
         assert!(meta
             .register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
                 node_id: 1,
                 location: "rack-1".to_string(),
@@ -1738,6 +1774,7 @@ mod tests {
         // convict the entire fleet on upgrade.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
@@ -1768,6 +1805,7 @@ mod tests {
 
     fn register(meta: &SingleNodeMeta, addr: &str) -> AckResponse {
         meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: addr.to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
@@ -1962,6 +2000,7 @@ mod tests {
         ] {
             assert!(meta
                 .register_server(RegisterServerRequest {
+                    numa_nodes: Vec::new(),
                     server_addr: addr.to_string(),
                     node_id: 1,
                     location: location.to_string(),
@@ -2021,6 +2060,7 @@ mod tests {
         for (addr, location) in servers {
             assert!(meta
                 .register_server(RegisterServerRequest {
+                    numa_nodes: Vec::new(),
                     server_addr: addr.to_string(),
                     node_id: 1,
                     location: location.to_string(),
@@ -2208,6 +2248,7 @@ mod tests {
         {
             let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
             meta.register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
                 node_id: 1,
                 location: "rack-1".to_string(),
@@ -2228,6 +2269,7 @@ mod tests {
     fn stop_meta() -> SingleNodeMeta {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
@@ -2286,6 +2328,7 @@ mod tests {
 
         let meta = SingleNodeMeta::default().with_conviction_lock(true);
         meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
@@ -2296,6 +2339,7 @@ mod tests {
         // It restarts and registers again; the lock does not stand in its way.
         assert!(meta
             .register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
                 node_id: 1,
                 location: "rack-1".to_string(),
@@ -2364,6 +2408,7 @@ mod tests {
         assert!(stopped_server(&meta).freeze_cooldown_until_ms <= now_ms());
         assert!(meta
             .register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
                 node_id: 1,
                 location: "rack-1".to_string(),
@@ -2380,6 +2425,7 @@ mod tests {
         {
             let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
             meta.register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
                 node_id: 1,
                 location: "rack-1".to_string(),
@@ -2401,6 +2447,7 @@ mod tests {
     fn muted_meta_with_a_server() -> SingleNodeMeta {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
@@ -2444,6 +2491,7 @@ mod tests {
             (
                 "register_server",
                 meta.register_server(RegisterServerRequest {
+                    numa_nodes: Vec::new(),
                     server_addr: "node-b".to_string(),
                     node_id: 2,
                     location: "rack-1".to_string(),
@@ -2499,6 +2547,7 @@ mod tests {
         // restarts cannot rejoin until an operator resumes.
         let meta = muted_meta_with_a_server();
         let rejoin = meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
@@ -2538,6 +2587,7 @@ mod tests {
         {
             let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
             meta.register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
                 node_id: 1,
                 location: "rack-1".to_string(),
@@ -2571,6 +2621,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         for (addr, node_id, location) in [("node-a", 1, "rack-1"), ("node-b", 2, "rack-2")] {
             meta.register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
                 server_addr: addr.to_string(),
                 node_id,
                 location: location.to_string(),
@@ -2670,6 +2721,7 @@ mod tests {
         // against must still be told where its shards should go.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
@@ -2717,6 +2769,7 @@ mod tests {
         .enumerate()
         {
             meta.register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
                 server_addr: addr.to_string(),
                 node_id: index as u64 + 1,
                 location: zone.to_string(),
@@ -3610,12 +3663,126 @@ mod tests {
         assert_eq!(peer.stats().topology_query_total, 5);
     }
 
+    fn domains(count: u64) -> Vec<NumaNode> {
+        (0..count)
+            .map(|id| NumaNode {
+                id,
+                cpu_list: format!("{}-{}", id * 16, id * 16 + 15),
+                memory_size_mb: 65_536,
+            })
+            .collect()
+    }
+
+    fn register_with(meta: &SingleNodeMeta, addr: &str, numa_nodes: Vec<NumaNode>) {
+        meta.register_server(RegisterServerRequest {
+            server_addr: addr.to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+            numa_nodes,
+        });
+    }
+
+    fn listed_server(meta: &SingleNodeMeta, addr: &str) -> ServerMetaInfo {
+        meta.list_servers()
+            .servers
+            .into_iter()
+            .find(|server| server.server_addr == addr)
+            .expect("registered")
+    }
+
+    #[test]
+    fn a_server_can_say_what_it_is_made_of() {
+        // The metaserver could not tell one large memory domain from four
+        // smaller ones, because there was nowhere to say.
+        let meta = SingleNodeMeta::default();
+        register_with(&meta, "node-a", domains(4));
+        let server = listed_server(&meta, "node-a");
+        assert_eq!(server.numa_nodes.len(), 4);
+        assert_eq!(server.numa_nodes[0].cpu_list, "0-15");
+        assert_eq!(server.numa_nodes[3].memory_size_mb, 65_536);
+    }
+
+    #[test]
+    fn a_server_that_says_nothing_is_recorded_as_saying_nothing() {
+        // Every server built before this reports no domains, and that has to be
+        // an empty list rather than a guess.
+        let meta = SingleNodeMeta::default();
+        register_with(&meta, "node-a", Vec::new());
+        assert!(listed_server(&meta, "node-a").numa_nodes.is_empty());
+    }
+
+    #[test]
+    fn re_registering_replaces_the_shape_rather_than_adding_to_it() {
+        // A machine that came back with different hardware is describing itself
+        // now, not amending what it said before.
+        let meta = SingleNodeMeta::default();
+        register_with(&meta, "node-a", domains(4));
+        register_with(&meta, "node-a", domains(2));
+        assert_eq!(listed_server(&meta, "node-a").numa_nodes.len(), 2);
+    }
+
+    #[test]
+    fn the_hardware_shape_survives_snapshot_and_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("numa-mutations.jsonl");
+        {
+            let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+            register_with(&meta, "node-a", domains(3));
+
+            let snapshot = meta.export_snapshot();
+            let peer = SingleNodeMeta::default();
+            assert!(peer.install_snapshot(snapshot).status.ok);
+            assert_eq!(listed_server(&peer, "node-a").numa_nodes.len(), 3);
+        }
+        let recovered = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert_eq!(listed_server(&recovered, "node-a").numa_nodes.len(), 3);
+    }
+
+    #[test]
+    fn knowing_the_shape_does_not_change_where_a_shard_goes() {
+        // Placement still treats a server as one target. Recording the shape is
+        // what a finer-grained placement would read; it is not that placement,
+        // and this pins that it did not quietly become it.
+        let meta = SingleNodeMeta::default();
+        register_with(&meta, "node-a", domains(8));
+        meta.register_server(RegisterServerRequest {
+            server_addr: "node-b".to_string(),
+            node_id: 2,
+            location: "rack-2".to_string(),
+            binary_version: "v1".to_string(),
+            numa_nodes: Vec::new(),
+        });
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            first_shard_id: 1,
+            shard_count: 1,
+            replica_count: 2,
+            partition_version: 0,
+            serving_options: TableServingOptions::default(),
+        });
+        let topology = meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            old_topology_version: 0,
+            client_location: String::new(),
+        });
+        // Two servers, two replicas: the eight domains on one of them do not
+        // turn it into eight candidates.
+        assert_eq!(topology.shards[0].replicas.len(), 2);
+    }
+
     #[test]
     fn metaserver_safe_mode_cooldown_blocks_rejoin_and_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("safe-mode-mutations.jsonl");
         let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
         meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: "cooldown-server".to_string(),
             node_id: 1,
             location: "z".to_string(),
@@ -3653,6 +3820,7 @@ mod tests {
         );
         assert_eq!(
             meta.register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
                 server_addr: "cooldown-server".to_string(),
                 node_id: 1,
                 location: "z".to_string(),
@@ -3726,12 +3894,14 @@ mod tests {
     fn metaserver_serves_table_topology_and_version_not_modified() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: "s1".to_string(),
             node_id: 1,
             location: "z1".to_string(),
             binary_version: String::new(),
         });
         meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: "s2".to_string(),
             node_id: 2,
             location: "z2".to_string(),
@@ -3865,6 +4035,7 @@ mod tests {
     fn metaserver_freeze_table_blocks_topology_update_and_finish_load_until_unfrozen() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: "s1".to_string(),
             node_id: 1,
             location: "z".to_string(),
@@ -4137,6 +4308,7 @@ mod tests {
             ("warm", 100, 100),
         ] {
             meta.register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
                 server_addr: server_addr.to_string(),
                 node_id: 0,
                 location: "z".to_string(),
@@ -4187,6 +4359,7 @@ mod tests {
             ("degraded", 0, 0, true),
         ] {
             meta.register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
                 server_addr: server_addr.to_string(),
                 node_id: 0,
                 location: "z".to_string(),
@@ -4245,6 +4418,7 @@ mod tests {
             ("serving", "serving"),
         ] {
             meta.register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
                 server_addr: server_addr.to_string(),
                 node_id: 0,
                 location: "z".to_string(),
@@ -4300,6 +4474,7 @@ mod tests {
             ("zone-b-hot", "zone-b", 10_000, 10_000),
         ] {
             meta.register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
                 server_addr: server_addr.to_string(),
                 node_id: 0,
                 location: location.to_string(),
@@ -4351,6 +4526,7 @@ mod tests {
             ("10.0.0.2:18001", "zone-c", 10_000, 10_000),
         ] {
             meta.register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
                 server_addr: server_addr.to_string(),
                 node_id: 0,
                 location: location.to_string(),
@@ -4400,6 +4576,7 @@ mod tests {
             ("10.0.0.1:18002", "zone-b", 20, 20),
         ] {
             meta.register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
                 server_addr: server_addr.to_string(),
                 node_id: 0,
                 location: location.to_string(),
@@ -4533,6 +4710,7 @@ mod tests {
     fn metaserver_finish_load_updates_shard_route() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: "s1".to_string(),
             node_id: 1,
             location: "z".to_string(),
@@ -4559,6 +4737,7 @@ mod tests {
         let snapshot_path = dir.path().join("scheduler-finish-load-snapshot.json");
         let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
         meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: "s1".to_string(),
             node_id: 1,
             location: "zone-a".to_string(),
@@ -4699,6 +4878,7 @@ mod tests {
         let log_path = dir.path().join("control-plane-parity.jsonl");
         let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
         meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: "s1".to_string(),
             node_id: 1,
             location: "zone-a".to_string(),
@@ -4791,6 +4971,7 @@ mod tests {
         assert_eq!(missing.status.code, "server_not_found");
 
         meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: "s1".to_string(),
             node_id: 1,
             location: "z".to_string(),
@@ -4843,6 +5024,7 @@ mod tests {
         let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
         assert!(meta.info().durable_mutation_log);
         meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: "server-a".to_string(),
             node_id: 1,
             location: "zone-a".to_string(),
@@ -5017,12 +5199,14 @@ mod tests {
         let snapshot_path = dir.path().join("meta-snapshot.json");
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: "server-a".to_string(),
             node_id: 1,
             location: "zone-a".to_string(),
             binary_version: "v1".to_string(),
         });
         meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: "server-b".to_string(),
             node_id: 2,
             location: "zone-b".to_string(),
