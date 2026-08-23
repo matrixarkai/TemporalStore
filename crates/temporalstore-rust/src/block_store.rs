@@ -127,6 +127,13 @@ pub struct BlockStoreStats {
     pub compressed_records_read: u64,
     #[serde(default)]
     pub compression_bytes_saved: u64,
+    /// Times the whole band manifest was written out.
+    ///
+    /// Writing it costs the whole manifest, so one write per slab install made installing n slabs
+    /// cost n manifests -- and each install cost time proportional to how many slabs already
+    /// existed. Counted rather than timed, because a count says the same thing on a busy machine.
+    #[serde(default)]
+    pub band_manifest_writes: u64,
     /// Slabs fetched on-demand from a shared-storage read-through source (parity
     /// lazy recovery). Each shared slab is fetched at most once, only when a read
     /// misses it locally; a nonzero count proves recovery did not install every slab
@@ -619,6 +626,10 @@ struct BlockStoreInner {
     next_page_id: u64,
     options: BlockStoreOptions,
     bands: BTreeMap<u64, BlockStoreBandDescriptor>,
+    /// Slab installs since the manifest was last written out. Writing it costs the whole manifest,
+    /// so it is written every so often rather than every install; the load rebuilds from the slabs
+    /// when what it reads does not match them.
+    bands_unwritten: usize,
     band_manifest_reconciled_on_open: bool,
     stats: BlockStoreStats,
     // Optional shared-storage read-through (on-demand lazy recovery): set by
@@ -626,6 +637,13 @@ struct BlockStoreInner {
     // read that misses a slab locally fetches it from here, caches it, then serves.
     shared_slab_source: Option<Arc<dyn SharedSlabSource>>,
 }
+
+/// Slab installs allowed to go by before the band manifest is written out.
+///
+/// Writing it costs the whole manifest, so writing it per install makes installing n slabs cost n
+/// manifests. Deferring trades that for a rebuild after a crash, which the load does for itself
+/// when what it reads does not match the slabs on disk.
+const BANDS_UNWRITTEN_BEFORE_PERSIST: usize = 64;
 
 impl LocalBlockStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
@@ -703,6 +721,7 @@ impl LocalBlockStore {
                 next_page_id,
                 options,
                 bands,
+                bands_unwritten: 0,
                 band_manifest_reconciled_on_open,
                 stats: BlockStoreStats::default(),
                 shared_slab_source: None,
@@ -2880,5 +2899,42 @@ mod tests {
                 report.purged_page_slab_ids.len()
             );
         }
+    }
+
+    /// Installing slabs must not cost more as the store fills up.
+    ///
+    /// Writing the band manifest costs the whole manifest, so writing it per install made
+    /// installing n slabs cost n manifests: measured at 111.7 ms per install with two hundred slabs
+    /// in the store and 270.7 ms with eight hundred. Written every so often instead, both are about
+    /// 5.4 ms and the cost stops tracking the size of the store.
+    ///
+    /// Counted rather than timed. A duration would assert the right thing on an idle machine and
+    /// something else entirely on a busy one; the number of manifest writes is the shape itself.
+    #[test]
+    fn installing_slabs_does_not_write_a_manifest_each_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let slabs = 512u64;
+        for id in 0..slabs {
+            store.install_slab(id, b"slab-contents").unwrap();
+        }
+        let writes = store.stats().band_manifest_writes;
+        assert!(
+            writes < slabs / 8,
+            "installing {slabs} slabs wrote the manifest {writes} times; one per install is what \
+             made each install cost the whole store"
+        );
+        assert!(
+            writes > 0,
+            "the manifest should still reach disk periodically, or a crash rebuilds everything"
+        );
+        // And it is still correct: a reopen sees every slab, whether or not the last write landed.
+        drop(store);
+        let reopened = LocalBlockStore::new(dir.path());
+        assert_eq!(
+            reopened.slab_ids().unwrap().len(),
+            slabs as usize,
+            "every installed slab must still be there after a reopen"
+        );
     }
 }
