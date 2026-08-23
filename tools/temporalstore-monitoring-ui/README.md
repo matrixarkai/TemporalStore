@@ -30,7 +30,7 @@ Covered views:
 - Workload testing status
 - Dynamic runtime config values
 - Scale-test summaries for primary, secondary, and TemporalAggregate workloads
-- Data module testing for TemporalAggregate, Feature, IPS, and STRING
+- Data module testing for TemporalAggregate, Feature, and STRING
 
 Expected optional fields in `health.json`:
 

@@ -109,5 +109,5 @@ distributed durability.
 - `storage_crash --mode corrupt-page` and `storage_production_harness` fail for reasons
   **unrelated to this work**: the former assumes a page `.seg` exists immediately after a
   write (invalid under the dump-cadence model where pages materialize at dump); the latter
-  carries a stale migration corpus referencing the removed `ips_add_with_options` command.
+  carries a stale migration corpus referencing a command that no longer exists.
   Both are pre-existing and tracked separately.

@@ -202,7 +202,6 @@ def module_tests(rows: dict[str, dict[str, str]], result_dir: Path) -> list[dict
     specs = [
         ("TemporalAggregate", "high-cardinality window aggregate", "temporalaggregate"),
         ("Feature", "module ingest/query", "feature"),
-        ("IPS", "risk/frequency cap sample", "ips"),
         ("STRING", "SET/GET baseline", "string"),
     ]
     tests = []
