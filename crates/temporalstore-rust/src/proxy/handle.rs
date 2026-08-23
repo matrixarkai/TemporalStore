@@ -57,7 +57,12 @@ impl ProxyService {
                 json_response(200, &self.client().preflight_report())
             }
             ("POST", "/proxy/topology/refresh") | ("POST", "/ProxyService/RefreshTopology") => {
-                json_response(200, &self.refresh_topology_from_meta())
+                match self.admit_topology_refresh() {
+                    Ok(_admitted) => json_response(200, &self.refresh_topology_from_meta()),
+                    Err(status) => {
+                        json_response(proxy_rejection_http_status(&status.code), &status)
+                    }
+                }
             }
             ("GET", "/proxy/config") | ("GET", "/ProxyService/GetConfig") => {
                 let options = self
@@ -81,6 +86,12 @@ impl ProxyService {
                 }
             }
             ("GET", path) if path.starts_with("/shards/") => {
+                let _admitted = match self.admit_shard_lookup() {
+                    Ok(guard) => guard,
+                    Err(status) => {
+                        return json_response(proxy_rejection_http_status(&status.code), &status)
+                    }
+                };
                 let shard_id = path
                     .trim_start_matches("/shards/")
                     .parse()
