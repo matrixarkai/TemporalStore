@@ -2384,6 +2384,7 @@ fn validate_node_topology_from_meta(
             meta_addr,
             "/tables/topology",
             &GetTableTopologyRequest {
+                client_location: String::new(),
                 namespace: request.namespace.clone(),
                 table_name: table_name.clone(),
                 old_topology_version: 0,

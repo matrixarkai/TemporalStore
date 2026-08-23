@@ -562,6 +562,11 @@ pub struct GetTableTopologyRequest {
     pub table_name: String,
     #[serde(default)]
     pub old_topology_version: u64,
+    /// Where the caller is, in the same hierarchical form as a server's
+    /// location. Used only to order each shard's replicas nearest-first; an
+    /// empty value leaves the order exactly as it was.
+    #[serde(default)]
+    pub client_location: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1891,6 +1896,7 @@ mod tests {
             .ok);
 
         let topology = meta.get_table_topology(GetTableTopologyRequest {
+            client_location: String::new(),
             namespace: "ns".to_string(),
             table_name: "orders".to_string(),
             old_topology_version: 0,
@@ -2033,6 +2039,7 @@ mod tests {
 
         let units = |meta: &SingleNodeMeta| {
             let topology = meta.get_table_topology(GetTableTopologyRequest {
+                client_location: String::new(),
                 namespace: "ns".to_string(),
                 table_name: "orders".to_string(),
                 old_topology_version: 0,
@@ -2500,6 +2507,7 @@ mod tests {
 
     fn routed_shard(meta: &SingleNodeMeta) -> TableShard {
         meta.get_table_topology(GetTableTopologyRequest {
+            client_location: String::new(),
             namespace: "ns".to_string(),
             table_name: "orders".to_string(),
             old_topology_version: 0,
@@ -2602,6 +2610,144 @@ mod tests {
             server_addr: "node-ghost".to_string(),
         });
         assert_eq!(routed_shard(&meta).primary, Some("node-ghost".to_string()));
+    }
+
+    /// One shard replicated across three zones, owned in zone-a. The servers are
+    /// registered a-b-c so the load-ordered scan produces that order, which is
+    /// what a caller sees today no matter where it is.
+    fn three_zone_shard() -> SingleNodeMeta {
+        let meta = SingleNodeMeta::default();
+        for (index, (addr, zone)) in [
+            ("node-a", "east/zone-a"),
+            ("node-b", "east/zone-b"),
+            ("node-c", "west/zone-c"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            meta.register_server(RegisterServerRequest {
+                server_addr: addr.to_string(),
+                node_id: index as u64 + 1,
+                location: zone.to_string(),
+                binary_version: "v1".to_string(),
+            });
+        }
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            first_shard_id: 1,
+            shard_count: 1,
+            replica_count: 3,
+            partition_version: 0,
+            serving_options: TableServingOptions::default(),
+        });
+        meta.register(RegisterShardRequest {
+            shard_id: 1,
+            server_addr: "node-a".to_string(),
+        });
+        meta
+    }
+
+    fn topology_for(meta: &SingleNodeMeta, client_location: &str) -> TableShard {
+        meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            old_topology_version: 0,
+            client_location: client_location.to_string(),
+        })
+        .shards
+        .into_iter()
+        .next()
+        .expect("one shard")
+    }
+
+    #[test]
+    fn a_caller_is_offered_the_replica_in_its_own_zone_first() {
+        // Replicas are deliberately spread as far apart as the topology allows,
+        // so most of a shard's replicas are far from any given caller by
+        // construction. Without this the caller reads from whichever server
+        // sorted first on load, which is a coin flip against crossing zones.
+        let meta = three_zone_shard();
+        // The order without a caller location is not accidental: the placement
+        // scan spreads replicas as widely as the topology allows, so the *far*
+        // replica is offered second. That is exactly the behaviour that makes a
+        // location-blind read expensive.
+        assert_eq!(
+            topology_for(&meta, "").replicas,
+            vec![
+                "node-a".to_string(),
+                "node-c".to_string(),
+                "node-b".to_string()
+            ]
+        );
+        assert_eq!(
+            topology_for(&meta, "east/zone-b").replicas.first(),
+            Some(&"node-b".to_string())
+        );
+        assert_eq!(
+            topology_for(&meta, "west/zone-c").replicas.first(),
+            Some(&"node-c".to_string())
+        );
+    }
+
+    #[test]
+    fn a_caller_with_no_replica_in_its_zone_still_prefers_the_nearer_half() {
+        // Locations are hierarchical, so "no replica here" is not the end of the
+        // question: a caller in east/zone-d shares `east` with two of the three.
+        let meta = three_zone_shard();
+        let replicas = topology_for(&meta, "east/zone-d").replicas;
+        assert_eq!(replicas.len(), 3);
+        assert_eq!(replicas[2], "node-c", "the far replica should sort last");
+    }
+
+    #[test]
+    fn ordering_replicas_never_moves_the_primary() {
+        // The primary is where the shard is actually owned. Reordering is about
+        // which copy to read, and must not change who owns it.
+        let meta = three_zone_shard();
+        for caller in ["", "east/zone-b", "west/zone-c"] {
+            assert_eq!(
+                topology_for(&meta, caller).primary,
+                Some("node-a".to_string()),
+                "caller {caller:?} was given a different primary"
+            );
+        }
+    }
+
+    #[test]
+    fn the_endpoints_stay_lined_up_with_the_replicas() {
+        // The two lists are positional. Reordering one without the other would
+        // hand every caller the wrong address for every replica.
+        let meta = three_zone_shard();
+        let shard = topology_for(&meta, "west/zone-c");
+        let addrs = shard
+            .replica_endpoints
+            .iter()
+            .map(|endpoint| endpoint.server_addr.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(shard.replicas, addrs);
+    }
+
+    #[test]
+    fn a_caller_that_says_nothing_sees_exactly_what_it_saw_before() {
+        // The whole change is opt-in on a field the caller may not send.
+        let meta = three_zone_shard();
+        let quiet = topology_for(&meta, "");
+        let unknown = topology_for(&meta, "somewhere/else");
+        assert_eq!(quiet.replicas, unknown.replicas);
+        assert_eq!(quiet.primary, unknown.primary);
+    }
+
+    #[test]
+    fn callers_equally_close_keep_the_order_the_load_scan_chose() {
+        // The sort is stable on purpose: among servers the caller cannot tell
+        // apart, the placement scan's load ordering is still the better answer.
+        let meta = three_zone_shard();
+        let replicas = topology_for(&meta, "east/zone-d").replicas;
+        assert_eq!(&replicas[..2], &["node-a".to_string(), "node-b".to_string()]);
     }
 
     #[test]
@@ -2753,6 +2899,7 @@ mod tests {
         );
 
         let topo = meta.get_table_topology(GetTableTopologyRequest {
+            client_location: String::new(),
             namespace: "ns".to_string(),
             table_name: "tbl".to_string(),
             old_topology_version: 0,
@@ -2796,6 +2943,7 @@ mod tests {
         assert!(unchanged_report.events.is_empty());
 
         let unchanged = meta.get_table_topology(GetTableTopologyRequest {
+            client_location: String::new(),
             namespace: "ns".to_string(),
             table_name: "tbl".to_string(),
             old_topology_version: topology_version,
@@ -2837,6 +2985,7 @@ mod tests {
         assert_eq!(meta.list_namespaces().namespaces[0].table_count, 0);
 
         let topology = meta.get_table_topology(GetTableTopologyRequest {
+            client_location: String::new(),
             namespace: "ns".to_string(),
             table_name: "tbl".to_string(),
             old_topology_version: 0,
@@ -2883,6 +3032,7 @@ mod tests {
         assert_eq!(meta.list_tables().tables[0].state, MetaEntityState::Frozen);
 
         let topology = meta.get_table_topology(GetTableTopologyRequest {
+            client_location: String::new(),
             namespace: "ns".to_string(),
             table_name: "tbl".to_string(),
             old_topology_version: 0,
@@ -2919,6 +3069,7 @@ mod tests {
         assert_eq!(meta.list_tables().tables[0].state, MetaEntityState::Normal);
 
         let topology = meta.get_table_topology(GetTableTopologyRequest {
+            client_location: String::new(),
             namespace: "ns".to_string(),
             table_name: "tbl".to_string(),
             old_topology_version: 0,
@@ -2966,6 +3117,7 @@ mod tests {
         assert!(table.topology_version > created.topology_version);
 
         let topology = meta.get_table_topology(GetTableTopologyRequest {
+            client_location: String::new(),
             namespace: "ns".to_string(),
             table_name: "tbl".to_string(),
             old_topology_version: created.topology_version,
@@ -3056,6 +3208,7 @@ mod tests {
         );
         assert_eq!(
             meta.get_table_topology(GetTableTopologyRequest {
+                client_location: String::new(),
                 namespace: "ns".to_string(),
                 table_name: "opts".to_string(),
                 old_topology_version: 0,
@@ -3154,6 +3307,7 @@ mod tests {
         });
 
         let topo = meta.get_table_topology(GetTableTopologyRequest {
+            client_location: String::new(),
             namespace: "ns".to_string(),
             table_name: "tbl".to_string(),
             old_topology_version: 0,
@@ -3211,6 +3365,7 @@ mod tests {
         });
 
         let topo = meta.get_table_topology(GetTableTopologyRequest {
+            client_location: String::new(),
             namespace: "ns".to_string(),
             table_name: "runtime_load".to_string(),
             old_topology_version: 0,
@@ -3265,6 +3420,7 @@ mod tests {
         });
 
         let topo = meta.get_table_topology(GetTableTopologyRequest {
+            client_location: String::new(),
             namespace: "ns".to_string(),
             table_name: "serving_state".to_string(),
             old_topology_version: 0,
@@ -3314,6 +3470,7 @@ mod tests {
         });
 
         let topo = meta.get_table_topology(GetTableTopologyRequest {
+            client_location: String::new(),
             namespace: "ns".to_string(),
             table_name: "tbl".to_string(),
             old_topology_version: 0,
@@ -3364,6 +3521,7 @@ mod tests {
         });
 
         let topo = meta.get_table_topology(GetTableTopologyRequest {
+            client_location: String::new(),
             namespace: "ns".to_string(),
             table_name: "tbl".to_string(),
             old_topology_version: 0,
@@ -3412,6 +3570,7 @@ mod tests {
         });
 
         let topo = meta.get_table_topology(GetTableTopologyRequest {
+            client_location: String::new(),
             namespace: "ns".to_string(),
             table_name: "tbl".to_string(),
             old_topology_version: 0,
@@ -3927,6 +4086,7 @@ mod tests {
         );
         assert_eq!(recovered.list_namespaces().namespaces[0].table_count, 1);
         let recovered_topology = recovered.get_table_topology(GetTableTopologyRequest {
+            client_location: String::new(),
             namespace: "ns".to_string(),
             table_name: "tbl".to_string(),
             old_topology_version: 0,
@@ -4074,6 +4234,7 @@ mod tests {
             MetaEntityState::Frozen
         );
         let topology = recovered.get_table_topology(GetTableTopologyRequest {
+            client_location: String::new(),
             namespace: "ns".to_string(),
             table_name: "tbl".to_string(),
             old_topology_version: 0,

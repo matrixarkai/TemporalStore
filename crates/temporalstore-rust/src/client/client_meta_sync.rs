@@ -28,6 +28,7 @@ impl TemporalStoreClient {
             meta_addr,
             "/tables/topology",
             &GetTableTopologyRequest {
+                client_location: String::new(),
                 namespace: namespace.clone(),
                 table_name: table_name.clone(),
                 old_topology_version: 0,

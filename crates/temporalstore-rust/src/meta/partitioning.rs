@@ -19,7 +19,11 @@ fn owner_is_serving(state: &MetaState, server_addr: &str) -> bool {
         .unwrap_or(true)
 }
 
-pub(super) fn build_shards(state: &MetaState, table: &TableMetaInfo) -> Vec<TableShard> {
+pub(super) fn build_shards(
+    state: &MetaState,
+    table: &TableMetaInfo,
+    client_location: &str,
+) -> Vec<TableShard> {
     #[derive(Debug)]
     struct PlacementCandidate {
         server_addr: String,
@@ -102,6 +106,7 @@ pub(super) fn build_shards(state: &MetaState, table: &TableMetaInfo) -> Vec<Tabl
         .iter()
         .map(|candidate| Location::parse(&candidate.location))
         .collect::<Vec<_>>();
+    let caller = Location::parse(client_location);
     let bucket_count = 1_u64 << 30;
     let mut shards = Vec::new();
     for offset in 0..table.shard_count {
@@ -196,6 +201,26 @@ pub(super) fn build_shards(state: &MetaState, table: &TableMetaInfo) -> Vec<Tabl
             // table gets one before anything registers.
             None => replicas.first().cloned(),
         };
+        // Replicas are deliberately spread as far apart as the topology
+        // allows, so most of a shard's replicas are far from any given caller
+        // by construction. Ordering them nearest-first is what lets a caller
+        // that has a replica in its own location read from it rather than
+        // crossing the fabric to whichever server happened to sort first on
+        // load. Only the order changes: the same servers are returned, and the
+        // primary -- which is where the shard is actually owned -- is untouched.
+        if !caller.is_empty() {
+            // Stable, so servers equally close to the caller keep the
+            // load-ordered sequence the scan above produced.
+            replicas.sort_by_key(|server_addr| {
+                std::cmp::Reverse(
+                    state
+                        .servers
+                        .get(server_addr)
+                        .map(|server| caller.shared_prefix_len(&Location::parse(&server.location)))
+                        .unwrap_or(0),
+                )
+            });
+        }
         let primary_endpoint = primary
             .as_ref()
             .map(|server_addr| server_endpoint(state, server_addr));
