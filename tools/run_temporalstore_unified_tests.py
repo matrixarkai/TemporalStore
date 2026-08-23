@@ -48,7 +48,7 @@ COMBINED_RAFT_GATE_CASES = {
     "raft_data_node_mixed_rw_and_membership",
     "raft_production_gate",
 }
-COMBINED_RAFT_GATE = "tools/run_raft_distributed_parity.sh"
+COMBINED_RAFT_GATE = "tools/run_raft_distributed_conformance.sh"
 COMBINED_RAFT_VALIDATOR = (
     "python3 tools/validate_aws_validation_log.py --job "
     "temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>"

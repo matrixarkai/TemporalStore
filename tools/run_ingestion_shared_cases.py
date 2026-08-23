@@ -64,7 +64,7 @@ def validate_case(case: dict, native_repo: Path | None) -> list[tuple[str, str]]
         if "cargo test -p temporalstore-rust" not in rust_runner:
             raise SystemExit(f"{location}: rust_runner must invoke temporalstore-rust tests")
         rust_validator = command.get("rust_validator")
-        if rust_validator != "python3 tools/validate_ingestion_ops_parity_evidence.py":
+        if rust_validator != "python3 tools/validate_ingestion_ops_conformance_evidence.py":
             raise SystemExit(f"{location}: missing ingestion rust_validator")
         required_paths = command.get("required_paths")
         if not isinstance(required_paths, list) or not required_paths:

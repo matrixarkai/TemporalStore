@@ -18,4 +18,4 @@ if [[ "${VALIDATE_ONLY}" == "1" ]]; then
   args+=(--validate-only)
 fi
 
-python3 "${ROOT}/tools/run_unified_parity_tests.py" "${args[@]}"
+python3 "${ROOT}/tools/run_unified_conformance_tests.py" "${args[@]}"

@@ -22,21 +22,21 @@ REQUIRED_SCRIPT_SNIPPETS = (
     "distributed_raft_harness",
     "metaserver_raft_harness",
     "raft_secondary_replication_harness",
-    "build_raft_distributed_parity_summary.py",
+    "build_raft_distributed_conformance_summary.py",
     "raft-distributed-parity-validation",
     "run_raft_cases_on_rust.py",
     "native-raft-cases-on-rust.json",
     "build_storage_raft_production_proof.py",
     "storage-raft-production-proof.json",
     "external_chaos_gate",
-    "validate_raft_storage_parity_evidence.py",
+    "validate_raft_storage_conformance_evidence.py",
 )
 
 REQUIRED_RAFT_PARITY_SCRIPT_SNIPPETS = (
     "distributed_raft_harness",
     "raft_secondary_replication_harness",
     "metaserver_raft_harness",
-    "build_raft_distributed_parity_summary.py",
+    "build_raft_distributed_conformance_summary.py",
     "raft-distributed-parity-validation",
 )
 
@@ -114,7 +114,7 @@ def main() -> None:
         "storage_raft_script",
     )
     count += require_snippets(
-        ROOT / "tools" / "run_raft_distributed_parity.sh",
+        ROOT / "tools" / "run_raft_distributed_conformance.sh",
         REQUIRED_RAFT_PARITY_SCRIPT_SNIPPETS,
         "raft_distributed_parity_script",
     )

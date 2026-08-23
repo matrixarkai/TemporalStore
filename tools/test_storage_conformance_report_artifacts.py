@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from validate_storage_lifecycle_parity import (
+from validate_storage_lifecycle_conformance import (
     REQUIRED_STORAGE_CACHE_LAYERS,
     REQUIRED_STORAGE_CACHE_SEMANTICS,
     REQUIRED_STORAGE_CACHE_CONTRACT_FIELDS,
@@ -35,8 +35,8 @@ from validate_storage_lifecycle_parity import (
     REQUIRED_STORAGE_WRITE_SEQUENCE,
     validate_report_pair,
 )
-from validate_storage_parity_report_artifacts import REQUIRED_PUBLIC_STORAGE_CONTRACT, validate_artifacts
-from validate_storage_tuning_parity import EXPECTED_DEFAULTS
+from validate_storage_conformance_report_artifacts import REQUIRED_PUBLIC_STORAGE_CONTRACT, validate_artifacts
+from validate_storage_tuning_conformance import EXPECTED_DEFAULTS
 
 
 def _zero_metrics() -> dict[str, int]:

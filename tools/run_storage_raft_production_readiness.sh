@@ -102,7 +102,7 @@ python3 tools/validate_aws_validation_log.py \
   --job temporalstore-raft-secondary-validation \
   --log "${ARTIFACT_DIR}/raft-secondary.json"
 
-python3 tools/build_raft_distributed_parity_summary.py \
+python3 tools/build_raft_distributed_conformance_summary.py \
   --artifact-dir "${ARTIFACT_DIR}" \
   --output "${ARTIFACT_DIR}/raft-distributed-parity.json"
 python3 tools/validate_aws_validation_log.py \
@@ -137,7 +137,7 @@ python3 tools/build_storage_raft_production_proof.py \
 
 echo "== 8/8 unified corpus and readiness docs =="
 python3 tools/run_temporalstore_unified_tests.py --validate-only
-python3 tools/validate_raft_storage_parity_evidence.py "${RAFT_NATIVE_EVIDENCE_ARGS[@]}"
+python3 tools/validate_raft_storage_conformance_evidence.py "${RAFT_NATIVE_EVIDENCE_ARGS[@]}"
 python3 tools/validate_no_duplicate_tests.py
 git diff --check
 

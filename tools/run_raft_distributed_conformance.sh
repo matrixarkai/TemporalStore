@@ -37,7 +37,7 @@ python3 tools/validate_aws_validation_log.py \
   --log "${ARTIFACT_DIR}/metaserver-raft.json"
 
 echo "== 4/4 combined Raft parity summary =="
-python3 tools/build_raft_distributed_parity_summary.py \
+python3 tools/build_raft_distributed_conformance_summary.py \
   --artifact-dir "${ARTIFACT_DIR}" \
   --output "${ARTIFACT_DIR}/raft-distributed-parity.json"
 python3 tools/validate_aws_validation_log.py \

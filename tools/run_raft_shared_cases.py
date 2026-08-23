@@ -49,7 +49,7 @@ RAFT_CASES = {
     "raft_rustraft_rolling_restart_joint_consensus_fault_harness",
     "raft_rustraft_shared_fault_gate",
 }
-COMBINED_GATE = "tools/run_raft_distributed_parity.sh"
+COMBINED_GATE = "tools/run_raft_distributed_conformance.sh"
 COMBINED_VALIDATOR_JOB = "temporalstore-raft-distributed-parity-validation"
 RUSTRAFT_FAULT_ACCEPTANCE_KEYWORDS = {
     "raft_rustraft_packet_loss_fault_harness": [
@@ -125,7 +125,7 @@ def validate_case(case: dict, native_repo: Path | None) -> tuple[int, int]:
             "distributed_raft_harness",
             "raft_secondary_replication_harness",
             "metaserver_raft_harness",
-            "run_raft_distributed_parity.sh",
+            "run_raft_distributed_conformance.sh",
             "cargo test -p temporalstore-rust",
         ]):
             raise SystemExit(f"{location}: rust_runner is not a known Raft evidence command")

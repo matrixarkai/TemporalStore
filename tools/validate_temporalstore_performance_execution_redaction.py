@@ -45,7 +45,7 @@ REQUIRED_RUN_WORKLOAD_FLAGS = (
 )
 REQUIRED_POST_IMPORT_VALIDATORS = (
     ("python", "tools/validate_temporalstore_rust_goal_parity.py"),
-    ("python", "tools/validate_storage_engine_9_phase_parity.py", "--loops", "9"),
+    ("python", "tools/validate_storage_engine_9_phase_conformance.py", "--loops", "9"),
 )
 REQUIRED_PHASE_SCALE_COVERAGE = {
     "events": [1000, 10000, 100000],

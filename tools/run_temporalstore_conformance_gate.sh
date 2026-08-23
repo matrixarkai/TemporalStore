@@ -9,7 +9,7 @@ READINESS_ALLOW_BLOCKED="${TS_READINESS_ALLOW_BLOCKED:-1}"
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run_temporalstore_parity_gate.sh [--local-only|--aws]
+usage: run_temporalstore_conformance_gate.sh [--local-only|--aws]
 
 Runs the local TemporalStore Rust parity/basic-function gate. With --aws, also
 deploys to the configured existing EKS cluster and validates AWS reads/writes,
@@ -59,7 +59,7 @@ fi
 
 echo "== local: SDK contract validation =="
 python3 tools/validate_sdk_contract.py
-python3 tools/validate_raft_storage_parity_evidence.py "${RAFT_NATIVE_EVIDENCE_ARGS[@]}"
+python3 tools/validate_raft_storage_conformance_evidence.py "${RAFT_NATIVE_EVIDENCE_ARGS[@]}"
 
 echo "== local: cargo test all targets =="
 cargo test -p temporalstore-rust --all-targets -- --test-threads=1
@@ -168,7 +168,7 @@ python3 tools/validate_aws_validation_log.py \
   --log "${RAFT_PARITY_ARTIFACT_DIR}/raft-secondary.json"
 
 echo "== local: combined data-node/metaserver raft parity =="
-python3 tools/build_raft_distributed_parity_summary.py \
+python3 tools/build_raft_distributed_conformance_summary.py \
   --artifact-dir "${RAFT_PARITY_ARTIFACT_DIR}" \
   --output "${RAFT_PARITY_ARTIFACT_DIR}/raft-distributed-parity.json"
 python3 tools/validate_aws_validation_log.py \
@@ -181,7 +181,7 @@ bash -n tools/deploy_and_test_aws_existing_eks.sh
 bash -n tools/validate_aws_existing_eks.sh
 bash -n tools/scale_test_aws_existing_eks.sh
 python3 -m py_compile tools/validate_aws_validation_log.py
-python3 -m py_compile tools/build_raft_distributed_parity_summary.py
+python3 -m py_compile tools/build_raft_distributed_conformance_summary.py
 
 echo "== local: whitespace =="
 git diff --check

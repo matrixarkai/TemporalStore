@@ -49,7 +49,7 @@ matrixobject = []
 # `matrixobject` feature so the default `cargo build --all-targets` does not try
 # to compile it without the dependency enabled.
 [[example]]
-name = "shared_store_append_blob_parity_report"
+name = "shared_store_append_blob_conformance_report"
 required-features = ["matrixobject"]
 
 [[example]]

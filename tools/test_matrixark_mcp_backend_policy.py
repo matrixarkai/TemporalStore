@@ -40,7 +40,7 @@ try:
         validate_runtime_host,
         validate_rust_runtime_path,
     )
-    from tools.validate_storage_lifecycle_parity import REPORT_PAIR_CORPUS, _load_json, validate_report_pair
+    from tools.validate_storage_lifecycle_conformance import REPORT_PAIR_CORPUS, _load_json, validate_report_pair
 except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
     import matrixark_mcp_budget_pack as mcp_budget_pack
     import matrixark_mcp_local_adapter as mcp_local
@@ -66,7 +66,7 @@ except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
         validate_runtime_host,
         validate_rust_runtime_path,
     )
-    from validate_storage_lifecycle_parity import REPORT_PAIR_CORPUS, _load_json, validate_report_pair
+    from validate_storage_lifecycle_conformance import REPORT_PAIR_CORPUS, _load_json, validate_report_pair
 
 
 

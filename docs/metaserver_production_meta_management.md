@@ -42,6 +42,6 @@ the normalized storage/Raft proof:
 ```
 
 The current local gate validates these responsibilities through `metaserver_raft_harness`,
-`build_raft_distributed_parity_summary.py`, `validate_aws_validation_log.py`, and
+`build_raft_distributed_conformance_summary.py`, `validate_aws_validation_log.py`, and
 `validate_metaserver_production_meta_management.py`. Full global production readiness still requires
 multi-process deployment evidence, transport security, and external chaos evidence.

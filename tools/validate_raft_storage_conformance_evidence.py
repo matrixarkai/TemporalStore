@@ -170,7 +170,7 @@ AREAS: tuple[ParityArea, ...] = (
             RustEvidence(
                 "compat/unified_temporalstore_cases.json",
                 (
-                    '"rust_parity_gate": "tools/run_raft_distributed_parity.sh"',
+                    '"rust_parity_gate": "tools/run_raft_distributed_conformance.sh"',
                     '"rust_parity_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>"',
                 ),
             ),
@@ -287,7 +287,7 @@ AREAS: tuple[ParityArea, ...] = (
                 ("trigger_failover", "catch_up_peer", "local_catch_up", "rolling restart"),
             ),
             RustEvidence(
-                "tools/run_temporalstore_parity_gate.sh",
+                "tools/run_temporalstore_conformance_gate.sh",
                 (
                     "distributed_raft_harness",
                     "metaserver_raft_harness",
@@ -299,7 +299,7 @@ AREAS: tuple[ParityArea, ...] = (
                 "tools/run_temporalstore_unified_validation.sh",
                 (
                     "data-node/metaserver raft distributed parity",
-                    "run_raft_distributed_parity.sh",
+                    "run_raft_distributed_conformance.sh",
                 ),
             ),
         ),
@@ -342,7 +342,7 @@ AREAS: tuple[ParityArea, ...] = (
                 ),
             ),
             RustEvidence(
-                "tools/run_raft_distributed_parity.sh",
+                "tools/run_raft_distributed_conformance.sh",
                 (
                     "distributed_raft_harness",
                     "raft_secondary_replication_harness",
@@ -351,7 +351,7 @@ AREAS: tuple[ParityArea, ...] = (
                 ),
             ),
             RustEvidence(
-                "tools/build_raft_distributed_parity_summary.py",
+                "tools/build_raft_distributed_conformance_summary.py",
                 (
                     "distributed_all_nodes_have_majority",
                     "partition_isolated_read_rejected",
@@ -381,7 +381,7 @@ AREAS: tuple[ParityArea, ...] = (
                     '"raft_production_gate"',
                     '"metaserver_post_failover_replacement_scale_down"',
                     '"data_raft_post_snapshot_rescale"',
-                    "tools/run_storage_raft_production_readiness.sh && tools/run_raft_distributed_parity.sh",
+                    "tools/run_storage_raft_production_readiness.sh && tools/run_raft_distributed_conformance.sh",
                     "temporalstore-raft-distributed-parity-validation",
                 ),
             ),
@@ -390,7 +390,7 @@ AREAS: tuple[ParityArea, ...] = (
                 (
                     '"required_raft_case_names"',
                     "native_required_paths_checked",
-                    "run_raft_distributed_parity.sh",
+                    "run_raft_distributed_conformance.sh",
                 ),
             ),
         ),
@@ -407,7 +407,7 @@ AREAS: tuple[ParityArea, ...] = (
                 ("scale_harness", "storage_modes_harness", "readiness_gate"),
             ),
             RustEvidence(
-                "tools/run_temporalstore_parity_gate.sh",
+                "tools/run_temporalstore_conformance_gate.sh",
                 ("storage_fault_matrix_harness", "validate_aws_validation_log.py"),
             ),
         ),

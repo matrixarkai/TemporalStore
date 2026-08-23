@@ -3575,7 +3575,7 @@
     },
     {
       "name": "raft_data_node_scale_failover_snapshot",
-      "rust_parity_gate": "tools/run_raft_distributed_parity.sh",
+      "rust_parity_gate": "tools/run_raft_distributed_conformance.sh",
       "rust_parity_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
       "shard_id": 31,
       "steps": [
@@ -3648,7 +3648,7 @@
     },
     {
       "name": "raft_data_node_mixed_rw_and_membership",
-      "rust_parity_gate": "tools/run_raft_distributed_parity.sh",
+      "rust_parity_gate": "tools/run_raft_distributed_conformance.sh",
       "rust_parity_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
       "shard_id": 32,
       "steps": [
@@ -3859,7 +3859,7 @@
               "tools/test_summarize_raft_gate_results.py"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "tools/run_storage_raft_production_readiness.sh && tools/run_raft_distributed_parity.sh",
+            "rust_runner": "tools/run_storage_raft_production_readiness.sh && tools/run_raft_distributed_conformance.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "native_data_raft_parity",
             "timeout_s": 2400
@@ -3985,7 +3985,7 @@
             "required_paths": [
             ],
             "rust_runner": "cargo test -p temporalstore-rust client_background_meta_sync_updates_existing_table_handle -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
+            "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py",
             "suite": "native_client_control_plane_parity"
           },
           "name": "client_proxy_meta_topology_version_change_shared"
@@ -4004,7 +4004,7 @@
             "required_paths": [
             ],
             "rust_runner": "cargo test -p temporalstore-rust direct_client_refreshes_cached_route_after_failure -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
+            "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py",
             "suite": "native_client_control_plane_parity"
           },
           "name": "stale_route_invalidation_shared"
@@ -4023,7 +4023,7 @@
             "required_paths": [
             ],
             "rust_runner": "cargo test -p temporalstore-rust proxy_policy_blocks_writes_not_serving_and_drop_percent -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
+            "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py",
             "suite": "native_proxy_control_plane_parity"
           },
           "name": "proxy_admission_drop_and_degraded_shared"
@@ -4042,7 +4042,7 @@
             "required_paths": [
             ],
             "rust_runner": "cargo test -p temporalstore-rust startup_load_request_uses_readonly_secondary_env -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
+            "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py",
             "suite": "native_proxy_control_plane_parity"
           },
           "name": "readonly_write_disabled_table_policy_shared"
@@ -4061,7 +4061,7 @@
             "required_paths": [
             ],
             "rust_runner": "cargo test -p temporalstore-rust proxy_skips_cached_backend_after_continuous_failure_threshold -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
+            "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py",
             "suite": "native_proxy_control_plane_parity"
           },
           "name": "backend_quarantine_and_recovery_shared"
@@ -4080,7 +4080,7 @@
             "required_paths": [
             ],
             "rust_runner": "cargo test -p temporalstore-rust runtime_load_reload_unload_records_lifecycle_transitions -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
+            "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py",
             "suite": "native_data_node_lifecycle_parity"
           },
           "name": "data_node_load_reload_unload_lifecycle_shared"
@@ -4099,7 +4099,7 @@
             "required_paths": [
             ],
             "rust_runner": "cargo test -p temporalstore-rust --bin server native_server_service_aliases_cover_partition_manager_surface -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
+            "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py",
             "suite": "native_data_node_lifecycle_parity"
           },
           "name": "native_server_service_alias_surface_shared"
@@ -4118,7 +4118,7 @@
             "required_paths": [
             ],
             "rust_runner": "cargo test -p temporalstore-rust metaserver_scheduler_drives_load_reload_unload_lifecycle_workflow -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
+            "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py",
             "suite": "native_metaserver_control_plane_parity"
           },
           "name": "metaserver_scheduler_load_reload_unload_shared"
@@ -4138,7 +4138,7 @@
               "tools/run_queue_ingestion_replay_ubuntu22.sh"
             ],
             "rust_runner": "cargo test -p temporalstore-rust ingestion_batch_reports_duplicate_kafka_offsets_without_nooping_valid_records -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_ingestion_ops_parity_evidence.py",
+            "rust_validator": "python3 tools/validate_ingestion_ops_conformance_evidence.py",
             "suite": "native_ingestion_parity"
           },
           "name": "kafka_offset_ledger_dedupe_shared"
@@ -4159,7 +4159,7 @@
               "docs/cross_storage_control_agent_parity.md"
             ],
             "rust_runner": "cargo test -p temporalstore-rust context_resource context_skill runtime_load_reload_unload_records_lifecycle_transitions proxy_policy_blocks_writes_not_serving_and_drop_percent direct_client_refreshes_cached_route_after_failure metaserver_scheduler_drives_load_reload_unload_lifecycle_workflow -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py && python3 tools/validate_raft_storage_parity_evidence.py",
+            "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py && python3 tools/validate_raft_storage_conformance_evidence.py",
             "suite": "native_cross_subsystem_parity"
           },
           "name": "storage_client_proxy_datanode_meta_agent_shared"
@@ -4180,7 +4180,7 @@
               "tools/run_production_gap_queue_ubuntu22.sh"
             ],
             "rust_runner": "cargo test -p temporalstore-rust kafka_consumer_group_runtime_reports_rebalance_and_backpressure -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_ingestion_ops_parity_evidence.py",
+            "rust_validator": "python3 tools/validate_ingestion_ops_conformance_evidence.py",
             "suite": "native_ingestion_parity"
           },
           "name": "kafka_rebalance_backpressure_shared"
@@ -4200,7 +4200,7 @@
               "docs/TEMPORALSTORE_ONE_CLUSTER_TEMPORAL_FEATURES.md"
             ],
             "rust_runner": "cargo test -p temporalstore-rust ingestion_persists_kafka_ledger_dead_letters_lag_and_flink_checkpoints -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_ingestion_ops_parity_evidence.py",
+            "rust_validator": "python3 tools/validate_ingestion_ops_conformance_evidence.py",
             "suite": "native_ingestion_parity"
           },
           "name": "flink_precommit_commit_abort_shared"
@@ -4220,7 +4220,7 @@
               "docs/production_gap_queue_runbook.md"
             ],
             "rust_runner": "cargo test -p temporalstore-rust dead_letter_export_and_raft_failover_idempotence_reports_are_ready -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_ingestion_ops_parity_evidence.py",
+            "rust_validator": "python3 tools/validate_ingestion_ops_conformance_evidence.py",
             "suite": "native_ingestion_parity"
           },
           "name": "dead_letter_export_shared"
@@ -4241,7 +4241,7 @@
               "docs/TEMPORALSTORE_AWS_SCALE30_PROMETHEUS_2026-06-07.md"
             ],
             "rust_runner": "cargo test -p temporalstore-rust ingestion_persists_kafka_ledger_dead_letters_lag_and_flink_checkpoints -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_ingestion_ops_parity_evidence.py",
+            "rust_validator": "python3 tools/validate_ingestion_ops_conformance_evidence.py",
             "suite": "native_ingestion_parity"
           },
           "name": "kafka_lag_metrics_shared"
@@ -4262,7 +4262,7 @@
               "docs/client_proxy_data_meta_production_gap_plan.md"
             ],
             "rust_runner": "cargo test -p temporalstore-rust dead_letter_export_and_raft_failover_idempotence_reports_are_ready -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_ingestion_ops_parity_evidence.py",
+            "rust_validator": "python3 tools/validate_ingestion_ops_conformance_evidence.py",
             "suite": "native_ingestion_parity"
           },
           "name": "restart_failover_idempotence_shared"
@@ -4699,7 +4699,7 @@
               "docs/rust_codex_mcp_integration.md"
             ],
             "rust_runner": "cargo test -p temporalstore-rust --bin matrixark_record_log -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_codex_mcp_parity.py",
+            "rust_validator": "python3 tools/validate_codex_mcp_conformance.py",
             "suite": "native_rust_codex_mcp_parity"
           },
           "name": "rust_matrixark_record_log_persists_shared_mcp_records"
@@ -4723,7 +4723,7 @@
               "docs/rust_codex_hook_integration.md"
             ],
             "rust_runner": "cargo test -p temporalstore-rust --bin codex_context_hook -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_codex_mcp_parity.py",
+            "rust_validator": "python3 tools/validate_codex_mcp_conformance.py",
             "suite": "native_rust_codex_mcp_parity"
           },
           "name": "multi_agent_context_hook_payload_profiles_roles"
@@ -4746,7 +4746,7 @@
               "tools/run_data_raft_scale_up_down_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust raft_read_index_and_transfer_reject_lagging_replica raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat raft_replica_read_rejects_lagging_follower_and_succeeds_after_catchup --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_runner": "cargo test -p temporalstore-rust raft_read_index_and_transfer_reject_lagging_replica raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat raft_replica_read_rejects_lagging_follower_and_succeeds_after_catchup --lib -- --test-threads=1 && tools/run_raft_distributed_conformance.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "native_data_raft_parity",
             "timeout_s": 1200,
@@ -4798,7 +4798,7 @@
               "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust raft_status_read_index_and_transfer_leader_match_engine_control_shape metaserver_raft_status_read_index_and_transfer_leader_work --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_runner": "cargo test -p temporalstore-rust raft_status_read_index_and_transfer_leader_match_engine_control_shape metaserver_raft_status_read_index_and_transfer_leader_work --lib -- --test-threads=1 && tools/run_raft_distributed_conformance.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "native_data_raft_parity",
             "timeout_s": 1200,
@@ -4906,7 +4906,7 @@
               "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust streaming_snapshot_chunks_install_only_after_all_chunks_arrive rustraft_snapshot_chunk_retry_releases_backpressure_and_installs_chunk raft_snapshot_chunk_transport_rejects_stale_term_before_buffering data_raft_snapshot_trigger_compacts_applied_log_bytes metaserver_raft_snapshot_trigger_compacts_applied_log_bytes --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_runner": "cargo test -p temporalstore-rust streaming_snapshot_chunks_install_only_after_all_chunks_arrive rustraft_snapshot_chunk_retry_releases_backpressure_and_installs_chunk raft_snapshot_chunk_transport_rejects_stale_term_before_buffering data_raft_snapshot_trigger_compacts_applied_log_bytes metaserver_raft_snapshot_trigger_compacts_applied_log_bytes --lib -- --test-threads=1 && tools/run_raft_distributed_conformance.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "native_data_raft_parity",
             "timeout_s": 1200,
@@ -4955,7 +4955,7 @@
               "tools/run_data_raft_scale_up_down_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust raft_config_rejects_oversized_log_entries_and_prohibited_elections raft_rpc_runtime_retries_transport_errors_and_releases_inflight append_entries_reorder_queue_records_gap_and_recovers_after_prefix_arrives append_entries_reorder_window_timeout_and_stale_term_are_reported --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_runner": "cargo test -p temporalstore-rust raft_config_rejects_oversized_log_entries_and_prohibited_elections raft_rpc_runtime_retries_transport_errors_and_releases_inflight append_entries_reorder_queue_records_gap_and_recovers_after_prefix_arrives append_entries_reorder_window_timeout_and_stale_term_are_reported --lib -- --test-threads=1 && tools/run_raft_distributed_conformance.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "native_data_raft_parity",
             "timeout_s": 1200,
@@ -5007,7 +5007,7 @@
               "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust raft_tick_election_waits_for_timeout_and_prevotes_before_promotion raft_prevote_rejects_candidate_without_quorum raft_election_controls_record_prohibition_offline_and_transfer_timeouts raft_config_rejects_oversized_log_entries_and_prohibited_elections raft_read_index_and_transfer_reject_lagging_replica production_raft_runtime_validates_security_timer_and_chaos_contracts --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_runner": "cargo test -p temporalstore-rust raft_tick_election_waits_for_timeout_and_prevotes_before_promotion raft_prevote_rejects_candidate_without_quorum raft_election_controls_record_prohibition_offline_and_transfer_timeouts raft_config_rejects_oversized_log_entries_and_prohibited_elections raft_read_index_and_transfer_reject_lagging_replica production_raft_runtime_validates_security_timer_and_chaos_contracts --lib -- --test-threads=1 && tools/run_raft_distributed_conformance.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "native_data_raft_parity",
             "timeout_s": 1200,
@@ -5229,7 +5229,7 @@
               "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust data_raft_snapshot_trigger_compacts_applied_log_bytes metaserver_raft_snapshot_trigger_compacts_applied_log_bytes --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_runner": "cargo test -p temporalstore-rust data_raft_snapshot_trigger_compacts_applied_log_bytes metaserver_raft_snapshot_trigger_compacts_applied_log_bytes --lib -- --test-threads=1 && tools/run_raft_distributed_conformance.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "native_data_raft_parity",
             "timeout_s": 1200,
@@ -5283,7 +5283,7 @@
               "tools/run_data_raft_scale_up_down_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust rustraft_leader_transfer_under_high_write_load_commits_once --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_runner": "cargo test -p temporalstore-rust rustraft_leader_transfer_under_high_write_load_commits_once --lib -- --test-threads=1 && tools/run_raft_distributed_conformance.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "native_data_raft_parity",
             "timeout_s": 1200,
@@ -5337,7 +5337,7 @@
               "tools/run_data_raft_scale_up_down_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust rustraft_follower_rejoin_after_compaction_installs_snapshot_and_replays_tail raft_snapshot_bootstraps_lagging_data_replica_then_catches_up_logs --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_runner": "cargo test -p temporalstore-rust rustraft_follower_rejoin_after_compaction_installs_snapshot_and_replays_tail raft_snapshot_bootstraps_lagging_data_replica_then_catches_up_logs --lib -- --test-threads=1 && tools/run_raft_distributed_conformance.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "native_data_raft_parity",
             "timeout_s": 1200,
@@ -5394,7 +5394,7 @@
               "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "tools/run_raft_distributed_parity.sh",
+            "rust_runner": "tools/run_raft_distributed_conformance.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "native_data_raft_parity",
             "timeout_s": 1200,
@@ -5446,7 +5446,7 @@
               "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "tools/run_raft_distributed_parity.sh && cargo run -p temporalstore-rust --bin external_chaos_gate -- --profile quick",
+            "rust_runner": "tools/run_raft_distributed_conformance.sh && cargo run -p temporalstore-rust --bin external_chaos_gate -- --profile quick",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "native_data_raft_parity",
             "timeout_s": 1800,
@@ -5970,7 +5970,7 @@
             "required_paths": [
             ],
             "rust_runner": "cargo test -p temporalstore-rust proxy_backend_failure_quarantines_route_then_recovers proxy_cache_ttl_and_topology_version_guard_invalidate_routes -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
+            "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py",
             "suite": "native_proxy_control_plane_parity"
           },
           "name": "multi_proxy_convergence_quarantine_shared"
@@ -5989,7 +5989,7 @@
             "required_paths": [
             ],
             "rust_runner": "cargo test -p temporalstore-rust metaserver_scheduler_execute_next_installs_token_then_loads_node metaserver_scheduler_retries_busy_unload_without_dropping_task -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
+            "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py",
             "suite": "native_metaserver_control_plane_parity"
           },
           "name": "scheduler_token_stale_generation_rejection_shared"
@@ -6008,7 +6008,7 @@
             "required_paths": [
             ],
             "rust_runner": "cargo test -p temporalstore-rust runtime_lifecycle_snapshot_restores_transitions_and_tokens runtime_auto_persists_lifecycle_snapshot_across_transitions runtime_reports_bad_lifecycle_snapshot_restore_in_preflight -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
+            "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py",
             "suite": "native_data_node_lifecycle_parity"
           },
           "name": "datanode_lifecycle_restart_recovery_shared"
@@ -6027,7 +6027,7 @@
             "required_paths": [
             ],
             "rust_runner": "cargo test -p temporalstore-rust client_retries_retryable_read_status_before_returning client_does_not_retry_write_status_without_write_retry_budget client_retry_classifier_separates_safe_topology_retry_from_unsafe_write_retry -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
+            "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py",
             "suite": "native_client_control_plane_parity"
           },
           "name": "client_retry_budget_topology_refresh_shared"
@@ -6046,7 +6046,7 @@
             "required_paths": [
             ],
             "rust_runner": "cargo test -p temporalstore-rust kafka_consumer_group_runtime_reports_rebalance_and_backpressure -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_ingestion_ops_parity_evidence.py",
+            "rust_validator": "python3 tools/validate_ingestion_ops_conformance_evidence.py",
             "suite": "native_ingestion_parity"
           },
           "name": "kafka_consumer_group_runtime_rebalance_shared"
@@ -6065,7 +6065,7 @@
             "required_paths": [
             ],
             "rust_runner": "cargo test -p temporalstore-rust flink_checkpoint_lifecycle_precommit_commit_abort ingestion_restart_replays_offsets_and_checkpoints_idempotently -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_ingestion_ops_parity_evidence.py",
+            "rust_validator": "python3 tools/validate_ingestion_ops_conformance_evidence.py",
             "suite": "native_ingestion_parity"
           },
           "name": "flink_checkpoint_restart_failover_shared"
@@ -6085,7 +6085,7 @@
               "docs/rust_ingestion_api_kafka_flink_20_cycle_plan.md"
             ],
             "rust_runner": "cargo test -p temporalstore-rust dead_letter_export_captures_invalid_records_without_blocking_valid_records ingestion_lag_metrics_report_committed_and_high_water_offsets -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_ingestion_ops_parity_evidence.py",
+            "rust_validator": "python3 tools/validate_ingestion_ops_conformance_evidence.py",
             "suite": "native_ingestion_parity"
           },
           "name": "dead_letter_lag_report_contract_shared"
@@ -6432,7 +6432,7 @@
               "crates/temporalstore-rust/src/bin/ops_scale_readiness_harness.rs"
             ],
             "rust_runner": "cargo test -p temporalstore-rust --bin ops_scale_readiness_harness grafana_metrics_parity_contract_covers_dashboard_alerts_and_emitters -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_grafana_metrics_parity.py",
+            "rust_validator": "python3 tools/validate_grafana_metrics_conformance.py",
             "suite": "native_ops_scale_parity"
           },
           "name": "grafana_prometheus_metric_family_parity"
@@ -8356,7 +8356,7 @@
             "description": "Shared conformance ingestion case for streaming and batch ingestion parity: ordered stream sequence fences, replay duplicate rejection, active in-flight backpressure, batch continuation, durable stream commits, Kafka offsets, Flink checkpoint state, and Prometheus/state-report visibility.",
             "native_runner_contract": "ingestion runtime emits the same streaming/batch report fields: stream_id, start_sequence, committed_sequence, duplicate_count, backpressure_rejected_count, batch accepted/failed counts, Kafka offsets, Flink checkpoints, dead letters, and lag metrics.",
             "rust_runner": "cargo test -p temporalstore-rust streaming_ingestion_ ingestion_batch_executes_api_kafka_and_flink_records --lib -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_ingestion_ops_parity_evidence.py",
+            "rust_validator": "python3 tools/validate_ingestion_ops_conformance_evidence.py",
             "required_paths": [
               "docs/ingestion_streaming_batch_parity.md"
             ],
@@ -9617,7 +9617,7 @@
             "mode": "rust_executable_native_static",
             "required_paths": [
             ],
-            "rust_runner": "tools/run_raft_distributed_parity.sh",
+            "rust_runner": "tools/run_raft_distributed_conformance.sh",
             "rust_test": "openraft_process_path_reports_independent_wal_snapshot_and_read_index",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "native_data_raft_parity"

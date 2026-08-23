@@ -51,14 +51,14 @@ python3 tools/validate_readiness_workflow.py
 python3 tools/validate_rust_vs_parity_report.py
 python3 tools/run_temporalstore_unified_tests.py --validate-only
 python3 tools/validate_no_duplicate_tests.py
-python3 tools/validate_raft_storage_parity_evidence.py "${RAFT_NATIVE_EVIDENCE_ARGS[@]}"
+python3 tools/validate_raft_storage_conformance_evidence.py "${RAFT_NATIVE_EVIDENCE_ARGS[@]}"
 python3 tools/run_raft_shared_cases.py --validate-only
 python3 tools/validate_storage_raft_production_plan.py
-python3 tools/validate_control_plane_parity_evidence.py
+python3 tools/validate_control_plane_conformance_evidence.py
 python3 tools/run_context_shared_cases.py --validate-only
 python3 tools/run_control_plane_shared_cases.py --validate-only
-python3 tools/validate_api_model_parity_evidence.py
-python3 tools/validate_ingestion_ops_parity_evidence.py
+python3 tools/validate_api_model_conformance_evidence.py
+python3 tools/validate_ingestion_ops_conformance_evidence.py
 python3 tools/run_ingestion_shared_cases.py --validate-only
 python3 tools/validate_sdk_contract.py
 
@@ -84,7 +84,7 @@ cargo test -p temporalstore-rust --test storage_crash_harness -- --test-threads=
 echo "== unified: data-node/metaserver raft distributed parity =="
 TS_RAFT_PARITY_ARTIFACT_DIR="${TS_UNIFIED_RAFT_PARITY_ARTIFACT_DIR:-/tmp/temporalstore-unified-raft-parity}" \
 TS_RAFT_PARITY_TIMEOUT="${TS_UNIFIED_RAFT_PARITY_TIMEOUT:-180s}" \
-tools/run_raft_distributed_parity.sh
+tools/run_raft_distributed_conformance.sh
 
 echo "== unified: compact scale/shared-store harness =="
 timeout "${LOCAL_SCALE_TIMEOUT}" cargo run -p temporalstore-rust --bin scale_harness -- \
