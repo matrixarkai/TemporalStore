@@ -1073,14 +1073,16 @@ fn matrixark_scan_cache_key(command: &RecordLogRequest, count: u64) -> String {
     .unwrap_or_else(|_| format!("fallback:{count}"))
 }
 
-fn mark_scan_cache_hit(mut value: Value) -> Value {
+/// Stamp a cached scan result as a hit.
+///
+/// `cache_entries` is passed in rather than read here on purpose: the only caller is already
+/// holding the scan-cache guard when it hands us the cached value, and `std::sync::Mutex` is not
+/// reentrant, so locking again here blocks forever on a guard this very thread owns. That is what
+/// used to happen on every cache hit.
+fn mark_scan_cache_hit(mut value: Value, cache_entries: usize) -> Value {
     if let Some(object) = value.as_object_mut() {
         object.insert("cache_hit".to_string(), json!(true));
         if let Some(stats) = object.get_mut("scan_stats").and_then(Value::as_object_mut) {
-            let cache_entries = matrixark_scan_cache()
-                .lock()
-                .map(|cache| cache.len())
-                .unwrap_or(0);
             stats.insert("candidate_cache_hit".to_string(), json!(true));
             stats.insert("cache_hit".to_string(), json!(true));
             stats.insert("candidate_cache_scope".to_string(), json!("process_global"));
@@ -1340,10 +1342,17 @@ fn scan_matrixark_candidates(
     let count_text = read_record_count(engine, &count_key)?;
     let count = count_text.parse::<u64>().unwrap_or(0);
     let scan_cache_key = matrixark_scan_cache_key(command, count);
-    if let Ok(cache) = matrixark_scan_cache().lock() {
-        if let Some(cached) = cache.get(&scan_cache_key) {
-            return Ok(mark_scan_cache_hit(cached.clone()));
+    // Take everything needed from the cache under one guard, then drop it before stamping the
+    // result -- stamping used to re-lock this same mutex and hang the request.
+    let cached_hit = match matrixark_scan_cache().lock() {
+        Ok(cache) => {
+            let entries = cache.len();
+            cache.get(&scan_cache_key).cloned().map(|value| (value, entries))
         }
+        Err(_) => None,
+    };
+    if let Some((value, entries)) = cached_hit {
+        return Ok(mark_scan_cache_hit(value, entries));
     }
     let allowed_types: HashSet<String> = command
         .record_types
@@ -3472,6 +3481,20 @@ fn score_lowered_text(lowered: &str, query_terms: &[String]) -> f64 {
         / query_terms.len() as f64
 }
 
+/// Order candidates for selection: relevance first, then scan position.
+///
+/// The ordinal is the candidate's position in the scan, which is append order, so breaking ties on
+/// ordinal ASCENDING means the OLDEST matching statement wins. That is worth knowing about: two
+/// statements matching a query equally well are often a value and its later revision, and this
+/// ranks the stale one first. Measured -- "the deployment window is Monday" then "...Friday",
+/// queried for "deployment window", returns Monday first.
+///
+/// Flipping it to prefer the newer candidate is NOT the fix, and was tried and reverted. This
+/// comparator also decides what SURVIVES truncation to `max_selected_refs`, not just the order, so
+/// preferring recency globally dropped entity refs out of the pack altogether --
+/// `matrixark_native_retrieve_context_pack_returns_selected_refs` fails with the flip and passes
+/// without it. A real fix prefers recency WITHIN a ref type, or changes selection alongside the
+/// comparator so type coverage is preserved.
 fn compare_scored_candidate(left: (f64, usize), right: (f64, usize)) -> std::cmp::Ordering {
     right
         .0
@@ -3605,6 +3628,95 @@ fn _request_shape_for_docs() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    use super::compare_scored_candidate;
+    use std::cmp::Ordering;
+
+    /// Stamping a cache hit must not reach for the scan-cache lock.
+    ///
+    /// The caller stamps the value while it still holds that guard, so a lock in here deadlocks
+    /// the request against itself -- which is exactly what happened on every hit. Holding the
+    /// guard for the duration of the call pins the invariant: if `mark_scan_cache_hit` ever locks
+    /// again, this test hangs instead of passing.
+    #[test]
+    fn stamping_a_cache_hit_does_not_relock_the_scan_cache() {
+        let held = super::matrixark_scan_cache()
+            .lock()
+            .expect("scan cache lock");
+        let stamped = super::mark_scan_cache_hit(
+            serde_json::json!({"ok": true, "scan_stats": {"scanned_records": 3}}),
+            7,
+        );
+        drop(held);
+        assert_eq!(Some(true), stamped.get("cache_hit").and_then(|v| v.as_bool()));
+        let stats = stamped.get("scan_stats").expect("scan stats");
+        assert_eq!(
+            Some(7),
+            stats
+                .get("native_placement_candidate_cache_entries")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize),
+            "the entry count must come from the caller's guard, not a fresh lock"
+        );
+    }
+
+    /// Relevance still decides: a better score wins regardless of age.
+    #[test]
+    fn a_higher_score_wins_regardless_of_position() {
+        // (score, ordinal). The lower-scoring candidate is newer and must still lose.
+        assert_eq!(
+            Ordering::Less,
+            compare_scored_candidate((0.9, 0), (0.1, 99))
+        );
+        assert_eq!(
+            Ordering::Greater,
+            compare_scored_candidate((0.1, 99), (0.9, 0))
+        );
+    }
+
+    /// A tie is broken by scan position, EARLIEST first -- and that is a known wart, not a
+    /// preference.
+    ///
+    /// Candidates arrive in append order, so this ranks the older of two equally-relevant
+    /// statements first, which for a memory is usually the stale one. Preferring the newer
+    /// candidate was tried and reverted: this comparator also decides what survives truncation to
+    /// `max_selected_refs`, and flipping it dropped entity refs out of the pack entirely (see
+    /// `matrixark_native_retrieve_context_pack_returns_selected_refs`). Fixing it properly means
+    /// preferring recency within a ref type, or changing selection with it.
+    #[test]
+    fn a_tie_is_broken_by_scan_position() {
+        assert_eq!(
+            Ordering::Greater,
+            compare_scored_candidate((0.5, 7), (0.5, 2)),
+            "the earlier candidate (lower ordinal) currently sorts first on a tie"
+        );
+        assert_eq!(
+            Ordering::Less,
+            compare_scored_candidate((0.5, 2), (0.5, 7))
+        );
+    }
+
+    #[test]
+    fn the_same_candidate_compares_equal() {
+        assert_eq!(Ordering::Equal, compare_scored_candidate((0.5, 3), (0.5, 3)));
+    }
+
+    /// Sorting a realistic mix: scores descending, and within a score band scan order.
+    #[test]
+    fn sorting_puts_best_first_then_scan_order() {
+        let mut candidates = vec![(0.2, 0), (0.8, 1), (0.2, 5), (0.8, 4)];
+        candidates.sort_by(|left, right| compare_scored_candidate(*left, *right));
+        assert_eq!(vec![(0.8, 1), (0.8, 4), (0.2, 0), (0.2, 5)], candidates);
+    }
+
+    /// A NaN score must not panic the comparator; it falls through to the position tie-break.
+    #[test]
+    fn a_nan_score_is_treated_as_a_tie() {
+        assert_eq!(
+            Ordering::Greater,
+            compare_scored_candidate((f64::NAN, 9), (f64::NAN, 1))
+        );
+    }
+
     use super::*;
     use std::collections::BTreeSet;
     use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -3636,6 +3748,7 @@ mod tests {
             record_hash_key: None,
             shard_size: None,
             record_types: None,
+            record_ids: None,
             selected_node_hashes: None,
             secondary_index_groups: None,
             scope: None,
