@@ -172,7 +172,16 @@ impl LocalBlockStore {
                 }
             }
         }
-        persist_band_manifest(&inner.root, &inner.bands)?;
+        // Not written on every install: the cost of writing it is the cost of the whole
+        // manifest, so doing it per install makes installing n slabs cost n manifests. The load
+        // rebuilds from the slabs when what it reads does not match them, so the worst a deferred
+        // write costs is a rebuild after a crash.
+        inner.bands_unwritten = inner.bands_unwritten.saturating_add(1);
+        if inner.bands_unwritten >= BANDS_UNWRITTEN_BEFORE_PERSIST {
+            inner.bands_unwritten = 0;
+            inner.stats.band_manifest_writes = inner.stats.band_manifest_writes.saturating_add(1);
+            persist_band_manifest(&inner.root, &inner.bands)?;
+        }
         Ok(())
     }
 }
