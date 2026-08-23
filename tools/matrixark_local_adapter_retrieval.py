@@ -663,9 +663,18 @@ class _LocalAdapterRetrievalMixin:
             }
         )
 
+    def _idle_commit_candidate_records(self, scope: Json) -> list[Json]:
+        """The records the idle-commit drain needs: pipeline tasks, nothing else.
+
+        Reading the whole log is fine on the JSONL backend, where `read_all()` walks an in-memory
+        list. The native adapter overrides this with a typed scan, because there `read_all()` ships
+        the entire record log over the proxy -- once per ingest -- to look at one record type.
+        """
+        return self.read_all()
+
     def drain_due_idle_session_commits(self, *, scope: Json, args: Json, hook: Json | None) -> Json:
         now = now_ms()
-        records = self.read_all()
+        records = self._idle_commit_candidate_records(scope)
         latest_status_by_task_hash: dict[int, str] = {}
         latest_order_by_task_hash: dict[int, int] = {}
         for index, record in enumerate(records):

@@ -1176,6 +1176,31 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         result["engine_purge"] = self._purge_scope_in_engine(scope)
         return result
 
+    def _idle_commit_candidate_records(self, scope: Json) -> list[Json]:
+        """Ask the engine for the pipeline tasks instead of reading the whole log.
+
+        Safe to narrow because the drain uses these records for nothing else: both of its loops
+        skip anything that is not a `matrixark_async_pipeline_task`.
+
+        Order is what makes it equivalent, and it survives. The drain decides last-write-wins from
+        list position, and the scan's `compact_latest_context_state_records` keys only
+        `context_summary`, `context_model_registry` and some `context_embedding` rows -- a pipeline
+        task gets no key, so it passes through untouched -- and the function re-sorts by the
+        original index, so append order is preserved either way.
+
+        A scope is required. `idle_commit_task_records({})` degenerates to a cross-scope full-store
+        scan, which is the cost this exists to avoid; without one, fall back to the inherited read.
+        """
+        if not scope:
+            return super()._idle_commit_candidate_records(scope)
+        scanner = getattr(self, "idle_commit_task_records", None)
+        if not callable(scanner):
+            return super()._idle_commit_candidate_records(scope)
+        try:
+            return scanner(scope)
+        except Exception:  # noqa: BLE001 - a scan failure must not stop the drain.
+            return super()._idle_commit_candidate_records(scope)
+
     def append(self, record: Json) -> None:
         self.append_many([record])
 

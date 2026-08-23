@@ -109,6 +109,11 @@ class MatrixArkServerRequestPolicyMixin:
         key_hash = self._idempotency_key_hash(name, raw_key, identity)
         record = self.adapter.find_idempotency_record(key_hash)
         if not record:
+            # Proven absent for THIS key, in this call. `_finalize_write_response` asks the same
+            # question a moment later and would otherwise pay a second lookup; note the answer on
+            # the call's own args rather than re-deriving it.
+            if isinstance(args, dict):
+                args["_matrixark_idempotency_absent"] = key_hash
             return None
         response = dict(record.get("response") or {})
         response["idempotent_replay"] = True
@@ -139,7 +144,12 @@ class MatrixArkServerRequestPolicyMixin:
         if not raw_key:
             return response
         key_hash = self._idempotency_key_hash(name, raw_key, identity)
-        if not self.adapter.find_idempotency_record(key_hash):
+        # Absent already established at the top of this same call -- see
+        # `_idempotent_replay_response`. Only look again when it was not, which is the case for a
+        # tool that finalizes without having gone through the replay check.
+        known_absent = (isinstance(args, dict)
+                        and args.get("_matrixark_idempotency_absent") == key_hash)
+        if known_absent or not self.adapter.find_idempotency_record(key_hash):
             stored_response = {key: value for key, value in response.items() if key != "access"}
             for secret_key in ("api_key", "new_api_key", "raw_key", "secret"):
                 if secret_key in stored_response:
