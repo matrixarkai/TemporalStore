@@ -4786,6 +4786,11 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             "superseded_count": len(superseded),
             "member_count": len(closure_ref_ids),
             "member_source": member_source,
+            # The identity set this delete covers. Deciding what belongs in it is the subtle part
+            # -- single-source derivatives are removed, multi-source ones are demoted instead --
+            # and it is decided exactly once, here. Reported so a backend can apply the same set
+            # to its own copy without re-deriving the rule and drifting from it.
+            "closure_ref_ids": sorted(closure_ref_ids | {memory_id}),
         }
         self._maybe_auto_purge()
         return result
@@ -5270,10 +5275,11 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         if parts.get("a"):
             reingest_scope["agent_hash"] = int(parts["a"])
         reingest_scope["_explicit_scope_keys"] = explicit_keys
+        clean_scope = {key: value for key, value in reingest_scope.items() if value is not None}
         ingested = self.ingest(
             {
                 "messages": [{"role": "user", "content": new_text}],
-                "scope": {key: value for key, value in reingest_scope.items() if value is not None},
+                "scope": clean_scope,
                 "finalize": True,
             },
             hook=hook,
@@ -5296,12 +5302,20 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             self._forget_persisted_event_members(memory_id)
             self._invalidate_event_member_index()
         self.append(tombstone)
+        superseded_ids = sorted(set(tombstone.get("closure_ref_ids") or []) | {memory_id})
         return {
             "updated": True,
             "memory_id": memory_id,
             "new_memory_id": new_memory_id,
             "superseded": True,
             "text": new_text,
+            # The identity set the old version covered. Reported for the same reason delete
+            # reports its closure: a backend has to remove its own copy, and re-deriving the rule
+            # there would put two versions of it in the tree.
+            "closure_ref_ids": superseded_ids,
+            # The scope the replacement was ingested into, so a backend that needs to finish the
+            # write itself does not have to reconstruct it from the old record a second time.
+            "reingest_scope": clean_scope,
         }
 
     def history(self, args: Json) -> Json:

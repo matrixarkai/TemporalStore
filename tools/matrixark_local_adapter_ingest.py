@@ -875,7 +875,7 @@ class _LocalAdapterIngestMixin:
             deduped_source_refs: list[str] = []
             seen_content_hashes: set[str] = set()
             unique_chunks = []
-            for chunk in parsed_chunks:
+            for chunk_index, chunk in enumerate(parsed_chunks):
                 chunk_content_hash = str(chunk.metadata.get("content_hash") or content_hash(chunk.text))
                 if chunk_content_hash in seen_content_hashes:
                     deduped_source_refs.append(chunk.source_ref)
@@ -1085,6 +1085,11 @@ class _LocalAdapterIngestMixin:
                     {
                         "record_type": "resource_chunk",
                         "import_task_hash": resource_import_task_hash,
+                        # Explicit order. Reassembling content by log order works only while the
+                        # log is read append-ordered and nothing in between re-orders or
+                        # re-materializes; an index makes the order a property of the record
+                        # instead of a property of how it happened to be read.
+                        "chunk_index": chunk_index,
                         "chunk_hash": chunk.chunk_hash,
                         "node_hash": node_hash,
                         "node_path": node_path,

@@ -77,6 +77,10 @@ struct RecordLogRequest {
     shard_size: Option<u64>,
     #[serde(default)]
     record_types: Option<Vec<String>>,
+    /// Identity ids to remove, for `matrixark_delete_records`. Sent by the caller, which owns the
+    /// decision about what a delete covers; the engine only matches and removes.
+    #[serde(default)]
+    record_ids: Option<Vec<String>>,
     #[serde(default)]
     selected_node_hashes: Option<Vec<u64>>,
     #[serde(default)]
@@ -1696,6 +1700,121 @@ fn forget_scope_records(
     Ok(stats)
 }
 
+/// Every id a record can be addressed by: its own identity, and any reference it carries.
+///
+/// A delete removes the addressed record AND the embeddings / index postings that point at it --
+/// those carry no identity of their own, only a `ref_hash` / `ref_hashes` aimed at one. Matching
+/// both is what stops a delete leaving orphaned postings behind that still surface its text.
+fn record_addressable_ids(record: &Value) -> Vec<String> {
+    let mut ids = Vec::new();
+    let mut push = |value: Option<&Value>| {
+        if let Some(value) = value {
+            match value {
+                Value::String(text) if !text.is_empty() => ids.push(text.clone()),
+                Value::Number(number) => ids.push(number.to_string()),
+                _ => {}
+            }
+        }
+    };
+    for field in [
+        "event_id_hash",
+        "entity_hash",
+        "summary_hash",
+        "segment_hash",
+        "ref_hash",
+    ] {
+        push(record.get(field));
+    }
+    if let Some(Value::Array(refs)) = record.get("ref_hashes") {
+        for item in refs {
+            match item {
+                Value::String(text) if !text.is_empty() => ids.push(text.clone()),
+                Value::Number(number) => ids.push(number.to_string()),
+                _ => {}
+            }
+        }
+    }
+    ids
+}
+
+/// Remove every record addressable by one of `ids`.
+///
+/// Mirrors `forget_scope_records` -- same shard walk, same survivor rewrite, same single durable
+/// batch that also clears the scan/hgetall caches so a later retrieve cannot re-serve a removed
+/// record from cache. Only the predicate differs: identity ids instead of a scope.
+fn delete_records_by_ids(
+    engine: &TemporalEngine,
+    record_hash_key: &str,
+    count_key: &str,
+    shard_size: u64,
+    ids: &[String],
+) -> Result<ForgetScopeStats, String> {
+    let wanted: HashSet<&str> = ids.iter().map(String::as_str).collect();
+    let mut stats = ForgetScopeStats::default();
+    if wanted.is_empty() {
+        // An empty id set must remove NOTHING. Falling through to a match-everything walk here
+        // would turn a no-op delete into a store wipe.
+        return Ok(stats);
+    }
+    let shard_size = shard_size.max(1);
+    let count = read_record_count(engine, count_key)?
+        .trim()
+        .parse::<u64>()
+        .unwrap_or(0);
+    if count == 0 {
+        return Ok(stats);
+    }
+    let max_shard = (count - 1) / shard_size;
+    let mut commands = Vec::new();
+    for shard in 0..=max_shard {
+        stats.shards_scanned += 1;
+        let key = format!("{}:{:06}", record_hash_key, shard);
+        for (field, value) in hgetall_map(engine, key.clone())? {
+            let records = decode_matrixark_payload(&value);
+            if records.is_empty() {
+                // Undecodable / non-record field (e.g. a counter): never touch it.
+                continue;
+            }
+            stats.records_scanned += records.len();
+            let mut survivors = Vec::with_capacity(records.len());
+            let mut removed_here = 0_usize;
+            for record in records {
+                if record_addressable_ids(&record)
+                    .iter()
+                    .any(|id| wanted.contains(id.as_str()))
+                {
+                    removed_here += 1;
+                } else {
+                    survivors.push(record);
+                }
+            }
+            if removed_here == 0 {
+                continue;
+            }
+            stats.records_removed += removed_here;
+            if survivors.is_empty() {
+                commands.push(Command::HashDelete {
+                    key: key.clone(),
+                    field,
+                });
+                stats.fields_deleted += 1;
+            } else {
+                let encoded = encode_forget_survivors(&value, survivors);
+                commands.push(Command::HashSet {
+                    key: key.clone(),
+                    field,
+                    value: encoded.into_bytes(),
+                });
+                stats.fields_rewritten += 1;
+            }
+        }
+    }
+    if !commands.is_empty() {
+        execute_empty_batch_runtime(engine, commands, true)?;
+    }
+    Ok(stats)
+}
+
 fn candidate_text(record: &Value) -> String {
     for field in [
         "text",
@@ -2171,6 +2290,39 @@ fn execute_record_log_request(
             );
             output
         }
+        "matrixark_delete_records" => {
+            let count_key = required_option(request.count_key.clone(), "count_key")?;
+            let record_hash_key =
+                required_option(request.record_hash_key.clone(), "record_hash_key")?;
+            let shard_size = request.shard_size.unwrap_or(1024).max(1);
+            let ids = request.record_ids.clone().unwrap_or_default();
+            let stats =
+                delete_records_by_ids(&engine, &record_hash_key, &count_key, shard_size, &ids)?;
+            let mut output = empty_output(root);
+            output.status = "deleted".to_string();
+            output.count = Some(stats.records_removed);
+            output.extra.insert(
+                "matrixark_delete_records_removed".to_string(),
+                json!(stats.records_removed),
+            );
+            output.extra.insert(
+                "matrixark_delete_records_scanned".to_string(),
+                json!(stats.records_scanned),
+            );
+            output.extra.insert(
+                "matrixark_delete_fields_deleted".to_string(),
+                json!(stats.fields_deleted),
+            );
+            output.extra.insert(
+                "matrixark_delete_fields_rewritten".to_string(),
+                json!(stats.fields_rewritten),
+            );
+            output.extra.insert(
+                "matrixark_delete_ids_requested".to_string(),
+                json!(ids.len()),
+            );
+            output
+        }
         "matrixark_retrieve_context_pack" => {
             if matrixark_compact_snapshot_retrieve_enabled() {
                 retrieve_context_pack_output(&engine, &request, root)?
@@ -2203,6 +2355,13 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
         "matrixark_scan_candidates"
         | "matrixark_retrieve_context_pack"
         | "matrixark_retrieve_context_pack_full_scan" => {
+            require_non_empty("count_key", request.count_key.as_deref().unwrap_or(""))?;
+            require_non_empty(
+                "record_hash_key",
+                request.record_hash_key.as_deref().unwrap_or(""),
+            )
+        }
+        "matrixark_delete_records" => {
             require_non_empty("count_key", request.count_key.as_deref().unwrap_or(""))?;
             require_non_empty(
                 "record_hash_key",

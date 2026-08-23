@@ -676,6 +676,119 @@ class _LocalAdapterDashboardMixin:
             "record_count": len(records),
         }
 
+    # A response this size is a deliberate ceiling, not a guess: a skill or attachment can be
+    # far larger than anything a caller wants in one JSON body, and the point of paging is that
+    # they never have to find that out the hard way.
+    RESOURCE_CONTENT_DEFAULT_CHUNKS = 32
+    RESOURCE_CONTENT_MAX_CHARS = 200_000
+
+    def get_resource_content(self, args: Json) -> Json:
+        """Return one resource's (or skill's) stored text, in order, a page at a time.
+
+        `list_skills` / `list_resources` return a POINTER -- raw_uri, cloud_key -- and metadata.
+        The text is already stored, split across `resource_chunk` records at ingest, but nothing
+        reassembled it, so "give me this skill's content" had no answer: a caller had to know the
+        chunks existed and stitch them itself.
+
+        Paged on purpose. An attachment can be far larger than anything that belongs in one JSON
+        response, so this returns at most `chunk_limit` chunks and at most `max_chars` characters,
+        and reports `next_chunk_offset` when there is more. A caller that wants everything loops;
+        a caller that wants the first page pays for the first page.
+
+        Ordering is `chunk_index` where present, and log order otherwise -- chunks written before
+        the index existed have no other ordering key, and returning them in log order is what the
+        ingest path produced.
+        """
+        resource_hash = args.get("resource_hash", args.get("skill_hash"))
+        try:
+            resource_hash = int(resource_hash)
+        except (TypeError, ValueError):
+            raise MatrixArkError("resource_hash (or skill_hash) must be an integer")
+        if resource_hash <= 0:
+            raise MatrixArkError("resource_hash (or skill_hash) must be a positive integer")
+        scope = optional_object(args, "scope")
+        offset = args.get("chunk_offset", 0)
+        offset = int(offset) if isinstance(offset, int) and offset > 0 else 0
+        limit = args.get("chunk_limit", self.RESOURCE_CONTENT_DEFAULT_CHUNKS)
+        if not isinstance(limit, int) or limit <= 0:
+            limit = self.RESOURCE_CONTENT_DEFAULT_CHUNKS
+        max_chars = args.get("max_chars", self.RESOURCE_CONTENT_MAX_CHARS)
+        if not isinstance(max_chars, int) or max_chars <= 0:
+            max_chars = self.RESOURCE_CONTENT_MAX_CHARS
+
+        found: list[Json] = []
+        manifest: Json = {}
+        for position, record in enumerate(self.read_all()):
+            record_type = record.get("record_type")
+            if record_type in {"resource_manifest", "skill_manifest"}:
+                rid = record.get("resource_hash", record.get("skill_hash"))
+                try:
+                    rid = int(rid or 0)
+                except (TypeError, ValueError):
+                    continue
+                if rid == resource_hash and scope_matches(candidate_access_scope(record), scope):
+                    manifest = record
+                continue
+            if record_type != "resource_chunk":
+                continue
+            try:
+                if int(record.get("resource_hash") or 0) != resource_hash:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            if not scope_matches(candidate_access_scope(record), scope):
+                continue
+            index = record.get("chunk_index")
+            found.append({
+                "order": (int(index) if isinstance(index, int) else position),
+                "chunk_index": int(index) if isinstance(index, int) else None,
+                "chunk_hash": record.get("chunk_hash"),
+                "source_ref": record.get("source_ref", record.get("source_locator", "")),
+                "token_estimate": record.get("token_estimate", 0),
+                "text": str(record.get("text") or ""),
+            })
+        # Same chunk_hash can be re-ingested; the later write wins, as everywhere else.
+        deduped: dict[Any, Json] = {}
+        for item in found:
+            deduped[item.get("chunk_hash", item["order"])] = item
+        ordered = sorted(deduped.values(), key=lambda c: c["order"])
+
+        page: list[Json] = []
+        chars = 0
+        truncated_by_chars = False
+        for item in ordered[offset:offset + limit]:
+            text = item["text"]
+            if chars + len(text) > max_chars:
+                room = max(0, max_chars - chars)
+                if room:
+                    item = {**item, "text": text[:room], "truncated": True}
+                    page.append(item)
+                    chars += room
+                truncated_by_chars = True
+                break
+            page.append(item)
+            chars += len(text)
+
+        served = offset + len(page)
+        has_more = served < len(ordered) or truncated_by_chars
+        return {
+            "status": "ok",
+            "resource_hash": resource_hash,
+            "name": manifest.get("name", ""),
+            "description": manifest.get("description", ""),
+            "resource_type": manifest.get("resource_type", "skill" if manifest.get("skill_hash") else ""),
+            "raw_uri": manifest.get("raw_uri", ""),
+            "chunk_count": len(ordered),
+            "chunk_offset": offset,
+            "returned_chunks": len(page),
+            "next_chunk_offset": served if has_more else None,
+            "has_more": bool(has_more),
+            "truncated_by_max_chars": truncated_by_chars,
+            "chars": chars,
+            "text": "".join(c["text"] for c in page),
+            "chunks": [{k: v for k, v in c.items() if k != "order"} for c in page],
+        }
+
     def list_resources(self, args: Json) -> Json:
         scope = optional_object(args, "scope")
         limit = args.get("limit", 100)

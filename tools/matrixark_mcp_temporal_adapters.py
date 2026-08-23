@@ -755,6 +755,22 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         self._store_summary_pass_state(token, refreshed)
         return result
 
+    def _invalidate_summary_pass_state(self) -> None:
+        """Force the next background refresh pass to actually run.
+
+        The skip in `refresh_summaries` rests on the record COUNT: dirty state only changes when
+        records are appended, so an unchanged count after a pass that found nothing means the next
+        pass would reach the same conclusion. A purge breaks that -- it removes and rewrites
+        records in place without moving the count -- and the node whose summary and index postings
+        it just removed is exactly the node that now needs rebuilding. Left alone, an updated
+        memory stayed in `get_all` and never became retrievable again.
+        """
+        self._summary_pass_state = (None, None)
+        try:
+            self._client.put_string(self._summary_pass_state_key(), "")
+        except Exception:  # noqa: BLE001 - the in-process copy already forces a pass here.
+            pass
+
     def _summary_pass_state_key(self) -> str:
         return f"{self._storage_prefix}:summary_pass_state"
 
@@ -973,6 +989,217 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             if limit and len(results) >= limit:
                 break
         return {"results": results, "count": len(results)}
+
+    def _purge_scope_in_engine(self, scope: Json) -> Json:
+        """Ask the engine to physically remove every record matching `scope`.
+
+        Shared by forget (one subject) and reset (the whole tenant). The engine refuses an
+        under-specified scope -- it requires a non-zero tenant_hash or an explicit subject
+        dimension -- so an empty scope cannot be turned into "delete everything" by accident.
+        """
+        purger = getattr(self._client, "matrixark_forget_scope", None)
+        if not callable(purger):
+            return {"ok": False, "error": "engine does not expose matrixark_forget_scope"}
+        try:
+            purged = purger(
+                count_key=self._count_key,
+                record_hash_key=self._record_hash_key,
+                shard_size=self._shard_size,
+                scope=scope,
+            )
+        except Exception as exc:  # noqa: BLE001 - the tombstone stands; report the engine half.
+            return {"ok": False, "error": str(exc)}
+        self._invalidate_summary_pass_state()
+        self._drop_direct_record_cache()
+        return {
+            "ok": True,
+            "records_removed": purged.get("matrixark_forget_records_removed"),
+            "fields_deleted": purged.get("matrixark_forget_fields_deleted"),
+            "fields_rewritten": purged.get("matrixark_forget_fields_rewritten"),
+            "shards_scanned": purged.get("matrixark_forget_shards_scanned"),
+        }
+
+    def _purge_record_ids_in_engine(self, ids: list[str]) -> Json | None:
+        """Remove the named records in the engine. Returns None when there is nothing to remove.
+
+        Shared by delete and update. Both address a set of records the caller has already decided
+        on -- an empty set means remove nothing, never "remove everything".
+        """
+        ids = [str(item) for item in (ids or []) if str(item)]
+        if not ids:
+            return None
+        purger = getattr(self._client, "matrixark_delete_records", None)
+        if not callable(purger):
+            return {"ok": False, "error": "engine does not expose matrixark_delete_records"}
+        try:
+            purged = purger(
+                count_key=self._count_key,
+                record_hash_key=self._record_hash_key,
+                shard_size=self._shard_size,
+                record_ids=ids,
+            )
+        except Exception as exc:  # noqa: BLE001 - the tombstone stands; report the engine half.
+            return {"ok": False, "error": str(exc)}
+        self._drop_direct_record_cache()
+        return {
+            "ok": True,
+            "records_removed": purged.get("matrixark_delete_records_removed"),
+            "fields_deleted": purged.get("matrixark_delete_fields_deleted"),
+            "fields_rewritten": purged.get("matrixark_delete_fields_rewritten"),
+            "ids_requested": purged.get("matrixark_delete_ids_requested"),
+        }
+
+    def update_memory(self, args: Json, hook: Json | None = None) -> Json:
+        """Remove the superseded version from the ENGINE as well as from the serving view.
+
+        An update is a supersede: the new text is ingested and the old id tombstoned. `get_all`
+        honours that immediately. `/v1/retrieve` is assembled inside the engine, which has never
+        heard of a tombstone, so the OLD text kept being served -- and because it outranked the new
+        one, a search after a successful update returned the stale value and not the new value at
+        all:
+
+            after update:  get_all = the new text
+                           retrieve = the OLD text, and the new text nowhere in the results
+
+        That is worse than a failed update, because the caller is told it succeeded. The inherited
+        implementation already computes exactly which records the old version covered, and its own
+        comment says the sweep exists "so the old text can't leak via retrieval after the update" --
+        the engine simply never learned about it.
+        """
+        result = super().update_memory(args, hook)
+        # `finalize` is honoured by the DISPATCH layer, which runs session_commit as a second tool
+        # call; `adapter.ingest()` ignores it. update re-ingests through the adapter directly, so
+        # on a native backend the replacement stayed at `extraction_phase: hot_path` /
+        # `status: observed` forever -- read straight out of the engine it had no node_path, while
+        # an ordinary ingest in the same scope reached final/extraction_committed. Retrieval there
+        # serves committed content, so the updated memory was in `get_all` and in no search, while
+        # the value it replaced had been committed and was still being served.
+        #
+        # Only the native path needs this. On the JSONL backend the re-ingest is already
+        # retrievable and committing there BREAKS it -- doing this in the shared implementation
+        # turned `test_update_supersede_retrieve_returns_new` into an empty context pack.
+        reingest_scope = result.get("reingest_scope")
+        if isinstance(reingest_scope, dict) and reingest_scope:
+            try:
+                self.session_commit({"scope": reingest_scope, "force": True,
+                                     "commit_reason": "update_supersede"}, hook=hook)
+            except Exception as exc:  # noqa: BLE001 - durably stored; the idle commit still closes it.
+                result["commit_error"] = str(exc)
+        purged = self._purge_record_ids_in_engine(result.get("closure_ref_ids") or [])
+        if purged is not None:
+            result["engine_purge"] = purged
+        return result
+
+    def delete_memory(self, args: Json, hook: Json | None = None) -> Json:
+        """Delete the memory in the ENGINE as well as in the serving view.
+
+        Same hole forget and reset had: the tombstone is honoured by every read that goes through
+        the Python serving pipeline, so `get_all` drops immediately, but `/v1/retrieve` is assembled
+        inside the engine and the engine has never heard of a tombstone. Measured before this: after
+        a delete, get_all went 2 -> 1 while retrieve still served the deleted memory.
+
+        The identity set comes from the inherited implementation rather than being re-derived here.
+        Which records a delete covers is genuinely subtle -- the addressed event, its single-source
+        derivatives, and the embeddings/postings pointing at any of them, while MULTI-source
+        derivatives are demoted rather than removed -- and deciding it twice, in two languages, is
+        how the two copies drift.
+        """
+        result = super().delete_memory(args, hook)
+        purged = self._purge_record_ids_in_engine(result.get("closure_ref_ids") or [])
+        if purged is not None:
+            result["engine_purge"] = purged
+        return result
+
+    def reset(self, args: Json, hook: Json | None = None) -> Json:
+        """Wipe the tenant in the ENGINE as well as in the serving view.
+
+        Same defect as forget, same cause: the inherited implementation writes a tombstone that
+        only the Python serving pipeline honours, so `get_all` returned 0 while `/v1/retrieve` --
+        assembled inside the engine -- went on serving the tenant's memories verbatim. Measured
+        before this: get_all=0 and the reset canary still retrievable.
+
+        Scoped to the caller's tenant, never wider. The engine's own guard would refuse an
+        under-specified scope anyway, but the tenant hash is resolved here rather than trusting
+        whatever the request carried.
+        """
+        result = super().reset(args, hook)
+        scope = dict(optional_object(args, "scope"))
+        tenant_hash, _ = self._resolve_subject_hashes(scope)
+        if not tenant_hash:
+            return result
+        # Tenant-wide on purpose: drop the user/session dimensions so this matches every record in
+        # the tenant, which is what reset means -- and keep the tenant hash, which is what stops it
+        # matching anything else.
+        engine_scope = {k: v for k, v in scope.items()
+                        if k not in ("user_id", "session_id", "agent_id", "user_hash",
+                                     "session_hash", "scope_key", "_explicit_scope_keys")}
+        engine_scope["tenant_hash"] = tenant_hash
+        result["engine_purge"] = self._purge_scope_in_engine(engine_scope)
+        return result
+
+    def forget(self, args: Json, hook: Json | None = None) -> Json:
+        """Forget the subject in the ENGINE as well as in the serving view.
+
+        The inherited implementation writes a durable tombstone, and every read that goes through
+        the Python serving pipeline honours it -- `get_all` returns 0 immediately. `/v1/retrieve`
+        does not go through that pipeline: on a native backend the engine assembles the context
+        pack itself, and the engine has no idea the tombstone exists. So a forgotten memory kept
+        coming back from retrieve, verbatim, while every check that asked `/v1/memories` reported
+        a clean wipe:
+
+            before forget:  get_all=2, retrieve contains the subject's secret = True
+            forget:         http 200, removed_count 54
+            after forget:   get_all=0, retrieve contains the secret = STILL True
+
+        Deleting data has to mean deleting it on every read path. The engine has had
+        `matrixark_forget_scope` all along -- it removes the subject's records, refuses an
+        under-specified scope that would match everything, commits one durable batch, and clears
+        its scan caches so a later retrieve cannot re-serve from cache -- and nothing called it.
+
+        The tombstone is still written first, and deliberately: it is the durable, auditable record
+        of the forget, it makes the serving view correct even if the engine call fails, and its
+        order-aware semantics are what let a subject be re-ingested afterwards. The engine purge is
+        what makes the deletion real.
+        """
+        result = super().forget(args, hook)
+        try:
+            from tools.matrixark_mcp_core_identity import identity_hashes
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_core_identity import identity_hashes
+        scope = dict(optional_object(args, "scope"))
+        # The engine matches records by scope, so it needs the SUBJECT's own hashes rather than
+        # whatever the caller's request happened to carry.
+        user_id = str(scope.get("user_id") or "")
+        if user_id:
+            scope.update(identity_hashes(str(scope.get("account_id") or ""),
+                                         str(scope.get("tenant_id") or ""), user_id=user_id))
+        result["engine_purge"] = self._purge_scope_in_engine(scope)
+        return result
+
+    def _idle_commit_candidate_records(self, scope: Json) -> list[Json]:
+        """Ask the engine for the pipeline tasks instead of reading the whole log.
+
+        Safe to narrow because the drain uses these records for nothing else: both of its loops
+        skip anything that is not a `matrixark_async_pipeline_task`.
+
+        Order is what makes it equivalent, and it survives. The drain decides last-write-wins from
+        list position, and the scan's `compact_latest_context_state_records` keys only
+        `context_summary`, `context_model_registry` and some `context_embedding` rows -- a pipeline
+        task gets no key, so it passes through untouched -- and the function re-sorts by the
+        original index, so append order is preserved either way.
+
+        A scope is required. `idle_commit_task_records({})` degenerates to a cross-scope full-store
+        scan, which is the cost this exists to avoid; without one, fall back to the inherited read.
+        """
+        if not scope:
+            return super()._idle_commit_candidate_records(scope)
+        scanner = getattr(self, "idle_commit_task_records", None)
+        if not callable(scanner):
+            return super()._idle_commit_candidate_records(scope)
+        try:
+            return scanner(scope)
+        except Exception:  # noqa: BLE001 - a scan failure must not stop the drain.
+            return super()._idle_commit_candidate_records(scope)
 
     def append(self, record: Json) -> None:
         self.append_many([record])
@@ -2704,6 +2931,49 @@ class MatrixArkRustProxyClient:
 
     def scan_hash(self, key: str) -> Json:
         return self._call_json("scan_hash", key=key)
+
+    def matrixark_delete_records(
+        self,
+        *,
+        count_key: str,
+        record_hash_key: str,
+        shard_size: int,
+        record_ids: list[str],
+    ) -> Json:
+        """Remove the named records in the engine.
+
+        A deliberately dumb primitive: the caller decides what a delete covers, the engine removes
+        what matches. An empty id list removes nothing.
+        """
+        return self._call_json(
+            "matrixark_delete_records",
+            count_key=count_key,
+            record_hash_key=record_hash_key,
+            shard_size=shard_size,
+            record_ids=[str(item) for item in record_ids],
+        )
+
+    def matrixark_forget_scope(
+        self,
+        *,
+        count_key: str,
+        record_hash_key: str,
+        shard_size: int,
+        scope: Json,
+    ) -> Json:
+        """Physically remove a subject's records in the engine.
+
+        The engine refuses an under-specified scope, so this cannot be used to wipe a store by
+        accident; it rewrites each hash field to its survivors, commits one durable batch, and
+        clears the engine's scan/hgetall caches.
+        """
+        return self._call_json(
+            "matrixark_forget_scope",
+            count_key=count_key,
+            record_hash_key=record_hash_key,
+            shard_size=shard_size,
+            scope=scope,
+        )
 
     def matrixark_scan_candidates(
         self,
