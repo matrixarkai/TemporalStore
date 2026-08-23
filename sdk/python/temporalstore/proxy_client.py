@@ -12,7 +12,6 @@ from .client import (
     FeatureFilter,
     FeatureFilterOp,
     FeaturePoint,
-    IpsFeatureStat,
     RiskPrecision,
     SequenceFeatureRow,
     TemporalStoreError,
@@ -226,69 +225,7 @@ class ProxyClient:
             for row in data.get("rows", [])
         ]
 
-    def add_ips_instance(
-        self,
-        table: str,
-        uid: int,
-        timestamp_us: int,
-        action_type: int,
-        logical_table: int,
-        features: Iterable[IpsFeatureStat],
-    ) -> None:
-        body = {
-            "namespace": self.options.namespace_name,
-            "table": self.options.table_name,
-            "ips_table": table,
-            "uid": uid,
-            "timestamp_us": timestamp_us,
-            "action_type": action_type,
-            "logical_table": logical_table,
-            "features": [asdict(feature) for feature in features],
-        }
-        body["command"] = {
-            "kind": "ips_add_with_options",
-            "key": table,
-            "timestamp_ms": int(timestamp_us // 1000),
-            "instance": _bytes_value(json.dumps(body["features"], separators=(",", ":"))),
-            "action_type": int(action_type),
-            "table_id": int(logical_table),
-        }
-        self._post("/ProxyService/ExecuteTableCmd", body)
 
-    def query_ips_last_instances(
-        self,
-        table: str,
-        uid: int,
-        action_type: int,
-        logical_table: int,
-        slot: int,
-        top_k: int = 20,
-        last_instances: int = 10,
-    ) -> List[IpsFeatureStat]:
-        body = {
-            "namespace": self.options.namespace_name,
-            "table": self.options.table_name,
-            "ips_table": table,
-            "uid": uid,
-            "action_type": action_type,
-            "logical_table": logical_table,
-            "slot": slot,
-            "top_k": top_k,
-            "last_instances": last_instances,
-        }
-        body["command"] = {"kind": "ips_query_last", "key": table, "count": int(last_instances)}
-        data = self._post("/ProxyService/ExecuteTableCmd", body)
-        return [
-            IpsFeatureStat(
-                int(row.get("id", 0)),
-                int(row.get("slot", slot)),
-                bool(row.get("has_slot", True)),
-                int(row.get("type", 0)),
-                int(row.get("v1", 0)),
-                int(row.get("v2", 0)),
-            )
-            for row in data.get("features", [])
-        ]
 
     def risk_increment(
         self,

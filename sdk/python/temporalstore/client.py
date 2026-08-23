@@ -82,13 +82,3 @@ class SequenceFeatureRow:
     action_type: int
     duration: int
     author_id: int
-
-
-@dataclass
-class IpsFeatureStat:
-    id: int
-    slot: int
-    has_slot: bool = True
-    type: int = 0
-    v1: int = 0
-    v2: int = 0

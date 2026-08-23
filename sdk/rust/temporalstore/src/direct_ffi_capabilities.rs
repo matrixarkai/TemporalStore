@@ -60,7 +60,6 @@ extern "C" {
     pub(crate) fn temporalstore_sequence_feature_row_array_free(
         rows: *mut CSequenceFeatureRowArray,
     );
-    pub(crate) fn temporalstore_add_ips_instance(
         client: *mut TemporalStoreClientOpaque,
         table: *const c_char,
         uid: i64,
@@ -71,7 +70,6 @@ extern "C" {
         feature_count: usize,
         error_message: *mut *mut c_char,
     ) -> c_int;
-    pub(crate) fn temporalstore_query_ips_last_instances(
         client: *mut TemporalStoreClientOpaque,
         table: *const c_char,
         uid: i64,
@@ -83,7 +81,6 @@ extern "C" {
         features: *mut CIpsFeatureArray,
         error_message: *mut *mut c_char,
     ) -> c_int;
-    pub(crate) fn temporalstore_ips_feature_array_free(features: *mut CIpsFeatureArray);
     pub(crate) fn temporalstore_control_state_increment(
         client: *mut TemporalStoreClientOpaque,
         key: *const c_char,
