@@ -49,6 +49,11 @@ impl TemporalStoreClient {
                         return Err(err.into());
                     }
                     if !Self::may_send_again(&request.commands, &err) {
+                        self.inner
+                            .stats
+                            .lock()
+                            .expect("client stats lock poisoned")
+                            .record_write_of_unknown_outcome();
                         let _ = self.resolve_route(request.shard_id, true, None);
                         return Err(err.into());
                     }
@@ -164,6 +169,11 @@ impl TemporalStoreClient {
                         return Err(err.into());
                     }
                     if !Self::may_send_again(std::slice::from_ref(&request.command), &err) {
+                        self.inner
+                            .stats
+                            .lock()
+                            .expect("client stats lock poisoned")
+                            .record_write_of_unknown_outcome();
                         // Drop the stale route so the NEXT request re-resolves, but do not
                         // send this write a second time -- its outcome is unknown, not known
                         // to be "never happened".
@@ -229,6 +239,11 @@ impl TemporalStoreClient {
                         return Err(err.into());
                     }
                     if !Self::may_send_again(&request.commands, &err) {
+                        self.inner
+                            .stats
+                            .lock()
+                            .expect("client stats lock poisoned")
+                            .record_write_of_unknown_outcome();
                         let _ =
                             self.resolve_route(request.shard_id, true, continuous_failed_time_ms);
                         return Err(err.into());

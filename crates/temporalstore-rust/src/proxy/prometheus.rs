@@ -74,6 +74,7 @@ impl ProxyService {
                 "continuous_backend_failure",
                 stats.continuous_backend_failures,
             ),
+            ("write_of_unknown_outcome", stats.writes_of_unknown_outcome),
             ("metaserver_error", stats.metaserver_errors),
             ("client_meta_sync_error", client.meta_sync_errors),
         ] {

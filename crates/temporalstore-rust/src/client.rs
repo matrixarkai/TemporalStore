@@ -368,6 +368,16 @@ pub struct ClientStats {
     pub backend_error_streak: u64,
     pub continuous_backend_failures: u64,
     pub backend_successes_after_error: u64,
+    /// Writes that failed with an outcome nobody can determine, and so were deliberately not
+    /// sent again.
+    ///
+    /// A refused connection proves the write never arrived and it is simply retried. A
+    /// timeout does not: the datanode stopped answering, and the write may or may not have
+    /// been applied. Repeating it there would apply it twice, so it is not repeated -- which
+    /// means these are the writes whose fate is genuinely unknown. That is a number an
+    /// operator has to be able to see; it was previously indistinguishable from an ordinary
+    /// backend error.
+    pub writes_of_unknown_outcome: u64,
     pub meta_sync_total: u64,
     pub meta_sync_errors: u64,
 }
@@ -579,6 +589,10 @@ pub struct ClientRetryDecision {
 }
 
 impl ClientStats {
+    fn record_write_of_unknown_outcome(&mut self) {
+        self.writes_of_unknown_outcome += 1;
+    }
+
     fn record_backend_error(&mut self, became_continuous: bool) {
         self.backend_errors += 1;
         self.backend_error_streak += 1;
