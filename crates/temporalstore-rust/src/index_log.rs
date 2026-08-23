@@ -689,6 +689,11 @@ impl LocalIndexLogStore {
         &self,
         shard_id: ShardId,
         retain_from_sequence: u64,
+        // Bounding this per round makes it WORSE. The round rewrites what it retains, so
+        // removing fewer records means copying more of them: 40,000 records took 357 ms in one
+        // unlimited round against 492 ms for a round limited to 200 -- dearer, and with the rest
+        // still to do. Zero, which every caller passes, is the cheap option. See
+        // `bounding_the_index_collector_per_round_costs_more_not_less`.
         max_entries_per_round: usize,
     ) -> Result<IndexLogGcReport, IndexLogError> {
         let inner = self.inner.lock().expect("index log lock poisoned");
@@ -1271,5 +1276,50 @@ mod tests {
         let reopened = LocalIndexLogStore::new(dir.path());
         assert_eq!(reopened.scan(8, 0, u64::MAX, u64::MAX).unwrap().len(), 3);
         assert_eq!(reopened.stats(8).last_sequence, 3);
+    }
+
+    /// Bounding this collector per round costs MORE, not less.
+    ///
+    /// Every other sweep here is bounded per round, this one takes a limit, and the production
+    /// path never passes one -- which looks exactly like an oversight worth fixing. It is not.
+    ///
+    /// The collector rewrites what it KEEPS: retained records are copied into a fresh file. So a
+    /// round that removes fewer records retains more and copies more. Timed on one round, removing
+    /// everything but the last record: 2,000 records took 22.7 ms unlimited against 29.0 ms
+    /// limited to 200; 40,000 took 356.7 ms against 492.0 ms. The bounded round is dearer and
+    /// leaves the rest of the work for later rounds that are dearer still.
+    ///
+    /// The assertion is on bytes rewritten rather than time, because that is the thing that makes
+    /// it true and it does not depend on the machine.
+    #[test]
+    fn bounding_the_index_collector_per_round_costs_more_not_less() {
+        let records = 4_000usize;
+        let mut rewritten = Vec::new();
+        for limit in [0usize, 200] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalIndexLogStore::new(dir.path());
+            for value in 0..records {
+                store
+                    .append_json(5, format!("{{\"value\":{value}}}").as_bytes())
+                    .unwrap();
+            }
+            let report = store
+                .gc_before_sequence_limited(5, records as u64, limit)
+                .unwrap();
+            // What the round costs is what it copies, which is what it retained.
+            rewritten.push((limit, report.records_removed, report.bytes_after));
+        }
+
+        let (_, unlimited_removed, unlimited_bytes) = rewritten[0];
+        let (_, limited_removed, limited_bytes) = rewritten[1];
+        assert_eq!(unlimited_removed, records - 1, "unlimited should clear the log");
+        assert_eq!(limited_removed, 200, "the limit should be respected");
+        assert!(
+            limited_bytes > unlimited_bytes * 10,
+            "a bounded round should be shown rewriting far more than an unbounded one \
+             ({limited_bytes} bytes against {unlimited_bytes}); if that is no longer true the \
+             collector has stopped copying what it keeps, and a per-round bound may now be worth \
+             having"
+        );
     }
 }
