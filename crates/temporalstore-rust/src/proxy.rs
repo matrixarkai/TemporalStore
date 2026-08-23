@@ -2498,6 +2498,74 @@ mod tests {
     }
 
     #[test]
+    fn every_proxy_counter_is_exposed_on_the_metrics_endpoint() {
+        // A counter nobody can read is a counter nobody acts on. topology_checks_skipped was
+        // added and never exposed, so the round-trips it was counting stayed invisible.
+        //
+        // The destructuring below has NO `..` rest pattern on purpose: adding a field to
+        // ProxyStats stops this test compiling until whoever added it says where it surfaces.
+        // That is the only guard that survives someone forgetting -- a hand-kept list of
+        // metric names would drift exactly the way this one already did.
+        let ProxyStats {
+            execute_requests,
+            batch_execute_requests,
+            bad_requests,
+            context_ingest_requests,
+            context_extract_requests,
+            context_retrieve_requests,
+            admission_rejections,
+            account_rejections,
+            inflight_rejections,
+            heartbeat_total,
+            heartbeat_slow_total,
+            auto_register_total,
+            route_cache_hits,
+            route_cache_misses,
+            route_refreshes,
+            topology_checks_skipped,
+            backend_errors,
+            continuous_backend_failures,
+            metaserver_errors,
+        } = ProxyStats::default();
+
+        // Field -> the label it is published under. Values are only here so the destructured
+        // bindings are used; what is asserted is that each label reaches the endpoint.
+        let published: [(&str, u64); 19] = [
+            ("kind=\"execute\"", execute_requests),
+            ("kind=\"batch_execute\"", batch_execute_requests),
+            ("kind=\"bad_request\"", bad_requests),
+            ("kind=\"context_ingest\"", context_ingest_requests),
+            ("kind=\"context_extract\"", context_extract_requests),
+            ("kind=\"context_retrieve\"", context_retrieve_requests),
+            ("kind=\"admission_rejection\"", admission_rejections),
+            ("kind=\"account_rejection\"", account_rejections),
+            ("kind=\"inflight_rejection\"", inflight_rejections),
+            ("kind=\"heartbeat\"", heartbeat_total),
+            ("kind=\"heartbeat_slow\"", heartbeat_slow_total),
+            ("kind=\"auto_register\"", auto_register_total),
+            ("kind=\"hit\"", route_cache_hits),
+            ("kind=\"miss\"", route_cache_misses),
+            ("kind=\"refresh\"", route_refreshes),
+            ("kind=\"topology_check_skipped\"", topology_checks_skipped),
+            ("kind=\"backend_error\"", backend_errors),
+            ("kind=\"continuous_backend_failure\"", continuous_backend_failures),
+            ("kind=\"metaserver_error\"", metaserver_errors),
+        ];
+
+        let proxy = scoped_proxy(ProxyOptions::default());
+        let metrics = proxy.prometheus_metrics();
+        let missing: Vec<&str> = published
+            .iter()
+            .map(|(label, _)| *label)
+            .filter(|label| !metrics.contains(label))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "these counters never reach /metrics: {missing:?}"
+        );
+    }
+
+    #[test]
     fn a_partial_config_push_keeps_every_field_it_does_not_mention() {
         let proxy = scoped_proxy(ProxyOptions {
             serving_mode: ProxyServingMode::NotServing,
