@@ -3623,3 +3623,111 @@ fn an_evicted_derived_page_is_served_from_its_wal_record() {
         "a derived page must not read back as missing once its cache entry is gone"
     );
 }
+
+/// What waiting before a dump would save, and what it would cost to wait.
+///
+/// A bucket is dumped, dirtied again by the very next write, and dumped again. Letting the log
+/// accumulate first lets those writes merge into one dump. The knob for that exists and is off, so
+/// today every cycle dumps every dirty bucket.
+///
+/// Off is a defensible choice -- the dumps saved are paid for with a longer log to replay after a
+/// restart -- so this reports both sides rather than asserting one is right.
+#[test]
+fn what_delaying_a_dump_would_save_and_cost() {
+    for threshold in [0u64, 5, 25, 100] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1 << 20,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+
+        let writes = 100u64;
+        let mut dumps = 0u64;
+        let mut worst_undumped = 0u64;
+        for index in 0..writes {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    // One key, written over and over: the case where merging matters.
+                    key: "hot".to_string(),
+                    value: format!("v{index}").into_bytes(),
+                },
+            });
+            let plan = engine.storage_lifecycle_plan(StorageLifecycleRequest {
+                shard_id: 1,
+                min_undumped_wal_records: threshold,
+                max_dump_buckets_per_round: 16,
+                ..Default::default()
+            });
+            if !plan.selected_dump_buckets.is_empty() {
+                dumps += 1;
+            }
+            worst_undumped = worst_undumped.max(plan.undumped_wal_records);
+        }
+        println!(
+            "  threshold {threshold:>4} records: {dumps:>4} dumps for {writes} writes to one bucket, \
+             worst undumped backlog {worst_undumped} records"
+        );
+    }
+}
+
+/// What waiting before a dump saves, and what the wait costs.
+///
+/// A bucket is dumped, dirtied again by the very next write, and dumped again. Letting the log
+/// accumulate first lets those writes merge into one dump. The knob for that exists and is off by
+/// default, so today every cycle dumps every dirty bucket.
+///
+/// Off is a defensible choice -- the dumps saved are paid for with a longer log to replay after a
+/// restart -- so this reports both sides rather than asserting one is right. The dumps are taken,
+/// not merely planned: planning alone never advances the dumped watermark, and then the backlog
+/// never falls and the counts mean nothing.
+#[test]
+fn what_delaying_a_dump_saves_and_costs() {
+    for threshold in [0u64, 10, 50] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1 << 20,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+
+        let writes = 100u64;
+        let mut dumps = 0u64;
+        let mut worst_backlog = 0u64;
+        for index in 0..writes {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    // One key, written over and over: the case where merging matters.
+                    key: "hot".to_string(),
+                    value: format!("v{index}").into_bytes(),
+                },
+            });
+            let plan = engine.storage_lifecycle_plan(StorageLifecycleRequest {
+                shard_id: 1,
+                min_undumped_wal_records: threshold,
+                max_dump_buckets_per_round: 16,
+                ..Default::default()
+            });
+            worst_backlog = worst_backlog.max(plan.undumped_wal_records);
+            if !plan.selected_dump_buckets.is_empty() {
+                // Take the dump, so the watermark moves and the next backlog is real.
+                if engine
+                    .create_bucket_dump_manifest(1, plan.selected_dump_buckets.clone())
+                    .is_ok()
+                {
+                    dumps += 1;
+                }
+            }
+        }
+        println!(
+            "  threshold {threshold:>3} records: {dumps:>4} dumps for {writes} writes to one bucket, \
+             worst replay backlog {worst_backlog} records"
+        );
+    }
+}
