@@ -136,7 +136,7 @@ AREAS: tuple[IngestionOpsArea, ...] = (
                 ),
             ),
             Evidence(
-                "tools/run_temporalstore_parity_gate.sh",
+                "tools/run_temporalstore_conformance_gate.sh",
                 (
                     "distributed_raft_harness",
                     "storage_fault_matrix_harness",
@@ -298,7 +298,7 @@ def validate_corpus_area(area: IngestionOpsArea, cases: dict[str, dict], require
             )
         if not command.get("rust_runner"):
             raise SystemExit(f"{area.name}: {area.corpus_case}/{step.get('name')} has no rust_runner")
-        if command.get("rust_validator") != "python3 tools/validate_ingestion_ops_parity_evidence.py":
+        if command.get("rust_validator") != "python3 tools/validate_ingestion_ops_conformance_evidence.py":
             raise SystemExit(
                 f"{area.name}: {area.corpus_case}/{step.get('name')} has wrong rust_validator"
             )

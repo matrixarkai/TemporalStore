@@ -141,6 +141,6 @@ Latest local proof on June 29, 2026:
 
 The focused RustRaft library tests and TemporalStore RustRaft consumer tests pass
 against the separate `RustRaft` checkout. Broader distributed/data-node Raft
-parity remains covered by `tools/run_raft_distributed_parity.sh`, which runs
+parity remains covered by `tools/run_raft_distributed_conformance.sh`, which runs
 data-node distributed Raft, secondary replication, metaserver Raft, and the
 combined parity summary.

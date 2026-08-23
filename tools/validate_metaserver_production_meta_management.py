@@ -103,7 +103,7 @@ def main() -> None:
         "metaserver_raft_harness",
     )
     count += require_snippets(
-        ROOT / "tools" / "build_raft_distributed_parity_summary.py",
+        ROOT / "tools" / "build_raft_distributed_conformance_summary.py",
         REQUIRED_PARITY_SUMMARY_FIELDS,
         "raft_distributed_parity_summary",
     )

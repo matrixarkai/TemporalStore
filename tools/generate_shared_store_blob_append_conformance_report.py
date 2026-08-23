@@ -83,7 +83,7 @@ def _load_rust_runtime_report(args: argparse.Namespace) -> tuple[dict[str, Any],
         "--features",
         "matrixobject",
         "--example",
-        "shared_store_append_blob_parity_report",
+        "shared_store_append_blob_conformance_report",
     ])
     started = time.time()
     result = _run(command, cwd=ROOT, env=env, timeout=args.timeout_seconds)
@@ -328,7 +328,7 @@ def _rust_summary(rust_report: dict[str, Any]) -> dict[str, Any]:
     async_enqueue_latency_avg_us = _avg_number_list(async_writer.get("enqueue_latencies_us"))
     retrieval_latency_avg_us = summary.get("retrieval_latency_avg_us")
     return {
-        "runtime_valid": rust_report.get("schema") == "temporalstore_shared_store_append_blob_parity_report_v1",
+        "runtime_valid": rust_report.get("schema") == "temporalstore_shared_store_append_blob_conformance_report_v1",
         "matrixobject_mode": rust_report.get("matrixobject_mode"),
         "storage_semantics": "incremental_journal_reopen_matrixobject_binding",
         "durable_reopen_equivalent": snapshot_reopen_ok,

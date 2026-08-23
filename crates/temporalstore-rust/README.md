@@ -96,7 +96,7 @@ overrides still work for compatibility.
 Keep the and Rust surfaces synchronized with:
 
 ```bash
-python3 tools/validate_storage_tuning_parity.py
+python3 tools/validate_storage_tuning_conformance.py
 ```
 
 For process-path Raft evidence, use the harnesses:

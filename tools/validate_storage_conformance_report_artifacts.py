@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from validate_storage_lifecycle_parity import (
+from validate_storage_lifecycle_conformance import (
     ALLOWED_ALIAS_CONTAINERS,
     CANONICAL_JSON_FIELDS,
     CANONICAL_PUBLIC_FIELDS,
@@ -44,7 +44,7 @@ from validate_storage_lifecycle_parity import (
     REQUIRED_STORAGE_WRITE_RESULT_FIELDS,
     REQUIRED_STORAGE_WRITE_SEQUENCE,
 )
-from validate_storage_tuning_parity import EXPECTED_DEFAULTS
+from validate_storage_tuning_conformance import EXPECTED_DEFAULTS
 
 
 ROOT = Path(__file__).resolve().parents[1]

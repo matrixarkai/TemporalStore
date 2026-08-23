@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Split out of validate_storage_lifecycle_parity.py; re-exported at that module's end via the dual
+"""Split out of validate_storage_lifecycle_conformance.py; re-exported at that module's end via the dual
 relative/absolute import pattern so the same module object is reused under both
 the package path (tools.<mod>) and the top-level path. No import-time cycle.
 __all__ lists every moved name for total re-export."""
@@ -9,15 +9,15 @@ import json
 import pathlib
 from typing import Any
 
-try:  # package path (tools.validate_storage_lifecycle_parity)
-    from .validate_storage_lifecycle_parity import (
+try:  # package path (tools.validate_storage_lifecycle_conformance)
+    from .validate_storage_lifecycle_conformance import (
         ALLOWED_ALIAS_CONTAINERS,
         CANONICAL_JSON_FIELDS,
         LEGACY_ALIAS_MAP,
         SCALE_REPORT,
     )
-except ImportError:  # top-level path (validate_storage_lifecycle_parity)
-    from validate_storage_lifecycle_parity import (
+except ImportError:  # top-level path (validate_storage_lifecycle_conformance)
+    from validate_storage_lifecycle_conformance import (
         ALLOWED_ALIAS_CONTAINERS,
         CANONICAL_JSON_FIELDS,
         LEGACY_ALIAS_MAP,

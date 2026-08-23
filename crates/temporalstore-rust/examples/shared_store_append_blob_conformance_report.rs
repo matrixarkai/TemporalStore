@@ -446,7 +446,7 @@ async fn main() {
     };
 
     let report = Report {
-        schema: "temporalstore_shared_store_append_blob_parity_report_v1",
+        schema: "temporalstore_shared_store_append_blob_conformance_report_v1",
         backend: "rust",
         matrixobject_mode: "rust_matrixobject_incremental_journal_protobuf_append_blob",
         entry_count,

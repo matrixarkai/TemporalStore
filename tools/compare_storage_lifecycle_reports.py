@@ -3,7 +3,7 @@
 # Copyright 2026 MatrixArkAI
 """Compare live and Rust TemporalStore storage lifecycle reports.
 
-This is the operator-facing wrapper around validate_storage_lifecycle_parity.py.
+This is the operator-facing wrapper around validate_storage_lifecycle_conformance.py.
 It fails closed unless both reports expose the canonical public storage contract,
 write/read/cold-scan sequences, lifecycle phases, cache layers, reclaim semantics,
 effective tuning, and storage lifecycle metrics.
@@ -15,7 +15,7 @@ import argparse
 import pathlib
 import sys
 
-from validate_storage_lifecycle_parity import _load_json, validate_contract_and_runner, validate_report_pair
+from validate_storage_lifecycle_conformance import _load_json, validate_contract_and_runner, validate_report_pair
 
 
 def main() -> int:

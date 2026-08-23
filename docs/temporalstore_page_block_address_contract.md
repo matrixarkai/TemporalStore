@@ -852,7 +852,7 @@ Both and Rust should expose the same metric names:
 - `append_watermark`
 - `compaction_watermark`
 
-`tools/validate_page_block_metrics_parity.py` validates that this canonical
+`tools/validate_page_block_metrics_conformance.py` validates that this canonical
 metric set is present in the shared contract and in conformance scale report
 artifacts.
 
@@ -1042,7 +1042,7 @@ Required phase-to-metric mapping:
 - `append_watermark`
 - `compaction_watermark`
 
-`tools/validate_storage_lifecycle_parity.py` validates that this canonical
+`tools/validate_storage_lifecycle_conformance.py` validates that this canonical
 lifecycle metric set is present in the shared contract and scale report runner.
 When given `--native-report` and `--rust-report`, it also verifies that both reports
 carry the same public storage tuning fields and lifecycle metric names.
@@ -1199,7 +1199,7 @@ Shared proof requirements:
 
 ## Nine-Phase Parity Gate
 
-`tools/validate_storage_engine_9_phase_parity.py` is the umbrella gate for the
+`tools/validate_storage_engine_9_phase_conformance.py` is the umbrella gate for the
 storage-engine parity loop. It runs the focused validators in the same phase
 order used by the conformance parity plan:
 
@@ -1216,13 +1216,13 @@ order used by the conformance parity plan:
 The gate should be used after every storage lifecycle change:
 
 ```bash
-python tools/validate_storage_engine_9_phase_parity.py
+python tools/validate_storage_engine_9_phase_conformance.py
 ```
 
 To repeat the full phase sequence for soak-style proof:
 
 ```bash
-python tools/validate_storage_engine_9_phase_parity.py --loops 9
+python tools/validate_storage_engine_9_phase_conformance.py --loops 9
 ```
 
 The umbrella gate does not replace native or Rust tests. It composes the
