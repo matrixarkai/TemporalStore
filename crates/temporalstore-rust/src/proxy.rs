@@ -268,6 +268,9 @@ pub struct ProxyStats {
     /// Registration attempts not made because one was made within
     /// `auto_register_min_interval_ms`.
     pub auto_register_throttled: u64,
+    /// Writes abandoned because the failure did not prove they never arrived, so replaying
+    /// them could have applied them twice. These are the writes whose fate is unknown.
+    pub writes_of_unknown_outcome: u64,
     pub auto_register_total: u64,
 }
 
@@ -1206,6 +1209,9 @@ impl ProxyService {
         stats.continuous_backend_failures += current
             .continuous_backend_failures
             .saturating_sub(last.continuous_backend_failures);
+        stats.writes_of_unknown_outcome += current
+            .writes_of_unknown_outcome
+            .saturating_sub(last.writes_of_unknown_outcome);
         *last = current;
     }
 
@@ -2741,6 +2747,7 @@ mod tests {
             heartbeat_slow_total,
             auto_register_total,
             auto_register_throttled,
+            writes_of_unknown_outcome,
             route_cache_hits,
             route_cache_misses,
             route_refreshes,
@@ -2752,7 +2759,7 @@ mod tests {
 
         // Field -> the label it is published under. Values are only here so the destructured
         // bindings are used; what is asserted is that each label reaches the endpoint.
-        let published: [(&str, u64); 20] = [
+        let published: [(&str, u64); 21] = [
             ("kind=\"execute\"", execute_requests),
             ("kind=\"batch_execute\"", batch_execute_requests),
             ("kind=\"bad_request\"", bad_requests),
@@ -2766,6 +2773,7 @@ mod tests {
             ("kind=\"heartbeat_slow\"", heartbeat_slow_total),
             ("kind=\"auto_register\"", auto_register_total),
             ("kind=\"auto_register_throttled\"", auto_register_throttled),
+            ("kind=\"write_of_unknown_outcome\"", writes_of_unknown_outcome),
             ("kind=\"hit\"", route_cache_hits),
             ("kind=\"miss\"", route_cache_misses),
             ("kind=\"refresh\"", route_refreshes),
@@ -4494,6 +4502,81 @@ mod tests {
             hits.load(Ordering::SeqCst) - before,
             1,
             "a request that timed out on a pooled socket must not be sent again on a fresh one"
+        );
+    }
+
+    #[test]
+    fn writes_of_unknown_outcome_are_counted_separately_from_ordinary_failures() {
+        // After a write stopped being replayed on timeout, "backend_errors" stopped being
+        // enough to reason about. A refused connection is harmless -- the write never landed
+        // and it was retried. A timeout is not: the write may have been applied and nothing
+        // retried it. Those two were indistinguishable in the counters, so nobody could
+        // answer the one question that matters after an incident: did any writes end up in a
+        // state we cannot determine?
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let slow = test_addr(18_396);
+        let slow_for_thread = slow.clone();
+        std::thread::spawn(move || {
+            serve(&slow_for_thread, move |_request| {
+                std::thread::sleep(Duration::from_millis(500));
+                crate::http::json_response(200, &Status::ok())
+            })
+            .unwrap();
+        });
+        start_meta(test_addr(18_397), slow.clone());
+        wait_for_http(&test_addr(18_397));
+
+        let timing_out = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_397),
+            route_cache_ttl_ms: 60_000,
+            connect_timeout_ms: 200,
+            io_timeout_ms: 120,
+            ..ProxyOptions::default()
+        });
+        let _ = timing_out.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        assert_eq!(
+            timing_out.info().stats.writes_of_unknown_outcome, 1,
+            "a write that timed out is a write nobody can account for"
+        );
+
+        // A refused connection is the opposite case and must NOT be counted: it proves the
+        // write never arrived, and it was replayed onto a healthy datanode.
+        start_server(test_addr(18_398), engine.clone());
+        start_meta(test_addr(18_399), test_addr(18_398));
+        wait_for_http(&test_addr(18_399));
+        wait_for_http(&test_addr(18_398));
+        let refused = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_399),
+            route_cache_ttl_ms: 60_000,
+            connect_timeout_ms: 50,
+            io_timeout_ms: 200,
+            ..ProxyOptions::default()
+        });
+        refused.client().insert_cached_route_for_test(1, "127.0.0.1:1");
+        let response = refused.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        assert!(response.status.ok, "a refused write is replayed and should succeed");
+        assert_eq!(
+            refused.info().stats.writes_of_unknown_outcome, 0,
+            "a refused write provably never arrived, so it is not unknown"
         );
     }
 
