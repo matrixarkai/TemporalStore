@@ -323,6 +323,34 @@ fn main() {
     }
 }
 
+/// Which node an operation is about.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct MetaRaftNodeRequest {
+    node_id: u64,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct MetaRaftMembershipResponse {
+    status: Status,
+    leader_id: u64,
+    members: Vec<u64>,
+    term: u64,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct MetaRaftScaleResponse {
+    status: Status,
+    /// Who the voters are once the change settled, and whether a majority of
+    /// them is live. Absent when the change was refused.
+    report: Option<temporalstore_rust::raft::RaftScaleChangeReport>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct MetaRaftSnapshotTriggerResponse {
+    status: Status,
+    report: Option<temporalstore_rust::raft::RaftSnapshotTriggerReport>,
+}
+
 #[derive(Clone)]
 enum MetaBackend {
     Single(SingleNodeMeta),
@@ -1375,6 +1403,21 @@ fn handle(
             ),
         },
         ("GET", "/meta/raft/ready") => json_response(200, &meta.raft_ready()),
+        ("GET", "/meta/raft/membership") => json_response(200, &meta.raft_membership()),
+        ("POST", "/meta/raft/add_node") => parse_or(&request.body, |req: MetaRaftNodeRequest| {
+            meta.raft_add_node(req.node_id)
+        }),
+        ("POST", "/meta/raft/remove_node") => {
+            parse_or(&request.body, |req: MetaRaftNodeRequest| {
+                meta.raft_remove_node(req.node_id)
+            })
+        }
+        ("POST", "/meta/raft/transfer_leader") => {
+            parse_or(&request.body, |req: MetaRaftNodeRequest| {
+                meta.raft_transfer_leader(req.node_id)
+            })
+        }
+        ("POST", "/meta/raft/snapshot") => json_response(200, &meta.raft_trigger_snapshot()),
         ("GET", "/meta/snapshot") => json_response(200, &meta.export_snapshot()),
         ("POST", "/meta/snapshot") | ("POST", "/meta/snapshot/restore") => {
             parse_or(&request.body, |snapshot: MetaSnapshot| {
@@ -2049,6 +2092,91 @@ mod tests {
     use temporalstore_rust::meta::{MetaEntityState, ShardSnapshotRef, TableTopologyResponse};
     use temporalstore_rust::rebalance::RebalanceStep;
     use temporalstore_rust::ProductionReadinessReport;
+
+    /// Drive one route against a single-node backend.
+    fn call(method: &str, path: &str, body: Vec<u8>) -> (u16, Vec<u8>) {
+        let backend = MetaBackend::Single(SingleNodeMeta::default());
+        let scheduler = MetaTaskScheduler::default();
+        handle(
+            &backend,
+            &scheduler,
+            HttpRequest {
+                method: method.to_string(),
+                path: path.to_string(),
+                body,
+            },
+        )
+    }
+
+    fn node_body(node_id: u64) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({ "node_id": node_id })).unwrap()
+    }
+
+    #[test]
+    fn the_membership_routes_exist() {
+        // They did not: changing the shape of the meta raft cluster meant
+        // restarting it, because the only raft routes were read-only. A 404
+        // here means the operation is still unreachable.
+        for (method, path, body) in [
+            ("GET", "/meta/raft/membership", Vec::new()),
+            ("POST", "/meta/raft/add_node", node_body(7)),
+            ("POST", "/meta/raft/remove_node", node_body(7)),
+            ("POST", "/meta/raft/transfer_leader", node_body(7)),
+            ("POST", "/meta/raft/snapshot", Vec::new()),
+        ] {
+            let (code, _) = call(method, path, body);
+            assert_eq!(code, 200, "{method} {path} is not routed");
+        }
+    }
+
+    #[test]
+    fn a_single_node_metaserver_says_so_rather_than_pretending() {
+        // Every one of these is meaningless without a cluster. Refusing
+        // clearly beats a route that appears to have done something.
+        for (method, path, body) in [
+            ("POST", "/meta/raft/add_node", node_body(7)),
+            ("POST", "/meta/raft/remove_node", node_body(7)),
+            ("POST", "/meta/raft/transfer_leader", node_body(7)),
+            ("POST", "/meta/raft/snapshot", Vec::new()),
+        ] {
+            let (_, body) = call(method, path, body);
+            let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(
+                parsed["status"]["code"], "raft_disabled",
+                "{method} {path} did not refuse"
+            );
+        }
+    }
+
+    #[test]
+    fn listing_membership_without_a_cluster_is_empty_and_says_why() {
+        let (code, body) = call("GET", "/meta/raft/membership", Vec::new());
+        assert_eq!(code, 200);
+        let parsed: MetaRaftMembershipResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed.status.code, "raft_disabled");
+        assert!(parsed.members.is_empty());
+    }
+
+    #[test]
+    fn a_scale_change_that_was_refused_carries_no_report() {
+        // The report describes the membership a change settled into. Returning
+        // one for a change that did not happen would be a lie an operator
+        // could act on.
+        let (_, body) = call("POST", "/meta/raft/add_node", node_body(7));
+        let parsed: MetaRaftScaleResponse = serde_json::from_slice(&body).unwrap();
+        assert!(!parsed.status.ok);
+        assert!(parsed.report.is_none());
+    }
+
+    #[test]
+    fn a_membership_request_without_a_node_is_rejected_not_guessed() {
+        let (code, body) = call("POST", "/meta/raft/add_node", b"{}".to_vec());
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            code >= 400 || parsed["status"]["ok"] == serde_json::Value::Bool(false),
+            "an empty body was accepted: {code} {parsed}"
+        );
+    }
 
     #[test]
     fn metaserver_metrics_expose_inventory_state_and_scheduler() {

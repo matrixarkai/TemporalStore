@@ -54,6 +54,110 @@ impl MetaBackend {
         }
     }
 
+    /// The refusal every membership operation gives on the single-node
+    /// backend. There is no cluster to change the shape of, and saying so is
+    /// better than a route that appears to work.
+    fn raft_only() -> Status {
+        Status::error("raft_disabled", "meta raft is disabled")
+    }
+
+    fn raft_membership(&self) -> MetaRaftMembershipResponse {
+        match self {
+            Self::Single(_) => MetaRaftMembershipResponse {
+                status: Self::raft_only(),
+                leader_id: 0,
+                members: Vec::new(),
+                term: 0,
+            },
+            Self::Raft(runtime) => {
+                let status = runtime.status();
+                MetaRaftMembershipResponse {
+                    status: Status::ok(),
+                    leader_id: status.leader_id,
+                    members: runtime.list_membership(),
+                    term: status.current_term,
+                }
+            }
+        }
+    }
+
+    /// Add a voter, refusing anything that would leave the cluster unable to
+    /// reach a majority. The unguarded variant exists but is not what an
+    /// operator should be able to reach over HTTP.
+    fn raft_add_node(&self, node_id: u64) -> MetaRaftScaleResponse {
+        match self {
+            Self::Single(_) => MetaRaftScaleResponse {
+                status: Self::raft_only(),
+                report: None,
+            },
+            Self::Raft(runtime) => match runtime.cluster().add_node_safely(node_id) {
+                Ok(report) => MetaRaftScaleResponse {
+                    status: Status::ok(),
+                    report: Some(report),
+                },
+                Err(err) => MetaRaftScaleResponse {
+                    status: Status::error("raft_scale_refused", err.to_string()),
+                    report: None,
+                },
+            },
+        }
+    }
+
+    fn raft_remove_node(&self, node_id: u64) -> MetaRaftScaleResponse {
+        match self {
+            Self::Single(_) => MetaRaftScaleResponse {
+                status: Self::raft_only(),
+                report: None,
+            },
+            Self::Raft(runtime) => match runtime.cluster().remove_node_safely(node_id) {
+                Ok(report) => MetaRaftScaleResponse {
+                    status: Status::ok(),
+                    report: Some(report),
+                },
+                Err(err) => MetaRaftScaleResponse {
+                    status: Status::error("raft_scale_refused", err.to_string()),
+                    report: None,
+                },
+            },
+        }
+    }
+
+    fn raft_transfer_leader(&self, node_id: u64) -> AckResponse {
+        match self {
+            Self::Single(_) => AckResponse {
+                status: Self::raft_only(),
+            },
+            Self::Raft(runtime) => AckResponse {
+                status: runtime
+                    .cluster()
+                    .transfer_leader(node_id)
+                    .map(|_| Status::ok())
+                    .unwrap_or_else(|err| {
+                        Status::error("raft_transfer_refused", err.to_string())
+                    }),
+            },
+        }
+    }
+
+    fn raft_trigger_snapshot(&self) -> MetaRaftSnapshotTriggerResponse {
+        match self {
+            Self::Single(_) => MetaRaftSnapshotTriggerResponse {
+                status: Self::raft_only(),
+                report: None,
+            },
+            Self::Raft(runtime) => match runtime.cluster().maybe_trigger_snapshot() {
+                Ok(report) => MetaRaftSnapshotTriggerResponse {
+                    status: Status::ok(),
+                    report: Some(report),
+                },
+                Err(err) => MetaRaftSnapshotTriggerResponse {
+                    status: Status::error("raft_snapshot_refused", err.to_string()),
+                    report: None,
+                },
+            },
+        }
+    }
+
     fn export_snapshot(&self) -> MetaSnapshotResponse {
         match self {
             Self::Single(meta) => MetaSnapshotResponse {
