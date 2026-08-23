@@ -142,6 +142,20 @@ pub struct ProxyOptions {
     /// Set to 0 to attempt on every heartbeat, which is the older behaviour.
     #[serde(default = "default_auto_register_min_interval_ms")]
     pub auto_register_min_interval_ms: u64,
+    /// The address this proxy is actually bound to, when that differs from the one it
+    /// advertises.
+    ///
+    /// `proxy_addr` is what the proxy tells the metaserver to reach it on. Behind NAT or a
+    /// container port mapping that is deliberately NOT the socket it listens on, and the
+    /// binary already supports the split -- it binds `TS_PROXY_BIND_ADDR` and advertises
+    /// `TS_PROXY_ADVERTISED_ADDR`. The service was never told the first of those, so the
+    /// ports report derived BOTH numbers from the advertised one and answered the advertised
+    /// address to the question "what am I listening on", which is the question someone asks
+    /// precisely when those two have come apart.
+    ///
+    /// Empty means the two are the same, which is the ordinary case.
+    #[serde(default)]
+    pub listen_addr: String,
     /// I/O timeout (ms) for forwarding a `/context/*` request to the owning
     /// datanode. Larger than the command io_timeout because extraction /
     /// embedding generation runs inline on the datanode.
@@ -216,6 +230,7 @@ impl Default for ProxyOptions {
             heartbeat_timeout_ms: default_heartbeat_timeout_ms(),
             topology_check_interval_ms: default_topology_check_interval_ms(),
             auto_register_min_interval_ms: default_auto_register_min_interval_ms(),
+            listen_addr: String::new(),
         }
     }
 }
@@ -2590,6 +2605,35 @@ mod tests {
                 mapping.rust_prometheus_family
             );
         }
+    }
+
+    #[test]
+    fn the_ports_report_distinguishes_what_is_bound_from_what_is_advertised() {
+        // Behind NAT or a container port mapping these are deliberately different, and that
+        // is exactly when someone asks the proxy what it is listening on. The report used to
+        // derive both numbers from the advertised address and answer the advertised one.
+        let mapped = scoped_proxy(ProxyOptions {
+            proxy_addr: "10.1.2.3:9000".to_string(),
+            listen_addr: "0.0.0.0:17000".to_string(),
+            ..ProxyOptions::default()
+        });
+        let ports = mapped.ports_report();
+        assert_eq!(ports.listen_addr, "0.0.0.0:17000", "what the socket is bound to");
+        assert_eq!(ports.listen_port, 17_000);
+        assert_eq!(ports.announce_addr, "10.1.2.3:9000", "what other nodes are told to use");
+        assert_eq!(ports.announce_port, 9_000);
+
+        // The ordinary case: nothing is mapped, so both answers are the same and the report
+        // reads exactly as it did before.
+        let plain = scoped_proxy(ProxyOptions {
+            proxy_addr: "127.0.0.1:17123".to_string(),
+            ..ProxyOptions::default()
+        });
+        let ports = plain.ports_report();
+        assert_eq!(ports.listen_addr, "127.0.0.1:17123");
+        assert_eq!(ports.announce_addr, "127.0.0.1:17123");
+        assert_eq!(ports.listen_port, 17_123);
+        assert_eq!(ports.announce_port, 17_123);
     }
 
     #[test]
