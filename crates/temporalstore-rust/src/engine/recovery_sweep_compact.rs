@@ -219,6 +219,18 @@ impl TemporalEngine {
         ids
     }
 
+/// How far a round may walk to fill its window.
+///
+/// The window is the useful work; the budget stops a long run of keys in the other category from
+/// turning a bounded round back into a walk of everything. Zero limits mean no limit, and then
+/// there is nothing to bound.
+fn expiry_scan_budget(limit: usize) -> usize {
+    if limit == 0 {
+        return 0;
+    }
+    limit.saturating_mul(8).max(64)
+}
+
     pub fn sweep_expired_records(
         &self,
         shard_id: ShardId,
@@ -239,27 +251,25 @@ impl TemporalEngine {
             return Err(Status::error("shard_not_loaded", "shard is not loaded"));
         };
         let now = now_ms();
-        let mut hot_keys = shard
-            .expires_at_ms
-            .iter()
-            .filter(|(key, _)| record_exists(shard, key))
-            .map(|(key, expires_at)| (key.clone(), *expires_at))
-            .collect::<Vec<_>>();
-        hot_keys.sort_by(|left, right| left.0.cmp(&right.0));
-        let mut cold_keys = shard
-            .expires_at_ms
-            .iter()
-            .filter(|(key, _)| !record_exists(shard, key))
-            .map(|(key, expires_at)| (key.clone(), *expires_at))
-            .collect::<Vec<_>>();
-        cold_keys.sort_by(|left, right| left.0.cmp(&right.0));
-
+        // Read each window from where its cursor left off. Asking about every deadline to find
+        // a window of sixteen made a round cost the size of the whole set, on every cycle.
         let hot_limit = request.max_hot_buckets_per_round;
         let cold_limit = request.max_cold_buckets_per_round;
-        let (hot_selected, next_hot_cursor) =
-            select_expiry_cursor_window(hot_keys, request.hot_cursor.as_deref(), hot_limit);
-        let (cold_selected, next_cold_cursor) =
-            select_expiry_cursor_window(cold_keys, request.cold_cursor.as_deref(), cold_limit);
+        let scan_budget = Self::expiry_scan_budget(hot_limit.max(cold_limit));
+        let (hot_selected, next_hot_cursor) = crate::engine::expiry_window(
+            &shard.expires_at_ms,
+            request.hot_cursor.as_deref(),
+            hot_limit,
+            scan_budget,
+            |key| record_exists(shard, key),
+        );
+        let (cold_selected, next_cold_cursor) = crate::engine::expiry_window(
+            &shard.expires_at_ms,
+            request.cold_cursor.as_deref(),
+            cold_limit,
+            scan_budget,
+            |key| !record_exists(shard, key),
+        );
         let mut expired_records_removed = 0;
         let mut skipped_records = 0usize;
         let mut loaded_for_expire = 0usize;
