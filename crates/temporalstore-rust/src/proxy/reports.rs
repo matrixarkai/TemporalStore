@@ -185,12 +185,19 @@ impl ProxyService {
 
     pub fn ports_report(&self) -> ProxyPortsReport {
         let options = self.options();
-        let listen_port = proxy_addr_port(&options.proxy_addr);
+        // Fall back to the advertised address only when nothing else is known. Reporting the
+        // advertised address as the listening one is worse than saying nothing new, because
+        // it looks like an answer.
+        let listen_addr = if options.listen_addr.is_empty() {
+            options.proxy_addr.clone()
+        } else {
+            options.listen_addr.clone()
+        };
         ProxyPortsReport {
-            listen_addr: options.proxy_addr.clone(),
+            listen_port: proxy_addr_port(&listen_addr),
+            announce_port: proxy_addr_port(&options.proxy_addr),
+            listen_addr,
             announce_addr: options.proxy_addr.clone(),
-            listen_port,
-            announce_port: listen_port,
         }
     }
 
