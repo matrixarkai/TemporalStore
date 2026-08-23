@@ -5301,12 +5301,17 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             self._forget_persisted_event_members(memory_id)
             self._invalidate_event_member_index()
         self.append(tombstone)
+        superseded_ids = sorted(set(tombstone.get("closure_ref_ids") or []) | {memory_id})
         return {
             "updated": True,
             "memory_id": memory_id,
             "new_memory_id": new_memory_id,
             "superseded": True,
             "text": new_text,
+            # The identity set the old version covered. Reported for the same reason delete
+            # reports its closure: a backend has to remove its own copy, and re-deriving the rule
+            # there would put two versions of it in the tree.
+            "closure_ref_ids": superseded_ids,
         }
 
     def history(self, args: Json) -> Json:

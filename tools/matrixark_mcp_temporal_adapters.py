@@ -755,6 +755,22 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         self._store_summary_pass_state(token, refreshed)
         return result
 
+    def _invalidate_summary_pass_state(self) -> None:
+        """Force the next background refresh pass to actually run.
+
+        The skip in `refresh_summaries` rests on the record COUNT: dirty state only changes when
+        records are appended, so an unchanged count after a pass that found nothing means the next
+        pass would reach the same conclusion. A purge breaks that -- it removes and rewrites
+        records in place without moving the count -- and the node whose summary and index postings
+        it just removed is exactly the node that now needs rebuilding. Left alone, an updated
+        memory stayed in `get_all` and never became retrievable again.
+        """
+        self._summary_pass_state = (None, None)
+        try:
+            self._client.put_string(self._summary_pass_state_key(), "")
+        except Exception:  # noqa: BLE001 - the in-process copy already forces a pass here.
+            pass
+
     def _summary_pass_state_key(self) -> str:
         return f"{self._storage_prefix}:summary_pass_state"
 
@@ -993,6 +1009,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             )
         except Exception as exc:  # noqa: BLE001 - the tombstone stands; report the engine half.
             return {"ok": False, "error": str(exc)}
+        self._invalidate_summary_pass_state()
         self._drop_direct_record_cache()
         return {
             "ok": True,
@@ -1001,6 +1018,113 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             "fields_rewritten": purged.get("matrixark_forget_fields_rewritten"),
             "shards_scanned": purged.get("matrixark_forget_shards_scanned"),
         }
+
+    def _purge_record_ids_in_engine(self, ids: list[str]) -> Json | None:
+        """Remove the named records in the engine. Returns None when there is nothing to remove.
+
+        Shared by delete and update. Both address a set of records the caller has already decided
+        on -- an empty set means remove nothing, never "remove everything".
+        """
+        ids = [str(item) for item in (ids or []) if str(item)]
+        if not ids:
+            return None
+        purger = getattr(self._client, "matrixark_delete_records", None)
+        if not callable(purger):
+            return {"ok": False, "error": "engine does not expose matrixark_delete_records"}
+        try:
+            purged = purger(
+                count_key=self._count_key,
+                record_hash_key=self._record_hash_key,
+                shard_size=self._shard_size,
+                record_ids=ids,
+            )
+        except Exception as exc:  # noqa: BLE001 - the tombstone stands; report the engine half.
+            return {"ok": False, "error": str(exc)}
+        self._invalidate_summary_pass_state()
+        self._drop_direct_record_cache()
+        return {
+            "ok": True,
+            "records_removed": purged.get("matrixark_delete_records_removed"),
+            "fields_deleted": purged.get("matrixark_delete_fields_deleted"),
+            "fields_rewritten": purged.get("matrixark_delete_fields_rewritten"),
+            "ids_requested": purged.get("matrixark_delete_ids_requested"),
+        }
+
+    def update_memory(self, args: Json, hook: Json | None = None) -> Json:
+        """Remove the superseded version from the ENGINE as well as from the serving view.
+
+        An update is a supersede: the new text is ingested and the old id tombstoned. `get_all`
+        honours that immediately. `/v1/retrieve` is assembled inside the engine, which has never
+        heard of a tombstone, so the OLD text kept being served -- and because it outranked the new
+        one, a search after a successful update returned the stale value and not the new value at
+        all:
+
+            after update:  get_all = the new text
+                           retrieve = the OLD text, and the new text nowhere in the results
+
+        That is worse than a failed update, because the caller is told it succeeded. The inherited
+        implementation already computes exactly which records the old version covered, and its own
+        comment says the sweep exists "so the old text can't leak via retrieval after the update" --
+        the engine simply never learned about it.
+        """
+        result = super().update_memory(args, hook)
+        purged = self._purge_record_ids_in_engine(result.get("closure_ref_ids") or [])
+        if purged is not None:
+            result["engine_purge"] = purged
+        return result
+
+    def _purge_record_ids_in_engine(self, ids: list[str]) -> Json | None:
+        """Remove the named records in the engine. Returns None when there is nothing to remove.
+
+        Shared by delete and update. Both address a set of records the caller has already decided
+        on -- an empty set means remove nothing, never "remove everything".
+        """
+        ids = [str(item) for item in (ids or []) if str(item)]
+        if not ids:
+            return None
+        purger = getattr(self._client, "matrixark_delete_records", None)
+        if not callable(purger):
+            return {"ok": False, "error": "engine does not expose matrixark_delete_records"}
+        try:
+            purged = purger(
+                count_key=self._count_key,
+                record_hash_key=self._record_hash_key,
+                shard_size=self._shard_size,
+                record_ids=ids,
+            )
+        except Exception as exc:  # noqa: BLE001 - the tombstone stands; report the engine half.
+            return {"ok": False, "error": str(exc)}
+        self._drop_direct_record_cache()
+        return {
+            "ok": True,
+            "records_removed": purged.get("matrixark_delete_records_removed"),
+            "fields_deleted": purged.get("matrixark_delete_fields_deleted"),
+            "fields_rewritten": purged.get("matrixark_delete_fields_rewritten"),
+            "ids_requested": purged.get("matrixark_delete_ids_requested"),
+        }
+
+    def update_memory(self, args: Json, hook: Json | None = None) -> Json:
+        """Remove the superseded version from the ENGINE as well as from the serving view.
+
+        An update is a supersede: the new text is ingested and the old id tombstoned. `get_all`
+        honours that immediately. `/v1/retrieve` is assembled inside the engine, which has never
+        heard of a tombstone, so the OLD text kept being served -- and because it outranked the new
+        one, a search after a successful update returned the stale value and not the new value at
+        all:
+
+            after update:  get_all = the new text
+                           retrieve = the OLD text, and the new text nowhere in the results
+
+        That is worse than a failed update, because the caller is told it succeeded. The inherited
+        implementation already computes exactly which records the old version covered, and its own
+        comment says the sweep exists "so the old text can't leak via retrieval after the update" --
+        the engine simply never learned about it.
+        """
+        result = super().update_memory(args, hook)
+        purged = self._purge_record_ids_in_engine(result.get("closure_ref_ids") or [])
+        if purged is not None:
+            result["engine_purge"] = purged
+        return result
 
     def delete_memory(self, args: Json, hook: Json | None = None) -> Json:
         """Delete the memory in the ENGINE as well as in the serving view.
@@ -1017,31 +1141,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         how the two copies drift.
         """
         result = super().delete_memory(args, hook)
-        ids = [str(item) for item in (result.get("closure_ref_ids") or []) if str(item)]
-        if not ids:
-            return result
-        purger = getattr(self._client, "matrixark_delete_records", None)
-        if not callable(purger):
-            result["engine_purge"] = {"ok": False, "error": "engine does not expose matrixark_delete_records"}
-            return result
-        try:
-            purged = purger(
-                count_key=self._count_key,
-                record_hash_key=self._record_hash_key,
-                shard_size=self._shard_size,
-                record_ids=ids,
-            )
-        except Exception as exc:  # noqa: BLE001 - the tombstone stands; report the engine half.
-            result["engine_purge"] = {"ok": False, "error": str(exc)}
-            return result
-        self._drop_direct_record_cache()
-        result["engine_purge"] = {
-            "ok": True,
-            "records_removed": purged.get("matrixark_delete_records_removed"),
-            "fields_deleted": purged.get("matrixark_delete_fields_deleted"),
-            "fields_rewritten": purged.get("matrixark_delete_fields_rewritten"),
-            "ids_requested": purged.get("matrixark_delete_ids_requested"),
-        }
+        purged = self._purge_record_ids_in_engine(result.get("closure_ref_ids") or [])
+        if purged is not None:
+            result["engine_purge"] = purged
         return result
 
     def reset(self, args: Json, hook: Json | None = None) -> Json:
