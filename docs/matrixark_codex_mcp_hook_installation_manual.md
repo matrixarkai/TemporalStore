@@ -50,7 +50,7 @@ Set `startup_timeout_sec = 180` or `240` for local development.
 
 ### Rust backend MCP config
 
-Use this when validating Rust parity:
+Use this when validating Rust conformance:
 
 ```toml
 [mcp_servers.matrixark]
@@ -173,7 +173,7 @@ Codex hook availability depends on the Codex surface/version. If hooks are not v
 }
 ```
 
-Use the Rust hook launcher for Rust parity:
+Use the Rust hook launcher for Rust conformance:
 
 ```json
 {

@@ -10,9 +10,9 @@ that can support production readiness claims.
 Benchmark result docs must stay strict:
 
 - Fixture scores are wiring evidence only; they must not be called paper-equivalent scores or
-  production-parity evidence.
+  production-conformance evidence.
 - Deterministic-reader full-dataset scores can claim retrieval/reader gate readiness for that
-  configured runner, but not live OSS-reader parity.
+  configured runner, but not live OSS-reader conformance.
 - OSS/open-model claims require at least one successful real local reader call and
   `require_open_source_reader=true`.
 - MatrixArk vs OpenViking/VikingMem OSS comparisons must pass the shared OSS model contract:
@@ -20,7 +20,7 @@ Benchmark result docs must stay strict:
   context budget, same reader prompt policy, and declared provider identities for both sides.
   Mismatched model, budget, or reader-policy runs are diagnostic-only even when their individual
   scores look good.
-- Production parity, production-ready, or paper-comparable benchmark claims require all evidence in
+- Production conformance, production-ready, or paper-comparable benchmark claims require all evidence in
   the same result doc: real dataset artifact, live OSS reader calls, full Rust TemporalStore replay,
   all-pipeline Rust evidence, and passing threshold output with zero threshold violations.
 - The archive gate must also show `reader_mode_effective=open-source`,
@@ -158,7 +158,7 @@ with the Python ranker and requires Rust case count, Hit@K, mean reciprocal rank
 query count to match the Python scorer within `--rust-temporalstore-score-tolerance` before marking
 the backend ready. Reports also emit `all_pipelines_use_rust_temporalstore`; production benchmark
 evidence requires that field to be `true`. A fixed `1e-6` numerical epsilon is always allowed so
-Rust f32 report output does not fail exact source-rank parity. Use `--skip-rust-temporalstore`
+Rust f32 report output does not fail exact source-rank conformance. Use `--skip-rust-temporalstore`
 only with `--allow-python-only-diagnostic` for explicit diagnostic Python-only runs; those reports
 are not Rust-backed evidence. Use
 `--rust-temporalstore-max-cases 0 --rust-temporalstore-source-limit 0` only when a full Rust
@@ -220,6 +220,6 @@ and report path.
 The Docker/open-model runner for `oss_reader_full` is documented in
 [context_benchmarks_docker_open_model.md](context_benchmarks_docker_open_model.md).
 Use `tools/run_context_benchmarks_oss_reader_endpoint.sh` when validating the
-VikingMem parity reader profile against an existing OpenAI-compatible endpoint.
+VikingMem conformance reader profile against an existing OpenAI-compatible endpoint.
 That path defaults to `vikingmem-gpt-4o-mini-reader` and `gpt-4o-mini`, and must
 report `reader_open_source_calls > 0`.

@@ -9,7 +9,7 @@ TemporalStore keeps Context data in its existing `ContextNode`, `ContextEvent`, 
 
 The workflow is:
 
-1. `manage`: report supported routes, provider count, pipeline stages, and/the baseline memory system parity
+1. `manage`: report supported routes, provider count, pipeline stages, and/the baseline memory system conformance
    evidence before admitting a deployment as context-ready. The management report now includes
    per-stage readiness, provider names, and policy controls so operators can see which part of the
    pipeline owns a failure.
@@ -100,7 +100,7 @@ profiles through `GET /context/workflow/state`:
 - `baseline-internvl-vllm`: `OpenGVLab/InternVL2_5-8B` VLM,
   `Qwen/Qwen2.5-7B-Instruct` chat model, `BAAI/bge-m3` embedding model, OpenAI-compatible
   gateway at `127.0.0.1:8000/v1`
-- `baseline-gpt-4o-mini-reader`: `gpt-4o-mini` reader/chat model for the baseline memory system benchmark parity,
+- `baseline-gpt-4o-mini-reader`: `gpt-4o-mini` reader/chat model for the baseline memory system benchmark conformance,
   `sentence-transformers/all-MiniLM-L6-v2` embedding model, OpenAI-compatible gateway at
   `https://api.openai.com/v1`
 - `matrixark-native-oss-context`: `google/flan-t5-small` extraction model and
@@ -171,11 +171,11 @@ The harness verifies:
 - restart replay preserves the same `ContextNode` and `ContextEvent`
 - shared-store sync and async replay preserve the same Context pipeline writes
 - Raft replica reads can serve the same Context event after the write path is replicated
-- `context_pipeline_ready` is true only when the parity report covers Context models,
+- `context_pipeline_ready` is true only when the conformance report covers Context models,
   the baseline memory system L0/L1/L2 tiers, extraction, retrieval, injection, index refs, pack audit, dirty
   summary, restart replay, shared-store sync/async replay, Raft reads, and unified corpus evidence
 
-## Context Model Parity
+## Context Model Conformance
 
 The current TemporalStore context module registers first-class LLM context model names on top of
 existing hash/feature page primitives:
@@ -209,7 +209,7 @@ Covered:
 - Data-node HTTP routes expose management and batch ingest/extract pipeline handoff.
 - The local harness and Docker-packaged harness validate management, ingest/extract, retrieval,
   injection, and audit refs.
--/the baseline memory system parity evidence covers engine-local restart, shared-store sync/async replay,
+-/the baseline memory system conformance evidence covers engine-local restart, shared-store sync/async replay,
   Raft reads, and the shared conformance Context corpus.
 
 ## the baseline memory system-Style Benchmark
@@ -217,7 +217,7 @@ Covered:
 `context_workflow_harness` runs a deterministic local benchmark inspired by the baseline memory system paper's
 long-term memory evaluation themes: retrieval effectiveness, low interactive latency, hierarchical
 context loading, and reduced context tokens. The benchmark does not claim byte-for-byte the baseline memory system
-workload parity, published the baseline memory system scores, or a licensed copy of LOCOMO/LongMemEval_s. It
+workload conformance, published the baseline memory system scores, or a licensed copy of LOCOMO/LongMemEval_s. It
 includes LOCOMO-style conversational-memory and LongMemEval_s-style long-context synthetic profiles
 so local validation can exercise similar source/query scaling and hit-ranking behavior. It produces
 local TemporalStore evidence:
@@ -320,7 +320,7 @@ after the dinner update?" and "What risk score was recorded after the latest fra
 numeric memory updates. Alias cases such as "What is Emma's roommate's name after the move?" and
 "What is the dog's name in the latest pet update?" cover entity-disambiguation updates.
 
-The shared conformance corpus also has a dedicated reasoning/VLM parity case.
+The shared conformance corpus also has a dedicated reasoning/VLM conformance case.
 Rust executes a conformance check that requires explicit
 coverage for multi-hop reasoning, temporal reasoning, memory updates, stale-memory replacement,
 open-domain retrieval, and VLM image/content understanding. The VLM case is currently a

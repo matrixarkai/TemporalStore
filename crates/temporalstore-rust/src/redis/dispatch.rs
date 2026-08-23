@@ -1379,7 +1379,7 @@ pub fn execute_redis_command_with_state(
             end_offset: String::new(),
             is_distinct: false,
         })),
-        // MANAGER op parity: CONTROLSTATEMANAGER key op_type is_distinct [start_offset end_offset | field...]
+        // MANAGER op conformance: CONTROLSTATEMANAGER key op_type is_distinct [start_offset end_offset | field...]
         // op_type: QUERY(2)|FIELD_LIST(5)|FIELD_COUNT(6)|ALL_DATA_VALUE(7). is_distinct: 0/1.
         "CONTROLSTATEMANAGER" if args.len() >= 4 => {
             let op_type = string_arg(&args[2]);

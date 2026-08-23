@@ -1164,7 +1164,7 @@ fn durable_index_survives_restart_and_points_to_page_file() {
 
 #[test]
 fn async_write_survives_restart_via_wal_replay_like_native() {
-    // parity: an async_storage write records a WAL entry but defers page/
+    // conformance: an async_storage write records a WAL entry but defers page/
     // index materialization to the background dump. If the crash beats the dump,
     // Startup load replays the wal and recovers the write. Rust must replay
     // its WAL on shard load the same way, or the async write is silently lost.
@@ -1386,7 +1386,7 @@ fn control_state_coalesced_write_survives_restart_via_wal_replay() {
 
 #[test]
 fn async_storage_batch_write_records_wal_without_sync_or_index() {
-    // Batch analog of the single-command async parity: the batch path (used by
+    // Batch analog of the single-command async conformance: the batch path (used by
     // ingestion) must also record a WAL entry per async write, unfsynced, with page/
     // index materialization deferred.
     let dir = tempfile::tempdir().unwrap();
@@ -2095,7 +2095,7 @@ fn read_string(engine: &TemporalEngine, key: &str) -> Option<Vec<u8>> {
 
 #[test]
 fn manifest_fold_threshold_dump_fires_only_past_the_gap_and_folds_the_catalog() {
-    // MANIFEST-PARITY FOLD cadence: with a tiny WAL gap, a threshold dump fires once the
+    // MANIFEST-CONFORMANCE FOLD cadence: with a tiny WAL gap, a threshold dump fires once the
     // undumped index-log has grown past it, folding the band/zone catalog into an index-log
     // MetaItem anchor; below the gap nothing is dumped. Matches
     // index-meta dump background cadence -- never a per-write dump.
@@ -2139,7 +2139,7 @@ fn manifest_fold_threshold_dump_fires_only_past_the_gap_and_folds_the_catalog() 
 
 #[test]
 fn manifest_fold_reload_reconstructs_catalog_with_band_manifest_deleted() {
-    // MANIFEST-PARITY FOLD round-trip: write, dump (folds the catalog), delete the band-manifest
+    // MANIFEST-CONFORMANCE FOLD round-trip: write, dump (folds the catalog), delete the band-manifest
     // file, reload -- every acked key must survive AND the band lifecycle must reconstruct from
     // the folded index-log MetaItem, proving the fold is a lossless catalog source.
     let _guard = FoldEnvGuard::set(&[("TS_INDEX_CATALOG_FOLD", "1")]);
@@ -3840,7 +3840,7 @@ fn feature_agg_rollup_matches_raw_scan() {
 }
 
 // The gated control-state rollup ladder must return exactly the same sum-family window
-// aggregates as the ungated raw scan, through the real execute() path. Functional-parity
+// aggregates as the ungated raw scan, through the real execute() path. Functional-conformance
 // gate for the O(levels) long-window control-state path (frequency caps / counts).
 #[test]
 fn control_state_rollup_matches_raw_scan_through_engine() {
@@ -3932,7 +3932,7 @@ fn control_state_rollup_matches_raw_scan_through_engine() {
     assert!(raw.iter().any(|value| *value != 0), "test series should be non-trivial");
 }
 
-// MANAGER op-code parity: QUERY(2) / FIELD_LIST(5) / FIELD_COUNT(6) / ALL_DATA_VALUE(7)
+// MANAGER op-code conformance: QUERY(2) / FIELD_LIST(5) / FIELD_COUNT(6) / ALL_DATA_VALUE(7)
 // over the H family series, plus the default summary path.
 #[test]
 fn control_state_manager_op_codes_match_hash_manager() {

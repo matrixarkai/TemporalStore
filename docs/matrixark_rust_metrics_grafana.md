@@ -57,5 +57,5 @@ errors, and every executed storage command.
 
 This is process-local bridge telemetry. It complements the native server
 metrics such as oplogger, page store, index, raft, and storage manager metrics.
-For production Rust parity, the next step is to expose the same metrics from a
+For production Rust conformance, the next step is to expose the same metrics from a
 Rust proxy instead of CLI-per-operation paths.

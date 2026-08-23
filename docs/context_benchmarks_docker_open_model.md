@@ -11,7 +11,7 @@ The repo also includes a Hugging Face Transformers endpoint for the exact
 `tools/openai_compatible_hf_reader.py`, defaults to `google/flan-t5-small`, and
 is packaged by `docker/Dockerfile.context-oss-reader`.
 
-Claim level: packaged open-model benchmark path. This page does not present production parity or
+Claim level: packaged open-model benchmark path. This page does not present production conformance or
 VikingMem paper-comparable evidence by itself. Those labels require a mounted real dataset, a
 successful real reader call, no deterministic fallback, full Rust TemporalStore replay, and passing
 threshold output in the archived report.
@@ -149,7 +149,7 @@ LOCOMO/LongMemEval_s full gate commands also require it unless they are run in a
 marked local diagnostic mode. Accepted pipeline and benchmark evidence invokes the Rust
 `context_workflow_harness`, compare Rust case count, Hit@K, mean reciprocal rank,
 and zero-hit queries with the Python scorer on the exact converted subset, and
-fails closed unless the parity result is on par. Production benchmark evidence requires
+fails closed unless the conformance result is on par. Production benchmark evidence requires
 `all_pipelines_use_rust_temporalstore=true`,
 `rust_temporalstore_context_event_ingest_ready=true`, and
 `rust_temporalstore_direct_source_scoring=false`.

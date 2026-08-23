@@ -677,7 +677,7 @@ fn partial_compaction_failure_durably_persists_the_consistent_partial_index() {
 
 #[test]
 fn sync_write_surfaces_wal_commit_failure_instead_of_acking_ok() {
-    // Durability parity: a synchronous write whose durable WAL commit fails must NOT be acked ok.
+    // Durability conformance: a synchronous write whose durable WAL commit fails must NOT be acked ok.
     // The WAL is the recovery source of truth, so a swallowed append error would tell the client a
     // write that is gone after a crash succeeded. surfaces the wal Commit failure
     // We inject the failure by replacing the WAL file with a

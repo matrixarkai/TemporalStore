@@ -7,7 +7,7 @@ identity. It is the Claude Code counterpart to the Codex hook family
 
 Entry point: [`tools/matrixark_claude_hook.sh`](../tools/matrixark_claude_hook.sh).
 
-## Feature parity with the Codex hook
+## Feature conformance with the Codex hook
 
 The Claude hook and the Codex hook run the **same engine**, parametrized by agent.
 They differ only in agent identity and session scope (`claude:<id>` vs
@@ -19,7 +19,7 @@ They differ only in agent identity and session scope (`claude:<id>` vs
 | **Extraction** | `Stop`, `SubagentStop`, `PreCompact`, `SessionEnd`, idle/threshold | `matrixark_session_commit` batch extract (segments, entities, index, summary, embeddings) | same |
 | **Retrieval** | `UserPromptSubmit` (before LLM) | `matrixark_retrieve` → `hookSpecificOutput.additionalContext` | same |
 
-Parity is enforced by
+Conformance is enforced by
 `tools/test_matrixark_popular_agent_hooks.py::test_codex_and_claude_hooks_have_ingestion_extraction_retrieval_parity`,
 which drives both agents through all three stages and asserts equivalent
 behavior and identical result shapes.
@@ -28,7 +28,7 @@ behavior and identical result shapes.
 
 Selected with `MATRIXARK_CLAUDE_HOOK_BACKEND`:
 
-- **`auto`** (default) — the python parity pipeline when the rust proxy binary
+- **`auto`** (default) — the python conformance pipeline when the rust proxy binary
   (`target/release/matrixark_rust_proxy`) is present, otherwise the offline rust
   engine.
 - **`python`** — `tools/matrixark_agent_hook.py --agent claude`. Byte-for-byte the

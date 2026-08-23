@@ -1410,7 +1410,7 @@ pub enum Command {
         end_ms: u64,
         aggregator: String,
     },
-    /// Full-parity analog of the control_state `HSETANDGET` operator: an
+    /// Full-conformance analog of the control_state `HSETANDGET` operator: an
     /// atomic increment-then-read that additionally supports precision bucketing,
     /// per-key TTL, and UUID idempotency (dedup within a bounded window so
     /// at-least-once queue replays do not double-count). `aggregator` accepts the
@@ -1453,7 +1453,7 @@ pub enum Command {
     },
     ControlStateManager {
         key: String,
-        /// Optional manager op-code for `MANAGER` parity: QUERY(2), FIELD_LIST(5),
+        /// Optional manager op-code for `MANAGER` conformance: QUERY(2), FIELD_LIST(5),
         /// FIELD_COUNT(6), ALL_DATA_VALUE(7). `None` / unknown returns the family summary.
         #[serde(default)]
         op_type: Option<String>,

@@ -103,7 +103,7 @@ Current local scale evidence:
   cases, 10,960 sources, Hit@K 1.0, reader hit 0.974, retrieval p95 28.978 ms, token reduction
   81.4017%, and the required Rust-backed fields all true. The passing replay used release-mode
   batches of 16 with source packing disabled, because LongMemEval_s native per-session sources
-  preserve exact per-query output and Rust/Python case parity.
+  preserve exact per-query output and Rust/Python case conformance.
 - LOCOMO full Rust replay now passes on the real `/tmp/locomo10.json` artifact with 1,542 cases,
   Hit@K 0.9533073930, reader hit 0.8839169909, retrieval p95 46.160 ms, and the required
   Rust-backed fields all true. The optimized replay uses source packing to preserve all source text
@@ -365,7 +365,7 @@ local gateway such as Ollama or vLLM:
 `Vision-CAIR/MiniGPT-4` profile. Use `mock_mode=true` with the same profile names for deterministic
 Docker validation when a live VLM server is not running.
 
-For the baseline memory system benchmark parity, use the GPT-4o-mini reader profile:
+For the baseline memory system benchmark conformance, use the GPT-4o-mini reader profile:
 
 ```json
 {

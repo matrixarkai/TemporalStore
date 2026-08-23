@@ -950,7 +950,7 @@ fn monotonic_record_count_enabled() -> bool {
         .unwrap_or(true)
 }
 
-// TemporalStore parity with the native storage engine: the storage engine's
+// TemporalStore conformance with the native storage engine: the storage engine's
 // record/serving SEQUENCE is an engine-owned MONOTONIC log id, taken from the append
 // log's own iterator id and exposed read-only. It is advanced only by the append log /
 // commit and is never a client
@@ -2688,7 +2688,7 @@ fn env_i32_any(names: &[&str], default: i32) -> i32 {
 }
 
 fn execute_empty(engine: &TemporalEngine, command: Command) -> Result<(), String> {
-    // parity monotonic serving sequence: never let a record_count write regress.
+    // conformance monotonic serving sequence: never let a record_count write regress.
     let command = clamp_record_count_command(engine, command);
     let retrieve_cache_keys = match &command {
         Command::HashSet { key, .. }
@@ -2759,7 +2759,7 @@ fn execute_empty_batch_runtime(
     if commands.is_empty() {
         return Ok(());
     }
-    // parity monotonic serving sequence: never let a record_count write regress
+    // conformance monotonic serving sequence: never let a record_count write regress
     // (mirrors the append-log's advance-only log id). Applies to the serving append
     // batch that carries the {prefix}:record_count StringSet.
     let commands: Vec<Command> = commands

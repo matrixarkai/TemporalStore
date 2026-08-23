@@ -1,7 +1,7 @@
 # TemporalStore LLM Context Deep Dive
 
 This document consolidates the MatrixArk / TemporalStore context design, serving
-schemas, ingestion/query workflows, parity gates, and local validation steps.
+schemas, ingestion/query workflows, conformance gates, and local validation steps.
 
 ## Goal
 
@@ -531,9 +531,9 @@ why older context was compressed.
 ## Monitoring UI Readiness
 
 The monitoring UI under `tools/temporalstore-monitoring-ui/` now exposes two
-operator-facing parity sections.
+operator-facing conformance sections.
 
-### End-to-End Parity
+### End-to-End Conformance
 
 This table repeats the runtime story across nine complete paths:
 
@@ -550,7 +550,7 @@ module parity
 ```
 
 Every row must show the evidence command or corpus case, the expected output, and
-the pass/fail status. This makes parity visible without reading the JSON corpus.
+the pass/fail status. This makes conformance visible without reading the JSON corpus.
 
 ### UI Production Readiness
 

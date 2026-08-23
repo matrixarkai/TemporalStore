@@ -38,7 +38,7 @@ python3 tools/run_temporalstore_unified_tests.py --validate-only
   `compat/unified_temporalstore_cases.json`.
 - New Rust product tests must include `shared-corpus: <case_id>`.
 - Rust-only implementation tests must include `rust-internal: <reason>`.
-- Keep parity claims tied to shared corpus cases, harness output, or docs
+- Keep conformance claims tied to shared corpus cases, harness output, or docs
   that describe the remaining blocker.
 
 ## Scope Boundaries

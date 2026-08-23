@@ -1,7 +1,7 @@
 # TemporalStore Rust Rolling Upgrade And Rollback Runbook
 
 This runbook covers the open-source Rust deployment shape: metaserver, data nodes, proxy, clients,
-and optional local Raft/replica harnesses. It is not a claim of AWS multi-node performance parity or
+and optional local Raft/replica harnesses. It is not a claim of AWS multi-node performance conformance or
 legacy wire compatibility.
 
 ## Preflight Gate

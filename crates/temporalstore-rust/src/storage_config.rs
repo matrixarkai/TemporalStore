@@ -28,7 +28,7 @@ pub const DEFAULT_COLD_SCAN_NO_CACHE_FILL: bool = true;
 pub const DEFAULT_PAGE_INDEX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_BLOCK_INDEX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 // Undumped index-log-gap threshold that triggers a background catalog/index dump under the
-// MANIFEST-PARITY FOLD (TS_INDEX_CATALOG_FOLD). Matches the
+// MANIFEST-CONFORMANCE FOLD (TS_INDEX_CATALOG_FOLD). Matches the
 // default of 1 MiB.
 pub const DEFAULT_INDEX_DUMP_WAL_GAP_BYTES: u64 = 1024 * 1024;
 
@@ -150,7 +150,7 @@ pub fn storage_zone_size_bytes() -> u64 {
 }
 
 /// Undumped index-log-gap threshold (bytes) that triggers a background catalog/index dump under
-/// the MANIFEST-PARITY FOLD. Reads the `TS_INDEX_DUMP_WAL_GAP_BYTES` env override -- or the
+/// the MANIFEST-CONFORMANCE FOLD. Reads the `TS_INDEX_DUMP_WAL_GAP_BYTES` env override -- or the
 /// previous name for it, so existing deployments keep working -- falling back to the 1 MiB
 /// default. Only consulted when `index_catalog_fold_enabled()`.
 pub fn index_dump_wal_gap_bytes() -> u64 {

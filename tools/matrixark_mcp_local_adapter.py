@@ -4676,14 +4676,14 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         return list(records)
 
     # ============================================================================================
-    # Memory management: forget (delete_all) / delete / get_all / reset  (mem0 parity)
+    # Memory management: forget (delete_all) / delete / get_all / reset  (mem0 conformance)
     # --------------------------------------------------------------------------------------------
     # These implement the mem0 memory-management surface against the local JSONL store via durable
     # tombstones (see `apply_memory_tombstones`). subject = `scope.user_id`. A tombstone is appended
     # to the same event log, so a "deleted"/"forgotten" memory never resurfaces from retrieve /
     # get_all / caches and the removal survives reload.
     #
-    # This pass ALSO adds: get/update(=supersede)/history (mem0 read/update parity), provenance-
+    # This pass ALSO adds: get/update(=supersede)/history (mem0 read/update conformance), provenance-
     # closure delete (a source-event delete cascades to its single-source derivatives, and demotes
     # multi-source derivatives by trimming the deleted source from their evidence), and a crash-safe
     # physical PURGE that rewrites the JSONL log without tombstoned records + markers to reclaim space

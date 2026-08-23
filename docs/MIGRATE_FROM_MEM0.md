@@ -156,7 +156,7 @@ hashed-subject audit record (`sha256(user_id)` + count).
 `memory_history(memory_id)`, `forget(user_id=…)`, `delete_memory(memory_id)`,
 `get_all(user_id=…)`, `reset_memory()`.
 
-### `search()` return shape (mem0 parity)
+### `search()` return shape (mem0 conformance)
 
 `m.search(...)` returns mem0's shape so existing mem0 code that reads
 `res["results"][i]["memory"]` works unchanged:

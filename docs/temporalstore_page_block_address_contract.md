@@ -3,7 +3,7 @@
 This is the shared storage-address contract for and Rust TemporalStore. It defines
 the public report/API vocabulary for page addresses, block addresses, logical indexes,
 and GC metadata. and Rust may keep different private implementation details, but
-public reports, parity tests, metrics, and compatibility docs should use these names.
+public reports, conformance tests, metrics, and compatibility docs should use these names.
 
 ## Goals
 
@@ -11,7 +11,7 @@ public reports, parity tests, metrics, and compatibility docs should use these n
 - Make page/block index reports comparable across both engines.
 - Prevent public naming drift such as `page_store` in one backend and `block_store`
   in another when the concept is the same serving/durable page layer.
-- Provide a stable target for shared parity tests, recovery tests, compaction tests,
+- Provide a stable target for shared conformance tests, recovery tests, compaction tests,
   and storage lifecycle reports.
 
 ## Canonical Address Types
@@ -212,7 +212,7 @@ Required safety gates before physical reclaim:
   the page/block;
 - compaction generation is newer than the stale page generation.
 
-## Read/Write Behavior Parity
+## Read/Write Behavior Conformance
 
 and Rust must expose the same logical read/write behavior even if their
 private page-store or block-store internals differ.
@@ -262,7 +262,7 @@ Required write sequence step names:
 
 Required behavior per step:
 
-| step | required parity behavior |
+| step | required conformance behavior |
 |---|---|
 | append record | Accept a typed record with logical model/table/object key, optional field, optional timestamp, payload bytes, and write options. |
 | route shard | Derive the same shard/partition decision from the shared routing key. Context records should use the agreed placement key, not broad tenant scans. |
@@ -321,7 +321,7 @@ Required write-path metrics:
 - `block_writes`
 - `bytes_written`
 
-Parity rules:
+Conformance rules:
 
 - The write result must contain canonical `PageAddress`, `BlockAddress`, and
   `append_watermark` fields in public reports.
@@ -339,7 +339,7 @@ Parity rules:
 - Batch append must preserve per-record logical ordering within the same
   shard/object/timestamp range, publish a `batch_watermark`, and report
   `records_appended`.
-- `append_durability_failures` must be zero for parity acceptance.
+- `append_durability_failures` must be zero for conformance acceptance.
 
 ### Read Path
 
@@ -500,7 +500,7 @@ Required behavior:
   but raw source pages must not enter hot LRU/admission unless an explicit
   replay/query path reinforces them.
 
-## Public Config Parity
+## Public Config Conformance
 
 and Rust must expose the same public storage tuning knobs. The names below
 are the public contract; each backend may map them into private gflags, typed
@@ -534,7 +534,7 @@ Required report shape:
 }
 ```
 
-Parity rules:
+Conformance rules:
 
 - launchers must map `TS_STORAGE_ZONE_SIZE` to `--storage_zone_size` and
   `TS_STREAM_MAX_BLOB_SIZE` to `--stream_max_blob_size` until native gflags use
@@ -542,12 +542,12 @@ Parity rules:
 - Rust must read all eight names through its typed storage tuning config.
 - Benchmark and scale reports must include `effective_storage_tuning` at the
   top-level config and per backend.
-- A parity gate should fail if one backend reports a missing knob or a different
+- A conformance gate should fail if one backend reports a missing knob or a different
   effective value under the same run config.
 
 ## Normalize Naming
 
-Public APIs, reports, metrics, docs, parity tests, and externally visible JSON
+Public APIs, reports, metrics, docs, conformance tests, and externally visible JSON
 must use the canonical names below. Private implementation names may still exist
 inside or Rust, but they must be translated before data leaves the backend.
 
@@ -620,7 +620,7 @@ Compatibility aliases are allowed only when all three conditions are true:
 1. The canonical field is present in the same report.
 2. The alias is clearly marked as `legacy_alias` or appears only in a migration
    section.
-3. The parity gate ignores the alias and validates only the canonical field.
+3. The conformance gate ignores the alias and validates only the canonical field.
 
 New public report fields must not introduce backend-specific names such as:
 
@@ -654,7 +654,7 @@ Required Phase 1 outputs:
 
 Phase 1 rules:
 
-- Aliases may be read by tools and dashboards, but parity gates must validate
+- Aliases may be read by tools and dashboards, but conformance gates must validate
   the canonical fields.
 - New reports must include canonical fields even when old alias fields are still
   emitted for compatibility.
@@ -694,7 +694,7 @@ Required Phase 3 behavior:
 - Rust compatibility deserializers continue reading old report fields through
   `compatibility_aliases`.
 
-### Phase 4: Report Shape Parity
+### Phase 4: Report Shape Conformance
 
 Phase 4 updates public reports to emit the same canonical shape as Rust.
 
@@ -714,7 +714,7 @@ Phase 5 makes the shared tests the source of truth for both engines.
 Required Phase 5 coverage:
 
 - shared page-address compatibility corpus;
-- shared page/block metrics parity validator;
+- shared page/block metrics conformance validator;
 - old-report compatibility fixtures;
 - and Rust native tests for page split, compaction rewrite, tombstones,
   no-promote cold scans, crash/restart index rebuild, and watermark behavior;
@@ -732,13 +732,13 @@ Required Phase 6 gates:
 - fail if canonical fields are absent from new reports;
 - fail if alias fields appear outside `compatibility_aliases` after the
   compatibility window;
-- fail if broad legacy report paths are used in production-performance parity
+- fail if broad legacy report paths are used in production-performance conformance
   claims.
 
 Removal gate:
 
 - remove or hide alias output only after dashboards, benchmark reports, portal
-  pages, tests, Rust tests, replay/audit tooling, and parity gates all read
+  pages, tests, Rust tests, replay/audit tooling, and conformance gates all read
   the canonical schema directly.
 
 ## conformance Mapping
@@ -753,9 +753,9 @@ Removal gate:
 | `Tombstone` / `GcEligibility` | deleted/dirty page and delayed destroy state | tombstone/GC report state | `Tombstone` / `GcEligibility` |
 | `FollowerCursorSafety` | follower cursor and snapshot retention state | raft/shared-store cursor safety state | `FollowerCursorSafety` |
 
-## Required Parity Tests
+## Required Conformance Tests
 
-Shared conformance parity cases must cover:
+Shared conformance conformance cases must cover:
 
 - encode/decode `PageAddress`;
 - encode/decode `BlockAddress`;
@@ -790,7 +790,7 @@ PageAddress and BlockAddress subset that both and Rust must consume:
 - cold scan reads that do not warm the serving cache;
 - crash/restart rebuild of `PageIndex`, `BlockIndex`, and `ObjectIndexEntry`.
 
-Lifecycle parity reports must also include `storage_index_contract` with these
+Lifecycle conformance reports must also include `storage_index_contract` with these
 required fields:
 
 - `page_address_codec`
@@ -903,7 +903,7 @@ Canonical cache metrics:
 - `cache_writeback_queue_depth`
 - `cache_writeback_rejections`
 
-Lifecycle parity reports must also include `storage_cache_contract` with these
+Lifecycle conformance reports must also include `storage_cache_contract` with these
 required fields:
 
 - `layers`
@@ -929,7 +929,7 @@ Required cache contract behavior:
 - `compaction_watermark_invalidation` must be `true`.
 - `cold_scan_no_promote` must be `true`.
 - `writeback_backpressure_measured` must be `true`.
-- `hot_cache_promotions` must be `0` for cold scan no-promote parity.
+- `hot_cache_promotions` must be `0` for cold scan no-promote conformance.
 
 Canonical StorageManager/StoreManager lifecycle phases:
 
@@ -1109,14 +1109,14 @@ pair that proves `page_store`, `block_store`, stream/blob, and page-segment
 aliases are accepted only under `compatibility_aliases` and compared through the
 canonical public shape.
 
-Lifecycle parity is intentionally stricter than cache eviction parity:
+Lifecycle conformance is intentionally stricter than cache eviction conformance:
 
 - cache eviction only proves memory pressure relief;
 - tombstone metadata proves logical delete eligibility;
 - compaction and GC prove live-record rewrite and stale-generation exclusion;
 - physical reclaim is complete only when reclaimable bytes and reclaimed bytes
   are reported with zero physical reclaim errors;
-- cold scan parity requires no-cache/no-promote reads and no hot-cache admission.
+- cold scan conformance requires no-cache/no-promote reads and no hot-cache admission.
 
 Canonical reclaim semantics:
 
@@ -1197,11 +1197,11 @@ Shared proof requirements:
 - physical reclaim is only complete when stale pages/blocks are tombstoned,
   rewritten or skipped safely, and reclaimed bytes are reported.
 
-## Nine-Phase Parity Gate
+## Nine-Phase Conformance Gate
 
 `tools/validate_storage_engine_9_phase_conformance.py` is the umbrella gate for the
-storage-engine parity loop. It runs the focused validators in the same phase
-order used by the conformance parity plan:
+storage-engine conformance loop. It runs the focused validators in the same phase
+order used by the conformance conformance plan:
 
 1. canonical public contract;
 2. read/write/cold-scan sequences;
@@ -1209,8 +1209,8 @@ order used by the conformance parity plan:
 4. page/block/slot/index behavior;
 5. multi-layer cache behavior;
 6. eviction, GC, compaction, and reclaim;
-7. public config parity;
-8. metrics/report parity;
+7. public config conformance;
+8. metrics/report conformance;
 9. shared storage/proxy/Raft evidence.
 
 The gate should be used after every storage lifecycle change:
@@ -1235,7 +1235,7 @@ This contract is satisfied when and Rust:
 
 - emit the same public address/index field names;
 - can convert private storage metadata into the canonical report shape;
-- pass the shared page/block/index parity cases;
+- pass the shared page/block/index conformance cases;
 - expose the same storage lifecycle metrics;
 - reject public report changes that reintroduce backend-specific naming drift;
 - encode the same logical `PageAddress`;

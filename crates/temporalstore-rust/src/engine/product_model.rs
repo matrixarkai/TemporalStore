@@ -169,7 +169,7 @@ pub(super) fn control_state_family_name(family: ControlStateFamily) -> &'static 
     }
 }
 
-/// `MANAGER` op-code parity. Accepts the numeric code or its symbolic name.
+/// `MANAGER` op-code conformance. Accepts the numeric code or its symbolic name.
 /// `None` / unknown -> the family summary (the historical default).
 pub(super) fn control_state_manager_op_code(op_type: Option<&str>) -> Option<i64> {
     let value = op_type?.trim();

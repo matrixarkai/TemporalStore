@@ -372,7 +372,7 @@ impl TemporalEngine {
         let _ = atomic_write_bytes(&self.index_path(shard_id), &index_bytes);
     }
 
-    /// MANIFEST-PARITY FOLD threshold check: dump the index catalog when the undumped index-log
+    /// MANIFEST-CONFORMANCE FOLD threshold check: dump the index catalog when the undumped index-log
     /// gap has crossed `index_dump_wal_gap_bytes` (the index-meta dump gap
     /// cadence). No-op with the `TS_INDEX_CATALOG_FOLD` gate off, so the background cycle is
     /// byte-identical when the fold is not enabled. Returns whether a dump fired.
@@ -407,8 +407,8 @@ impl TemporalEngine {
         self.dump_index_catalog(shard_id)
     }
 
-    /// MANIFEST-PARITY FOLD dump: materialize the durable base index, fold the band/zone catalog
-    /// into an index-log anchor (the durable band catalog, parity), and
+    /// MANIFEST-CONFORMANCE FOLD dump: materialize the durable base index, fold the band/zone catalog
+    /// into an index-log anchor (the durable band catalog, conformance), and
     /// advance the dumped watermark -- the batched, threshold-driven replacement for the per-write
     /// band-manifest persist. No-op with the gate off. Ordering is single-barrier safe: pages +
     /// WAL are fsynced, then the base index is written durably, then the folded anchor is fsync'd,
