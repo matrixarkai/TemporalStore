@@ -3931,6 +3931,66 @@ mod tests {
     }
 
     #[test]
+    fn a_timed_out_request_on_a_pooled_socket_is_not_resent() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // The keep-alive pool reconnects and sends again when a pooled socket fails, which is
+        // right when the server had reaped that socket -- nothing was served on it. It was
+        // also doing it when the peer simply stopped answering, which sends the request a
+        // second time even though the first may have been processed. One layer below the
+        // routing guard, and it would undo that guard from underneath.
+        let hits = std::sync::Arc::new(AtomicUsize::new(0));
+        let addr = test_addr(18_392);
+        let h = hits.clone();
+        let addr_for_thread = addr.clone();
+        std::thread::spawn(move || {
+            serve(&addr_for_thread, move |_request| {
+                // First exchange answers immediately, so the socket lands in the pool.
+                // Everything after that accepts the request and goes quiet.
+                if h.fetch_add(1, Ordering::SeqCst) > 0 {
+                    std::thread::sleep(Duration::from_millis(700));
+                }
+                crate::http::json_response(200, &Status::ok())
+            })
+            .unwrap();
+        });
+        wait_for_http(&addr);
+
+        let options = HttpRequestOptions {
+            connect_timeout_ms: 200,
+            io_timeout_ms: 120,
+            max_retries: 0,
+        };
+        // Warm the pool: this must succeed and leave a keep-alive socket for this thread.
+        crate::http::request_bytes_with_options(
+            &addr,
+            "POST",
+            "/warm",
+            b"{}",
+            "application/json",
+            options,
+        )
+        .expect("first exchange should succeed and pool its socket");
+
+        let before = hits.load(Ordering::SeqCst);
+        let _ = crate::http::request_bytes_with_options(
+            &addr,
+            "POST",
+            "/slow",
+            b"{}",
+            "application/json",
+            options,
+        );
+        // Leave room for a second attempt to arrive, so this fails loudly rather than racing.
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(
+            hits.load(Ordering::SeqCst) - before,
+            1,
+            "a request that timed out on a pooled socket must not be sent again on a fresh one"
+        );
+    }
+
+    #[test]
     fn a_write_whose_outcome_is_unknown_is_not_sent_twice() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
