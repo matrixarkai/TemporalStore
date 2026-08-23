@@ -3619,6 +3619,8 @@ mod tests {
 
     fn request(op: &str) -> RecordLogRequest {
         RecordLogRequest {
+            // This request names no identities: the field is only read by the delete op.
+            record_ids: None,
             op: op.to_string(),
             metaserver: "127.0.0.1:18000".to_string(),
             namespace: "codex_ns".to_string(),
