@@ -106,7 +106,16 @@ class _LocalAdapterSessionCommitMixin:
         # TODO(engine): the Rust engine-side batch-extraction/commit path (crates/**) needs the same
         # forward guard against delete-before-extract resurrection; this fix wires only the Python local
         # adapter. Not edited here per scope (crates are out of scope for this change).
-        _surviving_event_ids = surviving_source_event_ids(self._read_raw_records())
+        # Ask first whether there is anything to guard against. `surviving_source_event_ids`
+        # returns None -- i.e. keep every pending event -- whenever the log carries no tombstone,
+        # so on a log with none the raw read below is pure cost, once per commit, over the whole
+        # store. A backend that can answer the question cheaply says so; the default answers it
+        # by doing the read, exactly as before.
+        _surviving_event_ids = (
+            surviving_source_event_ids(self._read_raw_records())
+            if self.memory_tombstones_may_exist()
+            else None
+        )
         if _surviving_event_ids is not None:
             pending_all_unfiltered = [
                 record

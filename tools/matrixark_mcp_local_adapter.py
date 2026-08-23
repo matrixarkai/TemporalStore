@@ -4534,6 +4534,16 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
     # (the purged log replays to the same logical state). DEFERRED (separate parallel workstream):
     # rust-datanode-native StringDelete/CommonDelete/FeatureDelete wiring, and true re-derivation
     # (re-extraction) of a demoted multi-source entity/summary -- we trim evidence, not re-summarize.
+    def memory_tombstones_may_exist(self) -> bool:
+        """Could the durable log hold a memory tombstone? Conservative: True means "look properly".
+
+        The delete-before-extract guard reads the whole raw log on every commit, and on a log with
+        no tombstone that read changes nothing -- `surviving_source_event_ids` returns None. This
+        gives a backend a chance to answer the question without the read. Here, on the JSONL log,
+        the read IS the answer, so this is exactly what the guard used to do.
+        """
+        return _records_contain_memory_tombstone(self._read_raw_records())
+
     def _resolve_subject_hashes(self, scope: Json) -> tuple[int, int]:
         """Return ``(tenant_hash, user_hash)`` for an already-identity-enriched request scope,
         resolving each from an explicit hash field or by parsing the scope_key."""
