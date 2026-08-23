@@ -91,6 +91,19 @@ impl LocalBlockStore {
         Ok(fs::read(slab_path(&root, page_slab_id))?)
     }
 
+    /// Install one slab, and rewrite the whole band manifest.
+    ///
+    /// The manifest rewrite is the expensive part and it grows with the store: every install
+    /// serializes every band descriptor, writes them to a fresh file, fsyncs it, renames it and
+    /// fsyncs the directory. Installing n slabs therefore writes the manifest n times. Timed by
+    /// phase on one machine: 111.7 ms per install at 200 slabs, 270.7 ms at 800 -- while purging
+    /// all of them afterwards costs about 0.65 ms each, so the collection is not what is dear here.
+    ///
+    /// Fixable, and not fixed: the manifest is a CACHE, rebuildable from the slabs themselves by
+    /// `rebuild_band_manifest_at`, so it does not have to be written on every install. Writing it
+    /// periodically needs the load path to notice a stale one -- comparing its set against the
+    /// slabs actually present -- because a stale manifest is trusted today, which is worse than a
+    /// missing one.
     pub fn install_slab(
         &self,
         page_slab_id: u64,

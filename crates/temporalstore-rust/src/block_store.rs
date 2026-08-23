@@ -2845,4 +2845,40 @@ mod tests {
         assert_eq!(store.slab_ids().unwrap(), vec![1, 2, 3]);
         assert_eq!(store.delayed_destroy_slab_ids().unwrap(), vec![0]);
     }
+
+    /// Install, quarantine and purge, timed apart.
+    ///
+    /// A purge unlinks every quarantined slab in one round with the store's lock held, so the round
+    /// is unbounded in the amount of work it does. Whether that is the expensive part, or whether
+    /// getting there is, is what this separates -- an earlier attempt timed all three together at
+    /// twenty thousand slabs and did not finish in an hour.
+    #[test]
+    fn quarantine_and_purge_timed_by_phase() {
+        for slabs in [200u64, 800, 3_200] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalBlockStore::new(dir.path());
+
+            let started = std::time::Instant::now();
+            for id in 0..slabs {
+                store.install_slab(id, b"slab-contents").unwrap();
+            }
+            let install = started.elapsed().as_secs_f64() * 1e3;
+
+            let started = std::time::Instant::now();
+            store
+                .gc_slabs_before_with_live_refs_delayed_destroy(slabs - 1, [slabs - 1])
+                .unwrap();
+            let quarantine = started.elapsed().as_secs_f64() * 1e3;
+
+            let started = std::time::Instant::now();
+            let report = store.purge_delayed_destroy_slabs_with_report().unwrap();
+            let purge = started.elapsed().as_secs_f64() * 1e3;
+
+            println!(
+                "  {slabs:>5} slabs: install {install:>9.1} ms ({:>6.3} ms each)   quarantine {quarantine:>9.1} ms   purge {purge:>8.1} ms ({} destroyed)",
+                install / slabs as f64,
+                report.purged_page_slab_ids.len()
+            );
+        }
+    }
 }
