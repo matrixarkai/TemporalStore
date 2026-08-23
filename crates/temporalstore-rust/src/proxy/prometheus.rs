@@ -26,6 +26,7 @@ impl ProxyService {
             ("heartbeat", stats.heartbeat_total),
             ("heartbeat_slow", stats.heartbeat_slow_total),
             ("auto_register", stats.auto_register_total),
+            ("auto_register_throttled", stats.auto_register_throttled),
         ] {
             push_proxy_metric(
                 &mut out,

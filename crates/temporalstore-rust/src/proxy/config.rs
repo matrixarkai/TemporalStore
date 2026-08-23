@@ -41,6 +41,10 @@ pub(super) fn default_topology_check_interval_ms() -> u64 {
     50
 }
 
+pub(super) fn default_auto_register_min_interval_ms() -> u64 {
+    60_000
+}
+
 pub(super) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -97,6 +101,7 @@ pub(super) fn proxy_config_version(options: &ProxyOptions) -> u64 {
         pin_primary_reads: options.pin_primary_reads,
         heartbeat_timeout_ms: options.heartbeat_timeout_ms,
         topology_check_interval_ms: options.topology_check_interval_ms,
+        auto_register_min_interval_ms: options.auto_register_min_interval_ms,
     };
     for byte in serde_json::to_vec(&view).unwrap_or_default() {
         version ^= byte as u64;
@@ -125,4 +130,5 @@ struct ProxyConfigHashView<'a> {
     pin_primary_reads: bool,
     heartbeat_timeout_ms: u64,
     topology_check_interval_ms: u64,
+    auto_register_min_interval_ms: u64,
 }

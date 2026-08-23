@@ -21,6 +21,7 @@ mod response;
 use config::{
     default_context_first_shard_id, default_context_io_timeout_ms, default_context_shard_count,
     default_heartbeat_timeout_ms,
+    default_auto_register_min_interval_ms,
     default_topology_check_interval_ms,
     default_pin_primary_reads, default_proxy_addr, default_service_registry_ttl_ms, now_ms,
     proxy_client_from_options, proxy_config_version,
@@ -129,6 +130,18 @@ pub struct ProxyOptions {
     /// serving the shard fails, and the failure path force-refreshes the route.
     #[serde(default = "default_topology_check_interval_ms")]
     pub topology_check_interval_ms: u64,
+    /// Shortest interval (ms) between attempts to register this proxy with the metaserver
+    /// after a heartbeat comes back `not_found`.
+    ///
+    /// That reply means the metaserver does not know this proxy, and the answer is to
+    /// register again -- but it was being retried on EVERY heartbeat. A metaserver that keeps
+    /// saying `not_found` then takes a registration attempt plus a second heartbeat from every
+    /// proxy in the fleet, every interval, which is the most load precisely when it is least
+    /// able to serve it.
+    ///
+    /// Set to 0 to attempt on every heartbeat, which is the older behaviour.
+    #[serde(default = "default_auto_register_min_interval_ms")]
+    pub auto_register_min_interval_ms: u64,
     /// I/O timeout (ms) for forwarding a `/context/*` request to the owning
     /// datanode. Larger than the command io_timeout because extraction /
     /// embedding generation runs inline on the datanode.
@@ -202,6 +215,7 @@ impl Default for ProxyOptions {
             context_io_timeout_ms: default_context_io_timeout_ms(),
             heartbeat_timeout_ms: default_heartbeat_timeout_ms(),
             topology_check_interval_ms: default_topology_check_interval_ms(),
+            auto_register_min_interval_ms: default_auto_register_min_interval_ms(),
         }
     }
 }
@@ -236,6 +250,9 @@ pub struct ProxyStats {
     /// Topology checks not made because one was made within `topology_check_interval_ms`.
     /// This is the count of metaserver round-trips kept off the request path.
     pub topology_checks_skipped: u64,
+    /// Registration attempts not made because one was made within
+    /// `auto_register_min_interval_ms`.
+    pub auto_register_throttled: u64,
     pub auto_register_total: u64,
 }
 
@@ -831,6 +848,8 @@ struct ProxyInner {
     /// Wall-clock ms of the last topology check, 0 for "never". Read and written on the
     /// request path, so an atomic rather than a lock.
     last_topology_check_ms: std::sync::atomic::AtomicU64,
+    /// Wall-clock ms of the last auto-registration attempt, 0 for "never".
+    last_auto_register_ms: std::sync::atomic::AtomicU64,
 }
 
 impl ProxyService {
@@ -845,6 +864,7 @@ impl ProxyService {
                 inflight: ProxyInflight::default(),
                 boot_time_ms: now_ms(),
                 last_topology_check_ms: std::sync::atomic::AtomicU64::new(0),
+                last_auto_register_ms: std::sync::atomic::AtomicU64::new(0),
             }),
         }
     }
@@ -1380,6 +1400,33 @@ impl ProxyService {
         }
         let _ = self.client().invalidate_routes_from_meta_topology();
         self.sync_client_stats();
+    }
+
+    /// Whether enough time has passed to try registering with the metaserver again.
+    ///
+    /// Claims the slot as it answers, so two heartbeats cannot both decide they are due.
+    pub(super) fn auto_register_is_due(&self) -> bool {
+        let interval = self.options().auto_register_min_interval_ms;
+        if interval == 0 {
+            return true;
+        }
+        let now = now_ms();
+        let last = self
+            .inner
+            .last_auto_register_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if last != 0 && now >= last && now.saturating_sub(last) < interval {
+            return false;
+        }
+        self.inner
+            .last_auto_register_ms
+            .compare_exchange(
+                last,
+                now,
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            )
+            .is_ok()
     }
 
     /// Whether enough time has passed to ask the metaserver about topology again.
@@ -2546,6 +2593,88 @@ mod tests {
     }
 
     #[test]
+    fn a_metaserver_that_keeps_saying_not_found_is_not_hammered() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // not_found means "I do not know this proxy", and registering again is the right
+        // answer -- but it was being retried on every heartbeat. A metaserver stuck on
+        // not_found then takes a registration AND a second heartbeat from every proxy, every
+        // interval, which is the heaviest load at the moment it is least able to serve it.
+        let registers = std::sync::Arc::new(AtomicUsize::new(0));
+        let heartbeats = std::sync::Arc::new(AtomicUsize::new(0));
+        let addr = test_addr(18_394);
+        let r = registers.clone();
+        let h = heartbeats.clone();
+        let addr_for_thread = addr.clone();
+        std::thread::spawn(move || {
+            serve(&addr_for_thread, move |request| {
+                match request.path.as_str() {
+                    "/proxies/heartbeat" => {
+                        h.fetch_add(1, Ordering::SeqCst);
+                        crate::http::json_response(
+                            200,
+                            &ProxyHeartbeatResponse {
+                                status: Status::error("not_found", "unknown proxy"),
+                                config_changed: false,
+                                namespace: String::new(),
+                                config_version: 0,
+                                serving_mode: "serving".to_string(),
+                                drop_percent: 0,
+                            },
+                        )
+                    }
+                    "/proxies/register" => {
+                        r.fetch_add(1, Ordering::SeqCst);
+                        crate::http::json_response(
+                            200,
+                            &AckResponse {
+                                status: Status::error("still_unknown", "no"),
+                            },
+                        )
+                    }
+                    _ => crate::http::json_response(404, &Status::error("not_found", "no route")),
+                }
+            })
+            .unwrap();
+        });
+        wait_for_http(&addr);
+
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: addr.clone(),
+            ..ProxyOptions::default()
+        });
+        for _ in 0..6 {
+            let _ = proxy.heartbeat_to_meta();
+        }
+        assert_eq!(
+            registers.load(Ordering::SeqCst),
+            1,
+            "six heartbeats against a not_found metaserver should attempt registration once,              not once each"
+        );
+        assert_eq!(heartbeats.load(Ordering::SeqCst), 6, "heartbeats themselves continue");
+        assert_eq!(
+            proxy.info().stats.auto_register_throttled, 5,
+            "the attempts not made should be counted, not silently dropped"
+        );
+
+        // Zero restores the older behaviour exactly, so the escape hatch cannot rot.
+        registers.store(0, Ordering::SeqCst);
+        let eager = ProxyService::new(ProxyOptions {
+            meta_addr: addr,
+            auto_register_min_interval_ms: 0,
+            ..ProxyOptions::default()
+        });
+        for _ in 0..4 {
+            let _ = eager.heartbeat_to_meta();
+        }
+        assert_eq!(
+            registers.load(Ordering::SeqCst),
+            4,
+            "with the interval at zero every heartbeat should try to register"
+        );
+    }
+
+    #[test]
     fn every_proxy_counter_is_exposed_on_the_metrics_endpoint() {
         // A counter nobody can read is a counter nobody acts on. topology_checks_skipped was
         // added and never exposed, so the round-trips it was counting stayed invisible.
@@ -2567,6 +2696,7 @@ mod tests {
             heartbeat_total,
             heartbeat_slow_total,
             auto_register_total,
+            auto_register_throttled,
             route_cache_hits,
             route_cache_misses,
             route_refreshes,
@@ -2578,7 +2708,7 @@ mod tests {
 
         // Field -> the label it is published under. Values are only here so the destructured
         // bindings are used; what is asserted is that each label reaches the endpoint.
-        let published: [(&str, u64); 19] = [
+        let published: [(&str, u64); 20] = [
             ("kind=\"execute\"", execute_requests),
             ("kind=\"batch_execute\"", batch_execute_requests),
             ("kind=\"bad_request\"", bad_requests),
@@ -2591,6 +2721,7 @@ mod tests {
             ("kind=\"heartbeat\"", heartbeat_total),
             ("kind=\"heartbeat_slow\"", heartbeat_slow_total),
             ("kind=\"auto_register\"", auto_register_total),
+            ("kind=\"auto_register_throttled\"", auto_register_throttled),
             ("kind=\"hit\"", route_cache_hits),
             ("kind=\"miss\"", route_cache_misses),
             ("kind=\"refresh\"", route_refreshes),
