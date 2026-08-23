@@ -1055,6 +1055,52 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         except Exception:  # noqa: BLE001 - fall back to the per-subject reads rather than answer wrong.
             return None
 
+    def memory_tombstones_may_exist(self) -> bool:
+        """Answer from a type-filtered scan, so the guard does not read the whole log to find out.
+
+        The inherited implementation reads every raw record. On a native backend that is a full
+        record-log read on EVERY commit -- measured at up to 2392 records per commit -- and its
+        entire output is one boolean, almost always False. The engine can filter by record type
+        during its own walk, so only tombstone rows cross the boundary: normally none at all.
+
+        Deliberately scope-free: the guard is store-wide, and a tombstone in any scope is a reason
+        to do the full read. Bundled appends are handled engine-side, which matters because a
+        tombstone can be stored inside a bundle whose wrapper carries no record_type.
+
+        Returns True on ANY failure or missing support. A false negative here would skip the guard
+        and let a deleted event be re-materialised by extraction; a false positive only costs the
+        read the guard used to do unconditionally.
+        """
+        scanner = getattr(self._client, "matrixark_scan_candidates", None)
+        if not callable(scanner):
+            return super().memory_tombstones_may_exist()
+        try:
+            from tools.matrixark_mcp_local_adapter import MEMORY_TOMBSTONE_RECORD_TYPE
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_local_adapter import MEMORY_TOMBSTONE_RECORD_TYPE
+        try:
+            response = scanner(
+                count_key=self._count_key,
+                record_hash_key=self._record_hash_key,
+                shard_size=self._shard_size,
+                scope={},
+                record_types=[MEMORY_TOMBSTONE_RECORD_TYPE],
+                secondary_index_groups=[],
+                selected_node_hashes=[],
+            )
+        except Exception:  # noqa: BLE001 - an unanswered question means "do the full read".
+            return True
+        if not isinstance(response, dict):
+            return True
+        records = response.get("records")
+        if not isinstance(records, list):
+            return True
+        return any(
+            isinstance(record, dict)
+            and str(record.get("record_type") or "") == MEMORY_TOMBSTONE_RECORD_TYPE
+            for record in records
+        )
+
     def _purge_scope_in_engine(self, scope: Json) -> Json:
         """Ask the engine to physically remove every record matching `scope`.
 
