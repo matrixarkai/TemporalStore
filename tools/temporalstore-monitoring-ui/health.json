@@ -338,15 +338,6 @@
       "notes": "profile-like feature object; proxy FeatureQuery still needs debug"
     },
     {
-      "module": "IPS",
-      "test": "risk/frequency cap sample",
-      "status": "passed",
-      "write_path": "direct SDK",
-      "read_path": "primary",
-      "latency": "module smoke passed",
-      "notes": "slot/table/action dimensions"
-    },
-    {
       "module": "STRING",
       "test": "SET/GET baseline",
       "status": "passed",
@@ -385,16 +376,6 @@
       "query_shape": "GET(key, feature_group, selected_fields)",
       "storage_shape": "structured feature object with multiple fields",
       "consistency": "primary write path expected; secondary validation pending",
-      "test_status": "module smoke passed"
-    },
-    {
-      "name": "IPS",
-      "status": "passed",
-      "use_case": "risk/frequency-cap style state keyed by uid, slot, table, and action type",
-      "write_shape": "UPSERT/INCR(uid, slot, table, action_type, timestamp/value)",
-      "query_shape": "GET/SCAN(uid, slot, table, action_type, window/filter)",
-      "storage_shape": "business-specific indexed state for risk and serving",
-      "consistency": "implementation details need deeper test coverage",
       "test_status": "module smoke passed"
     },
     {

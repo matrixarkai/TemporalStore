@@ -296,12 +296,6 @@ fn usage() {
     eprintln!("  client ttl <key>");
     eprintln!("  client seqadd <key> <ts> <gid> <action_type> <duration> <author_id>");
     eprintln!("  client seqquery <key> <start> <end> <count> [field op value]");
-    eprintln!("  client ipsadd <key> <timestamp_ms> <instance>");
-    eprintln!("  client ipslast <key> <count>");
-    eprintln!("  client ipsrange <key> <start> <end> [count]");
-    eprintln!("  client ipsremove <key> <timestamp_ms>");
-    eprintln!("  client ipsdel <key>");
-    eprintln!("  client ipscount <key> <start> <end>");
     eprintln!("  client control_stateinc <key> <timestamp_ms> <amount>");
     eprintln!("  client control_statecount <key> <start_ms> <end_ms>");
     eprintln!("  client control_statequery <key> <start_ms> <end_ms> <sum|min|max|first|last|count>");

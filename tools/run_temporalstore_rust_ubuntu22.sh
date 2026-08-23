@@ -62,9 +62,6 @@ target/debug/client fdel feature:agg
 target/debug/client fagg feature:agg 0 300 count
 target/debug/client seqadd seq:1 100 900 3 120 7001
 target/debug/client seqquery seq:1 0 200 10 action_type eq 3
-target/debug/client ipsadd ips:1 100 inst-a
-target/debug/client ipsadd ips:1 200 inst-b
-target/debug/client ipslast ips:1 1
 target/debug/client riskinc risk:1 100 2
 target/debug/client riskinc risk:1 200 3
 target/debug/client riskcount risk:1 0 200
