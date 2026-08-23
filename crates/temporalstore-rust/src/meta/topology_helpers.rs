@@ -133,7 +133,7 @@ pub(super) fn stats_from_state(state: &MetaState) -> MetaStats {
     }
 }
 
-const TOPOLOGY_EVENT_HISTORY_LIMIT: usize = 256;
+pub(super) const TOPOLOGY_EVENT_HISTORY_LIMIT: usize = 256;
 
 pub(super) fn topology_version_report_from_state(
     state: &MetaState,
