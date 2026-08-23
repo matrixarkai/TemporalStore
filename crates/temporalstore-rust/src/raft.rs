@@ -1435,6 +1435,14 @@ pub struct VoteRequest {
     pub target_id: RaftNodeId,
     pub last_log_index: u64,
     pub last_log_term: u64,
+    /// Asks whether the vote WOULD be granted, without anyone acting on the question.
+    ///
+    /// A node that cannot reach the cluster would otherwise campaign on a timer and raise its term
+    /// every time, and a leader that later hears that term must step down -- so one unreachable
+    /// node drags a healthy cluster through repeated elections. Answering a pre-vote changes no
+    /// state, so an unreachable node never moves its term.
+    #[serde(default)]
+    pub pre_vote: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

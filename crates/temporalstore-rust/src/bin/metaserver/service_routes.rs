@@ -413,6 +413,7 @@ fn handle_master_service_route(
                     meta,
                     get_table_topology,
                     GetTableTopologyRequest {
+                        client_location: String::new(),
                         namespace: req.namespace,
                         table_name: req.table_name,
                         old_topology_version: 0,
@@ -434,6 +435,7 @@ fn handle_master_service_route(
                     meta,
                     get_table_topology,
                     GetTableTopologyRequest {
+                        client_location: String::new(),
                         namespace: req.namespace,
                         table_name: req.table_name,
                         old_topology_version: 0,
@@ -450,6 +452,9 @@ fn handle_master_service_route(
                     meta,
                     get_table_topology,
                     GetTableTopologyRequest {
+                        // The caller has been sending this on every topology
+                        // request all along; it was being dropped here.
+                        client_location: req.idc,
                         namespace: req.namespace,
                         table_name: req.table_name,
                         old_topology_version: req.old_topology_version.max(req.old_topo_version),

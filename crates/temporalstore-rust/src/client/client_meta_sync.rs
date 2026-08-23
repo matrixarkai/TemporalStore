@@ -28,6 +28,7 @@ impl TemporalStoreClient {
             meta_addr,
             "/tables/topology",
             &GetTableTopologyRequest {
+                client_location: String::new(),
                 namespace: namespace.clone(),
                 table_name: table_name.clone(),
                 old_topology_version: 0,
@@ -328,6 +329,11 @@ impl TemporalStoreClient {
         if !topology.status.ok {
             return Err(ClientError::Status(topology.status.message));
         }
+        // Remember what the metaserver just said, so routes resolved from here on are
+        // stamped with it and a later "unchanged" reply can actually keep the cache.
+        self.inner
+            .known_topology_version
+            .store(topology.current_topology_version, std::sync::atomic::Ordering::Relaxed);
 
         let stale_before_invalidation = old_topology_version < topology.current_topology_version
             || (before.unknown_topology_version_routes > 0 && !topology.unchanged);

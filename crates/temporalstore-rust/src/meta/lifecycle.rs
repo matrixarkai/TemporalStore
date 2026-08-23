@@ -44,7 +44,7 @@ impl SingleNodeMeta {
                 unchanged: true,
             };
         }
-        let shards = build_shards(&state, &table.info);
+        let shards = build_shards(&state, &table.info, &request.client_location);
         TableTopologyResponse {
             status: Status::ok(),
             table: Some(table.info.clone()),

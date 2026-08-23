@@ -3623,3 +3623,218 @@ fn an_evicted_derived_page_is_served_from_its_wal_record() {
         "a derived page must not read back as missing once its cache entry is gone"
     );
 }
+
+
+/// What waiting before a dump saves, and what the wait costs.
+///
+/// A bucket is dumped, dirtied again by the very next write, and dumped again. Letting the log
+/// accumulate first lets those writes merge into one dump. The knob for that exists and is off by
+/// default, so today every cycle dumps every dirty bucket.
+///
+/// Off is a defensible choice -- the dumps saved are paid for with a longer log to replay after a
+/// restart -- so this reports both sides rather than asserting one is right. The dumps are taken,
+/// not merely planned: planning alone never advances the dumped watermark, and then the backlog
+/// never falls and the counts mean nothing.
+#[test]
+fn what_delaying_a_dump_saves_and_costs() {
+    for threshold in [0u64, 10, 50] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1 << 20,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+
+        let writes = 100u64;
+        let mut dumps = 0u64;
+        let mut worst_backlog = 0u64;
+        for index in 0..writes {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    // One key, written over and over: the case where merging matters.
+                    key: "hot".to_string(),
+                    value: format!("v{index}").into_bytes(),
+                },
+            });
+            let plan = engine.storage_lifecycle_plan(StorageLifecycleRequest {
+                shard_id: 1,
+                min_undumped_wal_records: threshold,
+                max_dump_buckets_per_round: 16,
+                ..Default::default()
+            });
+            worst_backlog = worst_backlog.max(plan.undumped_wal_records);
+            if !plan.selected_dump_buckets.is_empty() {
+                // Take the dump, so the watermark moves and the next backlog is real.
+                if engine
+                    .create_bucket_dump_manifest(1, plan.selected_dump_buckets.clone())
+                    .is_ok()
+                {
+                    dumps += 1;
+                }
+            }
+        }
+        println!(
+            "  threshold {threshold:>3} records: {dumps:>4} dumps for {writes} writes to one bucket, \
+             worst replay backlog {worst_backlog} records"
+        );
+    }
+}
+
+/// One expiry round, as the number of keys carrying a deadline grows.
+///
+/// A round only ever acts on a bounded window. Choosing that window copies and sorts every key
+/// that has a deadline, so the cost tracks the whole set instead of the window -- and it is paid on
+/// every round, forever.
+#[test]
+fn what_one_expiry_round_costs_as_deadlines_accumulate() {
+    for keys in [1_000usize, 5_000, 20_000] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1 << 24,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..keys {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSetEx {
+                    key: format!("k{index:08}"),
+                    value: b"v".to_vec(),
+                    // Far enough out that nothing expires during the measurement.
+                    ttl_ms: 3_600_000,
+                },
+            });
+        }
+
+        let rounds = 20;
+        let started = std::time::Instant::now();
+        for _ in 0..rounds {
+            let report = engine.sweep_expired_records_with_request(ShardExpirySweepRequest {
+                shard_id: 1,
+                // A small window, which is the point: the round should cost the window.
+                max_hot_buckets_per_round: 16,
+                max_cold_buckets_per_round: 16,
+                ..Default::default()
+            });
+            assert!(report.is_ok(), "the sweep should run");
+        }
+        let per_round = started.elapsed().as_secs_f64() * 1e6 / rounds as f64;
+        println!(
+            "  {keys:>6} keys with a deadline: {per_round:>9.0} us per round \
+             ({:.2} us per 1k keys) for a window of 16",
+            per_round / (keys as f64 / 1000.0)
+        );
+    }
+}
+
+/// Paging by cursor reaches every deadline exactly once.
+///
+/// The window is read from an ordered set, so paging only works if the cursor advances past
+/// everything examined. If it advanced only past what was taken, a run of keys the round rejected
+/// would be re-examined forever and the sweep would never reach what lies beyond them.
+#[test]
+fn paging_the_expiry_window_reaches_every_deadline_once() {
+    use std::collections::BTreeMap;
+
+    let mut deadlines: BTreeMap<String, u64> = BTreeMap::new();
+    for index in 0..250u64 {
+        deadlines.insert(format!("key-{index:04}"), index);
+    }
+
+    for window in [1usize, 7, 64, 250, 400] {
+        let mut seen: Vec<String> = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..2_000 {
+            let (selected, next) = crate::engine::expiry_window(
+                &deadlines,
+                cursor.as_deref(),
+                window,
+                window.saturating_mul(8).max(64),
+                |_| true,
+            );
+            assert!(
+                selected.len() <= window,
+                "a window of {window} returned {} keys",
+                selected.len()
+            );
+            let mut sorted = selected.clone();
+            sorted.sort_by(|left, right| left.0.cmp(&right.0));
+            assert_eq!(selected, sorted, "the window should come back in key order");
+            seen.extend(selected.iter().map(|(key, _)| key.clone()));
+            match next {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        let mut unique = seen.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), seen.len(), "window {window} repeated a key");
+        assert_eq!(
+            unique.len(),
+            deadlines.len(),
+            "window {window} never reached every deadline"
+        );
+    }
+}
+
+/// A long run of keys the round rejects does not stall the sweep.
+///
+/// This is the case the scan budget exists for: looking for the few keys in one category when the
+/// set is almost entirely the other. The round stops early, but the cursor has moved, so the next
+/// one resumes past what was examined and the sweep still finishes.
+#[test]
+fn a_run_of_rejected_keys_does_not_stall_the_sweep() {
+    use std::collections::BTreeMap;
+
+    let mut deadlines: BTreeMap<String, u64> = BTreeMap::new();
+    for index in 0..1_000u64 {
+        deadlines.insert(format!("key-{index:04}"), index);
+    }
+    // Only the last handful are wanted; everything before them is examined and rejected.
+    let wanted = |key: &str| key >= "key-0990";
+
+    let mut found: Vec<String> = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut rounds = 0;
+    loop {
+        let (selected, next) =
+            crate::engine::expiry_window(&deadlines, cursor.as_deref(), 8, 64, wanted);
+        found.extend(selected.iter().map(|(key, _)| key.clone()));
+        rounds += 1;
+        match next {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+        assert!(rounds < 200, "the sweep is not making progress");
+    }
+    assert_eq!(found.len(), 10, "every wanted key should be reached");
+    assert!(
+        rounds > 1,
+        "this should take several bounded rounds, or the budget is not bounding anything"
+    );
+}
+
+/// No limit means every match after the cursor, and nothing to resume from.
+#[test]
+fn an_unlimited_expiry_window_returns_every_match() {
+    use std::collections::BTreeMap;
+
+    let mut deadlines: BTreeMap<String, u64> = BTreeMap::new();
+    for index in 0..40u64 {
+        deadlines.insert(format!("key-{index:04}"), index);
+    }
+    let (selected, next) = crate::engine::expiry_window(&deadlines, None, 0, 0, |_| true);
+    assert_eq!(selected.len(), 40);
+    assert!(next.is_none(), "there is nothing left to resume from");
+
+    let (after, _) =
+        crate::engine::expiry_window(&deadlines, Some("key-0019"), 0, 0, |_| true);
+    assert_eq!(after.len(), 20, "the cursor is exclusive");
+    assert_eq!(after.first().map(|(key, _)| key.as_str()), Some("key-0020"));
+}

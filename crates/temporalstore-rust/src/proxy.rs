@@ -21,6 +21,7 @@ mod response;
 use config::{
     default_context_first_shard_id, default_context_io_timeout_ms, default_context_shard_count,
     default_heartbeat_timeout_ms,
+    default_topology_check_interval_ms,
     default_pin_primary_reads, default_proxy_addr, default_service_registry_ttl_ms, now_ms,
     proxy_client_from_options, proxy_config_version,
 };
@@ -114,6 +115,20 @@ pub struct ProxyOptions {
     /// declared dead. Liveness must not be decided by a data-path deadline.
     #[serde(default = "default_heartbeat_timeout_ms")]
     pub heartbeat_timeout_ms: u64,
+    /// Shortest interval (ms) between metaserver topology checks on the request path.
+    ///
+    /// Every command entry point asks the metaserver "has topology changed" before it
+    /// routes. That is a synchronous round-trip, and it ran on EVERY request, so the
+    /// metaserver sat in the request path of all proxy traffic and its latency was added
+    /// to every operation. Checking once per interval instead bounds how long a topology
+    /// change can go unnoticed, in exchange for not paying a round-trip per request.
+    ///
+    /// Set to 0 to check on every request, which is the older behaviour exactly.
+    ///
+    /// A stale route is not the only safety net: a request to a backend that has stopped
+    /// serving the shard fails, and the failure path force-refreshes the route.
+    #[serde(default = "default_topology_check_interval_ms")]
+    pub topology_check_interval_ms: u64,
     /// I/O timeout (ms) for forwarding a `/context/*` request to the owning
     /// datanode. Larger than the command io_timeout because extraction /
     /// embedding generation runs inline on the datanode.
@@ -186,6 +201,7 @@ impl Default for ProxyOptions {
             context_shard_count: default_context_shard_count(),
             context_io_timeout_ms: default_context_io_timeout_ms(),
             heartbeat_timeout_ms: default_heartbeat_timeout_ms(),
+            topology_check_interval_ms: default_topology_check_interval_ms(),
         }
     }
 }
@@ -217,6 +233,9 @@ pub struct ProxyStats {
     /// sleep. A rising count means the heartbeat period is being set by metaserver latency
     /// rather than by the configured interval.
     pub heartbeat_slow_total: u64,
+    /// Topology checks not made because one was made within `topology_check_interval_ms`.
+    /// This is the count of metaserver round-trips kept off the request path.
+    pub topology_checks_skipped: u64,
     pub auto_register_total: u64,
 }
 
@@ -809,6 +828,9 @@ struct ProxyInner {
     service_discovery: RwLock<ProxyServiceDiscoveryState>,
     inflight: ProxyInflight,
     boot_time_ms: u64,
+    /// Wall-clock ms of the last topology check, 0 for "never". Read and written on the
+    /// request path, so an atomic rather than a lock.
+    last_topology_check_ms: std::sync::atomic::AtomicU64,
 }
 
 impl ProxyService {
@@ -822,6 +844,7 @@ impl ProxyService {
                 service_discovery: RwLock::default(),
                 inflight: ProxyInflight::default(),
                 boot_time_ms: now_ms(),
+                last_topology_check_ms: std::sync::atomic::AtomicU64::new(0),
             }),
         }
     }
@@ -1016,31 +1039,42 @@ impl ProxyService {
     /// account enforcement because a config push predates the field is not an
     /// acceptable failure mode. Keys absent from the body therefore carry the
     /// running value forward; only an explicit key changes them.
-    pub(super) fn carry_forward_admission_options(
-        &self,
-        options: &mut ProxyOptions,
-        body: &[u8],
-    ) {
-        let Ok(serde_json::Value::Object(supplied)) = serde_json::from_slice::<serde_json::Value>(body)
-        else {
-            return;
+    /// Apply a `POST /proxy/config` body on top of the running options, keeping any field
+    /// the body does not mention.
+    ///
+    /// The route replaces the WHOLE options document, so every key an operator left out took
+    /// its serde default rather than its running value. Only five admission fields were
+    /// carried forward, which meant a config push that omitted `serving_mode` silently put a
+    /// DRAINED proxy back into service, and one that omitted `location` erased the locality
+    /// that decides which replica reads go to. Neither said anything in the report.
+    ///
+    /// Done by merging JSON objects rather than by listing fields, so a field added later is
+    /// carried forward without anyone remembering to come back here. A hand-maintained list
+    /// is what limited this to five fields in the first place.
+    ///
+    /// `config_version` is deliberately NOT carried forward: zero means "derive the version
+    /// from the config hash", and carrying a previous explicit version onto changed content
+    /// would report the new config under the old number.
+    pub(super) fn merge_config_push(&self, body: &[u8]) -> Result<ProxyOptions, String> {
+        let supplied = serde_json::from_slice::<serde_json::Value>(body).map_err(|err| err.to_string())?;
+        let serde_json::Value::Object(mut supplied) = supplied else {
+            // Not an object at all -- let the normal parse produce the normal error.
+            return serde_json::from_slice::<ProxyOptions>(body).map_err(|err| err.to_string());
         };
-        let current = self.options();
-        if !supplied.contains_key("ingestion_account") {
-            options.ingestion_account = current.ingestion_account.clone();
+        let current = serde_json::to_value(&*self.options()).map_err(|err| err.to_string())?;
+        let serde_json::Value::Object(mut merged) = current else {
+            return serde_json::from_slice::<ProxyOptions>(body).map_err(|err| err.to_string());
+        };
+        let supplied_version = supplied.remove("config_version");
+        merged.remove("config_version");
+        for (key, value) in supplied {
+            merged.insert(key, value);
         }
-        if !supplied.contains_key("enforce_ingestion_account") {
-            options.enforce_ingestion_account = current.enforce_ingestion_account;
+        if let Some(version) = supplied_version {
+            merged.insert("config_version".to_string(), version);
         }
-        if !supplied.contains_key("max_inflight_requests") {
-            options.max_inflight_requests = current.max_inflight_requests;
-        }
-        if !supplied.contains_key("max_inflight_write_requests") {
-            options.max_inflight_write_requests = current.max_inflight_write_requests;
-        }
-        if !supplied.contains_key("pin_primary_reads") {
-            options.pin_primary_reads = current.pin_primary_reads;
-        }
+        serde_json::from_value::<ProxyOptions>(serde_json::Value::Object(merged))
+            .map_err(|err| err.to_string())
     }
 
     pub fn update_options_report(&self, options: ProxyOptions) -> ProxyConfigUpdateReport {
@@ -1277,6 +1311,51 @@ impl ProxyService {
             .map_err(|rejection| self.reject(rejection.status(), ProxyRejectionKind::Inflight))
     }
 
+    /// Admission for `GET /shards/{id}`.
+    ///
+    /// This route answers a client asking where a shard lives, and answering means a
+    /// metaserver round-trip. It took no in-flight slot, so it was the one piece of client
+    /// traffic that could not be bounded: `max_inflight_requests` capped execute and the
+    /// context routes while an unbounded number of lookups went straight through to the
+    /// metaserver. A client stampede was amplified onto the metaserver by the very component
+    /// meant to shield it. A drained proxy served them too.
+    ///
+    /// Admitted as a read. There is no namespace on the wire for this route, so account
+    /// scope cannot be checked here -- the shard id alone carries no tenant.
+    fn admit_shard_lookup(&self) -> Result<ProxyInflightGuard<'_>, Status> {
+        let options = self.options();
+        if let Some(status) = proxy_serving_rejection(&options, false) {
+            return Err(self.reject(status, ProxyRejectionKind::Policy));
+        }
+        self.inner
+            .inflight
+            .try_acquire(
+                false,
+                options.max_inflight_requests,
+                options.max_inflight_write_requests,
+            )
+            .map_err(|rejection| self.reject(rejection.status(), ProxyRejectionKind::Inflight))
+    }
+
+    /// Admission for `POST /proxy/topology/refresh`.
+    ///
+    /// Bounded, but deliberately NOT refused while draining. This is how an operator makes a
+    /// proxy pick up a topology change, and a proxy that has been drained is exactly when
+    /// someone needs to do that -- gating it on serving mode would take the tool away at the
+    /// moment it is wanted. What it does need is a ceiling: each call is a metaserver
+    /// round-trip, and nothing stopped a script from issuing them without limit.
+    fn admit_topology_refresh(&self) -> Result<ProxyInflightGuard<'_>, Status> {
+        let options = self.options();
+        self.inner
+            .inflight
+            .try_acquire(
+                false,
+                options.max_inflight_requests,
+                options.max_inflight_write_requests,
+            )
+            .map_err(|rejection| self.reject(rejection.status(), ProxyRejectionKind::Inflight))
+    }
+
     /// The options the proxy actually handed its client, so callers (and tests) can see what
     /// was carried through rather than what was merely configured.
     pub fn client_options_snapshot(&self) -> crate::client::ClientOptions {
@@ -1291,8 +1370,47 @@ impl ProxyService {
         if self.client().route_cache_size() == 0 {
             return;
         }
+        if !self.topology_check_is_due() {
+            self.inner
+                .stats
+                .write()
+                .expect("proxy stats lock poisoned")
+                .topology_checks_skipped += 1;
+            return;
+        }
         let _ = self.client().invalidate_routes_from_meta_topology();
         self.sync_client_stats();
+    }
+
+    /// Whether enough time has passed to ask the metaserver about topology again.
+    ///
+    /// Claims the slot as a side effect, so concurrent requests do not all decide they are
+    /// due and issue the same round-trip. Losing that race means skipping a check that
+    /// another thread is making right now, which is the correct outcome.
+    fn topology_check_is_due(&self) -> bool {
+        let interval = self.options().topology_check_interval_ms;
+        if interval == 0 {
+            return true;
+        }
+        let now = now_ms();
+        let last = self
+            .inner
+            .last_topology_check_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        // `now < last` only if the wall clock went backwards; treat that as due rather than
+        // locking the check out until the clock catches up.
+        if last != 0 && now >= last && now.saturating_sub(last) < interval {
+            return false;
+        }
+        self.inner
+            .last_topology_check_ms
+            .compare_exchange(
+                last,
+                now,
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            )
+            .is_ok()
     }
 
     fn inc_bad_request(&self) {
@@ -1779,6 +1897,9 @@ mod tests {
         let proxy = ProxyService::new(ProxyOptions {
             meta_addr: test_addr(18_330),
             route_cache_ttl_ms: 60_000,
+            // This test moves a shard and immediately re-requests, so it wants a topology
+            // check on every request. Zero is exactly the pre-interval behaviour.
+            topology_check_interval_ms: 0,
             ..ProxyOptions::default()
         });
         assert!(
@@ -2377,6 +2498,234 @@ mod tests {
     }
 
     #[test]
+    fn every_proxy_counter_is_exposed_on_the_metrics_endpoint() {
+        // A counter nobody can read is a counter nobody acts on. topology_checks_skipped was
+        // added and never exposed, so the round-trips it was counting stayed invisible.
+        //
+        // The destructuring below has NO `..` rest pattern on purpose: adding a field to
+        // ProxyStats stops this test compiling until whoever added it says where it surfaces.
+        // That is the only guard that survives someone forgetting -- a hand-kept list of
+        // metric names would drift exactly the way this one already did.
+        let ProxyStats {
+            execute_requests,
+            batch_execute_requests,
+            bad_requests,
+            context_ingest_requests,
+            context_extract_requests,
+            context_retrieve_requests,
+            admission_rejections,
+            account_rejections,
+            inflight_rejections,
+            heartbeat_total,
+            heartbeat_slow_total,
+            auto_register_total,
+            route_cache_hits,
+            route_cache_misses,
+            route_refreshes,
+            topology_checks_skipped,
+            backend_errors,
+            continuous_backend_failures,
+            metaserver_errors,
+        } = ProxyStats::default();
+
+        // Field -> the label it is published under. Values are only here so the destructured
+        // bindings are used; what is asserted is that each label reaches the endpoint.
+        let published: [(&str, u64); 19] = [
+            ("kind=\"execute\"", execute_requests),
+            ("kind=\"batch_execute\"", batch_execute_requests),
+            ("kind=\"bad_request\"", bad_requests),
+            ("kind=\"context_ingest\"", context_ingest_requests),
+            ("kind=\"context_extract\"", context_extract_requests),
+            ("kind=\"context_retrieve\"", context_retrieve_requests),
+            ("kind=\"admission_rejection\"", admission_rejections),
+            ("kind=\"account_rejection\"", account_rejections),
+            ("kind=\"inflight_rejection\"", inflight_rejections),
+            ("kind=\"heartbeat\"", heartbeat_total),
+            ("kind=\"heartbeat_slow\"", heartbeat_slow_total),
+            ("kind=\"auto_register\"", auto_register_total),
+            ("kind=\"hit\"", route_cache_hits),
+            ("kind=\"miss\"", route_cache_misses),
+            ("kind=\"refresh\"", route_refreshes),
+            ("kind=\"topology_check_skipped\"", topology_checks_skipped),
+            ("kind=\"backend_error\"", backend_errors),
+            ("kind=\"continuous_backend_failure\"", continuous_backend_failures),
+            ("kind=\"metaserver_error\"", metaserver_errors),
+        ];
+
+        let proxy = scoped_proxy(ProxyOptions::default());
+        let metrics = proxy.prometheus_metrics();
+        let missing: Vec<&str> = published
+            .iter()
+            .map(|(label, _)| *label)
+            .filter(|label| !metrics.contains(label))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "these counters never reach /metrics: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn a_partial_config_push_keeps_every_field_it_does_not_mention() {
+        let proxy = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::NotServing,
+            location: "zone-a".to_string(),
+            heartbeat_timeout_ms: 9_000,
+            max_inflight_requests: 7,
+            ingestion_account: "tenant-a".to_string(),
+            enforce_ingestion_account: true,
+            ..ProxyOptions::default()
+        });
+
+        // A push that mentions one field. Everything else must survive it. The dangerous one
+        // is serving_mode: this proxy has been DRAINED, and taking the default would put it
+        // back into service without saying so.
+        // meta_addr is supplied here on purpose: without it the body would simply fail to
+        // parse, and this test is about the fields that parse FINE and quietly reset.
+        let (code, _) = proxy.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/proxy/config".to_string(),
+            body: br#"{"meta_addr": "127.0.0.1:1", "drop_percent": 5}"#.to_vec(),
+        });
+        assert_eq!(code, 200);
+
+        let after = proxy.config_snapshot();
+        assert_eq!(after.drop_percent, 5, "the field that WAS supplied must apply");
+        assert_eq!(
+            after.serving_mode,
+            ProxyServingMode::NotServing,
+            "a drained proxy must not silently start serving again"
+        );
+        assert_eq!(after.location, "zone-a", "locality decides which replica reads go to");
+        assert_eq!(after.heartbeat_timeout_ms, 9_000);
+        assert_eq!(after.max_inflight_requests, 7);
+        assert_eq!(after.ingestion_account, "tenant-a");
+        assert!(after.enforce_ingestion_account);
+        assert_eq!(after.meta_addr, "127.0.0.1:1");
+
+
+        // Supplying a field still overrides it -- carrying forward must not become ignoring.
+        let (code, _) = proxy.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/proxy/config".to_string(),
+            body: br#"{"serving_mode": "serving", "location": "zone-b"}"#.to_vec(),
+        });
+        assert_eq!(code, 200);
+        let after = proxy.config_snapshot();
+        assert_eq!(after.serving_mode, ProxyServingMode::Serving);
+        assert_eq!(after.location, "zone-b");
+        assert_eq!(after.drop_percent, 5, "the earlier push is still in effect");
+
+        // Malformed bodies still fail rather than merging into nonsense.
+        let (code, _) = proxy.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/proxy/config".to_string(),
+            body: b"not json".to_vec(),
+        });
+        assert_eq!(code, 400);
+
+        // And a field with no default of its own now survives being left out, so a partial
+        // push no longer has to restate the whole document just to be accepted.
+        let (code, _) = proxy.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/proxy/config".to_string(),
+            body: br#"{"drop_percent": 6}"#.to_vec(),
+        });
+        assert_eq!(code, 200, "omitting a required field must carry it forward, not 400");
+        let after = proxy.config_snapshot();
+        assert_eq!(after.meta_addr, "127.0.0.1:1");
+        assert_eq!(after.drop_percent, 6);
+        assert_eq!(after.location, "zone-b", "and the rest still carries");
+    }
+
+    #[test]
+    fn shard_lookup_and_topology_refresh_are_bounded_by_the_inflight_quota() {
+        // Both reach the metaserver, and neither took a slot. max_inflight_requests capped
+        // execute and the context routes while an unbounded number of these went straight
+        // through -- so a client stampede was amplified onto the metaserver by the component
+        // whose job is to shield it.
+        let proxy = scoped_proxy(ProxyOptions {
+            max_inflight_requests: 1,
+            ..ProxyOptions::default()
+        });
+        let held = proxy
+            .admit_context(&context_scope("acct", "t"), false)
+            .expect("first request is admitted");
+        assert_eq!(proxy.inflight_snapshot(), (1, 0));
+
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "GET".to_string(),
+            path: "/shards/1".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(code, 429, "a shard lookup must take the quota");
+        assert!(String::from_utf8_lossy(&body).contains("proxy_inflight_quota_exceeded"));
+
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/proxy/topology/refresh".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(code, 429, "a topology refresh must take the quota");
+        assert!(String::from_utf8_lossy(&body).contains("proxy_inflight_quota_exceeded"));
+
+        drop(held);
+        assert_eq!(proxy.inflight_snapshot(), (0, 0));
+
+        // Releasing matters more than acquiring: a slot leaked on the way out would wedge the
+        // proxy shut, which is worse than the unbounded route this replaces. The metaserver
+        // here is unreachable, so these take the error path -- exactly where a leak would hide.
+        for _ in 0..3 {
+            let _ = proxy.handle(HttpRequest {
+                method: "GET".to_string(),
+                path: "/shards/1".to_string(),
+                body: Vec::new(),
+            });
+            let _ = proxy.handle(HttpRequest {
+                method: "POST".to_string(),
+                path: "/proxy/topology/refresh".to_string(),
+                body: Vec::new(),
+            });
+        }
+        assert_eq!(
+            proxy.inflight_snapshot(),
+            (0, 0),
+            "every slot must come back, including on the failure path"
+        );
+    }
+
+    #[test]
+    fn draining_stops_shard_lookups_but_still_allows_a_topology_refresh() {
+        // Drain means stop answering clients, and a shard lookup is a client asking where to
+        // go. A topology refresh is not client traffic -- it is how an operator makes the
+        // proxy notice a change, and a drained proxy is exactly when that is wanted, so it
+        // stays available on purpose.
+        let drained = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::NotServing,
+            ..ProxyOptions::default()
+        });
+
+        let (code, body) = drained.handle(HttpRequest {
+            method: "GET".to_string(),
+            path: "/shards/1".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(code, 503);
+        assert!(String::from_utf8_lossy(&body).contains("proxy_not_serving"));
+
+        let (code, body) = drained.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/proxy/topology/refresh".to_string(),
+            body: Vec::new(),
+        });
+        assert_ne!(code, 503, "an operator must still be able to refresh a drained proxy");
+        assert!(
+            !String::from_utf8_lossy(&body).contains("proxy_not_serving"),
+            "topology refresh must not be gated on serving mode"
+        );
+    }
+
+    #[test]
     fn context_routes_share_the_inflight_quota() {
         let proxy = scoped_proxy(ProxyOptions {
             max_inflight_requests: 1,
@@ -2685,6 +3034,36 @@ mod tests {
         let proxy_off = ProxyService::new(off);
         assert!(proxy_on.client_options_snapshot().refresh_route_on_backend_error);
         assert!(!proxy_off.client_options_snapshot().refresh_route_on_backend_error);
+    }
+    #[test]
+    fn proxy_location_reaches_replica_selection() {
+        // The proxy has always accepted a location, reported it to the metaserver and shown
+        // it in its own status -- but never handed it to the client, whose `local_location`
+        // is the fallback used when a table does not name a preferred_location, and which is
+        // what actually picks a replica. So a proxy told it lives in zone-a read cross-zone.
+        let located = ProxyService::new(ProxyOptions {
+            meta_addr: "127.0.0.1:1".to_string(),
+            location: "zone-a".to_string(),
+            ..ProxyOptions::default()
+        });
+        assert_eq!(located.client_options_snapshot().local_location, "zone-a");
+
+        // An unset location stays unset rather than inventing a preference.
+        let unlocated = ProxyService::new(ProxyOptions {
+            meta_addr: "127.0.0.1:1".to_string(),
+            ..ProxyOptions::default()
+        });
+        assert!(unlocated.client_options_snapshot().local_location.is_empty());
+
+        // A config push that changes the location has to reach the client too, otherwise the
+        // proxy would report one location and route by another.
+        let _ = located.update_options_report(ProxyOptions {
+            meta_addr: "127.0.0.1:1".to_string(),
+            location: "zone-b".to_string(),
+            config_version: 99,
+            ..ProxyOptions::default()
+        });
+        assert_eq!(located.client_options_snapshot().local_location, "zone-b");
     }
     #[test]
     fn proxy_policy_blocks_writes_not_serving_and_drop_percent() {
@@ -3835,6 +4214,330 @@ mod tests {
         });
     }
 
+    #[test]
+    fn a_timed_out_request_on_a_pooled_socket_is_not_resent() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // The keep-alive pool reconnects and sends again when a pooled socket fails, which is
+        // right when the server had reaped that socket -- nothing was served on it. It was
+        // also doing it when the peer simply stopped answering, which sends the request a
+        // second time even though the first may have been processed. One layer below the
+        // routing guard, and it would undo that guard from underneath.
+        let hits = std::sync::Arc::new(AtomicUsize::new(0));
+        let addr = test_addr(18_392);
+        let h = hits.clone();
+        let addr_for_thread = addr.clone();
+        std::thread::spawn(move || {
+            serve(&addr_for_thread, move |_request| {
+                // First exchange answers immediately, so the socket lands in the pool.
+                // Everything after that accepts the request and goes quiet.
+                if h.fetch_add(1, Ordering::SeqCst) > 0 {
+                    std::thread::sleep(Duration::from_millis(700));
+                }
+                crate::http::json_response(200, &Status::ok())
+            })
+            .unwrap();
+        });
+        wait_for_http(&addr);
+
+        let options = HttpRequestOptions {
+            connect_timeout_ms: 200,
+            io_timeout_ms: 120,
+            max_retries: 0,
+        };
+        // Warm the pool: this must succeed and leave a keep-alive socket for this thread.
+        crate::http::request_bytes_with_options(
+            &addr,
+            "POST",
+            "/warm",
+            b"{}",
+            "application/json",
+            options,
+        )
+        .expect("first exchange should succeed and pool its socket");
+
+        let before = hits.load(Ordering::SeqCst);
+        let _ = crate::http::request_bytes_with_options(
+            &addr,
+            "POST",
+            "/slow",
+            b"{}",
+            "application/json",
+            options,
+        );
+        // Leave room for a second attempt to arrive, so this fails loudly rather than racing.
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(
+            hits.load(Ordering::SeqCst) - before,
+            1,
+            "a request that timed out on a pooled socket must not be sent again on a fresh one"
+        );
+    }
+
+    #[test]
+    fn a_write_whose_outcome_is_unknown_is_not_sent_twice() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // A datanode that accepts the request and then stops answering. That is the case
+        // that matters: the connection succeeded, the request was delivered, and the client
+        // is left not knowing whether it was applied.
+        let hits = std::sync::Arc::new(AtomicUsize::new(0));
+        let slow = test_addr(18_390);
+        let h = hits.clone();
+        let slow_for_thread = slow.clone();
+        std::thread::spawn(move || {
+            serve(&slow_for_thread, move |_request| {
+                h.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(500));
+                json_response(200, &Status::ok())
+            })
+            .unwrap();
+        });
+        start_meta(test_addr(18_391), slow.clone());
+        wait_for_http(&test_addr(18_391));
+
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_391),
+            route_cache_ttl_ms: 60_000,
+            connect_timeout_ms: 200,
+            io_timeout_ms: 120,
+            ..ProxyOptions::default()
+        });
+
+        hits.store(0, Ordering::SeqCst);
+        let _ = proxy.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "counted".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        // Leave time for a second attempt to land, so this fails loudly rather than racing.
+        std::thread::sleep(Duration::from_millis(400));
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "a write that timed out must not be sent again -- the timeout says the datanode              stopped answering, not that it never received the write"
+        );
+
+        // A read is a different matter: repeating it cannot change anything, so the
+        // refresh-and-retry still applies. Pinned so the guard cannot quietly widen.
+        hits.store(0, Ordering::SeqCst);
+        let _ = proxy.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "counted".to_string(),
+            },
+        });
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(
+            hits.load(Ordering::SeqCst) >= 2,
+            "a read should still be retried after a backend failure, saw {}",
+            hits.load(Ordering::SeqCst)
+        );
+    }
+
+    #[test]
+    fn topology_check_stays_off_the_request_path() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let topo_posts = std::sync::Arc::new(AtomicUsize::new(0));
+
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        start_server(test_addr(18_384), engine.clone());
+
+        let meta = crate::meta::SingleNodeMeta::default();
+        meta.register_server(crate::meta::RegisterServerRequest {
+            server_addr: test_addr(18_384),
+            node_id: 1,
+            location: "zone-a".to_string(),
+            binary_version: "v-a".to_string(),
+        });
+        meta.register(RegisterShardRequest {
+            shard_id: 1,
+            server_addr: test_addr(18_384),
+        });
+
+        let addr = test_addr(18_385);
+        let tp = topo_posts.clone();
+        let m = meta.clone();
+        std::thread::spawn(move || {
+            serve(&addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("GET", path) if path.starts_with("/shards/") => {
+                        let shard_id =
+                            path.trim_start_matches("/shards/").parse().unwrap_or_default();
+                        json_response(200, &m.get(shard_id))
+                    }
+                    ("POST", "/tables/topology") => {
+                        let req = parse_json::<GetTableTopologyRequest>(&request.body).unwrap();
+                        json_response(200, &m.get_table_topology(req))
+                    }
+                    ("POST", "/meta/topology_version") => {
+                        tp.fetch_add(1, Ordering::SeqCst);
+                        let req = parse_json::<TopologyVersionRequest>(&request.body).unwrap();
+                        json_response(200, &m.topology_version_report(req))
+                    }
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+        wait_for_http(&test_addr(18_384));
+        wait_for_http(&test_addr(18_385));
+
+        let run = |options: ProxyOptions| {
+            let proxy = ProxyService::new(options);
+            for i in 0..10 {
+                assert!(
+                    proxy
+                        .execute(ExecuteRequest {
+                            shard_id: 1,
+                            command: Command::StringSet {
+                                key: format!("k{i}"),
+                                value: b"v".to_vec(),
+                            },
+                        })
+                        .status
+                        .ok
+                );
+            }
+        };
+
+        // Default interval: the burst shares one check instead of paying a metaserver
+        // round-trip each. This is the whole point -- the metaserver was synchronously in
+        // the path of every request, and its latency was added to every operation.
+        topo_posts.store(0, Ordering::SeqCst);
+        run(ProxyOptions {
+            meta_addr: test_addr(18_385),
+            route_cache_ttl_ms: 60_000,
+            ..ProxyOptions::default()
+        });
+        let throttled = topo_posts.load(Ordering::SeqCst);
+        assert!(
+            throttled <= 2,
+            "10 requests inside the interval should share a check, made {throttled}"
+        );
+
+        // Zero restores the older behaviour exactly, for anyone who wants a check per
+        // request. Asserted so the escape hatch cannot rot.
+        topo_posts.store(0, Ordering::SeqCst);
+        run(ProxyOptions {
+            meta_addr: test_addr(18_385),
+            route_cache_ttl_ms: 60_000,
+            topology_check_interval_ms: 0,
+            ..ProxyOptions::default()
+        });
+        let every = topo_posts.load(Ordering::SeqCst);
+        assert!(
+            every >= 8,
+            "with the interval at zero every request should check, made only {every}"
+        );
+    }
+
+    #[test]
+    fn route_cache_serves_repeat_requests_instead_of_re_resolving() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let shard_gets = std::sync::Arc::new(AtomicUsize::new(0));
+        let topo_posts = std::sync::Arc::new(AtomicUsize::new(0));
+
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        start_server(test_addr(18_380), engine.clone());
+
+        let meta = crate::meta::SingleNodeMeta::default();
+        meta.register_server(crate::meta::RegisterServerRequest {
+            server_addr: test_addr(18_380),
+            node_id: 1,
+            location: "zone-a".to_string(),
+            binary_version: "v-a".to_string(),
+        });
+        meta.register(RegisterShardRequest {
+            shard_id: 1,
+            server_addr: test_addr(18_380),
+        });
+
+        let addr = test_addr(18_381);
+        let sg = shard_gets.clone();
+        let tp = topo_posts.clone();
+        let m = meta.clone();
+        std::thread::spawn(move || {
+            serve(&addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("GET", path) if path.starts_with("/shards/") => {
+                        sg.fetch_add(1, Ordering::SeqCst);
+                        let shard_id = path.trim_start_matches("/shards/").parse().unwrap_or_default();
+                        json_response(200, &m.get(shard_id))
+                    }
+                    ("POST", "/tables/topology") => {
+                        let req = parse_json::<GetTableTopologyRequest>(&request.body).unwrap();
+                        json_response(200, &m.get_table_topology(req))
+                    }
+                    ("POST", "/meta/topology_version") => {
+                        tp.fetch_add(1, Ordering::SeqCst);
+                        let req = parse_json::<TopologyVersionRequest>(&request.body).unwrap();
+                        json_response(200, &m.topology_version_report(req))
+                    }
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+        wait_for_http(&test_addr(18_380));
+        wait_for_http(&test_addr(18_381));
+
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_381),
+            route_cache_ttl_ms: 60_000,
+            ..ProxyOptions::default()
+        });
+
+        for i in 0..10 {
+            assert!(proxy.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet { key: format!("k{i}"), value: b"v".to_vec() },
+            }).status.ok);
+        }
+
+        let gets = shard_gets.load(Ordering::SeqCst);
+        let posts = topo_posts.load(Ordering::SeqCst);
+        let report = proxy.preflight_report();
+
+        // Ten identical requests behind a 60s TTL. This used to be 10 shard lookups and
+        // zero cache hits: routes resolved by shard lookup were stamped topology version 0,
+        // "unknown" counted as stale, so every request invalidated the entry it had just
+        // written and resolved again. The cache existed and never once returned a hit.
+        assert!(
+            gets <= 2,
+            "10 requests should resolve at most twice, took {gets} shard lookups              (hits={} misses={} refreshes={})",
+            report.client.route_cache_hits,
+            report.client.route_cache_misses,
+            report.client.route_refreshes
+        );
+        assert!(
+            report.client.route_cache_hits >= 7,
+            "the cache should serve the repeats, saw {} hits across 10 requests",
+            report.client.route_cache_hits
+        );
+
+        // NOT asserted low on purpose: the topology check itself is still one POST per
+        // request on every command entry point. That is a separate cost and a separate
+        // change; this test pins the route cache, not the topology check.
+        assert!(posts >= 1, "topology is still checked, saw {posts}");
+    }
+
     fn start_meta_service(addr: String, meta: crate::meta::SingleNodeMeta) {
         std::thread::spawn(move || {
             serve(&addr, move |request| {
@@ -3925,6 +4628,171 @@ mod tests {
             })
             .unwrap();
         });
+    }
+
+    #[test]
+    fn context_route_lookup_uses_the_shared_route_cache() {
+        // The context routes are the whole of the gateway's traffic, and every one of them
+        // used to resolve its shard with a direct `/shards/{id}` GET -- no cache, no TTL, no
+        // backend-failure accounting. That put a metaserver round-trip in front of every
+        // ingest, extract and retrieve, and put the metaserver in the request path of all of
+        // them, while the command path had been caching the identical lookup all along.
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        start_context_server(test_addr(18_372), engine.clone());
+        start_meta(test_addr(18_373), test_addr(18_372));
+        wait_for_http(&test_addr(18_373));
+        wait_for_http(&test_addr(18_372));
+
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_373),
+            route_cache_ttl_ms: 60_000,
+            context_first_shard_id: 1,
+            context_shard_count: 1,
+            ..ProxyOptions::default()
+        });
+
+        let body = serde_json::to_vec(&serde_json::json!({
+            "scope": {"tenant_id": "team-alpha", "account_id": "acct_42"},
+            "messages": [{"role": "user", "content": "route cache check"}]
+        }))
+        .unwrap();
+        for attempt in 0..3 {
+            let (code, _) = proxy.handle(HttpRequest {
+                method: "POST".to_string(),
+                path: "/context/ingest".to_string(),
+                body: body.clone(),
+            });
+            assert_eq!(code, 200, "context ingest {attempt} should succeed");
+        }
+
+        let report = proxy.preflight_report();
+        // One resolve for the first request; the other two come from the cache. Before this
+        // the count would have been three lookups and an empty cache, because the context
+        // path never went through the client that owns the cache.
+        assert_eq!(
+            report.client.route_refreshes, 1,
+            "three context requests should resolve the shard once, saw {} refreshes",
+            report.client.route_refreshes
+        );
+        assert!(
+            report.client.route_cache_hits >= 2,
+            "the last two requests should be cache hits, saw {}",
+            report.client.route_cache_hits
+        );
+        assert_eq!(
+            report.client.route_cache_size, 1,
+            "the context lookup should populate the shared route cache"
+        );
+    }
+
+    #[test]
+    fn context_route_cache_is_invalidated_when_the_shard_moves() {
+        // Caching the context route is only safe if something notices the shard moving. A
+        // proxy fronting the context gateway serves these three routes and nothing else --
+        // it never calls execute -- so if the context path did not check topology itself,
+        // nothing on that proxy ever would, and it would keep sending the gateway to the old
+        // datanode for the whole of route_cache_ttl_ms.
+        let dir_a = tempfile::tempdir().unwrap();
+        let engine_a = TemporalEngine::with_local_dirs(
+            1024,
+            dir_a.path().join("cache"),
+            dir_a.path().join("pages"),
+            dir_a.path().join("indexes"),
+        );
+        engine_a.load_shard(1);
+        start_context_server(test_addr(18_374), engine_a.clone());
+
+        let dir_b = tempfile::tempdir().unwrap();
+        let engine_b = TemporalEngine::with_local_dirs(
+            1024,
+            dir_b.path().join("cache"),
+            dir_b.path().join("pages"),
+            dir_b.path().join("indexes"),
+        );
+        engine_b.load_shard(1);
+        start_context_server(test_addr(18_375), engine_b.clone());
+
+        let meta = crate::meta::SingleNodeMeta::default();
+        meta.register_server(crate::meta::RegisterServerRequest {
+            server_addr: test_addr(18_374),
+            node_id: 1,
+            location: "zone-a".to_string(),
+            binary_version: "v-a".to_string(),
+        });
+        meta.register(RegisterShardRequest {
+            shard_id: 1,
+            server_addr: test_addr(18_374),
+        });
+        start_meta_service(test_addr(18_376), meta.clone());
+        wait_for_http(&test_addr(18_374));
+        wait_for_http(&test_addr(18_375));
+        wait_for_http(&test_addr(18_376));
+
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_376),
+            route_cache_ttl_ms: 60_000,
+            context_first_shard_id: 1,
+            context_shard_count: 1,
+            ..ProxyOptions::default()
+        });
+
+        let body = serde_json::to_vec(&serde_json::json!({
+            "scope": {"tenant_id": "team-alpha", "account_id": "acct_42"},
+            "messages": [{"role": "user", "content": "before the move"}]
+        }))
+        .unwrap();
+        let ingest = |body: Vec<u8>| {
+            proxy.handle(HttpRequest {
+                method: "POST".to_string(),
+                path: "/context/ingest".to_string(),
+                body,
+            })
+        };
+
+        let (code, _) = ingest(body.clone());
+        assert_eq!(code, 200);
+        let before = proxy.preflight_report();
+        assert_eq!(before.client.route_refreshes, 1, "first request resolves once");
+
+        // The shard moves to the second datanode.
+        meta.register_server(crate::meta::RegisterServerRequest {
+            server_addr: test_addr(18_375),
+            node_id: 2,
+            location: "zone-b".to_string(),
+            binary_version: "v-b".to_string(),
+        });
+        meta.register(RegisterShardRequest {
+            shard_id: 1,
+            server_addr: test_addr(18_375),
+        });
+
+        // Deliberately NOT disabling the topology check interval here: wait it out instead,
+        // so this covers what a deployment actually runs rather than an escape hatch.
+        std::thread::sleep(std::time::Duration::from_millis(
+            ProxyOptions::default().topology_check_interval_ms + 25,
+        ));
+
+        let moved_body = serde_json::to_vec(&serde_json::json!({
+            "scope": {"tenant_id": "team-alpha", "account_id": "acct_42"},
+            "messages": [{"role": "user", "content": "after the move"}]
+        }))
+        .unwrap();
+        let (code, _) = ingest(moved_body);
+        assert_eq!(code, 200);
+
+        let after = proxy.preflight_report();
+        assert!(
+            after.client.route_refreshes > before.client.route_refreshes,
+            "the context path must re-resolve after the shard moves, refreshes stayed at {}",
+            after.client.route_refreshes
+        );
     }
 
     #[test]

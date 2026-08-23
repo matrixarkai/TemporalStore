@@ -671,12 +671,14 @@ impl RaftClusterInner {
         // an RPC, and re-learns the rest from AppendEntries on restart. Persist only our own
         // record. Unset -- the in-process test cluster -- keeps persisting every node.
         let local_only = self.local_node_id;
-        for (node_id, record) in self.wal_records() {
-            if let Some(local) = local_only {
-                if node_id != local {
-                    continue;
-                }
-            }
+        // Build ONLY the record we are going to persist. Building every node's record and then
+        // skipping all but one clones the whole log once per node and discards the rest, which
+        // is O(log length) of pure waste on every persist.
+        let records = match local_only {
+            Some(local) => self.wal_record_for(local).into_iter().collect::<Vec<_>>(),
+            None => self.wal_records(),
+        };
+        for (node_id, record) in records {
             // P1: when coalescing is enabled, skip the fdatasync for a node whose durability-
             // relevant state is byte-identical to what we last persisted. A false "changed" only
             // costs a redundant (safe) fsync; the skip fires ONLY when nothing Raft must persist
@@ -728,16 +730,29 @@ impl RaftClusterInner {
     }
 
     pub(super) fn wal_records(&self) -> Vec<(RaftNodeId, RaftWalRecord)> {
+        self.nodes
+            .keys()
+            .copied()
+            .filter_map(|node_id| self.wal_record_for(node_id))
+            .collect()
+    }
+
+    /// Build the WAL record for ONE node. Cloning a node's log is O(log length), so a caller
+    /// that will persist a single node must not pay for the others.
+    pub(super) fn wal_record_for(
+        &self,
+        node_id: RaftNodeId,
+    ) -> Option<(RaftNodeId, RaftWalRecord)> {
         let membership = RaftMembership {
             shard_id: self.shard_id,
             voters: self.voting_node_ids(),
             leader_id: self.leader_id,
         };
         self.nodes
-            .iter()
-            .map(|(node_id, node)| {
+            .get(&node_id)
+            .map(|node| {
                 (
-                    *node_id,
+                    node_id,
                     RaftWalRecord {
                         hard_state: RaftHardState {
                             current_term: node.current_term,
@@ -758,7 +773,6 @@ impl RaftClusterInner {
                     },
                 )
             })
-            .collect()
     }
 
     pub(super) fn leader_commit_index(&self) -> u64 {

@@ -115,22 +115,6 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /ProxyService/IpsAdd:
-    post:
-      summary: Add an IPS instance.
-      requestBody:
-        $ref: '#/components/requestBodies/IpsAdd'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
-  /ProxyService/IpsQueryLast:
-    post:
-      summary: Query recent IPS instances.
-      requestBody:
-        $ref: '#/components/requestBodies/IpsQueryLast'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
   /ProxyService/RiskIncrement:
     post:
       summary: Increment a risk counter.
@@ -234,18 +218,6 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/FeatureQueryRequest'
-    IpsAdd:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/IpsAddRequest'
-    IpsQueryLast:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/IpsQueryLastRequest'
     RiskIncrement:
       required: true
       content:
@@ -421,71 +393,6 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/FeatureFilter'
-    IpsFeatureStat:
-      type: object
-      required: [id, slot, has_slot, type, v1, v2]
-      properties:
-        id:
-          type: integer
-          format: int64
-        slot:
-          type: integer
-        has_slot:
-          type: boolean
-        type:
-          type: integer
-        v1:
-          type: integer
-        v2:
-          type: integer
-    IpsAddRequest:
-      type: object
-      required: [namespace, table, ips_table, uid, timestamp_us, action_type, logical_table, features]
-      properties:
-        namespace:
-          type: string
-        table:
-          type: string
-        ips_table:
-          type: string
-        uid:
-          type: integer
-          format: int64
-        timestamp_us:
-          type: integer
-          format: int64
-        action_type:
-          type: integer
-        logical_table:
-          type: integer
-        features:
-          type: array
-          items:
-            $ref: '#/components/schemas/IpsFeatureStat'
-    IpsQueryLastRequest:
-      type: object
-      required: [namespace, table, ips_table, uid, action_type, logical_table, slot]
-      properties:
-        namespace:
-          type: string
-        table:
-          type: string
-        ips_table:
-          type: string
-        uid:
-          type: integer
-          format: int64
-        action_type:
-          type: integer
-        logical_table:
-          type: integer
-        slot:
-          type: integer
-        top_k:
-          type: integer
-        last_instances:
-          type: integer
-          format: int64
     RiskIncrementRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'

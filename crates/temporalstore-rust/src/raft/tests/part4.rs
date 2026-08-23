@@ -526,6 +526,7 @@ fn metaserver_raft_replicates_full_metadata_mutation_api() {
     }
 
     let topology = meta.get_table_topology(GetTableTopologyRequest {
+        client_location: String::new(),
         namespace: "feature".to_string(),
         table_name: "user_seq".to_string(),
         old_topology_version: 0,
@@ -549,6 +550,7 @@ fn metaserver_raft_replicates_full_metadata_mutation_api() {
         assert_eq!(meta.commit_index(node_id).unwrap(), 5);
     }
     let updated_topology = meta.get_table_topology(GetTableTopologyRequest {
+        client_location: String::new(),
         namespace: "feature".to_string(),
         table_name: "user_seq".to_string(),
         old_topology_version: 0,
@@ -580,6 +582,7 @@ fn metaserver_raft_replicates_full_metadata_mutation_api() {
         assert_eq!(meta.commit_index(node_id).unwrap(), 7);
     }
     let dropped_topology = meta.get_table_topology(GetTableTopologyRequest {
+        client_location: String::new(),
         namespace: "feature".to_string(),
         table_name: "user_seq".to_string(),
         old_topology_version: 0,
@@ -3190,5 +3193,203 @@ fn a_reply_from_a_newer_term_makes_the_leader_step_down() {
     assert!(
         !still_leader,
         "the leader must step down rather than keep sending requests that can only be refused"
+    );
+}
+
+/// Answering a pre-vote changes nothing about the node that answers.
+///
+/// That is the whole property. A node that cannot reach the cluster campaigns on a timer, and if
+/// asking raised terms or recorded votes, one unreachable node would drag a healthy cluster
+/// through an election every time it tried.
+#[test]
+fn a_pre_vote_does_not_move_the_term_or_spend_the_vote() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+    let term_before = cluster.status().current_term;
+
+    let answer = cluster
+        .receive_vote_request(VoteRequest {
+            rpc: None,
+            shard_id: 1,
+            term: term_before + 40,
+            candidate_id: 3,
+            target_id: 2,
+            last_log_index: 0,
+            last_log_term: 0,
+            pre_vote: true,
+        })
+        .unwrap();
+    assert!(
+        answer.vote_granted,
+        "an up-to-date candidate at a newer term should be told yes: {answer:?}"
+    );
+
+    let term_after = cluster
+        .status()
+        .nodes
+        .iter()
+        .find(|node| node.node_id == 2)
+        .map(|node| node.current_term)
+        .unwrap();
+    assert_eq!(
+        term_after, term_before,
+        "answering a pre-vote must not adopt the term it asks about"
+    );
+
+    // And no vote was spent: a different candidate can still win that term for real.
+    let real = cluster
+        .receive_vote_request(VoteRequest {
+            rpc: None,
+            shard_id: 1,
+            term: term_before + 40,
+            candidate_id: 1,
+            target_id: 2,
+            last_log_index: 0,
+            last_log_term: 0,
+            pre_vote: false,
+        })
+        .unwrap();
+    assert!(
+        real.vote_granted,
+        "the pre-vote must not have recorded a vote, so this real one should be granted: {real:?}"
+    );
+}
+
+/// A candidate whose log is behind is told no, and still nothing moves.
+#[test]
+fn a_pre_vote_from_a_behind_candidate_is_declined() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+    for index in 0..3 {
+        cluster
+            .propose(Command::StringSet {
+                key: format!("committed-{index}"),
+                value: b"v".to_vec(),
+            })
+            .unwrap();
+    }
+    let term_before = cluster
+        .status()
+        .nodes
+        .iter()
+        .find(|node| node.node_id == 2)
+        .map(|node| node.current_term)
+        .unwrap();
+
+    let answer = cluster
+        .receive_vote_request(VoteRequest {
+            rpc: None,
+            shard_id: 1,
+            term: term_before + 40,
+            candidate_id: 3,
+            target_id: 2,
+            last_log_index: 0,
+            last_log_term: 0,
+            pre_vote: true,
+        })
+        .unwrap();
+    assert!(
+        !answer.vote_granted,
+        "a candidate missing committed entries must be told no: {answer:?}"
+    );
+    let term_after = cluster
+        .status()
+        .nodes
+        .iter()
+        .find(|node| node.node_id == 2)
+        .map(|node| node.current_term)
+        .unwrap();
+    assert_eq!(
+        term_after, term_before,
+        "a declined pre-vote must not move the term either"
+    );
+}
+
+/// Preparing the question does not raise the asker's own term.
+///
+/// A node that never gets a majority of yes answers repeats this forever, so if preparing it cost
+/// a term, an isolated node would still walk its term upward exactly as before.
+#[test]
+fn preparing_a_pre_vote_does_not_raise_the_term() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+    let before = cluster.status().current_term;
+    for _ in 0..25 {
+        let probe = cluster.prepare_pre_vote(2).expect("a voter can ask");
+        assert!(probe.pre_vote, "the request must be marked as a question");
+        assert!(
+            probe.term > before,
+            "it should ask about the term it would use"
+        );
+    }
+    let after = cluster
+        .status()
+        .nodes
+        .iter()
+        .map(|node| node.current_term)
+        .max()
+        .unwrap();
+    assert_eq!(
+        after, before,
+        "asking twenty-five times must leave every term where it was"
+    );
+}
+
+/// A follower that REFUSES an append still learns its leader is alive.
+///
+/// A follower marks its leader down when its election timer expires, and only an accepted append
+/// used to mark it back up. A follower that is merely behind rejects appends while it catches up,
+/// so it held a healthy leader as down indefinitely -- and every operation needing a leader, a
+/// membership change among them, was refused with "leader is not available" while the leader was
+/// leading a healthy majority.
+#[test]
+fn a_rejected_append_still_proves_the_leader_is_alive() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+    cluster
+        .propose(Command::StringSet {
+            key: "committed".to_string(),
+            value: b"v".to_vec(),
+        })
+        .unwrap();
+
+    // Node 3 timed out waiting and wrote its leader off, the way the election timer does.
+    cluster.set_alive(1, false).unwrap();
+
+    // The leader speaks to it, but from a point their logs do not agree on, so it is refused.
+    let response = cluster
+        .receive_append_entries(AppendEntriesRequest {
+            rpc: None,
+            shard_id: 1,
+            term: cluster.status().current_term,
+            leader_id: 1,
+            target_id: 3,
+            prev_log_index: 9,
+            prev_log_term: 9,
+            entries: Vec::new(),
+            leader_commit: 1,
+        })
+        .unwrap();
+    assert!(
+        !response.success,
+        "this append should be refused, or the test proves nothing: {response:?}"
+    );
+
+    let leader_alive = cluster
+        .status()
+        .nodes
+        .iter()
+        .any(|node| node.node_id == 1 && node.alive);
+    assert!(
+        leader_alive,
+        "being spoken to by the leader is proof it is alive, even when we refuse what it sent"
     );
 }

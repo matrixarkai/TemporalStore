@@ -1555,19 +1555,47 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
     }
 }
 
-fn apply_key_state_field<V: serde::de::DeserializeOwned>(
-    map: &mut HashMap<String, V>,
-    key: &str,
-    value: Option<&serde_json::Value>,
-) {
+/// Set or clear one key's entry, in whichever map holds it.
+///
+/// Written against the operations it actually uses -- insert and remove -- so that a map can be
+/// kept in key order where that matters without this having to care.
+/// The two things [`apply_key_state_field`] does to a map, so it does not have to name the map.
+trait KeyedState<V> {
+    fn insert_entry(&mut self, key: String, value: V);
+    fn remove_entry(&mut self, key: &str);
+}
+
+impl<V> KeyedState<V> for std::collections::HashMap<String, V> {
+    fn insert_entry(&mut self, key: String, value: V) {
+        self.insert(key, value);
+    }
+    fn remove_entry(&mut self, key: &str) {
+        self.remove(key);
+    }
+}
+
+impl<V> KeyedState<V> for std::collections::BTreeMap<String, V> {
+    fn insert_entry(&mut self, key: String, value: V) {
+        self.insert(key, value);
+    }
+    fn remove_entry(&mut self, key: &str) {
+        self.remove(key);
+    }
+}
+
+fn apply_key_state_field<V, M>(map: &mut M, key: &str, value: Option<&serde_json::Value>)
+where
+    V: serde::de::DeserializeOwned,
+    M: KeyedState<V>,
+{
     match value {
         Some(value) if !value.is_null() => {
             if let Ok(parsed) = serde_json::from_value::<V>(value.clone()) {
-                map.insert(key.to_string(), parsed);
+                map.insert_entry(key.to_string(), parsed);
             }
         }
         _ => {
-            map.remove(key);
+            map.remove_entry(key);
         }
     }
 }
@@ -2102,6 +2130,57 @@ fn ttl_ms(shard: &mut ShardState, key: &str) -> i64 {
         .map(|expires_at| expires_at.saturating_sub(now_ms()) as i64)
         .min()
         .unwrap_or(-1)
+}
+
+/// The next `limit` deadlines after `cursor` that `keep` accepts, read straight out of the
+/// ordered set.
+///
+/// The cost of a round should be the cost of its window. Asking `keep` about every deadline made it
+/// the cost of the whole set instead -- about 11 ms per thousand deadlines for a window of sixteen,
+/// on every cycle. Reading from where the cursor left off asks only about the window.
+///
+/// `scan_budget` bounds the walk: a long run of keys that `keep` rejects -- every resident key,
+/// when the sweep is looking for the non-resident ones -- would otherwise still walk the set. The
+/// cursor advances regardless, so the next round resumes past them and the sweep keeps moving.
+pub(crate) fn expiry_window<F>(
+    deadlines: &std::collections::BTreeMap<String, u64>,
+    cursor: Option<&str>,
+    limit: usize,
+    scan_budget: usize,
+    keep: F,
+) -> (Vec<(String, u64)>, Option<String>)
+where
+    F: Fn(&str) -> bool,
+{
+    use std::ops::Bound::{Excluded, Unbounded};
+
+    let lower = match cursor {
+        Some(cursor) => Excluded(cursor.to_string()),
+        None => Unbounded,
+    };
+    let mut selected = Vec::new();
+    let mut walked = 0usize;
+    let mut last_seen: Option<String> = None;
+    let mut reached_the_end = true;
+    for (key, expires_at) in deadlines.range((lower, Unbounded)) {
+        if limit > 0 && selected.len() >= limit {
+            reached_the_end = false;
+            break;
+        }
+        if scan_budget > 0 && walked >= scan_budget {
+            reached_the_end = false;
+            break;
+        }
+        walked = walked.saturating_add(1);
+        last_seen = Some(key.clone());
+        if keep(key.as_str()) {
+            selected.push((key.clone(), *expires_at));
+        }
+    }
+    // Resume past everything examined, not past everything taken: the keys `keep` rejected were
+    // looked at, and looking at them again next round is how a sweep fails to make progress.
+    let next_cursor = if reached_the_end { None } else { last_seen };
+    (selected, next_cursor)
 }
 
 fn select_expiry_cursor_window(

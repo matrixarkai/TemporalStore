@@ -3,6 +3,7 @@
 
 #![doc = include_str!("../README.md")]
 
+pub mod bytes_serde;
 pub mod block_store;
 pub mod checksum;
 pub mod client;

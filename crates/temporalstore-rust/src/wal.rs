@@ -35,6 +35,14 @@ impl From<crate::log_framing::FramingError> for WriteAheadLogError {
     }
 }
 
+fn current_write_ahead_log_format_version() -> u32 {
+    WRITE_AHEAD_LOG_FORMAT_VERSION
+}
+
+fn is_current_write_ahead_log_format_version(version: &u32) -> bool {
+    *version == WRITE_AHEAD_LOG_FORMAT_VERSION
+}
+
 /// Decode one raw WAL line (framed or legacy-unframed) into a [`WriteAheadLogRecord`],
 /// verifying the per-record integrity envelope when present. Used by every WAL reader
 /// (`last_wal_sequence_at`, `scan` consumers, GC, `info`) so a value-preserving bit-flip in a
@@ -46,10 +54,21 @@ pub fn decode_wal_line(line: &[u8]) -> Result<WriteAheadLogRecord, WriteAheadLog
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WriteAheadLogRecord {
+    // The names below are deliberately short. They are repeated in every record for the life of
+    // the log, and on a small write they cost more than the data does; the alias on each keeps
+    // every record already written readable.
+    #[serde(rename = "s", alias = "shard_id")]
     pub shard_id: ShardId,
+    #[serde(rename = "q", alias = "sequence")]
     pub sequence: u64,
+    #[serde(rename = "c", alias = "command")]
     pub command: Command,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "m",
+        alias = "metadata",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub metadata: Option<WriteAheadLogRecordMetadata>,
     /// Pages this write produced, carried in the record that records the write.
     ///
@@ -57,7 +76,12 @@ pub struct WriteAheadLogRecord {
     /// rebuilt from the command alone. Carrying it here is what lets a read serve the page back
     /// out of the log. Empty and skipped for every write that stages nothing, so records
     /// written without this are byte-identical to before.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        rename = "p",
+        alias = "staged_pages",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub staged_pages: Vec<StagedPage>,
 }
 
@@ -119,7 +143,16 @@ mod staged_page_bytes {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WriteAheadLogRecordMetadata {
+    /// Omitted while it is the current version: a record that does not say otherwise is current,
+    /// and saying so in every record costs more than the statement is worth.
+    #[serde(
+        rename = "v",
+        alias = "version",
+        default = "current_write_ahead_log_format_version",
+        skip_serializing_if = "is_current_write_ahead_log_format_version"
+    )]
     pub version: u32,
+    #[serde(rename = "t", alias = "timestamp_ms")]
     pub timestamp_ms: u64,
     /// Per-item description of the write.
     ///
@@ -128,7 +161,12 @@ pub struct WriteAheadLogRecordMetadata {
     /// reconstructs it. New records leave it empty and skip it entirely rather than spend 147
     /// bytes per write on data the record already contains; records written before that still
     /// carry theirs and still load.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        rename = "i",
+        alias = "items",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub items: Vec<WriteAheadLogItemMetadata>,
     // Atomic-batch framing (all three set together, or all absent for a standalone write). A
     // batch of N commands is written as N contiguously-sequenced records sharing one `batch_id`,
@@ -486,7 +524,8 @@ impl LocalWriteAheadLogStore {
             let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
             fs::create_dir_all(&inner.root)?;
             let _append_lock = WalAppendLock::acquire(&inner.root, shard_id)?;
-            let last_sequence = resolve_last_sequence_for_append(&mut inner, shard_id)?;
+            let (last_sequence, on_disk_len) =
+                resolve_last_sequence_for_append(&mut inner, shard_id)?;
             inner.last_sequence_by_shard.insert(shard_id, last_sequence);
             let seq = last_sequence.saturating_add(1);
             let rec = WriteAheadLogRecord {
@@ -496,7 +535,7 @@ impl LocalWriteAheadLogStore {
                 command,
                 staged_pages,
             };
-            let report = append_record_locked(&mut inner, &rec, sync && !group)?;
+            let report = append_record_locked(&mut inner, &rec, sync && !group, Some(on_disk_len))?;
             inner.stats.last_sequence = report.current_sequence;
             // Record the file length we just left behind so the next append's fast path can
             // confirm no other writer touched the file (O(1) stat) and skip the full scan.
@@ -540,7 +579,7 @@ impl LocalWriteAheadLogStore {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let _append_lock = WalAppendLock::acquire(&inner.root, shard_id)?;
-        let last_sequence = resolve_last_sequence_for_append(&mut inner, shard_id)?;
+        let (last_sequence, _on_disk_len) = resolve_last_sequence_for_append(&mut inner, shard_id)?;
         inner.last_sequence_by_shard.insert(shard_id, last_sequence);
         let seq = last_sequence.saturating_add(1);
         let rec = WriteAheadLogRecord {
@@ -553,7 +592,7 @@ impl LocalWriteAheadLogStore {
         // sync=false: write the bytes, defer the fdatasync to `commit_barrier`. Same as the
         // group branch of append_with_sync. `last_flushed_sequence` is NOT advanced here (the
         // record is not yet durable); the coalesced barrier advances it once it reaches disk.
-        let report = append_record_locked(&mut inner, &rec, false)?;
+        let report = append_record_locked(&mut inner, &rec, false, None)?;
         inner.stats.last_sequence = report.current_sequence;
         inner.last_sequence_by_shard.insert(shard_id, seq);
         inner
@@ -634,7 +673,7 @@ impl LocalWriteAheadLogStore {
                 // Buffer every record (sync=false); the single durability barrier below covers
                 // the whole batch. append_record_locked keeps last_flushed_sequence honest -- it
                 // only advances on an actual fsync, which happens once, after the loop.
-                let report = append_record_locked(&mut inner, &rec, false)?;
+                let report = append_record_locked(&mut inner, &rec, false, None)?;
                 inner.stats.last_sequence = report.current_sequence;
                 records.push(rec);
             }
@@ -732,7 +771,7 @@ impl LocalWriteAheadLogStore {
                 persistent_bytes: path.metadata().map(|metadata| metadata.len()).unwrap_or(0),
             });
         }
-        let report = append_record_locked(&mut inner, &record, true)?;
+        let report = append_record_locked(&mut inner, &record, true, None)?;
         inner
             .last_sequence_by_shard
             .insert(record.shard_id, record.sequence);
@@ -796,6 +835,13 @@ impl LocalWriteAheadLogStore {
             let next_offset = offset.saturating_add(read as u64);
             if next_offset > end_offset || total + read as u64 > max_bytes {
                 break;
+            }
+            // Refuse a corrupt record here, where it is being read. This used to happen only as a
+            // side effect of walking the whole file to find the log's end; that walk no longer
+            // reads everything, and a guarantee that depends on unrelated work is not a guarantee.
+            // A blank line carries nothing to verify and is passed through as before.
+            if !line.iter().all(|byte| byte.is_ascii_whitespace()) {
+                decode_wal_line(&line)?;
             }
             records.push((offset, line));
             offset = next_offset;
@@ -1302,10 +1348,14 @@ fn wal_fast_append_seq() -> bool {
 /// without the O(records) `last_wal_sequence_at` scan. Otherwise fall back to the full scan (which
 /// also repairs a torn tail via `set_len`), reconcile the verified length against the resulting
 /// on-disk length, and return `max(cache, disk)` exactly as the pre-gate path did.
+///
+/// Also reports the log's length as it was observed, because the caller is about to append at
+/// exactly that offset and the append lock is held across both -- so asking again would be asking
+/// a question already answered.
 fn resolve_last_sequence_for_append(
     inner: &mut WriteAheadLogInner,
     shard_id: ShardId,
-) -> Result<u64, WriteAheadLogError> {
+) -> Result<(u64, u64), WriteAheadLogError> {
     let cached_last_sequence = inner
         .last_sequence_by_shard
         .get(&shard_id)
@@ -1319,7 +1369,7 @@ fn resolve_last_sequence_for_append(
             let path = write_ahead_log_path(&inner.root, shard_id);
             let on_disk_len = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
             if on_disk_len == verified_len {
-                return Ok(cached_last_sequence);
+                return Ok((cached_last_sequence, on_disk_len));
             }
         }
     }
@@ -1332,7 +1382,7 @@ fn resolve_last_sequence_for_append(
         .map(|metadata| metadata.len())
         .unwrap_or(0);
     inner.verified_len_by_shard.insert(shard_id, reconciled_len);
-    Ok(cached_last_sequence.max(disk_last_sequence))
+    Ok((cached_last_sequence.max(disk_last_sequence), reconciled_len))
 }
 
 fn wal_env_flag_on(name: &str) -> bool {
@@ -1403,9 +1453,15 @@ fn append_record_locked(
     inner: &mut WriteAheadLogInner,
     record: &WriteAheadLogRecord,
     sync: bool,
+    known_offset: Option<u64>,
 ) -> Result<WriteAheadLogAppendReport, WriteAheadLogError> {
     let path = write_ahead_log_path(&inner.root, record.shard_id);
-    let offset = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    // The caller has usually just measured this under the same append lock, so taking its answer
+    // costs nothing and asking again costs a stat.
+    let offset = match known_offset {
+        Some(offset) => offset,
+        None => path.metadata().map(|metadata| metadata.len()).unwrap_or(0),
+    };
     // Frame the record with a length + SHA-256 digest so a later value-preserving bit-flip in
     // this committed line is detected on read (see `crate::log_framing`). Offsets/stats below
     // use the real byte length, so framing is transparent to the append report and replication.
@@ -1426,7 +1482,9 @@ fn append_record_locked(
         inner.stats.syncs += 1;
         inner.stats.last_flushed_sequence = record.sequence;
     }
-    let persistent_bytes = path.metadata()?.len();
+    // Ask the handle that was just written, not the path: it is cheaper, and it is the file
+    // this record actually went into rather than whatever the name refers to now.
+    let persistent_bytes = file.metadata()?.len();
     inner.stats.writes += 1;
     inner.stats.bytes_written += bytes.len() as u64;
     inner.stats.persistent_bytes = persistent_bytes;
@@ -1511,6 +1569,16 @@ fn read_wal_base(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
     }
 }
 
+/// The sequence the log last reached, found by reading its END rather than all of it.
+///
+/// A restart needs this before it can append. Reading and decoding every record made the cost grow
+/// with the whole log -- about 83 ms per megabyte, forever -- when the answer is in the last
+/// record. This walks backward to the last complete one instead.
+///
+/// A trailing write with no newline is a torn tail: it is truncated away, exactly as before, and
+/// nothing at or below the last complete record is ever cut. A corrupt record in the MIDDLE is no
+/// longer reported here, since reaching it meant decoding everything; replay still refuses it, and
+/// replay is the path that would act on it.
 fn last_wal_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, WriteAheadLogError> {
     let path = write_ahead_log_path(root, shard_id);
     if !path.exists() {
@@ -1518,47 +1586,86 @@ fn last_wal_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, WriteAhea
     }
     let (_, header_len) = read_wal_base(&path)?;
     let file = OpenOptions::new().read(true).write(true).open(&path)?;
-    let mut reader = BufReader::new(file.try_clone()?);
-    reader.seek(SeekFrom::Start(header_len))?;
-    let mut last = 0;
-    // Offsets here are physical, and the tail-truncation below cuts the file at `good_offset`,
-    // so both start past the header rather than at zero -- truncating to 0 would discard it.
-    let mut offset = header_len;
-    let mut good_offset = header_len;
-    loop {
-        let mut line = Vec::new();
-        let read = reader.read_until(b'\n', &mut line)?;
-        if read == 0 {
-            break;
+    let len = file.metadata()?.len();
+    if len <= header_len {
+        return Ok(0);
+    }
+
+    // Pull in the tail, growing the window until it holds a whole record. Records are small and
+    // the first window almost always suffices; the loop is for the ones that are not.
+    let mut window = 64 * 1024u64;
+    let (line, good_offset) = loop {
+        let window_start = header_len.max(len.saturating_sub(window));
+        let mut reader = BufReader::new(file.try_clone()?);
+        reader.seek(SeekFrom::Start(window_start))?;
+        let mut data = vec![0u8; (len - window_start) as usize];
+        reader.read_exact(&mut data)?;
+
+        // Everything after the final newline was never finished being written.
+        let Some(last_newline) = data.iter().rposition(|byte| *byte == b'\n') else {
+            if window_start == header_len {
+                // Not one complete record in the file: the whole body is a torn write.
+                break (None, header_len);
+            }
+            window = window.saturating_mul(4);
+            continue;
+        };
+        let good_offset = window_start + last_newline as u64 + 1;
+
+        // Walk back over any blank lines to the last record that actually says something.
+        let mut line_end = last_newline;
+        loop {
+            let line_start = data[..line_end]
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map(|index| index + 1);
+            let (line_start, reached_the_front) = match line_start {
+                Some(index) => (index, false),
+                None => (0usize, true),
+            };
+            let candidate = &data[line_start..line_end];
+            if !candidate.iter().all(|byte| byte.is_ascii_whitespace()) {
+                break;
+            }
+            if line_start == 0 {
+                if reached_the_front && window_start > header_len {
+                    // The blank run may continue below this window.
+                    line_end = usize::MAX;
+                    break;
+                }
+                // Blank all the way back to the start: no record in this log.
+                return Ok(0);
+            }
+            line_end = line_start - 1;
         }
-        offset = offset.saturating_add(read as u64);
-        if !line.ends_with(b"\n") {
-            break;
-        }
-        if line.iter().all(|byte| byte.is_ascii_whitespace()) {
-            good_offset = offset;
+        if line_end == usize::MAX {
+            window = window.saturating_mul(4);
             continue;
         }
-        // A fully newline-terminated line that fails to decode is COMMITTED corruption, not a
-        // torn tail: WAL records are single-line JSON with no embedded newline, so a complete
-        // (\n-terminated) line is a complete write. `decode_wal_line` verifies the per-record
-        // length + SHA-256 digest envelope (crate::log_framing) and returns `Corruption` on a
-        // value-preserving bit-flip; a legacy unframed record still decodes as before. Surface
-        // it as an error instead of breaking -- treating interior corruption as end-of-log
-        // would set_len the file down to the last good record, silently dropping every durable
-        // record after the corrupt one and defeating the strict replay-continuity DataLoss
-        // guard (ReplayWal refuses the load on a digest failure / hole rather than trimming). A
-        // genuine torn tail lacks the trailing '\n' and is still handled by the break above.
-        let record = decode_wal_line(&line)?;
-        last = last.max(record.sequence);
-        good_offset = offset;
-    }
-    if good_offset < offset || good_offset < file.metadata()?.len() {
+
+        let line_start = data[..line_end]
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map(|index| index + 1);
+        match line_start {
+            Some(index) => break (Some(data[index..line_end].to_vec()), good_offset),
+            None if window_start == header_len => {
+                break (Some(data[..line_end].to_vec()), good_offset)
+            }
+            // The record starts before the window: widen and look again.
+            None => window = window.saturating_mul(4),
+        }
+    };
+
+    if good_offset < len {
         file.set_len(good_offset)?;
         file.sync_all()?;
         sync_parent_dir(&path)?;
     }
-    Ok(last)
+    let Some(line) = line else {
+        return Ok(0);
+    };
+    Ok(decode_wal_line(&line)?.sequence)
 }
 
 fn current_time_ms() -> u64 {
@@ -2650,5 +2757,506 @@ mod tests {
         assert!(!reclaim_is_worth_rewriting(20 * MB, retained, floor, 25));
         // The prefix has grown past a quarter of what the pass must copy.
         assert!(reclaim_is_worth_rewriting(25 * MB, retained, floor, 25));
+    }
+
+    /// What a write costs on disk and in time, comparing the two payload shapes in ONE run.
+    ///
+    /// Both are measured back to back in the same process, alternating, because a timing taken
+    /// from a separate run on a shared machine mostly measures what else was running then. The
+    /// byte counts are deterministic; the timings are not, so they are reported as a ratio
+    /// between two shapes measured together rather than as absolute figures.
+    #[test]
+    fn payload_shape_footprint_and_latency() {
+        fn run(array_shape: bool, value_len: usize, records: u64) -> (u64, f64) {
+            crate::bytes_serde::set_array_shape_for_measurement(array_shape);
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            let started = std::time::Instant::now();
+            for index in 0..records {
+                store
+                    .append_with_sync(
+                        1,
+                        Command::StringSet {
+                            key: format!("bench-key-{index:08}"),
+                            value: vec![118u8; value_len],
+                        },
+                        false,
+                    )
+                    .unwrap();
+            }
+            let micros = started.elapsed().as_secs_f64() * 1e6 / records as f64;
+            let bytes = std::fs::metadata(write_ahead_log_path(dir.path(), 1))
+                .unwrap()
+                .len();
+            (bytes, micros)
+        }
+
+        let median = |mut values: Vec<f64>| {
+            values.sort_by(|left, right| left.partial_cmp(right).unwrap());
+            values[values.len() / 2]
+        };
+
+        for value_len in [64usize, 256, 1024, 4096] {
+            let records = 200u64;
+            let (array_bytes, _) = run(true, value_len, records);
+            let (encoded_bytes, _) = run(false, value_len, records);
+            let mut array_us = Vec::new();
+            let mut encoded_us = Vec::new();
+            // Alternate, so a burst of load on the machine lands on both and not just one.
+            for _ in 0..3 {
+                array_us.push(run(true, value_len, records).1);
+                encoded_us.push(run(false, value_len, records).1);
+            }
+            let array_us = median(array_us);
+            let encoded_us = median(encoded_us);
+            let user = records * value_len as u64;
+            println!(
+                "  value {value_len:>5}B: array {array_bytes:>9} B ({:.2}x user, {array_us:>7.1} us/write)   encoded {encoded_bytes:>9} B ({:.2}x user, {encoded_us:>7.1} us/write)   -> {:.2}x smaller, {:.2}x faster",
+                array_bytes as f64 / user as f64,
+                encoded_bytes as f64 / user as f64,
+                array_bytes as f64 / encoded_bytes as f64,
+                array_us / encoded_us
+            );
+            assert!(
+                encoded_bytes < array_bytes,
+                "the encoded shape must be smaller at {value_len}B"
+            );
+        }
+        // Leave the process on the default for whatever test runs next.
+        crate::bytes_serde::set_array_shape_for_measurement(false);
+    }
+
+    /// What is left in a small record once the payload stops being the problem.
+    ///
+    /// Prints one real record's bytes and attributes them, so the next decision about the format
+    /// is made against a breakdown rather than an impression.
+    #[test]
+    fn small_record_byte_breakdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        store
+            .append_with_sync(
+                1,
+                Command::StringSet {
+                    key: "bench-key-00000000".to_string(),
+                    value: vec![118u8; 64],
+                },
+                false,
+            )
+            .unwrap();
+        let raw = std::fs::read(write_ahead_log_path(dir.path(), 1)).unwrap();
+        let line = String::from_utf8_lossy(&raw);
+        let line = line.trim_end();
+        println!("  whole record ({} B):", line.len() + 1);
+        println!("    {line}");
+
+        let payload_start = line
+            .match_indices(' ')
+            .nth(2)
+            .map(|(index, _)| index + 1)
+            .unwrap_or(0);
+        let frame = payload_start + 1; // + the newline
+        let payload = &line[payload_start..];
+        let value_chars = payload
+            .split("\"value\":\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .map(str::len)
+            .unwrap_or(0);
+        let metadata = payload
+            .find("\"m\":")
+            .map(|start| payload[start..].len() - 1)
+            .unwrap_or(0);
+        let key_chars = "bench-key-00000000".len();
+        let structure = payload.len() - value_chars - metadata - key_chars;
+
+        println!("    frame + newline : {frame:>4} B");
+        println!("    field names etc : {structure:>4} B");
+        println!("    the key         : {key_chars:>4} B");
+        println!("    the value       : {value_chars:>4} B  (64 B of data)");
+        println!("    metadata block  : {metadata:>4} B");
+        println!("    total           : {:>4} B for 64 B of user data", line.len() + 1);
+    }
+
+
+    /// A record written with the long field names still loads.
+    ///
+    /// The rename is only safe because every field keeps an alias for what it was called, and
+    /// nothing rewrites logs already on disk. This is that promise, in the shape the previous code
+    /// actually wrote -- including the format version, which new records leave out.
+    #[test]
+    fn a_record_with_the_long_field_names_still_loads() {
+        let written_before = concat!(
+            r#"{"shard_id":1,"sequence":7,"command":{"kind":"string_set","key":"k","#,
+            r#""value":[104,105]},"metadata":{"version":1,"timestamp_ms":1787429651961}}"#
+        );
+        let record: WriteAheadLogRecord =
+            serde_json::from_str(written_before).expect("the long field names must still load");
+
+        assert_eq!(record.shard_id, 1);
+        assert_eq!(record.sequence, 7);
+        assert_eq!(
+            record.command,
+            Command::StringSet {
+                key: "k".to_string(),
+                value: b"hi".to_vec(),
+            }
+        );
+        let metadata = record.metadata.expect("the metadata block should load");
+        assert_eq!(metadata.version, WRITE_AHEAD_LOG_FORMAT_VERSION);
+        assert_eq!(metadata.timestamp_ms, 1_787_429_651_961);
+    }
+
+    /// A record that omits the version is read as the current one.
+    ///
+    /// New records leave it out precisely because that is what its absence means; if the default
+    /// were zero instead, every new record would read back claiming an unknown format.
+    #[test]
+    fn an_omitted_version_reads_as_the_current_one() {
+        let record: WriteAheadLogRecord = serde_json::from_str(
+            r#"{"s":1,"q":2,"c":{"kind":"string_get","key":"k"},"m":{"t":17}}"#,
+        )
+        .expect("a record without a version must load");
+        assert_eq!(
+            record.metadata.expect("metadata").version,
+            WRITE_AHEAD_LOG_FORMAT_VERSION,
+            "a record that does not name a version is the current one"
+        );
+    }
+
+    /// The short names really are what gets written, and a written record reads back unchanged.
+    #[test]
+    fn a_written_record_round_trips_through_the_short_names() {
+        let record = WriteAheadLogRecord {
+            shard_id: 3,
+            sequence: 11,
+            command: Command::StringSet {
+                key: "round-trip".to_string(),
+                value: vec![0u8, 127, 255],
+            },
+            metadata: Some(WriteAheadLogRecordMetadata {
+                version: WRITE_AHEAD_LOG_FORMAT_VERSION,
+                timestamp_ms: 42,
+                items: Vec::new(),
+                batch_id: None,
+                batch_size: None,
+                batch_index: None,
+            }),
+            staged_pages: Vec::new(),
+        };
+        let encoded = serde_json::to_string(&record).unwrap();
+        assert!(
+            !encoded.contains("shard_id") && !encoded.contains("timestamp_ms"),
+            "the long names should not be written any more, got {encoded}"
+        );
+        assert!(
+            !encoded.contains("version"),
+            "the current version should be left out, got {encoded}"
+        );
+        let decoded: WriteAheadLogRecord = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, record, "a record must survive its own encoding");
+    }
+
+    /// Barriers taken per durable write, as concurrency rises.
+    ///
+    /// A durable write costs an fsync, and the fsync dominates it -- so the lever on throughput is
+    /// how many writes share one barrier. A ratio near 1.0 means every writer paid for its own; the
+    /// lower it goes, the better concurrent writers are being coalesced.
+    #[test]
+    fn durable_write_barriers_per_write_under_concurrency() {
+        use std::sync::Arc;
+
+        for writers in [1usize, 2, 4, 8, 16] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Arc::new(LocalWriteAheadLogStore::new(dir.path()));
+            let per_writer = 40u64;
+            let started = std::time::Instant::now();
+            let mut handles = Vec::new();
+            for writer in 0..writers {
+                let store = Arc::clone(&store);
+                handles.push(std::thread::spawn(move || {
+                    for index in 0..per_writer {
+                        store
+                            .append_with_sync(
+                                1,
+                                Command::StringSet {
+                                    key: format!("w{writer}-{index:06}"),
+                                    value: vec![118u8; 128],
+                                },
+                                true,
+                            )
+                            .unwrap();
+                    }
+                }));
+            }
+            for handle in handles {
+                handle.join().unwrap();
+            }
+            let elapsed = started.elapsed();
+            let total = writers as u64 * per_writer;
+            let stats = store.raw_stats(1);
+            let per_write = stats.syncs as f64 / total as f64;
+            println!(
+                "  {writers:>2} writers: {total:>4} writes, {:>4} barriers = {per_write:.2} per write, {:>7.0} writes/s, {:>7.1} us/write",
+                stats.syncs,
+                total as f64 / elapsed.as_secs_f64(),
+                elapsed.as_secs_f64() * 1e6 / total as f64
+            );
+
+            // One barrier per write is the ceiling -- more than that would mean a durable write
+            // paid for someone else's fsync as well as its own.
+            assert!(
+                stats.syncs <= total,
+                "{writers} writers took {} barriers for {total} writes",
+                stats.syncs
+            );
+            if writers >= 8 {
+                // Measured at 0.20 and 0.17 on an idle machine; this only has to catch coalescing
+                // being switched off or broken, which shows up as 1.00 at every concurrency.
+                assert!(
+                    per_write < 0.9,
+                    "concurrent writers should share barriers, but {writers} writers took \
+                     {per_write:.2} per write -- that is one each, so nothing is being coalesced"
+                );
+            }
+        }
+    }
+
+    /// How long it takes to find the end of the log, as the log grows.
+    ///
+    /// Learning the last sequence is what a restart needs before it can append. Today that reads
+    /// and decodes every record, so the cost tracks the size of the whole log rather than the size
+    /// of its tail -- and a log is not bounded by how much of it is interesting.
+    #[test]
+    fn finding_the_end_of_the_log_as_it_grows() {
+        for records in [1_000u64, 5_000, 20_000] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            for index in 0..records {
+                store
+                    .append_with_sync(
+                        1,
+                        Command::StringSet {
+                            key: format!("key-{index:08}"),
+                            value: vec![118u8; 128],
+                        },
+                        false,
+                    )
+                    .unwrap();
+            }
+            let bytes = std::fs::metadata(write_ahead_log_path(dir.path(), 1))
+                .unwrap()
+                .len();
+
+            let started = std::time::Instant::now();
+            let rounds = 5;
+            let mut last = 0;
+            for _ in 0..rounds {
+                last = last_wal_sequence_at(dir.path(), 1).unwrap();
+            }
+            let micros = started.elapsed().as_secs_f64() * 1e6 / rounds as f64;
+            assert_eq!(last, records, "it should find the real end");
+            println!(
+                "  {records:>6} records ({:>8} B): {micros:>9.0} us to find the end  ({:.2} us per 1k records)",
+                bytes,
+                micros / (records as f64 / 1000.0)
+            );
+        }
+    }
+
+    /// A record larger than the first tail window is still found.
+    ///
+    /// The search starts with a 64 KiB window and widens until it holds a whole record. Nothing
+    /// else in the suite writes a record big enough to need that, so this is the test for it.
+    #[test]
+    fn the_end_is_found_even_when_the_last_record_is_huge() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        store
+            .append_with_sync(
+                1,
+                Command::StringSet {
+                    key: "small".to_string(),
+                    value: b"v".to_vec(),
+                },
+                false,
+            )
+            .unwrap();
+        // Comfortably past the first window, and past the second as well once encoded.
+        store
+            .append_with_sync(
+                1,
+                Command::StringSet {
+                    key: "huge".to_string(),
+                    value: vec![118u8; 400 * 1024],
+                },
+                false,
+            )
+            .unwrap();
+        drop(store);
+
+        let reopened = LocalWriteAheadLogStore::new(dir.path());
+        let next = reopened
+            .append_with_sync(
+                1,
+                Command::StringSet {
+                    key: "after".to_string(),
+                    value: b"v".to_vec(),
+                },
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            next.sequence, 3,
+            "the sequence must continue after a record wider than the search window"
+        );
+    }
+
+    /// A trailing write that never finished is cut, and nothing above it is.
+    #[test]
+    fn a_torn_trailing_write_is_cut_back_to_the_last_whole_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        for index in 0..3 {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index}"),
+                        value: b"v".to_vec(),
+                    },
+                    false,
+                )
+                .unwrap();
+        }
+        drop(store);
+
+        // A write that stopped partway: bytes with no newline after them.
+        let path = write_ahead_log_path(dir.path(), 1);
+        let whole = std::fs::read(&path).unwrap();
+        let mut torn = whole.clone();
+        torn.extend_from_slice(b"#tsf2 99 deadbeef {\"s\":1,\"q\":4,\"c\"");
+        std::fs::write(&path, &torn).unwrap();
+
+        let reopened = LocalWriteAheadLogStore::new(dir.path());
+        let next = reopened
+            .append_with_sync(
+                1,
+                Command::StringSet {
+                    key: "after".to_string(),
+                    value: b"v".to_vec(),
+                },
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            next.sequence, 4,
+            "the torn write should be gone and the sequence continue from the last whole record"
+        );
+        let after = std::fs::read(&path).unwrap();
+        assert!(
+            after.starts_with(&whole),
+            "every record that was complete must still be there, byte for byte"
+        );
+    }
+
+    /// Blank lines at the end do not hide the last record.
+    #[test]
+    fn blank_lines_after_the_last_record_are_stepped_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        for index in 0..2 {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index}"),
+                        value: b"v".to_vec(),
+                    },
+                    false,
+                )
+                .unwrap();
+        }
+        drop(store);
+        let path = write_ahead_log_path(dir.path(), 1);
+        let mut padded = std::fs::read(&path).unwrap();
+        padded.extend_from_slice(b"\n\n   \n");
+        std::fs::write(&path, padded).unwrap();
+
+        assert_eq!(
+            last_wal_sequence_at(dir.path(), 1).unwrap(),
+            2,
+            "blank trailing lines should be stepped over, not read as the end of the log"
+        );
+    }
+
+    /// Appending must not get slower as the log gets longer.
+    ///
+    /// Learning the last sequence is what an append needs first. If that reads the whole log, then
+    /// N appends read it N times and an ingest is quadratic. The check is direct: the cost of the
+    /// last thousand appends against the first thousand, into the same log.
+    #[test]
+    fn appending_does_not_get_slower_as_the_log_grows() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let batch = 1_000u64;
+        let batches = 20u64;
+        let mut first = 0.0f64;
+        let mut last = 0.0f64;
+
+        for round in 0..batches {
+            let started = std::time::Instant::now();
+            for index in 0..batch {
+                store
+                    .append_with_sync(
+                        1,
+                        Command::StringSet {
+                            key: format!("k{:08}", round * batch + index),
+                            value: vec![118u8; 128],
+                        },
+                        false,
+                    )
+                    .unwrap();
+            }
+            let per_append = started.elapsed().as_secs_f64() * 1e6 / batch as f64;
+            if round == 0 {
+                first = per_append;
+            }
+            if round == batches - 1 {
+                last = per_append;
+            }
+            if round % 5 == 0 || round == batches - 1 {
+                println!(
+                    "  after {:>6} records: {per_append:>7.1} us per append",
+                    round * batch
+                );
+            }
+        }
+
+        let stats = store.raw_stats(1);
+        let bytes = std::fs::metadata(write_ahead_log_path(dir.path(), 1))
+            .unwrap()
+            .len();
+        println!(
+            "  {} records, {bytes} B, {} full walks of the log, last/first = {:.2}x",
+            batches * batch,
+            stats.append_full_scans,
+            last / first
+        );
+
+        // Quadratic would show as the last batch costing many times the first. Some growth is
+        // fair -- the file is larger and the page cache is working harder -- so this is loose
+        // enough to pass on a busy machine and still catch the shape coming back.
+        assert!(
+            last < first * 4.0,
+            "appending got {:.1}x slower as the log grew ({first:.1} us -> {last:.1} us), which is \
+             the shape of an ingest that re-reads the log on every append",
+            last / first
+        );
+        assert!(
+            stats.append_full_scans <= 2,
+            "the append path walked the whole log {} times; it should learn the end once",
+            stats.append_full_scans
+        );
     }
 }

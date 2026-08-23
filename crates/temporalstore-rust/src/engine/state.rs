@@ -49,7 +49,9 @@ pub(super) struct ShardState {
     /// both maps correctly through insert_context_event_views.
     #[serde(default)]
     pub(super) index_format_version: u32,
-    pub(super) expires_at_ms: HashMap<String, u64>,
+    /// Deadlines, kept in key order so a sweep can resume from its cursor and look at the
+    /// window rather than at everything.
+    pub(super) expires_at_ms: BTreeMap<String, u64>,
     pub(super) strings: HashMap<String, BlockAddress>,
     pub(super) hashes: HashMap<String, HashMap<String, BlockAddress>>,
     #[serde(default, with = "super::set_index_serde")]

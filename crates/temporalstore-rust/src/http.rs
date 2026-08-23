@@ -30,6 +30,22 @@ pub enum HttpError {
     BadResponse(String),
 }
 
+impl HttpError {
+    /// Whether this error proves the request never reached the server.
+    ///
+    /// Only a refused connection proves it: the peer rejected the TCP handshake, so not one
+    /// byte of the request was sent. Everything else -- a read timeout above all -- means
+    /// the server stopped answering, which is not the same as never having heard the
+    /// request. That distinction is what decides whether a write may be sent again.
+    ///
+    /// Deliberately conservative. A connect timeout is indistinguishable from a read
+    /// timeout here (both surface as `TimedOut`), so it is treated as "unknown" and a write
+    /// is not repeated after one.
+    pub fn request_never_reached_the_server(&self) -> bool {
+        matches!(self, HttpError::Io(err) if err.kind() == ErrorKind::ConnectionRefused)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HttpRequestOptions {
     pub connect_timeout_ms: u64,
@@ -552,6 +568,16 @@ fn request_raw_with_options(
     Err(last_error.unwrap_or_else(|| HttpError::BadResponse("request failed".to_string())))
 }
 
+/// Whether the exchange failed because the peer stopped answering, rather than because the
+/// connection was already dead. The distinction decides whether the request may be sent
+/// again: a dead socket carried nothing, a timeout may have carried everything.
+fn timed_out(err: &HttpError) -> bool {
+    matches!(
+        err,
+        HttpError::Io(err) if matches!(err.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock)
+    )
+}
+
 fn is_retryable_request_error(err: &HttpError) -> bool {
     match err {
         HttpError::Io(err) => matches!(
@@ -669,6 +695,17 @@ fn request_raw_once(
                 pool_put(addr, stream);
                 return Ok(response);
             }
+            // A pooled socket the server reaped fails immediately -- a reset, a broken pipe,
+            // or an EOF that parses as a missing response header. Nothing was served on it,
+            // so reconnecting and sending again is transparent, and that is what this
+            // fallback is for.
+            //
+            // A timeout is not that. It means the peer accepted the request and did not
+            // answer in time, so the request may well have been processed. Silently sending
+            // it again on a fresh socket would apply a write twice, which is exactly the
+            // thing the routing layer above refuses to do -- and doing it here would undo
+            // that decision from underneath.
+            Err(err) if timed_out(&err) => return Err(err),
             Err(_) => { /* stale/broken pooled connection: drop it, reconnect */ }
         }
     }

@@ -52,6 +52,10 @@ impl ProxyService {
             ("hit", stats.route_cache_hits),
             ("miss", stats.route_cache_misses),
             ("refresh", stats.route_refreshes),
+            // Metaserver topology checks skipped because one was made within the interval.
+            // This is the count of round-trips kept off the request path, so it belongs
+            // where the rest of the route-cache maintenance is reported.
+            ("topology_check_skipped", stats.topology_checks_skipped),
         ] {
             push_proxy_metric(
                 &mut out,

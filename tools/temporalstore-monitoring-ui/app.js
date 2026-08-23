@@ -125,15 +125,6 @@ const fallbackHealth = {
       notes: "profile-like feature object",
     },
     {
-      module: "IPS",
-      test: "risk/frequency cap sample",
-      status: "pending",
-      write_path: "direct SDK",
-      read_path: "primary",
-      latency: "-",
-      notes: "slot/table/action dimensions",
-    },
-    {
       module: "STRING",
       test: "SET/GET baseline",
       status: "pending",

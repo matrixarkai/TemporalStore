@@ -615,6 +615,23 @@ class _LocalAdapterRetrieveMixin:
         embedding_metadata_by_ref: dict[tuple[Any, Any], Json] = {}
 
         def remember_embedding_metadata(record: Json) -> None:
+            # A context_embedding row copies its owner's metadata. Measured on a real ingest:
+            # 29 of the 33 populated fields are IDENTICAL on the owner record, and only four are
+            # unique to the row -- dim, model, model_ref (encoder provenance) and storage_options.
+            #
+            # This is NOT a fold waiting to happen. record_with_embedding_defaults() below fills
+            # only fields the owner is MISSING, so retrieval is already owner-first and this copy
+            # is never consulted in normal operation. It is a self-repair net for an owner that
+            # has lost fields, which
+            # test_retrieve_recovers_hot_event_type_from_embedding_metadata exercises by
+            # stripping event_type/classification/status/source_kind from a context_event.
+            #
+            # Removing the copy was measured end to end: it saves 2.6% of total record bytes
+            # (129,938 -> 126,510) because the vector dominates a row, not its metadata, and it
+            # breaks the repair path. Recorded so the trade is not re-derived: losing self-repair
+            # to save 2.6% is not worth it, and dropping these rows entirely costs more still --
+            # eight tests covering hot_event_type recovery, cross-session profile lineage and
+            # memory-layer classification all read them.
             ref_type = record.get("ref_type")
             ref_hash = record.get("ref_hash")
             if ref_type in (None, "") or ref_hash in (None, ""):

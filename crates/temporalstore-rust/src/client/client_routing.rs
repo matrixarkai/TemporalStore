@@ -48,6 +48,10 @@ impl TemporalStoreClient {
                     if !self.inner.options.refresh_route_on_backend_error {
                         return Err(err.into());
                     }
+                    if !Self::may_send_again(&request.commands, &err) {
+                        let _ = self.resolve_route(request.shard_id, true, None);
+                        return Err(err.into());
+                    }
                     let refreshed = self.resolve_route(request.shard_id, true, None)?;
                     Ok(post_json_with_options(
                         &refreshed,
@@ -106,6 +110,22 @@ impl TemporalStoreClient {
         )
     }
 
+    /// Whether a request that just failed may simply be sent again.
+    ///
+    /// A read always may -- repeating it cannot change anything. A write may only if the
+    /// error proves it never arrived: a refused connection sent no bytes, so nothing was
+    /// applied and re-sending is the recovery the caller wants. A read timeout proves
+    /// nothing of the sort -- the datanode stopped answering, which is not the same as never
+    /// having received the write -- and re-sending there counts `ControlStateIncrement`
+    /// twice with nothing downstream able to tell.
+    ///
+    /// The command layer above already drew this line: it retries a write only when the
+    /// backend REFUSED it (`safe_budget_free_write_retry` requires a topology retry), a
+    /// definite "not applied". This layer had no such reasoning and re-sent regardless.
+    fn may_send_again(commands: &[Command], err: &HttpError) -> bool {
+        !commands.iter().any(super::commands::is_write) || err.request_never_reached_the_server()
+    }
+
     pub(super) fn execute_routed_with_http_and_policy(
         &self,
         request: ExecuteRequest,
@@ -141,6 +161,19 @@ impl TemporalStoreClient {
                         .expect("client stats lock poisoned")
                         .record_backend_error(became_continuous);
                     if !self.inner.options.refresh_route_on_backend_error {
+                        return Err(err.into());
+                    }
+                    if !Self::may_send_again(std::slice::from_ref(&request.command), &err) {
+                        // Drop the stale route so the NEXT request re-resolves, but do not
+                        // send this write a second time -- its outcome is unknown, not known
+                        // to be "never happened".
+                        let _ = self.resolve_route_with_policy(
+                            request.shard_id,
+                            true,
+                            continuous_failed_time_ms,
+                            policy,
+                            preferred_location,
+                        );
                         return Err(err.into());
                     }
                     let refreshed = self.resolve_route_with_policy(
@@ -193,6 +226,11 @@ impl TemporalStoreClient {
                         .expect("client stats lock poisoned")
                         .record_backend_error(became_continuous);
                     if !self.inner.options.refresh_route_on_backend_error {
+                        return Err(err.into());
+                    }
+                    if !Self::may_send_again(&request.commands, &err) {
+                        let _ =
+                            self.resolve_route(request.shard_id, true, continuous_failed_time_ms);
                         return Err(err.into());
                     }
                     let refreshed =
@@ -299,14 +337,19 @@ impl TemporalStoreClient {
             .location
             .ok_or_else(|| ClientError::Status("route missing".to_string()))?
             .server_addr;
+        // Stamp the topology this route was resolved against. Without it the route is
+        // version 0 = unknown, the staleness check treats unknown as stale, and the entry is
+        // dropped on the very next request -- which is why the cache never returned a hit.
+        let mut cached = CachedRoute::for_shard(shard_id, server_addr.clone(), "shard_lookup");
+        cached.topology_version = self
+            .inner
+            .known_topology_version
+            .load(std::sync::atomic::Ordering::Relaxed);
         self.inner
             .routes
             .lock()
             .expect("client route cache lock poisoned")
-            .insert(
-                shard_id,
-                CachedRoute::for_shard(shard_id, server_addr.clone(), "shard_lookup"),
-            );
+            .insert(shard_id, cached);
         self.inner
             .stats
             .lock()

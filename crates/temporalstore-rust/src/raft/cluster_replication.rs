@@ -387,6 +387,21 @@ impl RaftCluster {
         let leader_id = request.leader_id;
         let term = request.term;
         let leader_commit = request.leader_commit;
+        // Contact from the leader proves it is alive, whatever we go on to decide about its
+        // entries. A follower marks its leader down when its election timer expires, and until
+        // now only an ACCEPTED append marked it back up -- so a follower that is merely behind,
+        // which rejects appends while it catches up, held a healthy leader as down and refused
+        // every operation that needs one.
+        let heard_from_the_leader = inner
+            .nodes
+            .get(&target_id)
+            .map(|node| term >= node.current_term)
+            .unwrap_or(false);
+        if heard_from_the_leader && leader_id != target_id {
+            if let Some(leader) = inner.nodes.get_mut(&leader_id) {
+                leader.alive = true;
+            }
+        }
         let received_entries = entries.len() as u64;
         let received_bytes = entries
             .iter()
@@ -679,6 +694,7 @@ impl RaftCluster {
         };
         inner.persist_configured_wal()?;
         Ok(VoteRequest {
+            pre_vote: false,
             rpc: None,
             shard_id,
             term: election_term,
@@ -721,6 +737,26 @@ impl RaftCluster {
                 term: node.current_term,
                 vote_granted: false,
                 reject_reason: Some("target_not_voter".to_string()),
+            });
+        }
+        if request.pre_vote {
+            // Answer, and change nothing: no term adopted, no vote recorded, nothing persisted.
+            // That is what makes a pre-vote safe to lose, and what stops a node that cannot reach
+            // anyone from walking its term up on a timer.
+            let local_last_index = node_last_log_or_snapshot_index(node);
+            let local_last_term =
+                node_term_at_log_or_snapshot_index(node, local_last_index).unwrap_or_default();
+            let would_grant = request.term > node.current_term
+                && (request.last_log_term, request.last_log_index)
+                    >= (local_last_term, local_last_index);
+            if !would_grant {
+                node.pipeline_state.pre_vote_rejections =
+                    node.pipeline_state.pre_vote_rejections.saturating_add(1);
+            }
+            return Ok(VoteResponse {
+                term: node.current_term,
+                vote_granted: would_grant,
+                reject_reason: (!would_grant).then(|| "pre_vote_declined".to_string()),
             });
         }
         if request.term < node.current_term {

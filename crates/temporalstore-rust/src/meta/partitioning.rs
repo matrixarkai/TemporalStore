@@ -6,7 +6,24 @@
 use super::*;
 use std::collections::BTreeSet;
 
-pub(super) fn build_shards(state: &MetaState, table: &TableMetaInfo) -> Vec<TableShard> {
+/// Whether the server a shard is registered to is in service.
+///
+/// An unknown address counts as serving: a route can outlive the server record
+/// it names, and treating that as out of service would silently unroute shards
+/// the metaserver simply has not heard about yet.
+fn owner_is_serving(state: &MetaState, server_addr: &str) -> bool {
+    state
+        .servers
+        .get(server_addr)
+        .map(|server| server.state == MetaEntityState::Normal)
+        .unwrap_or(true)
+}
+
+pub(super) fn build_shards(
+    state: &MetaState,
+    table: &TableMetaInfo,
+    client_location: &str,
+) -> Vec<TableShard> {
     #[derive(Debug)]
     struct PlacementCandidate {
         server_addr: String,
@@ -89,6 +106,7 @@ pub(super) fn build_shards(state: &MetaState, table: &TableMetaInfo) -> Vec<Tabl
         .iter()
         .map(|candidate| Location::parse(&candidate.location))
         .collect::<Vec<_>>();
+    let caller = Location::parse(client_location);
     let bucket_count = 1_u64 << 30;
     let mut shards = Vec::new();
     for offset in 0..table.shard_count {
@@ -100,7 +118,15 @@ pub(super) fn build_shards(state: &MetaState, table: &TableMetaInfo) -> Vec<Tabl
         let mut used_locations = BTreeSet::new();
         let mut used_hosts = BTreeSet::new();
         let mut placed_locations: Vec<Location> = Vec::new();
-        if let Some(location) = state.shards.get(&shard_id) {
+        // The owner is the one entry that reaches the replica list without
+        // passing the Normal filter the candidate scan applies. A server that
+        // was frozen or dropped is not serving, so naming it is telling a client
+        // to read from somewhere that is deliberately out of service.
+        let owner = state
+            .shards
+            .get(&shard_id)
+            .filter(|location| owner_is_serving(state, &location.server_addr));
+        if let Some(location) = owner {
             if let Some(server) = state.servers.get(&location.server_addr) {
                 placed_locations.push(Location::parse(&server.location));
             }
@@ -163,11 +189,38 @@ pub(super) fn build_shards(state: &MetaState, table: &TableMetaInfo) -> Vec<Tabl
                 &candidate.server_addr,
             );
         }
-        let primary = state
-            .shards
-            .get(&shard_id)
-            .map(|location| location.server_addr.clone())
-            .or_else(|| replicas.first().cloned());
+        let primary = match state.shards.get(&shard_id) {
+            // A recorded owner that is not serving leaves the shard with no
+            // primary. Falling through to the candidate scan would nominate a
+            // server that never loaded this shard, and a client that followed
+            // the nomination would read an empty shard and believe it.
+            Some(location) => {
+                owner_is_serving(state, &location.server_addr).then(|| location.server_addr.clone())
+            }
+            // No owner recorded yet: propose a placement, which is how a new
+            // table gets one before anything registers.
+            None => replicas.first().cloned(),
+        };
+        // Replicas are deliberately spread as far apart as the topology
+        // allows, so most of a shard's replicas are far from any given caller
+        // by construction. Ordering them nearest-first is what lets a caller
+        // that has a replica in its own location read from it rather than
+        // crossing the fabric to whichever server happened to sort first on
+        // load. Only the order changes: the same servers are returned, and the
+        // primary -- which is where the shard is actually owned -- is untouched.
+        if !caller.is_empty() {
+            // Stable, so servers equally close to the caller keep the
+            // load-ordered sequence the scan above produced.
+            replicas.sort_by_key(|server_addr| {
+                std::cmp::Reverse(
+                    state
+                        .servers
+                        .get(server_addr)
+                        .map(|server| caller.shared_prefix_len(&Location::parse(&server.location)))
+                        .unwrap_or(0),
+                )
+            });
+        }
         let primary_endpoint = primary
             .as_ref()
             .map(|server_addr| server_endpoint(state, server_addr));
