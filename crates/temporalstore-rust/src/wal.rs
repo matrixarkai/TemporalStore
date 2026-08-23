@@ -49,7 +49,96 @@ fn is_current_write_ahead_log_format_version(version: &u32) -> bool {
 /// committed record surfaces as `Corruption` instead of replaying as truth.
 pub fn decode_wal_line(line: &[u8]) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
     let payload = crate::log_framing::decode_line(line)?;
-    Ok(serde_json::from_slice::<WriteAheadLogRecord>(payload)?)
+    let (document, carried) = split_carried_payloads(payload)?;
+    if carried.is_empty() {
+        return Ok(serde_json::from_slice::<WriteAheadLogRecord>(document)?);
+    }
+    crate::bytes_serde::with_payloads(carried, || {
+        serde_json::from_slice::<WriteAheadLogRecord>(document)
+    })
+    .map_err(WriteAheadLogError::from)
+}
+
+/// Separates the document from the payloads carried beside it.
+///
+/// A serde_json document never contains a literal 0x1f -- control bytes are escaped -- so this can
+/// only be the separator this writer put there. A record written without carried payloads has none
+/// and is returned whole.
+const CARRIED_SEPARATOR: u8 = 0x1f;
+
+fn split_carried_payloads(payload: &[u8]) -> Result<(&[u8], Vec<Vec<u8>>), WriteAheadLogError> {
+    let Some(document_end) = payload.iter().position(|byte| *byte == CARRIED_SEPARATOR) else {
+        return Ok((payload, Vec::new()));
+    };
+    let document = &payload[..document_end];
+    let rest = &payload[document_end + 1..];
+    let lengths_end = rest
+        .iter()
+        .position(|byte| *byte == CARRIED_SEPARATOR)
+        .ok_or_else(|| {
+            WriteAheadLogError::Corruption(
+                "record carries payloads but does not say how long they are".to_string(),
+            )
+        })?;
+    let lengths = std::str::from_utf8(&rest[..lengths_end])
+        .map_err(|_| {
+            WriteAheadLogError::Corruption("payload lengths are not readable".to_string())
+        })?
+        .split(',')
+        .map(|length| {
+            length.parse::<usize>().map_err(|_| {
+                WriteAheadLogError::Corruption(format!("payload length is not a number: {length}"))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut carried = Vec::with_capacity(lengths.len());
+    let mut at = lengths_end + 1;
+    for length in lengths {
+        let end = at.checked_add(length).filter(|end| *end <= rest.len()).ok_or_else(|| {
+            WriteAheadLogError::Corruption(
+                "record claims more carried payload than it holds".to_string(),
+            )
+        })?;
+        carried.push(
+            crate::bytes_serde::unescape_payload(&rest[at..end])
+                .map_err(WriteAheadLogError::Corruption)?,
+        );
+        at = end;
+    }
+    if at != rest.len() {
+        return Err(WriteAheadLogError::Corruption(
+            "record holds more carried payload than it claims".to_string(),
+        ));
+    }
+    Ok((document, carried))
+}
+
+/// Encode a record: the document, and the payloads worth carrying beside it.
+fn encode_wal_payload(record: &WriteAheadLogRecord) -> Result<Vec<u8>, WriteAheadLogError> {
+    let (document, carried) =
+        crate::bytes_serde::carrying_payloads(|| serde_json::to_vec(record));
+    let mut payload = document?;
+    if carried.is_empty() {
+        // Nothing worth carrying: written exactly as it always was.
+        return Ok(payload);
+    }
+    let escaped = carried
+        .iter()
+        .map(|bytes| crate::bytes_serde::escape_payload(bytes))
+        .collect::<Vec<_>>();
+    let lengths = escaped
+        .iter()
+        .map(|bytes| bytes.len().to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    payload.push(CARRIED_SEPARATOR);
+    payload.extend_from_slice(lengths.as_bytes());
+    payload.push(CARRIED_SEPARATOR);
+    for bytes in &escaped {
+        payload.extend_from_slice(bytes);
+    }
+    Ok(payload)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -90,55 +179,13 @@ pub struct WriteAheadLogRecord {
 pub struct StagedPage {
     /// The object the page belongs to, which is what a read has when it comes looking.
     pub object_id: u64,
-    /// The page contents, stored text-encoded.
+    /// The page contents.
     ///
-    /// A byte vector serializes as an array of numbers, about five bytes of log per byte of
-    /// page. For a field that exists to carry page contents that is the dominant cost of the
-    /// whole record, so it is encoded instead -- about a third of the size.
-    #[serde(with = "staged_page_bytes")]
+    /// Carried beside the document when that is smaller, and encoded into it otherwise -- the same
+    /// choice every other payload gets. A page is the whole point of this record, so it is the
+    /// field where the difference between carrying bytes and encoding them shows up most.
+    #[serde(with = "crate::bytes_serde")]
     pub bytes: Vec<u8>,
-}
-
-/// Text encoding for a staged page's contents.
-///
-/// Reading accepts the array form too, so a log written before this still loads.
-mod staged_page_bytes {
-    use base64::engine::general_purpose::STANDARD;
-    use base64::Engine;
-    use serde::de::{Deserializer, Error, SeqAccess, Visitor};
-    use serde::Serializer;
-
-    pub(super) fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&STANDARD.encode(bytes))
-    }
-
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Vec<u8>, D::Error> {
-        struct EitherShape;
-
-        impl<'de> Visitor<'de> for EitherShape {
-            type Value = Vec<u8>;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("an encoded page, or the array of bytes written before")
-            }
-
-            fn visit_str<E: Error>(self, value: &str) -> Result<Self::Value, E> {
-                STANDARD.decode(value).map_err(E::custom)
-            }
-
-            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-                let mut bytes = Vec::with_capacity(seq.size_hint().unwrap_or(0));
-                while let Some(byte) = seq.next_element::<u8>()? {
-                    bytes.push(byte);
-                }
-                Ok(bytes)
-            }
-        }
-
-        deserializer.deserialize_any(EitherShape)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1465,7 +1512,7 @@ fn append_record_locked(
     // Frame the record with a length + SHA-256 digest so a later value-preserving bit-flip in
     // this committed line is detected on read (see `crate::log_framing`). Offsets/stats below
     // use the real byte length, so framing is transparent to the append report and replication.
-    let bytes = crate::log_framing::encode_line(&serde_json::to_vec(record)?);
+    let bytes = crate::log_framing::encode_line(&encode_wal_payload(record)?);
     let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
     file.write_all(&bytes)?;
     if sync {
@@ -3257,6 +3304,184 @@ mod tests {
             stats.append_full_scans <= 2,
             "the append path walked the whole log {} times; it should learn the end once",
             stats.append_full_scans
+        );
+    }
+
+    /// Every byte value survives being carried beside the document.
+    #[test]
+    fn a_carried_payload_survives_every_byte_value() {
+        let all_bytes: Vec<u8> = (0..=255u8).cycle().take(4096).collect();
+        let record = WriteAheadLogRecord {
+            shard_id: 1,
+            sequence: 9,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: all_bytes.clone(),
+            },
+            metadata: None,
+            staged_pages: Vec::new(),
+        };
+        let framed = crate::log_framing::encode_line(&encode_wal_payload(&record).unwrap());
+        assert!(
+            !framed[..framed.len() - 1].contains(&b'\n'),
+            "a record must not contain a newline, or every reader here loses the log"
+        );
+        let decoded = decode_wal_line(&framed).unwrap();
+        assert_eq!(decoded, record, "the payload changed on the way back");
+    }
+
+    /// Several payloads in one record come back in the right order, not swapped.
+    #[test]
+    fn several_carried_payloads_come_back_in_the_right_order() {
+        let record = WriteAheadLogRecord {
+            shard_id: 1,
+            sequence: 3,
+            command: Command::HashMultiSet {
+                key: "k".to_string(),
+                entries: vec![
+                    ("first".to_string(), vec![1u8; 600]),
+                    ("second".to_string(), vec![2u8; 600]),
+                    ("third".to_string(), vec![3u8; 600]),
+                ],
+            },
+            metadata: None,
+            staged_pages: Vec::new(),
+        };
+        let framed = crate::log_framing::encode_line(&encode_wal_payload(&record).unwrap());
+        assert_eq!(decode_wal_line(&framed).unwrap(), record);
+    }
+
+    /// A payload that escaping would grow stays encoded, so the record never gets bigger.
+    #[test]
+    fn a_payload_that_escaping_would_grow_stays_encoded() {
+        let newlines = vec![b'\n'; 2048];
+        let record = WriteAheadLogRecord {
+            shard_id: 1,
+            sequence: 4,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: newlines.clone(),
+            },
+            metadata: None,
+            staged_pages: Vec::new(),
+        };
+        let payload = encode_wal_payload(&record).unwrap();
+        assert!(
+            !payload.contains(&0x1f),
+            "a payload that would grow should have been left in the document"
+        );
+        let framed = crate::log_framing::encode_line(&payload);
+        assert_eq!(decode_wal_line(&framed).unwrap(), record);
+    }
+
+    /// A record with nothing worth carrying is written exactly as it was before.
+    #[test]
+    fn a_record_with_no_payload_is_unchanged_on_disk() {
+        let record = WriteAheadLogRecord {
+            shard_id: 1,
+            sequence: 5,
+            command: Command::StringGet {
+                key: "k".to_string(),
+            },
+            metadata: None,
+            staged_pages: Vec::new(),
+        };
+        let payload = encode_wal_payload(&record).unwrap();
+        assert_eq!(
+            payload,
+            serde_json::to_vec(&record).unwrap(),
+            "a record that carries nothing must be byte-identical to the document"
+        );
+    }
+
+    /// Records written before payloads were carried still load.
+    #[test]
+    fn a_record_written_before_payloads_were_carried_still_loads() {
+        let written_before = concat!(
+            r#"{"s":1,"q":7,"c":{"kind":"string_set","key":"k","value":"aGk="},"#,
+            r#""m":{"t":1787429651961}}"#
+        );
+        let framed = crate::log_framing::encode_line(written_before.as_bytes());
+        let decoded = decode_wal_line(&framed).unwrap();
+        assert_eq!(
+            decoded.command,
+            Command::StringSet {
+                key: "k".to_string(),
+                value: b"hi".to_vec(),
+            }
+        );
+    }
+
+    /// A truncated payload section is corruption, not a record with fewer bytes in it.
+    #[test]
+    fn a_truncated_carried_payload_is_refused() {
+        let record = WriteAheadLogRecord {
+            shard_id: 1,
+            sequence: 8,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: vec![7u8; 900],
+            },
+            metadata: None,
+            staged_pages: Vec::new(),
+        };
+        let mut payload = encode_wal_payload(&record).unwrap();
+        payload.truncate(payload.len() - 40);
+        let framed = crate::log_framing::encode_line(&payload);
+        assert!(
+            decode_wal_line(&framed).is_err(),
+            "a record holding less than it claims must be refused"
+        );
+    }
+
+    /// Through the real log: written, reopened, and read back.
+    #[test]
+    fn carried_payloads_survive_a_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let payloads: Vec<Vec<u8>> = (0..8)
+            .map(|index| (0..=255u8).cycle().skip(index).take(1500).collect())
+            .collect();
+        for payload in &payloads {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: "hot".to_string(),
+                        value: payload.clone(),
+                    },
+                    false,
+                )
+                .unwrap();
+        }
+        drop(store);
+
+        let reopened = LocalWriteAheadLogStore::new(dir.path());
+        let scanned = reopened.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        assert_eq!(scanned.len(), payloads.len(), "every record should be there");
+        for (index, (_, line)) in scanned.iter().enumerate() {
+            let record = decode_wal_line(line).unwrap();
+            match record.command {
+                Command::StringSet { value, .. } => {
+                    assert_eq!(value, payloads[index], "record {index} came back changed")
+                }
+                other => panic!("unexpected command: {other:?}"),
+            }
+        }
+        // And the sequence still resolves, which is the backward walk over binary payloads.
+        assert_eq!(
+            reopened
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: "after".to_string(),
+                        value: b"v".to_vec(),
+                    },
+                    false,
+                )
+                .unwrap()
+                .sequence,
+            payloads.len() as u64 + 1
         );
     }
 }

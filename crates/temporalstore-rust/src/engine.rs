@@ -2183,23 +2183,6 @@ where
     (selected, next_cursor)
 }
 
-fn select_expiry_cursor_window(
-    keys: Vec<(String, u64)>,
-    cursor: Option<&str>,
-    limit: usize,
-) -> (Vec<(String, u64)>, Option<String>) {
-    let start = cursor
-        .and_then(|cursor| keys.iter().position(|(key, _)| key.as_str() > cursor))
-        .unwrap_or_default();
-    let remaining = keys.into_iter().skip(start).collect::<Vec<_>>();
-    if limit == 0 || remaining.len() <= limit {
-        return (remaining, None);
-    }
-    let mut selected = remaining.into_iter().take(limit).collect::<Vec<_>>();
-    let next_cursor = selected.last().map(|(key, _)| key.clone());
-    (std::mem::take(&mut selected), next_cursor)
-}
-
 fn remove_if_expired(shard: &mut ShardState, key: &str) -> bool {
     // Use the replay-aware clock: during WAL replay this resolves to the per-record leader
     // timestamp so lazy expiry reproduces the leader's original branch. Using the real
