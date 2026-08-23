@@ -1,6 +1,45 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
+//! The write-ahead log.
+//!
+//! A shard's log is a sequence of pieces. `shard-{id}.wal.jsonl` is the one being written;
+//! sealed ones are `shard-{id}.wal.{start_log_id:020}.jsonl`, named so they sort into log order.
+//! `TS_WAL_SEGMENT_BYTES` sets when a piece is sealed; zero, the default, never seals one, and
+//! then the log is a single file and behaves exactly as it did before pieces existed.
+//!
+//! Positions are **log ids**: a byte position in the log's whole history, not in whichever file
+//! happens to hold it. Each piece records in its first bytes the log id its contents start at, so
+//! a log id says which piece holds a record and where inside it, by arithmetic. A log id keeps
+//! meaning across pieces, and survives reclaim.
+//!
+//! Reclaim unlinks whole pieces that hold nothing above the retain floor, and copies only within
+//! the piece being written.
+//!
+//! # Two things deliberately absent
+//!
+//! **There is no per-piece index from record number to byte offset.** A segmented log usually
+//! carries one, as a sidecar file, so that "read entries N through M" is a seek rather than a walk
+//! from the start of the piece. Here it would have no reader. Random access is by log id, which is
+//! already arithmetic and needs no index; and the only component that reads the log sequentially is
+//! recovery (`engine::lifecycle::replay_wal_into_shard`), which starts at a watermark and reads
+//! forward to the end, so a seek into the middle buys it nothing. Replication does not read this
+//! log at all -- the raft log is a separate structure under `raft::local_wal`. Adding the sidecar
+//! would mean another file to write, checksum, recover and keep consistent with the piece beside
+//! it, in exchange for nothing, and it would have to be correct across reclaim and a torn tail.
+//!
+//! Should something ever need to find a record by sequence without reading forward to it, this is
+//! the thing to build, and the reason it was not built is only that nothing needed it.
+//!
+//! **Pieces are not preallocated.** Writing into a file that is already its full size avoids
+//! persisting a new size on every barrier, which measured 42.7% cheaper per record at eight
+//! records per barrier. It is not done because the file's length is what tells the log where its
+//! records end -- used to pick the next write offset, find the tail, repair a torn tail, seal a
+//! piece, and bound every reader -- so preallocating means threading a separate logical end
+//! through all of them. Reserving blocks without changing the size (`FALLOC_FL_KEEP_SIZE`), which
+//! would need none of that, was measured and made no difference: the cost is persisting the size,
+//! not allocating the blocks.
+
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
