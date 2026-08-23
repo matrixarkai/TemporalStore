@@ -1039,31 +1039,42 @@ impl ProxyService {
     /// account enforcement because a config push predates the field is not an
     /// acceptable failure mode. Keys absent from the body therefore carry the
     /// running value forward; only an explicit key changes them.
-    pub(super) fn carry_forward_admission_options(
-        &self,
-        options: &mut ProxyOptions,
-        body: &[u8],
-    ) {
-        let Ok(serde_json::Value::Object(supplied)) = serde_json::from_slice::<serde_json::Value>(body)
-        else {
-            return;
+    /// Apply a `POST /proxy/config` body on top of the running options, keeping any field
+    /// the body does not mention.
+    ///
+    /// The route replaces the WHOLE options document, so every key an operator left out took
+    /// its serde default rather than its running value. Only five admission fields were
+    /// carried forward, which meant a config push that omitted `serving_mode` silently put a
+    /// DRAINED proxy back into service, and one that omitted `location` erased the locality
+    /// that decides which replica reads go to. Neither said anything in the report.
+    ///
+    /// Done by merging JSON objects rather than by listing fields, so a field added later is
+    /// carried forward without anyone remembering to come back here. A hand-maintained list
+    /// is what limited this to five fields in the first place.
+    ///
+    /// `config_version` is deliberately NOT carried forward: zero means "derive the version
+    /// from the config hash", and carrying a previous explicit version onto changed content
+    /// would report the new config under the old number.
+    pub(super) fn merge_config_push(&self, body: &[u8]) -> Result<ProxyOptions, String> {
+        let supplied = serde_json::from_slice::<serde_json::Value>(body).map_err(|err| err.to_string())?;
+        let serde_json::Value::Object(mut supplied) = supplied else {
+            // Not an object at all -- let the normal parse produce the normal error.
+            return serde_json::from_slice::<ProxyOptions>(body).map_err(|err| err.to_string());
         };
-        let current = self.options();
-        if !supplied.contains_key("ingestion_account") {
-            options.ingestion_account = current.ingestion_account.clone();
+        let current = serde_json::to_value(&*self.options()).map_err(|err| err.to_string())?;
+        let serde_json::Value::Object(mut merged) = current else {
+            return serde_json::from_slice::<ProxyOptions>(body).map_err(|err| err.to_string());
+        };
+        let supplied_version = supplied.remove("config_version");
+        merged.remove("config_version");
+        for (key, value) in supplied {
+            merged.insert(key, value);
         }
-        if !supplied.contains_key("enforce_ingestion_account") {
-            options.enforce_ingestion_account = current.enforce_ingestion_account;
+        if let Some(version) = supplied_version {
+            merged.insert("config_version".to_string(), version);
         }
-        if !supplied.contains_key("max_inflight_requests") {
-            options.max_inflight_requests = current.max_inflight_requests;
-        }
-        if !supplied.contains_key("max_inflight_write_requests") {
-            options.max_inflight_write_requests = current.max_inflight_write_requests;
-        }
-        if !supplied.contains_key("pin_primary_reads") {
-            options.pin_primary_reads = current.pin_primary_reads;
-        }
+        serde_json::from_value::<ProxyOptions>(serde_json::Value::Object(merged))
+            .map_err(|err| err.to_string())
     }
 
     pub fn update_options_report(&self, options: ProxyOptions) -> ProxyConfigUpdateReport {
@@ -2484,6 +2495,79 @@ mod tests {
         let body = String::from_utf8_lossy(&body).to_string();
         assert!(!body.contains("proxy_write_disabled"), "{body}");
         assert!(!body.contains("proxy_not_serving"), "{body}");
+    }
+
+    #[test]
+    fn a_partial_config_push_keeps_every_field_it_does_not_mention() {
+        let proxy = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::NotServing,
+            location: "zone-a".to_string(),
+            heartbeat_timeout_ms: 9_000,
+            max_inflight_requests: 7,
+            ingestion_account: "tenant-a".to_string(),
+            enforce_ingestion_account: true,
+            ..ProxyOptions::default()
+        });
+
+        // A push that mentions one field. Everything else must survive it. The dangerous one
+        // is serving_mode: this proxy has been DRAINED, and taking the default would put it
+        // back into service without saying so.
+        // meta_addr is supplied here on purpose: without it the body would simply fail to
+        // parse, and this test is about the fields that parse FINE and quietly reset.
+        let (code, _) = proxy.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/proxy/config".to_string(),
+            body: br#"{"meta_addr": "127.0.0.1:1", "drop_percent": 5}"#.to_vec(),
+        });
+        assert_eq!(code, 200);
+
+        let after = proxy.config_snapshot();
+        assert_eq!(after.drop_percent, 5, "the field that WAS supplied must apply");
+        assert_eq!(
+            after.serving_mode,
+            ProxyServingMode::NotServing,
+            "a drained proxy must not silently start serving again"
+        );
+        assert_eq!(after.location, "zone-a", "locality decides which replica reads go to");
+        assert_eq!(after.heartbeat_timeout_ms, 9_000);
+        assert_eq!(after.max_inflight_requests, 7);
+        assert_eq!(after.ingestion_account, "tenant-a");
+        assert!(after.enforce_ingestion_account);
+        assert_eq!(after.meta_addr, "127.0.0.1:1");
+
+
+        // Supplying a field still overrides it -- carrying forward must not become ignoring.
+        let (code, _) = proxy.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/proxy/config".to_string(),
+            body: br#"{"serving_mode": "serving", "location": "zone-b"}"#.to_vec(),
+        });
+        assert_eq!(code, 200);
+        let after = proxy.config_snapshot();
+        assert_eq!(after.serving_mode, ProxyServingMode::Serving);
+        assert_eq!(after.location, "zone-b");
+        assert_eq!(after.drop_percent, 5, "the earlier push is still in effect");
+
+        // Malformed bodies still fail rather than merging into nonsense.
+        let (code, _) = proxy.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/proxy/config".to_string(),
+            body: b"not json".to_vec(),
+        });
+        assert_eq!(code, 400);
+
+        // And a field with no default of its own now survives being left out, so a partial
+        // push no longer has to restate the whole document just to be accepted.
+        let (code, _) = proxy.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/proxy/config".to_string(),
+            body: br#"{"drop_percent": 6}"#.to_vec(),
+        });
+        assert_eq!(code, 200, "omitting a required field must carry it forward, not 400");
+        let after = proxy.config_snapshot();
+        assert_eq!(after.meta_addr, "127.0.0.1:1");
+        assert_eq!(after.drop_percent, 6);
+        assert_eq!(after.location, "zone-b", "and the rest still carries");
     }
 
     #[test]
