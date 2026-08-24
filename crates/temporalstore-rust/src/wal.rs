@@ -529,6 +529,11 @@ struct WriteAheadLogInner {
     // the log id that survives reclaim costs no file read on the write path. Filled on first use
     // and refreshed by reclaim -- the only thing that moves the base.
     base_by_shard: HashMap<ShardId, (u64, u64)>,
+    // Under TS_WAL_PREALLOCATE: the physical file size this process last grew the file to.
+    // Records stop at `verified_len_by_shard`; the file itself ends here. The append fast path
+    // compares the on-disk length against THIS (not the record end) to detect another writer,
+    // because under preallocation those two are allowed to differ.
+    prealloc_physical_by_shard: HashMap<ShardId, u64>,
 }
 
 impl LocalWriteAheadLogStore {
@@ -543,6 +548,7 @@ impl LocalWriteAheadLogStore {
                 verified_len_by_shard: HashMap::new(),
                 block_retention_floor_by_shard: HashMap::new(),
                 base_by_shard: HashMap::new(),
+                prealloc_physical_by_shard: HashMap::new(),
             })),
             sync_coord: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -638,7 +644,7 @@ impl LocalWriteAheadLogStore {
             let (base, header_len) = cached_wal_base(&mut inner, shard_id)?;
             log_id = base.saturating_add(report.offset.saturating_sub(header_len));
             // Roll after the record is written, so the piece being sealed is whole.
-            let rolled = roll_wal_segment_if_due(&mut inner, shard_id)?;
+            let rolled = roll_wal_segment_if_due(&mut inner, shard_id, Some(report.persistent_bytes))?;
             // Record the file length we just left behind so the next append's fast path can
             // confirm no other writer touched the file (O(1) stat) and skip the full scan.
             if !rolled {
@@ -753,7 +759,7 @@ impl LocalWriteAheadLogStore {
             let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
             fs::create_dir_all(&inner.root)?;
             let _append_lock = WalAppendLock::acquire(&inner.root, shard_id)?;
-            let disk_last_sequence = last_wal_sequence_at(&inner.root, shard_id)?;
+            let (disk_last_sequence, _) = last_wal_sequence_at(&inner.root, shard_id)?;
             let cached_last_sequence = inner
                 .last_sequence_by_shard
                 .get(&shard_id)
@@ -856,7 +862,7 @@ impl LocalWriteAheadLogStore {
         let last_sequence = match inner.last_sequence_by_shard.get(&record.shard_id).copied() {
             Some(sequence) => sequence,
             None => {
-                let sequence = last_wal_sequence_at(&inner.root, record.shard_id)?;
+                let (sequence, _) = last_wal_sequence_at(&inner.root, record.shard_id)?;
                 inner
                     .last_sequence_by_shard
                     .insert(record.shard_id, sequence);
@@ -949,6 +955,12 @@ impl LocalWriteAheadLogStore {
                 if read == 0 {
                     break;
                 }
+                // A trailing run of zeros with no newline is a preallocated reservation, not a
+                // record: records stop here. A torn NON-zero tail cannot reach this loop -- the
+                // repair scan above already truncated it.
+                if !line.ends_with(b"\n") && line.iter().all(|byte| *byte == 0) {
+                    break;
+                }
                 let next_log_id = log_id.saturating_add(read as u64);
                 if log_id < start_offset {
                     // Before the window: skip it, but keep counting position.
@@ -995,14 +1007,15 @@ impl LocalWriteAheadLogStore {
             if !path.exists() {
                 continue;
             }
-            let last = last_wal_sequence_in(&path)?;
+            let (last, record_end) = last_wal_sequence_in(&path)?;
             // An empty piece holds nothing either way; keep looking past it.
             if last > 0 && last > sequence {
                 return Ok(start);
             }
             let (base, header_len) = read_wal_base(&path)?;
-            let piece_len = path.metadata().map(|meta| meta.len()).unwrap_or(0);
-            start = base.saturating_add(piece_len.saturating_sub(header_len));
+            // Where the RECORDS end, not where the file does: under preallocation the active
+            // piece's file length includes the zeros reservation, which holds no log ids.
+            start = base.saturating_add(record_end.saturating_sub(header_len));
         }
         Ok(start)
     }
@@ -1011,7 +1024,7 @@ impl LocalWriteAheadLogStore {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let path = write_ahead_log_path(&inner.root, shard_id);
-        let last_sequence = last_wal_sequence_at(&inner.root, shard_id)?;
+        let (last_sequence, _) = last_wal_sequence_at(&inner.root, shard_id)?;
         if !path.exists() {
             return Ok(WriteAheadLogFlushReport {
                 shard_id,
@@ -1147,7 +1160,7 @@ impl LocalWriteAheadLogStore {
         }
 
         let bytes_before = path.metadata()?.len();
-        let last_sequence = last_wal_sequence_at(&inner.root, shard_id)?;
+        let (last_sequence, _) = last_wal_sequence_at(&inner.root, shard_id)?;
         // Never delete the highest-sequence record. The WAL file is the sequence-generator
         // source on restart (append seeds last_sequence_by_shard from last_wal_sequence_at), so
         // emptying it entirely on a full reclaim (retain_from > max) would regress the next
@@ -1300,7 +1313,9 @@ impl LocalWriteAheadLogStore {
         inner.stats.stats_full_scans = inner.stats.stats_full_scans.saturating_add(1);
         let path = write_ahead_log_path(&inner.root, shard_id);
         WriteAheadLogStats {
-            last_sequence: last_wal_sequence_at(&inner.root, shard_id).unwrap_or_default(),
+            last_sequence: last_wal_sequence_at(&inner.root, shard_id)
+                .map(|(sequence, _)| sequence)
+                .unwrap_or_default(),
             persistent_bytes: path.metadata().map(|metadata| metadata.len()).unwrap_or(0),
             ..inner.stats
         }
@@ -1411,7 +1426,7 @@ fn drop_covered_wal_segments(
         if path == active || !path.exists() {
             continue;
         }
-        let last = last_wal_sequence_in(&path)?;
+        let (last, _) = last_wal_sequence_in(&path)?;
         if last == 0 {
             // Holds no record at all; nothing to keep and nothing to lose.
         } else if last >= retain_from_sequence {
@@ -1526,6 +1541,7 @@ fn ensure_active_wal_segment(
 fn roll_wal_segment_if_due(
     inner: &mut WriteAheadLogInner,
     shard_id: ShardId,
+    record_end: Option<u64>,
 ) -> Result<bool, WriteAheadLogError> {
     let threshold = wal_segment_bytes();
     if threshold == 0 {
@@ -1534,10 +1550,24 @@ fn roll_wal_segment_if_due(
     let path = write_ahead_log_path(&inner.root, shard_id);
     let length = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
     let (base, header_len) = read_wal_base(&path)?;
-    let holds = length.saturating_sub(header_len);
+    // Where the records stop. Under preallocation the file is longer than the records, and both
+    // decisions below -- is this piece full, and what log id does the next piece start at --
+    // must come from the records: log ids are cumulative RECORD bytes, and a base derived from
+    // the reservation would hand out ids nothing ever occupies.
+    let record_end = record_end.unwrap_or(length).min(length);
+    let holds = record_end.saturating_sub(header_len);
     if holds < threshold {
         return Ok(false);
     }
+
+    // Trim the reservation before sealing, so a sealed piece's length IS its contents and every
+    // reader that derives a sealed piece's end from its file length keeps being right.
+    if record_end < length {
+        let file = OpenOptions::new().write(true).open(&path)?;
+        file.set_len(record_end)?;
+        file.sync_all()?;
+    }
+    inner.prealloc_physical_by_shard.remove(&shard_id);
 
     // Seal by rename: atomic, so the piece is either being written or sealed, never neither.
     let sealed = sealed_wal_path(&inner.root, shard_id, base);
@@ -1763,21 +1793,41 @@ fn resolve_last_sequence_for_append(
         ) {
             let path = write_ahead_log_path(&inner.root, shard_id);
             let on_disk_len = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
-            if on_disk_len == verified_len {
-                return Ok((cached_last_sequence, on_disk_len));
+            // Under preallocation the file is allowed to be longer than the records; unchanged
+            // means "still exactly the size this process grew it to". Either way, the offset
+            // handed back is where the RECORDS end, which is where the next one goes.
+            let expected_physical = if wal_preallocate_enabled() {
+                inner
+                    .prealloc_physical_by_shard
+                    .get(&shard_id)
+                    .copied()
+                    .unwrap_or(verified_len)
+            } else {
+                verified_len
+            };
+            if on_disk_len == expected_physical {
+                return Ok((cached_last_sequence, verified_len));
             }
         }
     }
     inner.stats.append_full_scans = inner.stats.append_full_scans.saturating_add(1);
-    let disk_last_sequence = last_wal_sequence_at(&inner.root, shard_id)?;
-    // `last_wal_sequence_at` may have truncated a torn tail; refresh the verified length to the
-    // reconciled on-disk length so the next fast-path comparison is against the real file.
-    let reconciled_len = write_ahead_log_path(&inner.root, shard_id)
+    let (disk_last_sequence, active_record_end) = last_wal_sequence_at(&inner.root, shard_id)?;
+    // The scan may have truncated a torn tail, and under preallocation it reports where the
+    // records stop rather than where the file ends -- the file may keep a zeros reservation
+    // after them. The next append belongs at the record end; the fast path compares the file
+    // against its physical size separately.
+    let reconciled_physical = write_ahead_log_path(&inner.root, shard_id)
         .metadata()
         .map(|metadata| metadata.len())
         .unwrap_or(0);
-    inner.verified_len_by_shard.insert(shard_id, reconciled_len);
-    Ok((cached_last_sequence.max(disk_last_sequence), reconciled_len))
+    let record_end = active_record_end.min(reconciled_physical);
+    inner.verified_len_by_shard.insert(shard_id, record_end);
+    if wal_preallocate_enabled() {
+        inner
+            .prealloc_physical_by_shard
+            .insert(shard_id, reconciled_physical);
+    }
+    Ok((cached_last_sequence.max(disk_last_sequence), record_end))
 }
 
 fn wal_env_flag_on(name: &str) -> bool {
@@ -1803,6 +1853,26 @@ fn wal_env_flag_default_on(name: &str) -> bool {
             .as_str(),
         "0" | "false" | "no" | "off"
     )
+}
+
+/// TS_WAL_PREALLOCATE (default OFF): write records inside a file that has already been grown
+/// to size instead of growing it on every append. fdatasync on a growing file must persist the
+/// new length -- the bytes are unreadable without it -- so every barrier pays a metadata write.
+/// Growing the file in chunks moves that cost to once per chunk. Measured only worthwhile at
+/// small group sizes (issue #188); ships dark until confirmed on the storage the cluster runs on.
+fn wal_preallocate_enabled() -> bool {
+    wal_env_flag_on("TS_WAL_PREALLOCATE")
+}
+
+/// TS_WAL_PREALLOCATE_CHUNK: how far past the write the file is grown when it runs out of room.
+/// Bounds both how often the size-persisting barrier is paid and how many zero bytes a crash
+/// leaves for the tail scan to walk back over.
+fn wal_preallocate_chunk() -> u64 {
+    std::env::var("TS_WAL_PREALLOCATE_CHUNK")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .filter(|bytes| *bytes >= 4096)
+        .unwrap_or(256 * 1024)
 }
 
 /// TS_GROUP_COMMIT: coalesce concurrent WAL fsyncs into shared durability barriers.
@@ -1861,8 +1931,36 @@ fn append_record_locked(
     // this committed line is detected on read (see `crate::log_framing`). Offsets/stats below
     // use the real byte length, so framing is transparent to the append report and replication.
     let bytes = crate::log_framing::encode_line(&encode_wal_payload(record)?);
-    let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
-    file.write_all(&bytes)?;
+    let prealloc = wal_preallocate_enabled();
+    let mut file = if prealloc {
+        // Positioned write, not O_APPEND: with a reservation, the physical end of the file is
+        // zeros, and O_APPEND would put this record after them.
+        OpenOptions::new().create(true).write(true).open(&path)?
+    } else {
+        OpenOptions::new().create(true).append(true).open(&path)?
+    };
+    if prealloc {
+        let needed = offset.saturating_add(bytes.len() as u64);
+        let physical = file.metadata()?.len();
+        if physical < needed {
+            // Grow to a chunk boundary. This is the one place the file's length changes, so it
+            // is the one place a barrier still has to persist a size -- once per chunk instead
+            // of once per record.
+            let chunk = wal_preallocate_chunk();
+            let target = needed
+                .saturating_add(chunk.saturating_sub(1))
+                .saturating_div(chunk)
+                .saturating_mul(chunk);
+            file.set_len(target)?;
+        }
+        inner
+            .prealloc_physical_by_shard
+            .insert(record.shard_id, file.metadata()?.len());
+        file.seek(SeekFrom::Start(offset))?;
+        file.write_all(&bytes)?;
+    } else {
+        file.write_all(&bytes)?;
+    }
     if sync {
         file.flush()?;
         crate::durability_metrics::record_barrier("engine_wal_append");
@@ -1879,8 +1977,14 @@ fn append_record_locked(
         inner.stats.last_flushed_sequence = record.sequence;
     }
     // Ask the handle that was just written, not the path: it is cheaper, and it is the file
-    // this record actually went into rather than whatever the name refers to now.
-    let persistent_bytes = file.metadata()?.len();
+    // this record actually went into rather than whatever the name refers to now. Under
+    // preallocation the file's length is the reservation, not the records, so the record end is
+    // where this write stopped.
+    let persistent_bytes = if prealloc {
+        offset.saturating_add(bytes.len() as u64)
+    } else {
+        file.metadata()?.len()
+    };
     inner.stats.writes += 1;
     inner.stats.bytes_written += bytes.len() as u64;
     inner.stats.persistent_bytes = persistent_bytes;
@@ -1975,36 +2079,44 @@ fn read_wal_base(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
 /// nothing at or below the last complete record is ever cut. A corrupt record in the MIDDLE is no
 /// longer reported here, since reaching it meant decoding everything; replay still refuses it, and
 /// replay is the path that would act on it.
-fn last_wal_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, WriteAheadLogError> {
+/// `(last sequence across the log, record end of the ACTIVE piece)`. The active piece's record
+/// end is what an appender needs -- it is where the next record goes -- and under preallocation
+/// it is the one length the file's own size no longer answers.
+fn last_wal_sequence_at(root: &Path, shard_id: ShardId) -> Result<(u64, u64), WriteAheadLogError> {
     // Newest first: the piece being written is empty right after a roll, and an empty piece is not
     // where the log ends. Only the piece being written can have a torn tail -- the sealed ones were
     // whole when they were renamed -- so this repairs that one and reads the rest.
     let mut pieces = wal_segment_paths(root, shard_id);
     pieces.reverse();
+    let mut active_record_end = None;
     for piece in pieces {
-        let sequence = last_wal_sequence_in(&piece)?;
+        let (sequence, record_end) = last_wal_sequence_in(&piece)?;
+        let active_record_end = *active_record_end.get_or_insert(record_end);
         if sequence > 0 {
-            return Ok(sequence);
+            return Ok((sequence, active_record_end));
         }
     }
-    Ok(0)
+    Ok((0, active_record_end.unwrap_or(0)))
 }
 
-fn last_wal_sequence_in(path: &Path) -> Result<u64, WriteAheadLogError> {
+/// `(last sequence, record end)` for one piece. The record end is the byte offset just past the
+/// last complete record -- the file's length, unless a torn tail was repaired or a preallocated
+/// zeros reservation follows the records (kept, not truncated: it is not damage, it is room).
+fn last_wal_sequence_in(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
     if !path.exists() {
-        return Ok(0);
+        return Ok((0, 0));
     }
     let (_, header_len) = read_wal_base(path)?;
     let file = OpenOptions::new().read(true).write(true).open(path)?;
     let len = file.metadata()?.len();
     if len <= header_len {
-        return Ok(0);
+        return Ok((0, len.min(header_len)));
     }
 
     // Pull in the tail, growing the window until it holds a whole record. Records are small and
     // the first window almost always suffices; the loop is for the ones that are not.
     let mut window = 64 * 1024u64;
-    let (line, good_offset) = loop {
+    let (line, good_offset, tail_is_reservation) = loop {
         let window_start = header_len.max(len.saturating_sub(window));
         let mut reader = BufReader::new(file.try_clone()?);
         reader.seek(SeekFrom::Start(window_start))?;
@@ -2014,13 +2126,19 @@ fn last_wal_sequence_in(path: &Path) -> Result<u64, WriteAheadLogError> {
         // Everything after the final newline was never finished being written.
         let Some(last_newline) = data.iter().rposition(|byte| *byte == b'\n') else {
             if window_start == header_len {
-                // Not one complete record in the file: the whole body is a torn write.
-                break (None, header_len);
+                // Not one complete record in the file: the whole body is either a torn write or
+                // an untouched preallocated reservation.
+                let zeros = data.iter().all(|byte| *byte == 0);
+                break (None, header_len, zeros);
             }
             window = window.saturating_mul(4);
             continue;
         };
         let good_offset = window_start + last_newline as u64 + 1;
+        // Whatever follows the last complete record: all zeros is a preallocated reservation
+        // (kept -- it is room, not damage); anything else is a torn write (repaired as always).
+        let tail_is_reservation = data[last_newline + 1..].iter().all(|byte| *byte == 0)
+            && last_newline as u64 + 1 < (len - window_start);
 
         // Walk back over any blank lines to the last record that actually says something.
         let mut line_end = last_newline;
@@ -2044,7 +2162,7 @@ fn last_wal_sequence_in(path: &Path) -> Result<u64, WriteAheadLogError> {
                     break;
                 }
                 // Blank all the way back to the start: no record in this log.
-                return Ok(0);
+                return Ok((0, header_len));
             }
             line_end = line_start - 1;
         }
@@ -2058,24 +2176,24 @@ fn last_wal_sequence_in(path: &Path) -> Result<u64, WriteAheadLogError> {
             .rposition(|byte| *byte == b'\n')
             .map(|index| index + 1);
         match line_start {
-            Some(index) => break (Some(data[index..line_end].to_vec()), good_offset),
+            Some(index) => break (Some(data[index..line_end].to_vec()), good_offset, tail_is_reservation),
             None if window_start == header_len => {
-                break (Some(data[..line_end].to_vec()), good_offset)
+                break (Some(data[..line_end].to_vec()), good_offset, tail_is_reservation)
             }
             // The record starts before the window: widen and look again.
             None => window = window.saturating_mul(4),
         }
     };
 
-    if good_offset < len {
+    if good_offset < len && !tail_is_reservation {
         file.set_len(good_offset)?;
         file.sync_all()?;
         sync_parent_dir(path)?;
     }
     let Some(line) = line else {
-        return Ok(0);
+        return Ok((0, good_offset));
     };
-    Ok(decode_wal_line(&line)?.sequence)
+    Ok((decode_wal_line(&line)?.sequence, good_offset))
 }
 
 fn current_time_ms() -> u64 {
@@ -2249,7 +2367,7 @@ mod tests {
         assert_eq!(one.sequence, 1);
         assert_eq!(two.sequence, 2);
         assert_eq!(three.sequence, 3);
-        assert_eq!(last_wal_sequence_at(dir.path(), 1).unwrap(), 3);
+        assert_eq!(last_wal_sequence_at(dir.path(), 1).unwrap().0, 3);
     }
 
     #[test]
@@ -3463,7 +3581,7 @@ mod tests {
             let rounds = 5;
             let mut last = 0;
             for _ in 0..rounds {
-                last = last_wal_sequence_at(dir.path(), 1).unwrap();
+                last = last_wal_sequence_at(dir.path(), 1).unwrap().0;
             }
             let micros = started.elapsed().as_secs_f64() * 1e6 / rounds as f64;
             assert_eq!(last, records, "it should find the real end");
@@ -3595,7 +3713,7 @@ mod tests {
         std::fs::write(&path, padded).unwrap();
 
         assert_eq!(
-            last_wal_sequence_at(dir.path(), 1).unwrap(),
+            last_wal_sequence_at(dir.path(), 1).unwrap().0,
             2,
             "blank trailing lines should be stepped over, not read as the end of the log"
         );
@@ -4342,7 +4460,7 @@ mod tests {
         store.gc_before_sequence(1, u64::MAX).unwrap();
 
         assert_eq!(
-            last_wal_sequence_at(dir.path(), 1).unwrap(),
+            last_wal_sequence_at(dir.path(), 1).unwrap().0,
             written,
             "the highest-sequence record must survive a full reclaim"
         );
@@ -4364,5 +4482,186 @@ mod tests {
             "a reclaimed log reused a sequence, which silently drops the record on replay"
         );
         set_wal_segment_bytes_for_test(None);
+    }
+
+    /// Run `body` with TS_WAL_PREALLOCATE on, restoring the environment afterward even on
+    /// panic, so a failing assertion cannot leak the gate into every later test. Env vars are
+    /// process-wide: like the other env-gated tests here, these are only meaningful under
+    /// --test-threads=1.
+    fn with_preallocate<T>(body: impl FnOnce() -> T + std::panic::UnwindSafe) -> T {
+        std::env::set_var("TS_WAL_PREALLOCATE", "1");
+        let outcome = std::panic::catch_unwind(body);
+        std::env::remove_var("TS_WAL_PREALLOCATE");
+        match outcome {
+            Ok(value) => value,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+
+    #[test]
+    fn preallocated_appends_grow_the_file_in_chunks_not_per_record() {
+        with_preallocate(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            append_n(&store, 1, 50);
+            let path = dir.path().join("shard-1.wal.jsonl");
+            let physical = path.metadata().unwrap().len();
+            // The file was grown to a chunk boundary, not to the records.
+            assert_eq!(
+                physical % wal_preallocate_chunk(),
+                0,
+                "file length must sit on a chunk boundary"
+            );
+            let records = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+            assert_eq!(50, records.len(), "every record must be read back through the zeros");
+        });
+    }
+
+    #[test]
+    fn a_scan_does_not_tear_down_the_reservation() {
+        // The whole point of respecting the reservation: scans run constantly under
+        // replication, and a scan that truncated the zeros would make the next append re-grow
+        // the file -- paying the metadata barrier per scan/append cycle instead of per chunk.
+        with_preallocate(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            append_n(&store, 1, 10);
+            let path = dir.path().join("shard-1.wal.jsonl");
+            let physical_before = path.metadata().unwrap().len();
+            for _ in 0..5 {
+                let records = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+                assert_eq!(10, records.len());
+            }
+            assert_eq!(
+                physical_before,
+                path.metadata().unwrap().len(),
+                "scanning must leave the reservation alone"
+            );
+            append_n(&store, 1, 1);
+            let records = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+            assert_eq!(11, records.len(), "the post-scan append must land after the records");
+        });
+    }
+
+    #[test]
+    fn a_restart_mid_reservation_resumes_the_sequence() {
+        with_preallocate(|| {
+            let dir = tempfile::tempdir().unwrap();
+            {
+                let store = LocalWriteAheadLogStore::new(dir.path());
+                append_n(&store, 1, 7);
+            }
+            // A fresh store has cold caches: its first append takes the slow path, which walks
+            // the tail through the zeros the previous process reserved.
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            let report = store
+                .append(
+                    1,
+                    Command::StringSet {
+                        key: "after-restart".to_string(),
+                        value: b"v".to_vec(),
+                    },
+                )
+                .unwrap();
+            assert_eq!(8, report.sequence, "the sequence must resume, not restart");
+            let records = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+            assert_eq!(8, records.len());
+        });
+    }
+
+    #[test]
+    fn a_torn_write_inside_the_reservation_is_repaired_not_kept() {
+        // A crash mid-write leaves a non-zero partial line where the records end, with the rest
+        // of the reservation's zeros after it. Only the zeros are a reservation; the partial
+        // line is damage and must be cut exactly as a torn tail always was.
+        with_preallocate(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let sequence_end;
+            {
+                let store = LocalWriteAheadLogStore::new(dir.path());
+                append_n(&store, 1, 5);
+                sequence_end = store.scan(1, 0, u64::MAX, u64::MAX).unwrap().len();
+            }
+            assert_eq!(5, sequence_end);
+            let path = dir.path().join("shard-1.wal.jsonl");
+            // Find where the records stop (the last newline) and plant garbage after it.
+            let bytes = fs::read(&path).unwrap();
+            let record_end = bytes.iter().rposition(|byte| *byte == b'\n').unwrap() + 1;
+            {
+                use std::io::{Seek, Write};
+                let mut file = OpenOptions::new().write(true).open(&path).unwrap();
+                file.seek(SeekFrom::Start(record_end as u64)).unwrap();
+                file.write_all(b"torn-partial-record-without-newline").unwrap();
+            }
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            let records = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+            assert_eq!(5, records.len(), "the torn garbage must not surface as a record");
+            let report = store
+                .append(
+                    1,
+                    Command::StringSet {
+                        key: "after-repair".to_string(),
+                        value: b"v".to_vec(),
+                    },
+                )
+                .unwrap();
+            assert_eq!(6, report.sequence);
+        });
+    }
+
+    #[test]
+    fn sealing_trims_the_reservation_off_the_sealed_piece() {
+        with_preallocate(|| {
+            let dir = tempfile::tempdir().unwrap();
+            set_wal_segment_bytes_for_test(Some(512));
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            append_n(&store, 1, 30);
+            set_wal_segment_bytes_for_test(None);
+            let mut sealed = 0;
+            for entry in fs::read_dir(dir.path()).unwrap() {
+                let path = entry.unwrap().path();
+                let name = path.file_name().unwrap().to_string_lossy().to_string();
+                if name.starts_with("shard-1.wal.") && name.ends_with(".jsonl") && name != "shard-1.wal.jsonl" {
+                    sealed += 1;
+                    let bytes = fs::read(&path).unwrap();
+                    assert!(
+                        !bytes.is_empty() && *bytes.last().unwrap() == b'\n',
+                        "a sealed piece must end exactly at its last record, not in zeros"
+                    );
+                }
+            }
+            assert!(sealed > 0, "the threshold must actually have sealed pieces");
+            let records = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+            assert_eq!(30, records.len(), "records must survive across sealed pieces");
+        });
+    }
+
+    /// Not an assertion, a measurement -- run by hand with and without TS_WAL_PREALLOCATE:
+    ///   cargo test --lib -- --ignored --exact wal::tests::measure_barrier_cost --nocapture
+    #[test]
+    #[ignore]
+    fn measure_barrier_cost() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let count = 2000usize;
+        let start = std::time::Instant::now();
+        for index in 0..count {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index}"),
+                        value: vec![0x61u8; 200],
+                    },
+                    true,
+                )
+                .unwrap();
+        }
+        let elapsed = start.elapsed();
+        let gate = std::env::var("TS_WAL_PREALLOCATE").unwrap_or_default();
+        println!(
+            "prealloc={gate:?} {count} synced appends: {:.1} us/append",
+            elapsed.as_micros() as f64 / count as f64
+        );
     }
 }
