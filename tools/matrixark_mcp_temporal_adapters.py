@@ -1133,14 +1133,18 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                 record_types=list(record_types),
                 secondary_index_groups=[],
                 selected_node_hashes=[],
+                # The scan's serving default drops embedding/index rows AFTER filtering, which
+                # silently overrides an explicit request for those types. This helper's contract
+                # is "records of exactly these types": for requests without them the type filter
+                # already excluded them and the flag is a no-op.
+                return_index_records=True,
                 **({"record_ids": [str(item) for item in record_ids]} if record_ids else {}),
             )
         except TypeError:
-            # An older client without the record_ids parameter: ask untargeted; the caller's own
-            # filters still apply, so this is the slow answer, not a wrong one.
-            if not record_ids:
-                return None
-            return self._scan_records_of_types(record_types)
+            # A client whose signature lacks one of the newer parameters. The full-read fallback
+            # is always correct; retrying with fewer kwargs is not -- a scan without
+            # return_index_records silently eats the embedding rows a caller asked for.
+            return None
         except Exception:  # noqa: BLE001 - an unanswered question means "do the full read".
             return None
         if not isinstance(response, dict):
@@ -1161,6 +1165,137 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         except ModuleNotFoundError:  # Direct script execution from tools/.
             from matrixark_mcp_local_adapter import MEMORY_TOMBSTONE_RECORD_TYPE
         return self._scan_records_of_types([MEMORY_TOMBSTONE_RECORD_TYPE])
+
+    # Every record type the refresh pass's consumers filter on, enumerated from the consumers
+    # themselves. Deliberately absent: context_index -- the store's largest class, whose only
+    # serving-chain effect (posting compaction) rewrites index rows nothing here reads -- and the
+    # audit/telemetry/idempotency families.
+    _SUMMARY_REFRESH_RECORD_TYPES = (
+        "context_event",
+        "context_summary",
+        "context_summary_dirty",
+        "context_summary_refresh_audit",
+        "context_debug_record",
+        "context_child_ref",
+        "context_entity",
+        "context_segment",
+        "context_node",
+        "context_embedding",
+        "context_compression_event",
+        "context_session_boundary",
+    )
+
+    def records_for_summary_refresh(self) -> list[Json]:
+        """The refresh pass's view from a typed scan, through the SAME serving chain as read_all.
+
+        Chain parity is the whole correctness story: the full read is
+        fold(raw + latest-state) -> compact_and_apply_tombstones -> filter_live, and this applies
+        exactly that to the subset. The fold's index-posting step is a no-op here because index
+        rows are excluded by design and nothing this pass reads consumes them.
+
+        Any failure serves the full read. With MATRIXARK_REFRESH_SHADOW_COMPARE=1 both views are
+        computed and compared -- skipping the comparison when the store moved between the two
+        reads, because a foreground write landing in the window is a race, not a divergence --
+        and the FULL view is served.
+        """
+        import os as _os
+
+        try:
+            from tools.matrixark_mcp_local_adapter import (
+                MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+                MEMORY_TOMBSTONE_RECORD_TYPE,
+                compact_and_apply_tombstones,
+                filter_live_memory_records,
+            )
+            from tools.matrixark_mcp_serving_records import compact_latest_context_state_records
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_local_adapter import (
+                MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+                MEMORY_TOMBSTONE_RECORD_TYPE,
+                compact_and_apply_tombstones,
+                filter_live_memory_records,
+            )
+            from matrixark_mcp_serving_records import compact_latest_context_state_records
+
+        shadow = _os.environ.get("MATRIXARK_REFRESH_SHADOW_COMPARE", "").strip()
+        shadow_on = shadow not in {"", "0", "false", "no", "off"}
+        count_before = None
+        if shadow_on:
+            try:
+                count_before = int(self._get_count())
+            except Exception:  # noqa: BLE001
+                count_before = None
+
+        wanted = list(self._SUMMARY_REFRESH_RECORD_TYPES) + [
+            MEMORY_TOMBSTONE_RECORD_TYPE,
+            MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+        ]
+        subset = self._scan_records_of_types(wanted)
+        if subset is None:
+            return self.read_all()
+        try:
+            latest_state = self._load_latest_context_state_records()
+        except Exception:  # noqa: BLE001 - the full read is the fallback, not a guess.
+            return self.read_all()
+        folded = compact_latest_context_state_records(list(subset) + list(latest_state))
+        live_subset = filter_live_memory_records(compact_and_apply_tombstones(folded))
+
+        if shadow_on:
+            full = self.read_all()
+            count_after = None
+            try:
+                count_after = int(self._get_count())
+            except Exception:  # noqa: BLE001
+                count_after = None
+            log_path = _os.environ.get("MATRIXARK_REFRESH_SHADOW_LOG",
+                                       "/tmp/matrixark_refresh_shadow.log")
+            if count_before is None or count_after is None or count_before != count_after:
+                try:
+                    with open(log_path, "a", encoding="utf-8") as log:
+                        log.write("SKIPPED racy window count %r -> %r\n"
+                                  % (count_before, count_after))
+                except OSError:
+                    pass
+                return full
+
+            kept = set(wanted)
+
+            def project(records: list[Json]) -> list[tuple]:
+                out = []
+                for record in records:
+                    record_type = str(record.get("record_type") or "")
+                    if record_type not in kept:
+                        continue
+                    identity = ""
+                    for field in ("event_id_hash", "summary_hash", "entity_hash", "dirty_hash",
+                                  "segment_hash", "node_hash", "ref_hash", "child_hash",
+                                  "compression_id_hash", "boundary_hash"):
+                        value = record.get(field)
+                        if value not in (None, ""):
+                            identity = "%s=%s" % (field, value)
+                            break
+                    out.append((record_type, identity, int(record.get("updated_at_ms") or 0)))
+                return out
+
+            expected, got = project(full), project(live_subset)
+            if expected != got:
+                try:
+                    with open(log_path, "a", encoding="utf-8") as log:
+                        log.write("MISMATCH full=%d subset=%d only_full=%r only_subset=%r\n" % (
+                            len(expected), len(got),
+                            [row for row in expected if row not in set(got)][:4],
+                            [row for row in got if row not in set(expected)][:4],
+                        ))
+                except OSError:
+                    pass
+            else:
+                try:
+                    with open(log_path, "a", encoding="utf-8") as log:
+                        log.write("CLEAN %d records\n" % len(got))
+                except OSError:
+                    pass
+            return full
+        return live_subset
 
     def raw_records_for_history(self, memory_id: str | None = None) -> list[Json]:
         """History's records from a three-type scan instead of a raw read of the whole log.
@@ -2263,10 +2398,12 @@ class MatrixArkRustCdylibClient:
             append_options=append_options,
         )
 
-    def matrixark_scan_candidates(self, *, count_key: str, record_hash_key: str, shard_size: int, scope: Json, record_types: list[str], secondary_index_groups: list[list[str]], selected_node_hashes: list[int], record_ids: list[str] | None = None) -> Json:
+    def matrixark_scan_candidates(self, *, count_key: str, record_hash_key: str, shard_size: int, scope: Json, record_types: list[str], secondary_index_groups: list[list[str]], selected_node_hashes: list[int], record_ids: list[str] | None = None, return_index_records: bool = False) -> Json:
         payload: Json = {"scope": scope, "record_types": record_types, "secondary_index_groups": secondary_index_groups, "selected_node_hashes": selected_node_hashes}
         if record_ids:
             payload["record_ids"] = [str(item) for item in record_ids]
+        if return_index_records:
+            payload["return_index_records"] = True
         request = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
         def call() -> Json:
             out = self._ctypes.c_void_p()
@@ -3348,10 +3485,13 @@ class MatrixArkRustProxyClient:
         secondary_index_groups: list[list[str]],
         selected_node_hashes: list[int],
         record_ids: list[str] | None = None,
+        return_index_records: bool = False,
     ) -> Json:
         extra: Json = {}
         if record_ids:
             extra["record_ids"] = [str(item) for item in record_ids]
+        if return_index_records:
+            extra["return_index_records"] = True
         return self._call_json(
             "matrixark_scan_candidates",
             count_key=count_key,

@@ -5607,6 +5607,15 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         return {"recorded": True, "memory_id": memory_id, "feedback": rating,
                 "feedback_reason": reason}
 
+    def records_for_summary_refresh(self) -> list[Json]:
+        """The live records a summary-refresh pass reads. Base implementation: the whole store.
+
+        The pass's consumers touch a closed set of record types; a backend that can fetch that
+        subset cheaply overrides this. The contract is that a pass fed the subset produces the
+        same refreshes as one fed `read_all()`.
+        """
+        return self.read_all()
+
     def raw_records_for_history(self, memory_id: str | None = None) -> list[Json]:
         """The records `history` walks. Base implementation: the whole raw log.
 

@@ -661,10 +661,13 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
         secondary_index_groups: list[list[str]],
         selected_node_hashes: list[int],
         record_ids: list[str] | None = None,
+        return_index_records: bool = False,
     ) -> Json:
         extra: Json = {}
         if record_ids:
             extra["record_ids"] = [str(item) for item in record_ids]
+        if return_index_records:
+            extra["return_index_records"] = True
         return self._call_json(
             "matrixark_scan_candidates",
             count_key=count_key,
