@@ -167,6 +167,13 @@ class _LocalAdapterRetrievalMixin:
             record_scope = candidate_access_scope(record)
             if record_scope:
                 return record_scope
+            # A folded owner carries the retired embedding record's fields under embedding_meta;
+            # the access scope that used to be recovered from the separate record is there.
+            meta = record.get("embedding_meta")
+            if isinstance(meta, dict):
+                record_scope = candidate_access_scope(meta)
+                if record_scope:
+                    return record_scope
             if record.get("record_type") == "context_embedding":
                 ref_scope = ref_scope_by_key.get((str(record.get("ref_type") or ""), record.get("ref_hash")))
                 if ref_scope:
@@ -401,6 +408,39 @@ class _LocalAdapterRetrievalMixin:
                 secondary_embedding_matched_count += 1
                 secondary_posting_ref_hashes.add(str(ref_hash))
                 node_hash = embedding_record.get("node_hash")
+                if node_hash is not None:
+                    secondary_posting_node_hashes.add(str(node_hash))
+
+            # Since the fold-and-drop, a NEW log has no separate embedding records: the owner
+            # itself carries the vector (and the ride-along embedding_meta). The owner is the
+            # real record, so it is matched directly -- no synthetic reconstruction needed.
+            _owner_ref_fields = {
+                "context_event": "event_id_hash",
+                "context_entity": "entity_hash",
+                "context_summary": "summary_hash",
+                "context_segment": "segment_hash",
+                "context_compression_event": "compression_id_hash",
+                "resource_chunk": "chunk_hash",
+                "skill_section": "section_hash",
+                "context_node": "node_hash",
+            }
+            for owner_record in raw_records:
+                ref_field = _owner_ref_fields.get(str(owner_record.get("record_type") or ""))
+                if ref_field is None:
+                    continue
+                if not owner_record.get("vector") and not owner_record.get("embedding_meta"):
+                    continue
+                ref_hash = owner_record.get(ref_field)
+                if ref_hash in (None, ""):
+                    continue
+                if not recovered_scope_matches(owner_record, scope) and not profile_bridge_scope_matches(owner_record, scope):
+                    continue
+                owner_terms = candidate_index_terms(owner_record, {}, {})
+                if not owner_terms.intersection(required_index_terms):
+                    continue
+                secondary_embedding_matched_count += 1
+                secondary_posting_ref_hashes.add(str(ref_hash))
+                node_hash = owner_record.get("node_hash")
                 if node_hash is not None:
                     secondary_posting_node_hashes.add(str(node_hash))
 
