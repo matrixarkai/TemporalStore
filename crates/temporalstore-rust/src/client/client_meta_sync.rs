@@ -59,10 +59,22 @@ impl TemporalStoreClient {
             self.record_meta_sync_error(&namespace, &table_name, "table topology missing");
             ClientError::Status("table topology missing".to_string())
         })?;
-        let route_topology_version = self
-            .current_meta_topology_version()
-            .unwrap_or(table.topology_version)
-            .max(table.topology_version);
+        // Asked for only when it is going to be used. Stamping routes needs the cluster's
+        // topology version, and getting it is its own metaserver round-trip -- but an
+        // unchanged reply installs no routes, so on that path the version is wanted for the
+        // sync record alone, and the table's own version is already the right answer: the
+        // metaserver has just confirmed it is current, which is why it answered unchanged.
+        //
+        // Asking anyway made every sync cost two round-trips instead of one, and since the
+        // unchanged reply is the common case once a topology settles, that was the usual cost
+        // rather than an occasional one.
+        let route_topology_version = if topology.unchanged {
+            table.topology_version
+        } else {
+            self.current_meta_topology_version()
+                .unwrap_or(table.topology_version)
+                .max(table.topology_version)
+        };
         let serving_options = table.serving_options.clone();
         let default_serving_options = crate::meta::TableServingOptions::default();
         let options = TableOptions {
