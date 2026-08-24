@@ -1,6 +1,45 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
+//! The write-ahead log.
+//!
+//! A shard's log is a sequence of pieces. `shard-{id}.wal.jsonl` is the one being written;
+//! sealed ones are `shard-{id}.wal.{start_log_id:020}.jsonl`, named so they sort into log order.
+//! `TS_WAL_SEGMENT_BYTES` sets when a piece is sealed; zero, the default, never seals one, and
+//! then the log is a single file and behaves exactly as it did before pieces existed.
+//!
+//! Positions are **log ids**: a byte position in the log's whole history, not in whichever file
+//! happens to hold it. Each piece records in its first bytes the log id its contents start at, so
+//! a log id says which piece holds a record and where inside it, by arithmetic. A log id keeps
+//! meaning across pieces, and survives reclaim.
+//!
+//! Reclaim unlinks whole pieces that hold nothing above the retain floor, and copies only within
+//! the piece being written.
+//!
+//! # Two things deliberately absent
+//!
+//! **There is no per-piece index from record number to byte offset.** A segmented log usually
+//! carries one, as a sidecar file, so that "read entries N through M" is a seek rather than a walk
+//! from the start of the piece. Here it would have no reader. Random access is by log id, which is
+//! already arithmetic and needs no index; and the only component that reads the log sequentially is
+//! recovery (`engine::lifecycle::replay_wal_into_shard`), which starts at a watermark and reads
+//! forward to the end, so a seek into the middle buys it nothing. Replication does not read this
+//! log at all -- the raft log is a separate structure under `raft::local_wal`. Adding the sidecar
+//! would mean another file to write, checksum, recover and keep consistent with the piece beside
+//! it, in exchange for nothing, and it would have to be correct across reclaim and a torn tail.
+//!
+//! Should something ever need to find a record by sequence without reading forward to it, this is
+//! the thing to build, and the reason it was not built is only that nothing needed it.
+//!
+//! **Pieces are not preallocated.** Writing into a file that is already its full size avoids
+//! persisting a new size on every barrier, which measured 42.7% cheaper per record at eight
+//! records per barrier. It is not done because the file's length is what tells the log where its
+//! records end -- used to pick the next write offset, find the tail, repair a torn tail, seal a
+//! piece, and bound every reader -- so preallocating means threading a separate logical end
+//! through all of them. Reserving blocks without changing the size (`FALLOC_FL_KEEP_SIZE`), which
+//! would need none of that, was measured and made no difference: the cost is persisting the size,
+//! not allocating the blocks.
+
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -891,6 +930,14 @@ impl LocalWriteAheadLogStore {
             // one file would mean nothing to a caller once there is more than one, and would not
             // survive reclaim.
             let (base, header_len) = read_wal_base(&path)?;
+            // A piece that ends before the window starts holds nothing the caller asked for. Its
+            // start plus its length says where it ends, so skipping it costs a stat rather than a
+            // read of every line in it. This is what makes a windowed scan cost the window: without
+            // it the loop below still reads the whole log and merely declines to return most of it.
+            let piece_len = path.metadata().map(|meta| meta.len()).unwrap_or(0);
+            if base.saturating_add(piece_len.saturating_sub(header_len)) <= start_offset {
+                continue;
+            }
             let mut file = File::open(&path)?;
             file.seek(SeekFrom::Start(header_len))?;
             let mut reader = BufReader::new(file);
@@ -925,6 +972,38 @@ impl LocalWriteAheadLogStore {
         inner.stats.scans += 1;
         inner.stats.bytes_read += total;
         Ok(records)
+    }
+
+    /// Where reading can start, to see every record after `sequence` and no whole piece before it.
+    ///
+    /// Recovery knows a sequence -- the one its durable index already covers -- and needs a
+    /// position to read from. Sequences ascend through the log, so a piece whose last sequence is
+    /// at or below the watermark holds nothing left to replay, and reading can begin at the first
+    /// piece that is not. The answer is conservative: it never skips a record after the watermark,
+    /// and it may include some before it, which the caller already filters.
+    ///
+    /// A log in one piece answers zero, which is what it did before any of this existed.
+    pub fn log_id_after_sequence(
+        &self,
+        shard_id: ShardId,
+        sequence: u64,
+    ) -> Result<u64, WriteAheadLogError> {
+        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let mut start = 0u64;
+        for path in wal_segment_paths(&inner.root, shard_id) {
+            if !path.exists() {
+                continue;
+            }
+            let last = last_wal_sequence_in(&path)?;
+            // An empty piece holds nothing either way; keep looking past it.
+            if last > 0 && last > sequence {
+                return Ok(start);
+            }
+            let (base, header_len) = read_wal_base(&path)?;
+            let piece_len = path.metadata().map(|meta| meta.len()).unwrap_or(0);
+            start = base.saturating_add(piece_len.saturating_sub(header_len));
+        }
+        Ok(start)
     }
 
     pub fn flush(&self, shard_id: ShardId) -> Result<WriteAheadLogFlushReport, WriteAheadLogError> {
@@ -4061,6 +4140,97 @@ mod tests {
                 report.dropped_segments,
                 report.dropped_segment_bytes
             );
+        }
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// Reading from a watermark never skips a record after it.
+    ///
+    /// This is the property recovery depends on. The strict sequence-continuity check downstream
+    /// turns a wrongly-skipped record into a refused load, so the answer must be conservative at
+    /// every watermark, not just convenient ones.
+    #[test]
+    fn reading_from_a_watermark_never_skips_a_record_after_it() {
+        set_wal_segment_bytes_for_test(Some(4 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let records = 400u64;
+        for index in 0..records {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 64],
+                    },
+                    false,
+                )
+                .unwrap();
+        }
+
+        for watermark in 0..=records {
+            let start = store.log_id_after_sequence(1, watermark).unwrap();
+            let seen = store.scan(1, start, u64::MAX, u64::MAX).unwrap();
+            let sequences: Vec<u64> = seen
+                .iter()
+                .map(|(_, line)| decode_wal_line(line).unwrap().sequence)
+                .collect();
+            for expected in (watermark + 1)..=records {
+                assert!(
+                    sequences.contains(&expected),
+                    "watermark {watermark} skipped sequence {expected}, which still had to be replayed"
+                );
+            }
+            // And the first thing read is never past the hole the caller would notice.
+            if let Some(first) = sequences.first() {
+                assert!(
+                    *first <= watermark + 1,
+                    "watermark {watermark} started at sequence {first}, leaving a hole"
+                );
+            }
+        }
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// What a restart reads: from the beginning of the log, against from the watermark.
+    #[test]
+    fn what_a_restart_reads_from_zero_against_from_the_watermark() {
+        for segment_bytes in [0u64, 64 * 1024] {
+            set_wal_segment_bytes_for_test(Some(segment_bytes));
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            let records = 20_000u64;
+            for index in 0..records {
+                store
+                    .append_with_sync(
+                        1,
+                        Command::StringSet {
+                            key: format!("k{index:06}"),
+                            value: vec![118u8; 128],
+                        },
+                        false,
+                    )
+                    .unwrap();
+            }
+            // The durable index already covers all but the last hundred records.
+            let watermark = records - 100;
+
+            let before = std::time::Instant::now();
+            let all = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+            let from_zero = before.elapsed().as_secs_f64() * 1e6;
+
+            let before = std::time::Instant::now();
+            let start = store.log_id_after_sequence(1, watermark).unwrap();
+            let windowed = store.scan(1, start, u64::MAX, u64::MAX).unwrap();
+            let from_watermark = before.elapsed().as_secs_f64() * 1e6;
+
+            println!(
+                "  piece size {:>6}: from zero {from_zero:>9.0} us ({} records read) -> from the watermark {from_watermark:>8.0} us ({} read)",
+                if segment_bytes == 0 { "one".to_string() } else { format!("{segment_bytes}") },
+                all.len(),
+                windowed.len()
+            );
+            assert!(windowed.len() >= 100, "the tail must be there to replay");
         }
         set_wal_segment_bytes_for_test(None);
     }
