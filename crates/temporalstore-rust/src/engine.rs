@@ -33,6 +33,7 @@ mod recovery_sweep_compact;
 mod persistence;
 mod bucket_dump_io;
 mod command_validation;
+pub mod quota;
 pub(crate) mod eviction_sampler;
 // Single source of truth for write-command classification (shared with the data_node layer,
 // which previously kept a drifted subset that mis-classified context/control-state writes
@@ -106,6 +107,9 @@ pub struct TemporalEngine {
     configs: Arc<RwLock<HashMap<ShardId, Config>>>,
     infos: Arc<RwLock<HashMap<ShardId, ShardInfo>>>,
     admissions: Arc<RwLock<HashMap<AdmissionScope, AdmissionState>>>,
+    /// Per-shard read and write rate limits. Empty and inert unless something sets a limit, or the
+    /// environment carries a default.
+    quotas: Arc<RwLock<quota::QuotaTable>>,
     /// Diagnostics: number of per-execute `promote_model_maps_to_bucket_index_authority` full
     /// O(store) reconcile scans this engine has run at the hot-path call site. Without
     /// TS_PHASE1_FLAT this fires once per command (O(writes)); with the gate on the
@@ -115,6 +119,47 @@ pub struct TemporalEngine {
 }
 
 impl TemporalEngine {
+    /// Set a shard's read and write rate limits, on a running engine.
+    ///
+    /// A rate of zero leaves that direction unlimited. Replacing a limit rebuilds the bucket, so
+    /// credit accumulated under the previous rate is dropped -- credit earned at one rate does not
+    /// mean anything at another.
+    pub fn set_shard_quota(&self, shard_id: ShardId, config: quota::ShardQuotaConfig) {
+        self.quotas
+            .write()
+            .expect("quota lock poisoned")
+            .set(shard_id, config);
+    }
+
+    /// What a shard's limits currently are, if any were set.
+    pub fn shard_quota(&self, shard_id: ShardId) -> Option<quota::ShardQuotaConfig> {
+        self.quotas
+            .read()
+            .expect("quota lock poisoned")
+            .config_of(shard_id)
+    }
+
+    /// Take one token for `kind`. True when the command may proceed.
+    ///
+    /// The overwhelmingly common case is a shard with no limit, and that case must not pay for
+    /// this. The environment default is read once for the process rather than per command, and a
+    /// shard that is not limited settles under a READ lock -- taking the write lock on every
+    /// command would serialise the engine on a feature almost nobody has turned on.
+    fn charge_quota(&self, shard_id: ShardId, kind: quota::QuotaKind) -> bool {
+        static DEFAULT: std::sync::OnceLock<quota::ShardQuotaConfig> = std::sync::OnceLock::new();
+        let default = *DEFAULT.get_or_init(quota::ShardQuotaConfig::from_env);
+        if default.is_unlimited() {
+            let table = self.quotas.read().expect("quota lock poisoned");
+            if !table.limits(shard_id) {
+                return true;
+            }
+        }
+        self.quotas
+            .write()
+            .expect("quota lock poisoned")
+            .try_consume(shard_id, kind, default)
+    }
+
     pub fn execute(&self, request: ExecuteRequest) -> ExecuteResponse {
         self.execute_with_storage_override(request, None)
     }
@@ -230,6 +275,36 @@ impl TemporalEngine {
         request: ExecuteRequest,
         async_storage_override: Option<bool>,
     ) -> ExecuteResponse {
+        // Charged before anything else, including the read-only fast path -- a read served without
+        // taking the shard lock still costs the shard, and a limit the cheapest reads slip past is
+        // not a limit.
+        //
+        // Not charged while applying a replicated entry or replaying the log. Refusing either is
+        // not shedding load: a follower that rejects what the leader committed diverges from it,
+        // and a replay that rejects a record already in the log cannot rebuild the shard.
+        if !raft_applying() && !replaying_wal() {
+            let kind = if command_validation::is_write_command(&request.command) {
+                quota::QuotaKind::Write
+            } else {
+                quota::QuotaKind::Read
+            };
+            if !self.charge_quota(request.shard_id, kind) {
+                return ExecuteResponse {
+                    status: Status::error(
+                        "quota_exhausted",
+                        format!(
+                            "shard {} is over its {} rate limit",
+                            request.shard_id,
+                            match kind {
+                                quota::QuotaKind::Write => "write",
+                                quota::QuotaKind::Read => "read",
+                            }
+                        ),
+                    ),
+                    response: CommandResponse::Empty,
+                };
+            }
+        }
         if async_storage_override.is_some() {
             if let Some(response) = self.execute_read_only_fast_path(&request) {
                 return response;
