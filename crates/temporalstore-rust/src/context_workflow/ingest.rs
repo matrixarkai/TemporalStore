@@ -300,6 +300,19 @@ pub fn ingest_resource_skill_context(
         fanout.compression_count += 1;
 
         for (index_name, index_ref_value) in index_writes {
+            if !crate::context_workflow::context_secondary_index_enabled() {
+                // The refs are still REPORTED (callers read the report to know what would be
+                // indexed); only the durable writes and their query-back are skipped.
+                match index_name.as_str() {
+                    "resource_ref" => secondary_indexes.resource_refs.push(index_ref_value),
+                    "skill_ref" => secondary_indexes.skill_refs.push(index_ref_value),
+                    "entity_ref" => secondary_indexes.entity_refs.push(index_ref_value),
+                    "source_ref" => secondary_indexes.source_refs.push(index_ref_value),
+                    "summary_ref" => secondary_indexes.summary_refs.push(index_ref_value),
+                    _ => {}
+                }
+                continue;
+            }
             let response = engine.execute_durable(ExecuteRequest {
                 shard_id: request.shard_id,
                 command: Command::ContextWriteIndexRef {
@@ -742,6 +755,11 @@ pub(crate) fn verify_secondary_index_refs(
     end_time_ms: u64,
     report: &mut ContextResourceSkillSecondaryIndexReport,
 ) {
+    // Nothing was written when index building is off, so there is nothing to query back --
+    // reporting every ref as missing would fail the ingest for skipping work on purpose.
+    if !crate::context_workflow::context_secondary_index_enabled() {
+        return;
+    }
     report
         .missing_refs
         .extend(query_missing_secondary_index_refs(
