@@ -2679,3 +2679,117 @@ fn resource_ingest_uses_live_embeddings_and_summary_retrieval() {
     handle.join().unwrap();
     std::env::remove_var("TS_CONTEXT_TEST_KEY");
 }
+
+#[test]
+fn retrieval_ranks_by_vectors_that_live_only_on_the_nodes() {
+    // No separate embedding rows exist anywhere in this store. If the summary-scoring pass
+    // still read node_l0 through the rows, every node here would score zero, selection would
+    // collapse to the lexical/recency fallback, and dropping the rows would degrade retrieval
+    // silently -- this test is what makes that impossible to miss.
+    let engine = test_engine();
+    const TENANT: u64 = 6001;
+    const EVENT_TIME: u64 = 1_781_700_000_000;
+    let provider = ContextModelProviderConfig::default();
+    let query = "how do we deploy the ingest service";
+    let query_vector = query::context_query_embedding(&provider, query).unwrap();
+    // An orthogonal-ish vector: shift every component's mass to a different slot so the cosine
+    // against the query is far from 1.
+    let mut away = query_vector.clone();
+    away.rotate_left(1);
+
+    // The decoy is built to win every path EXCEPT embedding scoring: its summary text repeats
+    // the query's own words (so the lexical fallback prefers it) and it is the most recent (so
+    // recency ordering prefers it). Only a real cosine score against the inline vectors puts
+    // the matching node ahead -- which is what failing over to the rows (all absent) would lose.
+    for (node_hash, name, summary, at, vector) in [
+        (11u64, "matching", "release runbook notes".to_string(),
+         EVENT_TIME, query_vector.clone()),
+        (12, "decoy", format!("{query} {query}"), EVENT_TIME + 500, away.clone()),
+        (13, "other", "unrelated text".to_string(), EVENT_TIME, away.clone()),
+    ] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode {
+                tenant_hash: TENANT,
+                node: ContextNode {
+                    node_hash,
+                    parent_hash: 0,
+                    kind: 1,
+                    canonical_name: name.to_string(),
+                    l0: summary.clone(),
+                    status: 0,
+                    last_event_time_ms: at,
+                    l1_ref: String::new(),
+                    raw_metadata_ref: String::new(),
+                    vector: Vec::new(),
+                    embedding_model_hash: 0,
+                    embedding_updated_at_ms: 0,
+                },
+            },
+        });
+        assert!(response.status.ok);
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertSummary {
+                tenant_hash: TENANT,
+                summary: ContextSummary {
+                    node_hash,
+                    level: 1,
+                    text: summary.clone(),
+                    valid_from_ms: at,
+                    vector: Vec::new(),
+                },
+            },
+        });
+        assert!(response.status.ok);
+        // The ONLY place the vector goes: the node itself.
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextSetNodeEmbedding {
+                tenant_hash: TENANT,
+                node_hash,
+                model_hash: 1,
+                vector,
+                updated_at_ms: at,
+            },
+        });
+        assert!(response.status.ok);
+    }
+
+    let retrieve = retrieve_context(
+        &engine,
+        ContextRetrieveRequest {
+            shard_id: 1,
+            tenant_hash: TENANT,
+            node_hashes: vec![11, 12, 13],
+            query: query.to_string(),
+            start_time_ms: 0,
+            end_time_ms: EVENT_TIME + 1_000,
+            max_events: 8,
+            min_confidence: 0.0,
+            min_importance: 0.0,
+            tiers: default_tiers(),
+            max_summary_nodes: 1,
+            max_event_nodes: 4,
+            prefer_current_agent: false,
+            current_agent_scope_key: "agent:test".to_string(),
+            provider,
+        },
+    );
+    assert!(retrieve.status.ok, "{:?}", retrieve.status);
+    let summary_nodes: Vec<u64> = retrieve
+        .blocks
+        .iter()
+        .filter(|block| block.tier == ContextTier::L0)
+        .map(|block| block.node_hash)
+        .collect();
+    assert_eq!(
+        vec![11u64],
+        summary_nodes,
+        "with one summary slot, the node whose inline vector matches the query must win it"
+    );
+    assert_eq!(
+        0, retrieve.fanout_plan.l0_row_fallback_nodes,
+        "every node here carries its vector inline, so nothing may fall back to the rows"
+    );
+}
