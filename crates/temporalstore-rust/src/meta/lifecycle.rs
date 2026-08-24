@@ -89,6 +89,75 @@ impl SingleNodeMeta {
         }
     }
 
+    /// List shard placement, ordered by shard id and returned a page at a time.
+    ///
+    /// Servers, proxies, proxy groups, namespaces and tables could all be
+    /// listed; shards -- the thing the metaserver exists to place -- could only
+    /// be fetched one id at a time, so answering "what is on this node?" or
+    /// "which shards has nothing claimed?" meant knowing every id up front.
+    pub fn list_shards(&self, request: ListShardsRequest) -> ListShardsResponse {
+        let state = self.inner.read().expect("meta lock poisoned");
+        let limit = if request.limit == 0 {
+            LIST_SHARDS_DEFAULT_LIMIT
+        } else {
+            request.limit.min(LIST_SHARDS_DEFAULT_LIMIT)
+        };
+
+        // One pass over the tables to build shard id -> owning table, rather
+        // than asking per shard: the per-shard lookup scans every table, so
+        // doing it inside the loop would be quadratic in a large deployment.
+        let mut shard_tables = BTreeMap::new();
+        for table in state.tables.values() {
+            for offset in 0..table.info.shard_count {
+                if let Ok(shard_id) = table_shard_id(&table.info, offset) {
+                    shard_tables.insert(
+                        shard_id,
+                        (table.info.namespace.clone(), table.info.table_name.clone()),
+                    );
+                }
+            }
+        }
+
+        let mut ids = state
+            .shards
+            .keys()
+            .copied()
+            .filter(|shard_id| *shard_id > request.after_shard_id)
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+
+        let mut shards = Vec::new();
+        let mut next_after_shard_id = None;
+        for shard_id in ids {
+            let Some(location) = state.shards.get(&shard_id) else {
+                continue;
+            };
+            if !request.server_addr.is_empty() && location.server_addr != request.server_addr {
+                continue;
+            }
+            if shards.len() == limit {
+                // A full page and at least one more match: hand back where to
+                // resume rather than silently truncating.
+                next_after_shard_id = shards.last().map(|entry: &ShardListEntry| entry.shard_id);
+                break;
+            }
+            let (namespace, table_name) = shard_tables.get(&shard_id).cloned().unwrap_or_default();
+            shards.push(ShardListEntry {
+                shard_id,
+                server_addr: location.server_addr.clone(),
+                namespace,
+                table_name,
+                latest_snapshot: location.latest_snapshot.clone(),
+            });
+        }
+
+        ListShardsResponse {
+            status: Status::ok(),
+            shards,
+            next_after_shard_id,
+        }
+    }
+
     pub fn list_servers(&self) -> ListServersResponse {
         let state = self.inner.read().expect("meta lock poisoned");
         ListServersResponse {

@@ -19,7 +19,7 @@ use temporalstore_rust::meta::{
     MetaSnapshot, MetaSnapshotFileRequest, MetaSnapshotFileResponse, MetaSnapshotResponse,
     ProxyHeartbeatRequest, PublishShardSnapshotRequest, RegisterProxyRequest,
     RegisterServerRequest, RegisterShardRequest, SafeModePolicy, ServerHeartbeatRequest,
-    ShardCheckOptions, ShardChecker, ShardReassignment, ShardReassignmentReason,
+    ListShardsRequest, ShardCheckOptions, ShardChecker, ShardReassignment, ShardReassignmentReason,
     DropProxyGroupRequest, NotifyStopRequest, ProxyCalibrationOptions, PutProxyGroupRequest, SingleNodeMeta, StateChangeRequest, TopologyVersionRequest, UpdateServerRequest,
     UpdateTableRequest,
 };
@@ -1540,6 +1540,13 @@ fn handle(
         }),
         ("POST", "/tables/unfreeze") => parse_or(&request.body, |req: DeleteTableRequest| {
             backend_call!(meta, unfreeze_table, req)
+        }),
+        ("GET", "/shards") => json_response(
+            200,
+            &backend_call!(meta, list_shards, ListShardsRequest::default()),
+        ),
+        ("POST", "/shards/list") => parse_or(&request.body, |req: ListShardsRequest| {
+            json_response(200, &backend_call!(meta, list_shards, req))
         }),
         ("GET", "/tables") => json_response(200, &backend_call!(meta, list_tables)),
         ("POST", "/tables/topology") | ("POST", "/table_topology") => {

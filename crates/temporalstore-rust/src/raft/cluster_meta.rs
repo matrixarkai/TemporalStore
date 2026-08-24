@@ -361,6 +361,17 @@ impl MetaRaftCluster {
         )
     }
 
+    pub fn list_shards(&self, request: crate::meta::ListShardsRequest) -> ListShardsResponse {
+        self.read_meta().map_or_else(
+            |status| ListShardsResponse {
+                status,
+                shards: Vec::new(),
+                next_after_shard_id: None,
+            },
+            |meta| meta.list_shards(request),
+        )
+    }
+
     pub fn list_servers(&self) -> ListServersResponse {
         self.read_meta().map_or_else(
             |status| ListServersResponse {

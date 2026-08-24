@@ -669,6 +669,51 @@ pub struct ListTablesResponse {
     pub tables: Vec<TableMetaInfo>,
 }
 
+/// Which shards to list, and how many.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ListShardsRequest {
+    /// Only shards owned by this server. Empty lists every server's.
+    #[serde(default)]
+    pub server_addr: String,
+    /// Resume after this shard id, exclusive. Zero starts from the beginning.
+    #[serde(default)]
+    pub after_shard_id: ShardId,
+    /// Most shards to return. Zero means the default cap.
+    #[serde(default)]
+    pub limit: usize,
+}
+
+/// One shard's placement, as the metaserver has it recorded.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShardListEntry {
+    pub shard_id: ShardId,
+    pub server_addr: String,
+    /// The table this shard's id falls inside, when one claims it. A registered
+    /// shard whose table was dropped, or that was registered before its table
+    /// existed, belongs to nothing and reports empty here -- which is worth
+    /// seeing rather than hiding.
+    pub namespace: String,
+    pub table_name: String,
+    pub latest_snapshot: Option<ShardSnapshotRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ListShardsResponse {
+    pub status: Status,
+    pub shards: Vec<ShardListEntry>,
+    /// Set only when the cap cut the page short. Pass it back as
+    /// `after_shard_id` to continue; absent means this was the last page.
+    pub next_after_shard_id: Option<ShardId>,
+}
+
+/// Default and hard cap on one page of shards.
+///
+/// Every other list endpoint returns everything, which is fine for servers,
+/// proxies and tables -- there are tens of those. Shards are the one entity
+/// there can be hundreds of thousands of, so this one paginates rather than
+/// handing back the whole placement table in a single response.
+pub const LIST_SHARDS_DEFAULT_LIMIT: usize = 1_000;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ListServersResponse {
     pub status: Status,
@@ -2748,6 +2793,219 @@ mod tests {
         let meta = three_zone_shard();
         let replicas = topology_for(&meta, "east/zone-d").replicas;
         assert_eq!(&replicas[..2], &["node-a".to_string(), "node-b".to_string()]);
+    }
+
+    /// One table of four shards spread over two servers, plus one shard that no
+    /// table claims.
+    fn placed_shards() -> SingleNodeMeta {
+        let meta = SingleNodeMeta::default();
+        for (index, addr) in ["node-a", "node-b"].into_iter().enumerate() {
+            meta.register_server(RegisterServerRequest {
+                server_addr: addr.to_string(),
+                node_id: index as u64 + 1,
+                location: "rack-1".to_string(),
+                binary_version: "v1".to_string(),
+            });
+        }
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            first_shard_id: 1,
+            shard_count: 4,
+            replica_count: 1,
+            partition_version: 0,
+            serving_options: TableServingOptions::default(),
+        });
+        for shard_id in 1..=4 {
+            meta.register(RegisterShardRequest {
+                shard_id,
+                server_addr: if shard_id % 2 == 1 { "node-a" } else { "node-b" }.to_string(),
+            });
+        }
+        // Registered, but inside no table's id range.
+        meta.register(RegisterShardRequest {
+            shard_id: 99,
+            server_addr: "node-a".to_string(),
+        });
+        meta
+    }
+
+    fn listed(meta: &SingleNodeMeta, request: ListShardsRequest) -> ListShardsResponse {
+        let response = meta.list_shards(request);
+        assert!(response.status.ok, "{response:?}");
+        response
+    }
+
+    #[test]
+    fn shard_placement_can_be_listed_at_all() {
+        // Servers, proxies, proxy groups, namespaces and tables were all
+        // listable. Shards -- the thing the metaserver exists to place -- could
+        // only be fetched one id at a time.
+        let meta = placed_shards();
+        let response = listed(&meta, ListShardsRequest::default());
+        assert_eq!(
+            response
+                .shards
+                .iter()
+                .map(|entry| entry.shard_id)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 99],
+            "shards should come back in id order"
+        );
+        assert_eq!(response.next_after_shard_id, None);
+    }
+
+    #[test]
+    fn a_listed_shard_names_the_table_that_claims_it() {
+        let meta = placed_shards();
+        let response = listed(&meta, ListShardsRequest::default());
+        let first = &response.shards[0];
+        assert_eq!(first.namespace, "ns");
+        assert_eq!(first.table_name, "orders");
+        assert_eq!(first.server_addr, "node-a");
+    }
+
+    #[test]
+    fn a_shard_no_table_claims_is_listed_rather_than_hidden() {
+        // Answering "which shards is nothing serving?" is most of the reason to
+        // want this listing, so an unclaimed shard must appear, with empty table
+        // fields rather than being dropped from the page.
+        let meta = placed_shards();
+        let response = listed(&meta, ListShardsRequest::default());
+        let orphan = response
+            .shards
+            .iter()
+            .find(|entry| entry.shard_id == 99)
+            .expect("the unclaimed shard should be listed");
+        assert_eq!(orphan.namespace, "");
+        assert_eq!(orphan.table_name, "");
+        assert_eq!(orphan.server_addr, "node-a");
+    }
+
+    #[test]
+    fn shards_can_be_listed_for_one_server() {
+        // The operational question is usually "what is on this node?".
+        let meta = placed_shards();
+        let response = listed(
+            &meta,
+            ListShardsRequest {
+                server_addr: "node-b".to_string(),
+                ..ListShardsRequest::default()
+            },
+        );
+        assert_eq!(
+            response
+                .shards
+                .iter()
+                .map(|entry| entry.shard_id)
+                .collect::<Vec<_>>(),
+            vec![2, 4]
+        );
+        assert!(response
+            .shards
+            .iter()
+            .all(|entry| entry.server_addr == "node-b"));
+    }
+
+    #[test]
+    fn a_full_page_says_where_to_resume() {
+        // A cap that truncates silently reads as "that is all of them", which is
+        // the wrong answer to give an operator counting shards.
+        let meta = placed_shards();
+        let first = listed(
+            &meta,
+            ListShardsRequest {
+                limit: 2,
+                ..ListShardsRequest::default()
+            },
+        );
+        assert_eq!(
+            first
+                .shards
+                .iter()
+                .map(|entry| entry.shard_id)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(first.next_after_shard_id, Some(2));
+
+        let second = listed(
+            &meta,
+            ListShardsRequest {
+                limit: 2,
+                after_shard_id: first.next_after_shard_id.unwrap(),
+                ..ListShardsRequest::default()
+            },
+        );
+        assert_eq!(
+            second
+                .shards
+                .iter()
+                .map(|entry| entry.shard_id)
+                .collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+    }
+
+    #[test]
+    fn the_last_page_does_not_offer_a_cursor() {
+        // Otherwise a caller loops forever on an empty page.
+        let meta = placed_shards();
+        let page = listed(
+            &meta,
+            ListShardsRequest {
+                limit: 2,
+                after_shard_id: 4,
+                ..ListShardsRequest::default()
+            },
+        );
+        assert_eq!(
+            page.shards
+                .iter()
+                .map(|entry| entry.shard_id)
+                .collect::<Vec<_>>(),
+            vec![99]
+        );
+        assert_eq!(page.next_after_shard_id, None);
+    }
+
+    #[test]
+    fn a_listing_cannot_be_asked_for_more_than_the_cap() {
+        // The cap is what stops one request returning the whole placement table.
+        let meta = placed_shards();
+        let response = listed(
+            &meta,
+            ListShardsRequest {
+                limit: usize::MAX,
+                ..ListShardsRequest::default()
+            },
+        );
+        assert!(response.shards.len() <= LIST_SHARDS_DEFAULT_LIMIT);
+    }
+
+    #[test]
+    fn a_listed_shard_carries_its_latest_snapshot() {
+        let meta = placed_shards();
+        let snapshot = ShardSnapshotRef {
+            uri: "s3://cluster/shards/1/manifest.json".to_string(),
+            checksum: "sha256:abc".to_string(),
+            byte_size: 2048,
+            last_log_index: 77,
+            created_at_ms: 1_000,
+        };
+        assert!(
+            meta.publish_shard_snapshot(PublishShardSnapshotRequest {
+                shard_id: 1,
+                snapshot: snapshot.clone(),
+            })
+            .status
+            .ok
+        );
+        let response = listed(&meta, ListShardsRequest::default());
+        assert_eq!(response.shards[0].latest_snapshot, Some(snapshot));
     }
 
     #[test]

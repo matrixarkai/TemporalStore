@@ -24,6 +24,7 @@ use crate::http::{
 use crate::meta::{
     AckResponse, AddNamespaceRequest, AddTableRequest, DeleteTableRequest, GetShardResponse,
     GetTableTopologyRequest, ListNamespacesResponse, ListProxiesResponse, ListServersResponse,
+    ListShardsResponse,
     ListTablesResponse, LoadFinishRequest, MetaEntityState, MetaInfo, MetaMutation,
     MetaPreflightReport, MetaSnapshot, MetaStats, ProxyHeartbeatRequest, ProxyHeartbeatResponse,
     PublishShardSnapshotRequest, RegisterProxyRequest, RegisterServerRequest, RegisterShardRequest,
