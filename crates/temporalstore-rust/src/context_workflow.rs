@@ -61,7 +61,7 @@ mod reports;
 mod skill;
 
 pub use resource::{
-    context_resource_chunk_embedding, parse_context_resource, update_context_resource_lifecycle,
+    parse_context_resource, update_context_resource_lifecycle,
 };
 pub use benchmark::{run_context_pipeline_benchmark, run_context_pipeline_benchmark_sweep};
 pub(crate) use benchmark::*;
@@ -89,7 +89,7 @@ use crate::engine::TemporalEngine;
 use crate::http::{post_json_with_options_and_headers, HttpRequestOptions};
 use crate::types::{
     context_model_descriptors, Command, CommandResponse, ContextAuditRef, ContextChildRef,
-    ContextCompressionEvent, ContextEmbedding, ContextEntity, ContextEvent, ContextIndexRef,
+    ContextCompressionEvent, ContextEntity, ContextEvent, ContextIndexRef,
     ContextModelDescriptor, ContextNode, ContextPackAudit, ContextSummary,
     ContextDirtyNode, ExecuteRequest, ShardId, Status,
 };
@@ -1077,9 +1077,9 @@ pub struct ContextFanoutPlanReport {
     pub event_expanded_nodes: usize,
     pub skipped_node_count: usize,
     pub summary_lookup_batches: usize,
-    // Candidate nodes whose L0 vector had to come from the separate embedding row because the
-    // node record carried none. The node_l0 rows can only be retired once this reads zero in
-    // production -- see the retirement issue. serde(default) so older reports still decode.
+    // Candidate nodes whose node record carries no vector at all -- un-embedded, scored by the
+    // hybrid lexical pass instead. (Named for the retired separate-row fallback it once
+    // counted; the rows are gone, so any nonzero here means the backfill has work to do.)
     #[serde(default)]
     pub l0_row_fallback_nodes: usize,
     #[serde(default)]
@@ -1669,9 +1669,9 @@ pub(crate) fn extract_context_gated(
     // embedding-dirty and the async drainer attaches vectors later, so an empty vector here
     // means "not yet", never "none". skip_serializing_if keeps that costing nothing on disk.
     if !embedding_deferred {
-        // embedding_inputs order is node_l0, [node_l1], event_text -- the same order the
-        // ContextEmbedding rows above index into, so the vectors line up with their owners:
-        // index 0 is the L0 summary, index 1 the L1 summary when emitted, and the event last.
+        // embedding_inputs order is node_l0, [node_l1], event_text, so the vectors line up
+        // with their owners: index 0 is the L0 summary (and the node), index 1 the L1 summary
+        // when emitted, and the event last.
         if let Some(vector) = embedding_vectors.first() {
             summary_l0.vector = vector.clone();
             // The node itself carries its L0 vector too: the traversal scores children from
@@ -1875,13 +1875,12 @@ pub fn retrieve_context(
     };
     trace_stage("query_embedding");
     let mut summary_scores_by_node = BTreeMap::<u64, (i64, usize)>::new();
-    // node_l0 comes from the node records themselves: the write path has carried the vector on
-    // the node since the fold, and the node is addressable by the hash already in hand -- no
-    // one-way ref hash to reconstruct. Nodes with an empty vector (embedded before the fold, or
-    // not embedded at all) fall back to the separate rows below, which is what lets those rows
-    // be retired without a flag day. Chunked like the row query: a single oversized command is
-    // rejected outright, not truncated, and an unscored node silently collapses to the
-    // lexical/recency fallback.
+    // node_l0 comes from the node records themselves: the vector lives on the node, which is
+    // addressable by the hash already in hand -- no one-way ref hash to reconstruct, and no
+    // separate rows left to fall back to. A node carrying no vector is simply un-embedded and
+    // is handed to the hybrid lexical pass below, exactly like before it was embedded. Chunked
+    // because a single oversized command is rejected outright, not truncated, and an unscored
+    // node silently collapses to the lexical/recency fallback.
     let mut l0_row_fallback: Vec<u64> = Vec::new();
     for chunk in node_hashes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
         if chunk.is_empty() {
@@ -1909,13 +1908,14 @@ pub fn retrieve_context(
                 }
             }
         }
-        // A node the engine did not return cannot carry a vector; its row (if any) still can.
+        // A node the engine did not return cannot carry a vector either.
         for node_hash in chunk {
             if !returned.contains(node_hash) {
                 l0_row_fallback.push(*node_hash);
             }
         }
     }
+    // Diagnostic only now: candidates whose node carries no vector at all (un-embedded).
     fanout_plan.l0_row_fallback_nodes = l0_row_fallback.len();
     // node_l1 comes from the L1 summaries' own vectors -- the ingest has filled them since the
     // fold, and the summary is addressable by the node hash already in hand. Level 2 here is
@@ -1940,46 +1940,6 @@ pub fn retrieve_context(
                 let scores = summary_scores_by_node.entry(entry.node_hash).or_default();
                 scores.0 = scores.0.max(score);
                 scores.1 = scores.1.saturating_add(1);
-            }
-        }
-    }
-    let mut summary_ref_owners = BTreeMap::new();
-    let mut summary_ref_hashes = Vec::with_capacity(l0_row_fallback.len());
-    for node_hash in &l0_row_fallback {
-        let ref_hash = context_embedding_ref_hash(request.tenant_hash, *node_hash, "node_l0");
-        summary_ref_owners.insert(ref_hash, *node_hash);
-        summary_ref_hashes.push(ref_hash);
-    }
-    // The engine caps a single ContextQueryEmbeddings at CONTEXT_MAX_LIMIT
-    // ref_hashes -- command validation REJECTS a larger request outright rather
-    // than truncating it. A large (bulk-ingested) namespace has many more nodes
-    // than that, so the summary-embedding pass MUST chunk its lookups: sending
-    // all node_hashes*2 ref_hashes in one command silently fails, leaving every
-    // node at score 0 and collapsing retrieval to the lexical/recency fallback
-    // (0% focused recall at scale). Chunk at the cap so every node is scored.
-    for chunk in summary_ref_hashes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
-        if chunk.is_empty() {
-            continue;
-        }
-        let chunk_refs = chunk.to_vec();
-        let chunk_len = chunk_refs.len();
-        let embeddings = engine.execute(ExecuteRequest {
-            shard_id: request.shard_id,
-            command: Command::ContextQueryEmbeddings {
-                tenant_hash: request.tenant_hash,
-                ref_hashes: chunk_refs,
-                limit: Some(chunk_len.max(1)),
-            },
-        });
-        if let CommandResponse::ContextEmbeddings { embeddings } = embeddings.response {
-            for embedding in embeddings {
-                if let Some(node_hash) = summary_ref_owners.get(&embedding.ref_hash) {
-                    let score =
-                        context_embedding_similarity_micros(&query_embedding, &embedding.vector);
-                    let entry = summary_scores_by_node.entry(*node_hash).or_default();
-                    entry.0 = entry.0.max(score);
-                    entry.1 = entry.1.saturating_add(1);
-                }
             }
         }
     }

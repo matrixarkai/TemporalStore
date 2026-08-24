@@ -2425,66 +2425,6 @@ pub(crate) fn execute_on_shard(
                 created: None,
             }
         }
-        Command::ContextUpsertEmbedding {
-            tenant_hash,
-            embedding,
-        } => {
-            // Per-embedding key for the PAGE (two embeddings must not share a page) and for the
-            // persisted entry; collection key for the index slot and the reported object key.
-            let object_key = context_embedding_key(tenant_hash, embedding.ref_hash);
-            let collection_key = context_embedding_collection_key(tenant_hash);
-            let object_id = stable_page_object_id(shard_id, "context_embedding", &object_key, None);
-            let routing_bucket =
-                page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
-            if let Ok(address) = append_value(
-                cache,
-                page_store,
-                shard_id,
-                &context_bytes(&embedding),
-                Some(object_id),
-                Some(routing_bucket),
-                async_storage,
-            ) {
-                // insert() on the ref hash OVERWRITES: re-embedding a node replaces its vector
-                // rather than accumulating one entry per update.
-                shard
-                    .context_embeddings
-                    .entry(collection_key.clone())
-                    .or_default()
-                    .insert(embedding.ref_hash, address);
-                mutated = true;
-            }
-            invalidate_record_all(cache, shard_id, &object_key);
-            invalidate_record_all(cache, shard_id, &collection_key);
-            CommandResponse::ContextObjectKey {
-                object_key: collection_key,
-            }
-        }
-        Command::ContextQueryEmbeddings {
-            tenant_hash,
-            ref_hashes,
-            limit,
-        } => {
-            // One map lookup for the tenant's series, then a log-n hit per requested ref --
-            // instead of formatting and hashing a full per-embedding key string per ref.
-            let series = shard
-                .context_embeddings
-                .get(&context_embedding_collection_key(tenant_hash));
-            let embeddings = match series {
-                None => Vec::new(),
-                Some(series) => dedupe_nonzero_u64_preserve_order(ref_hashes)
-                    .into_iter()
-                    .take(context_limit(limit))
-                    .filter_map(|ref_hash| {
-                        series.get(&ref_hash).and_then(|address| {
-                            read_page_bytes(cache, page_store, shard_id, address)
-                                .and_then(|bytes| context_from_bytes::<ContextEmbedding>(&bytes))
-                        })
-                    })
-                    .collect(),
-            };
-            CommandResponse::ContextEmbeddings { embeddings }
-        }
         Command::ContextTraverseTree {
             tenant_hash,
             start_node_hash,

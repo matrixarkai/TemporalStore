@@ -39,7 +39,6 @@ pub(super) fn proxy_command_is_write(command: &Command) -> bool {
             | Command::ContextMarkEmbeddingDirty { .. }
             | Command::ContextUpsertEntity { .. }
             | Command::ContextUpsertChildRef { .. }
-            | Command::ContextUpsertEmbedding { .. }
             | Command::ContextSetNodeEmbedding { .. }
             | Command::ContextUpsertSummary { .. }
             | Command::ContextWriteCompressionEvent { .. }
@@ -115,9 +114,7 @@ fn proxy_command_key(command: &Command) -> Option<&str> {
         | Command::ContextQueryEntities { .. }
         | Command::ContextUpsertChildRef { .. }
         | Command::ContextQueryChildren { .. }
-        | Command::ContextUpsertEmbedding { .. }
         | Command::ContextSetNodeEmbedding { .. }
-        | Command::ContextQueryEmbeddings { .. }
         | Command::ContextQueryNodeEmbeddings { .. }
         | Command::ContextTraverseTree { .. }
         | Command::ContextUpsertSummary { .. }
@@ -252,20 +249,6 @@ pub(super) fn proxy_command_routing_key(command: &Command) -> Option<String> {
                 parent_hash,
                 ..
             } => Some(format!("ctx:child:{tenant_hash}:{parent_hash}")),
-            Command::ContextUpsertEmbedding {
-                tenant_hash,
-                embedding,
-            } => Some(format!(
-                "ctx:embedding:{tenant_hash}:{}",
-                embedding.ref_hash
-            )),
-            Command::ContextQueryEmbeddings {
-                tenant_hash,
-                ref_hashes,
-                ..
-            } => ref_hashes
-                .first()
-                .map(|ref_hash| format!("ctx:embedding:{tenant_hash}:{ref_hash}")),
             Command::ContextTraverseTree {
                 tenant_hash,
                 start_node_hash,

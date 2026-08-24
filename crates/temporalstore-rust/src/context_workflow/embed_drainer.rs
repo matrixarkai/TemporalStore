@@ -439,28 +439,7 @@ mod tests {
         }
     }
 
-    /// The vector as carried by the separate record.
-    fn embedding_vector(engine: &TemporalEngine, tenant_hash: u64, node_hash: u64) -> Vec<f32> {
-        let ref_hash = context_embedding_ref_hash(tenant_hash, node_hash, "node_l0");
-        let response = engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::ContextQueryEmbeddings {
-                tenant_hash,
-                ref_hashes: vec![ref_hash],
-                limit: Some(1),
-            },
-        });
-        match response.response {
-            CommandResponse::ContextEmbeddings { embeddings } => embeddings
-                .into_iter()
-                .next()
-                .map(|e| e.vector)
-                .unwrap_or_default(),
-            _ => Vec::new(),
-        }
-    }
-
-    /// The vector as carried by the node itself, rather than by the separate record.
+    /// The vector as carried by the node itself.
     fn inline_vector(engine: &TemporalEngine, tenant_hash: u64, node_hash: u64) -> Vec<f32> {
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
@@ -474,24 +453,6 @@ mod tests {
                 node.map(|node| node.vector).unwrap_or_default()
             }
             _ => Vec::new(),
-        }
-    }
-
-    fn has_embedding(engine: &TemporalEngine, tenant_hash: u64, node_hash: u64) -> bool {
-        let ref_hash = context_embedding_ref_hash(tenant_hash, node_hash, "node_l0");
-        let response = engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::ContextQueryEmbeddings {
-                tenant_hash,
-                ref_hashes: vec![ref_hash],
-                limit: Some(1),
-            },
-        });
-        match response.response {
-            CommandResponse::ContextEmbeddings { embeddings } => {
-                embeddings.iter().any(|e| !e.vector.is_empty())
-            }
-            _ => false,
         }
     }
 

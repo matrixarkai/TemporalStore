@@ -173,10 +173,6 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
             tenant_hash,
             child_ref,
         } => vec![context_child_key(*tenant_hash, child_ref.parent_hash)],
-        Command::ContextUpsertEmbedding {
-            tenant_hash,
-            embedding,
-        } => vec![context_embedding_key(*tenant_hash, embedding.ref_hash)],
         Command::ContextSetNodeEmbedding {
             tenant_hash,
             node_hash,
@@ -236,7 +232,6 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::ContextGetEntity { .. }
         | Command::ContextQueryEntities { .. }
         | Command::ContextQueryChildren { .. }
-        | Command::ContextQueryEmbeddings { .. }
         | Command::ContextTraverseTree { .. }
         | Command::ContextQuerySummaries { .. }
         | Command::ContextQuerySummaryVectors { .. }
@@ -303,7 +298,6 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::ContextMarkEmbeddingDirty { .. }
             | Command::ContextUpsertEntity { .. }
             | Command::ContextUpsertChildRef { .. }
-            | Command::ContextUpsertEmbedding { .. }
             | Command::ContextSetNodeEmbedding { .. }
             | Command::ContextUpsertSummary { .. }
             | Command::ContextWriteCompressionEvent { .. }
@@ -708,24 +702,6 @@ pub(super) fn validate_command_preconditions(
             validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
             validate_context_required(*parent_hash != 0, "parent_hash is required")?;
             validate_context_limit(*limit)?;
-        }
-        Command::ContextUpsertEmbedding {
-            tenant_hash,
-            embedding,
-        } => {
-            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
-            validate_context_embedding(embedding)?;
-        }
-        Command::ContextQueryEmbeddings {
-            tenant_hash,
-            ref_hashes,
-            limit,
-        } => {
-            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
-            validate_context_limit(*limit)?;
-            if ref_hashes.len() > CONTEXT_MAX_LIMIT {
-                return Err(Status::error("invalid_argument", "too many ref_hashes"));
-            }
         }
         Command::ContextTraverseTree {
             tenant_hash,

@@ -418,7 +418,7 @@ fn context_extract_gates_l1_for_thin_sources() {
 #[test]
 fn context_extract_stores_embedding_vectors_on_the_records_themselves() {
     // Step 2 of the embedding fold populates event and summary records with their own vector,
-    // alongside the separate ContextEmbedding rows readers still use. Nothing READS the inline
+    // which is the only place they live. Nothing else READS the inline
     // field yet, so without this assertion "population" could be silently writing empty vectors
     // and every existing test would still pass.
     let engine = test_engine();
@@ -1293,7 +1293,6 @@ fn context_workflow_exposes_reference_open_source_vlm_profiles() {
             ("ContextIndexModel", 11),
             ("ContextAuditModel", 12),
             ("ContextChildModel", 14),
-            ("ContextEmbeddingModel", 15),
             ("ContextSummaryModel", 16),
             ("ContextCompressionModel", 17),
             ("ContextEntityModel", 18),
