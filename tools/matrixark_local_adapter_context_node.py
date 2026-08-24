@@ -246,13 +246,16 @@ class _LocalAdapterContextNodeMixin:
         limit: int = 512,
         updated_at_ms: int | None = None,
         record_types: set[str] | None = None,
+        records: list[Json] | None = None,
     ) -> Json:
         limit = max(1, int(limit or 1))
         refreshed_at_ms = updated_at_ms if isinstance(updated_at_ms, int) else now_ms()
         current_model = embedding_model_name()
         current_model_ref = embedding_model_ref_for_name(current_model)
         existing_embeddings: dict[tuple[str, str, int], Json] = {}
-        records = self.read_all()
+        # A caller that has already read the log this pass can hand its snapshot in, but only when
+        # nothing has been written since -- this needs to see rows produced earlier in the pass.
+        records = self.read_all() if records is None else records
         for record in records:
             if record.get("record_type") != "context_embedding":
                 continue
