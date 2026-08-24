@@ -695,3 +695,59 @@ fn a_follower_that_stops_converging_cannot_report_zero_lag() {
         "a follower that has caught up must report no stall"
     );
 }
+
+
+/// The AUTHENTICATED http entry point must accept a binary append body.
+///
+/// It extracts the rpc auth metadata before dispatching, and it did that by parsing the body as
+/// JSON -- so with binary replication on, every append got a 403 from the auth wrapper and the
+/// cluster could not replicate at all. The unauthenticated handler (which the other tests use)
+/// was fine, which is exactly why this test targets the authenticated one.
+#[test]
+fn authenticated_route_accepts_a_binary_append() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = RaftCluster::new_single_shard_with_wal(
+        dir.path(),
+        1,
+        [1, 2, 3],
+        RaftConfig::default(),
+    )
+    .unwrap();
+    cluster.set_local_node_id(2);
+    let request = AppendEntriesRequest {
+        rpc: None,
+        shard_id: 1,
+        term: 1,
+        leader_id: 1,
+        target_id: 2,
+        prev_log_index: 0,
+        prev_log_term: 0,
+        entries: vec![RaftLogEntry {
+            term: 1,
+            index: 1,
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "auth".into(),
+                value: b"binary".to_vec(),
+            },
+        }],
+        leader_commit: 0,
+    };
+    let body = wal_proto::encode_append_entries(&request).unwrap();
+    let (code, response) = handle_authenticated_raft_http(
+        &cluster,
+        HttpRequest {
+            method: "POST".to_string(),
+            path: "/raft/append_entries".to_string(),
+            body,
+        },
+        "",
+    );
+    assert_eq!(
+        code, 200,
+        "the authenticated route rejected a binary append: {}",
+        String::from_utf8_lossy(&response)
+    );
+    let parsed: AppendEntriesResponse = serde_json::from_slice(&response).unwrap();
+    assert!(parsed.success, "the append must actually be accepted");
+}

@@ -1463,6 +1463,24 @@ fn context_reference_blocks_and_provider_model_switches_are_reported() {
                     && embeddings.iter().all(|embedding| embedding.vector.len() == 16)
                     && embeddings.iter().all(|embedding| embedding.updated_at_ms == extract.event.event_time_ms)
         ));
+
+        // The node itself must carry its L0 vector off the same ingest -- the traversal scores
+        // from node.vector first, so a happy-path ingest that left it empty would strand every
+        // fresh node on the separate-record fallback and the records could never be retired.
+        let node = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextGetNode {
+                tenant_hash: 20260620,
+                node_hash: extract.node.node_hash,
+            },
+        });
+        assert!(matches!(
+            node.response,
+            CommandResponse::ContextNode { node: Some(ref node), .. }
+                if node.vector.len() == 16
+                    && node.embedding_model_hash != 0
+                    && node.embedding_updated_at_ms == extract.event.event_time_ms
+        ));
     }
 
     let retrieve = retrieve_context(&engine, ingest.retrieve_request);

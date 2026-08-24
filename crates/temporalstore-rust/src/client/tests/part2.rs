@@ -264,6 +264,119 @@ fn client_metasync_backoff_deadline_and_topology_refresh_survive_outage_churn() 
 }
 
 #[test]
+fn a_second_sync_asks_only_for_what_changed_and_keeps_its_routes() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // The request has always carried old_topology_version and the metaserver has always
+    // answered "unchanged" when it is current -- with the shard list omitted, because there is
+    // no point rebuilding what the caller already has. The client hardcoded 0, so that answer
+    // could never be given: every sync of every table rebuilt and shipped the whole shard list.
+    //
+    // It could not simply start sending the version either. An unchanged reply carries no
+    // shards, and the route surgery would have read that as "this table has no shards" and
+    // deleted them all. Both halves are needed, in that order.
+    let seen_versions = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
+    let builds = std::sync::Arc::new(AtomicUsize::new(0));
+    let meta_addr = free_local_addr();
+    let meta_addr_for_listener = meta_addr.clone();
+    let versions = seen_versions.clone();
+    let built = builds.clone();
+    std::thread::spawn(move || {
+        serve(&meta_addr_for_listener, move |request| {
+            match (request.method.as_str(), request.path.as_str()) {
+                ("POST", "/tables/topology") => {
+                    let req = parse_json::<crate::meta::GetTableTopologyRequest>(&request.body)
+                        .unwrap();
+                    versions.lock().unwrap().push(req.old_topology_version);
+                    let table = crate::meta::TableMetaInfo {
+                        table_id: 1,
+                        namespace: "ns".to_string(),
+                        table_name: "tbl".to_string(),
+                        state: crate::meta::MetaEntityState::Normal,
+                        topology_version: 7,
+                        first_shard_id: 1,
+                        shard_count: 1,
+                        replica_count: 1,
+                        partition_version: 0,
+                        serving_options: crate::meta::TableServingOptions::default(),
+                    };
+                    // Exactly what the metaserver does: current version in, no shards back.
+                    if req.old_topology_version >= table.topology_version {
+                        return json_response(
+                            200,
+                            &TableTopologyResponse {
+                                status: Status::ok(),
+                                table: Some(table),
+                                shards: Vec::new(),
+                                unchanged: true,
+                            },
+                        );
+                    }
+                    built.fetch_add(1, Ordering::SeqCst);
+                    json_response(
+                        200,
+                        &TableTopologyResponse {
+                            status: Status::ok(),
+                            table: Some(table),
+                            shards: vec![TableShard {
+                                shard_id: 1,
+                                start_bucket: 0,
+                                end_bucket: u64::MAX,
+                                primary: Some("127.0.0.1:29101".to_string()),
+                                replicas: Vec::new(),
+                                primary_endpoint: None,
+                                replica_endpoints: Vec::new(),
+                            }],
+                            unchanged: false,
+                        },
+                    )
+                }
+                _ => json_response(404, &Status::error("not_found", "no route")),
+            }
+        })
+        .unwrap();
+    });
+    wait_for_http(&meta_addr);
+
+    let client = TemporalStoreClient::with_options(ClientOptions {
+        proxy_addr: meta_addr.clone(),
+        meta_addr: Some(meta_addr.clone()),
+        ..ClientOptions::default()
+    });
+
+    client
+        .sync_table_topology("ns".to_string(), "tbl".to_string())
+        .expect("first sync succeeds");
+    assert_eq!(client.topology_cache_report().route_count, 1);
+
+    client
+        .sync_table_topology("ns".to_string(), "tbl".to_string())
+        .expect("second sync succeeds");
+
+    let versions = seen_versions.lock().unwrap().clone();
+    assert_eq!(
+        versions.first().copied(),
+        Some(0),
+        "the first sync has nothing to declare"
+    );
+    assert_eq!(
+        versions.get(1).copied(),
+        Some(7),
+        "the second sync must declare what it already has, or the metaserver cannot skip work"
+    );
+    assert_eq!(
+        builds.load(Ordering::SeqCst),
+        1,
+        "the shard list should be built once, not once per sync"
+    );
+    assert_eq!(
+        client.topology_cache_report().route_count,
+        1,
+        "an unchanged reply carries no shards and must not be read as having none"
+    );
+}
+
+#[test]
 fn a_topology_missing_a_primary_keeps_the_route_it_cannot_replace() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 

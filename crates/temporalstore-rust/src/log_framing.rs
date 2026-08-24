@@ -184,6 +184,171 @@ pub(crate) fn decode_line(line: &[u8]) -> Result<&[u8], FramingError> {
     Ok(payload)
 }
 
+/// Introduces a record whose payload is binary rather than text.
+///
+/// A binary payload may contain a newline, so a record carrying one cannot be found by splitting
+/// on newlines. Readers use [`next_frame`] or [`read_frame`] instead, which take the length the
+/// frame already declares rather than looking for a delimiter.
+pub(crate) const BINARY_PAYLOAD_MAGIC: u8 = 0xA7;
+
+/// Read the next record from `bytes`, returning how many bytes it occupied and its payload.
+///
+/// `Ok(None)` means there is nothing further to read, or that what remains is shorter than the
+/// record it declares -- a torn tail from a crash mid-append, which the caller truncates. A
+/// complete record whose digest does not match is committed corruption and returns `Err`. The
+/// checksum is picked by prefix, exactly as [`decode_line`] picks it.
+pub(crate) fn next_frame(bytes: &[u8]) -> Result<Option<(usize, &[u8])>, FramingError> {
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    let (checksum_of, header_prefix_len): (fn(&[u8]) -> String, usize) =
+        if bytes.starts_with(FRAME_MAGIC_V2) {
+            (crc_digest_hex, FRAME_MAGIC_V2.len())
+        } else if bytes.starts_with(FRAME_MAGIC_V1) {
+            (sha256_digest_hex, FRAME_MAGIC_V1.len())
+        } else {
+            // Unframed: the record ends at the newline, and the whole line is the payload.
+            // Without a newline the record was never finished being written -- a torn tail.
+            let Some(position) = bytes.iter().position(|byte| *byte == b'\n') else {
+                return Ok(None);
+            };
+            let line_len = position + 1;
+            return Ok(Some((line_len, strip_trailing_newline(&bytes[..line_len]))));
+        };
+    let rest = &bytes[header_prefix_len..];
+    let (len_field, after_len) = split_once_space(rest)
+        .ok_or_else(|| FramingError("framed record missing length field".to_string()))?;
+    let (digest_field, after_digest) = split_once_space(after_len)
+        .ok_or_else(|| FramingError("framed record missing digest field".to_string()))?;
+    let declared_len: usize = std::str::from_utf8(len_field)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| FramingError("framed record has an unparseable length field".to_string()))?;
+    if after_digest.len() < declared_len {
+        // Fewer bytes present than the record declares: the append was interrupted. That is a
+        // torn tail to be truncated, not damage to a record that was completely written.
+        return Ok(None);
+    }
+    let payload = &after_digest[..declared_len];
+    let actual = checksum_of(payload);
+    if actual.as_bytes() != digest_field {
+        return Err(FramingError(
+            "framed record digest does not match its payload".to_string(),
+        ));
+    }
+    let header_len = bytes.len() - after_digest.len();
+    let mut consumed = header_len + declared_len;
+    if bytes.get(consumed) == Some(&b'\n') {
+        consumed += 1; // the newline the encoder appends
+    }
+    Ok(Some((consumed, payload)))
+}
+
+/// Read one record from a stream, returning how many bytes it occupied and its payload.
+///
+/// The streaming twin of [`next_frame`], for the paths that face the largest logs there are:
+/// memory stays bounded by the biggest single record rather than by the file.
+pub(crate) fn read_frame<R: std::io::BufRead>(
+    reader: &mut R,
+) -> Result<Option<(usize, Vec<u8>)>, FramingError> {
+    let longest_magic = FRAME_MAGIC_V1.len().max(FRAME_MAGIC_V2.len());
+    let mut header = Vec::with_capacity(longest_magic + 32);
+    let mut spaces = 0usize;
+    loop {
+        let mut byte = [0u8; 1];
+        match reader.read_exact(&mut byte) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+                // Nothing at all is a clean end; a partial header is a torn tail.
+                return Ok(None);
+            }
+            Err(err) => return Err(FramingError(err.to_string())),
+        }
+        header.push(byte[0]);
+        if header.len() <= longest_magic {
+            let still_v1 = FRAME_MAGIC_V1.starts_with(&header[..header.len().min(FRAME_MAGIC_V1.len())])
+                && header.len() <= FRAME_MAGIC_V1.len();
+            let still_v2 = FRAME_MAGIC_V2.starts_with(&header[..header.len().min(FRAME_MAGIC_V2.len())])
+                && header.len() <= FRAME_MAGIC_V2.len();
+            if header.as_slice() == FRAME_MAGIC_V1 || header.as_slice() == FRAME_MAGIC_V2 {
+                spaces = 1; // the magic ends with the space that follows it
+                continue;
+            }
+            if still_v1 || still_v2 {
+                continue;
+            }
+            // Not a framed record: an unframed one runs to the next newline.
+            return read_unframed(reader, header);
+        }
+        if byte[0] == b' ' {
+            spaces += 1;
+            if spaces == 3 {
+                break;
+            }
+        }
+    }
+    let checksum_of: fn(&[u8]) -> String = if header.starts_with(FRAME_MAGIC_V2) {
+        crc_digest_hex
+    } else {
+        sha256_digest_hex
+    };
+    let magic_len = if header.starts_with(FRAME_MAGIC_V2) {
+        FRAME_MAGIC_V2.len()
+    } else {
+        FRAME_MAGIC_V1.len()
+    };
+    let rest = &header[magic_len..];
+    let (len_field, after_len) = split_once_space(rest)
+        .ok_or_else(|| FramingError("framed record missing length field".to_string()))?;
+    let (digest_field, _) = split_once_space(after_len)
+        .ok_or_else(|| FramingError("framed record missing digest field".to_string()))?;
+    let declared_len: usize = std::str::from_utf8(len_field)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| FramingError("framed record has an unparseable length field".to_string()))?;
+    let digest_expected = digest_field.to_vec();
+    let mut payload = vec![0u8; declared_len];
+    if reader.read_exact(&mut payload).is_err() {
+        // Fewer bytes than the record declares: the append was interrupted.
+        return Ok(None);
+    }
+    let actual = checksum_of(&payload);
+    if actual.as_bytes() != digest_expected.as_slice() {
+        return Err(FramingError(
+            "framed record digest does not match its payload".to_string(),
+        ));
+    }
+    let mut trailing = [0u8; 1];
+    let consumed_newline =
+        matches!(reader.read_exact(&mut trailing), Ok(())) && trailing[0] == b'\n';
+    let consumed = header.len() + declared_len + usize::from(consumed_newline);
+    Ok(Some((consumed, payload)))
+}
+
+/// Finish reading a record that is not framed: it runs to the next newline, and without one it
+/// was never finished being written.
+fn read_unframed<R: std::io::BufRead>(
+    reader: &mut R,
+    mut started: Vec<u8>,
+) -> Result<Option<(usize, Vec<u8>)>, FramingError> {
+    if started.last() == Some(&b'\n') {
+        let consumed = started.len();
+        let payload = strip_trailing_newline(&started).to_vec();
+        return Ok(Some((consumed, payload)));
+    }
+    let mut rest = Vec::new();
+    let read = reader
+        .read_until(b'\n', &mut rest)
+        .map_err(|err| FramingError(err.to_string()))?;
+    if read == 0 || !rest.ends_with(b"\n") {
+        return Ok(None);
+    }
+    let consumed = started.len() + rest.len();
+    started.extend_from_slice(&rest);
+    let payload = strip_trailing_newline(&started).to_vec();
+    Ok(Some((consumed, payload)))
+}
+
 fn strip_trailing_newline(line: &[u8]) -> &[u8] {
     if line.last() == Some(&b'\n') {
         &line[..line.len() - 1]

@@ -3958,7 +3958,19 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             except Exception:
                 pass
 
-    def _update_read_cache_after_append(self, records: list[Json]) -> None:
+    def _update_read_cache_after_append(
+        self, records: list[Json], *, pre_size: int | None = None
+    ) -> None:
+        """Fold freshly appended records into every read cache -- but only into a view that
+        actually covered the log up to this write.
+
+        ``pre_size`` is the retained-log byte total as it stood before this instance's write,
+        captured under the event-log lock. A cached view is only allowed to absorb the append
+        when the bytes it covers equal that number: the signature alone cannot catch a stale
+        view, because it describes the log at WRITE time, so a list missing another writer's
+        records still stamps the current signature and gets served to cold readers as if it
+        were complete.
+        """
         if not records:
             return
         cache_key = str(self.event_log.resolve())
@@ -3970,6 +3982,19 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         # is not this instance's own append-only one -- see _write_durable_read_cache.
         durable_epoch: int | None = None
         with self._read_cache_lock:
+            if (
+                pre_size is not None
+                and self._read_cache_records is not None
+                and self._read_cache_size >= 0
+                and self._read_cache_size != pre_size
+            ):
+                # Another writer appended since this view was established. Extending it would
+                # stamp the current signature onto a list missing their records, and a cold
+                # reader would silently lose them. Drop it; the next read re-derives from disk.
+                self._read_cache_records = None
+                self._read_cache_size = -1
+                self._read_cache_mtime_ns = -1
+                self._read_cache_source = "empty"
             if self._read_cache_records is not None:
                 before = len(self._read_cache_records)
                 self._read_cache_records.extend(records)
@@ -3991,6 +4016,11 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 self._read_cache_source = "empty"
         with _LOCAL_READ_CACHE_LOCK:
             cached = _LOCAL_READ_CACHE.get(cache_key)
+            if cached is not None and pre_size is not None and cached[0] != pre_size:
+                # The shared entry does not cover the log as it stood before this write either
+                # (a writer in another process got in), so it is stale the same way.
+                _LOCAL_READ_CACHE.pop(cache_key, None)
+                cached = None
             if cached is not None:
                 _, _, cached_records = cached
                 cached_records = compact_and_apply_tombstones(list(cached_records) + list(records))
@@ -4182,8 +4212,13 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         if self._queue_batched_records(records):
             return
         sanitized = [self._sanitize_jsonl_record(item) for item in records]
+        pre_size: int | None = None
         if self._local_jsonl_enabled:
             with self._event_log_lock:
+                # Log bytes as they stand BEFORE this write. If this differs from the bytes the
+                # cached view covers, another writer appended in between and the cached view is
+                # missing their records -- see _update_read_cache_after_append.
+                pre_size = int(self._jsonl_cache_signature_detail().get("total_size", -1))
                 jsonl_records = self._encode_records_for_log(sanitized)
                 jsonl_lines = [json.dumps(item, separators=(",", ":")) + "\n" for item in jsonl_records]
                 self._rotate_jsonl_if_needed_locked(sum(len(line.encode("utf-8")) for line in jsonl_lines))
@@ -4194,7 +4229,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         self._update_latest_entity_cache(records)
         # The read caches hold the fully-expanded (interning-free) view, so serve the sanitized
         # records -- expansion of the on-disk interned form yields exactly these.
-        self._update_read_cache_after_append(sanitized)
+        self._update_read_cache_after_append(sanitized, pre_size=pre_size)
         self._maintain_event_membership_after_append(records)
 
     def append_many(self, records: list[Json]) -> None:
@@ -4209,8 +4244,11 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         if self._queue_batched_records(records):
             return
         sanitized = [self._sanitize_jsonl_record(record) for record in records]
+        pre_size: int | None = None
         if self._local_jsonl_enabled:
             with self._event_log_lock:
+                # Same interloper capture as append() -- see _update_read_cache_after_append.
+                pre_size = int(self._jsonl_cache_signature_detail().get("total_size", -1))
                 jsonl_records = self._encode_records_for_log(sanitized)
                 jsonl_lines = [json.dumps(record, separators=(",", ":")) + "\n" for record in jsonl_records]
                 self._rotate_jsonl_if_needed_locked(sum(len(line.encode("utf-8")) for line in jsonl_lines))
@@ -4219,7 +4257,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                         handle.write(line)
                 self._prune_jsonl_retention_locked()
         self._update_latest_entity_cache(records)
-        self._update_read_cache_after_append(sanitized)
+        self._update_read_cache_after_append(sanitized, pre_size=pre_size)
 
     def _update_latest_entity_cache(self, records: list[Json]) -> None:
         if not hasattr(self, "_session_buffer_cache_lock"):
