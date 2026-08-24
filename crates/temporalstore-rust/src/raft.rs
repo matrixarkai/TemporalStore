@@ -7,6 +7,7 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{
+    Condvar,
     atomic::{AtomicBool, Ordering},
     mpsc, Arc, Mutex, RwLock,
 };
@@ -42,7 +43,8 @@ mod readiness;
 mod cluster_snapshot;
 mod production_runtime;
 mod local_wal;
-pub(crate) mod wal_proto;
+pub(crate) mod follower_pipeline;
+mod wal_proto;
 mod cluster_meta;
 mod cluster_meta_inner;
 mod cluster_inner;
@@ -3941,13 +3943,30 @@ fn validate_downloaded_snapshot_ref(
     Ok(())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RaftCluster {
     inner: Arc<RwLock<RaftClusterInner>>,
+    /// The per-follower senders, built on first use and rebuilt when the peer set changes.
+    /// Shared by clone: every handle to a cluster must ring the same senders.
+    follower_pipeline: Arc<Mutex<Option<follower_pipeline::FollowerPipeline>>>,
+    /// Bumped whenever the quorum commit advances; proposers wait on it instead of counting
+    /// acknowledgements themselves.
+    commit_signal: Arc<(Mutex<u64>, Condvar)>,
+}
+
+impl std::fmt::Debug for RaftCluster {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("RaftCluster").finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug)]
 struct RaftClusterInner {
+    /// Indices some proposer is waiting on; apply records their responses so each
+    /// waiter gets its own command's answer rather than whichever applied last.
+    response_waiters: BTreeSet<u64>,
+    /// Responses captured for registered waiters, taken by index.
+    pending_responses: BTreeMap<u64, CommandResponse>,
     shard_id: ShardId,
     leader_id: RaftNodeId,
     nodes: BTreeMap<RaftNodeId, RaftNode>,
@@ -4031,7 +4050,11 @@ impl RaftCluster {
         }
         let leader_lease_deadline_ms = initial_leader_lease_deadline_ms(&config);
         Ok(Self {
+            follower_pipeline: Arc::new(Mutex::new(None)),
+            commit_signal: Arc::new((Mutex::new(0), Condvar::new())),
             inner: Arc::new(RwLock::new(RaftClusterInner {
+                response_waiters: BTreeSet::new(),
+                pending_responses: BTreeMap::new(),
                 shard_id,
                 leader_id,
                 nodes,
@@ -4156,7 +4179,11 @@ impl RaftCluster {
         refresh_all_pipeline_states(&mut nodes, leader_id, None, &config);
         let leader_lease_deadline_ms = initial_leader_lease_deadline_ms(&config);
         Ok(Self {
+            follower_pipeline: Arc::new(Mutex::new(None)),
+            commit_signal: Arc::new((Mutex::new(0), Condvar::new())),
             inner: Arc::new(RwLock::new(RaftClusterInner {
+                response_waiters: BTreeSet::new(),
+                pending_responses: BTreeMap::new(),
                 shard_id,
                 leader_id,
                 nodes,
@@ -4540,6 +4567,133 @@ impl RaftCluster {
             (Ok(_), Err(err)) => Err(err),
             (Err(err), _) => Err(err),
         }
+    }
+
+    /// Propose through the per-follower senders: append under the lock, ring the senders,
+    /// wait for the quorum commit signal. This path never sends to a peer itself -- one sender
+    /// per follower does, which is what keeps that follower's appends in order -- and the commit
+    /// index reaches followers on their next append or heartbeat instead of a dedicated second
+    /// round trip per propose.
+    fn propose_pipelined<T>(
+        &self,
+        command: Command,
+        transport: &T,
+        entry_barrier: &mut Option<thread::JoinHandle<Result<(), RaftError>>>,
+    ) -> Result<CommandResponse, RaftError>
+    where
+        T: RaftTransport + Clone + Send + 'static,
+    {
+        self.ensure_follower_pipeline(transport);
+        let entry_index = {
+            let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+            inner.ensure_live_leader()?;
+            let entry_bytes = command_size_bytes(&command);
+            if entry_bytes > inner.config.max_memory_replicate_log_bytes {
+                let leader_id = inner.leader_id;
+                if let Some(leader) = inner.nodes.get_mut(&leader_id) {
+                    leader.pipeline_state.oversized_log_rejections = leader
+                        .pipeline_state
+                        .oversized_log_rejections
+                        .saturating_add(1);
+                    leader.pipeline_state.memory_backpressure_rejections = leader
+                        .pipeline_state
+                        .memory_backpressure_rejections
+                        .saturating_add(1);
+                }
+                inner.persist_configured_wal()?;
+                return Err(RaftError::LogEntryTooLarge {
+                    bytes: entry_bytes,
+                    limit: inner.config.max_memory_replicate_log_bytes,
+                });
+            }
+            if let Some((live, required)) = inner.joint_majority_failure() {
+                return Err(RaftError::NoMajority { live, required });
+            }
+            let required = inner.required_majority();
+            let live = inner.live_quorum_participants();
+            if live < required {
+                return Err(RaftError::NoMajority { live, required });
+            }
+            if !inner.leader_lease_valid() {
+                return Err(RaftError::LeaderUnavailable);
+            }
+            let leader_id = inner.leader_id;
+            let shard_id = inner.shard_id;
+            let leader = inner
+                .nodes
+                .get(&leader_id)
+                .filter(|node| node.alive && node.role == RaftRole::Leader)
+                .ok_or(RaftError::LeaderUnavailable)?;
+            let entry = RaftLogEntry {
+                term: leader.current_term,
+                index: node_next_log_index(leader),
+                shard_id,
+                command,
+            };
+            let index = entry.index;
+            let leader = inner
+                .nodes
+                .get_mut(&leader_id)
+                .ok_or(RaftError::LeaderUnavailable)?;
+            append_entry(leader, entry);
+            inner.response_waiters.insert(index);
+            index
+        };
+
+        // The entry is in the log. Write it and start its barrier NOW, so the leader's disk
+        // wait runs alongside the followers' instead of after them. Unchanged from the fan-out
+        // path: the commit index is recoverable and never has to be durable before the ack.
+        if wal_proto::overlap_leader_barrier_enabled() {
+            let staged = self
+                .inner
+                .write()
+                .expect("raft cluster lock poisoned")
+                .stage_deferred_persist();
+            if let Ok(staged) = staged {
+                if !staged.is_empty() {
+                    let cluster = self.clone();
+                    *entry_barrier =
+                        Some(thread::spawn(move || cluster.finish_staged_unlocked(staged)));
+                }
+            }
+            self.inner
+                .write()
+                .expect("raft cluster lock poisoned")
+                .begin_deferred_persist();
+        }
+
+        self.ring_replication();
+
+        let deadline_ms = {
+            let inner = self.inner.read().expect("raft cluster lock poisoned");
+            let configured = inner.config.replication_deadline_ms;
+            if configured == 0 {
+                default_replication_deadline_ms()
+            } else {
+                configured
+            }
+        };
+        let committed =
+            self.wait_for_quorum_commit(entry_index, Duration::from_millis(deadline_ms));
+
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        inner.response_waiters.remove(&entry_index);
+        if !committed {
+            inner.pending_responses.remove(&entry_index);
+            let required = inner.required_majority();
+            let live = inner.live_quorum_participants();
+            // The entry stays in the log and may commit later; the caller only learns that it
+            // did not commit within the deadline, which is all a replication deadline ever meant.
+            return Err(RaftError::NoMajority { live, required });
+        }
+        let response = inner
+            .pending_responses
+            .remove(&entry_index)
+            .unwrap_or(CommandResponse::Empty);
+        // No persist here: the commit advance already persisted the record that carries the new
+        // commit index, and the outer deferral flushes what this propose itself owes. A persist
+        // here charged every proposer a duplicate barrier.
+        Ok(response)
     }
 
     fn propose_distributed_one_locked<T>(
@@ -5396,6 +5550,50 @@ fn split_command_for_raft_limit(command: Command, limit: u64) -> Result<Vec<Comm
             bytes: command_size_bytes(&other),
             limit,
         }),
+    }
+}
+
+/// Apply newly committed entries, capturing the response of every index in `waiters` so each
+/// waiting proposer gets its own command's answer. The twin of [`apply_committed`] for the path
+/// where the applier is a sender thread and the interested parties are elsewhere; the exactly-
+/// once and cursor rules are identical, and both run under the caller's `inner` write lock.
+fn apply_committed_recording(
+    node: &mut RaftNode,
+    waiters: &BTreeSet<u64>,
+    captured: &mut BTreeMap<u64, CommandResponse>,
+) {
+    let start = node
+        .log
+        .binary_search_by_key(&node.applied_index.saturating_add(1), |entry| entry.index)
+        .unwrap_or_else(|position| position);
+    let mut batch = Vec::new();
+    let mut batch_indexes = Vec::new();
+    for entry in node.log[start..]
+        .iter()
+        .take_while(|entry| entry.index <= node.commit_index)
+    {
+        if entry.index <= node.max_applied_index {
+            node.applied_index = node.applied_index.max(entry.index);
+            node.applied.insert(entry.index);
+            continue;
+        }
+        if node.applied.insert(entry.index) {
+            batch.push(ExecuteRequest {
+                shard_id: entry.shard_id,
+                command: entry.command.clone(),
+            });
+            batch_indexes.push(entry.index);
+        }
+    }
+    if !batch.is_empty() {
+        let responses = node.engine.execute_raft_apply_batch(batch);
+        for (index, response) in batch_indexes.into_iter().zip(responses) {
+            node.applied_index = index;
+            node.max_applied_index = node.max_applied_index.max(index);
+            if waiters.contains(&index) {
+                captured.insert(index, response.response);
+            }
+        }
     }
 }
 

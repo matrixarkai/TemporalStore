@@ -751,3 +751,185 @@ fn authenticated_route_accepts_a_binary_append() {
     let parsed: AppendEntriesResponse = serde_json::from_slice(&response).unwrap();
     assert!(parsed.success, "the append must actually be accepted");
 }
+
+
+/// Counts how many appends are in flight per peer at once, failing the moment two overlap.
+///
+/// Two appends in flight to one follower is the disease the per-follower senders exist to cure:
+/// under real network latency the overlapping sends arrive out of order, the follower rejects,
+/// and the retries snowball into election churn. Loopback never shows it -- so this transport
+/// makes the overlap itself the assertion, latency or no latency.
+#[derive(Clone)]
+struct OneInFlightTransport {
+    cluster: RaftCluster,
+    in_flight: std::sync::Arc<
+        std::sync::Mutex<std::collections::BTreeMap<RaftNodeId, u32>>,
+    >,
+    max_seen: std::sync::Arc<std::sync::atomic::AtomicU32>,
+}
+
+impl OneInFlightTransport {
+    fn enter(&self, peer: RaftNodeId) {
+        let mut map = self.in_flight.lock().unwrap();
+        let slot = map.entry(peer).or_insert(0);
+        *slot += 1;
+        self.max_seen
+            .fetch_max(*slot, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn leave(&self, peer: RaftNodeId) {
+        let mut map = self.in_flight.lock().unwrap();
+        *map.entry(peer).or_insert(1) -= 1;
+    }
+}
+
+impl RaftTransport for OneInFlightTransport {
+    fn append_entries(
+        &self,
+        request: AppendEntriesRequest,
+    ) -> Result<AppendEntriesResponse, RaftError> {
+        let peer = request.target_id;
+        self.enter(peer);
+        // Hold the request open a moment so a second concurrent sender WOULD overlap here.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let out = self.cluster.receive_append_entries(request);
+        self.leave(peer);
+        out
+    }
+    fn request_vote(&self, request: VoteRequest) -> Result<VoteResponse, RaftError> {
+        self.cluster.receive_vote_request(request)
+    }
+    fn install_snapshot(
+        &self,
+        request: InstallSnapshotRequest,
+    ) -> Result<InstallSnapshotResponse, RaftError> {
+        self.cluster.receive_install_snapshot(request)
+    }
+    fn install_snapshot_chunk(
+        &self,
+        request: InstallSnapshotChunkRequest,
+    ) -> Result<InstallSnapshotChunkResponse, RaftError> {
+        self.cluster.receive_install_snapshot_chunk(request)
+    }
+}
+
+/// Eight concurrent proposers, and never two appends in flight to one follower.
+#[test]
+fn at_most_one_append_in_flight_per_follower() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = RaftCluster::new_single_shard_with_wal(
+        dir.path(),
+        1,
+        [1, 2, 3],
+        RaftConfig::default(),
+    )
+    .unwrap();
+    let transport = OneInFlightTransport {
+        cluster: cluster.clone(),
+        in_flight: Default::default(),
+        max_seen: Default::default(),
+    };
+    let writers = 8usize;
+    let each = 6usize;
+    let start = std::sync::Arc::new(std::sync::Barrier::new(writers));
+    let cluster = std::sync::Arc::new(cluster);
+    let handles: Vec<_> = (0..writers)
+        .map(|writer| {
+            let cluster = std::sync::Arc::clone(&cluster);
+            let transport = transport.clone();
+            let start = std::sync::Arc::clone(&start);
+            std::thread::spawn(move || {
+                start.wait();
+                let mut accepted = 0usize;
+                for index in 0..each {
+                    if cluster
+                        .propose_distributed(
+                            Command::StringSet {
+                                key: format!("pipe-{writer:02}-{index:02}"),
+                                value: format!("v{writer}-{index}").into_bytes(),
+                            },
+                            &transport,
+                        )
+                        .is_ok()
+                    {
+                        accepted += 1;
+                    }
+                }
+                accepted
+            })
+        })
+        .collect();
+    let accepted: usize = handles.into_iter().map(|handle| handle.join().unwrap()).sum();
+
+    let max_in_flight = transport
+        .max_seen
+        .load(std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        max_in_flight <= 1,
+        "{max_in_flight} appends were in flight to one follower at once"
+    );
+    assert_eq!(
+        accepted,
+        writers * each,
+        "every propose should commit through the pipeline"
+    );
+}
+
+/// Each of many concurrent proposers gets ITS OWN command's response back, not whichever
+/// happened to apply last in the same commit batch.
+#[test]
+fn concurrent_proposers_get_their_own_responses() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = RaftCluster::new_single_shard_with_wal(
+        dir.path(),
+        1,
+        [1, 2, 3],
+        RaftConfig::default(),
+    )
+    .unwrap();
+    let transport = cluster.clone();
+    // Seed distinct values, then read them back through propose_distributed concurrently: a
+    // string_get's response carries the value, so a swapped response is immediately visible.
+    for key in 0..6 {
+        cluster
+            .propose_distributed(
+                Command::StringSet {
+                    key: format!("own-{key}"),
+                    value: format!("value-{key}").into_bytes(),
+                },
+                &transport,
+            )
+            .unwrap();
+    }
+    let cluster = std::sync::Arc::new(cluster);
+    let start = std::sync::Arc::new(std::sync::Barrier::new(6));
+    let handles: Vec<_> = (0..6)
+        .map(|key| {
+            let cluster = std::sync::Arc::clone(&cluster);
+            let transport = (*cluster).clone();
+            let start = std::sync::Arc::clone(&start);
+            std::thread::spawn(move || {
+                start.wait();
+                let response = cluster
+                    .propose_distributed(
+                        Command::StringGet {
+                            key: format!("own-{key}"),
+                        },
+                        &transport,
+                    )
+                    .unwrap();
+                (key, response)
+            })
+        })
+        .collect();
+    for handle in handles {
+        let (key, response) = handle.join().unwrap();
+        match response {
+            CommandResponse::Bytes { value: Some(value) } => assert_eq!(
+                value,
+                format!("value-{key}").into_bytes(),
+                "proposer {key} got another command's response"
+            ),
+            other => panic!("proposer {key} got {other:?}"),
+        }
+    }
+}

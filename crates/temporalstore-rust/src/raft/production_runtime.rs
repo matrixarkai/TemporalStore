@@ -424,6 +424,41 @@ impl ProductionRaftRuntime {
                     last_contact_epoch = cluster.leader_contact_epoch();
                     if force_heartbeat || last_heartbeat.elapsed() >= heartbeat_interval {
                         force_heartbeat = false;
+                        if super::follower_pipeline::follower_pipeline_enabled() {
+                            // Heartbeats, catch-up batches and liveness all ride the per-follower
+                            // senders: a second sender here is exactly the interleaving the
+                            // pipeline exists to end. Check-quorum reads what the senders saw.
+                            let transport = RaftRpcRuntime::with_auth_token(
+                                AuthenticatedRaftTransport::new(
+                                    HttpRaftTransport::with_options(
+                                        peer_map.clone(),
+                                        http_options,
+                                    ),
+                                    auth_token.clone(),
+                                ),
+                                rpc_options,
+                                Some(auth_token.clone()),
+                            );
+                            cluster.ensure_follower_pipeline(&transport);
+                            cluster.ring_heartbeats();
+                            let window_ms = heartbeat_interval.as_millis() as u64
+                                * u64::from(peer_failure_threshold).max(1)
+                                + 250;
+                            let reached = 1 + cluster.pipeline_reached_within(window_ms);
+                            if reached < majority_size {
+                                quorum_misses = quorum_misses.saturating_add(1);
+                                if quorum_misses >= peer_failure_threshold {
+                                    quorum_misses = 0;
+                                    let _ = cluster.step_down_local(local_node_id);
+                                }
+                            } else {
+                                quorum_misses = 0;
+                            }
+                            last_heartbeat = InstantCompat::now();
+                            let _ = cluster.tick_election();
+                            thread::sleep(election_tick);
+                            continue;
+                        }
                         let transport = RaftRpcRuntime::with_auth_token(
                             AuthenticatedRaftTransport::new(
                                 HttpRaftTransport::with_options(peer_map.clone(), http_options),
