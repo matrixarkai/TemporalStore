@@ -5607,8 +5607,11 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         return {"recorded": True, "memory_id": memory_id, "feedback": rating,
                 "feedback_reason": reason}
 
-    def raw_records_for_history(self) -> list[Json]:
+    def raw_records_for_history(self, memory_id: str | None = None) -> list[Json]:
         """The records `history` walks. Base implementation: the whole raw log.
+
+        `memory_id` is a scoping HINT: a backend that can fetch one memory's records cheaply may
+        use it, and history filters by id either way, so ignoring it is always correct.
 
         History consumes three record types -- the memory's event rows, the tombstones that
         target or created it, and its feedback ratings -- in append order. A backend that can
@@ -5627,7 +5630,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             raise MatrixArkError("history requires a memory_id")
         events: list[Json] = []
         seen_ingested = False
-        for record in self.raw_records_for_history():
+        for record in self.raw_records_for_history(memory_id):
             record_type = str(record.get("record_type") or "")
             ts = record.get("updated_at_ms") or record.get("timestamp_key_ms") or record.get("event_time_ms") or record.get("created_at_ms")
             if record_type == "context_event" and str(record.get("event_id_hash")) == memory_id:

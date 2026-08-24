@@ -1108,7 +1108,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             return True
         return bool(records)
 
-    def _scan_records_of_types(self, record_types: list[str]) -> list[Json] | None:
+    def _scan_records_of_types(
+        self, record_types: list[str], record_ids: list[str] | None = None
+    ) -> list[Json] | None:
         """Records of exactly these types, in append order, from one filtered scan. None = could
         not ask.
 
@@ -1131,7 +1133,14 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                 record_types=list(record_types),
                 secondary_index_groups=[],
                 selected_node_hashes=[],
+                **({"record_ids": [str(item) for item in record_ids]} if record_ids else {}),
             )
+        except TypeError:
+            # An older client without the record_ids parameter: ask untargeted; the caller's own
+            # filters still apply, so this is the slow answer, not a wrong one.
+            if not record_ids:
+                return None
+            return self._scan_records_of_types(record_types)
         except Exception:  # noqa: BLE001 - an unanswered question means "do the full read".
             return None
         if not isinstance(response, dict):
@@ -1153,7 +1162,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             from matrixark_mcp_local_adapter import MEMORY_TOMBSTONE_RECORD_TYPE
         return self._scan_records_of_types([MEMORY_TOMBSTONE_RECORD_TYPE])
 
-    def raw_records_for_history(self) -> list[Json]:
+    def raw_records_for_history(self, memory_id: str | None = None) -> list[Json]:
         """History's records from a three-type scan instead of a raw read of the whole log.
 
         The raw read hauls the entire store -- summaries, embeddings, index postings -- to answer
@@ -1166,13 +1175,16 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             from tools.matrixark_mcp_local_adapter import MEMORY_TOMBSTONE_RECORD_TYPE
         except ModuleNotFoundError:  # Direct script execution from tools/.
             from matrixark_mcp_local_adapter import MEMORY_TOMBSTONE_RECORD_TYPE
-        subset = self._scan_records_of_types([
-            "context_event",
-            MEMORY_TOMBSTONE_RECORD_TYPE,
-            self.MEMORY_FEEDBACK_RECORD_TYPE,
-        ])
+        subset = self._scan_records_of_types(
+            [
+                "context_event",
+                MEMORY_TOMBSTONE_RECORD_TYPE,
+                self.MEMORY_FEEDBACK_RECORD_TYPE,
+            ],
+            record_ids=[str(memory_id)] if memory_id else None,
+        )
         if subset is None:
-            return super().raw_records_for_history()
+            return super().raw_records_for_history(memory_id)
         return subset
 
     def prior_context_records(self) -> list[Json]:
@@ -2251,8 +2263,11 @@ class MatrixArkRustCdylibClient:
             append_options=append_options,
         )
 
-    def matrixark_scan_candidates(self, *, count_key: str, record_hash_key: str, shard_size: int, scope: Json, record_types: list[str], secondary_index_groups: list[list[str]], selected_node_hashes: list[int]) -> Json:
-        request = json.dumps({"scope": scope, "record_types": record_types, "secondary_index_groups": secondary_index_groups, "selected_node_hashes": selected_node_hashes}, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    def matrixark_scan_candidates(self, *, count_key: str, record_hash_key: str, shard_size: int, scope: Json, record_types: list[str], secondary_index_groups: list[list[str]], selected_node_hashes: list[int], record_ids: list[str] | None = None) -> Json:
+        payload: Json = {"scope": scope, "record_types": record_types, "secondary_index_groups": secondary_index_groups, "selected_node_hashes": selected_node_hashes}
+        if record_ids:
+            payload["record_ids"] = [str(item) for item in record_ids]
+        request = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
         def call() -> Json:
             out = self._ctypes.c_void_p()
             error = self._ctypes.c_void_p()
@@ -3332,7 +3347,11 @@ class MatrixArkRustProxyClient:
         record_types: list[str],
         secondary_index_groups: list[list[str]],
         selected_node_hashes: list[int],
+        record_ids: list[str] | None = None,
     ) -> Json:
+        extra: Json = {}
+        if record_ids:
+            extra["record_ids"] = [str(item) for item in record_ids]
         return self._call_json(
             "matrixark_scan_candidates",
             count_key=count_key,
@@ -3342,6 +3361,7 @@ class MatrixArkRustProxyClient:
             record_types=record_types,
             secondary_index_groups=secondary_index_groups,
             selected_node_hashes=selected_node_hashes,
+            **extra,
         )
 
     def metrics_prometheus(self) -> str:

@@ -49,12 +49,21 @@ class _NativeAdapter(adapters.MatrixArkTemporalStoreDirectAdapter):
         self.scan_calls = 0
         self.raw_reads = 0
 
-    def _scan_records_of_types(self, record_types):
+    def _scan_records_of_types(self, record_types, record_ids=None):
         self.scan_calls += 1
+        self.last_record_ids = list(record_ids or [])
         if not self._scan_available:
             return None
         wanted = set(record_types)
-        return [r for r in self._records if str(r.get("record_type") or "") in wanted]
+        subset = [r for r in self._records if str(r.get("record_type") or "") in wanted]
+        if record_ids:
+            ids = {str(i) for i in record_ids}
+            def linked(r):
+                own = {str(r.get(f)) for f in ("event_id_hash", "target_memory_id", "superseded_by")
+                       if r.get(f) is not None}
+                return bool(own & ids)
+            subset = [r for r in subset if linked(r)]
+        return subset
 
     def _read_raw_records(self):
         self.raw_reads += 1
@@ -71,6 +80,8 @@ class HistoryScopedTests(unittest.TestCase):
         adapter = _NativeAdapter(_story())
         events = self._events(adapter, "77")
         self.assertEqual(0, adapter.raw_reads)
+        self.assertEqual(["77"], adapter.last_record_ids,
+                         "the memory id must reach the scan as its scoping hint")
         self.assertEqual([("ingested", None), ("feedback", "POSITIVE"),
                           ("superseded", "88")], events)
 
