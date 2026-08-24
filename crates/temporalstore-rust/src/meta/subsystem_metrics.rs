@@ -61,6 +61,9 @@ struct SubsystemMetricsState {
     divergence_rate_limited: u64,
     retention_blocked_servers: u64,
     retention_capped: u64,
+    calibration_shortfall_groups: u64,
+    calibration_shortfall_proxies: u64,
+    calibration_capped: u64,
 }
 
 /// Shared recorder for background-subsystem outcomes.
@@ -119,6 +122,47 @@ impl SubsystemMetrics {
     }
 
     /// Record one retention round.
+    /// Record one proxy calibration round.
+    ///
+    /// Calibration was the one background subsystem reporting nothing. Its
+    /// attach and detach both go through `set_proxy_group`, so they land in the
+    /// change history -- but a group left short of its target existed only in
+    /// the returned plan, which the loop dropped. `ProxyGroupShortfall` says of
+    /// itself that no available proxies "is an operator problem rather than a
+    /// metaserver one", and nothing was telling the operator.
+    pub fn record_calibration(&self, plan: &ProxyCalibrationPlan) {
+        self.with(|state| {
+            *state
+                .rounds_total
+                .entry("proxy_calibration".to_string())
+                .or_default() += 1;
+            *state
+                .reassigned_total
+                .entry("proxy_attach".to_string())
+                .or_default() += plan.attach.len() as u64;
+            *state
+                .reassigned_total
+                .entry("proxy_detach".to_string())
+                .or_default() += plan.detach.len() as u64;
+            state.calibration_shortfall_groups = plan.shortfalls.len() as u64;
+            // What each group is still short once this round's attaches land.
+            // `attached` is the count before the round and `available` is what
+            // the round can attach, so leaving `available` out overstates every
+            // shortfall by exactly the proxies about to be added.
+            state.calibration_shortfall_proxies = plan
+                .shortfalls
+                .iter()
+                .map(|short| {
+                    short
+                        .wanted
+                        .saturating_sub(short.attached)
+                        .saturating_sub(short.available)
+                })
+                .sum();
+            state.calibration_capped = plan.capped as u64;
+        });
+    }
+
     pub fn record_retention(&self, plan: &MetaRetentionPlan) {
         self.with(|state| {
             *state
@@ -369,6 +413,30 @@ fn render(state: &SubsystemMetricsState) -> String {
         state.retention_blocked_servers,
     );
 
+    out.push_str("# HELP temporalstore_meta_calibration_shortfall_groups Proxy groups left short of their target last round.\n");
+    out.push_str("# TYPE temporalstore_meta_calibration_shortfall_groups gauge\n");
+    push(
+        &mut out,
+        "temporalstore_meta_calibration_shortfall_groups",
+        &[],
+        state.calibration_shortfall_groups,
+    );
+    out.push_str("# HELP temporalstore_meta_calibration_shortfall_proxies Proxies those groups are missing.\n");
+    out.push_str("# TYPE temporalstore_meta_calibration_shortfall_proxies gauge\n");
+    push(
+        &mut out,
+        "temporalstore_meta_calibration_shortfall_proxies",
+        &[],
+        state.calibration_shortfall_proxies,
+    );
+    out.push_str("# HELP temporalstore_meta_calibration_capped Calibration changes the per-round cap held back last round.\n");
+    out.push_str("# TYPE temporalstore_meta_calibration_capped gauge\n");
+    push(
+        &mut out,
+        "temporalstore_meta_calibration_capped",
+        &[],
+        state.calibration_capped,
+    );
     out.push_str("# HELP temporalstore_meta_retention_capped Purges the per-round cap held back last round.\n");
     out.push_str("# TYPE temporalstore_meta_retention_capped gauge\n");
     push(

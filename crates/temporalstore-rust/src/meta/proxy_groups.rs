@@ -431,6 +431,9 @@ impl SingleNodeMeta {
         options: ProxyCalibrationOptions,
     ) -> ProxyCalibrationReport {
         let plan = self.plan_proxy_calibration_now(options);
+        // Recorded before the plan is applied, so a round that fails partway
+        // still reports what it set out to do and what it was short of.
+        self.metrics.record_calibration(&plan);
         for item in plan.detach.iter() {
             let response = self.set_proxy_group(ProxyAttachment {
                 proxy_addr: item.proxy_addr.clone(),
@@ -512,6 +515,105 @@ impl SingleNodeMeta {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_group_short_of_proxies_is_reported() {
+        // Calibration attaches and detaches through `set_proxy_group`, so those
+        // land in the change history. A group left short did not: it existed
+        // only in the returned plan, which the loop dropped. That is the number
+        // an operator needs -- the shortfall type says as much about itself.
+        let meta = SingleNodeMeta::default();
+        assert!(meta
+            .put_proxy_group(PutProxyGroupRequest {
+                group: "g1".to_string(),
+                namespace: "ns".to_string(),
+                location: "rack-1".to_string(),
+                instance_num: 3,
+            })
+            .status
+            .ok);
+        // One idle proxy for a group that wants three.
+        assert!(meta
+            .register_proxy(RegisterProxyRequest {
+                proxy_addr: "p1".to_string(),
+                namespace: "ns".to_string(),
+                location: "rack-1".to_string(),
+                config_version: 1,
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok);
+        assert!(meta
+            .proxy_heartbeat(ProxyHeartbeatRequest {
+                proxy_addr: "p1".to_string(),
+                namespace: "ns".to_string(),
+                config_version: 1,
+                binary_version: "v1".to_string(),
+                boot_time_ms: 0,
+            })
+            .status
+            .ok);
+
+        let report = meta.calibrate_proxy_groups(ProxyCalibrationOptions::default());
+        assert!(report.status.ok, "{report:?}");
+        assert_eq!(report.plan.shortfalls.len(), 1, "{:?}", report.plan);
+
+        let exported = meta.subsystem_metrics().prometheus();
+        assert!(
+            exported.contains("temporalstore_meta_calibration_shortfall_groups 1"),
+            "a group short of capacity was not reported:\n{exported}"
+        );
+        assert!(
+            exported.contains("temporalstore_meta_calibration_shortfall_proxies 2"),
+            "wanted 3 and attached 1, so two are missing:\n{exported}"
+        );
+    }
+
+    #[test]
+    fn a_group_at_its_target_reports_no_shortfall() {
+        // The guard: a healthy round must not look like a capacity problem.
+        let meta = SingleNodeMeta::default();
+        assert!(meta
+            .put_proxy_group(PutProxyGroupRequest {
+                group: "g1".to_string(),
+                namespace: "ns".to_string(),
+                location: "rack-1".to_string(),
+                instance_num: 1,
+            })
+            .status
+            .ok);
+        assert!(meta
+            .register_proxy(RegisterProxyRequest {
+                proxy_addr: "p1".to_string(),
+                namespace: "ns".to_string(),
+                location: "rack-1".to_string(),
+                config_version: 1,
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok);
+        assert!(meta
+            .proxy_heartbeat(ProxyHeartbeatRequest {
+                proxy_addr: "p1".to_string(),
+                namespace: "ns".to_string(),
+                config_version: 1,
+                binary_version: "v1".to_string(),
+                boot_time_ms: 0,
+            })
+            .status
+            .ok);
+
+        assert!(meta
+            .calibrate_proxy_groups(ProxyCalibrationOptions::default())
+            .status
+            .ok);
+        let exported = meta.subsystem_metrics().prometheus();
+        assert!(
+            exported.contains("temporalstore_meta_calibration_shortfall_groups 0"),
+            "a satisfied group was reported as short:\n{exported}"
+        );
+    }
+
     use super::*;
 
     fn group(name: &str, ns: &str, location: &str, want: u64) -> ProxyGroupInfo {
