@@ -1078,6 +1078,11 @@ pub struct ContextFanoutPlanReport {
     pub event_expanded_nodes: usize,
     pub skipped_node_count: usize,
     pub summary_lookup_batches: usize,
+    // Candidate nodes whose L0 vector had to come from the separate embedding row because the
+    // node record carried none. The node_l0 rows can only be retired once this reads zero in
+    // production -- see the retirement issue. serde(default) so older reports still decode.
+    #[serde(default)]
+    pub l0_row_fallback_nodes: usize,
     #[serde(default)]
     pub event_query_budget: usize,
     #[serde(default)]
@@ -1921,16 +1926,64 @@ pub fn retrieve_context(
         }
     };
     trace_stage("query_embedding");
-    let mut summary_ref_owners = BTreeMap::new();
-    let mut summary_ref_hashes = Vec::with_capacity(node_hashes.len().saturating_mul(2));
-    for node_hash in &node_hashes {
-        for label in ["node_l0", "node_l1"] {
-            let ref_hash = context_embedding_ref_hash(request.tenant_hash, *node_hash, label);
-            summary_ref_owners.insert(ref_hash, *node_hash);
-            summary_ref_hashes.push(ref_hash);
+    let mut summary_scores_by_node = BTreeMap::<u64, (i64, usize)>::new();
+    // node_l0 comes from the node records themselves: the write path has carried the vector on
+    // the node since the fold, and the node is addressable by the hash already in hand -- no
+    // one-way ref hash to reconstruct. Nodes with an empty vector (embedded before the fold, or
+    // not embedded at all) fall back to the separate rows below, which is what lets those rows
+    // be retired without a flag day. Chunked like the row query: a single oversized command is
+    // rejected outright, not truncated, and an unscored node silently collapses to the
+    // lexical/recency fallback.
+    let mut l0_row_fallback: Vec<u64> = Vec::new();
+    for chunk in node_hashes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let response = engine.execute(ExecuteRequest {
+            shard_id: request.shard_id,
+            command: Command::ContextGetNodes {
+                tenant_hash: request.tenant_hash,
+                node_hashes: chunk.to_vec(),
+            },
+        });
+        let mut returned = BTreeSet::new();
+        if let CommandResponse::ContextNodes { nodes } = response.response {
+            for node in nodes {
+                returned.insert(node.node_hash);
+                if node.vector.is_empty() {
+                    l0_row_fallback.push(node.node_hash);
+                } else {
+                    let score =
+                        context_embedding_similarity_micros(&query_embedding, &node.vector);
+                    let entry = summary_scores_by_node.entry(node.node_hash).or_default();
+                    entry.0 = entry.0.max(score);
+                    entry.1 = entry.1.saturating_add(1);
+                }
+            }
+        }
+        // A node the engine did not return cannot carry a vector; its row (if any) still can.
+        for node_hash in chunk {
+            if !returned.contains(node_hash) {
+                l0_row_fallback.push(*node_hash);
+            }
         }
     }
-    let mut summary_scores_by_node = BTreeMap::<u64, (i64, usize)>::new();
+    fanout_plan.l0_row_fallback_nodes = l0_row_fallback.len();
+    let mut summary_ref_owners = BTreeMap::new();
+    let mut summary_ref_hashes =
+        Vec::with_capacity(l0_row_fallback.len().saturating_add(node_hashes.len()));
+    for node_hash in &l0_row_fallback {
+        let ref_hash = context_embedding_ref_hash(request.tenant_hash, *node_hash, "node_l0");
+        summary_ref_owners.insert(ref_hash, *node_hash);
+        summary_ref_hashes.push(ref_hash);
+    }
+    // node_l1 still reads the separate rows: its owner-side home is the L1 summary's vector,
+    // and switching that read belongs to the summary-side step, not this one.
+    for node_hash in &node_hashes {
+        let ref_hash = context_embedding_ref_hash(request.tenant_hash, *node_hash, "node_l1");
+        summary_ref_owners.insert(ref_hash, *node_hash);
+        summary_ref_hashes.push(ref_hash);
+    }
     // The engine caps a single ContextQueryEmbeddings at CONTEXT_MAX_LIMIT
     // ref_hashes -- command validation REJECTS a larger request outright rather
     // than truncating it. A large (bulk-ingested) namespace has many more nodes

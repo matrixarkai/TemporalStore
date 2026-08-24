@@ -86,9 +86,41 @@ fn load_existing_embedding_refs(
     tenant_hash: u64,
     node_hashes: &[u64],
 ) -> HashSet<u64> {
+    // "Already embedded" is answered from the node record first: since the fold, the write path
+    // carries the vector on the node itself, and the separate node_l0 rows are on their way out.
+    // A node with an empty vector may still have a row from before the fold, so those (and nodes
+    // the engine does not return) are checked against the rows as before. The result is keyed by
+    // ref hash either way, because that is what every caller compares against.
     let mut out = HashSet::new();
     for chunk in node_hashes.chunks(512) {
-        let ref_hashes: Vec<u64> = chunk
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextGetNodes {
+                tenant_hash,
+                node_hashes: chunk.to_vec(),
+            },
+        });
+        let mut row_check: Vec<u64> = Vec::new();
+        let mut returned = HashSet::new();
+        if let CommandResponse::ContextNodes { nodes } = response.response {
+            for node in nodes {
+                returned.insert(node.node_hash);
+                if node.vector.is_empty() {
+                    row_check.push(node.node_hash);
+                } else {
+                    out.insert(context_embedding_ref_hash(tenant_hash, node.node_hash, "node_l0"));
+                }
+            }
+        }
+        for node_hash in chunk {
+            if !returned.contains(node_hash) {
+                row_check.push(*node_hash);
+            }
+        }
+        if row_check.is_empty() {
+            continue;
+        }
+        let ref_hashes: Vec<u64> = row_check
             .iter()
             .map(|node_hash| context_embedding_ref_hash(tenant_hash, *node_hash, "node_l0"))
             .collect();
@@ -97,7 +129,7 @@ fn load_existing_embedding_refs(
             command: Command::ContextQueryEmbeddings {
                 tenant_hash,
                 ref_hashes,
-                limit: Some(chunk.len().max(1)),
+                limit: Some(row_check.len().max(1)),
             },
         });
         if let CommandResponse::ContextEmbeddings { embeddings } = resp.response {
@@ -518,26 +550,43 @@ fn main() {
                 failed += chunk.len() as u64;
                 continue;
             }
-            let mut commands = Vec::with_capacity(chunk.len());
+            // Two commands per node, like the drainer and the live ingest: the separate row
+            // (still what node_l1-era readers and pre-fold data use) and the same vector on the
+            // node itself. A backfill that wrote only the row would leave node.vector empty and
+            // strand exactly the nodes it repaired on the fallback path forever.
+            let mut commands = Vec::with_capacity(chunk.len().saturating_mul(2));
             for ((node_hash, _), vector) in chunk.iter().zip(vectors.into_iter()) {
                 let embedding = ContextEmbedding {
                     ref_hash: context_embedding_ref_hash(tenant_hash, *node_hash, "node_l0"),
                     level: 1,
                     model_hash: stable_hash64(&format!("embedding_model:{}", embedding_model)),
-                    vector,
+                    vector: vector.clone(),
                     updated_at_ms,
                 };
                 commands.push(Command::ContextUpsertEmbedding {
                     tenant_hash,
                     embedding,
                 });
+                commands.push(Command::ContextSetNodeEmbedding {
+                    tenant_hash,
+                    node_hash: *node_hash,
+                    model_hash: stable_hash64(&format!("embedding_model:{}", embedding_model)),
+                    vector,
+                    updated_at_ms,
+                });
             }
             let response = engine.batch_execute(BatchExecuteRequest {
                 shard_id: 1,
                 commands,
             });
-            let ok = response.responses.iter().filter(|r| r.status.ok).count();
-            let bad = response.responses.len().saturating_sub(ok);
+            // Responses pair up with the commands; judge each node by its ROW write so the
+            // ok/bad accounting means exactly what it meant before the node write existed.
+            let ok = response
+                .responses
+                .chunks(2)
+                .filter(|pair| pair.first().map(|r| r.status.ok).unwrap_or(false))
+                .count();
+            let bad = chunk.len().saturating_sub(ok);
             embedded += ok as u64;
             failed += bad as u64;
         }
