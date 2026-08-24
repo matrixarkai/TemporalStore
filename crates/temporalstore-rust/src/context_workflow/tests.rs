@@ -1443,25 +1443,51 @@ fn context_reference_blocks_and_provider_model_switches_are_reported() {
                 if summaries.iter().any(|summary| summary.text == extract.l0)
         ));
 
-        let embedding_refs = vec![
-            context_embedding_ref_hash(20260620, extract.node.node_hash, "node_l0"),
-            context_embedding_ref_hash(20260620, extract.node.node_hash, "node_l1"),
-            context_embedding_ref_hash(20260620, extract.event.event_id_hash, "event_text"),
-        ];
-        let embeddings = engine.execute(ExecuteRequest {
+        // The vectors live on their owners: both summary levels answer the batched
+        // vector query, and the event itself carries one. No separate rows exist to ask.
+        for level in [1u32, 2] {
+            let vectors = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextQuerySummaryVectors {
+                    tenant_hash: 20260620,
+                    node_hashes: vec![extract.node.node_hash],
+                    level,
+                    as_of_ms: extract.event.event_time_ms + 1,
+                },
+            });
+            assert!(
+                matches!(
+                    vectors.response,
+                    CommandResponse::ContextSummaryVectors { ref vectors }
+                        if vectors.len() == 1 && vectors[0].vector.len() == 16
+                ),
+                "level {level} summary must carry its vector"
+            );
+        }
+        let events = engine.execute(ExecuteRequest {
             shard_id: 1,
-            command: Command::ContextQueryEmbeddings {
+            command: Command::ContextQueryEvents {
                 tenant_hash: 20260620,
-                ref_hashes: embedding_refs,
+                node_hash: extract.node.node_hash,
+                start_time_ms: 0,
+                end_time_ms: extract.event.event_time_ms + 1,
                 limit: Some(8),
+                max_scan: None,
+                current_valid_only: false,
+                as_of_ms: 0,
+                kinds: Vec::new(),
+                statuses: Vec::new(),
+                min_confidence: 0.0,
+                min_importance: 0.0,
             },
         });
         assert!(matches!(
-            embeddings.response,
-            CommandResponse::ContextEmbeddings { ref embeddings }
-                if embeddings.len() == 3
-                    && embeddings.iter().all(|embedding| embedding.vector.len() == 16)
-                    && embeddings.iter().all(|embedding| embedding.updated_at_ms == extract.event.event_time_ms)
+            events.response,
+            CommandResponse::ContextEvents { ref events, .. }
+                if events
+                    .iter()
+                    .any(|event| event.event_id_hash == extract.event.event_id_hash
+                        && event.vector.len() == 16)
         ));
 
         // The node itself must carry its L0 vector off the same ingest -- the traversal scores
@@ -2485,7 +2511,12 @@ fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
         .any(|block| block.text.contains("payment dependency timed out")
             || block.text.contains("payment gateway canary")));
 
-    let embedding_refs = report.embedding_refs.clone();
+    let extract_node_hashes: Vec<u64> = report
+        .ingest
+        .extracts
+        .iter()
+        .map(|extract| extract.node.node_hash)
+        .collect();
     let secondary_indexes = report.secondary_indexes.clone();
     let checked_ref_count = secondary_indexes.resource_refs.len()
         + secondary_indexes.skill_refs.len()
@@ -2496,19 +2527,20 @@ fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
 
     let restored = TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &page_dir, &index_dir);
     restored.load_shard(1);
-    let embeddings = restored.execute(ExecuteRequest {
+    // The vectors persisted on the nodes themselves, so a cold reload proves embedding
+    // durability by fetching the owners.
+    let nodes = restored.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::ContextQueryEmbeddings {
+        command: Command::ContextGetNodes {
             tenant_hash: 42,
-            ref_hashes: embedding_refs,
-            limit: Some(16),
+            node_hashes: extract_node_hashes.clone(),
         },
     });
     assert!(matches!(
-        embeddings.response,
-        CommandResponse::ContextEmbeddings { ref embeddings }
-            if embeddings.len() >= report.ingest.accepted * 3
-                && embeddings.iter().all(|embedding| embedding.vector.len() == 16)
+        nodes.response,
+        CommandResponse::ContextNodes { ref nodes }
+            if nodes.len() == extract_node_hashes.len()
+                && nodes.iter().all(|node| node.vector.len() == 16)
     ));
     let validation = validate_resource_skill_secondary_indexes(
         &restored,
@@ -2663,7 +2695,6 @@ fn resource_ingest_uses_live_embeddings_and_summary_retrieval() {
         vec!["resource-live".to_string()]
     );
     assert_eq!(report.embedding_evidence.vector_dimensions, vec![4]);
-    assert_eq!(report.embedding_refs.len(), 3);
     let traversal = &report
         .retrieval
         .query_understanding_debug

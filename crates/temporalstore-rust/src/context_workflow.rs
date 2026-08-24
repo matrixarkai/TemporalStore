@@ -809,7 +809,6 @@ pub struct ContextResourceSkillIngestReport {
     #[serde(default)]
     pub skill_selection: ContextSkillSelectionReport,
     pub ingest: ContextIngestExtractReport,
-    pub embedding_refs: Vec<u64>,
     #[serde(default)]
     pub embedding_evidence: ContextResourceSkillEmbeddingEvidenceReport,
     pub fanout: ContextResourceSkillModelFanoutReport,
@@ -1660,61 +1659,11 @@ pub(crate) fn extract_context_gated(
             (Vec::new(), ContextEmbeddingGenerationReport::default(), true)
         }
     };
-    // Embedding upsert commands are built only when embeddings actually succeeded;
-    // when deferred we skip them and mark the node embedding-dirty instead.
-    let embedding_commands: Vec<Command> = if embedding_deferred {
-        Vec::new()
-    } else {
-        let embedding_l0 = ContextEmbedding {
-            ref_hash: context_embedding_ref_hash(request.tenant_hash, node_hash, "node_l0"),
-            level: 1,
-            model_hash: context_embedding_model_hash(&provider.model),
-            vector: embedding_vectors[0].clone(),
-            updated_at_ms: timestamp_ms,
-        };
-        let embedding_l1 = if emit_l1 {
-            Some(ContextEmbedding {
-                ref_hash: context_embedding_ref_hash(request.tenant_hash, node_hash, "node_l1"),
-                level: 2,
-                model_hash: context_embedding_model_hash(&provider.model),
-                vector: embedding_vectors[1].clone(),
-                updated_at_ms: timestamp_ms,
-            })
-        } else {
-            None
-        };
-        let event_vector_index = if emit_l1 { 2 } else { 1 };
-        let embedding_event = ContextEmbedding {
-            ref_hash: context_embedding_ref_hash(request.tenant_hash, event_id_hash, "event_text"),
-            level: 3,
-            model_hash: context_embedding_model_hash(&provider.model),
-            vector: embedding_vectors[event_vector_index].clone(),
-            updated_at_ms: timestamp_ms,
-        };
-        let mut embedding_commands = vec![Command::ContextUpsertEmbedding {
-            tenant_hash: request.tenant_hash,
-            embedding: embedding_l0,
-        }];
-        if let Some(embedding_l1) = embedding_l1 {
-            embedding_commands.push(Command::ContextUpsertEmbedding {
-                tenant_hash: request.tenant_hash,
-                embedding: embedding_l1,
-            });
-        }
-        embedding_commands.push(Command::ContextUpsertEmbedding {
-            tenant_hash: request.tenant_hash,
-            embedding: embedding_event,
-        });
-        embedding_commands
-    };
 
-    // Step 2 of the embedding fold: carry the event's vector on the event record itself,
-    // alongside the separate ContextEmbedding row that readers still address by ref_hash.
-    // Dual-write on purpose -- ref_hash is a one-way hash of (tenant, owner, level), so no
-    // reader can reach an owner record from it, and the separate rows cannot be dropped until
-    // every reader is migrated to (owner, level) addressing. Populating first means that
-    // migration can be verified against records that already carry their vector, instead of
-    // flipping storage and addressing in one step.
+    // The vectors live on their owners and nowhere else: the summaries, the event and the node
+    // each carry their own. The separate ContextEmbedding rows this used to also write were
+    // addressed by a one-way hash of (tenant, owner, level) -- nothing holding one could ever
+    // find its owner again -- and every reader now asks the owner, so the rows are retired.
     //
     // Left empty when embedding was deferred (provider failure): the node is marked
     // embedding-dirty and the async drainer attaches vectors later, so an empty vector here
@@ -1794,7 +1743,6 @@ pub(crate) fn extract_context_gated(
         });
     }
     // Embedding upserts (empty when deferred).
-    commands.extend(embedding_commands);
     for command in commands {
         let response = engine.execute_durable(ExecuteRequest {
             shard_id: request.shard_id,
