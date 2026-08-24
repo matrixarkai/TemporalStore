@@ -5266,7 +5266,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 old = record
                 break
         if old is None:
-            raise MatrixArkError("update target memory not found (already deleted, or not a memory id)")
+            raise MatrixArkNotFoundError("update target memory not found (already deleted, or not a memory id)")
         old_scope_key = str(old.get("scope_key") or "")
         parts = parse_scope_key(old_scope_key)
         # Tenant isolation: an authenticated request scope pins tenant_hash; refuse cross-tenant edits.

@@ -85,6 +85,19 @@ class MatrixArkError(ValueError):
     pass
 
 
+class MatrixArkNotFoundError(MatrixArkError):
+    """The thing the request addressed does not exist.
+
+    A distinct type so the edge can answer 404 instead of 500. The difference matters to a caller:
+    a stale memory id is its own state to fix, while a 500 says the server failed and invites a
+    retry or a page.
+
+    Defined HERE, beside the  the adapters actually raise and catch. There is a
+    second, unrelated  in matrixark_mcp_errors.py; subclassing that one instead
+    would produce an exception that  on this path does not catch.
+    """
+
+
 def is_retryable_temporalstore_error(error: Any) -> bool:
     text = str(error).lower()
     retryable_fragments = (
