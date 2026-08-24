@@ -3044,3 +3044,199 @@ fn asking_by_owner_and_by_ref_hash_give_the_same_vector() {
     assert_eq!(vector, by_owner);
     assert_eq!(by_ref_hash, by_owner, "the two read paths disagree");
 }
+
+// shared-corpus: context_traversal_scores_from_inline_vector
+#[test]
+fn traversal_scores_a_child_whose_only_vector_is_on_the_node() {
+    // The retirement-readiness assertion: NO separate embedding record exists here. If the
+    // traversal still reaches for one, dropping those records would silently turn every
+    // tree query into an empty answer -- so this test must hold BEFORE they can go.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    const TENANT: u64 = 5001;
+    const ROOT: u64 = 1;
+    const NEAR: u64 = 2;
+    const FAR: u64 = 3;
+    const EVENT_TIME: u64 = 1_781_600_000_000;
+
+    for (node_hash, name) in [(ROOT, "root"), (NEAR, "near"), (FAR, "far")] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode {
+                tenant_hash: TENANT,
+                node: ContextNode {
+                    node_hash,
+                    parent_hash: if node_hash == ROOT { 0 } else { ROOT },
+                    kind: 1,
+                    canonical_name: name.to_string(),
+                    l0: format!("{name} text"),
+                    status: 0,
+                    last_event_time_ms: EVENT_TIME,
+                    l1_ref: String::new(),
+                    raw_metadata_ref: String::new(),
+                    vector: Vec::new(),
+                    embedding_model_hash: 0,
+                    embedding_updated_at_ms: 0,
+                },
+            },
+        });
+        assert!(response.status.ok);
+    }
+    for child_hash in [NEAR, FAR] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertChildRef {
+                tenant_hash: TENANT,
+                child_ref: ContextChildRef {
+                    parent_hash: ROOT,
+                    child_hash,
+                    updated_at_ms: EVENT_TIME,
+                },
+            },
+        });
+        assert!(response.status.ok);
+    }
+    // Vectors arrive ONLY through the node-addressed write -- no ContextUpsertEmbedding at all.
+    for (node_hash, first, second) in [(NEAR, 1.0, 0.0), (FAR, 0.0, 1.0)] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextSetNodeEmbedding {
+                tenant_hash: TENANT,
+                node_hash,
+                model_hash: 7,
+                vector: vec![first, second],
+                updated_at_ms: EVENT_TIME,
+            },
+        });
+        assert!(response.status.ok);
+    }
+
+    let traversal = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextTraverseTree {
+            tenant_hash: TENANT,
+            start_node_hash: ROOT,
+            query_vector: vec![1.0, 0.0],
+            max_depth: Some(2),
+            top_k_per_depth: Some(1),
+            max_children_scored_per_parent: Some(10),
+            max_candidate_nodes: Some(4),
+            leaf_only: true,
+        },
+    });
+    assert!(
+        matches!(
+            traversal.response,
+            CommandResponse::ContextTraversedNodes { ref nodes }
+                if nodes.len() == 1 && nodes[0].node_hash == NEAR && nodes[0].score > 0.99
+        ),
+        "a child whose only vector lives on the node must be scored"
+    );
+}
+
+// shared-corpus: context_traversal_inline_vector_wins_over_record
+#[test]
+fn traversal_prefers_the_node_vector_over_a_stale_separate_record() {
+    // When both exist, the node's own vector must win: the node-addressed write is the one
+    // re-embedding goes through, so a disagreement means the separate record is the stale copy.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    const TENANT: u64 = 5002;
+    const ROOT: u64 = 1;
+    const CHILD: u64 = 2;
+    const EVENT_TIME: u64 = 1_781_600_000_000;
+
+    for node_hash in [ROOT, CHILD] {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode {
+                tenant_hash: TENANT,
+                node: ContextNode {
+                    node_hash,
+                    parent_hash: if node_hash == ROOT { 0 } else { ROOT },
+                    kind: 1,
+                    canonical_name: format!("n{node_hash}"),
+                    l0: "text".to_string(),
+                    status: 0,
+                    last_event_time_ms: EVENT_TIME,
+                    l1_ref: String::new(),
+                    raw_metadata_ref: String::new(),
+                    vector: Vec::new(),
+                    embedding_model_hash: 0,
+                    embedding_updated_at_ms: 0,
+                },
+            },
+        });
+    }
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextUpsertChildRef {
+            tenant_hash: TENANT,
+            child_ref: ContextChildRef {
+                parent_hash: ROOT,
+                child_hash: CHILD,
+                updated_at_ms: EVENT_TIME,
+            },
+        },
+    });
+    // The separate record points AWAY from the query; the node's own vector points at it.
+    let ref_hash =
+        crate::context_workflow::context_embedding_ref_hash(TENANT, CHILD, "node_l0");
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextUpsertEmbedding {
+            tenant_hash: TENANT,
+            embedding: ContextEmbedding {
+                ref_hash,
+                level: 1,
+                model_hash: 1,
+                vector: vec![0.0, 1.0],
+                updated_at_ms: EVENT_TIME,
+            },
+        },
+    });
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextSetNodeEmbedding {
+            tenant_hash: TENANT,
+            node_hash: CHILD,
+            model_hash: 2,
+            vector: vec![1.0, 0.0],
+            updated_at_ms: EVENT_TIME + 1,
+        },
+    });
+
+    let traversal = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextTraverseTree {
+            tenant_hash: TENANT,
+            start_node_hash: ROOT,
+            query_vector: vec![1.0, 0.0],
+            max_depth: Some(1),
+            top_k_per_depth: Some(1),
+            max_children_scored_per_parent: Some(10),
+            max_candidate_nodes: Some(4),
+            leaf_only: false,
+        },
+    });
+    assert!(
+        matches!(
+            traversal.response,
+            CommandResponse::ContextTraversedNodes { ref nodes }
+                if nodes.len() == 1 && nodes[0].node_hash == CHILD && nodes[0].score > 0.99
+        ),
+        "the node's own vector must outrank the stale separate record"
+    );
+}

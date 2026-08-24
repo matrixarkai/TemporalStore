@@ -795,6 +795,29 @@ pub(super) fn load_context_children(
         .unwrap_or_default()
 }
 
+pub(super) fn load_context_node(
+    cache: &MultiLayerCache,
+    page_store: &LocalBlockStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    tenant_hash: u64,
+    node_hash: u64,
+) -> Option<ContextNode> {
+    // Same two-step lookup as the ContextGetNode command: current nodes live in the hashes map
+    // under the CONTEXT_NODE_FIELD slot; context_nodes is the pre-hashes location still read for
+    // blocks written before that move.
+    let object_key = context_node_key(tenant_hash, node_hash);
+    shard
+        .hashes
+        .get(&object_key)
+        .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
+        .or_else(|| shard.context_nodes.get(&object_key))
+        .and_then(|address| {
+            read_page_bytes(cache, page_store, shard_id, address)
+                .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
+        })
+}
+
 pub(super) fn load_context_embedding(
     cache: &MultiLayerCache,
     page_store: &LocalBlockStore,
@@ -967,30 +990,48 @@ pub(super) fn traverse_context_tree(
             children.sort_by_key(|child_ref| (child_ref.updated_at_ms, child_ref.child_hash));
             children.truncate(child_limit);
             for child in children {
-                // Address the embedding the way WRITERS store it. This passed the child's raw
-                // node hash, but every writer stores under
-                // context_embedding_ref_hash(tenant, owner, level) -- a hash of those three --
-                // which can never equal a bare node hash. So the lookup missed for every child,
-                // `continue` fired every iteration, and the cosine scoring below was
-                // unreachable. The test did not catch it because it wrote its embedding under
-                // the raw node hash too, constructing the data the way this READER expected
-                // rather than the way writers actually write it.
-                let ref_hash = crate::context_workflow::context_embedding_ref_hash(
-                    tenant_hash,
-                    child.child_hash,
-                    "node_l0",
-                );
-                let Some(embedding) = load_context_embedding(
+                // Score from the vector the node itself carries -- the write path has set it
+                // since nodes gained one -- and fall back to the separate embedding record for
+                // nodes embedded before that. The fallback is what lets those records be retired
+                // without a flag day: by the time they are dropped, nothing here needs them.
+                //
+                // The fallback must address the record the way WRITERS store it: under
+                // context_embedding_ref_hash(tenant, owner, level), a one-way hash of those
+                // three. An earlier version passed the child's raw node hash, which can never
+                // equal that, so the lookup missed for every child and the cosine scoring was
+                // unreachable -- and the test missed it by writing its embedding under the raw
+                // hash too, constructing data the way the reader expected rather than the way
+                // writers write it.
+                let vector = load_context_node(
                     cache,
                     page_store,
                     shard_id,
                     shard,
                     tenant_hash,
-                    ref_hash,
-                ) else {
+                    child.child_hash,
+                )
+                .filter(|node| !node.vector.is_empty())
+                .map(|node| node.vector)
+                .or_else(|| {
+                    let ref_hash = crate::context_workflow::context_embedding_ref_hash(
+                        tenant_hash,
+                        child.child_hash,
+                        "node_l0",
+                    );
+                    load_context_embedding(
+                        cache,
+                        page_store,
+                        shard_id,
+                        shard,
+                        tenant_hash,
+                        ref_hash,
+                    )
+                    .map(|embedding| embedding.vector)
+                });
+                let Some(vector) = vector else {
                     continue;
                 };
-                let score = cosine_similarity(query_vector, &embedding.vector);
+                let score = cosine_similarity(query_vector, &vector);
                 if score > 0.0 {
                     scored_layer.push(ContextTraversedNode {
                         node_hash: child.child_hash,
