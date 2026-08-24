@@ -50,6 +50,9 @@ impl SingleNodeMeta {
         state.servers.insert(
             server_addr.clone(),
             ServerMetaInfo {
+                load_key_count: 0,
+                load_memory_bytes: 0,
+                worst_shard_state_penalty: 0,
                 freeze_reason: FreezeReason::Unspecified,
                 server_addr: request.server_addr,
                 node_id: request.node_id,
@@ -218,6 +221,20 @@ impl SingleNodeMeta {
         server.reports_shard_states =
             server.reports_shard_states || !request.shard_states.is_empty();
         server.shard_states = request.shard_states;
+        // Summarised here, where the lists change, so that the read path does
+        // not have to walk them.
+        server.load_key_count = server.shard_loads.iter().map(|load| load.key_count).sum();
+        server.load_memory_bytes = server
+            .shard_loads
+            .iter()
+            .map(|load| load.memory_bytes)
+            .sum();
+        server.worst_shard_state_penalty = server
+            .shard_states
+            .iter()
+            .map(|state| placement_shard_state_penalty(&state.serving_state))
+            .max()
+            .unwrap_or_default();
         let server_state = server.state.as_str().to_string();
         let anchored = server.reported_boot_time_ms;
         if rebooted {

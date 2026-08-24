@@ -44,22 +44,6 @@ pub(super) fn build_shards(
         .values()
         .filter(|server| server.state == MetaEntityState::Normal)
         .map(|server| {
-            let key_count = server
-                .shard_loads
-                .iter()
-                .map(|load| load.key_count)
-                .sum::<u64>();
-            let memory_bytes = server
-                .shard_loads
-                .iter()
-                .map(|load| load.memory_bytes)
-                .sum::<u64>();
-            let shard_state_penalty = server
-                .shard_states
-                .iter()
-                .map(|state| placement_shard_state_penalty(&state.serving_state))
-                .max()
-                .unwrap_or_default();
             PlacementCandidate {
                 server_addr: server.server_addr.clone(),
                 location: server.location.clone(),
@@ -69,9 +53,9 @@ pub(super) fn build_shards(
                 running_shard_count: server.runtime_load.running_shard_count,
                 dirty_object_count: server.runtime_load.dirty_object_count,
                 dirty_shard_count: server.runtime_load.dirty_shard_count,
-                shard_state_penalty,
-                key_count,
-                memory_bytes,
+                shard_state_penalty: server.worst_shard_state_penalty,
+                key_count: server.load_key_count,
+                memory_bytes: server.load_memory_bytes,
             }
         })
         .collect::<Vec<_>>();
