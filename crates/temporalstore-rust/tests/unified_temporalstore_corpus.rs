@@ -365,6 +365,7 @@ fn response_kind(response: &CommandResponse) -> &'static str {
         CommandResponse::ContextEntities { .. } => "context_entities",
         CommandResponse::ContextChildRefs { .. } => "context_child_refs",
         CommandResponse::ContextEmbeddings { .. } => "context_embeddings",
+        CommandResponse::ContextNodeEmbeddings { .. } => "context_node_embeddings",
         CommandResponse::ContextEmbeddingDirtyNodes { .. } => "context_embedding_dirty_markers",
         CommandResponse::ContextTraversedNodes { .. } => "context_traversed_nodes",
         CommandResponse::ContextSummaries { .. } => "context_summaries",

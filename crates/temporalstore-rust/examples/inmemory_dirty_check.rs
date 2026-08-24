@@ -76,7 +76,9 @@ fn main() {
     mark(&e, 42, 2_000, 1);
     let m = query(&e, 42, 0, 10_000);
     assert_eq!(m.len(), 1, "coalesce to one");
-    assert_eq!(m[0].event_time_ms, 3_000, "latest ts wins");
+    assert_eq!(m[0].last_event_time_ms, 3_000, "latest ts wins");
+    assert_eq!(m[0].first_event_time_ms, 1_000, "and the span keeps the earliest");
+    assert_eq!(m[0].mark_count, 3, "three marks, one entry");
     assert_eq!(m[0].propagate_depth, 2, "max depth wins");
 
     // 2) Distinct nodes independent.
@@ -96,7 +98,9 @@ fn main() {
     }
     let m2 = query(&e2, 42, 0, 10_000_000);
     assert_eq!(m2.len(), 1, "500 marks -> 1 coalesced marker");
-    assert_eq!(m2[0].event_time_ms, 1_499);
+    assert_eq!(m2[0].last_event_time_ms, 1_499);
+    assert_eq!(m2[0].first_event_time_ms, 1_000);
+    assert_eq!(m2[0].mark_count, 500, "500 marks recorded, still one entry");
     assert_eq!(m2[0].propagate_depth, 3);
 
     println!("inmemory_dirty_check: OK (coalescing, latest-ts, max-depth, window-filter, bounded 500->1)");
