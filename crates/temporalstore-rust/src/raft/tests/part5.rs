@@ -933,3 +933,250 @@ fn concurrent_proposers_get_their_own_responses() {
         }
     }
 }
+
+
+/// Compacting the log must not record progress a peer never made.
+///
+/// A deployed process owns one node but keeps a view of the whole cluster, so most entries in
+/// `nodes` are SHADOWS of peers rather than nodes this process runs. Compaction walked every
+/// live node and installed the new snapshot into it, which advances that node's commit and
+/// applied indices and truncates its log -- so a follower that had received nothing was recorded
+/// as holding a snapshot it was never sent. That is the same shape as a stranded follower
+/// reporting no lag: the leader believes its own shadow instead of what the peer actually
+/// acknowledged, and anything downstream that asks "how far behind is this peer" gets a
+/// fabricated answer.
+#[test]
+fn compaction_does_not_credit_a_peer_with_a_snapshot_it_never_received() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = RaftCluster::new_single_shard_with_wal(
+        dir.path(),
+        1,
+        [1, 2, 3],
+        RaftConfig {
+            can_trigger_snapshot: true,
+            // Low enough that a handful of writes crosses it.
+            max_applied_log_bytes: 1,
+            // This test is about what compaction records for a peer, not about when it runs, so
+            // switch off the hold that would otherwise wait for these peers to catch up.
+            max_retained_log_bytes: 0,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
+    // This process runs node 1 only; 2 and 3 are shadows of peers it has not heard from.
+    cluster.set_local_node_id(1);
+
+    for index in 0..8u64 {
+        cluster
+            .propose(Command::StringSet {
+                key: format!("compact-{index:03}"),
+                value: b"v".to_vec(),
+            })
+            .unwrap();
+    }
+
+    // Where the peers actually are, before compaction runs.
+    let before: Vec<(u64, u64)> = {
+        let inner = cluster.inner.read().unwrap();
+        [2u64, 3]
+            .iter()
+            .map(|id| {
+                let node = inner.nodes.get(id).expect("peer shadow");
+                (node.commit_index, node.applied_index)
+            })
+            .collect()
+    };
+
+    let report = cluster.maybe_trigger_snapshot().unwrap();
+    assert!(report.triggered, "the byte threshold should have triggered a compaction");
+
+    let after: Vec<(u64, u64)> = {
+        let inner = cluster.inner.read().unwrap();
+        [2u64, 3]
+            .iter()
+            .map(|id| {
+                let node = inner.nodes.get(id).expect("peer shadow");
+                (node.commit_index, node.applied_index)
+            })
+            .collect()
+    };
+
+    assert_eq!(
+        before, after,
+        "compaction moved a peer's recorded progress without the peer acknowledging anything: \
+         before={before:?} after={after:?}. A peer learns of a snapshot by being sent one and \
+         answering; until then its recorded position must not move."
+    );
+}
+
+
+/// Compaction must wait for a follower that still needs the entries -- but not forever.
+///
+/// Discarding entries a peer has not got yet turns catching it up from "send it the entries" into
+/// "install a snapshot", which is the expensive path and the one most likely to go wrong on a
+/// node that is already behind. Waiting cannot be unconditional either: a peer that never comes
+/// back would pin the log open indefinitely, so past a ceiling the log is compacted regardless.
+#[test]
+fn compaction_waits_for_a_follower_that_is_behind_but_not_past_the_ceiling() {
+    let build = |ceiling: u64| {
+        let dir = tempfile::tempdir().unwrap();
+        let cluster = RaftCluster::new_single_shard_with_wal(
+            dir.path(),
+            1,
+            [1, 2, 3],
+            RaftConfig {
+                can_trigger_snapshot: true,
+                max_applied_log_bytes: 1,
+                max_retained_log_bytes: ceiling,
+                ..RaftConfig::default()
+            },
+        )
+        .unwrap();
+        cluster.set_local_node_id(1);
+        for index in 0..8u64 {
+            cluster
+                .propose(Command::StringSet {
+                    key: format!("hold-{index:03}"),
+                    value: b"v".to_vec(),
+                })
+                .unwrap();
+        }
+        (dir, cluster)
+    };
+
+    // A live follower that has acknowledged nothing: the entries it still needs must survive.
+    let (_dir, cluster) = build(1 << 30);
+    {
+        let mut inner = cluster.inner.write().unwrap();
+        for id in [2u64, 3] {
+            if let Some(node) = inner.nodes.get_mut(&id) {
+                node.alive = true;
+                node.pipeline_state.match_index = 0;
+            }
+        }
+    }
+    let held = cluster.maybe_trigger_snapshot().unwrap();
+    assert!(
+        !held.triggered,
+        "compaction discarded entries a live follower had not acknowledged (reason: {})",
+        held.reason
+    );
+    assert_eq!(held.reason, "held_for_a_follower_still_catching_up");
+
+    // Once the followers have it, there is nothing left to wait for.
+    {
+        let mut inner = cluster.inner.write().unwrap();
+        let applied = inner.nodes.get(&1).map(|node| node.applied_index).unwrap_or(0);
+        for id in [2u64, 3] {
+            if let Some(node) = inner.nodes.get_mut(&id) {
+                node.pipeline_state.match_index = applied;
+            }
+        }
+    }
+    assert!(
+        cluster.maybe_trigger_snapshot().unwrap().triggered,
+        "with every follower caught up there is nothing to wait for"
+    );
+
+    // A follower that stays behind must not hold the log open past the ceiling.
+    let (_dir2, tiny) = build(1);
+    {
+        let mut inner = tiny.inner.write().unwrap();
+        for id in [2u64, 3] {
+            if let Some(node) = inner.nodes.get_mut(&id) {
+                node.alive = true;
+                node.pipeline_state.match_index = 0;
+            }
+        }
+    }
+    assert!(
+        tiny.maybe_trigger_snapshot().unwrap().triggered,
+        "past the ceiling a snapshot is the cheaper way to catch that peer up, and an absent \
+         peer must not pin the log open"
+    );
+}
+
+
+/// A crash mid-write leaves a partial record, and recovery must drop exactly that and keep the
+/// rest -- for the encoding actually in use.
+///
+/// Records are written as a magic byte, a length, and a payload, so a crash can tear one in three
+/// distinct places: inside the length itself, inside the payload the length promised, or after a
+/// complete-looking frame whose bytes are damaged. The existing crash test appends a fragment of
+/// the older text encoding, which exercises none of them. Each case below must truncate the torn
+/// tail, leave the records before it intact, and recover the last good one.
+#[test]
+fn a_torn_binary_record_is_truncated_and_the_records_before_it_survive() {
+    for (case, tail) in [
+        // Torn inside the length: fewer bytes than the length field needs.
+        ("short length", vec![0xA7u8, 0x01, 0x02]),
+        // A length that promises far more payload than was written.
+        ("length past the end", vec![0xA7u8, 0xFF, 0xFF, 0x00, 0x00, 0x01, 0x02, 0x03]),
+        // A complete-looking frame whose payload is not a record.
+        (
+            "damaged payload",
+            {
+                let mut bytes = vec![0xA7u8];
+                bytes.extend_from_slice(&8u32.to_le_bytes());
+                bytes.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD, 0xBE, 0xEF]);
+                bytes
+            },
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let cluster = RaftCluster::new_single_shard_with_wal(
+            dir.path(),
+            7,
+            [1, 2, 3],
+            RaftConfig::default(),
+        )
+        .unwrap();
+        cluster.set_local_node_id(1);
+        for index in 0..3u64 {
+            cluster
+                .propose(Command::StringSet {
+                    key: format!("torn-{index}"),
+                    value: format!("v{index}").into_bytes(),
+                })
+                .unwrap();
+        }
+        let good = cluster
+            .inner
+            .read()
+            .unwrap()
+            .nodes
+            .get(&1)
+            .map(|node| node.commit_index)
+            .unwrap();
+
+        let wal = LocalRaftWal::new(dir.path());
+        let report = wal.segment_report(7, 1).unwrap();
+        let active = report.segments.last().expect("an active segment").clone();
+        let intact_len = std::fs::metadata(&active.path).unwrap().len();
+        {
+            use std::io::Write as _;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&active.path)
+                .unwrap();
+            file.write_all(&tail).unwrap();
+            file.sync_data().unwrap();
+        }
+
+        let recovery = wal.recover_node(7, 1).unwrap();
+        assert!(
+            recovery.corrupt_tail,
+            "{case}: a torn record must be recognised as a corrupt tail"
+        );
+        assert_eq!(
+            std::fs::metadata(&active.path).unwrap().len(),
+            intact_len,
+            "{case}: recovery must truncate exactly the torn tail, no more and no less"
+        );
+        let record = recovery.record.expect("{case}: the records before the tear must survive");
+        assert_eq!(
+            record.hard_state.commit_index, good,
+            "{case}: the last good record must come back unchanged"
+        );
+    }
+}

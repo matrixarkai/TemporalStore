@@ -658,6 +658,32 @@ impl RaftCluster {
             if applied_log_bytes < inner.config.max_applied_log_bytes {
                 return Ok(report);
             }
+            // Hold while a live follower still needs what this would discard, so catching it up
+            // stays a matter of sending entries rather than installing a snapshot -- but only up
+            // to a ceiling, past which a snapshot is the cheaper path anyway and an absent peer
+            // must not pin the log open.
+            //
+            // Only in a deployed process, which is the one that tracks peer progress by what
+            // peers acknowledge. The in-process cluster maintains that differently, and holding
+            // on it would stop compaction happening at all.
+            let ceiling = inner.config.max_retained_log_bytes;
+            if ceiling > 0 && applied_log_bytes < ceiling {
+                if let Some(local) = inner.local_node_id {
+                    let behind = inner
+                        .nodes
+                        .values()
+                        .filter(|node| {
+                            node.id != local
+                                && node.alive
+                                && node.replica_role.participates_in_quorum()
+                        })
+                        .any(|node| node.pipeline_state.match_index < leader.applied_index);
+                    if behind {
+                        report.reason = "held_for_a_follower_still_catching_up".to_string();
+                        return Ok(report);
+                    }
+                }
+            }
             report.triggered = true;
             report.reason = "applied_log_bytes_threshold".to_string();
             (true, report)
@@ -666,7 +692,21 @@ impl RaftCluster {
         if should_trigger {
             let snapshot = self.create_snapshot()?;
             let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+            // A deployed process owns ONE node and keeps shadows of its peers, so most entries
+            // here are not nodes this process runs. Installing the snapshot into a peer's shadow
+            // advances its recorded commit and applied indices and truncates its log, which
+            // credits a follower with a snapshot it was never sent -- and everything downstream
+            // that asks how far behind that peer is then reads a fabricated answer. A peer learns
+            // about a snapshot by being sent one and acknowledging it; until then its recorded
+            // position must not move.
+            //
+            // With no local node id set -- the in-process cluster, where every entry IS a node
+            // this process runs -- they are all local and all get installed, as before.
+            let local_only = inner.local_node_id;
             for node in inner.nodes.values_mut().filter(|node| node.alive) {
+                if local_only.map_or(false, |local| local != node.id) {
+                    continue;
+                }
                 if snapshot.last_included_index >= node.commit_index {
                     install_snapshot_state(node, snapshot.clone());
                 }
