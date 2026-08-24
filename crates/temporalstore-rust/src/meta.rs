@@ -4878,6 +4878,75 @@ mod tests {
     }
 
     #[test]
+    fn every_shard_of_a_table_is_spread_across_domains() {
+        // The parsed locations are now indexed rather than re-derived inside
+        // the placement loop, so they have to stay lined up with the candidate
+        // list they were built from. If an index slipped, the separation check
+        // would be reading some other server's location and replicas would
+        // start landing in the same domain -- which is precisely what the
+        // ladder exists to prevent, and it would fail silently.
+        let meta = SingleNodeMeta::default();
+        for (index, (addr, location)) in [
+            ("node-a", "east/zone-a"),
+            ("node-b", "east/zone-b"),
+            ("node-c", "west/zone-c"),
+            ("node-d", "west/zone-d"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            meta.register_server(RegisterServerRequest {
+                server_addr: addr.to_string(),
+                node_id: index as u64 + 1,
+                location: location.to_string(),
+                binary_version: "v1".to_string(),
+            });
+        }
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            first_shard_id: 1,
+            shard_count: 4,
+            replica_count: 2,
+            partition_version: 0,
+            serving_options: TableServingOptions::default(),
+        });
+
+        let topology = meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            old_topology_version: 0,
+            client_location: String::new(),
+        });
+        assert_eq!(topology.shards.len(), 4);
+        for shard in topology.shards {
+            assert_eq!(shard.replicas.len(), 2, "shard {} under-replicated", shard.shard_id);
+            let domains = shard
+                .replica_endpoints
+                .iter()
+                .map(|endpoint| {
+                    endpoint
+                        .location
+                        .split('/')
+                        .next()
+                        .unwrap_or_default()
+                        .to_string()
+                })
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(
+                domains.len(),
+                2,
+                "shard {} put both replicas in one domain: {:?}",
+                shard.shard_id,
+                shard.replicas
+            );
+        }
+    }
+
+    #[test]
     fn metaserver_safe_mode_cooldown_blocks_rejoin_and_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("safe-mode-mutations.jsonl");

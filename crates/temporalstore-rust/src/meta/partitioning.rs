@@ -24,10 +24,17 @@ pub(super) fn build_shards(
     table: &TableMetaInfo,
     client_location: &str,
 ) -> Vec<TableShard> {
+    /// A server being considered for a shard, borrowed from the metadata
+    /// rather than copied out of it.
+    ///
+    /// These used to own their two strings, which is two heap allocations per
+    /// live server on every topology request, for values dropped when the
+    /// request ends. The state is read-locked for the whole of this function,
+    /// so borrowing is sound and the copies bought nothing.
     #[derive(Debug)]
-    struct PlacementCandidate {
-        server_addr: String,
-        location: String,
+    struct PlacementCandidate<'a> {
+        server_addr: &'a str,
+        location: &'a str,
         degraded: bool,
         queue_depth: usize,
         background_queue_depth: usize,
@@ -45,8 +52,8 @@ pub(super) fn build_shards(
         .filter(|server| server.state == MetaEntityState::Normal)
         .map(|server| {
             PlacementCandidate {
-                server_addr: server.server_addr.clone(),
-                location: server.location.clone(),
+                server_addr: server.server_addr.as_str(),
+                location: server.location.as_str(),
                 degraded: !server.runtime_load.degraded_reasons.is_empty(),
                 queue_depth: server.runtime_load.queue_depth,
                 background_queue_depth: server.runtime_load.background_queue_depth,
@@ -70,7 +77,7 @@ pub(super) fn build_shards(
             left.dirty_shard_count,
             left.key_count,
             left.memory_bytes,
-            &left.server_addr,
+            left.server_addr,
         )
             .cmp(&(
                 right.degraded,
@@ -82,15 +89,18 @@ pub(super) fn build_shards(
                 right.dirty_shard_count,
                 right.key_count,
                 right.memory_bytes,
-                &right.server_addr,
+                right.server_addr,
             ))
     });
     // Every live server's parsed location, used to size the separation ladder.
     let candidate_locations = normal_servers
         .iter()
-        .map(|candidate| Location::parse(&candidate.location))
+        .map(|candidate| Location::parse(candidate.location))
         .collect::<Vec<_>>();
     let caller = Location::parse(client_location);
+    // Derived from the candidate locations alone, so it is the same for every
+    // shard of this table. It was being rebuilt per shard.
+    let ladder = separation_ladder(&candidate_locations);
     let bucket_count = 1_u64 << 30;
     let mut shards = Vec::new();
     for offset in 0..table.shard_count {
@@ -148,7 +158,7 @@ pub(super) fn build_shards(
         // nothing qualifies. Comparing whole location strings, as this used to,
         // treats two racks in one availability unit as "different locations" and
         // happily puts both replicas of a shard inside it.
-        for separation in separation_ladder(&candidate_locations) {
+        for &separation in &ladder {
             if replicas.len() >= table.replica_count as usize {
                 break;
             }
@@ -156,7 +166,7 @@ pub(super) fn build_shards(
                 if replicas.len() >= table.replica_count as usize {
                     break;
                 }
-                if seen_replicas.contains(&candidate.server_addr) {
+                if seen_replicas.contains(candidate.server_addr) {
                     continue;
                 }
                 // Parsed once, above, into candidate_locations. This scan runs
@@ -167,7 +177,7 @@ pub(super) fn build_shards(
                 if !separated_from(&placed_locations, candidate_location, separation) {
                     continue;
                 }
-                let host = server_host(&candidate.server_addr);
+                let host = server_host(candidate.server_addr);
                 if !host.is_empty() && used_hosts.contains(&host) {
                     continue;
                 }
@@ -180,7 +190,7 @@ pub(super) fn build_shards(
                     &mut seen_replicas,
                     &mut used_locations,
                     &mut used_hosts,
-                    &candidate.server_addr,
+                    candidate.server_addr,
                 );
             }
         }
@@ -194,7 +204,7 @@ pub(super) fn build_shards(
                 &mut seen_replicas,
                 &mut used_locations,
                 &mut used_hosts,
-                &candidate.server_addr,
+                candidate.server_addr,
             );
         }
         let primary = match state.shards.get(&shard_id) {
