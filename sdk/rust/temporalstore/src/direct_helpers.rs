@@ -6,7 +6,6 @@ use std::os::raw::{c_char, c_int};
 
 use crate::{
     temporalstore_free_string, CFeaturePointArray, CIpsFeatureArray, COptions, Error, FeaturePoint,
-    IpsFeatureStat, Options, Result,
 };
 
 pub(crate) struct CStringOptions {
@@ -100,20 +99,3 @@ pub(crate) fn feature_points_from_c_array(out: &CFeaturePointArray) -> Vec<Featu
         .collect()
 }
 
-pub(crate) fn ips_features_from_c_array(out: &CIpsFeatureArray) -> Vec<IpsFeatureStat> {
-    if out.features.is_null() {
-        return Vec::new();
-    }
-    let slice = unsafe { std::slice::from_raw_parts(out.features, out.count) };
-    slice
-        .iter()
-        .map(|feature| IpsFeatureStat {
-            id: feature.id,
-            slot: feature.slot,
-            has_slot: feature.has_slot != 0,
-            kind: feature.kind,
-            v1: feature.v1,
-            v2: feature.v2,
-        })
-        .collect()
-}

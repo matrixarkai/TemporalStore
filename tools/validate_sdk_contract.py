@@ -82,8 +82,6 @@ REQUIRED_COMMANDS = [
     "feature_query",
     "sequence_append",
     "sequence_query",
-    "ips_add",
-    "ips_query",
     "risk_increment",
     "risk_query",
     "context_node_upsert",
