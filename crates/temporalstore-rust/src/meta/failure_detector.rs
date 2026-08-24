@@ -935,6 +935,9 @@ mod tests {
     fn server(addr: &str, location: &str, state: MetaEntityState, heartbeat_ms: u64) -> ServerMetaInfo {
         ServerMetaInfo {
             numa_nodes: Vec::new(),
+            load_key_count: 0,
+            load_memory_bytes: 0,
+            worst_shard_state_penalty: 0,
             freeze_reason: FreezeReason::Unspecified,
             server_addr: addr.to_string(),
             node_id: 0,

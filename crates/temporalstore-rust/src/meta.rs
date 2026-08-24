@@ -368,6 +368,22 @@ pub struct ServerMetaInfo {
     /// does not send them, so the shard-divergence check declines to judge it.
     #[serde(default)]
     pub reports_shard_states: bool,
+    /// What `shard_loads` and `shard_states` add up to, summarised when the
+    /// server reports them.
+    ///
+    /// Placement needs three numbers out of those two lists: the total keys,
+    /// the total memory, and the worst serving state. It used to add them up
+    /// from scratch inside every topology request -- walking every shard of
+    /// every live server, twice for the loads and once for the states, to
+    /// re-derive figures that only change when a heartbeat arrives. A hundred
+    /// servers of fifty shards is fifteen thousand iterations per request, for
+    /// an answer identical to the last request's.
+    #[serde(default)]
+    pub load_key_count: u64,
+    #[serde(default)]
+    pub load_memory_bytes: u64,
+    #[serde(default)]
+    pub worst_shard_state_penalty: u8,
     pub binary_version: String,
     pub shard_loads: Vec<ShardLoad>,
     #[serde(default)]
@@ -4741,6 +4757,124 @@ mod tests {
             recovered.reserved_names().reserved,
             reserving(&["system"], &["audit"])
         );
+    }
+
+    fn beat(meta: &SingleNodeMeta, addr: &str, loads: &[(u64, u64)]) {
+        meta.server_heartbeat(ServerHeartbeatRequest {
+            server_addr: addr.to_string(),
+            boot_time_ms: 1,
+            binary_version: "v1".to_string(),
+            shard_loads: loads
+                .iter()
+                .enumerate()
+                .map(|(index, (keys, bytes))| ShardLoad {
+                    shard_id: index as ShardId + 1,
+                    key_count: *keys,
+                    memory_bytes: *bytes,
+                })
+                .collect(),
+            shard_stat_loads: Vec::new(),
+            runtime_load: ServerRuntimeLoad::default(),
+            shard_states: Vec::new(),
+        });
+    }
+
+    fn server_summary(meta: &SingleNodeMeta, addr: &str) -> (u64, u64) {
+        let server = meta
+            .list_servers()
+            .servers
+            .into_iter()
+            .find(|server| server.server_addr == addr)
+            .expect("registered");
+        (server.load_key_count, server.load_memory_bytes)
+    }
+
+    fn loaded_meta() -> SingleNodeMeta {
+        let meta = SingleNodeMeta::default();
+        for (addr, location) in [("node-a", "rack-1"), ("node-b", "rack-2")] {
+            meta.register_server(RegisterServerRequest {
+                server_addr: addr.to_string(),
+                node_id: 1,
+                location: location.to_string(),
+                binary_version: "v1".to_string(),
+                numa_nodes: Vec::new(),
+            });
+        }
+        meta
+    }
+
+    #[test]
+    fn a_heartbeat_summarises_the_load_it_reports() {
+        let meta = loaded_meta();
+        beat(&meta, "node-a", &[(10, 100), (20, 200), (30, 300)]);
+        assert_eq!(server_summary(&meta, "node-a"), (60, 600));
+    }
+
+    #[test]
+    fn a_lighter_heartbeat_lowers_the_summary_rather_than_adding_to_it() {
+        // The summary describes the latest report, not the history of them.
+        // Accumulating would make a server look permanently loaded once it had
+        // ever been busy, and placement would stop sending it anything.
+        let meta = loaded_meta();
+        beat(&meta, "node-a", &[(10, 100), (20, 200)]);
+        assert_eq!(server_summary(&meta, "node-a"), (30, 300));
+        beat(&meta, "node-a", &[(5, 50)]);
+        assert_eq!(server_summary(&meta, "node-a"), (5, 50));
+    }
+
+    #[test]
+    fn a_server_that_reports_nothing_summarises_to_nothing() {
+        let meta = loaded_meta();
+        beat(&meta, "node-a", &[]);
+        assert_eq!(server_summary(&meta, "node-a"), (0, 0));
+    }
+
+    #[test]
+    fn placement_still_prefers_the_lighter_server() {
+        // The behaviour the summary exists to serve, unchanged. This is the
+        // regression guard: if the summary ever stops tracking the report,
+        // placement silently starts choosing on stale numbers and only a test
+        // like this notices.
+        let meta = loaded_meta();
+        beat(&meta, "node-a", &[(1_000, 10_000)]);
+        beat(&meta, "node-b", &[(1, 10)]);
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            first_shard_id: 1,
+            shard_count: 1,
+            replica_count: 1,
+            partition_version: 0,
+            serving_options: TableServingOptions::default(),
+        });
+        let shard = meta
+            .get_table_topology(GetTableTopologyRequest {
+                namespace: "ns".to_string(),
+                table_name: "orders".to_string(),
+                old_topology_version: 0,
+                client_location: String::new(),
+            })
+            .shards
+            .into_iter()
+            .next()
+            .expect("one shard");
+        assert_eq!(
+            shard.primary,
+            Some("node-b".to_string()),
+            "the heavier server was proposed"
+        );
+    }
+
+    #[test]
+    fn the_summary_survives_a_snapshot_round_trip() {
+        let meta = loaded_meta();
+        beat(&meta, "node-a", &[(10, 100), (20, 200)]);
+        let peer = SingleNodeMeta::default();
+        assert!(peer.install_snapshot(meta.export_snapshot()).status.ok);
+        assert_eq!(server_summary(&peer, "node-a"), (30, 300));
     }
 
     #[test]
