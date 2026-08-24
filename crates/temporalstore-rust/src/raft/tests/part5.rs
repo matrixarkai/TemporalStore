@@ -815,6 +815,8 @@ impl RaftTransport for OneInFlightTransport {
 /// Eight concurrent proposers, and never two appends in flight to one follower.
 #[test]
 fn at_most_one_append_in_flight_per_follower() {
+    // This test IS the pipeline's invariant; it must not silently test the default.
+    let _pipeline = super::part4::EnvFlagGuard::set("TS_RAFT_FOLLOWER_PIPELINE");
     let dir = tempfile::tempdir().unwrap();
     let cluster = RaftCluster::new_single_shard_with_wal(
         dir.path(),
@@ -878,6 +880,8 @@ fn at_most_one_append_in_flight_per_follower() {
 /// happened to apply last in the same commit batch.
 #[test]
 fn concurrent_proposers_get_their_own_responses() {
+    // This test IS the pipeline's invariant; it must not silently test the default.
+    let _pipeline = super::part4::EnvFlagGuard::set("TS_RAFT_FOLLOWER_PIPELINE");
     let dir = tempfile::tempdir().unwrap();
     let cluster = RaftCluster::new_single_shard_with_wal(
         dir.path(),
@@ -932,6 +936,131 @@ fn concurrent_proposers_get_their_own_responses() {
             other => panic!("proposer {key} got {other:?}"),
         }
     }
+}
+
+
+/// After compacting into a state-image snapshot, a restart must serve every value.
+///
+/// The image path installed correctly on the live install route, but the RESTORE path used an
+/// installer that only knew entry-carrying snapshots -- an image snapshot restored there
+/// replayed nothing and produced an empty engine. That hole is why the image stayed dark; this
+/// is the test that proves it closed, through the binary record encoding and the on-disk WAL.
+#[test]
+fn restart_after_state_image_compaction_serves_every_value() {
+    let _image = super::part4::EnvFlagGuard::set("TS_RAFT_SNAPSHOT_STATE_IMAGE");
+    let dir = tempfile::tempdir().unwrap();
+    let config = RaftConfig {
+        // Compact as soon as anything is applied, so the test exercises the image path.
+        max_applied_log_bytes: 1,
+        ..RaftConfig::default()
+    };
+    let written: Vec<(String, Vec<u8>)> = (0..40)
+        .map(|index| (format!("img-{index:03}"), format!("value-{index:03}").into_bytes()))
+        .collect();
+    {
+        let cluster =
+            RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], config.clone())
+                .unwrap();
+        for (key, value) in &written {
+            cluster
+                .propose(Command::StringSet {
+                    key: key.clone(),
+                    value: value.clone(),
+                })
+                .unwrap();
+        }
+        let report = cluster.maybe_trigger_snapshot().unwrap();
+        assert!(report.triggered, "compaction must fire: {}", report.reason);
+        // The log behind the snapshot is gone; the marker carries the image, not the history.
+        let status = cluster.status();
+        assert!(status.commit_index >= 40);
+        // A few more writes AFTER compaction land in the retained tail.
+        for index in 40..44 {
+            cluster
+                .propose(Command::StringSet {
+                    key: format!("img-{index:03}"),
+                    value: format!("value-{index:03}").into_bytes(),
+                })
+                .unwrap();
+        }
+    }
+    let restored =
+        RaftCluster::restore_single_shard_from_wal(dir.path(), 1, [1, 2, 3], config).unwrap();
+    for index in 0..44 {
+        let key = format!("img-{index:03}");
+        let response = restored
+            .read_local(1, Command::StringGet { key: key.clone() })
+            .unwrap();
+        match response {
+            CommandResponse::Bytes { value: Some(value) } => assert_eq!(
+                value,
+                format!("value-{index:03}").into_bytes(),
+                "{key} came back wrong after an image restart"
+            ),
+            other => panic!("{key} unreadable after an image restart: {other:?}"),
+        }
+    }
+}
+
+/// Compaction must actually bound the bytes on disk: with it firing, the log directory stays a
+/// fraction of what the uncompacted history costs -- the difference between a record that
+/// carries state and one that re-encodes history.
+#[test]
+fn state_image_compaction_bounds_wal_bytes() {
+    let _image = super::part4::EnvFlagGuard::set("TS_RAFT_SNAPSHOT_STATE_IMAGE");
+    fn wal_bytes(root: &std::path::Path) -> u64 {
+        fn walk(path: &std::path::Path, total: &mut u64) {
+            if let Ok(entries) = std::fs::read_dir(path) {
+                for entry in entries.flatten() {
+                    let Ok(meta) = entry.metadata() else { continue };
+                    if meta.is_dir() {
+                        walk(&entry.path(), total);
+                    } else {
+                        *total += meta.len();
+                    }
+                }
+            }
+        }
+        let mut total = 0;
+        walk(root, &mut total);
+        total
+    }
+    let run = |compact: bool| -> u64 {
+        let dir = tempfile::tempdir().unwrap();
+        let cluster = RaftCluster::new_single_shard_with_wal(
+            dir.path(),
+            1,
+            [1, 2, 3],
+            RaftConfig {
+                max_applied_log_bytes: 64 * 1024,
+                ..RaftConfig::default()
+            },
+        )
+        .unwrap();
+        cluster.set_local_node_id(1);
+        for index in 0..600 {
+            cluster
+                .propose(Command::StringSet {
+                    // Overwrite a small key set: state stays bounded while history grows, which
+                    // is the workload compaction exists for. With unique keys, state equals
+                    // history and there is nothing for a snapshot to save.
+                    key: format!("b-{:02}", index % 20),
+                    value: vec![0x41u8; 512],
+                })
+                .unwrap();
+            if compact && index % 100 == 99 {
+                let _ = cluster.maybe_trigger_snapshot();
+            }
+        }
+        wal_bytes(dir.path())
+    };
+    let unbounded = run(false);
+    let bounded = run(true);
+    println!("wal bytes: unbounded={unbounded} bounded={bounded}");
+    assert!(
+        bounded * 2 < unbounded,
+        "compaction should bound the log: {bounded} vs {unbounded}"
+    );
 }
 
 

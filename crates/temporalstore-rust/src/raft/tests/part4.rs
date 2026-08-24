@@ -2225,19 +2225,19 @@ fn wal_recovery_rejects_ahead_of_storage_apply_fence() {
 
 /// Sets an env gate for the duration of a test and removes it on drop (even on panic), so a
 /// gated-behavior test never leaks its flag into the rest of the single-threaded suite.
-struct EnvFlagGuard {
+pub(super) struct EnvFlagGuard {
     name: &'static str,
 }
 
 impl EnvFlagGuard {
-    fn set(name: &'static str) -> Self {
+    pub(super) fn set(name: &'static str) -> Self {
         std::env::set_var(name, "1");
         Self { name }
     }
 
     /// Explicitly DISABLES a gate for the test's lifetime. Needed because the shipped fixes are
     /// default-ON: leaving the variable unset now selects the fixed path, not the legacy one.
-    fn off(name: &'static str) -> Self {
+    pub(super) fn off(name: &'static str) -> Self {
         std::env::set_var(name, "0");
         Self { name }
     }
@@ -2465,6 +2465,7 @@ fn s2_state_image_snapshot_travels_through_chunk_stream() {
 /// so behavior is byte-identical to before.
 #[test]
 fn s2_snapshot_gate_off_still_carries_entries_and_no_image() {
+    let _gate = EnvFlagGuard::off("TS_RAFT_SNAPSHOT_STATE_IMAGE");
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
     for i in 0..4 {
         cluster
@@ -2946,6 +2947,7 @@ fn r8_snapshot_install_with_divergent_boundary_discards_whole_log() {
                 external_snapshot_ref: None,
                 entries: vec![r8_branch_entry(2, 5, "winning")],
                 state_image: None,
+                state_image_externalized: false,
             },
         )
         .unwrap();
@@ -3012,6 +3014,7 @@ fn r8_snapshot_install_with_matching_boundary_retains_tail() {
                 external_snapshot_ref: None,
                 entries: vec![r8_branch_entry(2, 1, "v2")],
                 state_image: None,
+                state_image_externalized: false,
             },
         )
         .unwrap();

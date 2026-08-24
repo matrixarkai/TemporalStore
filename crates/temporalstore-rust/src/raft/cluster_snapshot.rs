@@ -489,6 +489,7 @@ impl RaftCluster {
                 external_snapshot_ref: None,
                 entries,
                 state_image,
+                state_image_externalized: false,
             },
         );
         {
@@ -589,6 +590,7 @@ impl RaftCluster {
                     external_snapshot_ref: None,
                     entries: Vec::new(),
                     state_image: Some(image),
+                    state_image_externalized: false,
                 });
             }
         }
@@ -621,6 +623,7 @@ impl RaftCluster {
             external_snapshot_ref: None,
             entries,
             state_image: None,
+            state_image_externalized: false,
         })
     }
 
