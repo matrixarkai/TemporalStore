@@ -99,6 +99,7 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::ContextTraverseTree { .. }
         | Command::ContextUpsertSummary { .. }
         | Command::ContextQuerySummaries { .. }
+        | Command::ContextQuerySummaryVectors { .. }
         | Command::ContextWriteCompressionEvent { .. }
         | Command::ContextQueryCompressionEvents { .. }
         | Command::ContextCompressEvents { .. }
@@ -127,6 +128,14 @@ pub(super) fn context_command_key(command: &Command) -> Option<String> {
         } => node_hashes
             .first()
             .map(|node_hash| context_node_key(*tenant_hash, *node_hash)),
+        Command::ContextQuerySummaryVectors {
+            tenant_hash,
+            node_hashes,
+            level,
+            ..
+        } => node_hashes
+            .first()
+            .map(|node_hash| context_summary_key(*tenant_hash, *node_hash, *level)),
         Command::ContextWriteEvent {
             tenant_hash,
             node_hash,

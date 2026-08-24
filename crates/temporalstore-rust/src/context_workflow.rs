@@ -1969,18 +1969,36 @@ pub fn retrieve_context(
         }
     }
     fanout_plan.l0_row_fallback_nodes = l0_row_fallback.len();
+    // node_l1 comes from the L1 summaries' own vectors -- the ingest has filled them since the
+    // fold, and the summary is addressable by the node hash already in hand. Level 2 here is
+    // the summary-record level for L1 (ContextQuerySummaries uses 1 = L0, 2 = L1).
+    for chunk in node_hashes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let response = engine.execute(ExecuteRequest {
+            shard_id: request.shard_id,
+            command: Command::ContextQuerySummaryVectors {
+                tenant_hash: request.tenant_hash,
+                node_hashes: chunk.to_vec(),
+                level: 2,
+                as_of_ms: request.end_time_ms.max(1),
+            },
+        });
+        if let CommandResponse::ContextSummaryVectors { vectors } = response.response {
+            for entry in vectors {
+                let score =
+                    context_embedding_similarity_micros(&query_embedding, &entry.vector);
+                let scores = summary_scores_by_node.entry(entry.node_hash).or_default();
+                scores.0 = scores.0.max(score);
+                scores.1 = scores.1.saturating_add(1);
+            }
+        }
+    }
     let mut summary_ref_owners = BTreeMap::new();
-    let mut summary_ref_hashes =
-        Vec::with_capacity(l0_row_fallback.len().saturating_add(node_hashes.len()));
+    let mut summary_ref_hashes = Vec::with_capacity(l0_row_fallback.len());
     for node_hash in &l0_row_fallback {
         let ref_hash = context_embedding_ref_hash(request.tenant_hash, *node_hash, "node_l0");
-        summary_ref_owners.insert(ref_hash, *node_hash);
-        summary_ref_hashes.push(ref_hash);
-    }
-    // node_l1 still reads the separate rows: its owner-side home is the L1 summary's vector,
-    // and switching that read belongs to the summary-side step, not this one.
-    for node_hash in &node_hashes {
-        let ref_hash = context_embedding_ref_hash(request.tenant_hash, *node_hash, "node_l1");
         summary_ref_owners.insert(ref_hash, *node_hash);
         summary_ref_hashes.push(ref_hash);
     }

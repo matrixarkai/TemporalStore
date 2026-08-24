@@ -85,6 +85,7 @@ use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextCompressionEvent,
     ContextEmbedding,
     ContextEntity, ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit,
+    ContextSummaryVector,
     ContextDirtyNode, EventReplicationMode, EventReplicationSelectionReport,
     ExecuteRequest, ExecuteResponse, FeaturePoint, FeatureWritePolicy, InternalContextIndex,
     ReplicatedBatchExecuteRequest, ReplicatedBatchExecuteResponse,

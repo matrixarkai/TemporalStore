@@ -2568,6 +2568,40 @@ pub(crate) fn execute_on_shard(
                 summaries,
             }
         }
+        Command::ContextQuerySummaryVectors {
+            tenant_hash,
+            node_hashes,
+            level,
+            as_of_ms,
+        } => {
+            // One summary read per node -- the same per-node cost the separate embedding rows
+            // had, minus the second keyspace. Only the newest summary at or before `as_of_ms`
+            // is consulted; a summary carrying no vector contributes nothing, so the caller can
+            // tell "not embedded" apart from "not summarized" by the node's absence here.
+            let vectors = dedupe_nonzero_u64_preserve_order(node_hashes)
+                .into_iter()
+                .filter_map(|node_hash| {
+                    let object_key = context_summary_key(tenant_hash, node_hash, level);
+                    load_context_summaries(
+                        cache,
+                        page_store,
+                        shard_id,
+                        shard,
+                        &object_key,
+                        as_of_ms,
+                        Some(1),
+                    )
+                    .into_iter()
+                    .next()
+                    .filter(|summary| !summary.vector.is_empty())
+                    .map(|summary| ContextSummaryVector {
+                        node_hash,
+                        vector: summary.vector,
+                    })
+                })
+                .collect();
+            CommandResponse::ContextSummaryVectors { vectors }
+        }
         Command::ContextWriteCompressionEvent { tenant_hash, event } => {
             let object_key = context_compression_key(tenant_hash, event.node_hash);
             let timeline_key =

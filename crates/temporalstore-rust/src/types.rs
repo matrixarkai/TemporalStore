@@ -477,6 +477,12 @@ pub struct ContextEmbedding {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContextSummaryVector {
+    pub node_hash: u64,
+    pub vector: Vec<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ContextSummary {
     pub node_hash: u64,
     pub level: u32,
@@ -1676,6 +1682,17 @@ pub enum Command {
         #[serde(default)]
         limit: Option<usize>,
     },
+    /// The newest summary VECTOR at `level` for each node, in one command.
+    ///
+    /// Retrieval scores every candidate node's summaries; per-node ContextQuerySummaries would
+    /// turn that into a command per candidate, and the whole summary payload when only the
+    /// vector is wanted. This returns exactly the scoring input, batched like ContextGetNodes.
+    ContextQuerySummaryVectors {
+        tenant_hash: u64,
+        node_hashes: Vec<u64>,
+        level: u32,
+        as_of_ms: u64,
+    },
     ContextWriteCompressionEvent {
         tenant_hash: u64,
         event: ContextCompressionEvent,
@@ -1944,6 +1961,9 @@ pub enum CommandResponse {
     ContextSummaries {
         object_key: String,
         summaries: Vec<ContextSummary>,
+    },
+    ContextSummaryVectors {
+        vectors: Vec<ContextSummaryVector>,
     },
     ContextCompressionEvents {
         object_key: String,

@@ -122,6 +122,7 @@ fn proxy_command_key(command: &Command) -> Option<&str> {
         | Command::ContextTraverseTree { .. }
         | Command::ContextUpsertSummary { .. }
         | Command::ContextQuerySummaries { .. }
+        | Command::ContextQuerySummaryVectors { .. }
         | Command::ContextWriteCompressionEvent { .. }
         | Command::ContextQueryCompressionEvents { .. }
         | Command::ContextCompressEvents { .. }
@@ -146,6 +147,14 @@ pub(super) fn proxy_command_routing_key(command: &Command) -> Option<String> {
             } => node_hashes
                 .first()
                 .map(|node_hash| format!("ctx:node:{tenant_hash}:{node_hash}")),
+            Command::ContextQuerySummaryVectors {
+                tenant_hash,
+                node_hashes,
+                level,
+                ..
+            } => node_hashes
+                .first()
+                .map(|node_hash| format!("ctx:summary:{tenant_hash}:{node_hash}:{level}")),
             Command::ContextWriteEvent {
                 tenant_hash,
                 node_hash,

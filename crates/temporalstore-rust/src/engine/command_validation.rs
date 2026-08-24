@@ -239,6 +239,7 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::ContextQueryEmbeddings { .. }
         | Command::ContextTraverseTree { .. }
         | Command::ContextQuerySummaries { .. }
+        | Command::ContextQuerySummaryVectors { .. }
         | Command::ContextQueryCompressionEvents { .. }
         | Command::ContextQueryNodeContext { .. } => Vec::new(),
     }
@@ -488,6 +489,20 @@ pub(super) fn validate_command_preconditions(
         } => {
             validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
             validate_context_required(!node_hashes.is_empty(), "node_hashes are required")?;
+            for node_hash in node_hashes {
+                validate_context_required(*node_hash != 0, "node_hash is required")?;
+            }
+        }
+        Command::ContextQuerySummaryVectors {
+            tenant_hash,
+            node_hashes,
+            level,
+            as_of_ms,
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_required(!node_hashes.is_empty(), "node_hashes are required")?;
+            validate_context_required(*level != 0, "level is required")?;
+            validate_context_required(*as_of_ms != 0, "as_of_ms is required")?;
             for node_hash in node_hashes {
                 validate_context_required(*node_hash != 0, "node_hash is required")?;
             }
