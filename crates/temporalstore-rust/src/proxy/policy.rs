@@ -62,9 +62,13 @@ pub(super) fn proxy_drop_rejection(options: &ProxyOptions, routing_key: &str) ->
 }
 
 fn proxy_dropped_status() -> Status {
+    // Says "for this key" on purpose. The decision comes from a hash of the routing key, so it
+    // is the same on every attempt: a caller that reads this as transient and retries will be
+    // refused identically for as long as the setting stands. The old wording -- "request
+    // dropped" -- invited exactly that retry loop.
     Status::error(
         "proxy_traffic_dropped",
-        "request dropped by proxy drop_percent",
+        "request refused for this key by proxy drop_percent; the same key is refused on every          attempt while drop_percent stands, so retrying it will not succeed",
     )
 }
 
