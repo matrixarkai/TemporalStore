@@ -116,15 +116,12 @@ AREAS: tuple[ApiModelArea, ...] = (
         ),
     ),
     ApiModelArea(
-        name="ips_risk_models",
+        name="risk_models",
         corpus_cases=(
-            "ips_options_range",
             "risk_counter_window",
             "risk_family_query_and_delete",
         ),
         command_kinds=(
-            "ips_add_with_options",
-            "ips_query_range",
             "risk_increment",
             "risk_count",
             "risk_set",
@@ -134,15 +131,11 @@ AREAS: tuple[ApiModelArea, ...] = (
         rust_evidence=(
             RustEvidence(
                 "crates/temporalstore-rust/src/types.rs",
-                ("IpsAddWithOptions", "IpsSnapshotReport", "RiskIncrement", "RiskFamilyQuery"),
+                ("RiskIncrement", "RiskFamilyQuery"),
             ),
             RustEvidence(
                 "crates/temporalstore-rust/src/client.rs",
-                ("ips_snapshot_report", "ips_query_range_with_options", "risk_family_query"),
-            ),
-            RustEvidence(
-                "crates/temporalstore-rust/src/client.rs",
-                ("ips_query_range_with_options", "risk_family_query"),
+                ("risk_family_query",),
             ),
         ),
     ),

@@ -572,374 +572,6 @@
       ]
     },
     {
-      "name": "ips_options_range",
-      "shard_id": 1,
-      "steps": [
-        {
-          "command": {
-            "action_type": 7,
-            "instance": [
-              105,
-              112,
-              115,
-              49
-            ],
-            "key": "unified:ips",
-            "kind": "ips_add_with_options",
-            "request_id": "req-1",
-            "table_id": 42,
-            "timestamp_ms": 3000
-          },
-          "expect": {
-            "kind": "integer",
-            "value": 1
-          },
-          "name": "ips_add_with_options"
-        },
-        {
-          "command": {
-            "count": null,
-            "end_ms": 3010,
-            "key": "unified:ips",
-            "kind": "ips_query_range",
-            "start_ms": 2990
-          },
-          "expect": {
-            "kind": "feature_points",
-            "points": [
-              {
-                "timestamp_ms": 3000,
-                "value": [
-                  105,
-                  112,
-                  115,
-                  49
-                ]
-              }
-            ]
-          },
-          "name": "ips_query_range"
-        }
-      ]
-    },
-    {
-      "name": "ips_snapshot_stat_filter_batch",
-      "shard_id": 1,
-      "steps": [
-        {
-          "command": {
-            "key": "unified:ips:deep",
-            "kind": "ips_load",
-            "points": [
-              {
-                "timestamp_ms": 5100,
-                "value": [
-                  108,
-                  111,
-                  97,
-                  100,
-                  101,
-                  100,
-                  45,
-                  49,
-                  48
-                ]
-              },
-              {
-                "timestamp_ms": 5200,
-                "value": [
-                  108,
-                  111,
-                  97,
-                  100,
-                  101,
-                  100,
-                  45,
-                  50,
-                  48
-                ]
-              }
-            ]
-          },
-          "expect": {
-            "kind": "integer",
-            "value": 2
-          },
-          "name": "ips_load_two_points"
-        },
-        {
-          "command": {
-            "action_type": 7,
-            "instance": [
-              111,
-              112,
-              116,
-              45,
-              51,
-              48
-            ],
-            "key": "unified:ips:deep",
-            "kind": "ips_add_with_options",
-            "request_id": "unified-ips-30",
-            "table_id": 42,
-            "timestamp_ms": 5300
-          },
-          "expect": {
-            "kind": "integer",
-            "value": 1
-          },
-          "name": "ips_add_option_point_table_42"
-        },
-        {
-          "command": {
-            "action_type": 7,
-            "instance": [
-              111,
-              112,
-              116,
-              45,
-              52,
-              48
-            ],
-            "key": "unified:ips:deep",
-            "kind": "ips_add_with_options",
-            "request_id": "unified-ips-40",
-            "table_id": 43,
-            "timestamp_ms": 5400
-          },
-          "expect": {
-            "kind": "integer",
-            "value": 1
-          },
-          "name": "ips_add_option_point_table_43"
-        },
-        {
-          "command": {
-            "instance": [
-              111,
-              116,
-              104,
-              101,
-              114
-            ],
-            "key": "unified:ips:other",
-            "kind": "ips_add",
-            "timestamp_ms": 5500
-          },
-          "expect": {
-            "kind": "empty"
-          },
-          "name": "ips_add_other_key_for_batch"
-        },
-        {
-          "command": {
-            "count": null,
-            "end_ms": 5350,
-            "key": "unified:ips:deep",
-            "kind": "ips_snapshot",
-            "start_ms": 5000
-          },
-          "expect": {
-            "kind": "feature_points",
-            "points": [
-              {
-                "timestamp_ms": 5100,
-                "value": [
-                  108,
-                  111,
-                  97,
-                  100,
-                  101,
-                  100,
-                  45,
-                  49,
-                  48
-                ]
-              },
-              {
-                "timestamp_ms": 5200,
-                "value": [
-                  108,
-                  111,
-                  97,
-                  100,
-                  101,
-                  100,
-                  45,
-                  50,
-                  48
-                ]
-              },
-              {
-                "timestamp_ms": 5300,
-                "value": [
-                  111,
-                  112,
-                  116,
-                  45,
-                  51,
-                  48
-                ]
-              }
-            ]
-          },
-          "name": "ips_snapshot_returns_range_prefix"
-        },
-        {
-          "command": {
-            "action_type": 7,
-            "count": 10,
-            "end_ms": 5600,
-            "key": "unified:ips:deep",
-            "kind": "ips_filter",
-            "start_ms": 5000,
-            "table_id": 42
-          },
-          "expect": {
-            "kind": "feature_points",
-            "points": [
-              {
-                "timestamp_ms": 5300,
-                "value": [
-                  111,
-                  112,
-                  116,
-                  45,
-                  51,
-                  48
-                ]
-              }
-            ]
-          },
-          "name": "ips_filter_matches_action_and_table"
-        },
-        {
-          "command": {
-            "count": 1,
-            "keys": [
-              "unified:ips:deep",
-              "unified:ips:other"
-            ],
-            "kind": "ips_batch_query_last"
-          },
-          "expect": {
-            "groups": [
-              [
-                "unified:ips:deep",
-                [
-                  {
-                    "timestamp_ms": 5400,
-                    "value": [
-                      111,
-                      112,
-                      116,
-                      45,
-                      52,
-                      48
-                    ]
-                  }
-                ]
-              ],
-              [
-                "unified:ips:other",
-                [
-                  {
-                    "timestamp_ms": 5500,
-                    "value": [
-                      111,
-                      116,
-                      104,
-                      101,
-                      114
-                    ]
-                  }
-                ]
-              ]
-            ],
-            "kind": "feature_point_groups"
-          },
-          "name": "ips_batch_last_groups_by_key"
-        },
-        {
-          "command": {
-            "end_ms": 5600,
-            "key": "unified:ips:deep",
-            "kind": "ips_stat",
-            "start_ms": 5000
-          },
-          "expect": {
-            "kind": "ips_stats",
-            "stats": {
-              "action_type_counts": [
-                [
-                  7,
-                  2
-                ]
-              ],
-              "first_timestamp_ms": 5100,
-              "last_timestamp_ms": 5400,
-              "table_id_counts": [
-                [
-                  42,
-                  1
-                ],
-                [
-                  43,
-                  1
-                ]
-              ],
-              "total": 4
-            }
-          },
-          "name": "ips_stat_counts_metadata"
-        },
-        {
-          "command": {
-            "count": 3,
-            "end_ms": 5600,
-            "key": "unified:ips:deep",
-            "kind": "ips_snapshot_report",
-            "start_ms": 5000
-          },
-          "expect": {
-            "kind": "ips_snapshot_report",
-            "report": {
-              "action_type_counts": [
-                [
-                  7,
-                  2
-                ]
-              ],
-              "end_ms": 5600,
-              "first_timestamp_ms": 5100,
-              "key": "unified:ips:deep",
-              "last_timestamp_ms": 5400,
-              "packed_timestamped_page_count": 3,
-              "page_segment_ids": [
-                0
-              ],
-              "requested_count": 3,
-              "returned_count": 3,
-              "start_ms": 5000,
-              "table_id_counts": [
-                [
-                  42,
-                  1
-                ],
-                [
-                  43,
-                  1
-                ]
-              ],
-              "total_in_range": 4,
-              "unique_page_ref_count": 3
-            }
-          },
-          "name": "ips_snapshot_report_counts_pages_and_metadata"
-        }
-      ]
-    },
-    {
       "name": "risk_counter_window",
       "shard_id": 1,
       "steps": [
@@ -6716,7 +6348,7 @@
       ]
     },
     {
-      "description": "Shared conformance Redis product command flow covering string, hash, set, Feature, IPS, and Risk commands through the engine-backed Redis command path.",
+      "description": "Shared conformance Redis product command flow covering string, hash, set, Feature, and Risk commands through the engine-backed Redis command path.",
       "family": "Redis/admin",
       "name": "redis_engine_product_command_flow",
       "shard_id": 1,
@@ -8386,50 +8018,6 @@
       "name": "all_family_api_redis_admin_product_models",
       "shard_id": 36,
       "steps": [
-        {
-          "command": {
-            "acceptance": {
-              "feature": [
-                "nested_points",
-                "replace",
-                "filter",
-                "aggregation"
-              ],
-              "ips": [
-                "snapshot",
-                "stat",
-                "filter_metadata"
-              ],
-              "redis_admin": [
-                "aliases",
-                "status_codes",
-                "typed_errors"
-              ],
-              "risk": [
-                "cpc",
-                "fol",
-                "manager",
-                "debug"
-              ],
-              "sequence": [
-                "batch_query",
-                "time_ordering",
-                "missing_series"
-              ]
-            },
-            "native_runner_contract": "product modules execute the same command/response corpus for Redis/admin/Feature/Sequence/IPS/Risk behavior.",
-            "description": "Unified API case covering Redis/admin aliases plus Feature nested point semantics, Sequence edge cases, IPS snap/stat/filter metadata, and Risk CPC/list/manager/debug behavior.",
-            "kind": "existing_test",
-            "mode": "rust_executable_native_static",
-            "required_paths": [
-              "docs/product_api_rust_parity.md"
-            ],
-            "rust_runner": "cargo test -p temporalstore-rust redis_ feature_ sequence_ ips_ risk_ -- --test-threads=1",
-            "suite": "native_product_api_parity"
-          },
-          "name": "redis_admin_feature_sequence_ips_risk_shared_contract",
-          "skip_client": true
-        }
       ]
     },
     {
@@ -10797,7 +10385,7 @@
     {
       "name": "all_data_model_rust_parity_sweep",
       "family": "all data models",
-      "description": "Executable shared conformance sweep across TemporalStore product data models: common TTL/existence, string, hash, set, Feature, Sequence, IPS, Risk, and Context node/event/entity/child/embedding/summary/compression/index sidecars.",
+      "description": "Executable shared conformance sweep across TemporalStore product data models: common TTL/existence, string, hash, set, Feature, Sequence, Risk, and Context node/event/entity/child/embedding/summary/compression/index sidecars.",
       "shard_id": 7,
       "steps": [
         {
@@ -11040,110 +10628,6 @@
                 "author_id": 9
               }
             ]
-          }
-        },
-        {
-          "name": "ips_add_a",
-          "command": {
-            "kind": "ips_add_with_options",
-            "key": "parity:ips",
-            "timestamp_ms": 300,
-            "instance": [
-              105,
-              112,
-              115,
-              45,
-              97
-            ],
-            "action_type": 7,
-            "table_id": 42,
-            "request_id": "req-a"
-          },
-          "expect": {
-            "kind": "integer",
-            "value": 1
-          }
-        },
-        {
-          "name": "ips_add_b",
-          "command": {
-            "kind": "ips_add_with_options",
-            "key": "parity:ips",
-            "timestamp_ms": 310,
-            "instance": [
-              105,
-              112,
-              115,
-              45,
-              98
-            ],
-            "action_type": 8,
-            "table_id": 42,
-            "request_id": "req-b"
-          },
-          "expect": {
-            "kind": "integer",
-            "value": 1
-          }
-        },
-        {
-          "name": "ips_filter",
-          "command": {
-            "kind": "ips_filter",
-            "key": "parity:ips",
-            "start_ms": 290,
-            "end_ms": 320,
-            "count": null,
-            "action_type": 8,
-            "table_id": 42
-          },
-          "expect": {
-            "kind": "feature_points",
-            "points": [
-              {
-                "timestamp_ms": 310,
-                "value": [
-                  105,
-                  112,
-                  115,
-                  45,
-                  98
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "ips_stat",
-          "command": {
-            "kind": "ips_stat",
-            "key": "parity:ips",
-            "start_ms": 290,
-            "end_ms": 320
-          },
-          "expect": {
-            "kind": "ips_stats",
-            "stats": {
-              "total": 2,
-              "first_timestamp_ms": 300,
-              "last_timestamp_ms": 310,
-              "action_type_counts": [
-                [
-                  7,
-                  1
-                ],
-                [
-                  8,
-                  1
-                ]
-              ],
-              "table_id_counts": [
-                [
-                  42,
-                  2
-                ]
-              ]
-            }
           }
         },
         {
@@ -12213,7 +11697,7 @@
         ]
       },
       {
-        "blocker": "executable shared adapter for Redis/admin/Feature/Sequence/IPS/Risk command corpus is still pending.",
+        "blocker": "executable shared adapter for Redis/admin/Feature/Sequence/Risk command corpus is still pending.",
         "expected_runner_command": "TS_NATIVE_UNIFIED_NATIVE_CMD='<native-product-api-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --family product_api_models --native --require-native-native",
         "family": "product_api_models",
         "status": "temporary_static_surface_gate",
@@ -12236,7 +11720,6 @@
       "redis_compatible_set_core",
       "feature_packed_timestamped_pages",
       "sequence_feature_rows",
-      "ips_options_range",
       "risk_counter_window",
       "risk_family_query_and_delete",
       "context_node_roundtrip",
@@ -12278,7 +11761,6 @@
       "native_proxy_serving_admission_parity_surfaces",
       "native_metaserver_scheduler_repair_parity_surfaces",
       "native_data_node_lifecycle_server_parity_surfaces",
-      "ips_snapshot_stat_filter_batch",
       "risk_manager_debug_fol",
       "storage_dump_load_recovery",
       "storage_fault_matrix",
@@ -12467,8 +11949,6 @@
       "sequence_add",
       "sequence_query",
       "sequence_batch_query",
-      "ips_add_with_options",
-      "ips_query_range",
       "risk_increment",
       "risk_count",
       "risk_set",
@@ -12486,12 +11966,6 @@
       "common_exists",
       "common_expire",
       "existing_test",
-      "ips_load",
-      "ips_batch_query_last",
-      "ips_snapshot",
-      "ips_filter",
-      "ips_stat",
-      "ips_snapshot_report",
       "risk_set_and_get",
       "risk_fol_set",
       "risk_fol_query",
@@ -12575,8 +12049,6 @@
       "context_pack_audits",
       "context_summary_dirty_markers",
       "feature_point_groups",
-      "ips_stats",
-      "ips_snapshot_report",
       "object_store_backend"
     ],
     "feature_parity_cases": [

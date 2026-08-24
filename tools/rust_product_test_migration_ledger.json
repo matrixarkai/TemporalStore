@@ -25,7 +25,6 @@
       "Feature": 12,
       "Sequence": 4,
       "Risk": 8,
-      "IPS": 4,
       "rust internals": 6
     },
     "by_family_and_classification": {
@@ -58,9 +57,6 @@
       },
       "Risk": {
         "move_to_shared": 8
-      },
-      "IPS": {
-        "move_to_shared": 4
       },
       "rust internals": {
         "rust_internal": 6
@@ -1555,15 +1551,6 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::ips_query_last_returns_recent_instances",
-      "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "ips_query_last_returns_recent_instances",
-      "family": "IPS",
-      "classification": "move_to_shared",
-      "next_migration_target": "IPS shared cases for snapshot/stat/filter and metadata semantics",
-      "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
-    },
-    {
       "test_id": "crates/temporalstore-rust/src/engine/tests.rs::risk_count_sums_window",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
       "test_name": "risk_count_sums_window",
@@ -1636,39 +1623,12 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::ips_remove_delete_and_count_are_supported",
-      "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "ips_remove_delete_and_count_are_supported",
-      "family": "IPS",
-      "classification": "move_to_shared",
-      "next_migration_target": "IPS shared cases for snapshot/stat/filter and metadata semantics",
-      "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::ips_pages_store_timestamp_keys_with_values",
-      "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "ips_pages_store_timestamp_keys_with_values",
-      "family": "IPS",
-      "classification": "move_to_shared",
-      "next_migration_target": "IPS shared cases for snapshot/stat/filter and metadata semantics",
-      "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
-    },
-    {
       "test_id": "crates/temporalstore-rust/src/engine/tests.rs::recovery_validates_all_timestamped_kv_page_families",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
       "test_name": "recovery_validates_all_timestamped_kv_page_families",
       "family": "storage/cache",
       "classification": "move_to_shared",
       "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
-      "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::ips_compaction_rewrites_shared_timestamped_page_once",
-      "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "ips_compaction_rewrites_shared_timestamped_page_once",
-      "family": "IPS",
-      "classification": "move_to_shared",
-      "next_migration_target": "IPS shared cases for snapshot/stat/filter and metadata semantics",
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
@@ -1699,9 +1659,7 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::feature_write_policy_sequence_batch_ips_dimensions_and_risk_precision_work",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "feature_write_policy_sequence_batch_ips_dimensions_and_risk_precision_work",
       "family": "Risk",
       "classification": "move_to_shared",
       "next_migration_target": "Risk shared cases for CPC/list/manager/debug/window semantics",

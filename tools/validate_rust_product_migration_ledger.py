@@ -34,7 +34,6 @@ VALID_FAMILIES = {
     "Redis/admin",
     "Feature",
     "Sequence",
-    "IPS",
     "Risk",
     "control plane",
     "ingestion",
