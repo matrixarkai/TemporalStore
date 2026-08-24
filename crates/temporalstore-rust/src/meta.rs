@@ -2033,6 +2033,99 @@ mod tests {
             .expect("registered")
     }
 
+    fn joined(meta: &SingleNodeMeta) -> Vec<String> {
+        let state = meta.inner.read().expect("meta lock poisoned");
+        state
+            .topology_events
+            .iter()
+            .map(|event| format!("{}:{}", event.kind, event.resource))
+            .collect()
+    }
+
+    #[test]
+    fn a_proxy_joining_is_recorded() {
+        // A server registering has always been recorded; a proxy registering
+        // was not, so a proxy could enter the cluster and leave no trace in the
+        // history at all.
+        let meta = SingleNodeMeta::default();
+        meta.register_proxy(RegisterProxyRequest {
+            proxy_addr: "proxy-1:9000".to_string(),
+            namespace: "ns".to_string(),
+            location: "rack-1".to_string(),
+            config_version: 1,
+            binary_version: "v1".to_string(),
+        });
+        assert!(
+            joined(&meta).contains(&"register_proxy:proxy:proxy-1:9000".to_string()),
+            "a proxy joined and the history did not notice: {:?}",
+            joined(&meta)
+        );
+    }
+
+    #[test]
+    fn a_namespace_being_created_is_recorded() {
+        // Freezing and dropping a namespace were recorded, but creating one was
+        // not -- so the history could show a namespace being frozen with no
+        // record of it ever having existed.
+        let meta = SingleNodeMeta::default();
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "tenant-a".to_string(),
+        });
+        assert!(
+            joined(&meta).contains(&"add_namespace:namespace:tenant-a".to_string()),
+            "a namespace was created and the history did not notice: {:?}",
+            joined(&meta)
+        );
+    }
+
+    #[test]
+    fn creating_the_same_namespace_twice_records_once() {
+        // The call is idempotent. An event per repeat would advance the
+        // topology version for a change that did not happen, and a caller
+        // polling the history would see movement where there was none.
+        let meta = SingleNodeMeta::default();
+        for _ in 0..3 {
+            meta.add_namespace(AddNamespaceRequest {
+                namespace: "tenant-a".to_string(),
+            });
+        }
+        let recorded = joined(&meta)
+            .into_iter()
+            .filter(|entry| entry == "add_namespace:namespace:tenant-a")
+            .count();
+        assert_eq!(recorded, 1, "an idempotent call recorded more than once");
+    }
+
+    #[test]
+    fn a_proxy_turned_away_is_not_recorded_as_having_joined() {
+        // The refusal paths return before the recording. A proxy under
+        // conviction that is refused must not appear in the history as having
+        // joined, or the history contradicts the state.
+        let meta = SingleNodeMeta::default().with_conviction_lock(true);
+        let register_proxy = || {
+            meta.register_proxy(RegisterProxyRequest {
+                proxy_addr: "proxy-a".to_string(),
+                namespace: "ns".to_string(),
+                location: "rack-1".to_string(),
+                config_version: 1,
+                binary_version: "v1".to_string(),
+            })
+        };
+        let joins = || {
+            joined(&meta)
+                .into_iter()
+                .filter(|entry| entry.starts_with("register_proxy:"))
+                .count()
+        };
+        assert!(register_proxy().status.ok);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert!(meta.freeze_stale_resources(0).status.ok);
+
+        let before = joins();
+        assert_eq!(register_proxy().status.code, "conviction_requires_unfreeze");
+        assert_eq!(joins(), before, "a refused registration was recorded anyway");
+    }
+
     #[test]
     fn a_freeze_records_why_it_happened() {
         let meta = SingleNodeMeta::default();
