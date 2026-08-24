@@ -827,6 +827,7 @@ impl LocalWriteAheadLogStore {
             return Ok(());
         }
         let file = OpenOptions::new().read(true).write(true).open(&path)?;
+        crate::durability_metrics::record_barrier("engine_wal_group_commit");
         file.sync_data()?;
         if !entry.dir_synced {
             // First durable append for this shard this process lifetime: make the
@@ -1021,6 +1022,7 @@ impl LocalWriteAheadLogStore {
             });
         }
         let file = OpenOptions::new().read(true).write(true).open(&path)?;
+        crate::durability_metrics::record_barrier("engine_wal_flush");
         file.sync_all()?;
         sync_parent_dir(&path)?;
         let persistent_bytes = path.metadata()?.len();
@@ -1860,6 +1862,7 @@ fn append_record_locked(
     file.write_all(&bytes)?;
     if sync {
         file.flush()?;
+        crate::durability_metrics::record_barrier("engine_wal_append");
         file.sync_data()?;
         // The parent-directory entry for the WAL file only needs a durable barrier when
         // the file is first created; appends grow the file (inode) without changing the
@@ -2181,6 +2184,7 @@ fn command_item_kind(command: &Command) -> WriteAheadLogItemKind {
 fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         if let Ok(dir) = File::open(parent) {
+            crate::durability_metrics::record_barrier("engine_wal_dir");
             dir.sync_all()?;
         }
     }

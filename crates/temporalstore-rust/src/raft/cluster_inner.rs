@@ -648,18 +648,42 @@ impl RaftClusterInner {
     }
 
     pub(super) fn persist_configured_wal(&mut self) -> Result<(), RaftError> {
+        let staged = self.stage_configured_wal()?;
+        self.finish_staged_wal(staged)
+    }
+
+    /// Take the barriers a set of staged appends owes.
+    ///
+    /// Safe to call with the propose lock released: the writes are already ordered, and a barrier
+    /// makes every byte already in the file durable regardless of who wrote it.
+    pub(super) fn finish_staged_wal(
+        &self,
+        staged: Vec<local_wal::StagedWalAppend>,
+    ) -> Result<(), RaftError> {
+        let Some(wal) = &self.wal else {
+            return Ok(());
+        };
+        for append in staged {
+            wal.finish_staged(append)
+                .map_err(|err| RaftError::Wal(err.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Write what this node must persist, WITHOUT taking the barrier for it.
+    fn stage_configured_wal(&mut self) -> Result<Vec<local_wal::StagedWalAppend>, RaftError> {
         // P4: this thread owes a barrier rather than skipping one -- `flush_deferred_persist`
         // takes it before the propose acks. Only the thread that opened the deferral defers, so
         // a vote grant or heartbeat racing this propose still fsyncs before it answers.
         if self.persist_deferred_owner == Some(std::thread::current().id()) {
             self.persist_dirty = true;
-            return Ok(());
+            return Ok(Vec::new());
         }
         // Clone the WAL handle (cheap -- it shares the cursor cache via an Arc) so `self` is free
         // to be borrowed mutably below for the coalescing fingerprint map.
         let wal = match &self.wal {
             Some(wal) => wal.clone(),
-            None => return Ok(()),
+            None => return Ok(Vec::new()),
         };
         let shard_id = self.shard_id;
         let max_segment_bytes = self.config.max_segment_bytes;
@@ -678,6 +702,7 @@ impl RaftClusterInner {
             Some(local) => self.wal_record_for(local).into_iter().collect::<Vec<_>>(),
             None => self.wal_records(),
         };
+        let mut staged = Vec::new();
         for (node_id, record) in records {
             // P1: when coalescing is enabled, skip the fdatasync for a node whose durability-
             // relevant state is byte-identical to what we last persisted. A false "changed" only
@@ -688,27 +713,31 @@ impl RaftClusterInner {
                 if self.last_durable_fingerprint.get(&node_id) == Some(&fingerprint) {
                     continue;
                 }
-                wal.persist_node_segmented(
-                    shard_id,
-                    node_id,
-                    &record,
-                    max_segment_bytes,
-                    min_keep_segment_num,
-                )
-                .map_err(|err| RaftError::Wal(err.to_string()))?;
+                staged.push(
+                    wal.stage_node_segmented(
+                        shard_id,
+                        node_id,
+                        &record,
+                        max_segment_bytes,
+                        min_keep_segment_num,
+                    )
+                    .map_err(|err| RaftError::Wal(err.to_string()))?,
+                );
                 self.last_durable_fingerprint.insert(node_id, fingerprint);
             } else {
-                wal.persist_node_segmented(
-                    shard_id,
-                    node_id,
-                    &record,
-                    max_segment_bytes,
-                    min_keep_segment_num,
-                )
-                .map_err(|err| RaftError::Wal(err.to_string()))?;
+                staged.push(
+                    wal.stage_node_segmented(
+                        shard_id,
+                        node_id,
+                        &record,
+                        max_segment_bytes,
+                        min_keep_segment_num,
+                    )
+                    .map_err(|err| RaftError::Wal(err.to_string()))?,
+                );
             }
         }
-        Ok(())
+        Ok(staged)
     }
 
     /// P4: start owing barriers on THIS thread instead of taking them. The caller must hold the
@@ -721,12 +750,24 @@ impl RaftClusterInner {
     /// P4: take the one real barrier covering everything deferred since `begin_deferred_persist`.
     /// Called before the propose acks, on the success and the failure path alike.
     pub(super) fn flush_deferred_persist(&mut self) -> Result<(), RaftError> {
+        let staged = self.stage_deferred_persist()?;
+        self.finish_staged_wal(staged)
+    }
+
+    /// End the deferral by WRITING what is owed, leaving the barrier to the caller.
+    ///
+    /// This is what lets the propose path drop its lock before flushing: the write happens while
+    /// the lock still orders it, and the barrier -- which every concurrent proposer can share --
+    /// happens after.
+    pub(super) fn stage_deferred_persist(
+        &mut self,
+    ) -> Result<Vec<local_wal::StagedWalAppend>, RaftError> {
         self.persist_deferred_owner = None;
         if !self.persist_dirty {
-            return Ok(());
+            return Ok(Vec::new());
         }
         self.persist_dirty = false;
-        self.persist_configured_wal()
+        self.stage_configured_wal()
     }
 
     pub(super) fn wal_records(&self) -> Vec<(RaftNodeId, RaftWalRecord)> {

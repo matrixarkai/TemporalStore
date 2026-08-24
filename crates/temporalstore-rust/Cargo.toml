@@ -69,6 +69,10 @@ name = "matrixark_rust_metaserver"
 path = "src/bin/matrixark_rust_metaserver.rs"
 
 [[bin]]
+name = "raft_barrier_profile"
+path = "src/bin/raft_barrier_profile.rs"
+
+[[bin]]
 name = "matrixark_rust_datanode"
 path = "src/bin/matrixark_rust_datanode.rs"
 

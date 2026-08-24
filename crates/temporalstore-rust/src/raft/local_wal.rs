@@ -4,11 +4,29 @@
 //! LocalRaftWal WAL persistence/recovery methods, split from raft.rs.
 use super::*;
 
+/// An append whose bytes are in the file but whose durability barrier has not been taken.
+///
+/// Writing and flushing are separated so a caller can hold a lock across the write -- record
+/// order matters, since each record carries the log and an older one landing after a newer one
+/// would regress it on recovery -- and then release that lock before the barrier, which is both
+/// the expensive part and the part that concurrent writers can share.
+#[must_use = "a staged append is not durable until finish_staged takes its barrier"]
+pub struct StagedWalAppend {
+    gate: Arc<crate::flush_gate::FlushGate>,
+    ticket: crate::flush_gate::FlushTicket,
+    file: fs::File,
+    shard_id: ShardId,
+    node_id: RaftNodeId,
+    min_keep_segments: usize,
+    slow_fsync_threshold_ms: u64,
+}
+
 impl LocalRaftWal {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),
             cursors: Arc::new(Mutex::new(BTreeMap::new())),
+            flush_gates: Arc::new(crate::flush_gate::FlushRegistry::default()),
         }
     }
 
@@ -42,6 +60,7 @@ impl LocalRaftWal {
         let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
         serde_json::to_writer(&mut file, &envelope).map_err(io::Error::other)?;
         file.write_all(b"\n")?;
+        crate::durability_metrics::record_barrier("raft_wal_append_unsegmented");
         file.sync_data()?;
         Ok(())
     }
@@ -75,6 +94,26 @@ impl LocalRaftWal {
         )
     }
 
+    /// Write a record's bytes without taking its barrier. See `finish_staged`.
+    pub fn stage_node_segmented(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+        record: &RaftWalRecord,
+        max_segment_bytes: u64,
+        min_keep_segments: usize,
+    ) -> io::Result<StagedWalAppend> {
+        self.stage_node_segmented_with_fsync_threshold(
+            shard_id,
+            node_id,
+            record,
+            max_segment_bytes,
+            min_keep_segments,
+            u64::MAX,
+        )
+    }
+
+    /// Append a record and make it durable before returning.
     pub fn persist_node_segmented_with_fsync_threshold(
         &self,
         shard_id: ShardId,
@@ -84,6 +123,32 @@ impl LocalRaftWal {
         min_keep_segments: usize,
         slow_fsync_threshold_ms: u64,
     ) -> io::Result<RaftWalSegmentReport> {
+        let staged = self.stage_node_segmented_with_fsync_threshold(
+            shard_id,
+            node_id,
+            record,
+            max_segment_bytes,
+            min_keep_segments,
+            slow_fsync_threshold_ms,
+        )?;
+        self.finish_staged(staged)
+    }
+
+    /// Write a record's bytes WITHOUT taking its durability barrier.
+    ///
+    /// The returned handle owes a barrier: nothing here is durable until `finish_staged` takes
+    /// it. Callers that must order their writes against each other hold their lock across this
+    /// call and release it before finishing, so the barriers coalesce while the writes stay in
+    /// order.
+    pub fn stage_node_segmented_with_fsync_threshold(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+        record: &RaftWalRecord,
+        max_segment_bytes: u64,
+        min_keep_segments: usize,
+        slow_fsync_threshold_ms: u64,
+    ) -> io::Result<StagedWalAppend> {
         let max_segment_bytes = max_segment_bytes.max(1);
         let min_keep_segments = min_keep_segments.max(1);
         let segment_dir = self.node_segment_dir(shard_id, node_id);
@@ -228,9 +293,12 @@ impl LocalRaftWal {
             .append(true)
             .open(&active_path)?;
         file.write_all(&encoded)?;
-        let fsync_started = Instant::now();
-        file.sync_data()?;
-        let last_fsync_elapsed_ms = fsync_started.elapsed().as_millis() as u64;
+        // The bytes are in the file now, so claim a barrier -- but do not take it here. Taking it
+        // under the cursor lock is what kept barriers-per-write pinned at 1.0 however many
+        // writers there were: each queued for the lock and then paid for an fsync that would have
+        // covered all of them. The barrier is taken below, once the lock is released.
+        let gate = self.flush_gates.gate((shard_id, node_id));
+        let ticket = gate.register_write();
 
         // Update the in-memory segment metadata to mirror what a fresh on-disk scan
         // (`node_segments` -> `inspect_segment_sequences`) would report.
@@ -274,6 +342,49 @@ impl LocalRaftWal {
         }
         cursor.persisted_last_index = log_last_index;
         cursor.persisted_last_term = log_last_term;
+
+        // Everything the cursor must record about this append is in place, so the lock can go
+        // before the expensive part. Writers blocked behind it now proceed and register against
+        // the same gate, and one barrier covers all of them.
+        drop(cursors);
+        Ok(StagedWalAppend {
+            gate,
+            ticket,
+            file,
+            shard_id,
+            node_id,
+            min_keep_segments,
+            slow_fsync_threshold_ms,
+        })
+    }
+
+    /// Take (or ride) the barrier a staged append owes, then prune and report.
+    ///
+    /// Pruning happens strictly after the barrier: dropping an old segment before the new record
+    /// is durable would trade a retention rule for a hole in the log.
+    pub fn finish_staged(&self, staged: StagedWalAppend) -> io::Result<RaftWalSegmentReport> {
+        let StagedWalAppend {
+            gate,
+            ticket,
+            file,
+            shard_id,
+            node_id,
+            min_keep_segments,
+            slow_fsync_threshold_ms,
+        } = staged;
+        let last_fsync_elapsed_ms = gate.await_durable(ticket, || {
+            crate::durability_metrics::record_barrier("raft_wal_append");
+            file.sync_data()
+        })?;
+        let mut cursors = self.cursors.lock().expect("raft wal cursor lock poisoned");
+        let Some(cursor) = cursors.get_mut(&(shard_id, node_id)) else {
+            // A concurrent `recover_node_segmented` dropped the cached cursor so the next append
+            // rebuilds it from disk. This append is already durable -- the barrier above saw to
+            // that -- and only the in-memory bookkeeping is gone, so read the report off disk
+            // rather than insist on state that was deliberately discarded.
+            drop(cursors);
+            return self.segment_report(shard_id, node_id);
+        };
 
         // Prune the oldest segments, keeping at least `min_keep_segments`. Removing a
         // segment drops its records from the retained window, so the next sequence
@@ -446,10 +557,43 @@ impl LocalRaftWal {
                         let mut entries = base
                             .map(|base| base.entries)
                             .unwrap_or_default();
-                        entries.retain(|entry| entry.index <= delta.from_index);
+                        // A raft log is in ascending index order, and both trims below depend on
+                        // that: each is a prefix or a suffix, never a scattered subset.
+                        debug_assert!(
+                            entries.windows(2).all(|pair| pair[0].index <= pair[1].index),
+                            "replay assumes the accumulated log is ordered by index"
+                        );
+                        // Drop what a conflict superseded. Testing the LAST entry first makes the
+                        // ordinary case -- an append that supersedes nothing -- O(1) instead of a
+                        // scan of everything accumulated so far. Scanning every time is what made
+                        // replay quadratic in record count, so a long-lived node paid for its
+                        // whole history on every restart.
+                        if entries
+                            .last()
+                            .map_or(false, |entry| entry.index > delta.from_index)
+                        {
+                            let keep =
+                                entries.partition_point(|entry| entry.index <= delta.from_index);
+                            crate::durability_metrics::record_scan(
+                                "replay_entries_scanned",
+                                (entries.len() - keep) as u64,
+                            );
+                            entries.truncate(keep);
+                        }
                         entries.extend(appended);
-                        if delta.log_first_index > 0 {
-                            entries.retain(|entry| entry.index >= delta.log_first_index);
+                        // Same again for what compaction removed, from the front.
+                        if delta.log_first_index > 0
+                            && entries
+                                .first()
+                                .map_or(false, |entry| entry.index < delta.log_first_index)
+                        {
+                            let drop_upto = entries
+                                .partition_point(|entry| entry.index < delta.log_first_index);
+                            crate::durability_metrics::record_scan(
+                                "replay_entries_scanned",
+                                drop_upto as u64,
+                            );
+                            entries.drain(..drop_upto);
                         }
                         merged.entries = entries;
                         Some(merged)
@@ -527,6 +671,7 @@ impl LocalRaftWal {
             serde_json::to_writer(&mut file, &envelope).map_err(io::Error::other)?;
             file.write_all(b"\n")?;
         }
+        crate::durability_metrics::record_barrier("raft_wal_compact");
         file.sync_data()?;
         Ok(())
     }

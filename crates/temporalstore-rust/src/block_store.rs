@@ -694,6 +694,7 @@ impl LocalBlockStore {
                     .open(slab_path(&root, page_slab_id))
                 {
                     if file.set_len(readable_prefix).is_ok() {
+                        crate::durability_metrics::record_barrier("block_store_open");
                         let _ = file.sync_all();
                         if let Ok(dir) = File::open(&root) {
                             let _ = dir.sync_all();
@@ -776,6 +777,7 @@ impl LocalBlockStore {
             .saturating_add(1);
         let path = slab_path(&inner.root, new_slab_id);
         let file = File::create(&path)?;
+        crate::durability_metrics::record_barrier("block_store_checkpoint_reserve");
         file.sync_all()?;
         sync_parent_dir(&path)?;
         inner.page_slab_id = new_slab_id;
@@ -1163,6 +1165,7 @@ fn roll_slab_inner(
     {
         let prev_path = slab_path(&inner.root, previous_page_slab_id);
         if let Ok(prev) = OpenOptions::new().append(true).open(&prev_path) {
+            crate::durability_metrics::record_barrier("block_store_slab_roll_prev");
             let _ = prev.sync_data();
         }
     }
@@ -1176,6 +1179,7 @@ fn roll_slab_inner(
     inner.write_offset = 0;
     let path = slab_path(&inner.root, inner.page_slab_id);
     let file = File::create(&path)?;
+    crate::durability_metrics::record_barrier("block_store_slab_roll");
     file.sync_all()?;
     sync_parent_dir(&path)?;
     let transition_unix_ms = now_unix_ms();

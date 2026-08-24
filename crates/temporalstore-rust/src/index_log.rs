@@ -248,6 +248,9 @@ pub struct IndexLogGcReport {
 #[derive(Debug, Clone)]
 pub struct LocalIndexLogStore {
     inner: Arc<Mutex<IndexLogInner>>,
+    /// One barrier gate per shard log, so appends that arrive while an fsync is in flight ride it
+    /// instead of queueing to take an identical one.
+    flush_gates: Arc<crate::flush_gate::FlushRegistry>,
 }
 
 #[derive(Debug)]
@@ -390,6 +393,7 @@ impl LocalIndexLogStore {
                 last_sequence_by_shard: HashMap::new(),
                 last_dumped_len_by_shard: HashMap::new(),
             })),
+            flush_gates: Arc::new(crate::flush_gate::FlushRegistry::default()),
         }
     }
 
@@ -548,13 +552,26 @@ impl LocalIndexLogStore {
             .open(index_log_path(&inner.root, shard_id))?;
         file.write_all(&bytes)?;
         file.flush()?;
-        if durable {
-            file.sync_data()?;
-        }
         inner.stats.writes += 1;
         inner.stats.bytes_written += bytes.len() as u64;
         inner.stats.last_sequence = next_sequence;
         inner.last_sequence_by_shard.insert(shard_id, next_sequence);
+        // The bytes are in the file and the bookkeeping is done, so claim a barrier and then let
+        // the lock go before taking it. Holding the lock across the fsync meant writers could
+        // never reach the barrier together, so each paid for one that would have covered all of
+        // them.
+        let barrier = durable.then(|| {
+            let gate = self.flush_gates.gate((shard_id as u64, 0));
+            let ticket = gate.register_write();
+            (gate, ticket)
+        });
+        drop(inner);
+        if let Some((gate, ticket)) = barrier {
+            gate.await_durable(ticket, || {
+                crate::durability_metrics::record_barrier("engine_index_log_append");
+                file.sync_data()
+            })?;
+        }
         Ok(next_sequence)
     }
 
@@ -751,6 +768,7 @@ impl LocalIndexLogStore {
                 temp.write_all(&crate::log_framing::encode_line(payload))?;
             }
             temp.flush()?;
+            crate::durability_metrics::record_barrier("engine_index_log_gc");
             temp.sync_all()?;
         }
         fs::rename(&temp_path, &path)?;
@@ -830,6 +848,7 @@ fn last_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, IndexLogError
     }
     if good_offset < offset || good_offset < file.metadata()?.len() {
         file.set_len(good_offset)?;
+        crate::durability_metrics::record_barrier("engine_index_log_seq_probe");
         file.sync_all()?;
         sync_parent_dir(&path)?;
     }
@@ -839,6 +858,7 @@ fn last_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, IndexLogError
 fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         if let Ok(dir) = File::open(parent) {
+            crate::durability_metrics::record_barrier("engine_index_log_dir");
             dir.sync_all()?;
         }
     }
@@ -1321,5 +1341,63 @@ mod tests {
              collector has stopped copying what it keeps, and a per-round bound may now be worth \
              having"
         );
+    }
+
+    /// Concurrent appends to one shard's index log must SHARE durability barriers.
+    ///
+    /// An fsync makes every byte already in the file durable, so a barrier taken while other
+    /// writers are queued behind it covers them too. This held the store lock across the fsync,
+    /// so writers could not reach the barrier together and each paid for one of its own -- the
+    /// same shape the raft node log had.
+    #[test]
+    fn concurrent_index_log_appends_share_barriers() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(LocalIndexLogStore::new(dir.path()));
+        let writers = 16usize;
+        let each = 8usize;
+        // Release the threads together, so they genuinely overlap rather than trickling through
+        // one at a time and each finding no barrier to ride.
+        let start = std::sync::Arc::new(std::sync::Barrier::new(writers));
+
+        crate::durability_metrics::reset();
+        let handles: Vec<_> = (0..writers)
+            .map(|writer| {
+                let store = std::sync::Arc::clone(&store);
+                let start = std::sync::Arc::clone(&start);
+                std::thread::spawn(move || {
+                    start.wait();
+                    for index in 0..each {
+                        store
+                            .append_delta(
+                                4,
+                                vec![page_item(1, &format!("k-{writer}-{index}"), false)],
+                                Vec::new(),
+                                None,
+                                None,
+                                true,
+                            )
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let appends = (writers * each) as u64;
+        let barriers = crate::durability_metrics::snapshot()
+            .get("engine_index_log_append")
+            .copied()
+            .unwrap_or(0);
+        assert!(barriers >= 1, "some barrier must actually be taken");
+        assert!(
+            barriers < appends,
+            "{barriers} barriers for {appends} concurrent appends -- nothing coalesced"
+        );
+
+        // Sharing a barrier must cost nobody their record: every append is still readable.
+        let records = store.read_delta_records(4, 0).unwrap();
+        assert_eq!(records.len() as u64, appends, "every append must survive");
     }
 }

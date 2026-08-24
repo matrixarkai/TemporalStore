@@ -91,6 +91,31 @@ impl RaftCluster {
         let _ = inner.persist_configured_wal();
     }
 
+    /// How long this node has been behind the leader without accepting anything, in
+    /// milliseconds of cluster clock. Zero when it is not behind.
+    ///
+    /// Staleness used to be derivable only by comparing log indices against this process's own
+    /// shadow of the peer. That shadow does not move when the peer rejects, so a follower that
+    /// had stopped converging reported a lag of ZERO while falling further behind -- the failure
+    /// mode reporting itself as health. This cannot: the comparison is against the commit index
+    /// the LEADER sent, and the clock advances whether or not appends are landing.
+    pub fn replication_stall_ms(&self, node_id: RaftNodeId) -> u64 {
+        let inner = self.inner.read().expect("raft cluster lock poisoned");
+        let Some(node) = inner.nodes.get(&node_id) else {
+            return 0;
+        };
+        let behind = node.pipeline_state.leader_reported_commit_index
+            > node_last_log_or_snapshot_index(node);
+        if !behind {
+            // Caught up with everything the leader has admitted to committing. An idle cluster
+            // must not look stalled.
+            return 0;
+        }
+        inner
+            .logical_time_ms
+            .saturating_sub(node.pipeline_state.last_accepted_append_ms)
+    }
+
     pub fn shard_id(&self) -> ShardId {
         self.inner
             .read()
