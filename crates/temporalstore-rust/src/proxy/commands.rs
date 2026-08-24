@@ -49,6 +49,8 @@ pub(super) fn proxy_command_is_write(command: &Command) -> bool {
 
 fn proxy_command_key(command: &Command) -> Option<&str> {
     match command {
+        // Names no key: it exists to be committed, not to touch a record.
+        Command::LeaderEstablish => None,
         Command::CommonDelete { key }
         | Command::CommonExpire { key, .. }
         | Command::CommonTtl { key }
