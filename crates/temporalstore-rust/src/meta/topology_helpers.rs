@@ -14,14 +14,34 @@ pub(super) fn table_shard_id(
     Ok(table.first_shard_id + offset)
 }
 
+/// Whether `table` owns `shard_id`.
+///
+/// A table's shard ids are `first_shard_id + offset` for every offset below its
+/// shard count, which makes them a contiguous range -- so this is a bounds
+/// check, not a search. It used to be written as a search: every candidate id
+/// was generated and compared, one per shard in the table.
+///
+/// That cost is paid per lookup, and the two callers that matter look one up
+/// for every registered shard in the cluster. Retention planning and placement
+/// were therefore quadratic in the fleet and linear again in the width of each
+/// table -- a hundred tables of a hundred shards each turned ten thousand
+/// lookups into a hundred million comparisons, on a timer.
+///
+/// `saturating_add` rather than `+`: `first_shard_id` is supplied by the caller
+/// that created the table, and a value near the top of the range would overflow
+/// on the way to computing the end of it.
+fn table_owns_shard(table: &TableMetaInfo, shard_id: ShardId) -> bool {
+    let first = table.first_shard_id;
+    shard_id >= first && shard_id < first.saturating_add(table.shard_count)
+}
+
 pub(super) fn table_for_shard<'a>(state: &'a MetaState, shard_id: ShardId) -> Option<&'a TableRecord> {
-    state.tables.values().find(|table| {
-        (0..table.info.shard_count).any(|offset| {
-            table_shard_id(&table.info, offset)
-                .map(|candidate| candidate == shard_id)
-                .unwrap_or(false)
-        })
-    })
+    // Still the first match in map order, so two tables claiming overlapping
+    // ranges resolve exactly as they did before.
+    state
+        .tables
+        .values()
+        .find(|table| table_owns_shard(&table.info, shard_id))
 }
 
 pub(super) fn push_replica(
