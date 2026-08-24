@@ -104,15 +104,23 @@ fn repeated_marks_for_one_node_coalesce_to_latest_and_max_depth() {
         1,
         "three marks for one node must coalesce into a single dirty marker"
     );
-    let marker = &nodes[0];
-    assert_eq!(node_hash, 42);
+    let entry = &nodes[0];
+    assert_eq!(entry.node_hash, 42);
     assert_eq!(
-        event_time_ms, 3_000,
-        "coalesced marker keeps the latest event time"
+        entry.last_event_time_ms, 3_000,
+        "the coalesced entry keeps the latest event time"
     );
     assert_eq!(
-        propagate_depth, 2,
-        "coalesced marker keeps the deepest requested propagate depth"
+        entry.first_event_time_ms, 1_000,
+        "and the earliest, which is the half a single timestamp used to hide"
+    );
+    assert_eq!(
+        entry.mark_count, 3,
+        "three marks arrived, and the entry says so"
+    );
+    assert_eq!(
+        entry.propagate_depth, 2,
+        "the coalesced entry keeps the deepest requested propagate depth"
     );
 }
 
@@ -126,8 +134,8 @@ fn distinct_nodes_are_tracked_independently() {
     let node_99 = query(&engine, 99, 0, 10_000);
     assert_eq!(node_42.len(), 1);
     assert_eq!(node_99.len(), 1);
-    assert_eq!(node_42[0].event_time_ms, 1_000);
-    assert_eq!(node_99[0].event_time_ms, 5_000);
+    assert_eq!(node_42[0].last_event_time_ms, 1_000);
+    assert_eq!(node_99[0].last_event_time_ms, 5_000);
     assert_eq!(node_99[0].propagate_depth, 3);
 }
 
@@ -160,6 +168,6 @@ fn coalescing_is_bounded_regardless_of_mark_count() {
         1,
         "500 marks for one node must remain a single coalesced dirty marker"
     );
-    assert_eq!(nodes[0].event_time_ms, 1_499, "latest event time wins");
+    assert_eq!(nodes[0].last_event_time_ms, 1_499, "latest event time wins");
     assert_eq!(nodes[0].propagate_depth, 3, "max depth across marks wins");
 }

@@ -2056,10 +2056,10 @@ fn ingest_external_benchmark_sources(
         });
         commands.push(Command::ContextMarkSummaryDirty {
             tenant_hash,
-            node_hash: dirty_node_hash,
+            node_hash: dirty_marker.node_hash,
             event_time_ms: dirty_marker.last_event_time_ms,
-            reason: dirty_reason,
-            propagate_depth: dirty_propagate_depth,
+            reason: dirty_marker.reason,
+            propagate_depth: dirty_marker.propagate_depth,
         });
         node_hashes.push(node_hash);
     }
@@ -2987,10 +2987,10 @@ fn context_pipeline_commands(extract: &temporalstore_rust::ContextExtractReport)
         },
         Command::ContextMarkSummaryDirty {
             tenant_hash: 20260616,
-            node_hash: extract.dirty_node_hash,
+            node_hash: extract.dirty_marker.node_hash,
             event_time_ms: extract.dirty_marker.last_event_time_ms,
-            reason: extract.dirty_reason,
-            propagate_depth: extract.dirty_propagate_depth,
+            reason: extract.dirty_marker.reason,
+            propagate_depth: extract.dirty_marker.propagate_depth,
         },
     ]
 }
