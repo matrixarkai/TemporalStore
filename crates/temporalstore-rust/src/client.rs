@@ -53,6 +53,15 @@ pub enum ClientError {
     Status(String),
     #[error("invalid request: {0}")]
     InvalidRequest(String),
+    /// A write failed in a way that does not say whether it was applied.
+    ///
+    /// The datanode stopped answering; it may have processed the write, or not. The write was
+    /// deliberately not sent again, because repeating it could apply it twice. That leaves the
+    /// caller with a decision only the caller can make -- reconcile, or accept the risk -- and
+    /// it can only make it if it is told this is what happened, rather than being handed the
+    /// same generic failure as a write that provably never arrived.
+    #[error("write outcome unknown: {0}")]
+    WriteOutcomeUnknown(String),
     #[error("unexpected response for {operation}: {response:?}")]
     UnexpectedResponse {
         operation: &'static str,

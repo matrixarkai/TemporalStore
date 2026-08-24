@@ -901,7 +901,7 @@ impl ProxyService {
         let response = self
             .client()
             .execute_with_options(request, RequestOptions::default())
-            .unwrap_or_else(|err| execute_error("server_error", err.to_string()));
+            .unwrap_or_else(|err| execute_error(proxy_client_error_code(&err), err.to_string()));
         self.sync_client_stats();
         response
     }
@@ -926,7 +926,7 @@ impl ProxyService {
             .client()
             .batch_execute_with_options(request, RequestOptions::default())
             .unwrap_or_else(|err| BatchExecuteResponse {
-                status: Status::error("server_error", err.to_string()),
+                status: Status::error(proxy_client_error_code(&err), err.to_string()),
                 responses: Vec::new(),
             });
         self.sync_client_stats();
@@ -1008,7 +1008,7 @@ impl ProxyService {
         let response = self
             .table_for_request(request.namespace, request.table_name)
             .and_then(|table| table.execute(request.command))
-            .unwrap_or_else(|err| execute_error("server_error", err.to_string()));
+            .unwrap_or_else(|err| execute_error(proxy_client_error_code(&err), err.to_string()));
         self.sync_client_stats();
         response
     }
@@ -1036,7 +1036,7 @@ impl ProxyService {
             .table_for_request(request.namespace, request.table_name)
             .and_then(|table| table.batch_execute(request.commands))
             .unwrap_or_else(|err| BatchExecuteResponse {
-                status: Status::error("server_error", err.to_string()),
+                status: Status::error(proxy_client_error_code(&err), err.to_string()),
                 responses: Vec::new(),
             });
         self.sync_client_stats();
@@ -1506,6 +1506,20 @@ fn context_drop_key(scope: &context::ProxyContextScope) -> String {
 /// HTTP status for an admission rejection on the `/context/*` routes, which
 /// return the transport code rather than embedding it in a body the gateway
 /// would have to parse to notice it was shed.
+/// The status code a client error should reach the caller as.
+///
+/// Everything used to arrive as `server_error`, which told an application only that something
+/// went wrong -- not whether its write had landed. Those are different situations with
+/// different correct responses: a failure that provably did not apply can simply be retried,
+/// while one that may have applied has to be reconciled, and retrying it is how a write gets
+/// counted twice. The proxy knows which it was; the caller could not find out.
+fn proxy_client_error_code(err: &crate::client::ClientError) -> &'static str {
+    match err {
+        crate::client::ClientError::WriteOutcomeUnknown(_) => "write_outcome_unknown",
+        _ => "server_error",
+    }
+}
+
 fn proxy_rejection_http_status(code: &str) -> u16 {
     match code {
         "proxy_account_denied" => 403,
@@ -4502,6 +4516,61 @@ mod tests {
             hits.load(Ordering::SeqCst) - before,
             1,
             "a request that timed out on a pooled socket must not be sent again on a fresh one"
+        );
+    }
+
+    #[test]
+    fn a_caller_can_tell_an_unknown_write_from_a_failed_one() {
+        // The counter added alongside this tells an OPERATOR how many writes are unaccounted
+        // for. It does not help the application holding the error, and that application has
+        // the same decision the client had: retry, or not. Retrying a write that already
+        // applied is how it gets applied twice -- the exact thing the client stopped doing
+        // internally. Handing back the same "server_error" for both cases pushes that bug one
+        // layer out.
+        let slow = test_addr(18_402);
+        let slow_for_thread = slow.clone();
+        std::thread::spawn(move || {
+            serve(&slow_for_thread, move |_request| {
+                std::thread::sleep(Duration::from_millis(500));
+                crate::http::json_response(200, &Status::ok())
+            })
+            .unwrap();
+        });
+        start_meta(test_addr(18_403), slow.clone());
+        wait_for_http(&test_addr(18_403));
+
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_403),
+            route_cache_ttl_ms: 60_000,
+            connect_timeout_ms: 200,
+            io_timeout_ms: 120,
+            ..ProxyOptions::default()
+        });
+        let response = proxy.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        assert!(!response.status.ok);
+        assert_eq!(
+            response.status.code, "write_outcome_unknown",
+            "a caller must be able to see that retrying this write is not free"
+        );
+
+        // A read that fails the same way is NOT unknown -- repeating a read cannot change
+        // anything, so it keeps the ordinary code and callers keep retrying it freely.
+        let response = proxy.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "k".to_string(),
+            },
+        });
+        assert!(!response.status.ok);
+        assert_ne!(
+            response.status.code, "write_outcome_unknown",
+            "a read is always safe to repeat and must not be labelled unknown"
         );
     }
 
