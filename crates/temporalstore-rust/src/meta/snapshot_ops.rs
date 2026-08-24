@@ -66,6 +66,7 @@ impl SingleNodeMeta {
             // taking over quietly resumes the change they stopped.
             meta_change_muted: snapshot.meta_change_muted,
             frozen_since_ms: snapshot.frozen_since_ms,
+            reserved_names: snapshot.reserved_names,
         })
     }
 
@@ -108,6 +109,7 @@ impl MetaSnapshot {
             dropped_since_ms: state.dropped_since_ms.clone(),
             meta_change_muted: state.meta_change_muted,
             frozen_since_ms: state.frozen_since_ms.clone(),
+            reserved_names: state.reserved_names.clone(),
         }
     }
 }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -407,6 +407,27 @@ pub struct SafeModePolicy {
     pub server_freeze_cooldown_ms: u64,
     #[serde(default)]
     pub proxy_freeze_cooldown_ms: u64,
+}
+
+/// Names held back from creation.
+///
+/// A name that is reserved cannot be used to create a namespace or a table.
+/// Existing ones are left alone: reserving a name is a statement about what may
+/// be created from now on, not a way to delete something already serving.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReservedNames {
+    /// Namespaces nobody may create.
+    #[serde(default)]
+    pub namespaces: BTreeSet<String>,
+    /// Table names nobody may create, in any namespace.
+    #[serde(default)]
+    pub tables: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReservedNamesResponse {
+    pub status: Status,
+    pub reserved: ReservedNames,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -911,6 +932,8 @@ pub enum MetaMutation {
     PurgeMeta(MetaRetentionPlan),
     /// Freeze, unfreeze or drop a whole namespace.
     SetNamespaceState(AddNamespaceRequest, MetaEntityState),
+    /// Replace the set of names held back from creation.
+    SetReservedNames(ReservedNames),
     /// Mute or resume metadata change. Recorded like any other mutation so it
     /// replays in order and reaches raft peers; the guard is deliberately not
     /// applied during replay, because the log only ever contains mutations that
@@ -1051,6 +1074,9 @@ pub(crate) struct MetaState {
     /// changes was to restart it with different configuration -- during exactly
     /// the incident where a restart is least welcome.
     meta_change_muted: bool,
+    /// Names held back from creation. Durable, like every other decision an
+    /// operator makes here.
+    reserved_names: ReservedNames,
     /// When each frozen table was frozen, keyed `table:<namespace.table>`.
     /// Servers and proxies carry `frozen_since_ms` on the resource itself;
     /// tables do not, and adding a field there would touch every
@@ -1092,6 +1118,11 @@ pub struct MetaSnapshot {
     /// installs it keeps ageing them instead of restarting their clocks.
     #[serde(default)]
     pub frozen_since_ms: BTreeMap<String, u64>,
+    /// Names held back from creation. Carried so a peer that installs this
+    /// snapshot keeps refusing them rather than quietly allowing what the
+    /// operator reserved.
+    #[serde(default)]
+    pub reserved_names: ReservedNames,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1356,6 +1387,61 @@ impl SingleNodeMeta {
         })
     }
 
+    /// The names currently held back from creation.
+    pub fn reserved_names(&self) -> ReservedNamesResponse {
+        let state = self.inner.read().expect("meta lock poisoned");
+        ReservedNamesResponse {
+            status: Status::ok(),
+            reserved: state.reserved_names.clone(),
+        }
+    }
+
+    /// Replace the reserved set. Guarded by the mute like any other change, and
+    /// recorded so it survives restart and reaches raft peers.
+    pub fn set_reserved_names(&self, reserved: ReservedNames) -> AckResponse {
+        if let Some(status) = self.meta_change_refusal() {
+            return AckResponse { status };
+        }
+        self.record_mutation(MetaMutation::SetReservedNames(reserved.clone()));
+        self.apply_set_reserved_names(reserved)
+    }
+
+    pub(crate) fn apply_set_reserved_names(&self, reserved: ReservedNames) -> AckResponse {
+        let mut state = self.inner.write().expect("meta lock poisoned");
+        state.reserved_names = reserved;
+        let detail = format!(
+            "namespaces={},tables={}",
+            state.reserved_names.namespaces.len(),
+            state.reserved_names.tables.len()
+        );
+        record_topology_event(&mut state, "reserved_names", "cluster".to_string(), detail);
+        AckResponse {
+            status: Status::ok(),
+        }
+    }
+
+    /// The refusal a guarded creation gives, or `None` when the name is free.
+    ///
+    /// Checked on the way in rather than inside `apply_*`, exactly like the
+    /// mute: the mutation log then holds only creations that were accepted, so
+    /// replay does not have to re-decide against a reserved set that has since
+    /// changed.
+    fn reserved_name_refusal(&self, namespace: &str, table: Option<&str>) -> Option<Status> {
+        let state = self.inner.read().expect("meta lock poisoned");
+        if state.reserved_names.namespaces.contains(namespace) {
+            return Some(Status::error(
+                "name_reserved",
+                format!("namespace {namespace} is reserved"),
+            ));
+        }
+        let table = table?;
+        state
+            .reserved_names
+            .tables
+            .contains(table)
+            .then(|| Status::error("name_reserved", format!("table name {table} is reserved")))
+    }
+
     /// Mute or resume metadata change.
     ///
     /// Never guarded by the mute itself -- an operator must always be able to
@@ -1418,6 +1504,9 @@ impl SingleNodeMeta {
             MetaMutation::UpdateServer(request) => self.apply_update_server(request).status,
             MetaMutation::SetNamespaceState(request, next) => {
                 self.apply_set_namespace_state(request, next).status
+            }
+            MetaMutation::SetReservedNames(reserved) => {
+                self.apply_set_reserved_names(reserved).status
             }
             MetaMutation::SetMetaChangeMuted(muted) => {
                 self.apply_set_meta_change_muted(muted).status
@@ -4496,6 +4585,161 @@ mod tests {
         assert_eq!(
             recovered.get(5).location.expect("registered").state,
             MetaEntityState::Frozen
+        );
+    }
+
+    fn reserving(namespaces: &[&str], tables: &[&str]) -> ReservedNames {
+        ReservedNames {
+            namespaces: namespaces.iter().map(|name| name.to_string()).collect(),
+            tables: tables.iter().map(|name| name.to_string()).collect(),
+        }
+    }
+
+    fn make_table(meta: &SingleNodeMeta, namespace: &str, table_name: &str) -> Status {
+        meta.add_table(AddTableRequest {
+            namespace: namespace.to_string(),
+            table_name: table_name.to_string(),
+            first_shard_id: 1,
+            shard_count: 1,
+            replica_count: 1,
+            partition_version: 0,
+            serving_options: TableServingOptions::default(),
+        })
+        .status
+    }
+
+    #[test]
+    fn a_reserved_namespace_cannot_be_created() {
+        let meta = SingleNodeMeta::default();
+        assert!(meta.set_reserved_names(reserving(&["system"], &[])).status.ok);
+        assert_eq!(
+            meta.add_namespace(AddNamespaceRequest {
+                namespace: "system".to_string(),
+            })
+            .status
+            .code,
+            "name_reserved"
+        );
+        // Everything else is still free.
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "tenant".to_string(),
+            })
+            .status
+            .ok);
+    }
+
+    #[test]
+    fn a_reserved_table_name_cannot_be_created_in_any_namespace() {
+        let meta = SingleNodeMeta::default();
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "one".to_string(),
+        });
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "two".to_string(),
+        });
+        assert!(meta.set_reserved_names(reserving(&[], &["audit"])).status.ok);
+        assert_eq!(make_table(&meta, "one", "audit").code, "name_reserved");
+        assert_eq!(make_table(&meta, "two", "audit").code, "name_reserved");
+        assert!(make_table(&meta, "one", "orders").ok);
+    }
+
+    #[test]
+    fn a_table_cannot_be_created_inside_a_reserved_namespace() {
+        // A table lands inside a namespace, so reserving the namespace has to
+        // hold back the tables that would be created in it.
+        let meta = SingleNodeMeta::default();
+        assert!(meta.set_reserved_names(reserving(&["system"], &[])).status.ok);
+        assert_eq!(make_table(&meta, "system", "orders").code, "name_reserved");
+    }
+
+    #[test]
+    fn reserving_a_name_does_not_disturb_what_already_exists() {
+        // Reserving is a statement about what may be created from now on. Using
+        // it to delete something already serving would be a very surprising way
+        // to take a table down.
+        let meta = SingleNodeMeta::default();
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "tenant".to_string(),
+        });
+        assert!(make_table(&meta, "tenant", "orders").ok);
+
+        assert!(meta
+            .set_reserved_names(reserving(&["tenant"], &["orders"]))
+            .status
+            .ok);
+
+        assert_eq!(meta.list_tables().tables.len(), 1);
+        assert!(meta
+            .get_table_topology(GetTableTopologyRequest {
+                namespace: "tenant".to_string(),
+                table_name: "orders".to_string(),
+                old_topology_version: 0,
+                client_location: String::new(),
+            })
+            .status
+            .ok);
+    }
+
+    #[test]
+    fn releasing_a_name_makes_it_creatable_again() {
+        let meta = SingleNodeMeta::default();
+        assert!(meta.set_reserved_names(reserving(&["system"], &[])).status.ok);
+        assert!(!meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "system".to_string(),
+            })
+            .status
+            .ok);
+
+        assert!(meta.set_reserved_names(ReservedNames::default()).status.ok);
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "system".to_string(),
+            })
+            .status
+            .ok);
+    }
+
+    #[test]
+    fn a_muted_metaserver_will_not_change_the_reserved_set() {
+        let meta = SingleNodeMeta::default();
+        assert!(meta.set_meta_change_muted(true).status.ok);
+        assert_eq!(
+            meta.set_reserved_names(reserving(&["system"], &[])).status.code,
+            "meta_change_muted"
+        );
+    }
+
+    #[test]
+    fn the_reserved_set_survives_snapshot_and_replay() {
+        // A peer that installs a snapshot must keep refusing what the operator
+        // reserved, rather than quietly allowing it.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("reserved-mutations.jsonl");
+        {
+            let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+            assert!(meta
+                .set_reserved_names(reserving(&["system"], &["audit"]))
+                .status
+                .ok);
+
+            let snapshot = meta.export_snapshot();
+            let peer = SingleNodeMeta::default();
+            assert!(peer.install_snapshot(snapshot).status.ok);
+            assert_eq!(
+                peer.add_namespace(AddNamespaceRequest {
+                    namespace: "system".to_string(),
+                })
+                .status
+                .code,
+                "name_reserved"
+            );
+        }
+        let recovered = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert_eq!(
+            recovered.reserved_names().reserved,
+            reserving(&["system"], &["audit"])
         );
     }
 

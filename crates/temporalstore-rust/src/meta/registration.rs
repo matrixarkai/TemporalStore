@@ -392,6 +392,9 @@ impl SingleNodeMeta {
         if let Some(status) = self.meta_change_refusal() {
             return AckResponse { status };
         }
+        if let Some(status) = self.reserved_name_refusal(&request.namespace, None) {
+            return AckResponse { status };
+        }
         self.record_mutation(MetaMutation::AddNamespace(request.clone()));
         self.apply_add_namespace(request)
     }

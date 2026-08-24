@@ -19,7 +19,7 @@ use temporalstore_rust::meta::{
     MetaSnapshot, MetaSnapshotFileRequest, MetaSnapshotFileResponse, MetaSnapshotResponse,
     ProxyHeartbeatRequest, PublishShardSnapshotRequest, RegisterProxyRequest,
     RegisterServerRequest, RegisterShardRequest, SafeModePolicy, ServerHeartbeatRequest,
-    ListShardsRequest, ShardCheckOptions, ShardChecker, ShardReassignment, ShardReassignmentReason, ShardStateRequest,
+    ListShardsRequest, ReservedNames, ShardCheckOptions, ShardChecker, ShardReassignment, ShardReassignmentReason, ShardStateRequest,
     DropProxyGroupRequest, NotifyStopRequest, ProxyCalibrationOptions, PutProxyGroupRequest, SingleNodeMeta, StateChangeRequest, TopologyVersionRequest, UpdateServerRequest,
     UpdateTableRequest,
 };
@@ -1591,6 +1591,12 @@ fn handle(
                 backend_call!(meta, drop_namespace, req)
             })
         }
+        ("GET", "/meta/reserved_names") => {
+            json_response(200, &backend_call!(meta, reserved_names))
+        }
+        ("POST", "/meta/reserved_names") => parse_or(&request.body, |req: ReservedNames| {
+            backend_call!(meta, set_reserved_names, req)
+        }),
         ("GET", "/namespaces") => json_response(200, &backend_call!(meta, list_namespaces)),
         ("POST", "/tables") => parse_or(&request.body, |req: AddTableRequest| {
             backend_call!(meta, add_table, req)
