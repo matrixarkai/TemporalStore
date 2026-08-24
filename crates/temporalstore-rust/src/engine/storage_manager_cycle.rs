@@ -947,7 +947,7 @@ impl TemporalEngine {
                 + pressure_signals.raft_snapshot_retention_blockers,
         );
 
-        // MANIFEST-PARITY FOLD threshold dump (gate on only, never on a dry run): if the undumped
+        // MANIFEST-CONFORMANCE FOLD threshold dump (gate on only, never on a dry run): if the undumped
         // index-log gap has crossed `index_dump_wal_gap_bytes`, materialize the base index +
         // fold the band/zone catalog into an index-log anchor here, in the background cycle --
         // mirroring this design's background `StorageManager` dump-on-WAL-gap cadence, never

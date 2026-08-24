@@ -2445,7 +2445,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
 
 #[test]
 fn control_state_set_and_get_with_options_buckets_by_precision() {
-    // HSETANDGET parity: precision floors the write into a single bucket, and
+    // HSETANDGET conformance: precision floors the write into a single bucket, and
     // the atomic increment-then-read returns the post-increment windowed aggregate.
     let engine = TemporalEngine::default();
     engine.load_shard(1);

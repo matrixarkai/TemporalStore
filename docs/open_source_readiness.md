@@ -34,7 +34,7 @@ evidence with independent WAL/snapshot stores.
 
 Current Rust compatibility positioning:
 
-- Reference implementation behavior parity is tracked through shared tests,
+- Reference implementation behavior conformance is tracked through shared tests,
   migration corpus, harness reports, and readiness docs.
 - Rust public surfaces are Rust APIs, HTTP/JSON, RESP, tonic/gRPC, Codex MCP,
   and harness contracts.

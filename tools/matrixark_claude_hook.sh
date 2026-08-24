@@ -25,7 +25,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 PYTHON="${TEMPORALSTORE_PYTHON:-python3}"
 # Backend selection:
-#   auto   (default) -> python parity pipeline when its runtime (rust proxy) is
+#   auto   (default) -> python conformance pipeline when its runtime (rust proxy) is
 #                       present, else the self-contained offline rust engine.
 #   python           -> tools/matrixark_agent_hook.py --agent claude (full MCP
 #                       pipeline; byte-for-byte the same code as the Codex hook).
@@ -150,7 +150,7 @@ if [[ "$BACKEND" == "auto" ]]; then
 fi
 
 if [[ "$BACKEND" == "python" ]]; then
-  # Parity pipeline: matrixark_agent_hook.py runs the identical ingest/extract/
+  # Conformance pipeline: matrixark_agent_hook.py runs the identical ingest/extract/
   # retrieve engine as the Codex hook and already emits the Claude Code contract
   # (hookSpecificOutput.additionalContext on UserPromptSubmit). Uses the local
   # rust proxy so it works without a running metaserver.

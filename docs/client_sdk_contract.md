@@ -103,7 +103,7 @@ tests or validators:
 - MetaSyncer production behavior is covered by deadline-limited topology calls, exponential backoff with deterministic jitter, metaserver outage survival, and topology-version route churn refresh tests.
 - retry budgets are covered by separate read/write retry-budget tests, including the no-duplicate
   unsafe write retry path.
-- pipeline parity is covered by ordered batch execution, per-command partial-failure preservation,
+- pipeline conformance is covered by ordered batch execution, per-command partial-failure preservation,
   retry-safe versus unsafe write classification, and timeout-budget propagation tests.
 - admission policy is covered by readonly, write-disabled, not-serving, drop-percent, and degraded
   proxy/client preflight tests.
@@ -134,7 +134,7 @@ New production command families must update all of these in the same change:
 - `proto/temporalstore/v1/temporalstore.proto`
 - `compat/unified_temporalstore_cases.json` when behavior is externally observable
 - Rust client/proxy/server command handling
-- native corpus runner support, when the command is part of parity
+- native corpus runner support, when the command is part of conformance
 - `tools/validate_sdk_contract.py`
 
 ## Readiness Status

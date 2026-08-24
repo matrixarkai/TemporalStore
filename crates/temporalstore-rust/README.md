@@ -50,7 +50,7 @@ passing report must prove:
 - per-peer progress, WAL first/last index, snapshot state, and admin metrics.
 
 If those fields are missing, readiness reports should keep the service blocked
-with concrete missing evidence rather than claiming parity from local fixtures.
+with concrete missing evidence rather than claiming conformance from local fixtures.
 
 ## Quick Validation
 
@@ -65,7 +65,7 @@ python3 tools/validate_rust_product_test_guard.py
 python3 tools/validate_no_duplicate_tests.py
 ```
 
-## Storage Tuning Parity
+## Storage Tuning Conformance
 
 Rust exposes the same public production tuning surface used by benchmark and
 deployment profiles. `StorageTuningConfig::from_env()` reads:

@@ -158,7 +158,7 @@ _DATA_ROUTES: dict[str, Tuple[str, str]] = {
     "/v1/session/commit": ("matrixark_session_commit", "ingest"),
     "/v1/retrieve": ("matrixark_retrieve", "retrieve"),
     "/v1/mcp": ("__mcp__", "retrieve"),
-    # Memory management (mem0 parity). forget/delete/reset gate on `context:forget` (see
+    # Memory management (mem0 conformance). forget/delete/reset gate on `context:forget` (see
     # _CATEGORY_SCOPE); get_all (POST /v1/memories) gates on `context:retrieve`. GET /v1/memories is
     # handled by a dedicated branch below (data routes are POST-only).
     "/v1/forget": ("matrixark_forget", "forget"),

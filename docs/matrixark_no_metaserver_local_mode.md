@@ -79,24 +79,24 @@ The same MatrixArk logic is used:
 | --- | ---: | ---: | --- | --- |
 | `temporalstore-local` | no | no | local JSONL record log | local dev, Codex hook debugging, demos |
 | `temporalstore-direct` | yes | yes | TemporalStore SDK | production-like pipeline tests |
-| `temporalstore-rust` | yes | yes | Rust SDK process over TemporalStore | cross-format parity tests |
+| `temporalstore-rust` | yes | yes | Rust SDK process over TemporalStore | cross-format conformance tests |
 
 
 ## Validation Result On 2026-06-23
 
-The local deployment was stopped before validation, and `127.0.0.1:18000` refused connections. The no-metaserver backend still passed the MatrixArk parity flows:
+The local deployment was stopped before validation, and `127.0.0.1:18000` refused connections. The no-metaserver backend still passed the MatrixArk conformance flows:
 
 | Test | Backend | Result | Elapsed |
 | --- | --- | ---: | ---: |
-| backend parity | `local-nometa` | pass | 93.89 ms |
-| feature parity | `local-nometa` | pass | 161.81 ms |
+| backend conformance | `local-nometa` | pass | 93.89 ms |
+| feature conformance | `local-nometa` | pass | 161.81 ms |
 
-Feature parity covered online ingest, async summary refresh, retrieve, feedback confirmation, batch extraction, current-state retrieval, tree traversal with L0/L1 summary embeddings, and replay.
+Feature conformance covered online ingest, async summary refresh, retrieve, feedback confirmation, batch extraction, current-state retrieval, tree traversal with L0/L1 summary embeddings, and replay.
 
 Artifacts:
 
-- `/tmp/matrixark-mcp-backend-parity/matrixark_mcp_backend_parity_local-nometa-20260623-now2.json`
-- `/tmp/matrixark-mcp-feature-parity/matrixark_mcp_feature_parity_local-nometa-feature-20260623-now2.json`
+- `/tmp/matrixark-mcp-backend-conformance/matrixark_mcp_backend_parity_local-nometa-20260623-now2.json`
+- `/tmp/matrixark-mcp-feature-conformance/matrixark_mcp_feature_parity_local-nometa-feature-20260623-now2.json`
 
 ## Current Boundary
 
@@ -104,9 +104,9 @@ This change gives MatrixArk a no-metaserver local mode today. It does not yet tu
 
 The next native-storage step is a true embedded/single-node backend that bootstraps one local partition without metaserver table discovery. The public MatrixArk switch can stay the same: `MATRIXARK_LOCAL_MODE=no-metaserver`.
 
-## Parity Test
+## Conformance Test
 
-Run the no-metaserver backend through the same parity harness:
+Run the no-metaserver backend through the same conformance harness:
 
 ```bash
 cd <repo>

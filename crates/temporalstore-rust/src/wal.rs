@@ -510,7 +510,7 @@ struct WriteAheadLogInner {
     root: PathBuf,
     stats: WriteAheadLogStats,
     last_sequence_by_shard: HashMap<ShardId, u64>,
-    // MANIFEST-PARITY / phase-1 flat-append cache (TS_PHASE1_FLAT). The WAL file byte length as
+    // MANIFEST-CONFORMANCE / phase-1 flat-append cache (TS_PHASE1_FLAT). The WAL file byte length as
     // this process last left it after its own append (or after a full reconcile scan), per shard.
     // On the next append the fast path stats the file: if the on-disk length still equals this,
     // no other writer touched the file since we wrote it (the append lock is cross-process) and --

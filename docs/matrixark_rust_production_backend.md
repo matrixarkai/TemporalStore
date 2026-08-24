@@ -102,7 +102,7 @@ python3 tools/matrixark_mcp_server.py \
   --storage-prefix matrixark:mcp
 ```
 
-For the Rust direct SDK parity path:
+For the Rust direct SDK conformance path:
 
 ```bash
 python3 tools/matrixark_mcp_server.py \
@@ -121,10 +121,10 @@ Operational probes:
 - `matrixark_backend_metrics`: returns health, readiness, Prometheus text, audit
   buffer stats, and backend config.
 
-## Parity Requirement
+## Conformance Requirement
 
-Full benchmark parity must use the Rust proxy or Rust direct SDK bridge. The
-shared corpus rejects Rust CLI-per-operation mode for full parity. The accepted
+Full benchmark conformance must use the Rust proxy or Rust direct SDK bridge. The
+shared corpus rejects Rust CLI-per-operation mode for full conformance. The accepted
 production-facing binaries are `matrixark_rust_proxy` and
 `matrixark_rust_direct_sdk`; `matrixark_record_log` is retained only as a
 compatibility/debug wrapper and should not appear in new production reports.

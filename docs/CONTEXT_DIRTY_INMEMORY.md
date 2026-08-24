@@ -80,7 +80,7 @@ inmemory_dirty_check: OK (coalescing, latest-ts, max-depth, window-filter, bound
 
 `MarkSummaryDirty` / `QuerySummaryDirty` use a process-local, mutex-guarded
 coalescing map (`InMemoryDirtyEntry`) instead of the `ContextDirtyModel` `OrSet`
-timeline — parity with the Rust behavior. Existing context reference-test expectations
+timeline — conformance with the Rust behavior. Existing context reference-test expectations
 (mark once → one marker, `propagate_depth == 1`) are preserved. Compile-verified
 against the project's `compile_commands.json` flags.
 

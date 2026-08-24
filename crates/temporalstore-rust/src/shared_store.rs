@@ -1646,7 +1646,7 @@ struct SharedSlabAddress {
     sha256: String,
 }
 
-/// Lazy read-through source backing parity recovery on the shared-filesystem
+/// Lazy read-through source backing conformance recovery on the shared-filesystem
 /// (`FileObjectStore`) backend. Holds the checkpoint's slab address map (slab id ->
 /// shared object key) with no slab bytes, and resolves each slab on demand to a
 /// synchronous filesystem read of the shared store, verifying the checkpoint
@@ -1686,7 +1686,7 @@ impl SharedSlabSource for SharedPathSlabSource {
             ))
         })?;
         let bytes = std::fs::read(&path)?;
-        // Parity with restore_checkpoint: reject a corrupt shared slab before caching it.
+        // Conformance with restore_checkpoint: reject a corrupt shared slab before caching it.
         let actual = sha256_hex(&bytes);
         if bytes.len() as u64 != address.byte_size || actual != address.sha256 {
             return Err(BlockStoreError::ChecksumMismatch {
@@ -1701,7 +1701,7 @@ impl SharedSlabSource for SharedPathSlabSource {
     }
 }
 
-/// Lazy read-through source backing parity recovery on the *networked*
+/// Lazy read-through source backing conformance recovery on the *networked*
 /// matrixobject (`MatrixObjectHttpStore`) backend. Same contract as
 /// [`SharedPathSlabSource`], but resolves each slab to a synchronous networked
 /// GET ([`MatrixObjectHttpStore::get_blocking`]) of the shared object instead of a
@@ -1745,7 +1745,7 @@ impl SharedSlabSource for MatrixObjectSlabSource {
                 ))
             })?
             .to_vec();
-        // Parity with restore_checkpoint: reject a corrupt shared slab before caching it.
+        // Conformance with restore_checkpoint: reject a corrupt shared slab before caching it.
         let actual = sha256_hex(&bytes);
         if bytes.len() as u64 != address.byte_size || actual != address.sha256 {
             return Err(BlockStoreError::ChecksumMismatch {
@@ -1764,7 +1764,7 @@ impl<O> SharedStoreReplicator<O>
 where
     O: ObjectStore + 'static,
 {
-    /// Shared body of the parity LAZY restore, parameterized over the
+    /// Shared body of the conformance LAZY restore, parameterized over the
     /// slab-source constructor so every shared-storage backend reuses the identical
     /// index-install + address-map + lazy-range-reserve logic; only the per-slab
     /// fetch transport differs (a local filesystem read vs a networked GET). Install
@@ -1842,7 +1842,7 @@ where
 }
 
 impl SharedStoreReplicator<FileObjectStore> {
-    /// Parity LAZY restore for the shared-filesystem backend: install the served
+    /// Conformance LAZY restore for the shared-filesystem backend: install the served
     /// INDEX and a per-slab shared address map WITHOUT downloading any slab bytes.
     /// Old (pre-checkpoint) pages are then read lazily through [`SharedPathSlabSource`]
     /// on the first read that needs them. See
@@ -1862,7 +1862,7 @@ impl SharedStoreReplicator<FileObjectStore> {
 }
 
 impl SharedStoreReplicator<MatrixObjectHttpStore> {
-    /// Parity LAZY restore for the *networked* matrixobject backend: install
+    /// Conformance LAZY restore for the *networked* matrixobject backend: install
     /// the served INDEX and a per-slab shared address map WITHOUT downloading any slab
     /// bytes. Old (pre-checkpoint) pages are then fetched lazily over the network
     /// through [`MatrixObjectSlabSource`] on the first read that needs them, so shard
@@ -3509,7 +3509,7 @@ mod tests {
 
     #[tokio::test]
     async fn matrixobject_networked_lazy_restore_reads_old_page_on_demand() {
-        // Parity lazy data-follow over the NETWORK: a fresh node with only
+        // Conformance lazy data-follow over the NETWORK: a fresh node with only
         // the networked matrixobject store restores the served index + a slab ADDRESS
         // map (no slab bytes), replays the WAL tail, and fetches an old (pre-checkpoint)
         // slab ON DEMAND over the socket the first time a read needs it.

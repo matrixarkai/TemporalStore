@@ -324,7 +324,7 @@ Packing policy prefers answer-dense evidence:
 
 ## Injection Completeness Gate
 
-The resource/skill parity runner now fails unless the complete serving model is injected. A passing run proves all of these records exist and are replayable:
+The resource/skill conformance runner now fails unless the complete serving model is injected. A passing run proves all of these records exist and are replayable:
 
 | Area | Required records |
 | --- | --- |
@@ -342,21 +342,21 @@ Important product boundary:
 
 ## Test Commands
 
-Run local resource/skill parity:
+Run local resource/skill conformance:
 
 ```bash
 cd <repo>
 python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_resource_skill_backend_parity.py --backends local
 ```
 
-Run live parity after topology readiness:
+Run live conformance after topology readiness:
 
 ```bash
 cd <repo>
 python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_resource_skill_backend_parity.py --backends native
 ```
 
-Run Rust live parity:
+Run Rust live conformance:
 
 ```bash
 cd <repo>

@@ -134,7 +134,7 @@ pub struct BlockStoreStats {
     /// existed. Counted rather than timed, because a count says the same thing on a busy machine.
     #[serde(default)]
     pub band_manifest_writes: u64,
-    /// Slabs fetched on-demand from a shared-storage read-through source (parity
+    /// Slabs fetched on-demand from a shared-storage read-through source (conformance
     /// lazy recovery). Each shared slab is fetched at most once, only when a read
     /// misses it locally; a nonzero count proves recovery did not install every slab
     /// up front.
@@ -1358,7 +1358,7 @@ mod tests {
 
     #[test]
     fn per_append_does_not_reserialize_the_band_manifest_on_the_default_path() {
-        // MANIFEST-PARITY FOLD no-O(n) proof: on the default single-barrier path the per-append
+        // MANIFEST-CONFORMANCE FOLD no-O(n) proof: on the default single-barrier path the per-append
         // band-manifest full re-serialize (the measured O(n) aging driver -- ~961 B rewritten per
         // write, growing with the band count) is OFF the write path. Appending many records must
         // NOT rewrite `page_extent_manifest.json` each time; the catalog is deferred and made
@@ -1391,7 +1391,7 @@ mod tests {
 
     #[test]
     fn zone_catalog_folds_bands_and_install_reconstructs_lifecycle() {
-        // MANIFEST-PARITY FOLD round-trip at the block-store layer: project the band catalog into
+        // MANIFEST-CONFORMANCE FOLD round-trip at the block-store layer: project the band catalog into
         // the durable ZoneInfo subset, then reconstruct the band lifecycle from that projection
         // with the band-manifest file deleted -- proving the folded catalog is a lossless source
         // of the durable band state (diagnostics are recomputed from the slab separately).
@@ -2783,7 +2783,7 @@ mod tests {
 
     #[test]
     fn band_garbage_floor_gates_reclaim_by_garbage_ratio() {
-        // garbage-ratio GC parity: reclaim is gated on a minimum band garbage ratio
+        // garbage-ratio GC conformance: reclaim is gated on a minimum band garbage ratio
         // (garbage = 10_000 - band live-fraction). Floor 0 (the default) reclaims every
         // eligible band as before; a floor above a band's garbage ratio excludes it.
         let dir = tempfile::tempdir().unwrap();

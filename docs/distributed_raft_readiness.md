@@ -181,10 +181,10 @@ closed because the local model is test-only. Local Raft fixtures remain availabl
 compatibility tests, and harness validation, but they are not an accepted runtime or deployment
 mode.
 
-The Rust production target is Rust-native behavior parity: keep TemporalRaft/raft-rs as the production
+The Rust production target is Rust-native behavior conformance: keep TemporalRaft/raft-rs as the production
 path and borrow RustRaft semantics, safety contracts, metrics, admin surfaces, and tests. The
 RustRaft-derived evidence is now paired with the Rust TemporalRaft process rollout evidence, and the
-process-path gate fails closed if that evidence is absent. This makes the runtime parity claim
+process-path gate fails closed if that evidence is absent. This makes the runtime conformance claim
 harder to fake, but it is still Rust-native TemporalRaft readiness evidence, not a claim that Rust is
 byte-for-byte or implementation-identical to RustRaft. Direct RustRaft FFI is not part of
 the readiness target.
@@ -225,8 +225,8 @@ The production runtime surface is:
   verifies post-failover reads
 - `run_raft_shared_cases.py` validates every shared conformance Raft corpus case has Rust process or
   harness evidence and required paths. Its Rust combined mode runs the data-node plus metaserver
-  parity gate once instead of treating individual corpus rows as production proof by name alone.
-- The combined Raft parity summary now promotes metaserver scheduler execution coverage,
+  conformance gate once instead of treating individual corpus rows as production proof by name alone.
+- The combined Raft conformance summary now promotes metaserver scheduler execution coverage,
   TemporalRaft metaserver process rollout, and metaserver-owned data-Raft membership into first-class
   evidence fields. Validation requires learner add, catch-up verification, promotion, leader
   transfer, voter removal, follower-lag/failover/scale-up/scale-down/secondary-replication flags,
@@ -260,7 +260,7 @@ The current unified corpus includes these Raft/replication cases:
 | `raft_metaserver_leader_snapshot_restart` | `tools/run_metaserver_raft_failover_ubuntu22.sh`, `tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh` | `metaserver_raft_harness` names leader/failover, snapshot install, and restart recovery as a separate shared scenario |
 | `raft_metaserver_membership_add_promote_remove` | `tools/run_metaserver_raft_membership_ubuntu22.sh` | `metaserver_raft_harness` names learner add, catch-up, promote, leader transfer, voter remove, stale generation rejection, and scheduler generation/token coupling as a separate shared scenario |
 | `raft_temporal_raft_process_rollout_evidence` | `tools/run_raft_production_gate_ubuntu22.sh`, `tools/run_raft_stress_suite_ubuntu22.sh` | Rust unit/readiness evidence verifies local mode is rejected for deployment and production readiness depends on TemporalRaft data-node and metaserver process rollout plus log-store validation fields; `distributed_raft_harness` now emits `membership_role_process_evidence` and requires `rustraft_runtime_semantics.membership_role_process_validated=true` for witness quorum/no-data behavior, learner auto-promote, and pending joint-consensus WAL restore before final commit; local-status Prometheus now exports RustRaft-style peer progress, snapshot state, transfer target, pre-vote/election counters, and WAL first/last log index; the membership matrix also requires metaserver generation/token replay evidence |
-| `raft_production_gate` | `tools/run_raft_production_gate_ubuntu22.sh` | `tools/run_storage_raft_production_readiness.sh` is the Rust storage/Raft local gate, and `tools/run_raft_distributed_conformance.sh` is the Rust Raft-only parity gate for data-node plus metaserver multi-node behavior; strict production mode still fails until networked TemporalRaft rollout and real multi-process log-store validation are complete |
+| `raft_production_gate` | `tools/run_raft_production_gate_ubuntu22.sh` | `tools/run_storage_raft_production_readiness.sh` is the Rust storage/Raft local gate, and `tools/run_raft_distributed_conformance.sh` is the Rust Raft-only conformance gate for data-node plus metaserver multi-node behavior; strict production mode still fails until networked TemporalRaft rollout and real multi-process log-store validation are complete |
 
 Focused Raft-case-driven Rust validation:
 
@@ -271,7 +271,7 @@ python3 tools/run_raft_cases_on_rust.py \
 ```
 
 This command uses the unified Raft case names above to verify required paths, write a
-case-to-Rust-runner mapping report, and execute the Rust data-node plus metaserver Raft parity gate.
+case-to-Rust-runner mapping report, and execute the Rust data-node plus metaserver Raft conformance gate.
 
 ## June 17, 2026 Local Multi-Node Validation
 
@@ -417,7 +417,7 @@ cargo build -p temporalstore-rust --bins
 cargo run -p temporalstore-rust --bin external_chaos_gate -- --profile quick
 ```
 
-The executable Raft-only parity gate for both data-node and metaserver multi-node behavior is:
+The executable Raft-only conformance gate for both data-node and metaserver multi-node behavior is:
 
 ```bash
 tools/run_raft_distributed_conformance.sh
@@ -425,7 +425,7 @@ tools/run_raft_distributed_conformance.sh
 
 It runs `distributed_raft_harness`, `raft_secondary_replication_harness`, and
 `metaserver_raft_harness`, then uses `build_raft_distributed_conformance_summary.py` to validate a
-combined `raft-distributed-parity.json` report with data-node replica reads, follower-write
+combined `raft-distributed-conformance.json` report with data-node replica reads, follower-write
 rejection, membership scale down/up, external snapshot restore, secondary restart/partition/lag/
 failover, post-snapshot re-scale down/up, and metaserver
 membership/read-index/snapshot/lagging-voter catch-up/failover/replacement/scale-down/no-majority

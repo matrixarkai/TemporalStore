@@ -131,16 +131,16 @@ matrixark-server start --backend rust --local
 matrixark-server apply-key --agent codex
 ```
 
-## And Rust Store Parity
+## And Rust Store Conformance
 
 MatrixArk should operate against either TemporalStore implementation through the same product contract. The caller should not change API payloads, access scopes, ContextPack shape, monitoring views, or benchmark commands when switching backends.
 
-| Area | TemporalStore | Rust TemporalStore | Required parity |
+| Area | TemporalStore | Rust TemporalStore | Required conformance |
 | --- | --- | --- | --- |
 | Local developer mode | Native process, direct SDK, or proxy/gateway. | Long-lived Rust proxy or binding; CLI-per-operation is debug only. | Same `backend=native|rust` switch in config and Docker. |
 | Serving data | ContextNode, ContextSummary, ContextEmbedding, ContextEvent, ContextEntity, ContextIndex, ResourceChunk, SkillManifest, ContextPackAudit. | Same logical records and wire shape. | Same record keys, timestamps, ids, and replay output. |
 | Ingestion | API, MCP, hook, batch/session commit, streaming, resource, skill, feedback. | Same ingestion APIs. | Same idempotency behavior and audit refs. |
-| Retrieval | Tree-first traversal, secondary-index filtering, event/entity/resource/skill selection, token-budget packing. | Same retrieval semantics. | Same selected refs and dropped-ref reasons for parity tests. |
+| Retrieval | Tree-first traversal, secondary-index filtering, event/entity/resource/skill selection, token-budget packing. | Same retrieval semantics. | Same selected refs and dropped-ref reasons for conformance tests. |
 | Storage mode | Local single node, multi data node, async oplog, future Raft HA. | Local single node first, then gateway-backed async writes and future HA mode. | Same health state and metrics labels. |
 | Benchmarking | LOCOMO, LongMemEval, scale tests, resource/skill tests. | Same unified tests. | Same artifacts: result JSON, report JSON/MD, hypotheses JSONL, ContextPack JSONL, judge JSONL. |
 
@@ -154,9 +154,9 @@ export MATRIXARK_TEMPORALSTORE_BACKEND=rust
 python3 tools/matrixark_mcp_server.py --event-log "$MATRIXARK_MCP_EVENT_LOG"
 ```
 
-Production Rust must not spawn a Rust CLI once per storage operation. That path is useful for feature parity tests, but product runs need a long-lived process, gateway, or in-process binding so latency and concurrency are comparable with.
+Production Rust must not spawn a Rust CLI once per storage operation. That path is useful for feature conformance tests, but product runs need a long-lived process, gateway, or in-process binding so latency and concurrency are comparable with.
 
-Parity gates:
+Conformance gates:
 
 1. Same message/resource/skill input produces the same logical records.
 2. Same query produces equivalent ContextPack sections, selected refs, dropped refs, and audit reasons.
@@ -280,10 +280,10 @@ Common fixes:
 - Slow retrieval: check model encode latency, TemporalStore write/audit backlog, and tree traversal fallback.
 - Resource miss: inspect parser output, chunk hashes, L0 summary, chunk embeddings, and resource access scope.
 - Skill miss: inspect skill triggers, owner scope, status, precedence, and selected-skill audit.
-- Backend mismatch: run the same parity fixture with `backend=native` and `backend=rust`; compare ContextPack JSONL, selected refs, dropped refs, and audit rows.
+- Backend mismatch: run the same conformance fixture with `backend=native` and `backend=rust`; compare ContextPack JSONL, selected refs, dropped refs, and audit rows.
 - Rust slow path: verify the Rust backend is a Rust proxy/binding, not CLI-per-operation.
 - slow path: verify async oplog, batch append, audit buffering, and data-node count before raising retrieval worker concurrency.
 
-## Product Parity Target
+## Product Conformance Target
 
 baseline-style operation teaches the right expectation: context systems need an install path, a control surface, and diagnostics. MatrixArk should match that operator experience while keeping the serving architecture TemporalStore-native: local or distributed, or Rust backend, one context store first, and optional MatrixDB/MatrixKV for offline analysis or transactional metadata.

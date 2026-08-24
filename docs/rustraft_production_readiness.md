@@ -23,7 +23,7 @@ The report also returns semantic `production_blockers`, for example:
 ```
 
 `rustraft_production_readiness_report` is the stricter production gate. It wraps
-the parity report and also requires runtime evidence for peer pipeline behavior,
+the conformance report and also requires runtime evidence for peer pipeline behavior,
 snapshot lifecycle, WAL lifecycle, data-node process rollout, and metaserver
 process rollout. Missing evidence fails closed with precise blockers such as:
 
@@ -141,6 +141,6 @@ Latest local proof on June 29, 2026:
 
 The focused RustRaft library tests and TemporalStore RustRaft consumer tests pass
 against the separate `RustRaft` checkout. Broader distributed/data-node Raft
-parity remains covered by `tools/run_raft_distributed_conformance.sh`, which runs
+conformance remains covered by `tools/run_raft_distributed_conformance.sh`, which runs
 data-node distributed Raft, secondary replication, metaserver Raft, and the
-combined parity summary.
+combined conformance summary.

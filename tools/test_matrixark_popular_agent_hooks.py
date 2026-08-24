@@ -177,19 +177,19 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
 
         for agent in agents:
             s = results[agent]
-            # Ingestion parity.
+            # Ingestion conformance.
             self.assertEqual("ok", s["ingest"]["status"], agent)
             self.assertTrue(s["ingest"]["ingested"], agent)
             self.assertEqual(agent, s["ingest"]["agent"], agent)
             self.assertEqual(f"{agent}:{agent}-parity", s["ingest"]["session_id"], agent)
-            # Retrieval parity.
+            # Retrieval conformance.
             self.assertEqual("ok", s["retrieve"]["status"], agent)
             self.assertGreaterEqual(s["retrieve"]["retrieved"]["selected_ref_count"], 0, agent)
-            # LLM-response ingestion parity (assistant message on Stop).
+            # LLM-response ingestion conformance (assistant message on Stop).
             self.assertEqual("ok", s["commit"]["status"], agent)
             self.assertTrue(s["commit"]["ingested"], agent)
 
-        # Structural parity: identical result shape per stage across the two agents.
+        # Structural conformance: identical result shape per stage across the two agents.
         for stage in ("ingest", "retrieve", "commit"):
             self.assertEqual(
                 set(results["codex"][stage].keys()),
@@ -197,9 +197,9 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
                 f"{stage} result-shape parity",
             )
 
-        # Decision parity: query/config-derived retrieval decisions are identical
+        # Decision conformance: query/config-derived retrieval decisions are identical
         # across agents (only identity/scope differ). This is substantive
-        # ingestion/extraction/retrieval parity beyond result-shape parity.
+        # ingestion/extraction/retrieval conformance beyond result-shape conformance.
         codex_ret = results["codex"]["retrieve"]["retrieved"]
         claude_ret = results["claude"]["retrieve"]["retrieved"]
         self.assertEqual(

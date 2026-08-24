@@ -5,7 +5,7 @@
 This document is a code-oriented map of the Rust TemporalStore implementation in
 `crates/temporalstore-rust`. It focuses on how the Rust code is organized, where
 major product behavior lives, how data flows through storage, Raft, context
-management, client/proxy paths, and what the current test and parity posture
+management, client/proxy paths, and what the current test and conformance posture
 looks like versus the shared conformance test corpus.
 
 Rust TemporalStore is intentionally Rust-native. The production surfaces are
@@ -122,9 +122,9 @@ of maintaining parallel product implementations.
 
 ## Storage And Cache
 
-Rust storage keeps a Rust-native page envelope and log format. parity is
-tracked as behavior and migration/replay parity, not byte-for-byte internal
-layout parity.
+Rust storage keeps a Rust-native page envelope and log format. conformance is
+tracked as behavior and migration/replay conformance, not byte-for-byte internal
+layout conformance.
 
 Important files:
 
@@ -247,7 +247,7 @@ data-node and metaserver paths, not on local in-process fixtures.
 - membership tokens and generation checks
 - topology history and operational reports
 
-The parity target here is behavior: scheduler-owned topology and membership
+The conformance target here is behavior: scheduler-owned topology and membership
 changes, durable replay, stale token rejection, and real data-node process
 coordination.
 
@@ -305,17 +305,17 @@ Current inventory snapshot from the repo tooling:
 
 Shared families currently include:
 
-- storage/cache parity
-- data Raft parity
-- context pipeline parity
-- context benchmark parity
-- ingestion parity
-- proxy/client/control-plane parity
-- data-node lifecycle parity
-- metaserver control-plane parity
-- ops/scale parity
-- Codex/MCP parity
-- Redis/admin product parity
+- storage/cache conformance
+- data Raft conformance
+- context pipeline conformance
+- context benchmark conformance
+- ingestion conformance
+- proxy/client/control-plane conformance
+- data-node lifecycle conformance
+- metaserver control-plane conformance
+- ops/scale conformance
+- Codex/MCP conformance
+- Redis/admin product conformance
 
 Adapter status is still mixed. Raft has native plus static gate coverage,
 benchmarks have a native adapter contract, and several families still depend on
@@ -386,7 +386,7 @@ should remain evidence based:
 - Context benchmark readiness requires Rust TemporalStore backend evidence;
   paper-comparable the baseline memory system claims additionally require real dataset, live
   reader, full replay, and archived report fields.
-- parity should be measured by shared executable product behavior, not by
+- conformance should be measured by shared executable product behavior, not by
   LOC matching or internal implementation shape.
 
 ## Recommended Next Deep-Dive Work

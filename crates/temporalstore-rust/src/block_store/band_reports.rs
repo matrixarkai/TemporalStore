@@ -6,7 +6,7 @@
 use super::*;
 
 /// Map a band descriptor's lifecycle state to the index-log `ZoneState` (1:1). Kept a free fn
-/// so both directions of the MANIFEST-PARITY FOLD conversion share one mapping.
+/// so both directions of the MANIFEST-CONFORMANCE FOLD conversion share one mapping.
 fn band_state_to_zone_state(state: BlockStoreBandState) -> crate::index_log::ZoneState {
     match state {
         BlockStoreBandState::Active => crate::index_log::ZoneState::Active,
@@ -36,7 +36,7 @@ impl LocalBlockStore {
             .collect()
     }
 
-    /// MANIFEST-PARITY FOLD: project the in-memory band catalog into the DURABLE `ZoneInfo`
+    /// MANIFEST-CONFORMANCE FOLD: project the in-memory band catalog into the DURABLE `ZoneInfo`
     /// subset kept in the index-log band catalog. Only the durable fields ride in
     /// the fold; the band descriptor's diagnostic fields (readable_prefix / corruption / errors)
     /// are deliberately dropped -- they are recomputed on load by scanning the slab, exactly as
@@ -62,7 +62,7 @@ impl LocalBlockStore {
             .collect()
     }
 
-    /// MANIFEST-PARITY FOLD recovery: seed the band catalog from a folded `ZoneInfo` snapshot
+    /// MANIFEST-CONFORMANCE FOLD recovery: seed the band catalog from a folded `ZoneInfo` snapshot
     /// recovered from the index-log MetaItem. Applied on load AFTER the block store has already
     /// reconciled from durable pages (reconcile stays authoritative for on-disk physical bytes
     /// and diagnostics), so this only RESTORES the catalog fields a pure disk scan cannot infer:

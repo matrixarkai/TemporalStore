@@ -255,7 +255,7 @@ struct IndexLogInner {
     root: PathBuf,
     stats: IndexLogStats,
     last_sequence_by_shard: HashMap<ShardId, u64>,
-    /// MANIFEST-PARITY FOLD: the index-log byte length recorded at the last catalog dump, per
+    /// MANIFEST-CONFORMANCE FOLD: the index-log byte length recorded at the last catalog dump, per
     /// shard. `undumped_len_since_dump` subtracts this from the current on-disk length to get the
     /// undumped gap that drives the threshold-dump cadence. Reset to 0
     /// on process restart, so the first post-restart cycle may dump once -- harmless (a dump only
@@ -297,7 +297,7 @@ fn indexlog_wal_only_sync() -> bool {
     )
 }
 
-/// MANIFEST-PARITY FOLD gate (default OFF, byte-identical when off). When on, the band/zone
+/// MANIFEST-CONFORMANCE FOLD gate (default OFF, byte-identical when off). When on, the band/zone
 /// catalog is folded into the index-log anchor at a threshold dump
 /// and the per-write band-manifest file stops being the
 /// catalog's source of truth (it is reconstructed on load from the durable pages + the folded
