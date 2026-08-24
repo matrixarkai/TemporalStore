@@ -390,6 +390,7 @@ impl ProductionRaftRuntime {
             let mut quorum_misses = 0u32;
             let mut election_timeout_ticks = randomized_election_timeout_ticks(local_node_id);
             let mut last_snapshot_check = InstantCompat::now();
+            let mut last_stall_report = InstantCompat::now();
             while !stop_thread.load(Ordering::SeqCst) {
                 if snapshot_check_interval > 0
                     && last_snapshot_check.elapsed()
@@ -413,6 +414,22 @@ impl ProductionRaftRuntime {
                 // Nothing else advances the raft clock in a live process, so without this
                 // every lease / offline / snapshot-send / leader-transfer timeout is
                 // unreachable and the failure detectors that depend on them never fire.
+                // Report a node that is behind and not catching up. Rate-limited, and it does
+                // not act: a node that is behind must keep trying, so this makes the condition
+                // visible rather than changing what the node does about it.
+                if last_stall_report.elapsed() >= Duration::from_millis(RAFT_STALL_REPORT_INTERVAL_MS)
+                {
+                    let stalled_ms = cluster.replication_stall_ms(local_node_id);
+                    if stalled_ms >= RAFT_STALL_WARN_MS {
+                        tracing::warn!(
+                            kind = "data",
+                            node_id = local_node_id,
+                            stalled_ms,
+                            "raft: this node is behind the leader and has accepted nothing for a while; still trying"
+                        );
+                    }
+                    last_stall_report = InstantCompat::now();
+                }
                 let elapsed_ms = last_tick.elapsed().as_millis() as u64;
                 last_tick = InstantCompat::now();
                 if elapsed_ms > 0 {

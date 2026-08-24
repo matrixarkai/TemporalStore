@@ -609,6 +609,12 @@ pub struct RaftSnapshotPublishReport {
     pub meta_ref: ShardSnapshotRef,
 }
 
+/// Four times the compaction threshold: enough that an ordinary lagging follower is waited for,
+/// while a peer that has stopped answering cannot hold the log open indefinitely.
+fn default_max_retained_log_bytes() -> u64 {
+    4 * 1024 * 1024 * 1024
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RaftNodeStatus {
     pub node_id: RaftNodeId,
@@ -1396,6 +1402,11 @@ struct NodeWalCursor {
 /// configured `max_segment_bytes` decides rotation, so retention keeps its meaning and
 /// the base cost is amortised over `max_segment_bytes / delta_size` appends.
 
+/// How far behind a node must be, with nothing accepted, before it says so.
+const RAFT_STALL_WARN_MS: u64 = 30_000;
+/// How often it may repeat that. A node that is stuck stays stuck, and one line per tick would
+/// bury everything else in the log.
+const RAFT_STALL_REPORT_INTERVAL_MS: u64 = 60_000;
 /// Consecutive failed AppendEntries before a leader marks a peer down.
 const RAFT_PEER_FAILURE_THRESHOLD: u32 = 3;
 /// Ticks of leader silence a follower tolerates before standing for election.
@@ -3403,6 +3414,14 @@ pub struct RaftConfig {
     pub min_keep_segment_num: u64,
     pub can_trigger_snapshot: bool,
     pub max_applied_log_bytes: u64,
+    /// Ceiling on the log kept for a follower that is behind, in bytes.
+    ///
+    /// Compaction is held while a live follower still needs the entries, so that catching it up
+    /// stays a matter of sending entries rather than installing a snapshot. Past this it compacts
+    /// anyway: a peer that is this far behind is cheaper to catch up with a snapshot, and one
+    /// that never returns must not pin the log open. Zero disables the hold entirely.
+    #[serde(default = "default_max_retained_log_bytes")]
+    pub max_retained_log_bytes: u64,
     /// P2: how long `propose_distributed_one` waits for the replication quorum before returning
     /// `NoMajority`. Defaults to 5000 ms (the legacy hardcoded deadline); a config that omits the
     /// field also resolves to 5000 so behavior stays byte-identical. Lower it (e.g. 500) so a
@@ -3447,6 +3466,7 @@ impl Default for RaftConfig {
             min_keep_segment_num: 2,
             can_trigger_snapshot: true,
             max_applied_log_bytes: 1024 * 1024 * 1024,
+            max_retained_log_bytes: default_max_retained_log_bytes(),
             replication_deadline_ms: default_replication_deadline_ms(),
         }
     }
