@@ -73,6 +73,16 @@ pub struct ProxyOptions {
     pub service_registry_ttl_ms: u64,
     #[serde(default)]
     pub serving_mode: ProxyServingMode,
+    /// Percentage of the KEYSPACE this proxy refuses, not a percentage of requests.
+    ///
+    /// The decision is taken from a hash of the routing key, so it is the same every time for
+    /// the same key: at 50 it is not "half the load is shed", it is "half the keys are refused,
+    /// always". Retrying a refused key never succeeds while the setting stands, and the
+    /// refusal applies to writes as well as reads.
+    ///
+    /// That is a usable property -- it is stable and it is reproducible -- but it is not what
+    /// a percentage normally means, so the refusal says so rather than leaving a caller to
+    /// discover it by retrying.
     #[serde(default)]
     pub drop_percent: u8,
     /// Account (namespace) this proxy is scoped to when
@@ -3314,6 +3324,92 @@ mod tests {
         });
         assert_eq!(located.client_options_snapshot().local_location, "zone-b");
     }
+    #[test]
+    fn drop_percent_refuses_the_same_keys_every_time_including_writes() {
+        // drop_percent reads like a load-shedding knob and is not one. The decision comes from
+        // a hash of the routing key, so at 50 it is not "half the requests" -- it is "half the
+        // keys, always", writes included. A caller that treats the refusal as transient and
+        // retries is refused identically forever, which is why the message now says so.
+        let proxy = scoped_proxy(ProxyOptions {
+            drop_percent: 50,
+            ..ProxyOptions::default()
+        });
+
+        // Find one refused key and one accepted key, then show each is stable.
+        let mut refused = None;
+        let mut accepted = None;
+        for i in 0..200 {
+            let key = format!("key-{i}");
+            let dropped = proxy
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet { key: key.clone() },
+                })
+                .status
+                .code
+                == "proxy_traffic_dropped";
+            if dropped && refused.is_none() {
+                refused = Some(key);
+            } else if !dropped && accepted.is_none() {
+                accepted = Some(key);
+            }
+            if refused.is_some() && accepted.is_some() {
+                break;
+            }
+        }
+        let refused = refused.expect("at 50 percent some key is refused");
+        let accepted = accepted.expect("at 50 percent some key is not refused");
+
+        for attempt in 0..5 {
+            let response = proxy.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: refused.clone(),
+                },
+            });
+            assert_eq!(
+                response.status.code, "proxy_traffic_dropped",
+                "attempt {attempt} on a refused key must be refused again -- the decision is                  per key, not per request"
+            );
+            assert!(
+                response.status.message.contains("will not succeed"),
+                "the refusal must say retrying this key is pointless, got {:?}",
+                response.status.message
+            );
+        }
+
+        // Writes are refused on the same basis as reads. The refusal is explicit rather than a
+        // silent discard, but it is a refusal, and it is permanent for that key.
+        let write = proxy.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: refused.clone(),
+                value: b"v".to_vec(),
+            },
+        });
+        assert_eq!(
+            write.status.code, "proxy_traffic_dropped",
+            "drop_percent applies to writes, not only reads"
+        );
+
+        // And a key on the other side of the hash is never refused.
+        for _ in 0..5 {
+            assert_ne!(
+                proxy
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringGet {
+                            key: accepted.clone()
+                        },
+                    })
+                    .status
+                    .code,
+                "proxy_traffic_dropped",
+                "an accepted key must stay accepted"
+            );
+        }
+    }
+
     #[test]
     fn proxy_policy_blocks_writes_not_serving_and_drop_percent() {
         let readonly = ProxyService::new(ProxyOptions {
