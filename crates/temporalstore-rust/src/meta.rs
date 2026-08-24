@@ -737,6 +737,31 @@ pub struct TopologyVersionReport {
     pub event_history_truncated: bool,
 }
 
+/// Which slice of the change history to return.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TopologyEventsRequest {
+    /// Return changes newer than this topology version. Zero returns whatever
+    /// the ring still holds.
+    #[serde(default)]
+    pub after_version: u64,
+    /// Most changes to return. Zero means the ring's own limit.
+    #[serde(default)]
+    pub limit: usize,
+}
+
+/// What the metaserver recorded, and whether the caller missed anything.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TopologyEventsResponse {
+    pub status: Status,
+    pub events: Vec<TopologyChangeEvent>,
+    /// The oldest change still held. The history is a bounded ring, so anything
+    /// older than this has been overwritten and cannot be asked for.
+    pub oldest_retained_version: u64,
+    /// Set when the caller asked to resume from a point the ring no longer
+    /// holds, so a gap in what they receive is not mistaken for quiet.
+    pub missed_events: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TopologyChangeEvent {
     pub topology_version: u64,
@@ -1456,6 +1481,43 @@ impl SingleNodeMeta {
             .tables
             .contains(table)
             .then(|| Status::error("name_reserved", format!("table name {table} is reserved")))
+    }
+
+    /// The recorded change history, oldest first.
+    ///
+    /// Every metadata change records one of these, and the only way to see them
+    /// was to subscribe and wait: an operator looking at an incident that had
+    /// already happened could not ask what changed.
+    pub fn topology_events(&self, request: TopologyEventsRequest) -> TopologyEventsResponse {
+        let state = self.inner.read().expect("meta lock poisoned");
+        let oldest_retained_version = state
+            .topology_events
+            .front()
+            .map(|event| event.topology_version)
+            .unwrap_or_default();
+        // Resuming from a version the ring has already overwritten means there
+        // are changes the caller will never see. Saying so is the difference
+        // between a gap and a quiet period.
+        let missed_events = request.after_version > 0
+            && oldest_retained_version > request.after_version.saturating_add(1);
+        let limit = if request.limit == 0 {
+            TOPOLOGY_EVENT_HISTORY_LIMIT
+        } else {
+            request.limit.min(TOPOLOGY_EVENT_HISTORY_LIMIT)
+        };
+        let events = state
+            .topology_events
+            .iter()
+            .filter(|event| event.topology_version > request.after_version)
+            .take(limit)
+            .cloned()
+            .collect();
+        TopologyEventsResponse {
+            status: Status::ok(),
+            events,
+            oldest_retained_version,
+            missed_events,
+        }
     }
 
     /// Mute or resume metadata change.
@@ -3462,6 +3524,94 @@ mod tests {
             freeze_cooldown_ms: 0,
             reason: FreezeReason::Unspecified,
         });
+    }
+
+    fn changed(meta: &SingleNodeMeta, name: &str) {
+        register(meta, name);
+    }
+
+    fn history(meta: &SingleNodeMeta, after_version: u64) -> TopologyEventsResponse {
+        meta.topology_events(TopologyEventsRequest {
+            after_version,
+            limit: 0,
+        })
+    }
+
+    #[test]
+    fn what_changed_can_be_asked_for_after_the_fact() {
+        // Every metadata change records one of these, and the only way to see
+        // them was to subscribe and wait -- so an operator looking at an
+        // incident that had already happened could not ask what changed.
+        let meta = SingleNodeMeta::default();
+        changed(&meta, "one");
+        changed(&meta, "two");
+
+        let seen = history(&meta, 0);
+        assert!(seen.status.ok);
+        assert!(seen.events.len() >= 2);
+        assert!(seen.events.iter().any(|event| event.resource.contains("one")));
+        assert!(seen.events.iter().any(|event| event.resource.contains("two")));
+        assert!(!seen.missed_events);
+    }
+
+    #[test]
+    fn a_caller_can_resume_from_where_it_stopped() {
+        let meta = SingleNodeMeta::default();
+        changed(&meta, "one");
+        let first = history(&meta, 0);
+        let resume_from = first.events.last().expect("an event").topology_version;
+
+        changed(&meta, "two");
+        let next = history(&meta, resume_from);
+        assert!(next.events.iter().all(|event| event.topology_version > resume_from));
+        assert!(next.events.iter().any(|event| event.resource.contains("two")));
+        assert!(!next.missed_events);
+    }
+
+    #[test]
+    fn a_caller_that_fell_behind_the_ring_is_told_so() {
+        // The history is bounded. A caller resuming from a point that has been
+        // overwritten must not read the gap as a quiet period -- that is the
+        // difference between "nothing happened" and "you missed it".
+        let meta = SingleNodeMeta::default();
+        for index in 0..(TOPOLOGY_EVENT_HISTORY_LIMIT + 20) {
+            changed(&meta, &format!("ns-{index}"));
+        }
+        let stale = history(&meta, 1);
+        assert!(
+            stale.missed_events,
+            "a caller resuming from an evicted point was not warned"
+        );
+        assert!(stale.oldest_retained_version > 1);
+    }
+
+    #[test]
+    fn asking_from_the_current_version_is_quiet_not_a_gap() {
+        // The inverse: caught up is not the same as fallen behind, and must not
+        // be reported as missing anything.
+        let meta = SingleNodeMeta::default();
+        changed(&meta, "one");
+        let latest = history(&meta, 0)
+            .events
+            .last()
+            .expect("an event")
+            .topology_version;
+        let caught_up = history(&meta, latest);
+        assert!(caught_up.events.is_empty());
+        assert!(!caught_up.missed_events);
+    }
+
+    #[test]
+    fn the_history_never_returns_more_than_asked_for() {
+        let meta = SingleNodeMeta::default();
+        for index in 0..10 {
+            changed(&meta, &format!("ns-{index}"));
+        }
+        let capped = meta.topology_events(TopologyEventsRequest {
+            after_version: 0,
+            limit: 3,
+        });
+        assert_eq!(capped.events.len(), 3);
     }
 
     #[test]

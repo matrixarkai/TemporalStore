@@ -19,7 +19,7 @@ use temporalstore_rust::meta::{
     MetaSnapshot, MetaSnapshotFileRequest, MetaSnapshotFileResponse, MetaSnapshotResponse,
     ProxyHeartbeatRequest, PublishShardSnapshotRequest, RegisterProxyRequest,
     RegisterServerRequest, RegisterShardRequest, SafeModePolicy, ServerHeartbeatRequest,
-    ListShardsRequest, ReservedNames, ShardCheckOptions, ShardChecker, ShardReassignment, ShardReassignmentReason, ShardStateRequest,
+    ListShardsRequest, ReservedNames, ShardCheckOptions, ShardChecker, ShardReassignment, ShardReassignmentReason, ShardStateRequest, TopologyEventsRequest,
     DropProxyGroupRequest, NotifyStopRequest, ProxyCalibrationOptions, PutProxyGroupRequest, SingleNodeMeta, StateChangeRequest, TopologyVersionRequest, UpdateServerRequest,
     UpdateTableRequest,
 };
@@ -1443,6 +1443,11 @@ fn handle(
         }
         ("GET", "/meta/scheduler") | ("GET", "/meta/scheduler/snapshot") => {
             json_response(200, &scheduler.snapshot())
+        }
+        ("POST", "/meta/topology_events") => {
+            parse_or(&request.body, |req: TopologyEventsRequest| {
+                backend_call!(meta, topology_events, req)
+            })
         }
         ("GET", "/meta/scheduler/executions") => json_response(200, &scheduler.executions()),
         ("POST", "/meta/scheduler/submit") => {
