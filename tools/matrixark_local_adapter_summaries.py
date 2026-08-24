@@ -590,10 +590,13 @@ class _LocalAdapterSummariesMixin:
         min_compression_event_age_ms: int = TIME_COMPRESSION_MIN_EVENT_AGE_MS,
         raw_event_ttl_after_compression_ms: int = TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS,
         skip_dirty_reasons: set[str] | None = None,
+        records: list[Json] | None = None,
     ) -> Json:
         refreshed_at_ms = refreshed_at_ms or now_ms()
         skip_dirty_reasons = skip_dirty_reasons or set()
-        records = self.read_all()
+        # `records` lets one caller's read serve a whole pass. Reading here is a full record-log
+        # read, and on a native backend it holds the single shared proxy lane while it runs.
+        records = self.read_all() if records is None else records
         skipped_dirty_reasons: Json = {}
         pending_by_node = pending_dirty_node_records(
             records=records,
@@ -1180,7 +1183,11 @@ class _LocalAdapterSummariesMixin:
             for reason in args.get("skip_dirty_reasons", [])
             if str(reason or "").strip()
         } if isinstance(args.get("skip_dirty_reasons"), list) else set()
+        # One read for the pass. The embedding step below reuses it only when nothing was
+        # written -- see there.
+        pass_records = self.read_all()
         result = self.refresh_dirty_node_summaries(
+            records=pass_records,
             scope=scope,
             limit=limit,
             refreshed_at_ms=refreshed_at_ms,
@@ -1214,10 +1221,21 @@ class _LocalAdapterSummariesMixin:
             else str(ensure_embeddings_arg).strip().lower() not in {"0", "false", "no", "off"}
         )
         if ensure_embeddings:
+            # Reuse the snapshot ONLY when the summary pass wrote nothing: then the store is
+            # unchanged and a second read returns the same records. When it did write, this must
+            # re-read, because it has to see the summaries just produced -- and a row read back
+            # from the store differs from the one written (serving materialization strips the
+            # scope it carries), so an in-memory reconstruction would not be the same input.
+            try:
+                wrote_nothing = int(result.get("refreshed_count") or 0) == 0
+            except (TypeError, ValueError):
+                wrote_nothing = False
             result["embedding_refresh"] = self.ensure_context_embeddings(
+                records=pass_records if wrote_nothing else None,
                 scope=scope,
                 limit=integer_arg(args, "embedding_backfill_limit", max(1, limit * 8), minimum=1),
                 updated_at_ms=refreshed_at_ms,
             )
+            result["embedding_refresh_reused_pass_records"] = bool(wrote_nothing)
         return result
 
