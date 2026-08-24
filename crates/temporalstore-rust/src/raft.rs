@@ -42,6 +42,7 @@ mod readiness;
 mod cluster_snapshot;
 mod production_runtime;
 mod local_wal;
+pub(crate) mod wal_proto;
 mod cluster_meta;
 mod cluster_meta_inner;
 mod cluster_inner;
@@ -1980,8 +1981,26 @@ impl RaftTransport for HttpRaftTransport {
         &self,
         request: AppendEntriesRequest,
     ) -> Result<AppendEntriesResponse, RaftError> {
+        let addr = self.peer_addr(request.target_id)?.to_string();
+        if wal_proto::binary_replication_enabled() {
+            let body = wal_proto::encode_append_entries(&request)
+                .map_err(|err| RaftError::Transport(err.to_string()))?;
+            // The response is a handful of integers either way, so it stays as it was; the size
+            // that matters is the entries travelling out.
+            let raw = crate::http::request_bytes_with_options(
+                &addr,
+                "POST",
+                "/raft/append_entries",
+                &body,
+                "application/x-protobuf",
+                self.options,
+            )
+            .map_err(|err| RaftError::Transport(err.to_string()))?;
+            return serde_json::from_slice(&raw)
+                .map_err(|err| RaftError::Transport(err.to_string()));
+        }
         Ok(post_json_with_options(
-            self.peer_addr(request.target_id)?,
+            &addr,
             "/raft/append_entries",
             &request,
             self.options,
@@ -2026,8 +2045,30 @@ impl RaftTransport for HttpRaftTransport {
     }
 }
 
+/// Whether a request body carries the binary encoding rather than text.
+pub fn is_binary_rpc(body: &[u8]) -> bool {
+    wal_proto::is_binary_rpc(body)
+}
+
+/// Decode a binary replicated batch. Callers that only need a field from the header still have to
+/// decode, since a binary body has no fields to read out by name.
+pub fn decode_append_entries(body: &[u8]) -> std::io::Result<AppendEntriesRequest> {
+    wal_proto::decode_append_entries(body)
+}
+
 pub fn handle_raft_http(cluster: &RaftCluster, request: HttpRequest) -> (u16, Vec<u8>) {
     match (request.method.as_str(), request.path.as_str()) {
+        // Accept either encoding: a body starting with the magic byte is binary, and a text
+        // body always starts with `{`.
+        ("POST", "/raft/append_entries") if wal_proto::is_binary_rpc(&request.body) => {
+            match wal_proto::decode_append_entries(&request.body) {
+                Ok(req) => match cluster.receive_append_entries(req) {
+                    Ok(response) => json_response(200, &response),
+                    Err(err) => json_response(500, &err.to_string()),
+                },
+                Err(err) => json_response(400, &err.to_string()),
+            }
+        }
         ("POST", "/raft/append_entries") => match parse_json::<AppendEntriesRequest>(&request.body)
         {
             Ok(req) => match cluster.receive_append_entries(req) {
@@ -2086,6 +2127,14 @@ fn raft_rpc_metadata_for_http_request(
 ) -> Result<Option<RaftRpcMetadata>, RaftError> {
     match (request.method.as_str(), request.path.as_str()) {
         ("POST", "/raft/append_entries") => {
+            // A binary body carries its rpc metadata inside the message, not as a JSON field.
+            // Parsing it as JSON here fails, and that failure surfaced as a 403 on EVERY binary
+            // append -- the authenticated wrapper choked before dispatch ever saw the request.
+            if wal_proto::is_binary_rpc(&request.body) {
+                let req = wal_proto::decode_append_entries(&request.body)
+                    .map_err(|err| RaftError::Transport(err.to_string()))?;
+                return Ok(req.rpc);
+            }
             let req = parse_json::<AppendEntriesRequest>(&request.body)
                 .map_err(|err| RaftError::Transport(err.to_string()))?;
             Ok(req.rpc)
@@ -4428,18 +4477,42 @@ impl RaftCluster {
                 .expect("raft cluster lock poisoned")
                 .begin_deferred_persist();
         }
-        let outcome = self.propose_distributed_one_locked(command, transport);
+        let mut entry_barrier = None;
+        let outcome =
+            self.propose_distributed_one_locked(command, transport, &mut entry_barrier);
         if !deferring {
+            // An overlapped barrier is still joined before the ack, whatever path leaves here.
+            if let Some(handle) = entry_barrier {
+                let joined = handle
+                    .join()
+                    .unwrap_or_else(|_| Err(RaftError::Wal("barrier thread panicked".to_string())));
+                return match (outcome, joined) {
+                    (Ok(response), Ok(())) => Ok(response),
+                    (Ok(_), Err(err)) => Err(err),
+                    (Err(err), _) => Err(err),
+                };
+            }
             return outcome;
         }
         // Write what the deferral owes while the propose lock still orders it. Records carry the
         // log, so an older record landing after a newer one would regress the log on recovery --
         // the write must stay ordered.
-        let staged = self
-            .inner
-            .write()
-            .expect("raft cluster lock poisoned")
-            .stage_deferred_persist();
+        //
+        // With the barrier overlapped, the entry is already written and being flushed, and what
+        // is owed here is only the commit index -- which is recoverable and so is left for the
+        // next record to carry rather than paid for on this write's critical path.
+        let staged = if entry_barrier.is_some() {
+            self.inner
+                .write()
+                .expect("raft cluster lock poisoned")
+                .discard_deferred_persist();
+            Ok(Vec::new())
+        } else {
+            self.inner
+                .write()
+                .expect("raft cluster lock poisoned")
+                .stage_deferred_persist()
+        };
         // The barrier needs no such ordering: an fsync makes every byte already in the file
         // durable whoever wrote it. Releasing the lock here is what finally gives group commit a
         // queue to coalesce -- while the barrier was taken under this lock only one writer ever
@@ -4447,10 +4520,20 @@ impl RaftCluster {
         // Nothing is acknowledged before its barrier: the flush still happens below, on the
         // failure path as well as the success path.
         drop(_propose_guard);
-        let flushed = match staged {
+        let mut flushed = match staged {
             Ok(staged) => self.finish_staged_unlocked(staged),
             Err(err) => Err(err),
         };
+        // Join the overlapped barrier before acknowledging: the entry has to be durable here, it
+        // just did not have to wait for replication to start becoming so.
+        if let Some(handle) = entry_barrier {
+            let joined = handle
+                .join()
+                .unwrap_or_else(|_| Err(RaftError::Wal("barrier thread panicked".to_string())));
+            if flushed.is_ok() {
+                flushed = joined;
+            }
+        }
         // Never ack a write whose barrier failed: a flush error wins over a successful propose.
         match (outcome, flushed) {
             (Ok(response), Ok(())) => Ok(response),
@@ -4463,6 +4546,7 @@ impl RaftCluster {
         &self,
         command: Command,
         transport: &T,
+        entry_barrier: &mut Option<thread::JoinHandle<Result<(), RaftError>>>,
     ) -> Result<CommandResponse, RaftError>
     where
         T: RaftTransport + Clone + Send + 'static,
@@ -4528,6 +4612,30 @@ impl RaftCluster {
             target_ids.extend(fallback_target_ids);
             (entry, leader_id, target_ids, required)
         };
+
+        // The entry is in the log. Write it and start its barrier NOW, so the leader's disk wait
+        // runs alongside the followers' instead of after them. The commit index is not known yet
+        // and does not need to be: it is recoverable, so it never has to be durable before the
+        // acknowledgement.
+        if wal_proto::overlap_leader_barrier_enabled() {
+            let staged = self
+                .inner
+                .write()
+                .expect("raft cluster lock poisoned")
+                .stage_deferred_persist();
+            if let Ok(staged) = staged {
+                if !staged.is_empty() {
+                    let cluster = self.clone();
+                    *entry_barrier =
+                        Some(thread::spawn(move || cluster.finish_staged_unlocked(staged)));
+                }
+            }
+            // Anything persisted from here on is the commit index, which this path discards.
+            self.inner
+                .write()
+                .expect("raft cluster lock poisoned")
+                .begin_deferred_persist();
+        }
 
         let mut replicated = {
             let inner = self.inner.read().expect("raft cluster lock poisoned");

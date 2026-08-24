@@ -35,6 +35,8 @@ pub(super) fn command_touched_keys(command: &Command) -> Vec<String> {
 
 pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
     match command {
+        // Touches no object, so it holds no object keys.
+        Command::LeaderEstablish => Vec::new(),
         Command::CommonDelete { key } => associated_record_keys(key),
         Command::CommonExpire { key, .. }
         | Command::StringSet { key, .. }

@@ -58,8 +58,10 @@ impl LocalRaftWal {
             delta: None,
         };
         let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
-        serde_json::to_writer(&mut file, &envelope).map_err(io::Error::other)?;
-        file.write_all(b"\n")?;
+        file.write_all(&wal_proto::encode_record_line(
+            &envelope,
+            wal_proto::binary_records_enabled(),
+        )?)?;
         crate::durability_metrics::record_barrier("raft_wal_append_unsegmented");
         file.sync_data()?;
         Ok(())
@@ -249,10 +251,7 @@ impl LocalRaftWal {
                     delta: None,
                 }
             };
-            let mut buf = Vec::new();
-            serde_json::to_writer(&mut buf, &envelope).map_err(io::Error::other)?;
-            buf.push(b'\n');
-            Ok(buf)
+            wal_proto::encode_record_line(&envelope, wal_proto::binary_records_enabled())
         };
 
         let mut wrote_base = !delta_safe;
@@ -515,19 +514,13 @@ impl LocalRaftWal {
             let mut valid_until = 0usize;
             while offset < bytes.len() {
                 let remaining = &bytes[offset..];
-                let line_len = remaining
-                    .iter()
-                    .position(|byte| *byte == b'\n')
-                    .map(|pos| pos + 1)
-                    .unwrap_or(remaining.len());
-                let raw_line = &remaining[..line_len];
-                let line = raw_line.strip_suffix(b"\n").unwrap_or(raw_line);
-                if line.is_empty() {
-                    valid_until = offset + line_len;
-                    offset += line_len;
+                // Blank padding is not a record, but it is not damage either.
+                if remaining.first() == Some(&b'\n') {
+                    valid_until = offset + 1;
+                    offset += 1;
                     continue;
                 }
-                let Ok(envelope) = serde_json::from_slice::<RaftWalEnvelope>(line) else {
+                let Some((line_len, envelope)) = wal_proto::next_envelope(remaining) else {
                     break;
                 };
                 if envelope.checksum != raft_wal_checksum(&envelope.record)? {
@@ -638,18 +631,11 @@ impl LocalRaftWal {
         let mut offset = 0usize;
         while offset < bytes.len() {
             let remaining = &bytes[offset..];
-            let line_len = remaining
-                .iter()
-                .position(|byte| *byte == b'\n')
-                .map(|pos| pos + 1)
-                .unwrap_or(remaining.len());
-            let raw_line = &remaining[..line_len];
-            let line = raw_line.strip_suffix(b"\n").unwrap_or(raw_line);
-            if line.is_empty() {
-                offset += line_len;
+            if remaining.first() == Some(&b'\n') {
+                offset += 1;
                 continue;
             }
-            let Ok(envelope) = serde_json::from_slice::<RaftWalEnvelope>(line) else {
+            let Some((line_len, envelope)) = wal_proto::next_envelope(remaining) else {
                 break;
             };
             if envelope.checksum != raft_wal_checksum(&envelope.record)? {
@@ -667,9 +653,11 @@ impl LocalRaftWal {
             .write(true)
             .truncate(true)
             .open(&path)?;
+        // Rewriting the retained records adopts whichever encoding is current; a reader
+        // handles either, but a file written whole in one encoding is easier to reason about.
+        let binary = wal_proto::binary_records_enabled();
         for envelope in retained {
-            serde_json::to_writer(&mut file, &envelope).map_err(io::Error::other)?;
-            file.write_all(b"\n")?;
+            file.write_all(&wal_proto::encode_record_line(&envelope, binary)?)?;
         }
         crate::durability_metrics::record_barrier("raft_wal_compact");
         file.sync_data()?;
@@ -731,19 +719,12 @@ impl LocalRaftWal {
         let mut valid_records = 0usize;
         while offset < bytes.len() {
             let remaining = &bytes[offset..];
-            let line_len = remaining
-                .iter()
-                .position(|byte| *byte == b'\n')
-                .map(|pos| pos + 1)
-                .unwrap_or(remaining.len());
-            let raw_line = &remaining[..line_len];
-            let line = raw_line.strip_suffix(b"\n").unwrap_or(raw_line);
-            if line.is_empty() {
-                valid_until = offset + line_len;
-                offset += line_len;
+            if remaining.first() == Some(&b'\n') {
+                valid_until = offset + 1;
+                offset += 1;
                 continue;
             }
-            let Ok(envelope) = serde_json::from_slice::<RaftWalEnvelope>(line) else {
+            let Some((line_len, envelope)) = wal_proto::next_envelope(remaining) else {
                 break;
             };
             if envelope.checksum != raft_wal_checksum(&envelope.record)? {
@@ -866,20 +847,26 @@ impl LocalRaftWal {
     }
 
     pub(super) fn inspect_segment_sequences(path: &Path) -> io::Result<(u64, u64, u64, u64, u64)> {
-        let file = OpenOptions::new().read(true).open(path)?;
+        let bytes = fs::read(path)?;
         let mut record_count = 0u64;
         let mut first_sequence = 0u64;
         let mut last_sequence = 0u64;
         let mut first_log_index = 0u64;
         let mut last_log_index = 0u64;
-        for line in BufReader::new(file).lines() {
-            let line = line?;
-            if line.trim().is_empty() {
+        let mut offset = 0usize;
+        while offset < bytes.len() {
+            let remaining = &bytes[offset..];
+            // Blank padding is not a record.
+            if remaining.first() == Some(&b'\n') {
+                offset += 1;
                 continue;
             }
-            let Ok(envelope) = serde_json::from_str::<RaftWalEnvelope>(&line) else {
-                continue;
+            // A record that will not decode leaves no way to find where the next one begins, so
+            // stop here -- the same place the recovery path stops on the same file.
+            let Some((consumed, envelope)) = wal_proto::next_envelope(remaining) else {
+                break;
             };
+            offset += consumed;
             record_count = record_count.saturating_add(1);
             if first_sequence == 0 {
                 first_sequence = envelope.sequence;
