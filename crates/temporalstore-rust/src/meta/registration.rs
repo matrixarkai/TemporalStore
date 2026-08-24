@@ -16,7 +16,7 @@ impl SingleNodeMeta {
 
     pub(super) fn apply_register_server(&self, request: RegisterServerRequest) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
-        state.counters.server_register_total += 1;
+        MetaCounters::bump(&self.counters.server_register_total);
         if let Some(existing) = state.servers.get(&request.server_addr) {
             let now = now_ms();
             if existing.state == MetaEntityState::Frozen && existing.freeze_cooldown_until_ms > now
@@ -149,7 +149,7 @@ impl SingleNodeMeta {
 
     pub fn server_heartbeat(&self, request: ServerHeartbeatRequest) -> ServerHeartbeatResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
-        state.counters.server_heartbeat_total += 1;
+        MetaCounters::bump(&self.counters.server_heartbeat_total);
         let topology_version = state.topology_version;
         let Some(server) = state.servers.get_mut(&request.server_addr) else {
             return ServerHeartbeatResponse {
@@ -233,7 +233,7 @@ impl SingleNodeMeta {
 
     pub(super) fn apply_register_proxy(&self, request: RegisterProxyRequest) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
-        state.counters.proxy_register_total += 1;
+        MetaCounters::bump(&self.counters.proxy_register_total);
         if let Some(existing) = state.proxies.get(&request.proxy_addr) {
             let now = now_ms();
             if existing.state == MetaEntityState::Frozen && existing.freeze_cooldown_until_ms > now
@@ -282,7 +282,7 @@ impl SingleNodeMeta {
 
     pub fn proxy_heartbeat(&self, request: ProxyHeartbeatRequest) -> ProxyHeartbeatResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
-        state.counters.proxy_heartbeat_total += 1;
+        MetaCounters::bump(&self.counters.proxy_heartbeat_total);
         let Some(proxy) = state.proxies.get_mut(&request.proxy_addr) else {
             return ProxyHeartbeatResponse {
                 status: Status::error("not_found", "proxy not found"),
@@ -369,7 +369,7 @@ impl SingleNodeMeta {
 
     pub(super) fn apply_add_namespace(&self, request: AddNamespaceRequest) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
-        state.counters.namespace_create_total += 1;
+        MetaCounters::bump(&self.counters.namespace_create_total);
         state
             .namespaces
             .entry(request.namespace)

@@ -98,7 +98,7 @@ impl SingleNodeMeta {
 
     pub fn stats(&self) -> MetaStats {
         let state = self.inner.read().expect("meta lock poisoned");
-        stats_from_state(&state)
+        stats_from_state(&state, &self.counters)
     }
 
     pub fn preflight_report(&self) -> MetaPreflightReport {
@@ -145,7 +145,7 @@ impl SingleNodeMeta {
         };
         MetaPreflightReport {
             status,
-            stats: stats_from_state(&state),
+            stats: stats_from_state(&state, &self.counters),
             normal_servers,
             frozen_servers,
             normal_proxies,

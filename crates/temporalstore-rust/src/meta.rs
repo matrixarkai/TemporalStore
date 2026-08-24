@@ -2,6 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -918,18 +919,47 @@ impl LocalMetaMutationLog {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Request counters, kept beside the metadata rather than inside it.
+///
+/// They used to live in `MetaState`, which meant counting a request required
+/// the same exclusive lock as changing the cluster. Two of the paths that count
+/// are pure reads -- resolving a shard's location, and refreshing a table's
+/// topology -- and they are the two every client and proxy calls most. Holding
+/// the write lock made them serialise against each other and against every
+/// metadata change, to add one to an integer nobody reads on that path.
+///
+/// `Relaxed` throughout: these are reported, never used to order anything.
+#[derive(Debug, Default)]
 struct MetaCounters {
-    register_shard_total: u64,
-    get_shard_total: u64,
-    server_register_total: u64,
-    server_heartbeat_total: u64,
-    proxy_register_total: u64,
-    proxy_heartbeat_total: u64,
-    namespace_create_total: u64,
-    table_create_total: u64,
-    topology_query_total: u64,
-    load_finish_total: u64,
+    register_shard_total: AtomicU64,
+    get_shard_total: AtomicU64,
+    server_register_total: AtomicU64,
+    server_heartbeat_total: AtomicU64,
+    proxy_register_total: AtomicU64,
+    proxy_heartbeat_total: AtomicU64,
+    namespace_create_total: AtomicU64,
+    table_create_total: AtomicU64,
+    topology_query_total: AtomicU64,
+    load_finish_total: AtomicU64,
+}
+
+impl MetaCounters {
+    fn bump(counter: &AtomicU64) {
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn restore(&self, stats: &MetaStats) {
+        self.register_shard_total.store(stats.register_shard_total, Ordering::Relaxed);
+        self.get_shard_total.store(stats.get_shard_total, Ordering::Relaxed);
+        self.server_register_total.store(stats.server_register_total, Ordering::Relaxed);
+        self.server_heartbeat_total.store(stats.server_heartbeat_total, Ordering::Relaxed);
+        self.proxy_register_total.store(stats.proxy_register_total, Ordering::Relaxed);
+        self.proxy_heartbeat_total.store(stats.proxy_heartbeat_total, Ordering::Relaxed);
+        self.namespace_create_total.store(stats.namespace_create_total, Ordering::Relaxed);
+        self.table_create_total.store(stats.table_create_total, Ordering::Relaxed);
+        self.topology_query_total.store(stats.topology_query_total, Ordering::Relaxed);
+        self.load_finish_total.store(stats.load_finish_total, Ordering::Relaxed);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -945,7 +975,6 @@ pub(crate) struct MetaState {
     proxy_groups: BTreeMap<String, ProxyGroupInfo>,
     namespaces: BTreeMap<String, MetaEntityState>,
     tables: BTreeMap<String, TableRecord>,
-    counters: MetaCounters,
     next_table_id: u64,
     topology_version: u64,
     topology_events: VecDeque<TopologyChangeEvent>,
@@ -1038,6 +1067,9 @@ pub struct SingleNodeMeta {
     /// can report it. Shared by clone, so every handle to this meta writes to
     /// and reads from the same recorder.
     metrics: SubsystemMetrics,
+    /// Request counters. Shared by clone, so every handle counts into the same
+    /// place, and atomic so counting does not need the metadata lock.
+    counters: Arc<MetaCounters>,
 }
 
 impl Default for SingleNodeMeta {
@@ -1051,6 +1083,7 @@ impl Default for SingleNodeMeta {
             mutation_log: None,
             forbid_self_clearing_conviction: false,
             metrics: SubsystemMetrics::new(),
+            counters: Arc::new(MetaCounters::default()),
         }
     }
 }
@@ -1083,7 +1116,7 @@ impl SingleNodeMeta {
 
     fn apply_register(&self, request: RegisterShardRequest) -> RegisterShardResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
-        state.counters.register_shard_total += 1;
+        MetaCounters::bump(&self.counters.register_shard_total);
         let latest_snapshot = state
             .shards
             .get(&request.shard_id)
@@ -1109,8 +1142,9 @@ impl SingleNodeMeta {
     }
 
     pub fn get(&self, shard_id: ShardId) -> GetShardResponse {
-        let mut state = self.inner.write().expect("meta lock poisoned");
-        state.counters.get_shard_total += 1;
+        MetaCounters::bump(&self.counters.get_shard_total);
+        // A shared lock: resolving a location reads and nothing more.
+        let state = self.inner.read().expect("meta lock poisoned");
         let location = state.shards.get(&shard_id).cloned();
         GetShardResponse {
             status: if location.is_some() {
@@ -3200,6 +3234,121 @@ mod tests {
         // The point is that asking does not panic; the answer is that the
         // shard below the range is not in it.
         assert_eq!(resolves_to(&meta, 10), None);
+    }
+
+    fn counted_meta() -> SingleNodeMeta {
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "node-a".to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+        });
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            first_shard_id: 1,
+            shard_count: 1,
+            replica_count: 1,
+            partition_version: 0,
+            serving_options: TableServingOptions::default(),
+        });
+        meta.register(RegisterShardRequest {
+            shard_id: 1,
+            server_addr: "node-a".to_string(),
+        });
+        meta
+    }
+
+    fn topology_request() -> GetTableTopologyRequest {
+        GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            old_topology_version: 0,
+            client_location: String::new(),
+        }
+    }
+
+    /// Run `body` on another thread and fail rather than hang if it blocks.
+    fn must_finish(what: &str, body: impl FnOnce() + Send + 'static) {
+        use std::sync::mpsc;
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            body();
+            let _ = tx.send(());
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_secs(10)).is_ok(),
+            "{what} blocked"
+        );
+    }
+
+    #[test]
+    fn a_topology_read_does_not_need_the_exclusive_lock() {
+        // This is the whole point of the change. While a shared lock is held,
+        // a reader must still get through. Taking the write lock -- which is
+        // what counting the request used to require -- would block here until
+        // the guard below is dropped, and the probe would time out.
+        let meta = counted_meta();
+        let guard = meta.inner.read().expect("meta lock poisoned");
+        let probe = meta.clone();
+        must_finish("a topology read", move || {
+            assert!(probe.get_table_topology(topology_request()).status.ok);
+        });
+        drop(guard);
+    }
+
+    #[test]
+    fn resolving_a_shard_does_not_need_the_exclusive_lock() {
+        let meta = counted_meta();
+        let guard = meta.inner.read().expect("meta lock poisoned");
+        let probe = meta.clone();
+        must_finish("a shard lookup", move || {
+            assert!(probe.get(1).status.ok);
+        });
+        drop(guard);
+    }
+
+    #[test]
+    fn every_concurrent_read_is_still_counted_exactly_once() {
+        // Counting moved out of the lock, so it has to be atomic or the total
+        // quietly drifts under load -- the one thing that would make this a
+        // trade rather than a win.
+        let meta = counted_meta();
+        let before = meta.stats().topology_query_total;
+        let threads = (0..8)
+            .map(|_| {
+                let probe = meta.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..50 {
+                        probe.get_table_topology(topology_request());
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for thread in threads {
+            thread.join().expect("reader thread");
+        }
+        assert_eq!(meta.stats().topology_query_total, before + 400);
+    }
+
+    #[test]
+    fn counters_survive_a_snapshot_install() {
+        // They live outside the state now, so installing a snapshot has to
+        // carry them across explicitly or a peer reports having served nothing.
+        let meta = counted_meta();
+        for _ in 0..3 {
+            meta.get_table_topology(topology_request());
+        }
+        let snapshot = meta.export_snapshot();
+        assert_eq!(snapshot.stats.topology_query_total, 3);
+
+        let peer = SingleNodeMeta::default();
+        assert!(peer.install_snapshot(snapshot).status.ok);
+        assert_eq!(peer.stats().topology_query_total, 3);
     }
 
     #[test]

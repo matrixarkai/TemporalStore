@@ -7,8 +7,10 @@ use super::*;
 
 impl SingleNodeMeta {
     pub fn get_table_topology(&self, request: GetTableTopologyRequest) -> TableTopologyResponse {
-        let mut state = self.inner.write().expect("meta lock poisoned");
-        state.counters.topology_query_total += 1;
+        MetaCounters::bump(&self.counters.topology_query_total);
+        // A shared lock: topology is derived from the metadata, not written to
+        // it, and this is the request every client and proxy repeats.
+        let state = self.inner.read().expect("meta lock poisoned");
         let Some(table) = state
             .tables
             .get(&table_key(&request.namespace, &request.table_name))
@@ -429,7 +431,7 @@ impl SingleNodeMeta {
 
     pub(super) fn apply_finish_load(&self, request: LoadFinishRequest) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
-        state.counters.load_finish_total += 1;
+        MetaCounters::bump(&self.counters.load_finish_total);
         if !request.status.ok {
             return AckResponse {
                 status: request.status,
