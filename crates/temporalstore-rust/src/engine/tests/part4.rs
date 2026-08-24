@@ -3902,3 +3902,43 @@ fn an_unlimited_expiry_window_returns_every_match() {
     assert_eq!(after.len(), 20, "the cursor is exclusive");
     assert_eq!(after.first().map(|(key, _)| key.as_str()), Some("key-0020"));
 }
+
+
+/// A cycle request that does not mention the ordering guard must still get it.
+///
+/// Index-log records may only be discarded once the buckets they describe have been dumped;
+/// truncating first throws away the record of state that is not durable anywhere else. The guard
+/// that enforces that is a field on the request, and the request is parsed from an HTTP body --
+/// so what an OMITTED field decodes to is the behaviour every caller gets who does not name it.
+/// `#[serde(default)]` on a bool decodes to `false`, which is the unsafe order, even though the
+/// type's own `Default` says true.
+#[test]
+fn omitting_the_commit_before_truncate_guard_still_commits_before_truncating() {
+    // Take a well-formed body and remove ONLY the guard, so this tests what silence means rather
+    // than whether every other field happens to be optional.
+    let mut body: serde_json::Value =
+        serde_json::to_value(StorageManagerCycleRequest::default()).unwrap();
+    let removed = body
+        .as_object_mut()
+        .unwrap()
+        .remove("index_gc_commit_dirty_slots_before_truncation");
+    assert!(removed.is_some(), "the guard should be present in a serialised request");
+
+    let silent: StorageManagerCycleRequest = serde_json::from_value(body).unwrap();
+    assert!(
+        silent.index_gc_commit_dirty_buckets_before_truncation,
+        "a request that does not mention the guard decoded to the unsafe order: index-log records \
+         would be discarded before the buckets they describe had been dumped"
+    );
+
+    // Naming it false is still allowed -- this is about what silence means, not about removing
+    // the choice.
+    let mut off: serde_json::Value =
+        serde_json::to_value(StorageManagerCycleRequest::default()).unwrap();
+    off.as_object_mut().unwrap().insert(
+        "index_gc_commit_dirty_slots_before_truncation".to_string(),
+        serde_json::Value::Bool(false),
+    );
+    let explicit: StorageManagerCycleRequest = serde_json::from_value(off).unwrap();
+    assert!(!explicit.index_gc_commit_dirty_buckets_before_truncation);
+}
