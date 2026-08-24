@@ -1646,6 +1646,8 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
     let proxies = backend_call!(meta, list_proxies).proxies;
     let namespaces = backend_call!(meta, list_namespaces).namespaces;
     let tables = backend_call!(meta, list_tables).tables;
+    let proxy_groups = backend_call!(meta, list_proxy_groups).groups;
+    let reserved = backend_call!(meta, reserved_names).reserved;
     let scheduler_snapshot = scheduler.snapshot();
     let scheduler_executions = scheduler.executions();
     let mut out = String::new();
@@ -1683,6 +1685,9 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
         ("server", servers.len() as u64),
         ("proxy", proxies.len() as u64),
         ("shard", stats.shard_count as u64),
+        ("proxy_group", proxy_groups.len() as u64),
+        ("reserved_namespace", reserved.namespaces.len() as u64),
+        ("reserved_table", reserved.tables.len() as u64),
     ] {
         push_meta_metric(
             &mut out,
@@ -1724,7 +1729,61 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
                 .filter(|table| table.state.as_str() == state)
                 .count() as u64,
         );
+        // A namespace has had a state since it became something an operator can
+        // freeze and drop; nothing reported it.
+        push_meta_metric(
+            &mut out,
+            "temporalstore_meta_resource_state",
+            &[("resource", "namespace"), ("state", state)],
+            namespaces
+                .iter()
+                .filter(|namespace| namespace.state.as_str() == state)
+                .count() as u64,
+        );
+        push_meta_metric(
+            &mut out,
+            "temporalstore_meta_resource_state",
+            &[("resource", "proxy_group"), ("state", state)],
+            proxy_groups
+                .iter()
+                .filter(|group| group.state.as_str() == state)
+                .count() as u64,
+        );
     }
+    // A datanode that restarts in place is detected and reported; a proxy
+    // that does the same has been counted on its record since restart counting
+    // existed, and nothing read the number. A proxy cycling repeatedly is worth
+    // seeing for the same reason a datanode is.
+    out.push_str(
+        "# HELP temporalstore_meta_proxy_restarts Proxy restarts observed in place, by proxy.
+",
+    );
+    out.push_str("# TYPE temporalstore_meta_proxy_restarts gauge
+");
+    for proxy in &proxies {
+        push_meta_metric(
+            &mut out,
+            "temporalstore_meta_proxy_restarts",
+            &[("proxy", proxy.proxy_addr.as_str())],
+            proxy.restart_count,
+        );
+    }
+
+    // Shards are counted from the stats rather than listed: there can be
+    // hundreds of thousands of them, and a scrape should not page through the
+    // whole placement table to count two numbers.
+    push_meta_metric(
+        &mut out,
+        "temporalstore_meta_resource_state",
+        &[("resource", "shard"), ("state", "normal")],
+        stats.shard_count.saturating_sub(stats.frozen_shard_count) as u64,
+    );
+    push_meta_metric(
+        &mut out,
+        "temporalstore_meta_resource_state",
+        &[("resource", "shard"), ("state", "frozen")],
+        stats.frozen_shard_count as u64,
+    );
 
     out.push_str(
         "# HELP temporalstore_meta_topology_version Current metaserver topology version.\n",
@@ -2298,6 +2357,163 @@ mod tests {
         // that supplying options is still accepted rather than rejected.
         let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(parsed.get("status").is_some());
+    }
+
+    /// Scrape `/metrics` from a backend the caller has set up.
+    fn scrape(backend: &MetaBackend) -> String {
+        let scheduler = MetaTaskScheduler::default();
+        let (code, body) = handle(
+            backend,
+            &scheduler,
+            HttpRequest {
+                method: "GET".to_string(),
+                path: "/metrics".to_string(),
+                body: Vec::new(),
+            },
+        );
+        assert_eq!(code, 200);
+        String::from_utf8(body).expect("utf8")
+    }
+
+    #[test]
+    fn a_proxy_cycling_in_place_is_visible() {
+        // The count has been kept on the proxy's record since restart counting
+        // existed and nothing read it. A datanode that restarts in place is
+        // detected and reported; a proxy doing the same was silent.
+        let meta = SingleNodeMeta::default();
+        meta.register_proxy(RegisterProxyRequest {
+            proxy_addr: "proxy-a".to_string(),
+            namespace: "ns".to_string(),
+            location: "rack-1".to_string(),
+            config_version: 0,
+            binary_version: "v1".to_string(),
+        });
+        let beat = |boot_time_ms: u64| {
+            meta.proxy_heartbeat(ProxyHeartbeatRequest {
+                proxy_addr: "proxy-a".to_string(),
+                namespace: "ns".to_string(),
+                config_version: 0,
+                boot_time_ms,
+                binary_version: "v1".to_string(),
+            });
+        };
+        beat(100);
+        let backend = MetaBackend::Single(meta.clone());
+        assert!(scrape(&backend)
+            .contains("temporalstore_meta_proxy_restarts{proxy=\"proxy-a\"} 0"));
+
+        // Same address, different boot time: it came back as a new process.
+        beat(200);
+        assert!(scrape(&backend)
+            .contains("temporalstore_meta_proxy_restarts{proxy=\"proxy-a\"} 1"));
+
+        // A heartbeat from the same process must not count again.
+        beat(200);
+        assert!(scrape(&backend)
+            .contains("temporalstore_meta_proxy_restarts{proxy=\"proxy-a\"} 1"));
+    }
+
+    #[test]
+    fn a_frozen_namespace_shows_up_on_the_dashboard() {
+        // A namespace has had a state since it became something an operator can
+        // freeze and drop, and nothing reported it: you could take a tenant out
+        // of service and see no change on any dashboard.
+        let meta = SingleNodeMeta::default();
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "tenant".to_string(),
+        });
+        let backend = MetaBackend::Single(meta.clone());
+        assert!(scrape(&backend).contains(
+            "temporalstore_meta_resource_state{resource=\"namespace\",state=\"normal\"} 1"
+        ));
+
+        assert!(
+            meta.freeze_namespace(AddNamespaceRequest {
+                namespace: "tenant".to_string(),
+            })
+            .status
+            .ok
+        );
+        let after = scrape(&backend);
+        assert!(after.contains(
+            "temporalstore_meta_resource_state{resource=\"namespace\",state=\"frozen\"} 1"
+        ));
+        assert!(after.contains(
+            "temporalstore_meta_resource_state{resource=\"namespace\",state=\"normal\"} 0"
+        ));
+    }
+
+    #[test]
+    fn a_frozen_shard_shows_up_on_the_dashboard() {
+        let meta = SingleNodeMeta::default();
+        for shard_id in [1, 2] {
+            meta.register(RegisterShardRequest {
+                shard_id,
+                server_addr: "node-a".to_string(),
+            });
+        }
+        let backend = MetaBackend::Single(meta.clone());
+        assert!(scrape(&backend).contains(
+            "temporalstore_meta_resource_state{resource=\"shard\",state=\"normal\"} 2"
+        ));
+
+        assert!(meta.freeze_shard(ShardStateRequest { shard_id: 1 }).status.ok);
+        let after = scrape(&backend);
+        assert!(after.contains(
+            "temporalstore_meta_resource_state{resource=\"shard\",state=\"frozen\"} 1"
+        ));
+        assert!(after.contains(
+            "temporalstore_meta_resource_state{resource=\"shard\",state=\"normal\"} 1"
+        ));
+    }
+
+    #[test]
+    fn the_inventory_counts_groups_and_reserved_names() {
+        let meta = SingleNodeMeta::default();
+        assert!(
+            meta.put_proxy_group(PutProxyGroupRequest {
+                group: "front".to_string(),
+                namespace: "tenant".to_string(),
+                location: String::new(),
+                instance_num: 2,
+            })
+            .status
+            .ok
+        );
+        assert!(
+            meta.set_reserved_names(ReservedNames {
+                namespaces: ["system".to_string()].into_iter().collect(),
+                tables: ["audit".to_string(), "wal".to_string()].into_iter().collect(),
+            })
+            .status
+            .ok
+        );
+        let out = scrape(&MetaBackend::Single(meta));
+        assert!(out.contains("temporalstore_meta_inventory{kind=\"proxy_group\"} 1"));
+        assert!(out.contains("temporalstore_meta_inventory{kind=\"reserved_namespace\"} 1"));
+        assert!(out.contains("temporalstore_meta_inventory{kind=\"reserved_table\"} 2"));
+    }
+
+    #[test]
+    fn the_shard_states_always_add_up_to_the_total() {
+        // The two rows are derived from one another, so a mistake in either
+        // shows as a total that does not match the inventory.
+        let meta = SingleNodeMeta::default();
+        for shard_id in 1..=5 {
+            meta.register(RegisterShardRequest {
+                shard_id,
+                server_addr: "node-a".to_string(),
+            });
+        }
+        assert!(meta.freeze_shard(ShardStateRequest { shard_id: 3 }).status.ok);
+        let out = scrape(&MetaBackend::Single(meta));
+        assert!(out.contains("temporalstore_meta_inventory{kind=\"shard\"} 5"));
+        assert!(out.contains(
+            "temporalstore_meta_resource_state{resource=\"shard\",state=\"normal\"} 4"
+        ));
+        assert!(out.contains(
+            "temporalstore_meta_resource_state{resource=\"shard\",state=\"frozen\"} 1"
+        ));
     }
 
     #[test]

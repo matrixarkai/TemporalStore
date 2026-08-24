@@ -155,6 +155,11 @@ pub(super) fn stats_from_state(state: &MetaState, counters: &MetaCounters) -> Me
         namespace_count: state.namespaces.len(),
         table_count: state.tables.len(),
         shard_count: state.shards.len(),
+        frozen_shard_count: state
+            .shards
+            .values()
+            .filter(|location| location.state != MetaEntityState::Normal)
+            .count(),
     }
 }
 

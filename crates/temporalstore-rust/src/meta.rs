@@ -889,6 +889,14 @@ pub struct MetaStats {
     pub namespace_count: usize,
     pub table_count: usize,
     pub shard_count: usize,
+    /// How many of those shards are not serving.
+    ///
+    /// A shard can be taken out of service on its own, and nothing counted it:
+    /// an operator could freeze one and see no change on any dashboard. Counted
+    /// here rather than kept as a running total, because a tally maintained
+    /// beside the shards is a second thing to keep in step with them.
+    #[serde(default)]
+    pub frozen_shard_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
