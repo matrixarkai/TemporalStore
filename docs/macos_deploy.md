@@ -73,8 +73,8 @@ dependencies from public GitHub (see `crates/temporalstore-rust/Cargo.toml`), so
 `cargo build` fetches them automatically on the first build:
 
 ```text
-matrixraft            https://github.com/bjmeetsfo/MatrixRaft.git         (Raft consensus)
-matrixcache           https://github.com/bjmeetsfo/MatrixCache.git        (tiered cache + RocksDB SSD store)
+matrixraft            https://github.com/matrixarkai/MatrixRaft.git         (Raft consensus)
+matrixcache           https://github.com/matrixarkai/MatrixCache.git        (tiered cache + RocksDB SSD store)
 matrixobjectstore-rs  https://github.com/bjmeetsfo/MatrixObjectStore.git  (optional; enable with --features matrixobject)
 ```
 
@@ -88,7 +88,7 @@ local MatrixCache/MatrixRaft clones.
 From the repo:
 
 ```bash
-git clone https://github.com/bjmeetsfo/TemporalStore.git
+git clone https://github.com/matrixarkai/TemporalStore.git
 cd TemporalStore
 ./tools/install_macos_temporalstore.sh --check-prereqs
 ```

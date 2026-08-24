@@ -84,7 +84,7 @@ git, rustc, cargo inside WSL
 Clone the repo and run commands from the repo root:
 
 ```powershell
-git clone https://github.com/bjmeetsfo/TemporalStore.git
+git clone https://github.com/matrixarkai/TemporalStore.git
 cd TemporalStore
 powershell -ExecutionPolicy Bypass `
   -File .\tools\install_windows_docker_temporalstore.ps1 `
