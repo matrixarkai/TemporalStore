@@ -511,6 +511,55 @@ class Memory:
         body: Json = {"scope": scope, "confirm": user_id}
         return _post_json(self._base_url, self._api_key, "/v1/forget", body, self._timeout)
 
+    def delete_users(self, *, user_id: Optional[str] = None, agent_id: Optional[str] = None,
+                     run_id: Optional[str] = None, **kw: Any) -> Json:
+        """Forget one named subject, or EVERY subject that holds memories (mem0 ``delete_users``).
+
+        With `user_id`, this is `delete_all` for that subject. With no identity at all, it lists
+        the subjects that hold memories and forgets each one -- which is what mem0's no-argument
+        `delete_users()` means.
+
+        Two things it deliberately does not pretend about:
+
+        * The server addresses a forget by `scope.user_id`. An agent or a run cannot be forgotten
+          on its own, so an `agent_id`/`run_id`-only call raises instead of quietly deleting
+          nothing. Pass the `user_id` whose memories you mean, or use `reset` for the tenant.
+        * Every subject that fails is reported in `failed`, with the error. A partial wipe must
+          not return looking like a complete one -- the caller is deleting data and needs to know
+          which subjects still hold it.
+
+        Returns ``{"deleted": n, "results": [...], "failed": [...]}``.
+        """
+        if user_id:
+            return {
+                "deleted": 1,
+                "results": [{"user_id": user_id,
+                             "result": self.delete_all(user_id=user_id, agent_id=agent_id,
+                                                       run_id=run_id)}],
+                "failed": [],
+            }
+        if agent_id or run_id:
+            raise ValueError(
+                "delete_users addresses a subject by user_id; an agent_id or run_id alone is not "
+                "a forgettable subject. Pass the user_id whose memories you mean, or use reset()."
+            )
+        listed = self.users()
+        rows = listed.get("results") or listed.get("items") or []
+        subjects = [
+            str(row.get("name") or "")
+            for row in rows
+            if isinstance(row, dict) and str(row.get("type") or "user") == "user" and row.get("name")
+        ]
+        results: list[Json] = []
+        failed: list[Json] = []
+        for name in subjects:
+            try:
+                results.append({"user_id": name, "result": self.delete_all(user_id=name)})
+            except Exception as exc:  # noqa: BLE001 - report it; a silent skip reads as success.
+                failed.append({"user_id": name, "error": repr(exc)})
+        return {"deleted": len(results), "results": results, "failed": failed,
+                "subjects_listed": len(subjects)}
+
     def get_all(self, *, user_id: Optional[str] = None, agent_id: Optional[str] = None,
                 run_id: Optional[str] = None, limit: Optional[int] = None, **kw: Any) -> Json:
         """List a subject's active memories (mem0 ``get_all(user_id=...)``). Maps identity kwargs to
