@@ -1014,6 +1014,37 @@ fn metaserver_raft_mutation_api_rejects_without_majority() {
 }
 
 #[test]
+fn muting_metadata_change_refuses_changes_on_the_raft_path_too() {
+    // The mute is the incident lever: while it is set the metaserver is meant
+    // to refuse every recorded metadata mutation. That check lived only in
+    // SingleNodeMeta's public methods, and the raft backend proposes straight
+    // past them -- so on a raft-backed metaserver, which is what a real
+    // deployment runs, setting the mute changed nothing.
+    let meta = MetaRaftCluster::new([10, 11, 12]);
+    assert!(meta.set_meta_change_muted(true).status.ok);
+
+    let muted = meta.add_namespace(AddNamespaceRequest {
+        namespace: "during-an-incident".to_string(),
+    });
+    assert!(
+        !muted.status.ok,
+        "the cluster was muted and the change went through anyway"
+    );
+    assert_eq!(muted.status.code, "meta_change_muted");
+
+    // And the lever has to be releasable, or muting would be a one-way door.
+    assert!(meta.set_meta_change_muted(false).status.ok);
+    assert!(
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "after-the-incident".to_string(),
+        })
+        .status
+        .ok,
+        "unmuting did not restore metadata change"
+    );
+}
+
+#[test]
 fn metaserver_raft_can_read_from_any_live_committed_replica() {
     let meta = MetaRaftCluster::new([10, 11, 12]);
     meta.propose(MetaCommand::PutShardLocation(ShardLocation {

@@ -915,6 +915,20 @@ pub struct MetaPreflightReport {
     pub degraded_reasons: Vec<String>,
 }
 
+impl MetaMutation {
+    /// Whether this change may still be made while metadata change is muted.
+    ///
+    /// Only the lever itself and the retention purge. The lever, because muting
+    /// must not be a one-way door -- refusing it would leave no way back. The
+    /// purge, because the single-node path has always allowed it: its one
+    /// caller is the retention loop, which the mute stops separately, and the
+    /// two backends have to agree on what the mute means rather than each
+    /// inventing an answer.
+    pub(crate) fn allowed_while_muted(&self) -> bool {
+        matches!(self, Self::SetMetaChangeMuted(_) | Self::PurgeMeta(_))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", content = "request", rename_all = "snake_case")]
 pub enum MetaMutation {
@@ -1394,13 +1408,17 @@ impl SingleNodeMeta {
 
     /// The refusal every guarded entry point returns while muted, or `None` when
     /// metadata change is flowing normally.
+    /// The refusal a muted metaserver answers with, so both backends phrase it
+    /// identically.
+    pub(crate) fn muted_status() -> Status {
+        Status::error(
+            "meta_change_muted",
+            "metadata change is muted; resume it before making changes",
+        )
+    }
+
     fn meta_change_refusal(&self) -> Option<Status> {
-        self.is_meta_change_muted().then(|| {
-            Status::error(
-                "meta_change_muted",
-                "metadata change is muted; resume it before making changes",
-            )
-        })
+        self.is_meta_change_muted().then(Self::muted_status)
     }
 
     /// The names currently held back from creation.

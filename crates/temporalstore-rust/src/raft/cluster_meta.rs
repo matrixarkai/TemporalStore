@@ -557,8 +557,40 @@ impl MetaRaftCluster {
     }
 
     pub(super) fn mutation_status(&self, mutation: MetaMutation) -> Status {
+        // The mute is the incident lever: while it is set, the metaserver is
+        // meant to refuse every recorded metadata mutation. That check lived
+        // only in SingleNodeMeta's public methods, and this path proposes
+        // straight past them -- so on a raft-backed metaserver, which is what a
+        // real deployment runs, setting the mute changed nothing at all.
+        //
+        // Checked before proposing rather than while applying: replay has to
+        // reapply what was already accepted, including changes recorded before
+        // the mute was set.
+        if !mutation.allowed_while_muted() {
+            // An unreadable cluster is left to propose and fail on its own
+            // terms. Refusing here would turn "cannot tell" into "muted".
+            if self.peek_meta_change_muted() == Some(true) {
+                return SingleNodeMeta::muted_status();
+            }
+        }
         self.propose_mutation(mutation)
             .unwrap_or_else(|err| Status::error("raft_error", err.to_string()))
+    }
+
+    /// Whether the readable replica reports metadata change as muted.
+    ///
+    /// Deliberately not `read_meta()`: that clones the entire metadata state,
+    /// and this runs on every mutation. `None` means no replica could answer,
+    /// which is not the same as "not muted".
+    pub(super) fn peek_meta_change_muted(&self) -> Option<bool> {
+        let inner = self.inner.read().expect("meta raft lock poisoned");
+        let leader_commit_index = inner.nodes.get(&inner.leader_id)?.commit_index;
+        inner
+            .nodes
+            .values()
+            .filter(|node| node.alive && node.commit_index >= leader_commit_index)
+            .min_by_key(|node| node.id)
+            .map(|node| node.meta.is_meta_change_muted())
     }
 
     pub(super) fn read_meta(&self) -> Result<SingleNodeMeta, Status> {
