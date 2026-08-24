@@ -774,6 +774,11 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             refreshed = int((result or {}).get("refreshed_count") or 0)
         except (TypeError, ValueError):
             refreshed = None
+        # A pass stopped by its wall-clock budget left work behind even when it refreshed nothing,
+        # and the unchanged-count skip must not park that backlog forever: record it as "did work"
+        # so the next pass runs.
+        if (result or {}).get("pass_budget_exhausted") and refreshed == 0:
+            refreshed = 1
         self._store_summary_pass_state(token, refreshed)
         return result
 
