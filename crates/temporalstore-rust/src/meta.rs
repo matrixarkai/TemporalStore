@@ -3907,6 +3907,7 @@ mod tests {
             node_id: 1,
             location: "rack-1".to_string(),
             binary_version: "v1".to_string(),
+            numa_nodes: Vec::new(),
         });
         meta.add_namespace(AddNamespaceRequest {
             namespace: "tenant".to_string(),
@@ -3940,6 +3941,7 @@ mod tests {
             namespace: "tenant".to_string(),
             table_name: table_name.to_string(),
             old_topology_version: 0,
+            client_location: String::new(),
         })
         .status
     }
