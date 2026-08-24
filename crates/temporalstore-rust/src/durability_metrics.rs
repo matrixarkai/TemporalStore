@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Counts durability barriers by the call site that takes them.
 //!
 //! A write's latency is roughly `barriers x fsync`, so a total barrier count per write says how
