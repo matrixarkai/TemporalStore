@@ -5522,6 +5522,67 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             "reingest_scope": clean_scope,
         }
 
+    MEMORY_FEEDBACK_RECORD_TYPE = "matrixark_memory_feedback"
+    MEMORY_FEEDBACK_RATINGS = ("POSITIVE", "NEGATIVE", "VERY_NEGATIVE")
+
+    def memory_feedback(self, args: Json, hook: Json | None = None) -> Json:
+        """Attach a rating to an existing memory (mem0 ``feedback``).
+
+        Deliberately NOT a `context_event`: a rating is not a memory, and storing it as one would
+        make it show up in `get_all` and compete for retrieval. It is its own record type, and
+        `history(memory_id)` surfaces it beside the ingest / supersede / delete events -- which is
+        where a caller looks for what happened to a memory, and the only place this is readable.
+
+        The rating vocabulary is closed. An unrecognised value is refused rather than stored,
+        because a rating nobody can interpret is worse than no rating: it reads as feedback that
+        was recorded and understood.
+        """
+        memory_id = str(args.get("memory_id") or args.get("id") or "").strip()
+        if not memory_id:
+            raise MatrixArkInvalidRequestError("feedback requires a memory_id")
+        rating = str(args.get("feedback") or args.get("rating") or "").strip().upper()
+        if not rating:
+            raise MatrixArkInvalidRequestError(
+                "feedback requires a feedback value (%s)"
+                % ", ".join(self.MEMORY_FEEDBACK_RATINGS))
+        if rating not in self.MEMORY_FEEDBACK_RATINGS:
+            raise MatrixArkInvalidRequestError(
+                "feedback must be one of %s (got %r)"
+                % (", ".join(self.MEMORY_FEEDBACK_RATINGS), rating))
+        reason = args.get("feedback_reason")
+        reason = str(reason).strip() if isinstance(reason, str) and reason.strip() else None
+
+        target: Json | None = None
+        for record in self.read_all():
+            if (str(record.get("record_type") or "") == "context_event"
+                    and str(record.get("event_id_hash")) == memory_id):
+                target = record
+                break
+        if target is None:
+            raise MatrixArkNotFoundError(
+                "feedback target memory not found (already deleted, or not a memory id)")
+
+        # Tenant isolation, the same rule `update` applies: an authenticated request pins a tenant,
+        # and a rating must not cross from one tenant to another's memory.
+        request_scope = optional_object(args, "scope")
+        request_tenant, _ = self._resolve_subject_hashes(request_scope) if request_scope else (0, 0)
+        target_tenant, _ = _record_scope_hashes(target)
+        if request_tenant and target_tenant and request_tenant != target_tenant:
+            raise MatrixArkError("feedback refused: the memory belongs to another tenant")
+
+        record = {
+            "record_type": self.MEMORY_FEEDBACK_RECORD_TYPE,
+            "target_memory_id": memory_id,
+            "feedback": rating,
+            "scope_key": str(target.get("scope_key") or ""),
+            "created_at_ms": now_ms(),
+        }
+        if reason:
+            record["feedback_reason"] = reason
+        self.append(record)
+        return {"recorded": True, "memory_id": memory_id, "feedback": rating,
+                "feedback_reason": reason}
+
     def history(self, args: Json) -> Json:
         """Return the ordered change history for a memory id (mem0 ``history``). Because the store is
         event-sourced, this is the RAW (un-compacted, un-tombstoned) event log filtered to the id:
@@ -5554,6 +5615,13 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 elif str(record.get("superseded_by")) == memory_id:
                     events.append({"event": "created", "record_type": record_type, "memory_id": memory_id,
                                    "created_at_ms": ts, "supersedes_memory_id": record.get("target_memory_id")})
+            elif (record_type == self.MEMORY_FEEDBACK_RECORD_TYPE
+                    and str(record.get("target_memory_id") or "") == memory_id):
+                entry = {"event": "feedback", "record_type": record_type, "memory_id": memory_id,
+                         "created_at_ms": ts, "feedback": record.get("feedback")}
+                if record.get("feedback_reason"):
+                    entry["feedback_reason"] = record.get("feedback_reason")
+                events.append(entry)
         return {"memory_id": memory_id, "history": events, "count": len(events)}
 
     # --------------------------------------------------------------------------------------------
