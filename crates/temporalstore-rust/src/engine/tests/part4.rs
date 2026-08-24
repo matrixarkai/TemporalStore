@@ -1441,6 +1441,70 @@ fn dump_clears_dumped_buckets_so_they_are_not_redumped() {
     );
 }
 
+/// A follower behind EVERY dump must be reported, not passed over in silence.
+///
+/// A cursor pins the newest dump at or below it. One that sits below all of them matched nothing
+/// and fell straight through, so the case where NO retained dump can serve a follower -- the one
+/// that most needs saying -- produced no signal at all, and pruning went ahead and threw away the
+/// only dump that could ever have helped. The oldest is kept instead, and reported with a reason
+/// that separates "pins an older dump" from "is behind everything we kept".
+#[test]
+fn a_follower_behind_every_dump_is_reported_and_keeps_the_oldest() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for value in ["v1", "v2", "v3"] {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "behind".to_string(),
+                value: value.as_bytes().to_vec(),
+            },
+        });
+        engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
+    }
+    let plan_before = engine.bucket_dump_manifest_prune_plan(1);
+    let oldest = plan_before
+        .prunable_manifest_ids
+        .first()
+        .cloned()
+        .expect("older dumps are prunable when nothing pins them");
+
+    // A follower older than every dump: sequence zero precedes them all.
+    let plan = engine.bucket_dump_manifest_prune_plan_with_follower_cursors(
+        1,
+        vec![BucketDumpFollowerReplayCursor {
+            follower_id: "follower-behind-everything".to_string(),
+            shard_id: 1,
+            wal_sequence: 0,
+            index_log_sequence: 0,
+        }],
+    );
+
+    assert_eq!(
+        plan.follower_blocks.len(),
+        1,
+        "a follower no retained dump can serve must be reported, not skipped: {plan:?}"
+    );
+    assert_eq!(
+        plan.follower_blocks[0].reason,
+        "follower_cursor_precedes_every_manifest"
+    );
+    assert!(
+        plan.retained_manifest_ids.contains(&plan.follower_blocks[0].manifest_id),
+        "the dump reported as blocking must actually be kept"
+    );
+    assert!(
+        !plan.prunable_manifest_ids.contains(&oldest),
+        "the oldest dump is this follower's only chance and must not be pruned"
+    );
+}
+
 #[test]
 fn bucket_dump_manifest_prune_is_blocked_by_lagging_follower_cursor() {
     let dir = tempfile::tempdir().unwrap();
