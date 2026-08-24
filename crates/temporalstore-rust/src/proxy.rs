@@ -116,6 +116,18 @@ pub struct ProxyOptions {
     pub context_first_shard_id: ShardId,
     /// Number of shards the context corpus is spread across. `1` keeps every
     /// tenant on `context_first_shard_id` (single-shard deploys).
+    /// How many shards the context routes spread tenants over. **0 means follow the cluster**,
+    /// which is the default.
+    ///
+    /// This used to default to 1, so a proxy in front of an eight-shard cluster put every
+    /// tenant's context on shard one and said nothing about it -- one shard doing all the work
+    /// while seven sat idle, and no error to notice.
+    ///
+    /// A tenant's shard comes from hashing its id across this range, so CHANGING the count
+    /// moves tenants. Context already written under a different count stays where it was
+    /// written and is not found under the new one. That is why the effective value and where
+    /// it came from are both reported: a deployment that has been running on the old default
+    /// with more than one shard is doing a data move, not a config change.
     #[serde(default = "default_context_shard_count")]
     pub context_shard_count: u64,
     /// I/O timeout (ms) for control-plane calls to the metaserver: heartbeat,
@@ -463,6 +475,13 @@ pub struct ProxyPolicyReport {
     pub inflight_write_requests: u64,
     #[serde(default)]
     pub pin_primary_reads: bool,
+    /// Shards the context routes actually spread tenants over, and where that number came
+    /// from -- "configured", "cluster", or "fallback_until_cluster_known". Reported because
+    /// this used to be a silent 1: nothing said every tenant was landing on one shard.
+    #[serde(default)]
+    pub context_shard_count: u64,
+    #[serde(default)]
+    pub context_shard_count_source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -878,6 +897,9 @@ struct ProxyInner {
     last_topology_check_ms: std::sync::atomic::AtomicU64,
     /// Wall-clock ms of the last auto-registration attempt, 0 for "never".
     last_auto_register_ms: std::sync::atomic::AtomicU64,
+    /// Shard count last read from the metaserver, 0 for "not asked yet". Only consulted when
+    /// `context_shard_count` is 0.
+    cluster_shard_count: std::sync::atomic::AtomicU64,
 }
 
 impl ProxyService {
@@ -893,6 +915,7 @@ impl ProxyService {
                 boot_time_ms: now_ms(),
                 last_topology_check_ms: std::sync::atomic::AtomicU64::new(0),
                 last_auto_register_ms: std::sync::atomic::AtomicU64::new(0),
+                cluster_shard_count: std::sync::atomic::AtomicU64::new(0),
             }),
         }
     }
@@ -1431,6 +1454,68 @@ impl ProxyService {
         }
         let _ = self.client().invalidate_routes_from_meta_topology();
         self.sync_client_stats();
+    }
+
+    /// How many shards the context routes actually spread tenants over.
+    ///
+    /// A configured non-zero value wins. Otherwise the cluster's shard count is used, which is
+    /// read from the metaserver on the heartbeat rather than per request -- a lookup on the
+    /// request path is what the route cache and the topology interval exist to avoid.
+    ///
+    /// Falls back to 1 only while the count is still unknown (before the first heartbeat, or
+    /// if the metaserver cannot be reached). That is the old behaviour, so a proxy that cannot
+    /// ask degrades to what it did before rather than to nothing.
+    pub(super) fn effective_context_shard_count(&self) -> u64 {
+        let configured = self.options().context_shard_count;
+        if configured != 0 {
+            return configured;
+        }
+        match self
+            .inner
+            .cluster_shard_count
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            0 => 1,
+            known => known,
+        }
+    }
+
+    /// Where `effective_context_shard_count` got its answer, for the status surfaces.
+    pub(super) fn context_shard_count_source(&self) -> &'static str {
+        if self.options().context_shard_count != 0 {
+            "configured"
+        } else if self
+            .inner
+            .cluster_shard_count
+            .load(std::sync::atomic::Ordering::Relaxed)
+            != 0
+        {
+            "cluster"
+        } else {
+            "fallback_until_cluster_known"
+        }
+    }
+
+    /// Read the cluster's shard count from the metaserver and remember it.
+    ///
+    /// Called from the heartbeat, which already talks to the metaserver on a fixed cadence, so
+    /// this adds no new schedule and nothing to the request path.
+    pub(super) fn refresh_cluster_shard_count(&self) {
+        if self.options().context_shard_count != 0 {
+            return;
+        }
+        let options = self.options();
+        if let Ok(stats) = get_json_with_options::<crate::meta::MetaStats>(
+            &options.meta_addr,
+            "/meta/stats",
+            options.control_http_options(),
+        ) {
+            if stats.shard_count > 0 {
+                self.inner
+                    .cluster_shard_count
+                    .store(stats.shard_count as u64, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
     }
 
     /// Whether enough time has passed to try registering with the metaserver again.
@@ -3324,6 +3409,100 @@ mod tests {
         });
         assert_eq!(located.client_options_snapshot().local_location, "zone-b");
     }
+    #[test]
+    fn context_shards_follow_the_cluster_unless_told_otherwise() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // The count used to default to 1, so a proxy in front of a multi-shard cluster put
+        // every tenant's context on one shard -- silently, with six or seven shards idle and
+        // no error to notice. It now follows the cluster unless a value is configured.
+        let stats_calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let addr = test_addr(18_404);
+        let calls = stats_calls.clone();
+        let addr_for_thread = addr.clone();
+        std::thread::spawn(move || {
+            serve(&addr_for_thread, move |request| match request.path.as_str() {
+                "/meta/stats" => {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    let mut stats = crate::meta::MetaStats::default();
+                    stats.shard_count = 8;
+                    crate::http::json_response(200, &stats)
+                }
+                "/proxies/heartbeat" => crate::http::json_response(
+                    200,
+                    &ProxyHeartbeatResponse {
+                        status: Status::ok(),
+                        config_changed: false,
+                        namespace: String::new(),
+                        config_version: 0,
+                        serving_mode: "serving".to_string(),
+                        drop_percent: 0,
+                    },
+                ),
+                _ => crate::http::json_response(404, &Status::error("not_found", "no route")),
+            })
+            .unwrap();
+        });
+        wait_for_http(&addr);
+
+        // Before the first heartbeat the cluster count is unknown, so it behaves as it always
+        // did rather than guessing. Degrading to the old answer beats degrading to none.
+        let following = ProxyService::new(ProxyOptions {
+            meta_addr: addr.clone(),
+            ..ProxyOptions::default()
+        });
+        assert_eq!(following.effective_context_shard_count(), 1);
+        assert_eq!(
+            following.context_shard_count_source(),
+            "fallback_until_cluster_known"
+        );
+
+        // One heartbeat is enough to learn it.
+        let _ = following.heartbeat_to_meta();
+        assert_eq!(
+            following.effective_context_shard_count(),
+            8,
+            "a proxy in front of an eight-shard cluster should spread context over eight"
+        );
+        assert_eq!(following.context_shard_count_source(), "cluster");
+        assert_eq!(
+            following.policy_report().context_shard_count,
+            8,
+            "the effective value has to be visible, since it used to be a silent 1"
+        );
+
+        // Tenants actually land on more than one shard now.
+        let mut landed = std::collections::BTreeSet::new();
+        for i in 0..64 {
+            let scope = context::ProxyContextScope {
+                tenant_id: format!("tenant-{i}"),
+                account_id: "acct".to_string(),
+                ..Default::default()
+            };
+            landed.insert(following.context_shard_id(context::context_tenant_hash(&scope)));
+        }
+        assert!(
+            landed.len() > 1,
+            "64 tenants over 8 shards should not all land on one, saw {landed:?}"
+        );
+
+        // A configured value still wins, and needs no cluster lookup at all.
+        let before = stats_calls.load(Ordering::SeqCst);
+        let configured = ProxyService::new(ProxyOptions {
+            meta_addr: addr.clone(),
+            context_shard_count: 4,
+            ..ProxyOptions::default()
+        });
+        let _ = configured.heartbeat_to_meta();
+        assert_eq!(configured.effective_context_shard_count(), 4);
+        assert_eq!(configured.context_shard_count_source(), "configured");
+        assert_eq!(
+            stats_calls.load(Ordering::SeqCst),
+            before,
+            "an explicitly configured count must not ask the cluster anything"
+        );
+    }
+
     #[test]
     fn drop_percent_refuses_the_same_keys_every_time_including_writes() {
         // drop_percent reads like a load-shedding knob and is not one. The decision comes from
