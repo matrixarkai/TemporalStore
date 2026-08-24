@@ -69,11 +69,6 @@ name = "matrixark_rust_metaserver"
 path = "src/bin/matrixark_rust_metaserver.rs"
 
 [[bin]]
-name = "matrixobject_store_server"
-path = "src/bin/matrixobject_store_server.rs"
-required-features = ["matrixobject"]
-
-[[bin]]
 name = "raft_barrier_profile"
 path = "src/bin/raft_barrier_profile.rs"
 
