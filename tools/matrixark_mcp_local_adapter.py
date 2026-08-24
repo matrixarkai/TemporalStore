@@ -4728,6 +4728,17 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
     # (the purged log replays to the same logical state). DEFERRED (separate parallel workstream):
     # rust-datanode-native StringDelete/CommonDelete/FeatureDelete wiring, and true re-derivation
     # (re-extraction) of a demoted multi-source entity/summary -- we trim evidence, not re-summarize.
+    def prior_context_records(self) -> list[Json]:
+        """The live records prior-context collection reads. Base implementation: the whole store.
+
+        `collect_prior_context` and the caller-supplied-fields carry-over consume only three
+        record types (context_event, context_summary, context_pack_audit), in append order, with
+        live-view semantics. A backend that can fetch that subset cheaply overrides this; the
+        contract is that the result is indistinguishable FROM THOSE CONSUMERS' point of view from
+        `read_all()`.
+        """
+        return self.read_all()
+
     def surviving_ids_for_pending_events(self, pending: list[Json]) -> set[str] | None:
         """Which of `pending`'s event ids survive the tombstone sweep? None = all of them.
 

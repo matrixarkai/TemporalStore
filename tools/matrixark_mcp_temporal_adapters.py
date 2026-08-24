@@ -1103,28 +1103,25 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             return True
         return bool(records)
 
-    def _memory_tombstone_records(self) -> list[Json] | None:
-        """Every memory tombstone in the store, from one type-filtered scan. None = could not ask.
+    def _scan_records_of_types(self, record_types: list[str]) -> list[Json] | None:
+        """Records of exactly these types, in append order, from one filtered scan. None = could
+        not ask.
 
         None and [] mean different things and the callers depend on it: [] is an authoritative
-        "no tombstones" (skip the guard entirely), None sends the caller to the expensive, correct
-        path. Collapsing them would either re-run full reads on every clean store or skip the
-        guard on an unreachable engine.
+        "nothing of these types", None sends the caller to the expensive, correct path. Bundled
+        appends are expanded engine-side, so a record stored inside a bundle whose wrapper carries
+        no record_type is still returned.
         """
         scanner = getattr(self._client, "matrixark_scan_candidates", None)
         if not callable(scanner):
             return None
-        try:
-            from tools.matrixark_mcp_local_adapter import MEMORY_TOMBSTONE_RECORD_TYPE
-        except ModuleNotFoundError:  # Direct script execution from tools/.
-            from matrixark_mcp_local_adapter import MEMORY_TOMBSTONE_RECORD_TYPE
         try:
             response = scanner(
                 count_key=self._count_key,
                 record_hash_key=self._record_hash_key,
                 shard_size=self._shard_size,
                 scope={},
-                record_types=[MEMORY_TOMBSTONE_RECORD_TYPE],
+                record_types=list(record_types),
                 secondary_index_groups=[],
                 selected_node_hashes=[],
             )
@@ -1135,11 +1132,111 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         records = response.get("records")
         if not isinstance(records, list):
             return None
+        wanted = set(record_types)
         return [
             record for record in records
-            if isinstance(record, dict)
-            and str(record.get("record_type") or "") == MEMORY_TOMBSTONE_RECORD_TYPE
+            if isinstance(record, dict) and str(record.get("record_type") or "") in wanted
         ]
+
+    def _memory_tombstone_records(self) -> list[Json] | None:
+        """Every memory tombstone in the store. None = could not ask (see _scan_records_of_types)."""
+        try:
+            from tools.matrixark_mcp_local_adapter import MEMORY_TOMBSTONE_RECORD_TYPE
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_local_adapter import MEMORY_TOMBSTONE_RECORD_TYPE
+        return self._scan_records_of_types([MEMORY_TOMBSTONE_RECORD_TYPE])
+
+    def prior_context_records(self) -> list[Json]:
+        """The prior-context view from a five-type scan instead of a full-store read.
+
+        `collect_prior_context` and the caller-supplied-fields carry-over consume three record
+        types; tombstones and retention-cutoff markers are fetched alongside so the LIVE-view
+        semantics reproduce on the subset via the SAME functions the full read applies --
+        `compact_and_apply_tombstones` then `filter_live_memory_records`. The scan returns append
+        order, which is what the order-aware sweep and the newest-first consumers need.
+
+        Any failure falls back to the full read. With MATRIXARK_PRIOR_CONTEXT_SHADOW_COMPARE=1
+        both views are computed, projected to what the consumers can see, compared, and the FULL
+        view is served -- the scan path earns trust shadowed over live traffic first.
+        """
+        import os as _os
+
+        try:
+            from tools.matrixark_mcp_local_adapter import (
+                MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+                MEMORY_TOMBSTONE_RECORD_TYPE,
+                compact_and_apply_tombstones,
+                filter_live_memory_records,
+            )
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_local_adapter import (
+                MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+                MEMORY_TOMBSTONE_RECORD_TYPE,
+                compact_and_apply_tombstones,
+                filter_live_memory_records,
+            )
+        subset = self._scan_records_of_types([
+            "context_event",
+            "context_summary",
+            "context_pack_audit",
+            MEMORY_TOMBSTONE_RECORD_TYPE,
+            MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+        ])
+        if subset is None:
+            return self.read_all()
+        # Summaries and other compact records can live in the latest-state HASH rather than the
+        # append log, and the scan walks only the log -- the shadow compare caught exactly this:
+        # the subset was missing every refresher-written context_summary. Fold the latest-state
+        # records in, filtered to the same types, in the same position the full read gives them
+        # (after the log records).
+        kept_types = {
+            "context_event", "context_summary", "context_pack_audit",
+            MEMORY_TOMBSTONE_RECORD_TYPE, MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+        }
+        try:
+            latest_state = self._load_latest_context_state_records()
+        except Exception:  # noqa: BLE001 - the full read is the fallback, not a guess.
+            return self.read_all()
+        subset = subset + [
+            record for record in latest_state
+            if isinstance(record, dict) and str(record.get("record_type") or "") in kept_types
+        ]
+        live_subset = filter_live_memory_records(compact_and_apply_tombstones(subset))
+
+        shadow = _os.environ.get("MATRIXARK_PRIOR_CONTEXT_SHADOW_COMPARE", "").strip()
+        if shadow not in {"", "0", "false", "no", "off"}:
+            full = self.read_all()
+
+            def project(records: list[Json]) -> list[tuple]:
+                keep = {"context_event", "context_summary", "context_pack_audit"}
+                out = []
+                for record in records:
+                    record_type = str(record.get("record_type") or "")
+                    if record_type not in keep:
+                        continue
+                    out.append((
+                        record_type,
+                        str(record.get("event_id_hash") or record.get("summary_hash")
+                            or record.get("context_pack_id") or ""),
+                        int(record.get("updated_at_ms") or 0),
+                    ))
+                return out
+
+            expected, got = project(full), project(live_subset)
+            if expected != got:
+                try:
+                    path = _os.environ.get("MATRIXARK_PRIOR_CONTEXT_SHADOW_LOG",
+                                           "/tmp/matrixark_prior_context_shadow.log")
+                    with open(path, "a", encoding="utf-8") as log:
+                        log.write("MISMATCH full=%d subset=%d only_full=%r only_subset=%r\n" % (
+                            len(expected), len(got),
+                            [row for row in expected if row not in set(got)][:5],
+                            [row for row in got if row not in set(expected)][:5],
+                        ))
+                except OSError:
+                    pass
+            return full
+        return live_subset
 
     def surviving_ids_for_pending_events(self, pending: list[Json]) -> set[str] | None:
         """Decide the guard from the tombstones alone, without reading the whole raw log.
