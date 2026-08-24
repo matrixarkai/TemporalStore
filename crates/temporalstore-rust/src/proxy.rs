@@ -537,7 +537,7 @@ impl Default for ProxyTonicStreamingContract {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyMigrationContract {
     pub compatibility_decision: String,
-    pub legacy_cplusplus_wire_in_scope: bool,
+    pub legacy_wire_in_scope: bool,
     pub native_wire_proxy_transport_ready: bool,
     pub production_protocols: Vec<String>,
     pub http_json_aliases_ready: bool,
@@ -567,7 +567,7 @@ impl Default for ProxyMigrationContract {
             compatibility_decision:
                 "legacy command transport is out of scope; use Rust-native HTTP/JSON, RESP, and tonic"
                     .to_string(),
-            legacy_cplusplus_wire_in_scope: false,
+            legacy_wire_in_scope: false,
             native_wire_proxy_transport_ready: false,
             production_protocols: vec![
                 "HTTP/JSON".to_string(),
@@ -1851,7 +1851,7 @@ mod tests {
             migration.compatibility_decision,
             "legacy command transport is out of scope; use Rust-native HTTP/JSON, RESP, and tonic"
         );
-        assert!(!migration.legacy_cplusplus_wire_in_scope);
+        assert!(!migration.legacy_wire_in_scope);
         assert!(!migration.native_wire_proxy_transport_ready);
         assert!(migration.http_json_aliases_ready);
         assert!(migration.resp_migration_ready);

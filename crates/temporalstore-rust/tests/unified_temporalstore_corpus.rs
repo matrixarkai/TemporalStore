@@ -1839,7 +1839,7 @@ fn verify_proxy_operational_surface_aliases() {
     }
 
     let migration = proxy.native_migration_contract();
-    assert!(!migration.legacy_cplusplus_wire_in_scope);
+    assert!(!migration.legacy_wire_in_scope);
     assert!(migration.http_json_aliases_ready);
     assert!(migration.resp_migration_ready);
     assert!(migration.tonic_streaming_ready);
