@@ -111,6 +111,11 @@ RETRIEVAL_HOT_RECORD_TYPES = {
 RESOURCE_IMPORT_IGNORE_DIRS = {".git", "node_modules", "target", "build", "dist", ".venv", "__pycache__"}
 LOCAL_READ_CACHE_COPY = os.environ.get("MATRIXARK_LOCAL_READ_CACHE_COPY", "1").strip().lower() not in {"0", "false", "no"}
 LOCAL_DURABLE_READ_CACHE_ENABLED = os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
+# Records the tail file may hold before the base is folded back in. Bounds both the
+# delta file and the work a load does stitching it onto the base.
+LOCAL_DURABLE_READ_CACHE_MAX_DELTA = max(
+    1, int(os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_MAX_DELTA", "2000"))
+)
 LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS = max(0.0, float(os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS", "0")))
 LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION = 1
 PRE_RETRIEVAL_SUMMARY_REFRESH = os.environ.get("MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH", "0").strip().lower() in {"1", "true", "yes"}
@@ -3480,6 +3485,11 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         self._read_cache_mtime_ns = -1
         self._read_cache_source = "empty"
         self._durable_read_cache_last_write_ms = 0.0
+        # (cache_key, base_count, delta_count, epoch) this instance last wrote, or None.
+        self._durable_read_cache_state: tuple[str, int, int, int | None] | None = None
+        # Bumped whenever compaction rewrites the cached record list, so a persisted tail can
+        # tell "only grew at the end" from "the prefix moved".
+        self._read_cache_compaction_epoch = 0
         self._retrieval_records_cache_lock = threading.RLock()
         self._retrieval_records_cache_generation = 0
         self._retrieval_records_cache: dict[tuple[Any, ...], Json] = {}
@@ -3628,6 +3638,28 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
     def _durable_read_cache_path(self) -> Path:
         return self.event_log.with_name(f"{self.event_log.name}.read-cache.json")
 
+    def _durable_read_cache_delta_path(self) -> Path:
+        """Records appended since the base snapshot, one JSON object per line.
+
+        Dot-prefixed so it sits OUTSIDE the <event log name>* namespace: callers glob that
+        prefix to enumerate retained shards, and a cache file picked up there would be replayed
+        as durable history.
+        """
+        return self.event_log.with_name(f".{self.event_log.name}.read-cache-delta.jsonl")
+
+    def _durable_read_cache_head_path(self) -> Path:
+        """Signature and counts only -- never the records.
+
+        The signature changes on every append, so whichever file holds it is rewritten every
+        time. Keeping it out of the base is the point: the base holds the records and is
+        rewritten only when the delta is folded back in.
+
+        Counts are read from HERE rather than kept on the instance. Several adapters can share
+        one log, and an instance that has not written yet believes the base is empty -- trusting
+        that would append a tail against the wrong offset and duplicate or skip records.
+        """
+        return self.event_log.with_name(f".{self.event_log.name}.read-cache-head.json")
+
     def _jsonl_cache_signature_detail(self, paths: list[Path] | None = None) -> Json:
         total_size = 0
         max_mtime_ns = -1
@@ -3654,26 +3686,66 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         if not self._local_jsonl_enabled or not LOCAL_DURABLE_READ_CACHE_ENABLED:
             return None
         try:
+            with self._durable_read_cache_head_path().open("r", encoding="utf-8") as handle:
+                head = json.load(handle)
             with self._durable_read_cache_path().open("r", encoding="utf-8") as handle:
                 payload = json.load(handle)
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             return None
-        if not isinstance(payload, dict):
+        if not isinstance(head, dict) or not isinstance(payload, dict):
             return None
-        if payload.get("schema_version") != LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION:
+        if head.get("schema_version") != LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION:
             return None
-        if payload.get("cache_key") != str(self.event_log.resolve()):
+        if head.get("cache_key") != str(self.event_log.resolve()):
             return None
-        if payload.get("signature") != signature:
+        if head.get("signature") != signature:
             return None
         records = payload.get("records")
         if not isinstance(records, list):
             return None
-        # The durable cache stores the already-expanded view; expand defensively in case an older
-        # cache captured an interned snapshot (a no-op otherwise).
-        return expand_interned_records([record for record in records if isinstance(record, dict)])
+        records = [record for record in records if isinstance(record, dict)]
+        if len(records) != head.get("record_count"):
+            return None
+        delta_count = head.get("delta_count") or 0
+        if delta_count:
+            try:
+                with self._durable_read_cache_delta_path().open("r", encoding="utf-8") as handle:
+                    tail = [json.loads(line) for line in handle if line.strip()]
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                return None
+            if len(tail) != delta_count:
+                return None
+            records.extend(record for record in tail if isinstance(record, dict))
+        return expand_interned_records(records)
 
-    def _write_durable_read_cache(self, records: list[Json], signature: Json, *, force: bool = False) -> None:
+    def _durable_read_cache_counts(self) -> tuple[int, int]:
+        """(base_count, delta_count) as recorded on disk, or (0, 0)."""
+        try:
+            with self._durable_read_cache_head_path().open("r", encoding="utf-8") as handle:
+                head = json.load(handle)
+            if head.get("cache_key") != str(self.event_log.resolve()):
+                return (0, 0)
+            if head.get("schema_version") != LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION:
+                return (0, 0)
+            return (int(head.get("record_count") or 0), int(head.get("delta_count") or 0))
+        except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
+            return (0, 0)
+
+    def _write_durable_read_cache(
+        self,
+        records: list[Json],
+        signature: Json,
+        *,
+        force: bool = False,
+        epoch: int | None = None,
+    ) -> None:
+        """Persist the read snapshot.
+
+        epoch identifies the caller's compaction generation for a list that only ever grows
+        at the end. Only then can the tail be written on its own -- compaction rewrites the list,
+        and a shorter or reordered prefix makes a slice-based tail wrong. Callers holding a list
+        they cannot make that promise for pass None and get a full rewrite.
+        """
         if not self._local_jsonl_enabled or not LOCAL_DURABLE_READ_CACHE_ENABLED:
             return
         if int(signature.get("total_size", -1)) < 0:
@@ -3683,6 +3755,59 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             if now - self._durable_read_cache_last_write_ms < LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS:
                 return
         path = self._durable_read_cache_path()
+        delta_path = self._durable_read_cache_delta_path()
+        head_path = self._durable_read_cache_head_path()
+        base_count, delta_count = self._durable_read_cache_counts()
+        # Matching counts are not proof the bytes match: several adapters share one log, and a
+        # list of the same length can hold different records. Continue the tail only when the
+        # counts on disk are still exactly the ones THIS instance last wrote AND no compaction
+        # has run since -- together those mean the persisted base really is the prefix of the
+        # list in hand, whatever happened in between.
+        appended = len(records) - (base_count + delta_count)
+        contiguous = (
+            epoch is not None
+            and appended > 0
+            and self._durable_read_cache_state
+            == (str(self.event_log.resolve()), base_count, delta_count, epoch)
+        )
+
+        def write_head(record_count: int, deltas: int) -> None:
+            tmp = head_path.with_name(f"{head_path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+            with tmp.open("w", encoding="utf-8") as handle:
+                json.dump({
+                    "schema_version": LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION,
+                    "cache_key": str(self.event_log.resolve()),
+                    "signature": signature,
+                    "record_count": record_count,
+                    "delta_count": deltas,
+                }, handle, separators=(",", ":"))
+                handle.write("\n")
+            tmp.replace(head_path)
+
+        # Append-only fast path. The base holds the whole record set, so rewriting it costs
+        # O(corpus) JSON on every append -- and retrieval appends recall-reinforcement markers,
+        # so every query paid it. Writing just the tail keeps the cost proportional to what
+        # actually changed, and base + delta reconstruct the same view, so the snapshot stays
+        # current for a restart.
+        if (
+            contiguous
+            and base_count > 0
+            and delta_count + appended <= LOCAL_DURABLE_READ_CACHE_MAX_DELTA
+            and path.exists()
+        ):
+            try:
+                with delta_path.open("a", encoding="utf-8") as handle:
+                    for record in records[base_count + delta_count:]:
+                        handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+                write_head(base_count, delta_count + appended)
+                self._durable_read_cache_state = (
+                    str(self.event_log.resolve()), base_count, delta_count + appended, epoch
+                )
+                self._durable_read_cache_last_write_ms = now
+                return
+            except (OSError, TypeError, ValueError):
+                pass   # fall through to a full rewrite, which also clears the partial tail
+
         tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         payload = {
             "schema_version": LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION,
@@ -3697,6 +3822,14 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 json.dump(payload, handle, separators=(",", ":"))
                 handle.write("\n")
             tmp_path.replace(path)
+            try:
+                delta_path.unlink()
+            except FileNotFoundError:
+                pass
+            write_head(len(records), 0)
+            self._durable_read_cache_state = (
+                str(self.event_log.resolve()), len(records), 0, epoch
+            )
             self._durable_read_cache_last_write_ms = now
         except OSError:
             try:
@@ -3713,10 +3846,13 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             self._read_cache_source = "empty"
         with _LOCAL_READ_CACHE_LOCK:
             _LOCAL_READ_CACHE.pop(cache_key, None)
-        try:
-            self._durable_read_cache_path().unlink()
-        except FileNotFoundError:
-            pass
+        for cache_file in (self._durable_read_cache_path(),
+                           self._durable_read_cache_delta_path(),
+                           self._durable_read_cache_head_path()):
+            try:
+                cache_file.unlink()
+            except FileNotFoundError:
+                pass
 
     def _prune_jsonl_retention_locked(self) -> None:
         max_rotated = max(0, LOCAL_JSONL_RETENTION_COUNT - 1)
@@ -3830,10 +3966,19 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         size = int(signature.get("total_size", -1))
         mtime_ns = int(signature.get("max_mtime_ns", -1))
         durable_records: list[Json] | None = None
+        # Compaction generation of the list handed to the durable writer, or None when the list
+        # is not this instance's own append-only one -- see _write_durable_read_cache.
+        durable_epoch: int | None = None
         with self._read_cache_lock:
             if self._read_cache_records is not None:
+                before = len(self._read_cache_records)
                 self._read_cache_records.extend(records)
                 self._read_cache_records = compact_and_apply_tombstones(self._read_cache_records)
+                # Compaction only ever REMOVES (tombstones, duplicates), so an unchanged total
+                # means nothing was dropped and the prefix still stands.
+                if len(self._read_cache_records) != before + len(records):
+                    self._read_cache_compaction_epoch += 1
+                durable_epoch = self._read_cache_compaction_epoch
             if size >= 0:
                 self._read_cache_size = size
                 self._read_cache_mtime_ns = mtime_ns
@@ -3851,7 +3996,10 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 cached_records = compact_and_apply_tombstones(list(cached_records) + list(records))
                 _LOCAL_READ_CACHE[cache_key] = (self._read_cache_size, self._read_cache_mtime_ns, cached_records)
                 if durable_records is None:
+                    # Shared across adapters over this log, so its prefix is not necessarily the
+                    # one already persisted -- never claim a tail append from here.
                     durable_records = list(cached_records)
+                    durable_epoch = None
             elif self._read_cache_records is not None:
                 _LOCAL_READ_CACHE[cache_key] = (
                     self._read_cache_size,
@@ -3859,7 +4007,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                     compact_and_apply_tombstones(list(self._read_cache_records)),
                 )
         if durable_records is not None:
-            self._write_durable_read_cache(durable_records, signature)
+            self._write_durable_read_cache(durable_records, signature, epoch=durable_epoch)
         if any(str(record.get("record_type") or "") in RETRIEVAL_HOT_RECORD_TYPES for record in records):
             with self._retrieval_records_cache_lock:
                 self._retrieval_records_cache_generation += 1
@@ -4441,10 +4589,13 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 self._read_cache_source = "empty"
             with _LOCAL_READ_CACHE_LOCK:
                 _LOCAL_READ_CACHE.pop(cache_key, None)
-            try:
-                self._durable_read_cache_path().unlink()
-            except FileNotFoundError:
-                pass
+            for cache_file in (self._durable_read_cache_path(),
+                               self._durable_read_cache_delta_path(),
+                               self._durable_read_cache_head_path()):
+                try:
+                    cache_file.unlink()
+                except FileNotFoundError:
+                    pass
             return []
         signature = self._jsonl_cache_signature_detail(paths)
         size = int(signature.get("total_size", -1))
@@ -4510,7 +4661,12 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             self._read_cache_source = "jsonl"
         with _LOCAL_READ_CACHE_LOCK:
             _LOCAL_READ_CACHE[cache_key] = (size, mtime_ns, list(records))
-        self._write_durable_read_cache(list(records), signature, force=True)
+        # These records were just installed as the cached list, so the epoch describes them
+        # exactly -- passing it lets the next append continue this base instead of
+        # rewriting it once before the tail path can start.
+        self._write_durable_read_cache(
+            list(records), signature, force=True, epoch=self._read_cache_compaction_epoch
+        )
         if cache_changed:
             with self._retrieval_records_cache_lock:
                 self._retrieval_records_cache_generation += 1
