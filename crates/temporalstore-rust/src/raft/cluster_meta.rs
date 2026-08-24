@@ -601,7 +601,15 @@ impl MetaRaftCluster {
             .ok_or(RaftError::LeaderUnavailable)?;
         let entry = MetaLogEntry {
             term: leader.current_term,
-            index: leader.log.last().map(|entry| entry.index + 1).unwrap_or(1),
+            // Numbered from the log *or the installed snapshot*, whichever is
+            // further along. Installing a meta snapshot truncates the log and
+            // marks everything up to the snapshot applied, so taking the next
+            // index from the log alone restarted numbering at 1 -- indices the
+            // node had already applied. Every proposal after an install was
+            // skipped as a duplicate, and `propose_mutation` turns "not applied"
+            // into `Status::ok`, so the change was discarded and reported
+            // successful.
+            index: meta_node_last_log_or_snapshot_index(leader) + 1,
             command,
         };
         let mut replicated = 0;
