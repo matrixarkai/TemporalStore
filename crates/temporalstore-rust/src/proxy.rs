@@ -4450,6 +4450,7 @@ mod tests {
                         &GetShardResponse {
                             status: Status::ok(),
                             location: Some(ShardLocation {
+                                state: crate::meta::MetaEntityState::Normal,
                                 shard_id: 1,
                                 server_addr: server_addr.clone(),
                                 latest_snapshot: None,

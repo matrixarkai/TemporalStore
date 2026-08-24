@@ -138,8 +138,27 @@ impl MetaEntityState {
 pub struct ShardLocation {
     pub shard_id: ShardId,
     pub server_addr: String,
+    /// Whether this shard is being served.
+    ///
+    /// There was previously no way to take one shard out of service: the only
+    /// lever was freezing its whole table, which stops every other shard in it
+    /// too. A `Frozen` shard keeps its owner entry so it can be returned to
+    /// service, but stops being routed to, and the planners leave it alone --
+    /// an operator who froze a shard does not want rebalancing to move it or
+    /// the divergence check to "repair" it.
+    ///
+    /// Defaults to `Normal`, so shard entries written before this existed load
+    /// as serving.
+    #[serde(default)]
+    pub state: MetaEntityState,
     #[serde(default)]
     pub latest_snapshot: Option<ShardSnapshotRef>,
+}
+
+/// Take one shard out of service, or return it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShardStateRequest {
+    pub shard_id: ShardId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -880,6 +899,8 @@ pub enum MetaMutation {
     FreezeProxy(StateChangeRequest),
     UnfreezeProxy(StateChangeRequest),
     DropProxy(StateChangeRequest),
+    SetShardState(ShardStateRequest, MetaEntityState),
+    DropShard(ShardStateRequest),
     PutProxyGroup(PutProxyGroupRequest),
     DropProxyGroup(DropProxyGroupRequest),
     SetProxyGroup(ProxyAttachment),
@@ -1168,6 +1189,7 @@ impl SingleNodeMeta {
         state.shards.insert(
             request.shard_id,
             ShardLocation {
+                state: MetaEntityState::Normal,
                 shard_id: request.shard_id,
                 server_addr: request.server_addr.clone(),
                 latest_snapshot,
@@ -1181,6 +1203,82 @@ impl SingleNodeMeta {
             format!("server_addr={}", request.server_addr),
         );
         RegisterShardResponse {
+            status: Status::ok(),
+        }
+    }
+
+    /// Stop serving one shard, keeping its owner entry so it can come back.
+    pub fn freeze_shard(&self, request: ShardStateRequest) -> AckResponse {
+        self.set_shard_state(request, MetaEntityState::Frozen)
+    }
+
+    /// Return a frozen shard to service.
+    pub fn unfreeze_shard(&self, request: ShardStateRequest) -> AckResponse {
+        self.set_shard_state(request, MetaEntityState::Normal)
+    }
+
+    fn set_shard_state(&self, request: ShardStateRequest, next: MetaEntityState) -> AckResponse {
+        if let Some(status) = self.meta_change_refusal() {
+            return AckResponse { status };
+        }
+        self.record_mutation(MetaMutation::SetShardState(request.clone(), next));
+        self.apply_set_shard_state(request, next)
+    }
+
+    pub(crate) fn apply_set_shard_state(
+        &self,
+        request: ShardStateRequest,
+        next: MetaEntityState,
+    ) -> AckResponse {
+        let mut state = self.inner.write().expect("meta lock poisoned");
+        let Some(shard) = state.shards.get_mut(&request.shard_id) else {
+            return AckResponse {
+                status: Status::error("shard_not_found", "shard is not registered"),
+            };
+        };
+        if shard.state == next {
+            return AckResponse {
+                status: Status::error("not_modified", "shard state is unchanged"),
+            };
+        }
+        shard.state = next;
+        // Topology is derived on read, so the version bump is what makes clients
+        // stop (or resume) resolving to this shard.
+        record_topology_event(
+            &mut state,
+            "shard_state",
+            format!("shard:{}", request.shard_id),
+            format!("state={}", next.as_str()),
+        );
+        AckResponse {
+            status: Status::ok(),
+        }
+    }
+
+    /// Forget a shard entirely. The route is removed rather than tombstoned:
+    /// a shard has no identity beyond where it is served from.
+    pub fn drop_shard(&self, request: ShardStateRequest) -> AckResponse {
+        if let Some(status) = self.meta_change_refusal() {
+            return AckResponse { status };
+        }
+        self.record_mutation(MetaMutation::DropShard(request.clone()));
+        self.apply_drop_shard(request)
+    }
+
+    pub(crate) fn apply_drop_shard(&self, request: ShardStateRequest) -> AckResponse {
+        let mut state = self.inner.write().expect("meta lock poisoned");
+        if state.shards.remove(&request.shard_id).is_none() {
+            return AckResponse {
+                status: Status::error("shard_not_found", "shard is not registered"),
+            };
+        }
+        record_topology_event(
+            &mut state,
+            "drop_shard",
+            format!("shard:{}", request.shard_id),
+            "state=dropped",
+        );
+        AckResponse {
             status: Status::ok(),
         }
     }
@@ -1333,6 +1431,10 @@ impl SingleNodeMeta {
             MetaMutation::SetProxyGroup(request) => {
                 self.apply_set_proxy_group(request).status
             }
+            MetaMutation::SetShardState(request, state) => {
+                self.apply_set_shard_state(request, state).status
+            }
+            MetaMutation::DropShard(request) => self.apply_drop_shard(request).status,
             MetaMutation::FreezeServer(request) => {
                 self.apply_set_server_state(request, MetaEntityState::Frozen)
                     .status
@@ -4223,6 +4325,180 @@ mod tests {
         assert_eq!(meta.list_tables().tables[0].replica_count, 2);
     }
 
+    fn shard_meta() -> SingleNodeMeta {
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "node-a".to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+            numa_nodes: Vec::new(),
+        });
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            first_shard_id: 1,
+            shard_count: 2,
+            replica_count: 1,
+            partition_version: 0,
+            serving_options: TableServingOptions::default(),
+        });
+        for shard_id in [1, 2] {
+            meta.register(RegisterShardRequest {
+                shard_id,
+                server_addr: "node-a".to_string(),
+            });
+        }
+        meta
+    }
+
+    fn shard(id: ShardId) -> ShardStateRequest {
+        ShardStateRequest { shard_id: id }
+    }
+
+    fn serving_primaries(meta: &SingleNodeMeta) -> Vec<Option<String>> {
+        meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            old_topology_version: 0,
+            client_location: String::new(),
+        })
+        .shards
+        .into_iter()
+        .map(|s| s.primary)
+        .collect()
+    }
+
+    #[test]
+    fn freezing_one_shard_leaves_the_rest_of_the_table_serving() {
+        // The whole point: the only lever before this was freezing the table,
+        // which takes every other shard in it out too.
+        let meta = shard_meta();
+        assert_eq!(
+            serving_primaries(&meta),
+            vec![Some("node-a".to_string()), Some("node-a".to_string())]
+        );
+
+        assert!(meta.freeze_shard(shard(1)).status.ok);
+        let primaries = serving_primaries(&meta);
+        assert_eq!(primaries[0], None, "the frozen shard must not be routed to");
+        assert_eq!(primaries[1], Some("node-a".to_string()));
+
+        // And the table itself is untouched.
+        assert_eq!(meta.list_tables().tables[0].state, MetaEntityState::Normal);
+    }
+
+    #[test]
+    fn a_frozen_shard_comes_back() {
+        let meta = shard_meta();
+        assert!(meta.freeze_shard(shard(1)).status.ok);
+        assert_eq!(serving_primaries(&meta)[0], None);
+        assert!(meta.unfreeze_shard(shard(1)).status.ok);
+        assert_eq!(serving_primaries(&meta)[0], Some("node-a".to_string()));
+    }
+
+    #[test]
+    fn freezing_a_shard_keeps_its_owner_so_it_can_return() {
+        // A frozen shard is out of service, not forgotten; the owner entry is
+        // what makes unfreezing put it back where it was.
+        let meta = shard_meta();
+        meta.freeze_shard(shard(1));
+        let located = meta.get(1);
+        assert!(located.status.ok);
+        let location = located.location.expect("still registered");
+        assert_eq!(location.server_addr, "node-a");
+        assert_eq!(location.state, MetaEntityState::Frozen);
+    }
+
+    #[test]
+    fn rebalancing_leaves_a_frozen_shard_alone() {
+        // An operator froze it on purpose. Moving it would be the planner
+        // undoing a deliberate decision.
+        let meta = shard_meta();
+        meta.freeze_shard(shard(1));
+        meta.register_server(RegisterServerRequest {
+            server_addr: "node-b".to_string(),
+            node_id: 2,
+            location: "rack-2".to_string(),
+            binary_version: "v1".to_string(),
+            numa_nodes: Vec::new(),
+        });
+        let plans = meta.plan_auto_rebalance();
+        assert!(
+            plans.iter().all(|plan| plan.shard_id != 1),
+            "frozen shard was moved: {plans:?}"
+        );
+    }
+
+    #[test]
+    fn the_divergence_check_ignores_a_frozen_shard() {
+        // Its owner not serving it is exactly what freezing means, so flagging
+        // it would have the checker "repair" the operator's decision.
+        let meta = shard_meta();
+        meta.freeze_shard(shard(1));
+        let mut checker = ShardChecker::default();
+        let (report, moves) = meta.check_shard_divergence(&mut checker);
+        assert!(report.diverged.iter().all(|d| d.shard_id != 1));
+        assert!(moves.iter().all(|m| m.shard_id != 1));
+    }
+
+    #[test]
+    fn dropping_a_shard_removes_the_route() {
+        let meta = shard_meta();
+        assert!(meta.drop_shard(shard(1)).status.ok);
+        assert!(!meta.get(1).status.ok);
+        assert_eq!(
+            meta.drop_shard(shard(1)).status.code,
+            "shard_not_found",
+            "dropping twice should report the shard is gone"
+        );
+    }
+
+    #[test]
+    fn shard_state_changes_are_rejected_when_unknown_or_unchanged() {
+        let meta = shard_meta();
+        assert_eq!(meta.freeze_shard(shard(99)).status.code, "shard_not_found");
+        assert!(meta.freeze_shard(shard(1)).status.ok);
+        assert_eq!(meta.freeze_shard(shard(1)).status.code, "not_modified");
+    }
+
+    #[test]
+    fn freezing_a_shard_bumps_the_topology_version() {
+        let meta = shard_meta();
+        let before = meta.stats().topology_version;
+        assert!(meta.freeze_shard(shard(1)).status.ok);
+        assert!(meta.stats().topology_version > before);
+    }
+
+    #[test]
+    fn shard_state_survives_snapshot_and_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("shard-state-mutations.jsonl");
+        {
+            let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+            meta.register(RegisterShardRequest {
+                shard_id: 5,
+                server_addr: "node-a".to_string(),
+            });
+            assert!(meta.freeze_shard(shard(5)).status.ok);
+            let snapshot = meta.export_snapshot();
+            let restored = SingleNodeMeta::default();
+            assert!(restored.install_snapshot(snapshot).status.ok);
+            assert_eq!(
+                restored.get(5).location.expect("registered").state,
+                MetaEntityState::Frozen
+            );
+        }
+        let recovered = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert_eq!(
+            recovered.get(5).location.expect("registered").state,
+            MetaEntityState::Frozen
+        );
+    }
+
     #[test]
     fn metaserver_safe_mode_cooldown_blocks_rejoin_and_round_trips() {
         let dir = tempfile::tempdir().unwrap();
@@ -5562,6 +5838,7 @@ mod tests {
         assert_eq!(
             recovered.get(10).location.unwrap(),
             ShardLocation {
+                state: MetaEntityState::Normal,
                 shard_id: 10,
                 server_addr: "server-a".to_string(),
                 latest_snapshot: None,

@@ -522,11 +522,7 @@ impl SingleNodeMeta {
         let shard_placement = self.shard_placements();
         let shard_owners = {
             let state = self.inner.read().expect("meta lock poisoned");
-            state
-                .shards
-                .values()
-                .map(|location| (location.shard_id, location.server_addr.clone()))
-                .collect::<BTreeMap<_, _>>()
+            serving_shard_owners(&state)
         };
         compute_placement_aware_rebalance(&shard_owners, &shard_placement, &live_servers, options)
     }

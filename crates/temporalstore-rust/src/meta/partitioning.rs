@@ -118,10 +118,30 @@ pub(super) fn build_shards(
         let mut used_locations = BTreeSet::new();
         let mut used_hosts = BTreeSet::new();
         let mut placed_locations: Vec<Location> = Vec::new();
-        // The owner is the one entry that reaches the replica list without
-        // passing the Normal filter the candidate scan applies. A server that
-        // was frozen or dropped is not serving, so naming it is telling a client
-        // to read from somewhere that is deliberately out of service.
+        // A shard that is not serving gets no placement at all. Skipping only
+        // its recorded owner is not enough: the candidate scan below would pick
+        // a primary for it anyway, and it would stay routable.
+        let serving = state
+            .shards
+            .get(&shard_id)
+            .map(|location| location.state == MetaEntityState::Normal)
+            .unwrap_or(true);
+        if !serving {
+            shards.push(TableShard {
+                shard_id,
+                start_bucket,
+                end_bucket,
+                primary: None,
+                replicas: Vec::new(),
+                primary_endpoint: None,
+                replica_endpoints: Vec::new(),
+            });
+            continue;
+        }
+        // A serving shard can still be owned by a server that is not serving.
+        // That is a separate question from the one above, and the owner is the
+        // one entry that reaches the replica list without passing the Normal
+        // filter the candidate scan applies.
         let owner = state
             .shards
             .get(&shard_id)
