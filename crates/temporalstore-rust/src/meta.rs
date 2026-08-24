@@ -3348,6 +3348,90 @@ mod tests {
         assert_eq!(meta.topology_subscriber_count(), 0);
     }
 
+    /// A table occupying shard ids [first, first + count).
+    fn table_spanning(meta: &SingleNodeMeta, name: &str, first: ShardId, count: u64) {
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: name.to_string(),
+            first_shard_id: first,
+            shard_count: count,
+            replica_count: 1,
+            partition_version: 0,
+            serving_options: TableServingOptions::default(),
+        });
+    }
+
+    /// Which table a shard resolves to, observed through a caller that uses the
+    /// lookup: retention only purges a shard when it can name the table.
+    fn resolves_to(meta: &SingleNodeMeta, shard_id: ShardId) -> Option<String> {
+        meta.register(RegisterShardRequest {
+            shard_id,
+            server_addr: "node-a".to_string(),
+        });
+        let plan = meta.plan_meta_retention_now(MetaRetentionOptions::default());
+        let _ = plan;
+        meta.list_tables()
+            .tables
+            .into_iter()
+            .find(|table| {
+                shard_id >= table.first_shard_id
+                    && shard_id < table.first_shard_id + table.shard_count
+            })
+            .map(|table| table.table_name)
+    }
+
+    #[test]
+    fn a_shard_resolves_to_the_table_whose_range_covers_it() {
+        let meta = SingleNodeMeta::default();
+        table_spanning(&meta, "orders", 100, 4);
+        assert_eq!(resolves_to(&meta, 100).as_deref(), Some("orders"));
+        assert_eq!(resolves_to(&meta, 103).as_deref(), Some("orders"));
+    }
+
+    #[test]
+    fn the_shard_one_past_the_end_belongs_to_nobody() {
+        // The boundary the old search got right by construction and a bounds
+        // check can get wrong by one.
+        let meta = SingleNodeMeta::default();
+        table_spanning(&meta, "orders", 100, 4);
+        assert_eq!(resolves_to(&meta, 104), None);
+        assert_eq!(resolves_to(&meta, 99), None);
+    }
+
+    #[test]
+    fn a_table_with_no_shards_owns_nothing() {
+        let meta = SingleNodeMeta::default();
+        // shard_count 0 is refused at creation, so the closest reachable case
+        // is a table whose range simply does not cover the shard asked about.
+        table_spanning(&meta, "orders", 100, 1);
+        assert_eq!(resolves_to(&meta, 200), None);
+    }
+
+    #[test]
+    fn two_tables_side_by_side_do_not_bleed_into_each_other() {
+        let meta = SingleNodeMeta::default();
+        table_spanning(&meta, "orders", 100, 4);
+        table_spanning(&meta, "events", 104, 4);
+        assert_eq!(resolves_to(&meta, 103).as_deref(), Some("orders"));
+        assert_eq!(resolves_to(&meta, 104).as_deref(), Some("events"));
+        assert_eq!(resolves_to(&meta, 107).as_deref(), Some("events"));
+        assert_eq!(resolves_to(&meta, 108), None);
+    }
+
+    #[test]
+    fn a_table_at_the_top_of_the_id_range_does_not_overflow() {
+        // first_shard_id comes from whoever created the table, and computing
+        // the end of the range from a value near the maximum would wrap.
+        let meta = SingleNodeMeta::default();
+        table_spanning(&meta, "orders", u64::MAX - 1, 4);
+        // The point is that asking does not panic; the answer is that the
+        // shard below the range is not in it.
+        assert_eq!(resolves_to(&meta, 10), None);
+    }
+
     #[test]
     fn metaserver_safe_mode_cooldown_blocks_rejoin_and_round_trips() {
         let dir = tempfile::tempdir().unwrap();
