@@ -75,8 +75,9 @@ dependencies from public GitHub (see `crates/temporalstore-rust/Cargo.toml`), so
 ```text
 matrixraft            https://github.com/matrixarkai/MatrixRaft.git         (Raft consensus)
 matrixcache           https://github.com/matrixarkai/MatrixCache.git        (tiered cache + RocksDB SSD store)
-matrixobjectstore-rs  https://github.com/bjmeetsfo/MatrixObjectStore.git  (optional; enable with --features matrixobject)
 ```
+
+An optional object-store backend sits behind `--features matrixobject`. It is not part of this build: the feature ships as an empty stub, so nothing is fetched for it and nothing needs to be.
 
 Each is pinned to an exact revision, so you never clone them by hand — you only
 need `git` and network access to `github.com`. For offline builds, run

@@ -32,5 +32,4 @@ unknown-git = "deny"
 allow-git = [
     "https://github.com/matrixarkai/MatrixRaft.git",
     "https://github.com/matrixarkai/MatrixCache.git",
-    "https://github.com/bjmeetsfo/MatrixObjectStore.git",
 ]

@@ -182,8 +182,9 @@ build — you never clone them by hand:
 ```text
 matrixraft            https://github.com/matrixarkai/MatrixRaft.git         Raft consensus
 matrixcache           https://github.com/matrixarkai/MatrixCache.git        tiered cache + RocksDB SSD store
-matrixobjectstore-rs  https://github.com/bjmeetsfo/MatrixObjectStore.git  optional (--features matrixobject)
 ```
+
+An optional object-store backend sits behind `--features matrixobject`. It is not part of this build: the feature ships as an empty stub, so nothing is fetched for it and nothing needs to be.
 
 Each is pinned to an exact revision, so builds are reproducible. Because
 `matrixcache` enables the `rocksdb-ssd` feature, the first build compiles RocksDB
