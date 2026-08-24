@@ -4797,6 +4797,7 @@ mod tests {
                 node_id: 1,
                 location: location.to_string(),
                 binary_version: "v1".to_string(),
+                numa_nodes: Vec::new(),
             });
         }
         meta
