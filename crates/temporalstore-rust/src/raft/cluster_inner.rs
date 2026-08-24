@@ -754,6 +754,18 @@ impl RaftClusterInner {
         self.finish_staged_wal(staged)
     }
 
+    /// End the deferral WITHOUT writing what it owes.
+    ///
+    /// Used for the commit index once the entry itself is already durable. Raft treats the commit
+    /// index as recoverable -- a restarting node learns it from its leader, and a leader
+    /// re-establishes it by committing an entry of its own term -- so it does not have to be made
+    /// durable before a write is acknowledged. The next record written carries the current value
+    /// anyway.
+    pub(super) fn discard_deferred_persist(&mut self) {
+        self.persist_deferred_owner = None;
+        self.persist_dirty = false;
+    }
+
     /// End the deferral by WRITING what is owed, leaving the barrier to the caller.
     ///
     /// This is what lets the propose path drop its lock before flushing: the write happens while

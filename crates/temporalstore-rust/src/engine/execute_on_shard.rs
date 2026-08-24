@@ -24,6 +24,9 @@ pub(crate) fn execute_on_shard(
     shard.control_distinct_sketch = control_distinct_sketch;
     let mut mutated = false;
     let response = match command {
+        // Applied as nothing: `mutated` stays false, so it neither dirties a shard nor
+        // invalidates a cache entry.
+        Command::LeaderEstablish => CommandResponse::Empty,
         Command::CommonDelete { key } => {
             mutated = delete_record(shard, &key);
             invalidate_record_all(cache, shard_id, &key);

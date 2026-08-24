@@ -26,6 +26,8 @@ pub(super) fn command_is_dropped(command: &Command, drop_percent: u8) -> bool {
 
 pub(super) fn command_key(command: &Command) -> Option<&str> {
     match command {
+        // Names no key: it exists to be committed, not to touch a record.
+        Command::LeaderEstablish => None,
         Command::CommonDelete { key }
         | Command::CommonExpire { key, .. }
         | Command::CommonTtl { key }

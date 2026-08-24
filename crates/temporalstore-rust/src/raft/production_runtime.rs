@@ -574,6 +574,39 @@ impl ProductionRaftRuntime {
                                 // timeouts fire and supersede it.
                                 force_heartbeat = true;
                                 last_contact_epoch = cluster.leader_contact_epoch();
+                                // Commit one entry of this term, which moves the commit point to
+                                // cover everything before it. Until that happens a leader cannot
+                                // safely treat older entries as committed however many replicas
+                                // hold them, so entries above the commit point it restarted with
+                                // would stay unapplied on an idle cluster.
+                                //
+                                // Off this thread: proposing takes the propose lock and a network
+                                // round trip, and the timer loop has heartbeats to send.
+                                {
+                                    let cluster = cluster.clone();
+                                    let transport = transport.clone();
+                                    thread::spawn(move || {
+                                        match cluster.propose_distributed(
+                                            Command::LeaderEstablish,
+                                            &transport,
+                                        ) {
+                                            Ok(_) => tracing::info!(
+                                                kind = "data",
+                                                node_id = local_node_id,
+                                                "raft: new leader established its commit point"
+                                            ),
+                                            // Not fatal: the next write establishes it instead.
+                                            // Worth saying, because until then a restarted leader
+                                            // serves whatever commit point it came back with.
+                                            Err(err) => tracing::warn!(
+                                                kind = "data",
+                                                node_id = local_node_id,
+                                                error = %err,
+                                                "raft: new leader could not establish its commit point"
+                                            ),
+                                        }
+                                    });
+                                }
                                 continue;
                             }
                         }

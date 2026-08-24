@@ -1178,6 +1178,13 @@ impl ContextWire for ContextCompressionEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Command {
+    /// Appended by a leader when it takes office, and applied as nothing.
+    ///
+    /// A leader may not conclude that entries from an earlier term are committed just because a
+    /// majority holds them; it has to commit something of its own term first. Without that, a
+    /// node that restarts and takes office keeps whatever commit point it had, and entries above
+    /// it sit in the log unapplied until the next write happens to arrive.
+    LeaderEstablish,
     CommonDelete {
         key: String,
     },
