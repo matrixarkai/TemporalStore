@@ -238,9 +238,6 @@ pub struct ContextNode {
     pub status: u32,
     #[serde(default)]
     pub last_event_time_ms: u64,
-    // Deprecated hot-schema field: use ContextSummaryDirtyMarker instead.
-    #[serde(default, skip_serializing)]
-    pub summary_dirty: bool,
     // Deprecated hot-schema field: use ContextSummary records instead.
     #[serde(default, skip_serializing)]
     pub l1_ref: String,
@@ -408,14 +405,24 @@ pub struct ContextPackAudit {
     pub blocked_refs: Vec<ContextAuditRef>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ContextSummaryDirtyMarker {
+/// A node the summary or embedding worker still owes work on.
+///
+/// Dirty tracking is a coalescing map keyed by dirty object key, not a log of records: repeated
+/// edits to one node update a single entry rather than appending. This is that entry as callers
+/// see it, so the coalescing is visible -- how many marks arrived and the span of event times
+/// they covered. The record it replaced could carry only one timestamp, so a query had to flatten
+/// first and last into a single `event_time_ms` and drop the count entirely.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ContextDirtyNode {
     pub node_hash: u64,
-    pub event_time_ms: u64,
+    pub first_event_time_ms: u64,
+    pub last_event_time_ms: u64,
     #[serde(default)]
     pub reason: u32,
     #[serde(default)]
     pub propagate_depth: u32,
+    #[serde(default)]
+    pub mark_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -669,8 +676,8 @@ impl ContextWire for ContextNode {
         encode_bytes_field(&mut out, 4, self.canonical_name.as_bytes());
         encode_bytes_field(&mut out, 5, self.l0.as_bytes());
         encode_varint_field(&mut out, 6, self.last_event_time_ms);
-        // raw_metadata_ref is a deprecated hot-schema field (like status,
-        // summary_dirty, and l1_ref, all #[serde(default, skip_serializing)]);
+        // raw_metadata_ref is a deprecated hot-schema field (like status and l1_ref,
+        // both #[serde(default, skip_serializing)]);
         // source provenance moved to resource/provenance sidecars. It is the last
         // deprecated field still being written to the canonical wire payload,
         // so encoding it round-trips a value the trimmed schema must drop. Stop
@@ -699,7 +706,6 @@ impl ContextWire for ContextNode {
             l0: String::new(),
             status: 0,
             last_event_time_ms: 0,
-            summary_dirty: false,
             l1_ref: String::new(),
             raw_metadata_ref: String::new(),
             vector: Vec::new(),
@@ -717,7 +723,6 @@ impl ContextWire for ContextNode {
                 (6, 0) => value.last_event_time_ms = decode_varint(bytes, &mut cursor)?,
                 // Legacy Rust-only node fields from pre-trim builds.
                 (7, 0) => value.last_event_time_ms = decode_varint(bytes, &mut cursor)?,
-                (8, 0) => value.summary_dirty = decode_varint(bytes, &mut cursor)? != 0,
                 (9, 2) => value.l1_ref = decode_string(bytes, &mut cursor)?,
                 (10, 2) => value.raw_metadata_ref = decode_string(bytes, &mut cursor)?,
                 (CONTEXT_VECTOR_FIELD, 2) => {
@@ -950,43 +955,6 @@ impl ContextWire for ContextPackAudit {
     }
 }
 
-impl ContextWire for ContextSummaryDirtyMarker {
-    fn encode_context_proto_value(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        // SummaryDirtyMarker (context interface.proto): node_hash=1, event_time_ms=2,
-        // propagate_depth=3. Rust's extra `reason` must NOT sit at 3 (it would land in's
-        // propagate_depth); place it at 4.
-        encode_varint_field(&mut out, 1, self.node_hash);
-        encode_varint_field(&mut out, 2, self.event_time_ms);
-        encode_varint_field(&mut out, 3, u64::from(self.propagate_depth));
-        encode_varint_field(&mut out, 4, u64::from(self.reason));
-        out
-    }
-
-    fn decode_context_proto_value(bytes: &[u8]) -> Option<Self> {
-        let mut cursor = 0;
-        let mut value = Self {
-            node_hash: 0,
-            event_time_ms: 0,
-            reason: 0,
-            propagate_depth: 0,
-        };
-        while cursor < bytes.len() {
-            let tag = decode_varint(bytes, &mut cursor)?;
-            match (tag >> 3, tag & 0x7) {
-                (1, 0) => value.node_hash = decode_varint(bytes, &mut cursor)?,
-                (2, 0) => value.event_time_ms = decode_varint(bytes, &mut cursor)?,
-                (3, 0) => {
-                    value.propagate_depth =
-                        u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?
-                }
-                (4, 0) => value.reason = u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?,
-                (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
-            }
-        }
-        Some(value)
-    }
-}
 
 impl ContextWire for ContextEntity {
     fn encode_context_proto_value(&self) -> Vec<u8> {
@@ -1594,7 +1562,12 @@ pub enum Command {
     },
     ContextMarkSummaryDirty {
         tenant_hash: u64,
-        marker: ContextSummaryDirtyMarker,
+        node_hash: u64,
+        event_time_ms: u64,
+        #[serde(default)]
+        reason: u32,
+        #[serde(default)]
+        propagate_depth: u32,
     },
     ContextQuerySummaryDirty {
         tenant_hash: u64,
@@ -1614,7 +1587,12 @@ pub enum Command {
     // {node_hash, event_time_ms} carrier.
     ContextMarkEmbeddingDirty {
         tenant_hash: u64,
-        marker: ContextSummaryDirtyMarker,
+        node_hash: u64,
+        event_time_ms: u64,
+        #[serde(default)]
+        reason: u32,
+        #[serde(default)]
+        propagate_depth: u32,
         #[serde(default)]
         clear: bool,
     },
@@ -1915,19 +1893,19 @@ pub enum CommandResponse {
         object_key: String,
         audits: Vec<ContextPackAudit>,
     },
-    ContextSummaryDirtyMarkers {
+    ContextSummaryDirtyNodes {
         object_key: String,
-        markers: Vec<ContextSummaryDirtyMarker>,
+        nodes: Vec<ContextDirtyNode>,
     },
-    // Response for ContextQueryEmbeddingDirty. Mirrors ContextSummaryDirtyMarkers
+    // Response for ContextQueryEmbeddingDirty. Mirrors ContextSummaryDirtyNodes
     // but adds a `tenant_hashes` vector parallel to `markers`: the all-pending scan
     // (node_hash == 0) spans every tenant on the shard, so the drainer needs each
     // marker's tenant to compute its embedding ref-hash and read its events. In the
     // single-node per-node query `tenant_hashes` may be empty (the caller already
     // knows the tenant it asked for).
-    ContextEmbeddingDirtyMarkers {
+    ContextEmbeddingDirtyNodes {
         object_key: String,
-        markers: Vec<ContextSummaryDirtyMarker>,
+        nodes: Vec<ContextDirtyNode>,
         #[serde(default)]
         tenant_hashes: Vec<u64>,
     },
@@ -2140,7 +2118,6 @@ mod tests {
             embedding_model_hash: 0xDEAD_BEEF,
             embedding_updated_at_ms: 1_780_000_000_777,
             status: 0,
-            summary_dirty: false,
             l1_ref: String::new(),
             raw_metadata_ref: String::new(),
         };
@@ -2168,7 +2145,6 @@ mod tests {
             embedding_model_hash: 0,
             embedding_updated_at_ms: 0,
             status: 0,
-            summary_dirty: false,
             l1_ref: String::new(),
             raw_metadata_ref: String::new(),
         };
@@ -2202,7 +2178,6 @@ mod tests {
             embedding_model_hash: 0,
             embedding_updated_at_ms: 0,
             status: 0,
-            summary_dirty: false,
             l1_ref: String::new(),
             raw_metadata_ref: String::new(),
         };
@@ -2395,7 +2370,6 @@ mod tests {
             l0: "service".to_string(),
             status: 1,
             last_event_time_ms: 123,
-            summary_dirty: true,
             l1_ref: "l1".to_string(),
             raw_metadata_ref: "raw".to_string(),
             vector: Vec::new(),
@@ -2404,7 +2378,6 @@ mod tests {
         };
         let native_node = ContextNode {
             status: 0,
-            summary_dirty: false,
             l1_ref: String::new(),
             raw_metadata_ref: String::new(),
             vector: Vec::new(),
@@ -2545,15 +2518,5 @@ mod tests {
             Some(audit)
         );
 
-        let dirty = ContextSummaryDirtyMarker {
-            node_hash: 42,
-            event_time_ms: 3000,
-            reason: 4,
-            propagate_depth: 2,
-        };
-        assert_eq!(
-            ContextSummaryDirtyMarker::decode_context_proto_value(&dirty.encode_context_proto_value()),
-            Some(dirty)
-        );
     }
 }

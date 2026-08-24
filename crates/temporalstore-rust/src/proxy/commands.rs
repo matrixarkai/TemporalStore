@@ -195,8 +195,9 @@ pub(super) fn proxy_command_routing_key(command: &Command) -> Option<String> {
             } => Some(format!("ctx:audit:{tenant_hash}:{session_hash}")),
             Command::ContextMarkSummaryDirty {
                 tenant_hash,
-                marker,
-            } => Some(format!("ctx:dirty:{tenant_hash}:{}", marker.node_hash)),
+                node_hash,
+                ..
+            } => Some(format!("ctx:dirty:{tenant_hash}:{}", node_hash)),
             Command::ContextQuerySummaryDirty {
                 tenant_hash,
                 node_hash,
@@ -204,9 +205,9 @@ pub(super) fn proxy_command_routing_key(command: &Command) -> Option<String> {
             } => Some(format!("ctx:dirty:{tenant_hash}:{node_hash}")),
             Command::ContextMarkEmbeddingDirty {
                 tenant_hash,
-                marker,
+                node_hash,
                 ..
-            } => Some(format!("ctx:embdirty:{tenant_hash}:{}", marker.node_hash)),
+            } => Some(format!("ctx:embdirty:{tenant_hash}:{}", node_hash)),
             Command::ContextQueryEmbeddingDirty {
                 tenant_hash,
                 node_hash,

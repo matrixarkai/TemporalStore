@@ -211,12 +211,18 @@ impl TemporalStoreTable {
     pub fn context_mark_summary_dirty(
         &self,
         tenant_hash: u64,
-        marker: ContextSummaryDirtyMarker,
+        node_hash: u64,
+        event_time_ms: u64,
+        reason: u32,
+        propagate_depth: u32,
     ) -> Result<String, ClientError> {
         match self
             .execute(Command::ContextMarkSummaryDirty {
                 tenant_hash,
-                marker,
+                node_hash,
+                event_time_ms,
+                reason,
+                propagate_depth,
             })?
             .response
         {
@@ -235,7 +241,7 @@ impl TemporalStoreTable {
         start_time_ms: u64,
         end_time_ms: u64,
         limit: Option<usize>,
-    ) -> Result<Vec<ContextSummaryDirtyMarker>, ClientError> {
+    ) -> Result<Vec<ContextDirtyNode>, ClientError> {
         match self
             .execute(Command::ContextQuerySummaryDirty {
                 tenant_hash,
@@ -246,7 +252,7 @@ impl TemporalStoreTable {
             })?
             .response
         {
-            CommandResponse::ContextSummaryDirtyMarkers { markers, .. } => Ok(markers),
+            CommandResponse::ContextSummaryDirtyNodes { nodes, .. } => Ok(nodes),
             response => Err(ClientError::UnexpectedResponse {
                 operation: "context_query_summary_dirty",
                 response,
@@ -259,12 +265,18 @@ impl TemporalStoreTable {
     pub fn context_mark_embedding_dirty(
         &self,
         tenant_hash: u64,
-        marker: ContextSummaryDirtyMarker,
+        node_hash: u64,
+        event_time_ms: u64,
+        reason: u32,
+        propagate_depth: u32,
     ) -> Result<String, ClientError> {
         match self
             .execute(Command::ContextMarkEmbeddingDirty {
                 tenant_hash,
-                marker,
+                node_hash,
+                event_time_ms,
+                reason,
+                propagate_depth,
                 clear: false,
             })?
             .response
@@ -281,12 +293,18 @@ impl TemporalStoreTable {
     pub fn context_clear_embedding_dirty(
         &self,
         tenant_hash: u64,
-        marker: ContextSummaryDirtyMarker,
+        node_hash: u64,
+        event_time_ms: u64,
+        reason: u32,
+        propagate_depth: u32,
     ) -> Result<String, ClientError> {
         match self
             .execute(Command::ContextMarkEmbeddingDirty {
                 tenant_hash,
-                marker,
+                node_hash,
+                event_time_ms,
+                reason,
+                propagate_depth,
                 clear: true,
             })?
             .response
@@ -299,10 +317,10 @@ impl TemporalStoreTable {
         }
     }
 
-    /// Query embedding-dirty markers. `node_hash == 0` returns all pending
+    /// Query embedding-dirty nodes. `node_hash == 0` returns all pending
     /// embedding-dirty nodes (the drainer's O(pending) scan); a non-zero
     /// `node_hash` returns the single coalesced entry for that node. Returns the
-    /// markers alongside their per-marker tenant hashes (parallel vector; used by
+    /// nodes alongside their per-marker tenant hashes (parallel vector; used by
     /// the all-pending drain scan, which spans tenants).
     pub fn context_query_embedding_dirty(
         &self,
@@ -311,7 +329,7 @@ impl TemporalStoreTable {
         start_time_ms: u64,
         end_time_ms: u64,
         limit: Option<usize>,
-    ) -> Result<(Vec<ContextSummaryDirtyMarker>, Vec<u64>), ClientError> {
+    ) -> Result<(Vec<ContextDirtyNode>, Vec<u64>), ClientError> {
         match self
             .execute(Command::ContextQueryEmbeddingDirty {
                 tenant_hash,
@@ -322,11 +340,11 @@ impl TemporalStoreTable {
             })?
             .response
         {
-            CommandResponse::ContextEmbeddingDirtyMarkers {
-                markers,
+            CommandResponse::ContextEmbeddingDirtyNodes {
+                nodes,
                 tenant_hashes,
                 ..
-            } => Ok((markers, tenant_hashes)),
+            } => Ok((nodes, tenant_hashes)),
             response => Err(ClientError::UnexpectedResponse {
                 operation: "context_query_embedding_dirty",
                 response,

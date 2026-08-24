@@ -91,7 +91,7 @@ use crate::types::{
     context_model_descriptors, Command, CommandResponse, ContextAuditRef, ContextChildRef,
     ContextCompressionEvent, ContextEmbedding, ContextEntity, ContextEvent, ContextIndexRef,
     ContextModelDescriptor, ContextNode, ContextPackAudit, ContextSummary,
-    ContextSummaryDirtyMarker, ExecuteRequest, ShardId, Status,
+    ContextDirtyNode, ExecuteRequest, ShardId, Status,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,7 +227,7 @@ pub struct ContextExtractReport {
     pub node: ContextNode,
     pub event: ContextEvent,
     pub index_ref: ContextIndexRef,
-    pub dirty_marker: ContextSummaryDirtyMarker,
+    pub dirty_marker: ContextDirtyNode,
     #[serde(default)]
     pub source_ref: String,
     #[serde(default)]
@@ -1507,11 +1507,13 @@ pub(crate) fn extract_context_gated(
                 primary_event_time_ms: 0,
                 event_id_hash: 0,
             },
-            dirty_marker: ContextSummaryDirtyMarker {
+            dirty_marker: ContextDirtyNode {
                 node_hash: 0,
-                event_time_ms: request.timestamp_ms,
+                first_event_time_ms: request.timestamp_ms,
+                last_event_time_ms: request.timestamp_ms,
                 reason: 0,
                 propagate_depth: 0,
+                mark_count: 0,
             },
             source_ref: String::new(),
             related_node_hashes: Vec::new(),
@@ -1550,7 +1552,6 @@ pub(crate) fn extract_context_gated(
         l0: l0.clone(),
         status: 1,
         last_event_time_ms: timestamp_ms,
-        summary_dirty: true,
         l1_ref: l1.clone(),
         raw_metadata_ref: request.source_id.clone(),
         vector: Vec::new(),
@@ -1586,11 +1587,13 @@ pub(crate) fn extract_context_gated(
     if emit_l1 {
         summary_refs.push(format!("summary:{node_hash}:l1"));
     }
-    let dirty_marker = ContextSummaryDirtyMarker {
+    let dirty_marker = ContextDirtyNode {
         node_hash,
-        event_time_ms: timestamp_ms,
+        first_event_time_ms: timestamp_ms,
+            last_event_time_ms: timestamp_ms,
         reason: 1,
         propagate_depth: 1,
+        mark_count: 1,
     };
 
     let mut summary_l0 = ContextSummary {
@@ -1749,7 +1752,10 @@ pub(crate) fn extract_context_gated(
         },
         Command::ContextMarkSummaryDirty {
             tenant_hash: request.tenant_hash,
-            marker: dirty_marker.clone(),
+            node_hash: dirty_marker.node_hash,
+            event_time_ms: dirty_marker.last_event_time_ms,
+            reason: dirty_marker.reason,
+            propagate_depth: dirty_marker.propagate_depth,
         },
         Command::ContextUpsertSummary {
             tenant_hash: request.tenant_hash,
@@ -1768,12 +1774,10 @@ pub(crate) fn extract_context_gated(
         // embedding-dirty so the async drainer retries. Happy path marks nothing.
         commands.push(Command::ContextMarkEmbeddingDirty {
             tenant_hash: request.tenant_hash,
-            marker: ContextSummaryDirtyMarker {
-                node_hash,
+            node_hash,
                 event_time_ms: timestamp_ms,
                 reason: EMBEDDING_DIRTY_REASON_LIVE_FAILURE,
                 propagate_depth: 0,
-            },
             clear: false,
         });
     }
@@ -2623,7 +2627,6 @@ fn empty_node() -> ContextNode {
         l0: String::new(),
         status: 0,
         last_event_time_ms: 0,
-        summary_dirty: false,
         l1_ref: String::new(),
         raw_metadata_ref: String::new(),
         vector: Vec::new(),
@@ -2677,11 +2680,13 @@ fn empty_extract_report(
             primary_event_time_ms: 0,
             event_id_hash: 0,
         },
-        dirty_marker: ContextSummaryDirtyMarker {
+        dirty_marker: ContextDirtyNode {
             node_hash: 0,
-            event_time_ms: timestamp_ms,
+            first_event_time_ms: timestamp_ms,
+            last_event_time_ms: timestamp_ms,
             reason: 0,
             propagate_depth: 0,
+            mark_count: 0,
         },
         source_ref: String::new(),
         related_node_hashes: Vec::new(),

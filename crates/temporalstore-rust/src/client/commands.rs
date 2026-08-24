@@ -181,8 +181,9 @@ pub(super) fn context_command_key(command: &Command) -> Option<String> {
         } => Some(context_audit_key(*tenant_hash, *session_hash)),
         Command::ContextMarkSummaryDirty {
             tenant_hash,
-            marker,
-        } => Some(context_dirty_key(*tenant_hash, marker.node_hash)),
+            node_hash,
+            ..
+        } => Some(context_dirty_key(*tenant_hash, *node_hash)),
         Command::ContextQuerySummaryDirty {
             tenant_hash,
             node_hash,
@@ -190,9 +191,9 @@ pub(super) fn context_command_key(command: &Command) -> Option<String> {
         } => Some(context_dirty_key(*tenant_hash, *node_hash)),
         Command::ContextMarkEmbeddingDirty {
             tenant_hash,
-            marker,
+            node_hash,
             ..
-        } => Some(context_embedding_dirty_key(*tenant_hash, marker.node_hash)),
+        } => Some(context_embedding_dirty_key(*tenant_hash, *node_hash)),
         Command::ContextQueryEmbeddingDirty {
             tenant_hash,
             node_hash,

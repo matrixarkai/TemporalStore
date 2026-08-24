@@ -12,7 +12,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use temporalstore_rust::{
     Command, CommandResponse, ContextEmbedding, ContextEvent, ContextNode, ContextSummary,
-    ContextSummaryDirtyMarker, ExecuteRequest, StorageCacheWarmupReport, TemporalEngine,
+    ContextDirtyNode, ExecuteRequest, StorageCacheWarmupReport, TemporalEngine,
 };
 
 const SHARD_ID: u64 = 1;
@@ -302,7 +302,6 @@ fn write_context_records(engine: &TemporalEngine) -> usize {
         l0: "thread/session".to_string(),
         status: 0,
         last_event_time_ms: 1_000,
-        summary_dirty: false,
         l1_ref: String::new(),
         raw_metadata_ref: String::new(),
         vector: Vec::new(),
@@ -351,12 +350,10 @@ fn write_context_records(engine: &TemporalEngine) -> usize {
         shard_id: SHARD_ID,
         command: Command::ContextMarkSummaryDirty {
             tenant_hash: TENANT,
-            marker: ContextSummaryDirtyMarker {
-                node_hash: NODE,
+            node_hash: NODE,
                 event_time_ms: 2_010,
                 reason: 1,
                 propagate_depth: 1,
-            },
         },
     }));
     assert_ok(engine.execute(ExecuteRequest {
@@ -441,12 +438,10 @@ fn append_context_records_after_restart(engine: &TemporalEngine) -> usize {
         shard_id: SHARD_ID,
         command: Command::ContextMarkSummaryDirty {
             tenant_hash: TENANT,
-            marker: ContextSummaryDirtyMarker {
-                node_hash: NODE,
+            node_hash: NODE,
                 event_time_ms: 3_200,
                 reason: 2,
                 propagate_depth: 1,
-            },
         },
     }));
     assert_ok(engine.execute(ExecuteRequest {
@@ -533,7 +528,7 @@ fn count_context_data(
         })
         .response
     {
-        CommandResponse::ContextSummaryDirtyMarkers { markers, .. } => markers.len(),
+        CommandResponse::ContextSummaryDirtyNodes { nodes, .. } => nodes.len(),
         _ => 0,
     };
     let summary_count = match engine

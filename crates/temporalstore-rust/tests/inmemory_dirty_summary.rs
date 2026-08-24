@@ -3,7 +3,7 @@
 
 //! Integration coverage for the in-memory, coalesced summary-dirty tracking.
 //!
-//! Summary-dirty markers are no longer persisted as one `ctx:dirty` page per event.
+//! Summary-dirty nodes are no longer persisted as one `ctx:dirty` page per event.
 //! They are tracked in an in-memory, coalescing hashmap keyed by dirty object key so
 //! repeated marks for the same node collapse into a single entry. These tests exercise
 //! the public engine API to prove:
@@ -16,7 +16,7 @@
 use std::path::PathBuf;
 
 use temporalstore_rust::{
-    Command, CommandResponse, ContextSummaryDirtyMarker, ExecuteRequest, TemporalEngine,
+    Command, CommandResponse, ContextDirtyNode, ExecuteRequest, TemporalEngine,
 };
 
 const SHARD_ID: u64 = 1;
@@ -53,12 +53,10 @@ fn mark(engine: &TemporalEngine, node_hash: u64, event_time_ms: u64, propagate_d
             shard_id: SHARD_ID,
             command: Command::ContextMarkSummaryDirty {
                 tenant_hash: TENANT,
-                marker: ContextSummaryDirtyMarker {
-                    node_hash,
-                    event_time_ms,
-                    reason: 1,
-                    propagate_depth,
-                },
+                node_hash,
+                event_time_ms,
+                reason: 1,
+                propagate_depth,
             },
         })
         .response;
@@ -73,7 +71,7 @@ fn query(
     node_hash: u64,
     start_time_ms: u64,
     end_time_ms: u64,
-) -> Vec<ContextSummaryDirtyMarker> {
+) -> Vec<ContextDirtyNode> {
     match engine
         .execute(ExecuteRequest {
             shard_id: SHARD_ID,
@@ -87,8 +85,8 @@ fn query(
         })
         .response
     {
-        CommandResponse::ContextSummaryDirtyMarkers { markers, .. } => markers,
-        other => panic!("expected ContextSummaryDirtyMarkers, got {other:?}"),
+        CommandResponse::ContextSummaryDirtyNodes { nodes, .. } => nodes,
+        other => panic!("expected ContextSummaryDirtyNodes, got {other:?}"),
     }
 }
 
@@ -100,20 +98,20 @@ fn repeated_marks_for_one_node_coalesce_to_latest_and_max_depth() {
     mark(&engine, 42, 3_000, 2);
     mark(&engine, 42, 2_000, 1);
 
-    let markers = query(&engine, 42, 0, 10_000);
+    let nodes = query(&engine, 42, 0, 10_000);
     assert_eq!(
-        markers.len(),
+        nodes.len(),
         1,
         "three marks for one node must coalesce into a single dirty marker"
     );
-    let marker = &markers[0];
-    assert_eq!(marker.node_hash, 42);
+    let marker = &nodes[0];
+    assert_eq!(node_hash, 42);
     assert_eq!(
-        marker.event_time_ms, 3_000,
+        event_time_ms, 3_000,
         "coalesced marker keeps the latest event time"
     );
     assert_eq!(
-        marker.propagate_depth, 2,
+        propagate_depth, 2,
         "coalesced marker keeps the deepest requested propagate depth"
     );
 }
@@ -156,12 +154,12 @@ fn coalescing_is_bounded_regardless_of_mark_count() {
     for i in 0..500u64 {
         mark(&engine, 42, 1_000 + i, (i % 4) as u32);
     }
-    let markers = query(&engine, 42, 0, 10_000_000);
+    let nodes = query(&engine, 42, 0, 10_000_000);
     assert_eq!(
-        markers.len(),
+        nodes.len(),
         1,
         "500 marks for one node must remain a single coalesced dirty marker"
     );
-    assert_eq!(markers[0].event_time_ms, 1_499, "latest event time wins");
-    assert_eq!(markers[0].propagate_depth, 3, "max depth across marks wins");
+    assert_eq!(nodes[0].event_time_ms, 1_499, "latest event time wins");
+    assert_eq!(nodes[0].propagate_depth, 3, "max depth across marks wins");
 }

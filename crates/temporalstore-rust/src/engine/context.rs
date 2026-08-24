@@ -9,7 +9,7 @@ use crate::block_store::BlockAddress;
 use crate::types::{
     ContextAuditRef, ContextChildRef, ContextCompressionEvent, ContextEmbedding, ContextEntity,
     ContextEvent, ContextExtractedEventIndexes, ContextIndexLookup, ContextIndexRef, ContextNode,
-    ContextPackAudit, ContextSummary, ContextSummaryDirtyMarker, ContextTraversedNode, ContextWire,
+    ContextPackAudit, ContextSummary, ContextTraversedNode, ContextWire,
     FeaturePoint, InternalContextIndex, ShardId, Status,
 };
 use matrixcache::MultiLayerCache;
@@ -649,20 +649,23 @@ pub(super) fn validate_context_pack_audit(audit: &ContextPackAudit) -> Result<()
     Ok(())
 }
 
-pub(super) fn validate_context_dirty_marker(
-    marker: &ContextSummaryDirtyMarker,
+pub(super) fn validate_context_dirty_node(
+    node_hash: u64,
+    event_time_ms: u64,
+    _reason: u32,
+    propagate_depth: u32,
 ) -> Result<(), Status> {
     validate_context_required(
-        marker.node_hash != 0 && marker.event_time_ms != 0,
+        node_hash != 0 && event_time_ms != 0,
         "node_hash and event_time_ms are required",
     )?;
-    if marker.propagate_depth > CONTEXT_MAX_PROPAGATE_DEPTH {
+    if propagate_depth > CONTEXT_MAX_PROPAGATE_DEPTH {
         return Err(Status::error(
             "invalid_argument",
             "propagate_depth exceeds maximum",
         ));
     }
-    validate_context_timestamp(marker.event_time_ms)
+    validate_context_timestamp(event_time_ms)
 }
 
 pub(super) fn validate_context_entity(entity: &ContextEntity) -> Result<(), Status> {

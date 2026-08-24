@@ -128,7 +128,6 @@ fn context_models_match_keys_timeline_pages_and_filters() {
         l0: "service".to_string(),
         status: 1,
         last_event_time_ms: 1_000,
-        summary_dirty: true,
         l1_ref: "l1://summary".to_string(),
         raw_metadata_ref: "raw://node".to_string(),
         vector: Vec::new(),
@@ -137,7 +136,6 @@ fn context_models_match_keys_timeline_pages_and_filters() {
     };
     let native_node = ContextNode {
         status: 0,
-        summary_dirty: false,
         l1_ref: String::new(),
         raw_metadata_ref: String::new(),
         vector: Vec::new(),
@@ -540,17 +538,22 @@ fn context_models_match_keys_timeline_pages_and_filters() {
         CommandResponse::ContextPackAudits { audits, .. } if audits == vec![audit]
     ));
 
-    let marker = ContextSummaryDirtyMarker {
+    let dirty = ContextDirtyNode {
         node_hash: 42,
-        event_time_ms: 3_000,
+        first_event_time_ms: 3_000,
+        last_event_time_ms: 3_000,
         reason: 4,
         propagate_depth: 2,
+        mark_count: 1,
     };
     let dirty_write = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::ContextMarkSummaryDirty {
             tenant_hash: 11,
-            marker: marker.clone(),
+            node_hash: dirty.node_hash,
+            event_time_ms: dirty.last_event_time_ms,
+            reason: dirty.reason,
+            propagate_depth: dirty.propagate_depth,
         },
     });
     assert!(matches!(
@@ -570,7 +573,7 @@ fn context_models_match_keys_timeline_pages_and_filters() {
     });
     assert!(matches!(
         dirty_query.response,
-        CommandResponse::ContextSummaryDirtyMarkers { markers, .. } if markers == vec![marker]
+        CommandResponse::ContextSummaryDirtyNodes { nodes, .. } if nodes == vec![dirty]
     ));
 
     assert!(
@@ -704,7 +707,6 @@ fn context_tree_embedding_summary_and_compression_match_round_trip() {
             l0: "Company A context root.".to_string(),
             status: 0,
             last_event_time_ms: 0,
-            summary_dirty: false,
             l1_ref: String::new(),
             raw_metadata_ref: String::new(),
             vector: Vec::new(),
@@ -719,7 +721,6 @@ fn context_tree_embedding_summary_and_compression_match_round_trip() {
             l0: "GPU purchase leaf node.".to_string(),
             status: 0,
             last_event_time_ms: 0,
-            summary_dirty: false,
             l1_ref: String::new(),
             raw_metadata_ref: String::new(),
             vector: Vec::new(),
@@ -2576,6 +2577,119 @@ fn string_get_uses_memory_cache() {
     assert!(stats.puts >= 2);
 }
 
+// shared-corpus: context_dirty_coalescing_is_visible
+#[test]
+fn repeated_marks_coalesce_and_the_query_says_so() {
+    // Dirty tracking is a coalescing map, not a log of records. The record type that used to
+    // carry a mark could hold only one timestamp, so a query had to flatten first and last into
+    // a single event_time_ms and drop the mark count entirely -- the caller could not tell one
+    // edit from fifty, nor how much time the dirty span covered.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    const TENANT: u64 = 3300;
+    const NODE: u64 = 88;
+
+    for event_time_ms in [5_000_u64, 9_000, 7_000] {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextMarkSummaryDirty {
+                tenant_hash: TENANT,
+                node_hash: NODE,
+                event_time_ms,
+                reason: 2,
+                propagate_depth: 1,
+            },
+        });
+    }
+
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextQuerySummaryDirty {
+            tenant_hash: TENANT,
+            node_hash: NODE,
+            start_time_ms: 0,
+            end_time_ms: 100_000,
+            limit: None,
+        },
+    });
+    let CommandResponse::ContextSummaryDirtyNodes { nodes, .. } = response.response else {
+        panic!("expected ContextSummaryDirtyNodes");
+    };
+
+    // Three marks, one entry -- that is the coalescing, and it is why nothing is appended per
+    // edit. Before, a caller could only have learned this by counting records that no longer
+    // exist.
+    assert_eq!(1, nodes.len(), "repeated marks must not accumulate entries");
+    let node = &nodes[0];
+    assert_eq!(3, node.mark_count, "the query must report how many marks arrived");
+    assert_eq!(5_000, node.first_event_time_ms, "earliest event that made it dirty");
+    assert_eq!(
+        9_000, node.last_event_time_ms,
+        "latest event, and NOT the last mark to arrive -- 7_000 came in last"
+    );
+    assert_eq!(2, node.reason);
+    assert_eq!(1, node.propagate_depth);
+}
+
+// shared-corpus: context_dirty_window_uses_the_whole_span
+#[test]
+fn a_query_window_is_matched_against_the_whole_dirty_span() {
+    // The span matters for more than reporting: a window that overlaps only the earliest event
+    // must still find the node. Flattened to one timestamp, the early half of the span was
+    // invisible and a drain scoped to it would skip work it owed.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    const TENANT: u64 = 3301;
+    const NODE: u64 = 89;
+
+    for event_time_ms in [1_000_u64, 50_000] {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextMarkSummaryDirty {
+                tenant_hash: TENANT,
+                node_hash: NODE,
+                event_time_ms,
+                reason: 0,
+                propagate_depth: 0,
+            },
+        });
+    }
+
+    let found = |start: u64, end: u64| {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQuerySummaryDirty {
+                tenant_hash: TENANT,
+                node_hash: NODE,
+                start_time_ms: start,
+                end_time_ms: end,
+                limit: None,
+            },
+        });
+        match response.response {
+            CommandResponse::ContextSummaryDirtyNodes { nodes, .. } => !nodes.is_empty(),
+            _ => false,
+        }
+    };
+
+    assert!(found(0, 2_000), "a window over the earliest event must match");
+    assert!(found(40_000, 60_000), "a window over the latest event must match");
+    assert!(found(10_000, 20_000), "a window inside the span must match");
+    assert!(!found(60_000, 70_000), "a window past the span must not match");
+}
+
 // shared-corpus: context_node_inline_embedding
 #[test]
 fn a_node_embedding_lands_on_the_node_itself() {
@@ -2601,7 +2715,6 @@ fn a_node_embedding_lands_on_the_node_itself() {
         l0: "the text this node is about".to_string(),
         status: 0,
         last_event_time_ms: 0,
-        summary_dirty: false,
         l1_ref: String::new(),
         raw_metadata_ref: String::new(),
         vector: Vec::new(),
@@ -2673,7 +2786,6 @@ fn re_embedding_a_node_replaces_the_vector_rather_than_accumulating() {
                 l0: "text".to_string(),
                 status: 0,
                 last_event_time_ms: 0,
-                summary_dirty: false,
                 l1_ref: String::new(),
                 raw_metadata_ref: String::new(),
                 vector: Vec::new(),
@@ -2784,7 +2896,6 @@ fn node_vectors_can_be_asked_for_by_owner() {
                     l0: format!("text {node_hash}"),
                     status: 0,
                     last_event_time_ms: 0,
-                    summary_dirty: false,
                     l1_ref: String::new(),
                     raw_metadata_ref: String::new(),
                     vector: Vec::new(),
@@ -2859,7 +2970,6 @@ fn asking_by_owner_and_by_ref_hash_give_the_same_vector() {
                 l0: "text".to_string(),
                 status: 0,
                 last_event_time_ms: 0,
-                summary_dirty: false,
                 l1_ref: String::new(),
                 raw_metadata_ref: String::new(),
                 vector: Vec::new(),

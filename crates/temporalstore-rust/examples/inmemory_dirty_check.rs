@@ -10,7 +10,7 @@
 //! independently of unrelated pre-existing breakage elsewhere in the crate.
 
 use temporalstore_rust::{
-    Command, CommandResponse, ContextSummaryDirtyMarker, ExecuteRequest, TemporalEngine,
+    Command, CommandResponse, ContextDirtyNode, ExecuteRequest, TemporalEngine,
 };
 
 const SHARD_ID: u64 = 1;
@@ -39,19 +39,17 @@ fn mark(engine: &TemporalEngine, node: u64, ts: u64, depth: u32) {
             shard_id: SHARD_ID,
             command: Command::ContextMarkSummaryDirty {
                 tenant_hash: TENANT,
-                marker: ContextSummaryDirtyMarker {
-                    node_hash: node,
-                    event_time_ms: ts,
-                    reason: 1,
-                    propagate_depth: depth,
-                },
+                node_hash: node,
+                event_time_ms: ts,
+                reason: 1,
+                propagate_depth: depth,
             },
         })
         .response;
     assert!(matches!(r, CommandResponse::ContextObjectKey { .. }));
 }
 
-fn query(engine: &TemporalEngine, node: u64, start: u64, end: u64) -> Vec<ContextSummaryDirtyMarker> {
+fn query(engine: &TemporalEngine, node: u64, start: u64, end: u64) -> Vec<ContextDirtyNode> {
     match engine
         .execute(ExecuteRequest {
             shard_id: SHARD_ID,
@@ -65,7 +63,7 @@ fn query(engine: &TemporalEngine, node: u64, start: u64, end: u64) -> Vec<Contex
         })
         .response
     {
-        CommandResponse::ContextSummaryDirtyMarkers { markers, .. } => markers,
+        CommandResponse::ContextSummaryDirtyNodes { nodes, .. } => nodes,
         other => panic!("unexpected: {other:?}"),
     }
 }

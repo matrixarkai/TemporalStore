@@ -530,12 +530,10 @@ fn recovery_validates_all_timestamped_kv_page_families() {
                 shard_id: 1,
                 command: Command::ContextMarkSummaryDirty {
                     tenant_hash: 44,
-                    marker: ContextSummaryDirtyMarker {
-                        node_hash: 55,
-                        event_time_ms: 4_200,
-                        reason: 9,
-                        propagate_depth: 2,
-                    },
+                    node_hash: 55,
+                event_time_ms: 4_200,
+                reason: 9,
+                propagate_depth: 2,
                 },
             })
             .status

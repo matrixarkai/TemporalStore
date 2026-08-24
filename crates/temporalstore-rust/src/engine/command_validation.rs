@@ -151,13 +151,14 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
         }
         Command::ContextMarkSummaryDirty {
             tenant_hash,
-            marker,
-        } => vec![context_dirty_key(*tenant_hash, marker.node_hash)],
+            node_hash,
+            ..
+        } => vec![context_dirty_key(*tenant_hash, *node_hash)],
         Command::ContextMarkEmbeddingDirty {
             tenant_hash,
-            marker,
+            node_hash,
             ..
-        } => vec![context_embedding_dirty_key(*tenant_hash, marker.node_hash)],
+        } => vec![context_embedding_dirty_key(*tenant_hash, *node_hash)],
         Command::ContextUpsertEntity {
             tenant_hash,
             entity,
@@ -592,10 +593,14 @@ pub(super) fn validate_command_preconditions(
         }
         Command::ContextMarkSummaryDirty {
             tenant_hash,
-            marker,
+            node_hash,
+            event_time_ms,
+            reason,
+            propagate_depth,
+            ..
         } => {
             validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
-            validate_context_dirty_marker(marker)?;
+            validate_context_dirty_node(*node_hash, *event_time_ms, *reason, *propagate_depth)?;
         }
         Command::ContextQuerySummaryDirty {
             tenant_hash,
@@ -612,11 +617,14 @@ pub(super) fn validate_command_preconditions(
         }
         Command::ContextMarkEmbeddingDirty {
             tenant_hash,
-            marker,
+            node_hash,
+            event_time_ms,
+            reason,
+            propagate_depth,
             ..
         } => {
             validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
-            validate_context_dirty_marker(marker)?;
+            validate_context_dirty_node(*node_hash, *event_time_ms, *reason, *propagate_depth)?;
         }
         Command::ContextQueryEmbeddingDirty {
             start_time_ms,
