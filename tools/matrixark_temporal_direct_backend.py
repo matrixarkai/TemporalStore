@@ -901,6 +901,31 @@ class _TemporalDirectBackendMixin:
         versions.update(str(value) for value in new_versions if str(value))
         return sorted(versions)
 
+    def _read_hash_values_best_effort(
+        self, pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], str]:
+        """Read many (key, field) values in ONE call, when the client can.
+
+        Returns only the pairs it actually resolved. The caller falls back to the per-entry read
+        for anything missing, so a partial answer is never mistaken for an empty value -- an empty
+        value here would silently drop the existing refs a merge is supposed to preserve.
+        """
+        if bool(getattr(self, "_native_side_index_assume_fresh", False)):
+            return {}
+        reader = getattr(self._client, "batch_hget", None)
+        if not callable(reader) or not pairs:
+            return {}
+        try:
+            rows = reader([{"key": key, "field": field} for key, field in pairs])
+        except Exception:  # noqa: BLE001 - fall back to the per-entry reads.
+            return {}
+        out: dict[tuple[str, str], str] = {}
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            out[(str(row.get("key") or ""), str(row.get("field") or ""))] = str(row.get("value") or "")
+        return out
+
     def _read_hash_value_best_effort(self, key: str, field: str) -> str:
         if bool(getattr(self, "_native_side_index_assume_fresh", False)):
             return ""
@@ -969,11 +994,24 @@ class _TemporalDirectBackendMixin:
                     if route:
                         route_by_hash_field.setdefault(lookup_key, route)
 
+        # Every existing value below is addressed by a (key, field) pair that is already known,
+        # so they are fetched in ONE call rather than one round trip per merge.
+        prefetch_locator_key = self._context_ref_locator_key()
+        wanted: list[tuple[str, str]] = list(lookup_updates.keys())
+        wanted.extend((prefetch_locator_key, str(ref_hash)) for ref_hash in locator_updates)
+        wanted.extend(placement_updates.keys())
+        prefetched = self._read_hash_values_best_effort(wanted) if wanted else {}
+
+        def existing_for(key: str, field: str) -> str:
+            """The stored value: from the batch when it covered this pair, per-entry otherwise."""
+            hit = prefetched.get((key, field))
+            return hit if hit is not None else self._read_hash_value_best_effort(key, field)
+
         entries: list[Json] = []
         for (key, field), update in lookup_updates.items():
             new_refs = update.get("ref_hashes", []) if isinstance(update, dict) else []
             new_buckets = update.get("posting_buckets", set()) if isinstance(update, dict) else set()
-            existing_value = self._read_hash_value_best_effort(key, field)
+            existing_value = existing_for(key, field)
             merged_refs = self._merge_ref_hashes(existing_value, new_refs)
             existing_buckets: set[int] = set()
             if existing_value:
@@ -1011,7 +1049,7 @@ class _TemporalDirectBackendMixin:
         locator_key = self._context_ref_locator_key()
         for ref_hash, new_locations in locator_updates.items():
             field = str(ref_hash)
-            merged_locations = self._merge_ref_locations(self._read_hash_value_best_effort(locator_key, field), new_locations)
+            merged_locations = self._merge_ref_locations(existing_for(locator_key, field), new_locations)
             entries.append(
                 {
                     "key": locator_key,
@@ -1023,7 +1061,7 @@ class _TemporalDirectBackendMixin:
         for (key, field), update in placement_updates.items():
             new_locations = update.get("locations", []) if isinstance(update, dict) else []
             new_versions = update.get("resource_versions", set()) if isinstance(update, dict) else set()
-            existing_value = self._read_hash_value_best_effort(key, field)
+            existing_value = existing_for(key, field)
             merged_locations = self._merge_ref_locations(existing_value, new_locations)
             merged_versions = self._merge_resource_versions(existing_value, new_versions if isinstance(new_versions, set) else set())
             entries.append(
