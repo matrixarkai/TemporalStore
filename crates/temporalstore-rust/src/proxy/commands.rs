@@ -40,6 +40,7 @@ pub(super) fn proxy_command_is_write(command: &Command) -> bool {
             | Command::ContextUpsertEntity { .. }
             | Command::ContextUpsertChildRef { .. }
             | Command::ContextUpsertEmbedding { .. }
+            | Command::ContextSetNodeEmbedding { .. }
             | Command::ContextUpsertSummary { .. }
             | Command::ContextWriteCompressionEvent { .. }
             | Command::ContextCompressEvents { .. }
@@ -113,7 +114,9 @@ fn proxy_command_key(command: &Command) -> Option<&str> {
         | Command::ContextUpsertChildRef { .. }
         | Command::ContextQueryChildren { .. }
         | Command::ContextUpsertEmbedding { .. }
+        | Command::ContextSetNodeEmbedding { .. }
         | Command::ContextQueryEmbeddings { .. }
+        | Command::ContextQueryNodeEmbeddings { .. }
         | Command::ContextTraverseTree { .. }
         | Command::ContextUpsertSummary { .. }
         | Command::ContextQuerySummaries { .. }

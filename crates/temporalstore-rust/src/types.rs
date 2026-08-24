@@ -1476,6 +1476,30 @@ pub enum Command {
         start_ms: u64,
         end_ms: u64,
     },
+    /// Attach an embedding to the node it describes.
+    ///
+    /// Addressed by the node itself rather than by a hash of (tenant, owner, level). That hash
+    /// is one-way: a writer holding a node can compute it, but nothing holding the result can
+    /// get back to the node, so the vector and the record it describes could only ever be
+    /// re-associated by recomputing the hash from the owner. Naming the owner here is what lets
+    /// the vector live on the record it belongs to.
+    /// Vectors for these nodes, read from the nodes themselves.
+    ///
+    /// The counterpart of ContextSetNodeEmbedding: asking by owner is only possible because the
+    /// vector lives on the owner now. ContextQueryEmbeddings cannot answer this -- it is keyed
+    /// by a hash of (tenant, owner, level), so the caller must already know each owner in order
+    /// to rebuild the key, and the reply cannot say which owner it came from.
+    ContextQueryNodeEmbeddings {
+        tenant_hash: u64,
+        node_hashes: Vec<u64>,
+    },
+    ContextSetNodeEmbedding {
+        tenant_hash: u64,
+        node_hash: u64,
+        model_hash: u64,
+        vector: Vec<f32>,
+        updated_at_ms: u64,
+    },
     ContextUpsertNode {
         tenant_hash: u64,
         node: ContextNode,
@@ -1920,6 +1944,11 @@ pub enum CommandResponse {
         refs: Vec<ContextChildRef>,
         #[serde(default)]
         created: Option<bool>,
+    },
+    /// (node_hash, vector) pairs -- nodes with no vector of their own are omitted, so a caller
+    /// can tell "not embedded yet" from "embedded to the zero vector".
+    ContextNodeEmbeddings {
+        embeddings: Vec<(u64, Vec<f32>)>,
     },
     ContextEmbeddings {
         embeddings: Vec<ContextEmbedding>,

@@ -1502,6 +1502,94 @@ pub(crate) fn execute_on_shard(
             }
             CommandResponse::HashEntries { entries }
         }
+        Command::ContextQueryNodeEmbeddings {
+            tenant_hash,
+            node_hashes,
+        } => {
+            // One node read per hash, and the vector comes back with it -- where the separate
+            // record meant a second lookup per node on top of the node read retrieval does
+            // anyway.
+            let embeddings = dedupe_nonzero_u64_preserve_order(node_hashes)
+                .into_iter()
+                .take(context_limit(None))
+                .filter_map(|node_hash| {
+                    let object_key = context_node_key(tenant_hash, node_hash);
+                    let node = shard
+                        .hashes
+                        .get(&object_key)
+                        .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
+                        .or_else(|| shard.context_nodes.get(&object_key))
+                        .and_then(|address| {
+                            read_page_bytes(cache, page_store, shard_id, address)
+                                .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
+                        })?;
+                    if node.vector.is_empty() {
+                        return None;
+                    }
+                    Some((node_hash, node.vector))
+                })
+                .collect();
+            CommandResponse::ContextNodeEmbeddings { embeddings }
+        }
+        Command::ContextSetNodeEmbedding {
+            tenant_hash,
+            node_hash,
+            model_hash,
+            vector,
+            updated_at_ms,
+        } => {
+            // Read-modify-write of the node record. The vector rides along with the node from
+            // here on, so a reader that has fetched the node has already paid for the vector --
+            // no second key, no second block, and no hash to invert.
+            let object_key = context_node_key(tenant_hash, node_hash);
+            let existing = shard
+                .hashes
+                .get(&object_key)
+                .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
+                .or_else(|| shard.context_nodes.get(&object_key))
+                .and_then(|address| {
+                    read_page_bytes(cache, page_store, shard_id, address)
+                        .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
+                });
+            match existing {
+                // No node to attach to. Writing a placeholder here would invent a node that
+                // ingest never created, so report it rather than fabricate one.
+                None => CommandResponse::ContextObjectKey {
+                    object_key: String::new(),
+                },
+                Some(mut node) => {
+                    node.vector = vector;
+                    node.embedding_model_hash = model_hash;
+                    node.embedding_updated_at_ms = updated_at_ms;
+                    let object_id = stable_page_object_id(
+                        shard_id,
+                        "hash",
+                        &object_key,
+                        Some(CONTEXT_NODE_FIELD),
+                    );
+                    let routing_bucket =
+                        page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
+                    if let Ok(address) = append_value(
+                        cache,
+                        page_store,
+                        shard_id,
+                        &context_bytes(&node),
+                        Some(object_id),
+                        Some(routing_bucket),
+                        async_storage,
+                    ) {
+                        shard
+                            .hashes
+                            .entry(object_key.clone())
+                            .or_default()
+                            .insert(CONTEXT_NODE_FIELD.to_string(), address);
+                        mutated = true;
+                    }
+                    invalidate_record_all(cache, shard_id, &object_key);
+                    CommandResponse::ContextObjectKey { object_key }
+                }
+            }
+        }
         Command::ContextUpsertNode { tenant_hash, node } => {
             let object_key = context_node_key(tenant_hash, node.node_hash);
             let object_id =

@@ -91,7 +91,9 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::ContextUpsertChildRef { .. }
         | Command::ContextQueryChildren { .. }
         | Command::ContextUpsertEmbedding { .. }
+        | Command::ContextSetNodeEmbedding { .. }
         | Command::ContextQueryEmbeddings { .. }
+        | Command::ContextQueryNodeEmbeddings { .. }
         | Command::ContextTraverseTree { .. }
         | Command::ContextUpsertSummary { .. }
         | Command::ContextQuerySummaries { .. }
@@ -227,6 +229,12 @@ pub(super) fn context_command_key(command: &Command) -> Option<String> {
             tenant_hash,
             embedding,
         } => Some(context_embedding_key(*tenant_hash, embedding.ref_hash)),
+        // Keyed by the NODE, not by an embedding key -- the vector now lives on the node record.
+        Command::ContextSetNodeEmbedding {
+            tenant_hash,
+            node_hash,
+            ..
+        } => Some(context_node_key(*tenant_hash, *node_hash)),
         Command::ContextQueryEmbeddings {
             tenant_hash,
             ref_hashes,

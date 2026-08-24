@@ -174,6 +174,18 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
             tenant_hash,
             embedding,
         } => vec![context_embedding_key(*tenant_hash, embedding.ref_hash)],
+        Command::ContextSetNodeEmbedding {
+            tenant_hash,
+            node_hash,
+            ..
+        } => vec![context_node_key(*tenant_hash, *node_hash)],
+        Command::ContextQueryNodeEmbeddings {
+            tenant_hash,
+            node_hashes,
+        } => node_hashes
+            .iter()
+            .map(|node_hash| context_node_key(*tenant_hash, *node_hash))
+            .collect(),
         Command::ContextUpsertSummary {
             tenant_hash,
             summary,
@@ -288,6 +300,7 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::ContextUpsertEntity { .. }
             | Command::ContextUpsertChildRef { .. }
             | Command::ContextUpsertEmbedding { .. }
+            | Command::ContextSetNodeEmbedding { .. }
             | Command::ContextUpsertSummary { .. }
             | Command::ContextWriteCompressionEvent { .. }
             | Command::ContextCompressEvents { .. }
