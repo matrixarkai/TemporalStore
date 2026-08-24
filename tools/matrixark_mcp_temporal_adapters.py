@@ -1117,7 +1117,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         appends are expanded engine-side, so a record stored inside a bundle whose wrapper carries
         no record_type is still returned.
         """
-        scanner = getattr(self._client, "matrixark_scan_candidates", None)
+        # An adapter with no client at all (partial construction, stubs) is the same answer as
+        # a client without the scan: the question cannot be asked here.
+        scanner = getattr(getattr(self, "_client", None), "matrixark_scan_candidates", None)
         if not callable(scanner):
             return None
         try:
@@ -1150,6 +1152,28 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         except ModuleNotFoundError:  # Direct script execution from tools/.
             from matrixark_mcp_local_adapter import MEMORY_TOMBSTONE_RECORD_TYPE
         return self._scan_records_of_types([MEMORY_TOMBSTONE_RECORD_TYPE])
+
+    def raw_records_for_history(self) -> list[Json]:
+        """History's records from a three-type scan instead of a raw read of the whole log.
+
+        The raw read hauls the entire store -- summaries, embeddings, index postings -- to answer
+        one id, and it grows with the store. The scan returns the three types history reports, in
+        append order, which is the order history walks. Duplicate event rows need no special care:
+        history collapses them to one "ingested" entry either way. Any failure falls back to the
+        raw read.
+        """
+        try:
+            from tools.matrixark_mcp_local_adapter import MEMORY_TOMBSTONE_RECORD_TYPE
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_local_adapter import MEMORY_TOMBSTONE_RECORD_TYPE
+        subset = self._scan_records_of_types([
+            "context_event",
+            MEMORY_TOMBSTONE_RECORD_TYPE,
+            self.MEMORY_FEEDBACK_RECORD_TYPE,
+        ])
+        if subset is None:
+            return super().raw_records_for_history()
+        return subset
 
     def prior_context_records(self) -> list[Json]:
         """The prior-context view from a five-type scan instead of a full-store read.
