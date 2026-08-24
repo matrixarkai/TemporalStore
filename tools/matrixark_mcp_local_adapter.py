@@ -5355,7 +5355,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         except (TypeError, ValueError):
             raise MatrixArkError("limit must be an integer")
         memories: list[Json] = []
-        for record in self.read_all():
+        for record in self.records_for_get_all(scope):
             if str(record.get("record_type") or "") != "context_event":
                 continue
             rec_tenant, rec_user = _record_scope_hashes(record)
@@ -5606,6 +5606,15 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         self.append(record)
         return {"recorded": True, "memory_id": memory_id, "feedback": rating,
                 "feedback_reason": reason}
+
+    def records_for_get_all(self, scope: Json) -> list[Json]:
+        """The live records get_all filters. Base implementation: the whole store.
+
+        get_all's own scope filter (hash equality) runs over whatever this returns, so an
+        override only has to produce a SUPERSET of the subject's live events -- being slow is
+        recoverable, dropping a memory from the listing is not.
+        """
+        return self.read_all()
 
     def records_for_summary_refresh(self) -> list[Json]:
         """The live records a summary-refresh pass reads. Base implementation: the whole store.

@@ -1109,7 +1109,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         return bool(records)
 
     def _scan_records_of_types(
-        self, record_types: list[str], record_ids: list[str] | None = None
+        self,
+        record_types: list[str],
+        record_ids: list[str] | None = None,
+        scope: Json | None = None,
     ) -> list[Json] | None:
         """Records of exactly these types, in append order, from one filtered scan. None = could
         not ask.
@@ -1129,7 +1132,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                 count_key=self._count_key,
                 record_hash_key=self._record_hash_key,
                 shard_size=self._shard_size,
-                scope={},
+                scope=dict(scope) if scope else {},
                 record_types=list(record_types),
                 secondary_index_groups=[],
                 selected_node_hashes=[],
@@ -1184,6 +1187,127 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         "context_compression_event",
         "context_session_boundary",
     )
+
+    def records_for_get_all(self, scope: Json) -> list[Json]:
+        """A pinned subject's live view from a scoped typed scan, not a full-store read.
+
+        Engages only when the scope resolves to non-zero tenant AND user hashes -- the engine's
+        scope index answers exactly that shape, and anything broader serves the full read.
+        Tombstones and retention markers carry no scope_key, so the scan's scopeless bucket
+        carries them into the subset and the same serving chain as the full read applies.
+        """
+        import os as _os
+
+        try:
+            tenant_hash, user_hash = self._resolve_subject_hashes(scope or {})
+        except Exception:  # noqa: BLE001
+            return self.read_all()
+        if not tenant_hash or not user_hash:
+            return self.read_all()
+        try:
+            from tools.matrixark_mcp_local_adapter import (
+                MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+                MEMORY_TOMBSTONE_RECORD_TYPE,
+                compact_and_apply_tombstones,
+                filter_live_memory_records,
+            )
+            from tools.matrixark_mcp_serving_records import compact_latest_context_state_records
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_local_adapter import (
+                MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+                MEMORY_TOMBSTONE_RECORD_TYPE,
+                compact_and_apply_tombstones,
+                filter_live_memory_records,
+            )
+            from matrixark_mcp_serving_records import compact_latest_context_state_records
+
+        shadow = _os.environ.get("MATRIXARK_GETALL_SHADOW_COMPARE", "").strip()
+        shadow_on = shadow not in {"", "0", "false", "no", "off"}
+        count_before = None
+        if shadow_on:
+            try:
+                count_before = int(self._get_count())
+            except Exception:  # noqa: BLE001
+                count_before = None
+
+        engine_scope: Json = {
+            "tenant_hash": tenant_hash,
+            "user_hash": user_hash,
+            "_explicit_scope_keys": ["tenant_id", "user_id"],
+        }
+        if isinstance(scope, dict) and scope.get("user_id"):
+            engine_scope["user_id"] = str(scope.get("user_id"))
+        subset = self._scan_records_of_types(
+            [
+                "context_event",
+                MEMORY_TOMBSTONE_RECORD_TYPE,
+                MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+            ],
+            scope=engine_scope,
+        )
+        if subset is None:
+            return self.read_all()
+        try:
+            latest_state = self._load_latest_context_state_records()
+        except Exception:  # noqa: BLE001 - the full read is the fallback, not a guess.
+            return self.read_all()
+        folded = compact_latest_context_state_records(list(subset) + list(latest_state))
+        live_subset = filter_live_memory_records(compact_and_apply_tombstones(folded))
+
+        if shadow_on:
+            full = self.read_all()
+            count_after = None
+            try:
+                count_after = int(self._get_count())
+            except Exception:  # noqa: BLE001
+                count_after = None
+            log_path = _os.environ.get("MATRIXARK_GETALL_SHADOW_LOG",
+                                       "/tmp/matrixark_getall_shadow.log")
+            if count_before is None or count_after is None or count_before != count_after:
+                try:
+                    with open(log_path, "a", encoding="utf-8") as log:
+                        log.write("SKIPPED racy window count %r -> %r\n"
+                                  % (count_before, count_after))
+                except OSError:
+                    pass
+                return full
+
+            def project(records: list[Json]) -> list[tuple]:
+                out = []
+                for record in records:
+                    if str(record.get("record_type") or "") != "context_event":
+                        continue
+                    rec_tenant, rec_user = 0, 0
+                    try:
+                        from tools.matrixark_mcp_local_adapter import _record_scope_hashes
+                    except ModuleNotFoundError:
+                        from matrixark_mcp_local_adapter import _record_scope_hashes
+                    rec_tenant, rec_user = _record_scope_hashes(record)
+                    if rec_tenant != tenant_hash or rec_user != user_hash:
+                        continue
+                    out.append((str(record.get("event_id_hash") or ""),
+                                int(record.get("updated_at_ms") or 0)))
+                return out
+
+            expected, got = project(full), project(live_subset)
+            if expected != got:
+                try:
+                    with open(log_path, "a", encoding="utf-8") as log:
+                        log.write("MISMATCH full=%d subset=%d only_full=%r only_subset=%r\n" % (
+                            len(expected), len(got),
+                            [row for row in expected if row not in set(got)][:4],
+                            [row for row in got if row not in set(expected)][:4],
+                        ))
+                except OSError:
+                    pass
+            else:
+                try:
+                    with open(log_path, "a", encoding="utf-8") as log:
+                        log.write("CLEAN %d records\n" % len(got))
+                except OSError:
+                    pass
+            return full
+        return live_subset
 
     def records_for_summary_refresh(self) -> list[Json]:
         """The refresh pass's view from a typed scan, through the SAME serving chain as read_all.
