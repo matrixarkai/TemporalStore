@@ -49,17 +49,11 @@ pub(super) fn push_replica(
     state: &MetaState,
     replicas: &mut Vec<String>,
     seen_replicas: &mut BTreeSet<String>,
-    used_locations: &mut BTreeSet<String>,
     used_hosts: &mut BTreeSet<String>,
     server_addr: &str,
 ) {
     if !seen_replicas.insert(server_addr.to_string()) {
         return;
-    }
-    if let Some(server) = state.servers.get(server_addr) {
-        if !server.location.is_empty() {
-            used_locations.insert(server.location.clone());
-        }
     }
     let host = server_host(server_addr);
     if !host.is_empty() {
