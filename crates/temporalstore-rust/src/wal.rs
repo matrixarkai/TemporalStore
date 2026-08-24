@@ -903,6 +903,12 @@ impl LocalWriteAheadLogStore {
         let Some((path, physical)) = locate_log_id(&inner.root, shard_id, offset)? else {
             return Ok(Vec::new());
         };
+        // The records may stop before the file does: under preallocation the active piece ends
+        // in a zeros reservation, which is room, not log content, and must not be served to a
+        // caller reading the stream. Sealed pieces end exactly at their records, so the clamp
+        // is a no-op there.
+        let (_, record_end) = last_wal_sequence_in(&path)?;
+        let size = size.min(record_end.saturating_sub(physical));
         let bytes = read_at(&path, physical, size)?;
         inner.stats.reads += 1;
         inner.stats.bytes_read += bytes.len() as u64;
@@ -1193,11 +1199,17 @@ impl LocalWriteAheadLogStore {
         // That is what makes the whole reclaim expressible as one number: every survivor moves
         // down by exactly the length of the removed prefix.
         let (base_offset, header_len) = read_wal_base(&path)?;
+        // Where the records stop. Under preallocation the file continues past them as a zeros
+        // reservation, which this pass must neither decode as a record nor copy into the
+        // rewritten file; the tail scan also repairs any torn non-zero tail first, exactly as
+        // an append would.
+        let (_, record_end) = last_wal_sequence_in(&path)?;
         // One line at a time. A log is not bounded by memory, so neither this search nor the
         // copy below may hold it: reclaiming a large log otherwise costs a transient allocation
         // the size of the whole file.
-        let mut reader = BufReader::new(File::open(&path)?);
-        reader.seek(SeekFrom::Start(header_len))?;
+        let mut source = File::open(&path)?;
+        source.seek(SeekFrom::Start(header_len))?;
+        let mut reader = BufReader::new(source.take(record_end.saturating_sub(header_len)));
         let mut records_before = 0usize;
         let mut records_after = 0usize;
         let mut split = None;
@@ -1277,7 +1289,10 @@ impl LocalWriteAheadLogStore {
             // arithmetic this whole scheme rests on, and it costs a parse per record.
             let mut source = File::open(&path)?;
             source.seek(SeekFrom::Start(split))?;
-            std::io::copy(&mut BufReader::new(source), &mut temp)?;
+            std::io::copy(
+                &mut BufReader::new(source.take(record_end.saturating_sub(split))),
+                &mut temp,
+            )?;
             temp.flush()?;
             temp.sync_all()?;
         }
@@ -1290,6 +1305,11 @@ impl LocalWriteAheadLogStore {
             .base_by_shard
             .insert(shard_id, (new_base, new_header_len));
         let bytes_after = path.metadata()?.len();
+        // The rewritten file ends exactly at its records: no reservation survives the rename,
+        // and the record end IS the file length again. Leaving the old entries in place would
+        // make the next append place its bytes against the pre-rewrite file.
+        inner.verified_len_by_shard.insert(shard_id, bytes_after);
+        inner.prealloc_physical_by_shard.remove(&shard_id);
         Ok(WriteAheadLogGcReport {
             shard_id,
             retain_from_sequence,
@@ -1378,6 +1398,11 @@ impl LocalWriteAheadLogStore {
             if line.trim().is_empty() {
                 continue;
             }
+            // The records may end before the file does: a trailing zeros run is preallocated
+            // room, not a record, and it always comes last.
+            if line.bytes().all(|byte| byte == 0) {
+                break;
+            }
             let record = decode_wal_line(line.as_bytes())?;
             if start_sequence == 0 {
                 start_sequence = record.sequence;
@@ -1440,6 +1465,17 @@ fn drop_covered_wal_segments(
         sync_parent_dir(&active)?;
     }
     Ok((dropped, freed))
+}
+
+/// One byte at `offset`, or None at/past the end of the file.
+fn byte_at(path: &Path, offset: u64) -> Result<Option<u8>, WriteAheadLogError> {
+    let mut file = File::open(path)?;
+    file.seek(SeekFrom::Start(offset))?;
+    let mut byte = [0u8; 1];
+    match std::io::Read::read(&mut file, &mut byte)? {
+        0 => Ok(None),
+        _ => Ok(Some(byte[0])),
+    }
 }
 
 fn read_at(path: &Path, physical: u64, size: u64) -> Result<Vec<u8>, WriteAheadLogError> {
@@ -1806,7 +1842,17 @@ fn resolve_last_sequence_for_append(
                 verified_len
             };
             if on_disk_len == expected_physical {
-                return Ok((cached_last_sequence, verified_len));
+                // An unchanged length is not enough under preallocation: another process
+                // appending INSIDE the reservation leaves the file the same size. Its write
+                // starts with a frame byte, never NUL, so one byte read at our record end tells
+                // the two apart -- zero (or reading at the very end) means the reservation is
+                // still ours from here on.
+                let interloper = wal_preallocate_enabled()
+                    && verified_len < on_disk_len
+                    && byte_at(&path, verified_len)?.is_some_and(|byte| byte != 0);
+                if !interloper {
+                    return Ok((cached_last_sequence, verified_len));
+                }
             }
         }
     }
@@ -1855,13 +1901,16 @@ fn wal_env_flag_default_on(name: &str) -> bool {
     )
 }
 
-/// TS_WAL_PREALLOCATE (default OFF): write records inside a file that has already been grown
+/// TS_WAL_PREALLOCATE (default ON): write records inside a file that has already been grown
 /// to size instead of growing it on every append. fdatasync on a growing file must persist the
 /// new length -- the bytes are unreadable without it -- so every barrier pays a metadata write.
-/// Growing the file in chunks moves that cost to once per chunk. Measured only worthwhile at
-/// small group sizes (issue #188); ships dark until confirmed on the storage the cluster runs on.
+/// Growing the file in chunks moves that cost to once per chunk: measured 42-55% cheaper at a
+/// barrier per record (issue #188). Live by default now that the full suite runs green with it
+/// forced on; the env var remains the escape hatch (=0 restores growing appends, and a log
+/// written either way reads back under the other, since the tail scan treats a zeros run as
+/// room and a plain file simply ends at its records).
 fn wal_preallocate_enabled() -> bool {
-    wal_env_flag_on("TS_WAL_PREALLOCATE")
+    wal_env_flag_default_on("TS_WAL_PREALLOCATE")
 }
 
 /// TS_WAL_PREALLOCATE_CHUNK: how far past the write the file is grown when it runs out of room.
@@ -1922,10 +1971,26 @@ fn append_record_locked(
 ) -> Result<WriteAheadLogAppendReport, WriteAheadLogError> {
     let path = write_ahead_log_path(&inner.root, record.shard_id);
     // The caller has usually just measured this under the same append lock, so taking its answer
-    // costs nothing and asking again costs a stat.
+    // costs nothing and asking again costs a stat. With no answer in hand, the record end comes
+    // from the cache this function itself maintains -- under preallocation the file's length is
+    // the RESERVATION, so the metadata fallback would put the record after the zeros; and a
+    // caller looping appends (the atomic batch) needs each write to advance the next one's
+    // offset, which only holds if the cache is updated here, where the write happens.
     let offset = match known_offset {
         Some(offset) => offset,
-        None => path.metadata().map(|metadata| metadata.len()).unwrap_or(0),
+        None => match inner.verified_len_by_shard.get(&record.shard_id) {
+            Some(&record_end) if wal_preallocate_enabled() => record_end,
+            _ => {
+                if wal_preallocate_enabled() && path.exists() {
+                    // Cold under the gate: the file may end in a reservation another process
+                    // left, so ask the tail scan where the records stop.
+                    let (_, record_end) = last_wal_sequence_in(&path)?;
+                    record_end
+                } else {
+                    path.metadata().map(|metadata| metadata.len()).unwrap_or(0)
+                }
+            }
+        },
     };
     // Frame the record with a length + SHA-256 digest so a later value-preserving bit-flip in
     // this committed line is detected on read (see `crate::log_framing`). Offsets/stats below
@@ -1985,6 +2050,11 @@ fn append_record_locked(
     } else {
         file.metadata()?.len()
     };
+    // The record-end cache advances with the write itself, so a caller that appends in a loop
+    // without re-measuring (the atomic batch) still places every record after the previous one.
+    inner
+        .verified_len_by_shard
+        .insert(record.shard_id, persistent_bytes);
     inner.stats.writes += 1;
     inner.stats.bytes_written += bytes.len() as u64;
     inner.stats.persistent_bytes = persistent_bytes;
@@ -2429,7 +2499,11 @@ mod tests {
         // corruption, not a torn tail.
         let path = write_ahead_log_path(dir.path(), 1);
         let contents = std::fs::read_to_string(&path).unwrap();
-        let lines: Vec<&str> = contents.lines().collect();
+        // Preallocated room trails the records; the record lines are the non-zero ones.
+        let lines: Vec<&str> = contents
+            .lines()
+            .filter(|line| !line.bytes().all(|byte| byte == 0))
+            .collect();
         assert_eq!(lines.len(), 4);
         let corrupted = format!(
             "{}\ncorrupt-not-json\n{}\n{}\n",
@@ -2763,12 +2837,23 @@ mod tests {
         }
     }
 
+    /// The file bytes with any trailing preallocated-zeros reservation stripped:
+    /// exactly the records (a record line always ends in a newline, never a NUL).
+    fn strip_reservation(mut bytes: Vec<u8>) -> Vec<u8> {
+        while bytes.last() == Some(&0) {
+            bytes.pop();
+        }
+        bytes
+    }
+
     /// Decode the shard's WAL the way GC does, so a test can assert on what survived.
     fn sequences_on_disk(root: &std::path::Path, shard: ShardId) -> Vec<u64> {
         let bytes = std::fs::read(write_ahead_log_path(root, shard)).unwrap();
         bytes[data_start(&bytes)..]
             .split(|byte| *byte == b'\n')
             .filter(|line| !line.is_empty())
+            // A trailing zeros run is preallocated room, not a record.
+            .filter(|line| !line.iter().all(|byte| *byte == 0))
             .map(|line| decode_wal_line(line).unwrap().sequence)
             .collect()
     }
@@ -2777,9 +2862,15 @@ mod tests {
     fn record_offsets_on_disk(root: &std::path::Path, shard: ShardId) -> Vec<usize> {
         let bytes = std::fs::read(write_ahead_log_path(root, shard)).unwrap();
         let start = data_start(&bytes);
+        // Preallocated room ends the records early: nothing starts inside the zeros.
+        let end = bytes[start..]
+            .windows(1)
+            .rposition(|window| window[0] == b'\n')
+            .map(|index| start + index + 1)
+            .unwrap_or(bytes.len());
         let mut offsets = vec![start];
-        for (index, byte) in bytes.iter().enumerate().skip(start) {
-            if *byte == b'\n' && index + 1 < bytes.len() {
+        for (index, byte) in bytes.iter().enumerate().take(end).skip(start) {
+            if *byte == b'\n' && index + 1 < end {
                 offsets.push(index + 1);
             }
         }
@@ -2960,7 +3051,8 @@ mod tests {
         let store = LocalWriteAheadLogStore::new(dir.path());
         append_n(&store, 1, 6);
 
-        let raw_before = std::fs::read(write_ahead_log_path(dir.path(), 1)).unwrap();
+        let raw_before =
+            strip_reservation(std::fs::read(write_ahead_log_path(dir.path(), 1)).unwrap());
         let offsets = record_offsets_on_disk(dir.path(), 1);
         // Reclaiming from sequence 4 keeps records from index 3 onward.
         let split = offsets[3];
@@ -3314,9 +3406,10 @@ mod tests {
                     .unwrap();
             }
             let micros = started.elapsed().as_secs_f64() * 1e6 / records as f64;
-            let bytes = std::fs::metadata(write_ahead_log_path(dir.path(), 1))
-                .unwrap()
-                .len();
+            let bytes = strip_reservation(
+                std::fs::read(write_ahead_log_path(dir.path(), 1)).unwrap(),
+            )
+            .len() as u64;
             (bytes, micros)
         }
 
@@ -3662,7 +3755,7 @@ mod tests {
 
         // A write that stopped partway: bytes with no newline after them.
         let path = write_ahead_log_path(dir.path(), 1);
-        let whole = std::fs::read(&path).unwrap();
+        let whole = strip_reservation(std::fs::read(&path).unwrap());
         let mut torn = whole.clone();
         torn.extend_from_slice(b"#tsf2 99 deadbeef {\"s\":1,\"q\":4,\"c\"");
         std::fs::write(&path, &torn).unwrap();
@@ -3708,7 +3801,7 @@ mod tests {
         }
         drop(store);
         let path = write_ahead_log_path(dir.path(), 1);
-        let mut padded = std::fs::read(&path).unwrap();
+        let mut padded = strip_reservation(std::fs::read(&path).unwrap());
         padded.extend_from_slice(b"\n\n   \n");
         std::fs::write(&path, padded).unwrap();
 
@@ -4495,6 +4588,30 @@ mod tests {
         match outcome {
             Ok(value) => value,
             Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+
+    /// The escape hatch, pinned: =0 must restore growing appends exactly.
+    #[test]
+    fn the_preallocate_escape_hatch_restores_growing_appends() {
+        std::env::set_var("TS_WAL_PREALLOCATE", "0");
+        let outcome = std::panic::catch_unwind(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            append_n(&store, 1, 10);
+            let path = dir.path().join("shard-1.wal.jsonl");
+            let physical = path.metadata().unwrap().len();
+            let records = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+            assert_eq!(10, records.len());
+            let record_bytes: u64 = records.iter().map(|(_, line)| line.len() as u64).sum();
+            assert_eq!(
+                physical, record_bytes,
+                "with the hatch pulled, the file must end exactly at its records"
+            );
+        });
+        std::env::remove_var("TS_WAL_PREALLOCATE");
+        if let Err(panic) = outcome {
+            std::panic::resume_unwind(panic);
         }
     }
 
