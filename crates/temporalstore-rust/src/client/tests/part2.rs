@@ -264,6 +264,53 @@ fn client_metasync_backoff_deadline_and_topology_refresh_survive_outage_churn() 
 }
 
 #[test]
+fn failure_driven_topology_syncs_are_spaced_out() {
+    // A request that fails in a way suggesting the cached topology is wrong triggers a
+    // re-sync. The guard on that is per REQUEST, which says nothing about the other requests
+    // in flight -- and a shard moving fails many at once. Unthrottled, each one is its own
+    // metaserver round-trip: a sync storm aimed at the metaserver exactly while it is working
+    // through the topology change that caused the failures. One failure is enough to learn
+    // what all of them need.
+    let client = TemporalStoreClient::with_options(ClientOptions {
+        proxy_addr: "127.0.0.1:1".to_string(),
+        meta_addr: Some("127.0.0.1:1".to_string()),
+        topo_error_retry_interval_ms: 5_000,
+        ..ClientOptions::default()
+    });
+
+    assert!(
+        client.forced_sync_is_due("ns", "tbl"),
+        "the first failure should learn the topology"
+    );
+    for attempt in 0..8 {
+        assert!(
+            !client.forced_sync_is_due("ns", "tbl"),
+            "concurrent failure {attempt} must not each fire their own sync"
+        );
+    }
+
+    // Per table, not global: another table's failure is its own question.
+    assert!(
+        client.forced_sync_is_due("ns", "other"),
+        "a different table must not be throttled by this one"
+    );
+
+    // Zero disables the spacing, which is the older behaviour, kept reachable.
+    let eager = TemporalStoreClient::with_options(ClientOptions {
+        proxy_addr: "127.0.0.1:1".to_string(),
+        meta_addr: Some("127.0.0.1:1".to_string()),
+        topo_error_retry_interval_ms: 0,
+        ..ClientOptions::default()
+    });
+    for attempt in 0..4 {
+        assert!(
+            eager.forced_sync_is_due("ns", "tbl"),
+            "with spacing off, attempt {attempt} should still sync"
+        );
+    }
+}
+
+#[test]
 fn a_second_sync_asks_only_for_what_changed_and_keeps_its_routes() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
