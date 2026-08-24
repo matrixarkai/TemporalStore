@@ -2074,6 +2074,79 @@ mod tests {
     }
 
     #[test]
+    fn the_default_detector_reports_what_it_freezes() {
+        // temporalstore_meta_convicted_total is exported unconditionally, and
+        // only the adaptive detector was recording into it. The adaptive one is
+        // off unless asked for, so on a default metaserver the counter sat at
+        // zero while this detector froze servers and proxies -- a confident
+        // wrong number, which reads worse than an absent series.
+        let meta = SingleNodeMeta::default();
+        register(&meta, "server-a");
+        assert!(meta
+            .register_proxy(RegisterProxyRequest {
+                proxy_addr: "proxy-a".to_string(),
+                namespace: "ns".to_string(),
+                location: "rack-1".to_string(),
+                config_version: 1,
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        let report = meta.freeze_stale_resources(0);
+        assert!(report.status.ok);
+        assert_eq!(report.frozen_servers.len(), 1, "{report:?}");
+        assert_eq!(report.frozen_proxies.len(), 1, "{report:?}");
+
+        let exported = meta.subsystem_metrics().prometheus();
+        assert!(
+            exported.contains("temporalstore_meta_convicted_total{tier=\"server\"} 1"),
+            "the detector froze a server and the counter did not move:\n{exported}"
+        );
+        assert!(
+            exported.contains("temporalstore_meta_convicted_total{tier=\"proxy\"} 1"),
+            "the detector froze a proxy and the counter did not move:\n{exported}"
+        );
+    }
+
+    #[test]
+    fn each_tier_counts_only_its_own_freezes() {
+        // `record_conviction` sums both lists, so one call carrying servers and
+        // proxies together would count every freeze under both tiers. The
+        // counts are deliberately asymmetric -- two servers, one proxy -- so
+        // any cross-contamination shows up as a wrong number rather than a
+        // coincidentally equal one.
+        let meta = SingleNodeMeta::default();
+        register(&meta, "server-a");
+        register(&meta, "server-b");
+        assert!(meta
+            .register_proxy(RegisterProxyRequest {
+                proxy_addr: "proxy-a".to_string(),
+                namespace: "ns".to_string(),
+                location: "rack-1".to_string(),
+                config_version: 1,
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert!(meta.freeze_stale_resources(0).status.ok);
+
+        let exported = meta.subsystem_metrics().prometheus();
+        assert!(
+            exported.contains("temporalstore_meta_convicted_total{tier=\"server\"} 2"),
+            "two servers frozen must count two under server:
+{exported}"
+        );
+        assert!(
+            exported.contains("temporalstore_meta_convicted_total{tier=\"proxy\"} 1"),
+            "one proxy frozen must count one under proxy:
+{exported}"
+        );
+    }
+
+    #[test]
     fn a_convicted_server_cannot_register_its_way_back_into_service() {
         // Without this the freeze cooldown is the only guard, and it defaults to
         // zero -- so the convicted node clears the metaserver's decision simply
