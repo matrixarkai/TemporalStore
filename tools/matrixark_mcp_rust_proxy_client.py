@@ -660,7 +660,11 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
         record_types: list[str],
         secondary_index_groups: list[list[str]],
         selected_node_hashes: list[int],
+        record_ids: list[str] | None = None,
     ) -> Json:
+        extra: Json = {}
+        if record_ids:
+            extra["record_ids"] = [str(item) for item in record_ids]
         return self._call_json(
             "matrixark_scan_candidates",
             count_key=count_key,
@@ -670,6 +674,7 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
             record_types=record_types,
             secondary_index_groups=secondary_index_groups,
             selected_node_hashes=selected_node_hashes,
+            **extra,
         )
 
     def metrics_prometheus(self) -> str:

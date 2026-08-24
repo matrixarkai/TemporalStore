@@ -1065,6 +1065,7 @@ fn matrixark_scan_cache_key(command: &RecordLogRequest, count: u64) -> String {
         "shard_size": command.shard_size.unwrap_or(1024).max(1),
         "count": count,
         "record_types": command.record_types,
+        "record_ids": command.record_ids,
         "selected_node_hashes": command.selected_node_hashes,
         "secondary_index_groups": command.secondary_index_groups,
         "scope": command.scope,
@@ -1444,6 +1445,147 @@ fn type_index_payloads(
     Ok(Some((values, shards_touched)))
 }
 
+/// Is this record about one of `ids` -- carrying it, targeting it, or created by superseding it?
+///
+/// `record_addressable_ids` covers what a record CARRIES (its own identity and its ref hashes);
+/// history also needs the records that POINT at an id: a tombstone's `target_memory_id`, and the
+/// supersede link `superseded_by` that marks the successor's creation.
+fn record_id_linked(record: &Value, ids: &HashSet<String>) -> bool {
+    if record_addressable_ids(record)
+        .iter()
+        .any(|id| ids.contains(id.as_str()))
+    {
+        return true;
+    }
+    for field in ["target_memory_id", "superseded_by"] {
+        match record.get(field) {
+            Some(Value::String(text)) if ids.contains(text.as_str()) => return true,
+            Some(Value::Number(number)) if ids.contains(number.to_string().as_str()) => {
+                return true
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Payload values for an id-scoped scan, in append order: the ids' locator locations plus the
+/// type-index locations of every requested type except `context_event` (events carry their own
+/// id, so the locator covers them; tombstones and feedback point at an id without carrying it,
+/// and they are sparse). `Ok(None)` = compose cannot answer; the caller walks.
+fn id_scoped_payloads(
+    engine: &TemporalEngine,
+    record_hash_key: &str,
+    allowed_types: &HashSet<String>,
+    requested_ids: &[String],
+) -> Result<Option<(Vec<String>, u64)>, String> {
+    let ready = read_record_count(engine, &type_index_ready_key(record_hash_key))?;
+    if ready.trim() != "1" {
+        return Ok(None);
+    }
+    // The record hash key is `{prefix}:records`, so the locator key derives from it -- callers
+    // do not reliably send storage_prefix, and the id mode must not depend on an optional field.
+    let Some(prefix) = record_hash_key.strip_suffix(":records") else {
+        return Ok(None);
+    };
+    let locator_key = format!("{prefix}:context_ref_locator");
+    let mut positions: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for id in requested_ids {
+        let raw = read_bytes(
+            engine,
+            Command::HashGet {
+                key: locator_key.clone(),
+                field: id.clone(),
+            },
+        )?;
+        let mut found = 0_usize;
+        if !raw.is_empty() {
+            if let Ok(decoded) = serde_json::from_str::<Value>(&raw) {
+                for location in decoded
+                    .get("locations")
+                    .and_then(Value::as_array)
+                    .map(|items| items.as_slice())
+                    .unwrap_or(&[])
+                {
+                    let key = location.get("key").and_then(Value::as_str).unwrap_or("");
+                    let field = location.get("field").and_then(Value::as_str).unwrap_or("");
+                    if key.is_empty() || field.is_empty() {
+                        continue;
+                    }
+                    // Only locations in THIS record log: the locator is shared per prefix, and a
+                    // location under another base must not leak into this scan.
+                    let Some((base, shard)) = record_shard_key_parts(key) else {
+                        continue;
+                    };
+                    if base != record_hash_key {
+                        continue;
+                    }
+                    positions.insert(format!("{shard}:{field}"));
+                    found += 1;
+                }
+            }
+        }
+        if found == 0 {
+            // An old store predating the side index, or an id that never existed. The walk is
+            // the correct answer for both; guessing "no records" here would erase real history.
+            return Ok(None);
+        }
+    }
+    for record_type in allowed_types {
+        if record_type == "context_event" {
+            continue;
+        }
+        for (location, _) in hgetall_map(engine, type_index_key(record_hash_key, record_type))? {
+            positions.insert(location);
+        }
+    }
+    let mut fields_by_shard: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for location in &positions {
+        if let Some((shard, field)) = location.split_once(':') {
+            fields_by_shard
+                .entry(shard.to_string())
+                .or_default()
+                .push(field.to_string());
+        }
+    }
+    let shards_touched = fields_by_shard.len() as u64;
+    let mut values = Vec::with_capacity(positions.len());
+    for (shard, fields) in fields_by_shard {
+        let key = format!("{record_hash_key}:{shard}");
+        let response = engine.execute_durable(ExecuteRequest {
+            shard_id: DEFAULT_SHARD_ID,
+            command: Command::HashMultiGet { key, fields },
+        });
+        if !response.status.ok {
+            return Err(format!(
+                "{}: {}",
+                response.status.code, response.status.message
+            ));
+        }
+        match response.response {
+            CommandResponse::Values {
+                values: shard_values,
+            } => {
+                for value in shard_values {
+                    let Some(bytes) = value else { continue };
+                    if bytes.is_empty() {
+                        continue;
+                    }
+                    values.push(String::from_utf8(bytes).map_err(|error| {
+                        format!("stored hash value is not UTF-8: {error}")
+                    })?);
+                }
+            }
+            other => {
+                return Err(format!(
+                    "unexpected response for id-scoped fetch: {other:?}"
+                ))
+            }
+        }
+    }
+    Ok(Some((values, shards_touched)))
+}
+
 /// Persist a walk-built index and its ready-marker, once. Returns whether it wrote.
 fn persist_type_index_backfill(
     engine: &TemporalEngine,
@@ -1514,8 +1656,23 @@ fn scan_matrixark_candidates(
     // Collect payloads first -- from the type index when it can answer, from the shard walk
     // otherwise -- then run one shared filter loop, so the two paths cannot drift.
     let mut payload_values: Vec<String> = Vec::new();
+    let requested_ids: Vec<String> = command.record_ids.clone().unwrap_or_default();
+    let requested_id_set: HashSet<String> = requested_ids.iter().cloned().collect();
+    let mut id_scoped_used = false;
     let mut type_index_used = false;
-    if !allowed_types.is_empty() && count > 0 {
+    if !requested_ids.is_empty() && count > 0 {
+        if let Some((values, shards_touched)) = id_scoped_payloads(
+            engine,
+            &record_hash_key,
+            &allowed_types,
+            &requested_ids,
+        )? {
+            payload_values = values;
+            placement_partitions_touched = shards_touched;
+            id_scoped_used = true;
+        }
+    }
+    if !id_scoped_used && !allowed_types.is_empty() && count > 0 {
         if let Some((values, shards_touched)) =
             type_index_payloads(engine, &record_hash_key, &allowed_types)?
         {
@@ -1525,7 +1682,7 @@ fn scan_matrixark_candidates(
         }
     }
     let mut type_index_backfilled = false;
-    if !type_index_used && count > 0 {
+    if !id_scoped_used && !type_index_used && count > 0 {
         // The walk this scan pays anyway sees every payload, so it can build the index for every
         // type in the store as a side effect; the marker makes the next scan's miss authoritative.
         let mut backfill: BTreeMap<String, Vec<(String, Vec<u8>)>> = BTreeMap::new();
@@ -1556,6 +1713,10 @@ fn scan_matrixark_candidates(
                     .unwrap_or("");
                 if !allowed_types.is_empty() && !allowed_types.contains(record_type) {
                     dropped_by_type += 1;
+                    continue;
+                }
+                if !requested_id_set.is_empty() && !record_id_linked(&record, &requested_id_set) {
+                    dropped_by_scope += 1; // id-filtered, counted with scope drops
                     continue;
                 }
                 if !scope_matches_record(&record, command.scope.as_ref()) {
@@ -1703,6 +1864,7 @@ fn scan_matrixark_candidates(
             "dropped_by_scope": dropped_by_scope,
             "selected_node_dropped_candidate_count": selected_node_dropped,
             "secondary_index_groups_supplied": secondary_groups.len(),
+            "id_scoped_used": id_scoped_used,
             "type_index_used": type_index_used,
             "type_index_backfilled": type_index_backfilled,
             "secondary_index_matched_candidate_count": secondary_matched,
@@ -4024,6 +4186,115 @@ mod tests {
             payload.to_string(),
         )];
         execute_record_log_request(engine, append, root).expect("append");
+    }
+
+    /// Id mode: the locator finds the id's own rows, the type index finds the rows that point
+    /// at it, and the composed answer equals the walk's -- in the walk's order.
+    #[test]
+    fn id_scoped_scan_matches_the_walk() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        clear_engine_cache();
+        clear_matrixark_scan_cache();
+
+        let storage_prefix = "matrixark:test:id-scoped";
+        let probe = request("get_string");
+        let root = record_log_root(&probe);
+        let engine = open_engine(&probe).expect("engine");
+        append_one(&engine, storage_prefix, 0,
+            r#"{"record_type":"context_event","event_id_hash":77,"text":"the memory"}"#,
+            root.clone());
+        append_one(&engine, storage_prefix, 1,
+            r#"{"record_type":"context_event","event_id_hash":88,"text":"someone else"}"#,
+            root.clone());
+        append_one(&engine, storage_prefix, 2,
+            r#"{"record_type":"matrixark_memory_tombstone","tombstone_kind":"delete","tombstone_reason":"supersede","target_memory_id":"77","superseded_by":"99"}"#,
+            root.clone());
+        append_one(&engine, storage_prefix, 3,
+            r#"{"record_type":"matrixark_memory_feedback","target_memory_id":"77","feedback":"POSITIVE"}"#,
+            root.clone());
+
+        // The locator entry the adapter's side-index builder would have written: the id's OWN
+        // row only. The tombstone and feedback must come from the type index -- that split is
+        // the design under test.
+        let mut locator = request("hset");
+        locator.key = format!("{storage_prefix}:context_ref_locator");
+        locator.field = "77".to_string();
+        locator.value = format!(
+            r#"{{"locations":[{{"key":"{storage_prefix}:records:000000","field":"{:020}"}}]}}"#,
+            0
+        );
+        execute_record_log_request(&engine, locator, root.clone()).expect("locator entry");
+
+        let id_request = |root: PathBuf| {
+            let mut scan = request("matrixark_scan_candidates");
+            scan.storage_prefix = storage_prefix.to_string();
+            scan.count_key = Some(format!("{storage_prefix}:record_count"));
+            scan.record_hash_key = Some(format!("{storage_prefix}:records"));
+            scan.shard_size = Some(1);
+            scan.record_types = Some(vec![
+                "context_event".to_string(),
+                "matrixark_memory_tombstone".to_string(),
+                "matrixark_memory_feedback".to_string(),
+            ]);
+            scan.record_ids = Some(vec!["77".to_string()]);
+            let output = execute_record_log_request(&engine, scan, root).expect("id scan");
+            Value::Object(output.extra.into_iter().collect())
+        };
+
+        // First run: no marker yet, so the walk answers (id-filtered) and backfills.
+        let walk = id_request(root.clone());
+        let stats = walk.get("scan_stats").expect("stats");
+        assert_eq!(Some(false), stats.get("id_scoped_used").and_then(Value::as_bool));
+        assert_eq!(Some(true), stats.get("type_index_backfilled").and_then(Value::as_bool));
+
+        clear_matrixark_scan_cache();
+        let scoped = id_request(root.clone());
+        let stats = scoped.get("scan_stats").expect("stats");
+        assert_eq!(Some(true), stats.get("id_scoped_used").and_then(Value::as_bool),
+            "the second run must be served by the locator + type-index compose");
+        assert_eq!(scan_record_texts(&walk), scan_record_texts(&scoped),
+            "id-scoped and walk answers must be identical, in the same order");
+        assert_eq!(vec!["the memory", "77", "77"], scan_record_texts(&scoped),
+            "the other memory's event must be absent; order is log order");
+    }
+
+    /// An id the locator has never seen falls back to the walk -- absence must be walked, not
+    /// guessed, because an old store predates the side index.
+    #[test]
+    fn id_scoped_scan_walks_when_the_locator_has_no_entry() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        clear_engine_cache();
+        clear_matrixark_scan_cache();
+
+        let storage_prefix = "matrixark:test:id-scoped-miss";
+        let probe = request("get_string");
+        let root = record_log_root(&probe);
+        let engine = open_engine(&probe).expect("engine");
+        append_one(&engine, storage_prefix, 0,
+            r#"{"record_type":"context_event","event_id_hash":77,"text":"unlocated"}"#,
+            root.clone());
+
+        let mut scan = request("matrixark_scan_candidates");
+        scan.storage_prefix = storage_prefix.to_string();
+        scan.count_key = Some(format!("{storage_prefix}:record_count"));
+        scan.record_hash_key = Some(format!("{storage_prefix}:records"));
+        scan.shard_size = Some(1);
+        scan.record_types = Some(vec!["context_event".to_string()]);
+        scan.record_ids = Some(vec!["77".to_string()]);
+        let output = execute_record_log_request(&engine, scan.clone(), root.clone()).expect("scan");
+        let first = Value::Object(output.extra.into_iter().collect());
+        clear_matrixark_scan_cache();
+        let output = execute_record_log_request(&engine, scan, root).expect("scan");
+        let second = Value::Object(output.extra.into_iter().collect());
+        for result in [&first, &second] {
+            let stats = result.get("scan_stats").expect("stats");
+            assert_eq!(Some(false), stats.get("id_scoped_used").and_then(Value::as_bool));
+            assert_eq!(vec!["unlocated"], scan_record_texts(result));
+        }
     }
 
     /// The core property: walk + backfill on the first typed scan, index on the second, and the
