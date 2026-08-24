@@ -3807,6 +3807,7 @@ mod tests {
                 node_id: 1,
                 location: "rack-1".to_string(),
                 binary_version: "v1".to_string(),
+                numa_nodes: Vec::new(),
             })
         };
         register();
@@ -3852,6 +3853,7 @@ mod tests {
                 node_id: 1,
                 location: "rack-1".to_string(),
                 binary_version: "v1".to_string(),
+                numa_nodes: Vec::new(),
             })
         };
         register();
@@ -3883,6 +3885,7 @@ mod tests {
             node_id: 1,
             location: "rack-1".to_string(),
             binary_version: "v1".to_string(),
+            numa_nodes: Vec::new(),
         });
         assert!(meta.drop_server(drop_of("node-a")).status.ok);
         let first = drop_clock(&meta, "server:node-a").expect("stamped");
