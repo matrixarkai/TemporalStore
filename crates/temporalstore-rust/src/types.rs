@@ -1476,6 +1476,20 @@ pub enum Command {
         start_ms: u64,
         end_ms: u64,
     },
+    /// Attach an embedding to the node it describes.
+    ///
+    /// Addressed by the node itself rather than by a hash of (tenant, owner, level). That hash
+    /// is one-way: a writer holding a node can compute it, but nothing holding the result can
+    /// get back to the node, so the vector and the record it describes could only ever be
+    /// re-associated by recomputing the hash from the owner. Naming the owner here is what lets
+    /// the vector live on the record it belongs to.
+    ContextSetNodeEmbedding {
+        tenant_hash: u64,
+        node_hash: u64,
+        model_hash: u64,
+        vector: Vec<f32>,
+        updated_at_ms: u64,
+    },
     ContextUpsertNode {
         tenant_hash: u64,
         node: ContextNode,

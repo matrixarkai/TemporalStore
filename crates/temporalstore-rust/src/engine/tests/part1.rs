@@ -2575,3 +2575,181 @@ fn string_get_uses_memory_cache() {
     assert!(stats.memory_hits >= 1);
     assert!(stats.puts >= 2);
 }
+
+// shared-corpus: context_node_inline_embedding
+#[test]
+fn a_node_embedding_lands_on_the_node_itself() {
+    // Addressing the write by the node is the whole point: the old ref hash of
+    // (tenant, owner, level) is one-way, so a vector written under it could only ever be
+    // found again by recomputing that hash from an owner someone already had in hand.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    const TENANT: u64 = 4242;
+    const NODE: u64 = 77;
+
+    let node = ContextNode {
+        node_hash: NODE,
+        parent_hash: 0,
+        kind: 1,
+        canonical_name: "session/with-a-vector".to_string(),
+        l0: "the text this node is about".to_string(),
+        status: 0,
+        last_event_time_ms: 0,
+        summary_dirty: false,
+        l1_ref: String::new(),
+        raw_metadata_ref: String::new(),
+        vector: Vec::new(),
+        embedding_model_hash: 0,
+        embedding_updated_at_ms: 0,
+    };
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextUpsertNode {
+            tenant_hash: TENANT,
+            node,
+        },
+    });
+
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextSetNodeEmbedding {
+            tenant_hash: TENANT,
+            node_hash: NODE,
+            model_hash: 909,
+            vector: vec![0.25, 0.5, -0.75],
+            updated_at_ms: 1_781_000_000_000,
+        },
+    });
+
+    let fetched = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextGetNode {
+            tenant_hash: TENANT,
+            node_hash: NODE,
+        },
+    });
+    let CommandResponse::ContextNode { node, .. } = fetched.response else {
+        panic!("expected ContextNode");
+    };
+    let node = node.expect("the node must still be there");
+    assert_eq!(vec![0.25, 0.5, -0.75], node.vector, "vector did not reach the node");
+    assert_eq!(909, node.embedding_model_hash);
+    assert_eq!(1_781_000_000_000, node.embedding_updated_at_ms);
+    // The rest of the node must survive a write that only meant to attach a vector.
+    assert_eq!("session/with-a-vector", node.canonical_name);
+    assert_eq!("the text this node is about", node.l0);
+    assert_eq!(1, node.kind);
+}
+
+// shared-corpus: context_node_inline_embedding_replaces
+#[test]
+fn re_embedding_a_node_replaces_the_vector_rather_than_accumulating() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    const TENANT: u64 = 4243;
+    const NODE: u64 = 78;
+
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextUpsertNode {
+            tenant_hash: TENANT,
+            node: ContextNode {
+                node_hash: NODE,
+                parent_hash: 0,
+                kind: 1,
+                canonical_name: "n".to_string(),
+                l0: "text".to_string(),
+                status: 0,
+                last_event_time_ms: 0,
+                summary_dirty: false,
+                l1_ref: String::new(),
+                raw_metadata_ref: String::new(),
+                vector: Vec::new(),
+                embedding_model_hash: 0,
+                embedding_updated_at_ms: 0,
+            },
+        },
+    });
+    for (model, vector, at) in [
+        (1_u64, vec![1.0_f32, 0.0], 1_781_000_000_000_u64),
+        (2, vec![0.0, 1.0], 1_781_000_000_500),
+    ] {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextSetNodeEmbedding {
+                tenant_hash: TENANT,
+                node_hash: NODE,
+                model_hash: model,
+                vector,
+                updated_at_ms: at,
+            },
+        });
+    }
+    let fetched = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextGetNode {
+            tenant_hash: TENANT,
+            node_hash: NODE,
+        },
+    });
+    let CommandResponse::ContextNode { node, .. } = fetched.response else {
+        panic!("expected ContextNode");
+    };
+    let node = node.expect("node must exist");
+    assert_eq!(vec![0.0, 1.0], node.vector, "the newer vector must win outright");
+    assert_eq!(2, node.embedding_model_hash);
+    assert_eq!(1_781_000_000_500, node.embedding_updated_at_ms);
+}
+
+// shared-corpus: context_node_inline_embedding_no_node
+#[test]
+fn an_embedding_for_a_node_that_does_not_exist_is_refused_not_invented() {
+    // Writing a placeholder node here would put a node into the tree that ingest never
+    // created -- a node with a vector, no name and no text, which retrieval would then score.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextSetNodeEmbedding {
+            tenant_hash: 4244,
+            node_hash: 999,
+            model_hash: 1,
+            vector: vec![1.0],
+            updated_at_ms: 1_781_000_000_000,
+        },
+    });
+    let CommandResponse::ContextObjectKey { object_key } = response.response else {
+        panic!("expected ContextObjectKey");
+    };
+    assert!(object_key.is_empty(), "no node means nothing was written");
+
+    let fetched = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextGetNode {
+            tenant_hash: 4244,
+            node_hash: 999,
+        },
+    });
+    let CommandResponse::ContextNode { node, .. } = fetched.response else {
+        panic!("expected ContextNode");
+    };
+    assert!(node.is_none(), "a node must not be conjured by embedding it");
+}
