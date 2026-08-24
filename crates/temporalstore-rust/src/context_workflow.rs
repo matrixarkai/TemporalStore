@@ -1544,7 +1544,7 @@ pub(crate) fn extract_context_gated(
         String::new()
     };
     let l2_ref = summaries.l2_ref;
-    let node = ContextNode {
+    let mut node = ContextNode {
         node_hash,
         parent_hash: 0,
         kind: source_kind_code(request.source_kind),
@@ -1720,6 +1720,13 @@ pub(crate) fn extract_context_gated(
         // index 0 is the L0 summary, index 1 the L1 summary when emitted, and the event last.
         if let Some(vector) = embedding_vectors.first() {
             summary_l0.vector = vector.clone();
+            // The node itself carries its L0 vector too: the traversal scores children from
+            // node.vector first, and without this the happy path would leave it empty on every
+            // fresh ingest -- only the drainer's deferred path would ever fill it, so the
+            // fallback to the separate record could never be retired.
+            node.vector = vector.clone();
+            node.embedding_model_hash = context_embedding_model_hash(&provider.model);
+            node.embedding_updated_at_ms = timestamp_ms;
         }
         if let (Some(summary), Some(vector)) = (summary_l1.as_mut(), embedding_vectors.get(1)) {
             summary.vector = vector.clone();
