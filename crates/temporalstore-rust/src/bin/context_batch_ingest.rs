@@ -43,7 +43,7 @@ use serde_json::{json, Value};
 use temporalstore_rust::{
     ingest_extract_context, BatchExecuteRequest, Command, ContextEvent, ContextExtractRequest,
     ContextIndexRef, ContextIngestExtractRequest, ContextModelProviderConfig, ContextNode,
-    ContextSourceKind, ContextSummaryDirtyMarker, TemporalEngine,
+    ContextSourceKind, ContextDirtyNode, TemporalEngine,
 };
 
 // Reason code stamped on embedding-dirty markers written by the raw-first bulk
@@ -388,7 +388,6 @@ fn write_raw_sources(
             l0: truncate_words(&source.body, 18),
             status: 1,
             last_event_time_ms: timestamp_ms,
-            summary_dirty: true,
             l1_ref: String::new(),
             raw_metadata_ref: source.source_id.clone(),
             vector: Vec::new(),
@@ -442,12 +441,10 @@ fn write_raw_sources(
         // only on failure).
         commands.push(Command::ContextMarkEmbeddingDirty {
             tenant_hash,
-            marker: ContextSummaryDirtyMarker {
-                node_hash,
+            node_hash,
                 event_time_ms: timestamp_ms,
                 reason: EMBEDDING_DIRTY_REASON_BULK_DEFERRED,
                 propagate_depth: 0,
-            },
             clear: false,
         });
         node_hashes.push(node_hash);

@@ -370,7 +370,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
             area: "context_workflow".to_string(),
             ready: context_workflow.production_ready,
             covered: vec![
-                "Rust-native Context extraction/retrieval/injection workflow persists ContextNode, ContextEvent, ContextIndexRef, ContextSummaryDirtyMarker, and ContextPackAudit"
+                "Rust-native Context extraction/retrieval/injection workflow persists ContextNode, ContextEvent, ContextIndexRef, ContextDirtyNode, and ContextPackAudit"
                     .to_string(),
                 "Hierarchical L0/L1/L2 context tiers are generated deterministically for local mocked sources"
                     .to_string(),

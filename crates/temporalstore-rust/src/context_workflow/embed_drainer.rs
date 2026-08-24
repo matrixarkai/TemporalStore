@@ -67,11 +67,11 @@ impl Default for EmbedDrainerConfig {
 /// Outcome of one drain pass.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct EmbedDrainReport {
-    /// Pending markers returned by the O(pending) query this pass.
+    /// Pending nodes returned by the O(pending) query this pass.
     pub pending_scanned: usize,
     /// Nodes whose embedding was upserted successfully.
     pub embedded: usize,
-    /// Embedding-dirty markers cleared (== embedded, minus any clear failures).
+    /// Embedding-dirty nodes cleared (== embedded, minus any clear failures).
     pub cleared: usize,
     /// Dirty nodes skipped because they had no event text to embed. These are
     /// still cleared so the drainer does not spin on them forever.
@@ -179,12 +179,10 @@ fn clear_marker(
             shard_id: config.shard_id,
             command: Command::ContextMarkEmbeddingDirty {
                 tenant_hash,
-                marker: ContextSummaryDirtyMarker {
-                    node_hash,
-                    event_time_ms: event_time_ms.max(1),
-                    reason: 0,
-                    propagate_depth: 0,
-                },
+                node_hash,
+                event_time_ms: event_time_ms.max(1),
+                reason: 0,
+                propagate_depth: 0,
                 clear: true,
             },
         })
@@ -212,16 +210,16 @@ pub fn drain_embedding_dirty_once(
             limit: Some(config.max_nodes_per_pass.max(1)),
         },
     });
-    let (markers, tenant_hashes) = match query.response {
-        CommandResponse::ContextEmbeddingDirtyMarkers {
-            markers,
+    let (nodes, tenant_hashes) = match query.response {
+        CommandResponse::ContextEmbeddingDirtyNodes {
+            nodes,
             tenant_hashes,
             ..
-        } => (markers, tenant_hashes),
+        } => (nodes, tenant_hashes),
         _ => return report,
     };
-    report.pending_scanned = markers.len();
-    if markers.is_empty() {
+    report.pending_scanned = nodes.len();
+    if nodes.is_empty() {
         return report;
     }
 
@@ -233,8 +231,8 @@ pub fn drain_embedding_dirty_once(
         event_time_ms: u64,
         text: String,
     }
-    let mut pending: Vec<Pending> = Vec::with_capacity(markers.len());
-    for (index, marker) in markers.iter().enumerate() {
+    let mut pending: Vec<Pending> = Vec::with_capacity(nodes.len());
+    for (index, marker) in nodes.iter().enumerate() {
         let tenant_hash = tenant_hashes
             .get(index)
             .copied()
@@ -248,7 +246,7 @@ pub fn drain_embedding_dirty_once(
         let text = node_embed_text(engine, config, tenant_hash, marker.node_hash);
         if text.trim().is_empty() {
             report.empty_text += 1;
-            if clear_marker(engine, config, tenant_hash, marker.node_hash, marker.event_time_ms) {
+            if clear_marker(engine, config, tenant_hash, marker.node_hash, marker.last_event_time_ms) {
                 report.cleared += 1;
             }
             continue;
@@ -256,13 +254,15 @@ pub fn drain_embedding_dirty_once(
         pending.push(Pending {
             tenant_hash,
             node_hash: marker.node_hash,
-            event_time_ms: marker.event_time_ms,
+            // The coalesced entry spans a range of event times; the drain clears against the
+            // latest, which is what the mark advanced to.
+            event_time_ms: marker.last_event_time_ms,
             text,
         });
     }
 
     // 3) Batch-embed (>= batch_size per call) and upsert node_l0 vectors, then
-    //    clear the markers for the nodes that embedded successfully.
+    //    clear the nodes for the nodes that embedded successfully.
     let model_hash = context_embedding_model_hash(&config.provider.embedding_model);
     let updated_at_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -392,7 +392,6 @@ mod tests {
                         l0: text.to_string(),
                         status: 1,
                         last_event_time_ms: 1_000,
-                        summary_dirty: true,
                         l1_ref: String::new(),
                         raw_metadata_ref: format!("src://{node_hash}"),
                         vector: Vec::new(),
@@ -440,12 +439,10 @@ mod tests {
                 shard_id: 1,
                 command: Command::ContextMarkEmbeddingDirty {
                     tenant_hash,
-                    marker: ContextSummaryDirtyMarker {
-                        node_hash,
-                        event_time_ms: 1_000,
-                        reason: 2,
-                        propagate_depth: 0,
-                    },
+                    node_hash,
+                event_time_ms: 1_000,
+                reason: 2,
+                propagate_depth: 0,
                     clear: false,
                 },
             })
@@ -466,7 +463,7 @@ mod tests {
             },
         });
         match response.response {
-            CommandResponse::ContextEmbeddingDirtyMarkers { markers, .. } => markers.len(),
+            CommandResponse::ContextEmbeddingDirtyNodes { nodes, .. } => nodes.len(),
             _ => 0,
         }
     }
@@ -538,12 +535,10 @@ mod tests {
             shard_id: 1,
             command: Command::ContextMarkEmbeddingDirty {
                 tenant_hash,
-                marker: ContextSummaryDirtyMarker {
-                    node_hash,
-                    event_time_ms: 500,
-                    reason: 2,
-                    propagate_depth: 0,
-                },
+                node_hash,
+                event_time_ms: 500,
+                reason: 2,
+                propagate_depth: 0,
                 clear: false,
             },
         });
@@ -559,9 +554,9 @@ mod tests {
             },
         });
         match per_node.response {
-            CommandResponse::ContextEmbeddingDirtyMarkers { markers, .. } => {
-                assert_eq!(markers.len(), 1);
-                assert_eq!(markers[0].node_hash, node_hash);
+            CommandResponse::ContextEmbeddingDirtyNodes { nodes, .. } => {
+                assert_eq!(nodes.len(), 1);
+                assert_eq!(nodes[0].node_hash, node_hash);
             }
             other => panic!("unexpected: {other:?}"),
         }
@@ -577,8 +572,8 @@ mod tests {
             },
         });
         match summary.response {
-            CommandResponse::ContextSummaryDirtyMarkers { markers, .. } => {
-                assert!(markers.is_empty(), "embedding-dirty must not set summary-dirty");
+            CommandResponse::ContextSummaryDirtyNodes { nodes, .. } => {
+                assert!(nodes.is_empty(), "embedding-dirty must not set summary-dirty");
             }
             other => panic!("unexpected: {other:?}"),
         }
@@ -594,12 +589,12 @@ mod tests {
             },
         });
         match all.response {
-            CommandResponse::ContextEmbeddingDirtyMarkers {
-                markers,
+            CommandResponse::ContextEmbeddingDirtyNodes {
+                nodes,
                 tenant_hashes,
                 ..
             } => {
-                assert_eq!(markers.len(), 1);
+                assert_eq!(nodes.len(), 1);
                 assert_eq!(tenant_hashes, vec![tenant_hash]);
             }
             other => panic!("unexpected: {other:?}"),
@@ -609,12 +604,10 @@ mod tests {
             shard_id: 1,
             command: Command::ContextMarkEmbeddingDirty {
                 tenant_hash,
-                marker: ContextSummaryDirtyMarker {
-                    node_hash,
-                    event_time_ms: 500,
-                    reason: 0,
-                    propagate_depth: 0,
-                },
+                node_hash,
+                event_time_ms: 500,
+                reason: 0,
+                propagate_depth: 0,
                 clear: true,
             },
         });
@@ -692,7 +685,6 @@ mod tests {
                         l0: format!("body text for node {node}"),
                         status: 1,
                         last_event_time_ms: 1_000,
-                        summary_dirty: false,
                         l1_ref: String::new(),
                         raw_metadata_ref: String::new(),
                         vector: Vec::new(),

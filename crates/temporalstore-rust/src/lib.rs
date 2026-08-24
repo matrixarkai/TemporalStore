@@ -222,7 +222,7 @@ pub use types::{
     ContextCompressionModel, ContextEmbedding, ContextEmbeddingModel,
     ContextEntity, ContextEvent, ContextEventModel, ContextExtractedEventIndexes,
     ContextIndexModel, ContextIndexRef, ContextNode, ContextNodeModel, ContextPackAudit,
-    ContextSlab, ContextSummary, ContextSummaryDirtyMarker, ContextSummaryModel,
+    ContextSlab, ContextSummary, ContextDirtyNode, ContextSummaryModel,
     ContextTraversedNode, ContextWire, EventReplicationMode, EventReplicationSelectionReport,
     ExecuteRequest, ExecuteResponse, FeaturePoint, InternalContextIndex,
     ReplicatedBatchExecuteRequest, ReplicatedBatchExecuteResponse, ReplicatedCommand,

@@ -2100,28 +2100,31 @@ pub(crate) fn execute_on_shard(
         }
         Command::ContextMarkSummaryDirty {
             tenant_hash,
-            marker,
+            node_hash,
+            event_time_ms,
+            reason,
+            propagate_depth,
         } => {
             // In-memory, coalesced summary-dirty tracking. Repeated marks for the same
             // node update a single hashmap entry instead of appending a new persisted
             // page, so dirty records are bounded by distinct dirty nodes, not by events.
             // The map is ephemeral (never written to the page store) and may be lost on
             // restart; the async summary worker re-marks on the next event.
-            let object_key = context_dirty_key(tenant_hash, marker.node_hash);
+            let object_key = context_dirty_key(tenant_hash, node_hash);
             let entry = shard
                 .context_dirty_index
                 .entry(object_key.clone())
                 .or_default();
             if entry.mark_count == 0 {
-                entry.node_hash = marker.node_hash;
-                entry.first_event_time_ms = marker.event_time_ms;
-                entry.last_event_time_ms = marker.event_time_ms;
+                entry.node_hash = node_hash;
+                entry.first_event_time_ms = event_time_ms;
+                entry.last_event_time_ms = event_time_ms;
             } else {
-                entry.first_event_time_ms = entry.first_event_time_ms.min(marker.event_time_ms);
-                entry.last_event_time_ms = entry.last_event_time_ms.max(marker.event_time_ms);
+                entry.first_event_time_ms = entry.first_event_time_ms.min(event_time_ms);
+                entry.last_event_time_ms = entry.last_event_time_ms.max(event_time_ms);
             }
-            entry.reason = marker.reason;
-            entry.propagate_depth = entry.propagate_depth.max(marker.propagate_depth);
+            entry.reason = reason;
+            entry.propagate_depth = entry.propagate_depth.max(propagate_depth);
             entry.mark_count = entry.mark_count.saturating_add(1);
             CommandResponse::ContextObjectKey { object_key }
         }
@@ -2137,7 +2140,7 @@ pub(crate) fn execute_on_shard(
             // for API compatibility but there is at most one coalesced marker per node.
             let _ = limit;
             let object_key = context_dirty_key(tenant_hash, node_hash);
-            let markers = shard
+            let nodes = shard
                 .context_dirty_index
                 .get(&object_key)
                 .filter(|entry| {
@@ -2146,22 +2149,27 @@ pub(crate) fn execute_on_shard(
                         && entry.first_event_time_ms <= end_time_ms
                 })
                 .map(|entry| {
-                    vec![ContextSummaryDirtyMarker {
+                    vec![ContextDirtyNode {
                         node_hash: entry.node_hash,
-                        event_time_ms: entry.last_event_time_ms,
+                        first_event_time_ms: entry.first_event_time_ms,
+            last_event_time_ms: entry.last_event_time_ms,
                         reason: entry.reason,
                         propagate_depth: entry.propagate_depth,
+                        mark_count: entry.mark_count,
                     }]
                 })
                 .unwrap_or_default();
-            CommandResponse::ContextSummaryDirtyMarkers {
+            CommandResponse::ContextSummaryDirtyNodes {
                 object_key,
-                markers,
+                nodes,
             }
         }
         Command::ContextMarkEmbeddingDirty {
             tenant_hash,
-            marker,
+            node_hash,
+            event_time_ms,
+            reason,
+            propagate_depth,
             clear,
         } => {
             // In-memory, coalesced embedding-dirty tracking, independent of the
@@ -2170,7 +2178,7 @@ pub(crate) fn execute_on_shard(
             // for the same node coalesce into a single entry so dirty records stay
             // bounded by distinct dirty nodes, not by events. The map is ephemeral
             // (never written to the page store) and re-derived after restart.
-            let object_key = context_embedding_dirty_key(tenant_hash, marker.node_hash);
+            let object_key = context_embedding_dirty_key(tenant_hash, node_hash);
             if clear {
                 shard.context_embedding_dirty_index.remove(&object_key);
             } else {
@@ -2180,15 +2188,15 @@ pub(crate) fn execute_on_shard(
                     .or_default();
                 if entry.mark_count == 0 {
                     entry.tenant_hash = tenant_hash;
-                    entry.node_hash = marker.node_hash;
-                    entry.first_event_time_ms = marker.event_time_ms;
-                    entry.last_event_time_ms = marker.event_time_ms;
+                    entry.node_hash = node_hash;
+                    entry.first_event_time_ms = event_time_ms;
+                    entry.last_event_time_ms = event_time_ms;
                 } else {
-                    entry.first_event_time_ms = entry.first_event_time_ms.min(marker.event_time_ms);
-                    entry.last_event_time_ms = entry.last_event_time_ms.max(marker.event_time_ms);
+                    entry.first_event_time_ms = entry.first_event_time_ms.min(event_time_ms);
+                    entry.last_event_time_ms = entry.last_event_time_ms.max(event_time_ms);
                 }
-                entry.reason = marker.reason;
-                entry.propagate_depth = entry.propagate_depth.max(marker.propagate_depth);
+                entry.reason = reason;
+                entry.propagate_depth = entry.propagate_depth.max(propagate_depth);
                 entry.mark_count = entry.mark_count.saturating_add(1);
             }
             CommandResponse::ContextObjectKey { object_key }
@@ -2205,7 +2213,7 @@ pub(crate) fn execute_on_shard(
             // the single coalesced entry for that node. Either way this touches only
             // the pending set, never the corpus.
             let cap = context_limit(limit);
-            let mut markers = Vec::new();
+            let mut nodes = Vec::new();
             let mut tenant_hashes = Vec::new();
             let object_key = if node_hash == 0 {
                 // Deterministic order (by object key) so a bounded drain pass is
@@ -2222,11 +2230,13 @@ pub(crate) fn execute_on_shard(
                     .collect();
                 entries.sort_by(|(left, _), (right, _)| left.cmp(right));
                 for (_, entry) in entries.into_iter().take(cap) {
-                    markers.push(ContextSummaryDirtyMarker {
+                    nodes.push(ContextDirtyNode {
                         node_hash: entry.node_hash,
-                        event_time_ms: entry.last_event_time_ms,
+                        first_event_time_ms: entry.first_event_time_ms,
+            last_event_time_ms: entry.last_event_time_ms,
                         reason: entry.reason,
                         propagate_depth: entry.propagate_depth,
+                        mark_count: entry.mark_count,
                     });
                     tenant_hashes.push(entry.tenant_hash);
                 }
@@ -2243,19 +2253,21 @@ pub(crate) fn execute_on_shard(
                                 && entry.first_event_time_ms <= end_time_ms
                         })
                 {
-                    markers.push(ContextSummaryDirtyMarker {
+                    nodes.push(ContextDirtyNode {
                         node_hash: entry.node_hash,
-                        event_time_ms: entry.last_event_time_ms,
+                        first_event_time_ms: entry.first_event_time_ms,
+            last_event_time_ms: entry.last_event_time_ms,
                         reason: entry.reason,
                         propagate_depth: entry.propagate_depth,
+                        mark_count: entry.mark_count,
                     });
                     tenant_hashes.push(entry.tenant_hash);
                 }
                 object_key
             };
-            CommandResponse::ContextEmbeddingDirtyMarkers {
+            CommandResponse::ContextEmbeddingDirtyNodes {
                 object_key,
-                markers,
+                nodes,
                 tenant_hashes,
             }
         }

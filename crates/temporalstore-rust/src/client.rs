@@ -39,7 +39,7 @@ pub use routing::{
 
 use crate::types::{
     parse_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
-    ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit, ContextSummaryDirtyMarker,
+    ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit, ContextDirtyNode,
     ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy,
     ControlStateFamily, ControlStateSelectionType, SequenceFeatureRow, SequenceQuerySpec,
     ShardId, Status,

@@ -20,7 +20,7 @@ use temporalstore_rust::{
     ContextPipelineBenchmarkSweepRequest, ContextPipelineBenchmarkThresholds,
     ContextPipelineParityEvidence, ContextResourceParseRequest, ContextResourceSkillIngestRequest,
     ContextResourceSkillSecondaryIndexValidationRequest, ContextRetrieveRequest,
-    ContextSkillIngestInput, ContextSourceKind, ContextSummaryDirtyMarker, ContextTier,
+    ContextSkillIngestInput, ContextSourceKind, ContextDirtyNode, ContextTier,
     ExecuteRequest, RaftCluster, RaftConfig, SharedStoreReplicator, SharedStoreStorageMode,
     TemporalEngine, context_pipeline_manage_report, context_pipeline_parity_evidence,
     context_workflow_state_report, extract_context, ingest_extract_context,
@@ -1998,7 +1998,6 @@ fn ingest_external_benchmark_sources(
             l0: l0.clone(),
             status: 1,
             last_event_time_ms: timestamp_ms,
-            summary_dirty: true,
             l1_ref: l1.clone(),
             raw_metadata_ref: source_ref.clone(),
             vector: Vec::new(),
@@ -2028,11 +2027,13 @@ fn ingest_external_benchmark_sources(
             primary_event_time_ms: timestamp_ms,
             event_id_hash,
         };
-        let dirty_marker = ContextSummaryDirtyMarker {
+        let dirty_marker = ContextDirtyNode {
             node_hash,
-            event_time_ms: timestamp_ms,
+            first_event_time_ms: timestamp_ms,
+            last_event_time_ms: timestamp_ms,
             reason: 1,
             propagate_depth: 1,
+            mark_count: 1,
         };
         commands.push(Command::ContextUpsertNode {
             tenant_hash,
@@ -2055,7 +2056,10 @@ fn ingest_external_benchmark_sources(
         });
         commands.push(Command::ContextMarkSummaryDirty {
             tenant_hash,
-            marker: dirty_marker,
+            node_hash: dirty_node_hash,
+            event_time_ms: dirty_marker.last_event_time_ms,
+            reason: dirty_reason,
+            propagate_depth: dirty_propagate_depth,
         });
         node_hashes.push(node_hash);
     }
@@ -2983,7 +2987,10 @@ fn context_pipeline_commands(extract: &temporalstore_rust::ContextExtractReport)
         },
         Command::ContextMarkSummaryDirty {
             tenant_hash: 20260616,
-            marker: extract.dirty_marker.clone(),
+            node_hash: extract.dirty_node_hash,
+            event_time_ms: extract.dirty_marker.last_event_time_ms,
+            reason: extract.dirty_reason,
+            propagate_depth: extract.dirty_propagate_depth,
         },
     ]
 }
