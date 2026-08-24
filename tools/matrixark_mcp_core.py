@@ -388,6 +388,8 @@ MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_get_memory_by_key": {"context:retrieve"},
     "matrixark_update_memory": {"context:ingest"},
     "matrixark_memory_history": {"context:retrieve"},
+    # A write about a memory, so it gates like a write rather than like a read.
+    "matrixark_memory_feedback": {"context:ingest"},
     "matrixark_ingestion_dashboard": {"context:replay"},
     "matrixark_management_portal": {"portal:read"},
     "matrixark_auth_sso_login": set(),

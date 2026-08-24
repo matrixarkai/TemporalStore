@@ -430,6 +430,22 @@ class Memory:
         body: Json = {"memory_id": str(memory_id)}
         return _post_json(self._base_url, self._api_key, "/v1/delete", body, self._timeout)
 
+    def feedback(self, memory_id: str, feedback: str, feedback_reason: Optional[str] = None,
+                 **kw: Any) -> Json:
+        """Rate an existing memory (mem0 ``feedback``).
+
+        The rating is stored against the memory, not as a memory: it does not appear in `get_all`
+        or `search`. Read it back with `history(memory_id)`, where it appears as an event beside
+        the ingest and supersede entries.
+
+        `feedback` is one of POSITIVE, NEGATIVE, VERY_NEGATIVE. An unknown value is refused by the
+        server rather than stored.
+        """
+        body: Json = {"memory_id": str(memory_id), "feedback": str(feedback)}
+        if feedback_reason:
+            body["feedback_reason"] = str(feedback_reason)
+        return _post_json(self._base_url, self._api_key, "/v1/memory/feedback", body, self._timeout)
+
     def batch_update(self, memories: Any, **kw: Any) -> Json:
         """Update many memories in one call (mem0 ``batch_update``).
 

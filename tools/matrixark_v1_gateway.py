@@ -171,6 +171,9 @@ _DATA_ROUTES: dict[str, Tuple[str, str]] = {
     "/v1/resource/content": ("matrixark_get_resource_content", "retrieve"),
     # update = supersede (ingest an amended version + tombstone the old id): gates on context:ingest.
     "/v1/update": ("matrixark_update_memory", "ingest"),
+    # mem0 feedback(): rate an existing memory. A write about a memory, so it gates like one; the
+    # rating is read back through GET /v1/memory/<id>/history, not as a memory of its own.
+    "/v1/memory/feedback": ("matrixark_memory_feedback", "ingest"),
     # get (GET /v1/memory/<id>) and history (GET /v1/memory/<id>/history) are handled by dedicated
     # GET branches below (data routes are POST-only), gated on context:retrieve.
 }
@@ -181,6 +184,8 @@ _BACKPRESSURE_ERRORS = {"MatrixArkBackpressureError"}
 # The addressed thing does not exist -- the caller's own state to fix, not a server fault. Matched
 # by class name, like the sets above, so a message that merely contains "not found" is unaffected.
 _NOT_FOUND_ERRORS = {"MatrixArkNotFoundError"}
+# The request is malformed -- the caller's to fix, and not worth a retry.
+_INVALID_REQUEST_ERRORS = {"MatrixArkInvalidRequestError"}
 _STORAGE_QUOTA_ERRORS = {
     "MatrixArkStorageQuotaError",
     "StorageQuotaExceeded",
@@ -1053,6 +1058,8 @@ def _classify_backend_error(exc: Exception) -> int:
         return 429
     if name in _NOT_FOUND_ERRORS:
         return 404
+    if name in _INVALID_REQUEST_ERRORS:
+        return 400
     return 500
 
 

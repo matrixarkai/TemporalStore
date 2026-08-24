@@ -218,6 +218,18 @@ def dispatch_matrixark_tool(server: Any, name: str, args: Json, hook: Json | Non
         server.access.append_audit("skill.update", identity, status="ok", details={"skill_hash": result.get("skill_hash"), "skill_status": result.get("status")})
         response = {**result, "access": args.get("_matrixark_auth", {})}
         return server._finalize_write_response(name, args, identity, hook, response)
+    if name == "matrixark_memory_feedback":
+        result = server.adapter.memory_feedback(args, hook=hook)
+        server.append_audit_policy(
+            "context.memory_feedback",
+            identity,
+            status="ok",
+            details={"memory_id": result.get("memory_id"), "feedback": result.get("feedback")},
+            args=args,
+            hot_path=True,
+        )
+        response = {**result, "access": args.get("_matrixark_auth", {})}
+        return server._finalize_write_response(name, args, identity, hook, response)
     if name == "matrixark_feedback":
         started_perf = time.perf_counter()
         try:

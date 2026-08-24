@@ -85,6 +85,15 @@ class MatrixArkError(ValueError):
     pass
 
 
+class MatrixArkInvalidRequestError(MatrixArkError):
+    """The request itself is malformed -- a value outside its allowed vocabulary, say.
+
+    A distinct type so the edge can answer 400. Not applied wholesale: `MatrixArkError` is raised
+    for both bad input and internal failures throughout the adapter, and reclassifying all of it
+    would turn real faults into 400s. Used where the classification is unambiguous.
+    """
+
+
 class MatrixArkNotFoundError(MatrixArkError):
     """The thing the request addressed does not exist.
 
