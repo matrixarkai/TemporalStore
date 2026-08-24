@@ -30,6 +30,7 @@ mod shard_check;
 mod retention;
 mod proxy_groups;
 mod subsystem_metrics;
+mod event_bus;
 use self::partitioning::*;
 use self::topology_helpers::*;
 pub use self::auto_rebalance::{
@@ -54,6 +55,7 @@ pub use self::proxy_groups::{
     ProxyGroupShortfall, PutProxyGroupRequest,
 };
 pub use self::subsystem_metrics::{SubsystemMetrics, TIER_PROXY, TIER_SERVER};
+pub use self::event_bus::{TopologyNotice, TopologySubscription, SUBSCRIBER_QUEUE_DEPTH};
 pub use self::retention::{
     plan_freeze_aging, plan_meta_retention, FreezeAgingOptions, FreezeAgingPlan,
     FreezeAgingReport, MetaRetentionOptions, MetaRetentionPlan, MetaRetentionReport,
@@ -1039,6 +1041,10 @@ pub struct SingleNodeMeta {
     /// can report it. Shared by clone, so every handle to this meta writes to
     /// and reads from the same recorder.
     metrics: SubsystemMetrics,
+    /// Fan-out for metadata change, deliberately outside `inner` so a
+    /// subscriber's cost never lands inside the metadata lock. Shared by clone,
+    /// like the metadata itself.
+    events: Arc<event_bus::MetaEventBus>,
 }
 
 impl Default for SingleNodeMeta {
@@ -1052,6 +1058,7 @@ impl Default for SingleNodeMeta {
             mutation_log: None,
             forbid_self_clearing_conviction: false,
             metrics: SubsystemMetrics::new(),
+            events: Arc::new(event_bus::MetaEventBus::default()),
         }
     }
 }
@@ -3117,6 +3124,228 @@ mod tests {
             .filter(|addr| addr != "node-2")
             .collect::<Vec<_>>();
         assert_eq!(eastern, baseline, "the tie-break stopped being stable");
+    }
+
+    fn bus_meta() -> SingleNodeMeta {
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "node-a".to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+        });
+        // Setting the fixture up is itself a metadata change. Pump it through
+        // before anyone subscribes, so these tests observe what they cause
+        // rather than the registration that built the fixture.
+        meta.pump_topology_events();
+        meta
+    }
+
+    fn freeze(meta: &SingleNodeMeta) {
+        meta.freeze_server(StateChangeRequest {
+            endpoint: "node-a".to_string(),
+            freeze_cooldown_ms: 0,
+            reason: FreezeReason::Unspecified,
+        });
+    }
+
+    fn unfreeze(meta: &SingleNodeMeta) {
+        meta.unfreeze_server(StateChangeRequest {
+            endpoint: "node-a".to_string(),
+            freeze_cooldown_ms: 0,
+            reason: FreezeReason::Unspecified,
+        });
+    }
+
+    #[test]
+    fn a_subscriber_is_told_about_a_change_instead_of_polling_for_it() {
+        let meta = bus_meta();
+        let subscription = meta.subscribe_topology();
+        meta.pump_topology_events();
+
+        freeze(&meta);
+        assert_eq!(meta.pump_topology_events(), 1);
+
+        let notice = subscription.try_next().expect("a notice");
+        assert_eq!(notice.event.kind, "server_state");
+        assert_eq!(notice.event.resource, "server:node-a");
+        assert_eq!(notice.missed, 0);
+    }
+
+    #[test]
+    fn a_subscriber_can_ask_for_only_the_kinds_it_cares_about() {
+        let meta = bus_meta();
+        let subscription = meta.subscribe_topology_kinds(["add_table"]);
+        meta.pump_topology_events();
+
+        freeze(&meta);
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            first_shard_id: 1,
+            shard_count: 1,
+            replica_count: 1,
+            partition_version: 0,
+            serving_options: TableServingOptions::default(),
+        });
+        meta.pump_topology_events();
+
+        let kinds = subscription
+            .drain()
+            .into_iter()
+            .map(|notice| notice.event.kind)
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, vec!["add_table".to_string()]);
+    }
+
+    #[test]
+    fn every_subscriber_sees_the_same_change() {
+        let meta = bus_meta();
+        let first = meta.subscribe_topology();
+        let second = meta.subscribe_topology();
+        meta.pump_topology_events();
+
+        freeze(&meta);
+        meta.pump_topology_events();
+
+        assert_eq!(first.drain().len(), 1);
+        assert_eq!(second.drain().len(), 1);
+    }
+
+    #[test]
+    fn a_subscriber_that_stops_reading_cannot_hold_up_the_others() {
+        // The failure this design exists to survive. A subscriber that stops
+        // draining must not grow the metaserver's memory, block the pump, or
+        // cost anyone else a single event.
+        let meta = bus_meta();
+        let asleep = meta.subscribe_topology();
+        let awake = meta.subscribe_topology();
+        meta.pump_topology_events();
+
+        let rounds = SUBSCRIBER_QUEUE_DEPTH + 40;
+        for round in 0..rounds {
+            if round % 2 == 0 {
+                freeze(&meta);
+            } else {
+                unfreeze(&meta);
+            }
+            meta.pump_topology_events();
+            // The attentive one keeps up; the sleeping one never reads.
+            assert_eq!(awake.drain().len(), 1, "attentive subscriber missed round {round}");
+        }
+
+        // The sleeper banked at most its queue depth, not one per round.
+        let banked = asleep.drain();
+        assert!(
+            banked.len() <= SUBSCRIBER_QUEUE_DEPTH,
+            "queue grew past its bound: {}",
+            banked.len()
+        );
+        assert!(rounds > SUBSCRIBER_QUEUE_DEPTH);
+    }
+
+    #[test]
+    fn falling_behind_is_reported_rather_than_hidden() {
+        // Having missed a freeze is survivable; not knowing you missed it is
+        // not, so the count rides along on the next notice that gets through.
+        let meta = bus_meta();
+        let subscription = meta.subscribe_topology();
+        meta.pump_topology_events();
+
+        for round in 0..(SUBSCRIBER_QUEUE_DEPTH + 10) {
+            if round % 2 == 0 {
+                freeze(&meta);
+            } else {
+                unfreeze(&meta);
+            }
+            meta.pump_topology_events();
+        }
+        // Empty the backlog, then take one more notice: it must carry the count.
+        let banked = subscription.drain();
+        assert!(!banked.is_empty());
+        freeze(&meta);
+        unfreeze(&meta);
+        meta.pump_topology_events();
+        let after = subscription.try_next().expect("a notice after the backlog");
+        assert!(
+            after.missed > 0,
+            "the subscriber was never told it had fallen behind"
+        );
+    }
+
+    #[test]
+    fn events_the_ring_recycled_are_counted_as_missed() {
+        // The ring holds a bounded history. If more changes land between pumps
+        // than it retains, the pump never sees them -- and versions increase by
+        // exactly one per event, so exactly how many is knowable.
+        let meta = bus_meta();
+        let subscription = meta.subscribe_topology();
+        meta.pump_topology_events();
+
+        for round in 0..(TOPOLOGY_EVENT_HISTORY_LIMIT + 50) {
+            if round % 2 == 0 {
+                freeze(&meta);
+            } else {
+                unfreeze(&meta);
+            }
+        }
+        meta.pump_topology_events();
+
+        let notices = subscription.drain();
+        assert!(!notices.is_empty());
+        assert!(
+            notices.iter().any(|notice| notice.missed > 0),
+            "the pump did not notice the ring had recycled events"
+        );
+    }
+
+    #[test]
+    fn unsubscribing_stops_delivery() {
+        let meta = bus_meta();
+        let subscription = meta.subscribe_topology();
+        meta.pump_topology_events();
+        assert_eq!(meta.topology_subscriber_count(), 1);
+
+        meta.unsubscribe_topology(subscription.id);
+        assert_eq!(meta.topology_subscriber_count(), 0);
+
+        freeze(&meta);
+        meta.pump_topology_events();
+        assert!(subscription.try_next().is_none());
+    }
+
+    #[test]
+    fn a_subscriber_arriving_later_starts_from_now() {
+        // The cursor advances even with nobody listening, so subscribing does
+        // not replay the whole retained history at you.
+        let meta = bus_meta();
+        freeze(&meta);
+        unfreeze(&meta);
+        meta.pump_topology_events();
+
+        let subscription = meta.subscribe_topology();
+        meta.pump_topology_events();
+        assert!(subscription.try_next().is_none(), "history was replayed");
+
+        freeze(&meta);
+        meta.pump_topology_events();
+        assert!(subscription.try_next().is_some());
+    }
+
+    #[test]
+    fn a_dropped_subscription_is_forgotten() {
+        let meta = bus_meta();
+        {
+            let _subscription = meta.subscribe_topology();
+            assert_eq!(meta.topology_subscriber_count(), 1);
+        }
+        // The receiver is gone; the next fan-out reaps it.
+        freeze(&meta);
+        meta.pump_topology_events();
+        assert_eq!(meta.topology_subscriber_count(), 0);
     }
 
     #[test]
