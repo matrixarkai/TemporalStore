@@ -1445,6 +1445,177 @@ fn type_index_payloads(
     Ok(Some((values, shards_touched)))
 }
 
+fn scope_index_key(record_hash_key: &str, bucket: &str) -> String {
+    format!("{record_hash_key}:scope_index:{bucket}")
+}
+
+fn scope_index_ready_key(record_hash_key: &str) -> String {
+    format!("{record_hash_key}:scope_index_ready")
+}
+
+/// Bumped when the bucket layout changes; a store whose marker holds an older value re-walks
+/// once and rebuilds. Version 2 = the type-partitioned scopeless bucket.
+const SCOPE_INDEX_LAYOUT_VERSION: &str = "2";
+
+/// The scope buckets a record files its field under, from its OWN scope_key -- the same source
+/// the scope matcher reads.
+///
+/// Scopeless records match EVERY query under the matcher's rules, so they must reach every
+/// index-served scan -- but ingest bundles a scoped event with scopeless system records in ONE
+/// field, so a single master bucket would put nearly every field in the store there (measured:
+/// 380 of ~460) and the fetch degenerates to a walk. A scopeless record therefore files under
+/// "none" (for untyped queries) AND "none:{record_type}" (so a typed query only drags in
+/// scopeless records of the types it asked for). "partial" = a scope_key lacking a tenant or
+/// user part: the matcher rejects those against any pinned query, so nothing fetches the bucket.
+fn record_scope_buckets(record: &Value) -> Vec<String> {
+    let scope_key = candidate_scope_key(record);
+    if scope_key.is_empty() {
+        let record_type = record
+            .get("record_type")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        return vec!["none".to_string(), format!("none:{record_type}")];
+    }
+    let parts = parse_scope_key(&scope_key);
+    match (parts.get("t"), parts.get("u")) {
+        (Some(tenant), Some(user)) if *tenant != 0 && *user != 0 => {
+            vec![format!("t={tenant}|u={user}")]
+        }
+        _ => vec!["partial".to_string()],
+    }
+}
+
+/// The bucket a query pins, or None when the query is not pinned enough for the scope index.
+///
+/// Pinned = non-zero tenant and user hashes with the user marked explicit. A tenant-wide query
+/// would need every user's bucket, and a session-mode refinement is applied by the shared filter
+/// loop after the fetch -- the index only has to be a superset.
+fn query_scope_bucket(query_scope: Option<&Value>) -> Option<String> {
+    let query = query_scope.filter(|value| value.is_object())?;
+    let tenant = query.get("tenant_hash").and_then(Value::as_u64).unwrap_or(0);
+    let user = query.get("user_hash").and_then(Value::as_u64).unwrap_or(0);
+    if tenant == 0 || user == 0 || !scope_key_explicit(query, "user_id") {
+        return None;
+    }
+    Some(format!("t={tenant}|u={user}"))
+}
+
+/// Payload values for a pinned-scope scan, in append order: the bucket's locations plus the
+/// scopeless bucket, intersected with the requested types' locations when the type index can
+/// answer. `Ok(None)` = the scope index cannot answer; the caller walks (and backfills).
+fn scope_index_payloads(
+    engine: &TemporalEngine,
+    record_hash_key: &str,
+    allowed_types: &HashSet<String>,
+    bucket: &str,
+) -> Result<Option<(Vec<String>, u64)>, String> {
+    let ready = read_record_count(engine, &scope_index_ready_key(record_hash_key))?;
+    if ready.trim() != SCOPE_INDEX_LAYOUT_VERSION {
+        return Ok(None);
+    }
+    let mut source_buckets: Vec<String> = vec![bucket.to_string()];
+    if allowed_types.is_empty() {
+        source_buckets.push("none".to_string());
+    } else {
+        for record_type in allowed_types {
+            source_buckets.push(format!("none:{record_type}"));
+        }
+    }
+    let mut positions: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for source_bucket in &source_buckets {
+        for (location, _) in
+            hgetall_map(engine, scope_index_key(record_hash_key, source_bucket))?
+        {
+            positions.insert(location);
+        }
+    }
+    if !allowed_types.is_empty() {
+        let type_ready = read_record_count(engine, &type_index_ready_key(record_hash_key))?;
+        if type_ready.trim() == "1" {
+            let mut type_positions: std::collections::BTreeSet<String> =
+                std::collections::BTreeSet::new();
+            for record_type in allowed_types {
+                for (location, _) in
+                    hgetall_map(engine, type_index_key(record_hash_key, record_type))?
+                {
+                    type_positions.insert(location);
+                }
+            }
+            positions = positions
+                .intersection(&type_positions)
+                .cloned()
+                .collect();
+        }
+    }
+    let mut fields_by_shard: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for location in &positions {
+        if let Some((shard, field)) = location.split_once(':') {
+            fields_by_shard
+                .entry(shard.to_string())
+                .or_default()
+                .push(field.to_string());
+        }
+    }
+    let shards_touched = fields_by_shard.len() as u64;
+    let mut values = Vec::with_capacity(positions.len());
+    for (shard, fields) in fields_by_shard {
+        let key = format!("{record_hash_key}:{shard}");
+        let response = engine.execute_durable(ExecuteRequest {
+            shard_id: DEFAULT_SHARD_ID,
+            command: Command::HashMultiGet { key, fields },
+        });
+        if !response.status.ok {
+            return Err(format!(
+                "{}: {}",
+                response.status.code, response.status.message
+            ));
+        }
+        match response.response {
+            CommandResponse::Values {
+                values: shard_values,
+            } => {
+                for value in shard_values {
+                    let Some(bytes) = value else { continue };
+                    if bytes.is_empty() {
+                        continue;
+                    }
+                    values.push(String::from_utf8(bytes).map_err(|error| {
+                        format!("stored hash value is not UTF-8: {error}")
+                    })?);
+                }
+            }
+            other => {
+                return Err(format!(
+                    "unexpected response for scope-index fetch: {other:?}"
+                ))
+            }
+        }
+    }
+    Ok(Some((values, shards_touched)))
+}
+
+/// Persist a walk-built scope index and its ready-marker, once. Returns whether it wrote.
+fn persist_scope_index_backfill(
+    engine: &TemporalEngine,
+    record_hash_key: &str,
+    entries_by_index_key: BTreeMap<String, Vec<(String, Vec<u8>)>>,
+) -> Result<bool, String> {
+    let ready = read_record_count(engine, &scope_index_ready_key(record_hash_key))?;
+    if ready.trim() == SCOPE_INDEX_LAYOUT_VERSION {
+        return Ok(false);
+    }
+    let mut commands: Vec<Command> = entries_by_index_key
+        .into_iter()
+        .map(|(key, entries)| Command::HashMultiSet { key, entries })
+        .collect();
+    commands.push(Command::StringSet {
+        key: scope_index_ready_key(record_hash_key),
+        value: SCOPE_INDEX_LAYOUT_VERSION.as_bytes().to_vec(),
+    });
+    execute_empty_batch_runtime(engine, commands, true)?;
+    Ok(true)
+}
+
 /// Is this record about one of `ids` -- carrying it, targeting it, or created by superseding it?
 ///
 /// `record_addressable_ids` covers what a record CARRIES (its own identity and its ref hashes);
@@ -1672,7 +1843,28 @@ fn scan_matrixark_candidates(
             id_scoped_used = true;
         }
     }
-    if !id_scoped_used && !allowed_types.is_empty() && count > 0 {
+    let query_bucket = query_scope_bucket(command.scope.as_ref());
+    let mut scope_index_used = false;
+    if !id_scoped_used && count > 0 {
+        if let Some(bucket) = &query_bucket {
+            if let Some((values, shards_touched)) =
+                scope_index_payloads(engine, &record_hash_key, &allowed_types, bucket)?
+            {
+                payload_values = values;
+                placement_partitions_touched = shards_touched;
+                scope_index_used = true;
+            }
+        }
+    }
+    // A pinned query whose scope index is not ready takes the WALK on purpose -- the walk
+    // backfills the scope index, while the type path would serve this scan and leave the scope
+    // index unbuilt forever on stores that predate it.
+    if !id_scoped_used
+        && !scope_index_used
+        && query_bucket.is_none()
+        && !allowed_types.is_empty()
+        && count > 0
+    {
         if let Some((values, shards_touched)) =
             type_index_payloads(engine, &record_hash_key, &allowed_types)?
         {
@@ -1682,10 +1874,11 @@ fn scan_matrixark_candidates(
         }
     }
     let mut type_index_backfilled = false;
-    if !id_scoped_used && !type_index_used && count > 0 {
+    if !id_scoped_used && !scope_index_used && !type_index_used && count > 0 {
         // The walk this scan pays anyway sees every payload, so it can build the index for every
         // type in the store as a side effect; the marker makes the next scan's miss authoritative.
         let mut backfill: BTreeMap<String, Vec<(String, Vec<u8>)>> = BTreeMap::new();
+        let mut scope_backfill: BTreeMap<String, Vec<(String, Vec<u8>)>> = BTreeMap::new();
         for shard in 0..=max_shard {
             let key = format!("{}:{:06}", record_hash_key, shard);
             let shard6 = format!("{shard:06}");
@@ -1696,11 +1889,20 @@ fn scan_matrixark_candidates(
                         .or_default()
                         .push((format!("{shard6}:{field}"), b"1".to_vec()));
                 }
+                for record in decode_matrixark_payload(&value) {
+                    for bucket in record_scope_buckets(&record) {
+                        scope_backfill
+                            .entry(scope_index_key(&record_hash_key, &bucket))
+                            .or_default()
+                            .push((format!("{shard6}:{field}"), b"1".to_vec()));
+                    }
+                }
                 payload_values.push(value);
             }
         }
         type_index_backfilled =
             persist_type_index_backfill(engine, &record_hash_key, backfill)?;
+        persist_scope_index_backfill(engine, &record_hash_key, scope_backfill)?;
     }
     let mut records = Vec::new();
     {
@@ -1865,6 +2067,7 @@ fn scan_matrixark_candidates(
             "selected_node_dropped_candidate_count": selected_node_dropped,
             "secondary_index_groups_supplied": secondary_groups.len(),
             "id_scoped_used": id_scoped_used,
+            "scope_index_used": scope_index_used,
             "type_index_used": type_index_used,
             "type_index_backfilled": type_index_backfilled,
             "secondary_index_matched_candidate_count": secondary_matched,
@@ -2024,6 +2227,14 @@ fn forget_scope_records(
                         field: format!("{shard:06}:{field}"),
                     });
                 }
+                for record in decode_matrixark_payload(&value) {
+                    for bucket in record_scope_buckets(&record) {
+                        commands.push(Command::HashDelete {
+                            key: scope_index_key(record_hash_key, &bucket),
+                            field: format!("{shard:06}:{field}"),
+                        });
+                    }
+                }
                 commands.push(Command::HashDelete {
                     key: key.clone(),
                     field,
@@ -2150,6 +2361,14 @@ fn delete_records_by_ids(
                         key: type_index_key(record_hash_key, &record_type),
                         field: format!("{shard:06}:{field}"),
                     });
+                }
+                for record in decode_matrixark_payload(&value) {
+                    for bucket in record_scope_buckets(&record) {
+                        commands.push(Command::HashDelete {
+                            key: scope_index_key(record_hash_key, &bucket),
+                            field: format!("{shard:06}:{field}"),
+                        });
+                    }
                 }
                 commands.push(Command::HashDelete {
                     key: key.clone(),
@@ -2494,6 +2713,14 @@ fn execute_record_log_request(
                                 .entry(type_index_key(base, &record_type))
                                 .or_default()
                                 .push((format!("{shard6}:{field}"), b"1".to_vec()));
+                        }
+                        for record in decode_matrixark_payload(value_text) {
+                            for bucket in record_scope_buckets(&record) {
+                                index_entries
+                                    .entry(scope_index_key(base, &bucket))
+                                    .or_default()
+                                    .push((format!("{shard6}:{field}"), b"1".to_vec()));
+                            }
                         }
                     }
                 }
@@ -4186,6 +4413,165 @@ mod tests {
             payload.to_string(),
         )];
         execute_record_log_request(engine, append, root).expect("append");
+    }
+
+    fn pinned_scan(
+        engine: &TemporalEngine,
+        storage_prefix: &str,
+        tenant: u64,
+        user: u64,
+        explicit_user: bool,
+        root: PathBuf,
+    ) -> Value {
+        let mut scan = request("matrixark_scan_candidates");
+        scan.storage_prefix = storage_prefix.to_string();
+        scan.count_key = Some(format!("{storage_prefix}:record_count"));
+        scan.record_hash_key = Some(format!("{storage_prefix}:records"));
+        scan.shard_size = Some(1);
+        scan.record_types = Some(vec!["context_event".to_string()]);
+        let mut scope = json!({"tenant_hash": tenant, "user_hash": user});
+        if explicit_user {
+            scope["_explicit_scope_keys"] = json!(["tenant_id", "user_id"]);
+        }
+        scan.scope = Some(scope);
+        let output = execute_record_log_request(engine, scan, root).expect("pinned scan");
+        Value::Object(output.extra.into_iter().collect())
+    }
+
+    fn scoped_event(event_id: u64, tenant: u64, user: u64, text: &str) -> String {
+        format!(
+            r#"{{"record_type":"context_event","event_id_hash":{event_id},"text":"{text}","scope_key":"t={tenant}|u={user}|s=1|","access_scope":{{"tenant_hash":{tenant},"user_hash":{user},"scope_key":"t={tenant}|u={user}|s=1|"}}}}"#
+        )
+    }
+
+    /// The core property: walk + backfill on the first pinned scan, scope index on the second,
+    /// identical ordered answers -- with a scopeless record present in both (it matches every
+    /// query, so the none-bucket must ride along) and another subject's record in neither.
+    #[test]
+    fn scope_index_serves_a_pinned_scan_with_the_walks_answer() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        clear_engine_cache();
+        clear_matrixark_scan_cache();
+
+        let storage_prefix = "matrixark:test:scope-index";
+        let probe = request("get_string");
+        let root = record_log_root(&probe);
+        let engine = open_engine(&probe).expect("engine");
+        append_one(&engine, storage_prefix, 0,
+            &scoped_event(1, 11, 22, "alices first"), root.clone());
+        append_one(&engine, storage_prefix, 1,
+            &scoped_event(2, 11, 33, "bobs record"), root.clone());
+        append_one(&engine, storage_prefix, 2,
+            r#"{"record_type":"context_event","event_id_hash":3,"text":"scopeless"}"#,
+            root.clone());
+        append_one(&engine, storage_prefix, 3,
+            &scoped_event(4, 11, 22, "alices second"), root.clone());
+
+        let walk = pinned_scan(&engine, storage_prefix, 11, 22, true, root.clone());
+        let stats = walk.get("scan_stats").expect("stats");
+        assert_eq!(Some(false), stats.get("scope_index_used").and_then(Value::as_bool));
+
+        clear_matrixark_scan_cache();
+        let scoped = pinned_scan(&engine, storage_prefix, 11, 22, true, root.clone());
+        let stats = scoped.get("scan_stats").expect("stats");
+        assert_eq!(Some(true), stats.get("scope_index_used").and_then(Value::as_bool),
+            "the second pinned scan must be served by the scope index");
+        assert_eq!(scan_record_texts(&walk), scan_record_texts(&scoped),
+            "scope-indexed and walk answers must be identical, in the same order");
+        assert_eq!(vec!["alices first", "scopeless", "alices second"],
+            scan_record_texts(&scoped),
+            "another subject's record must be absent; the scopeless one present");
+    }
+
+    /// A scopeless record of a type the query did not ask for must not drag its field into the
+    /// fetch. This is the property the one-bucket layout got wrong: ingest bundles a scoped
+    /// event with scopeless system records, so the master bucket held nearly every field and a
+    /// pinned scan fetched the store (measured: 4,921 records fetched to keep 2).
+    #[test]
+    fn scope_index_skips_scopeless_records_of_other_types() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        clear_engine_cache();
+        clear_matrixark_scan_cache();
+
+        let storage_prefix = "matrixark:test:scope-index-riders";
+        let probe = request("get_string");
+        let root = record_log_root(&probe);
+        let engine = open_engine(&probe).expect("engine");
+        append_one(&engine, storage_prefix, 0,
+            &scoped_event(1, 11, 22, "alices event"), root.clone());
+        append_one(&engine, storage_prefix, 1,
+            r#"{"record_type":"context_index","posting":"rider"}"#, root.clone());
+        append_one(&engine, storage_prefix, 2,
+            r#"{"record_type":"context_event","event_id_hash":3,"text":"scopeless"}"#,
+            root.clone());
+
+        pinned_scan(&engine, storage_prefix, 11, 22, true, root.clone()); // walk + backfill
+        clear_matrixark_scan_cache();
+        let scan = pinned_scan(&engine, storage_prefix, 11, 22, true, root.clone());
+        let stats = scan.get("scan_stats").expect("stats");
+        assert_eq!(Some(true), stats.get("scope_index_used").and_then(Value::as_bool));
+        assert_eq!(vec!["alices event", "scopeless"], scan_record_texts(&scan),
+            "scopeless events still ride along; the posting must not");
+        assert_eq!(Some(2_u64), stats.get("scanned_records").and_then(Value::as_u64),
+            "the posting-only field must not be fetched at all");
+    }
+
+    /// A query that does not pin the user must not be scope-index-served: the bucket scheme
+    /// cannot answer a tenant-wide question.
+    #[test]
+    fn scope_index_declines_an_unpinned_query() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        clear_engine_cache();
+        clear_matrixark_scan_cache();
+
+        let storage_prefix = "matrixark:test:scope-index-unpinned";
+        let probe = request("get_string");
+        let root = record_log_root(&probe);
+        let engine = open_engine(&probe).expect("engine");
+        append_one(&engine, storage_prefix, 0,
+            &scoped_event(1, 11, 22, "alice"), root.clone());
+        append_one(&engine, storage_prefix, 1,
+            &scoped_event(2, 11, 33, "bob"), root.clone());
+
+        // Backfill via a pinned scan, then ask tenant-wide (user not explicit).
+        pinned_scan(&engine, storage_prefix, 11, 22, true, root.clone());
+        clear_matrixark_scan_cache();
+        let tenant_wide = pinned_scan(&engine, storage_prefix, 11, 22, false, root.clone());
+        let stats = tenant_wide.get("scan_stats").expect("stats");
+        assert_eq!(Some(false), stats.get("scope_index_used").and_then(Value::as_bool));
+        assert_eq!(vec!["alice", "bob"], scan_record_texts(&tenant_wide));
+    }
+
+    /// Records appended after the backfill are bucketed in the same durable batch as the data.
+    #[test]
+    fn scope_index_sees_records_appended_after_the_backfill() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        clear_engine_cache();
+        clear_matrixark_scan_cache();
+
+        let storage_prefix = "matrixark:test:scope-index-append";
+        let probe = request("get_string");
+        let root = record_log_root(&probe);
+        let engine = open_engine(&probe).expect("engine");
+        append_one(&engine, storage_prefix, 0,
+            &scoped_event(1, 11, 22, "before"), root.clone());
+        pinned_scan(&engine, storage_prefix, 11, 22, true, root.clone()); // walk + backfill
+        append_one(&engine, storage_prefix, 1,
+            &scoped_event(2, 11, 22, "after"), root.clone());
+
+        clear_matrixark_scan_cache();
+        let scan = pinned_scan(&engine, storage_prefix, 11, 22, true, root.clone());
+        let stats = scan.get("scan_stats").expect("stats");
+        assert_eq!(Some(true), stats.get("scope_index_used").and_then(Value::as_bool));
+        assert_eq!(vec!["before", "after"], scan_record_texts(&scan));
     }
 
     /// Id mode: the locator finds the id's own rows, the type index finds the rows that point
