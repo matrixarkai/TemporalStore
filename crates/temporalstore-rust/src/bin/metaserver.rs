@@ -2881,6 +2881,58 @@ mod tests {
         assert_eq!(run.queue_len, 1);
     }
 
+    fn one_execution_record() -> MetaSchedulerExecutionRecord {
+        MetaSchedulerExecutionRecord {
+            task_id: 1,
+            node_addr: "127.0.0.1:1".to_string(),
+            status: Status::ok(),
+            scheduler_result: SchedulerTaskResult::Ok,
+            retry_times: 0,
+            next_run_time_ms: None,
+            calls: Vec::new(),
+            lifecycle_token: None,
+            lifecycle_state: None,
+            raft_membership_report: None,
+            queue_len: 0,
+        }
+    }
+
+    #[test]
+    fn an_execution_that_cannot_be_persisted_says_so() {
+        // `persist_current` writes the execution history and the scheduler
+        // snapshot together. Its result used to be dropped here while `submit`,
+        // `run_next` and `restore` all return theirs, so a failed write left the
+        // post-execution state non-durable with nobody told -- and a restart
+        // could hand out a task that had already run.
+        let dir = tempfile::tempdir().unwrap();
+        // A regular file where a directory would have to be: `create_dir_all`
+        // cannot make a directory under it, so persisting fails for a reason
+        // that has nothing to do with the execution itself.
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let scheduler =
+            MetaTaskScheduler::with_snapshot_path(blocker.join("sub").join("scheduler.json"))
+                .unwrap();
+
+        let persisted = scheduler.record_execution(one_execution_record());
+        assert!(
+            !persisted.ok,
+            "persisting was impossible and it reported success"
+        );
+        assert_eq!(persisted.code, "scheduler_persist_failed");
+    }
+
+    #[test]
+    fn an_execution_that_persists_reports_ok() {
+        // The other half: the guard must not turn a healthy round into an error.
+        let dir = tempfile::tempdir().unwrap();
+        let scheduler =
+            MetaTaskScheduler::with_snapshot_path(dir.path().join("scheduler.json")).unwrap();
+        let persisted = scheduler.record_execution(one_execution_record());
+        assert!(persisted.ok, "{persisted:?}");
+        assert_eq!(scheduler.executions().executions.len(), 1);
+    }
+
     #[test]
     fn metaserver_scheduler_execute_next_dry_run_preserves_queue() {
         let backend = MetaBackend::Single(SingleNodeMeta::default());
