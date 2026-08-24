@@ -6,11 +6,46 @@
 
 impl MetaTaskScheduler {
     fn from_env() -> io::Result<Self> {
-        std::env::var("TS_META_SCHEDULER_SNAPSHOT")
+        let scheduler = std::env::var("TS_META_SCHEDULER_SNAPSHOT")
             .ok()
             .map(|path| Self::with_snapshot_path(PathBuf::from(path)))
             .transpose()
-            .map(|scheduler| scheduler.unwrap_or_default())
+            .map(|scheduler| scheduler.unwrap_or_default())?;
+        // Applied here as well as in `with_snapshot_path`: without a snapshot
+        // path that branch is never taken, and the pacing would silently only
+        // work for deployments that happen to persist their queue.
+        Ok(Self {
+            default_options: Self::options_from_env(),
+            ..scheduler
+        })
+    }
+
+    /// Pacing from the environment, falling back to the compiled defaults so an
+    /// unconfigured metaserver behaves exactly as it did.
+    fn options_from_env() -> TaskSchedulerOptions {
+        let defaults = TaskSchedulerOptions::default();
+        TaskSchedulerOptions {
+            base_postpone_ms: env_u64(
+                "TS_META_TASK_SCHEDULER_BASE_POSTPONE_MS",
+                defaults.base_postpone_ms,
+            ),
+            max_postpone_ms: env_u64(
+                "TS_META_TASK_SCHEDULER_MAX_POSTPONE_MS",
+                defaults.max_postpone_ms,
+            ),
+            max_retry_times: env_u64(
+                "TS_META_TASK_SCHEDULER_MAX_RETRY_TIMES",
+                defaults.max_retry_times,
+            ),
+            // How many tasks the metaserver will have in flight at once. The
+            // compiled default is 1, which drives one shard move or load at a
+            // time; a large fleet will want more, and now can have it without
+            // a rebuild.
+            max_inflight: env_u64(
+                "TS_META_TASK_SCHEDULER_MAX_INFLIGHT",
+                defaults.max_inflight as u64,
+            ) as usize,
+        }
     }
 
     fn with_snapshot_path(path: PathBuf) -> io::Result<Self> {
@@ -24,6 +59,7 @@ impl MetaTaskScheduler {
             inner: Arc::new(Mutex::new(scheduler)),
             executions: Arc::new(Mutex::new(executions)),
             snapshot_path: Some(path),
+            default_options: Self::options_from_env(),
         })
     }
 
@@ -57,7 +93,7 @@ impl MetaTaskScheduler {
         match scheduler.run_next(
             request.now_ms,
             request.result,
-            request.options.unwrap_or_default(),
+            request.options.unwrap_or(self.default_options),
         ) {
             Ok(report) => MetaSchedulerRunResponse {
                 status: if report.is_some() {
