@@ -277,10 +277,12 @@ fn a_second_sync_asks_only_for_what_changed_and_keeps_its_routes() {
     // deleted them all. Both halves are needed, in that order.
     let seen_versions = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
     let builds = std::sync::Arc::new(AtomicUsize::new(0));
+    let seen_version_calls = std::sync::Arc::new(AtomicUsize::new(0));
     let meta_addr = free_local_addr();
     let meta_addr_for_listener = meta_addr.clone();
     let versions = seen_versions.clone();
     let built = builds.clone();
+    let version_calls = seen_version_calls.clone();
     std::thread::spawn(move || {
         serve(&meta_addr_for_listener, move |request| {
             match (request.method.as_str(), request.path.as_str()) {
@@ -331,6 +333,13 @@ fn a_second_sync_asks_only_for_what_changed_and_keeps_its_routes() {
                         },
                     )
                 }
+                // Only the CALL is interesting here. What comes back does not matter: an
+                // unparsed answer just falls back to the table's own version, and what this
+                // test measures is whether the call is made at all.
+                ("POST", "/meta/topology_version") => {
+                    version_calls.fetch_add(1, Ordering::SeqCst);
+                    json_response(503, &Status::error("unavailable", "not part of this test"))
+                }
                 _ => json_response(404, &Status::error("not_found", "no route")),
             }
         })
@@ -348,6 +357,7 @@ fn a_second_sync_asks_only_for_what_changed_and_keeps_its_routes() {
         .sync_table_topology("ns".to_string(), "tbl".to_string())
         .expect("first sync succeeds");
     assert_eq!(client.topology_cache_report().route_count, 1);
+    let version_calls_after_first = seen_version_calls.load(Ordering::SeqCst);
 
     client
         .sync_table_topology("ns".to_string(), "tbl".to_string())
@@ -373,6 +383,11 @@ fn a_second_sync_asks_only_for_what_changed_and_keeps_its_routes() {
         client.topology_cache_report().route_count,
         1,
         "an unchanged reply carries no shards and must not be read as having none"
+    );
+    assert_eq!(
+        seen_version_calls.load(Ordering::SeqCst),
+        version_calls_after_first,
+        "a sync that changed nothing should cost one round-trip, not two -- the cluster          topology version is only needed to stamp routes, and an unchanged reply installs none"
     );
 }
 
