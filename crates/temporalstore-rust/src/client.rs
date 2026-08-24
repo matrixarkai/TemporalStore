@@ -525,6 +525,13 @@ pub struct ClientMetaSyncTableReport {
     pub last_topology_version: u64,
     pub consecutive_errors: u64,
     pub last_error: String,
+    /// Shards the last sync could not route because the topology named no primary for them.
+    ///
+    /// Their previous routes are kept rather than discarded -- a snapshot taken while a
+    /// primary is being elected should not destroy a working route -- but the sync is not a
+    /// clean one, and reporting it as clean is how this stayed invisible.
+    #[serde(default)]
+    pub shards_without_primary: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -652,6 +659,7 @@ struct ClientMetaSyncTableState {
     last_topology_version: u64,
     consecutive_errors: u64,
     last_error: String,
+    shards_without_primary: u64,
 }
 
 #[derive(Debug, Clone)]
