@@ -4728,6 +4728,19 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
     # (the purged log replays to the same logical state). DEFERRED (separate parallel workstream):
     # rust-datanode-native StringDelete/CommonDelete/FeatureDelete wiring, and true re-derivation
     # (re-extraction) of a demoted multi-source entity/summary -- we trim evidence, not re-summarize.
+    def surviving_ids_for_pending_events(self, pending: list[Json]) -> set[str] | None:
+        """Which of `pending`'s event ids survive the tombstone sweep? None = all of them.
+
+        The delete-before-extract guard's question, asked as a method so a backend can answer it
+        without reading the whole log. This base implementation IS the old behaviour: skip when no
+        tombstone can exist, otherwise run the order-aware sweep over the full raw log.
+        """
+        if not pending:
+            return None
+        if not self.memory_tombstones_may_exist():
+            return None
+        return surviving_source_event_ids(self._read_raw_records())
+
     def memory_tombstones_may_exist(self) -> bool:
         """Could the durable log hold a memory tombstone? Conservative: True means "look properly".
 

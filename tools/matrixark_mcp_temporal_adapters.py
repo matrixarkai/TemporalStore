@@ -1093,9 +1093,27 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         and let a deleted event be re-materialised by extraction; a false positive only costs the
         read the guard used to do unconditionally.
         """
+        # No scanner at all is not the same as a scan that failed: without the capability the
+        # base implementation answers accurately from the raw log (what would run anyway), while
+        # a FAILED scan means the engine could not answer and the only safe report is True.
+        if not callable(getattr(self._client, "matrixark_scan_candidates", None)):
+            return super().memory_tombstones_may_exist()
+        records = self._memory_tombstone_records()
+        if records is None:
+            return True
+        return bool(records)
+
+    def _memory_tombstone_records(self) -> list[Json] | None:
+        """Every memory tombstone in the store, from one type-filtered scan. None = could not ask.
+
+        None and [] mean different things and the callers depend on it: [] is an authoritative
+        "no tombstones" (skip the guard entirely), None sends the caller to the expensive, correct
+        path. Collapsing them would either re-run full reads on every clean store or skip the
+        guard on an unreachable engine.
+        """
         scanner = getattr(self._client, "matrixark_scan_candidates", None)
         if not callable(scanner):
-            return super().memory_tombstones_may_exist()
+            return None
         try:
             from tools.matrixark_mcp_local_adapter import MEMORY_TOMBSTONE_RECORD_TYPE
         except ModuleNotFoundError:  # Direct script execution from tools/.
@@ -1111,17 +1129,87 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                 selected_node_hashes=[],
             )
         except Exception:  # noqa: BLE001 - an unanswered question means "do the full read".
-            return True
+            return None
         if not isinstance(response, dict):
-            return True
+            return None
         records = response.get("records")
         if not isinstance(records, list):
-            return True
-        return any(
-            isinstance(record, dict)
+            return None
+        return [
+            record for record in records
+            if isinstance(record, dict)
             and str(record.get("record_type") or "") == MEMORY_TOMBSTONE_RECORD_TYPE
-            for record in records
-        )
+        ]
+
+    def surviving_ids_for_pending_events(self, pending: list[Json]) -> set[str] | None:
+        """Decide the guard from the tombstones alone, without reading the whole raw log.
+
+        Per pending event, against each scanned tombstone that `_tombstone_kills_record` says
+        matches it:
+
+        * `delete` kind: the id is unique to one ingest and the tombstone was written to remove
+          it, so the tombstone postdates the event by construction -- matching alone kills it.
+        * `forget`/`reset` kind: only records PRECEDING the tombstone die, and a re-ingest after a
+          forget must survive. Order comes from timestamps; a strict comparison decides, and a tie
+          or a missing timestamp makes the event AMBIGUOUS -- the whole commit then takes the full
+          raw read, because guessing either way is a real bug (resurrected deleted content one
+          way, silently unextracted memory the other).
+
+        Returns None for "keep everything" so the caller's contract is unchanged.
+        """
+        if not pending:
+            return None
+        tombstones = self._memory_tombstone_records()
+        if tombstones is None:
+            return super().surviving_ids_for_pending_events(pending)
+        if not tombstones:
+            return None
+        try:
+            from tools.matrixark_mcp_local_adapter import _tombstone_kills_record
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_local_adapter import _tombstone_kills_record
+
+        def event_time_ms(record: Json) -> int:
+            # The same resolution order the commit path uses for pending events.
+            try:
+                return int(
+                    (record.get("envelope") or {}).get("ingestion_time_ms")
+                    or record.get("updated_at_ms")
+                    or record.get("timestamp_key_ms")
+                    or 0
+                )
+            except (TypeError, ValueError):
+                return 0
+
+        surviving: set[str] = set()
+        for event in pending:
+            if not isinstance(event, dict):
+                continue
+            event_id = str(event.get("event_id_hash") or "")
+            if not event_id:
+                continue
+            killed = False
+            for tombstone in tombstones:
+                if not _tombstone_kills_record(tombstone, event):
+                    continue
+                kind = str(tombstone.get("tombstone_kind") or "")
+                if kind == "delete":
+                    killed = True
+                    break
+                event_ms = event_time_ms(event)
+                try:
+                    tombstone_ms = int(tombstone.get("created_at_ms") or 0)
+                except (TypeError, ValueError):
+                    tombstone_ms = 0
+                if not event_ms or not tombstone_ms or event_ms == tombstone_ms:
+                    # Cannot order them: ambiguous, so this commit takes the full, correct read.
+                    return super().surviving_ids_for_pending_events(pending)
+                if tombstone_ms > event_ms:
+                    killed = True
+                    break
+            if not killed:
+                surviving.add(event_id)
+        return surviving
 
     def _purge_scope_in_engine(self, scope: Json) -> Json:
         """Ask the engine to physically remove every record matching `scope`.
