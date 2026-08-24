@@ -1634,11 +1634,17 @@ fn roll_wal_segment_if_due(
     let sealed = sealed_wal_path(&inner.root, shard_id, base);
     fs::rename(&path, &sealed)?;
     sync_parent_dir(&sealed)?;
+    // Sealed, and nothing to append to yet. A crash here leaves a log whose pieces are all sealed,
+    // and an absent piece reads as starting at log id zero -- which those pieces already own.
+    crate::fault::point("wal/roll/after_rename");
 
     // Start the next piece where this one ended. If a crash lands before this, the next append
     // derives the same starting point from the sealed pieces.
     let next_base = base.saturating_add(holds);
     let mut file = File::create(&path)?;
+    // Created, no header yet. A crash here leaves a piece of zero length, which reads as starting
+    // at log id zero for the same reason.
+    crate::fault::point("wal/roll/after_create");
     file.write_all(&crate::log_framing::encode_base_header(next_base))?;
     file.flush()?;
     // No barrier for the header, and none for the directory entry. The header rides the barrier
@@ -4954,6 +4960,95 @@ mod tests {
             at(&mut r, 1.0),
         );
         assert!(!rolled.is_empty(), "nothing rolled, so this measured nothing");
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// The window between sealing a piece and starting the next one, entered by stopping there.
+    ///
+    /// There is already a test for this window that builds its state by hand -- it removes the
+    /// piece being written and reopens. That is only a test of this window if removing that file is
+    /// what a crash there leaves behind, and nothing checks the claim. Applying the same reasoning
+    /// one window over produced a test that failed for the wrong reason, so the reasoning is worth
+    /// removing rather than repeating: here the roll is stopped AT the line, and whatever is on
+    /// disk afterwards is what a crash at that line leaves, by construction.
+    #[test]
+    fn stopping_a_roll_after_the_rename_does_not_reuse_addresses() {
+        set_wal_segment_bytes_for_test(Some(2 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+
+        // Write until a roll is about to happen, with the point disarmed.
+        let mut written = Vec::new();
+        let mut index = 0u64;
+        let mut stopped = false;
+        while index < 5_000 {
+            let armed = crate::fault::arm(
+                "wal/roll/after_rename",
+                crate::fault::FaultAction::Stop,
+            );
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                store.append_with_sync_reporting(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 64],
+                    },
+                    false,
+                )
+            }));
+            drop(armed);
+            match outcome {
+                Ok(Ok((record, log_id))) => written.push((record.sequence, log_id)),
+                Ok(Err(err)) => panic!("append failed: {err}"),
+                Err(_) => {
+                    // The roll stopped after the rename. The store's lock is poisoned by that
+                    // unwind, which is exactly what a crash would cost us: this handle is done.
+                    stopped = true;
+                    break;
+                }
+            }
+            index += 1;
+        }
+        assert!(stopped, "never reached a roll, so this tested nothing");
+        drop(store);
+
+        // Everything is sealed and there is nothing to append to -- the state a crash there leaves.
+        let active = write_ahead_log_path(dir.path(), 1);
+        assert!(!active.exists(), "the piece being written should be gone");
+        assert!(
+            wal_segment_paths(dir.path(), 1).iter().any(|p| p != &active),
+            "the sealed pieces should still be there"
+        );
+
+        let reopened = LocalWriteAheadLogStore::new(dir.path());
+        let (_, log_id) = reopened
+            .append_with_sync_reporting(
+                1,
+                Command::StringSet {
+                    key: "after".to_string(),
+                    value: b"v".to_vec(),
+                },
+                false,
+            )
+            .unwrap();
+        assert!(
+            written.iter().all(|(_, earlier)| *earlier < log_id),
+            "a record written after the crash took an address an earlier one already owns"
+        );
+        // And every address handed out before the crash still resolves to its own record.
+        for (sequence, earlier) in &written {
+            if let Some(bytes) = reopened.read_at_log_id(1, *earlier, 4096).unwrap() {
+                let end = bytes
+                    .iter()
+                    .position(|byte| *byte == b'\n')
+                    .map_or(bytes.len(), |at| at + 1);
+                assert_eq!(
+                    decode_wal_line(&bytes[..end]).unwrap().sequence,
+                    *sequence,
+                    "log id {earlier} resolved to the wrong record"
+                );
+            }
+        }
         set_wal_segment_bytes_for_test(None);
     }
 }

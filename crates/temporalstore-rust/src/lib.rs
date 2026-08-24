@@ -34,6 +34,7 @@ pub mod storage_config;
 pub mod storage_descriptor;
 pub mod telemetry;
 pub mod types;
+pub mod fault;
 pub mod wal;
 pub mod record_framing;
 pub mod index_log_record;
