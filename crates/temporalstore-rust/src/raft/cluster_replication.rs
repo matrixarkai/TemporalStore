@@ -201,11 +201,18 @@ impl RaftCluster {
             node_term_at_log_or_snapshot_index(leader, prev_log_index).unwrap_or_default();
         let mut entries = Vec::new();
         let mut inflight_bytes = 0u64;
-        for entry in leader
+        // A raft log is in ascending index order, so everything this peer still needs is a
+        // SUFFIX of it. Scanning from the front and filtering costs the whole log on every
+        // AppendEntries to every peer, which makes a write more expensive the more history sits
+        // in front of it -- appending one entry should cost the same at index 10 and 10,000.
+        let first_unsent = leader
             .log
-            .iter()
-            .filter(|entry| entry.index > prev_log_index)
-        {
+            .partition_point(|entry| entry.index <= prev_log_index);
+        crate::durability_metrics::record_scan(
+            "replication_entries_examined",
+            (leader.log.len() - first_unsent) as u64,
+        );
+        for entry in leader.log[first_unsent..].iter() {
             if entries.len() as u64 >= available_entries {
                 break;
             }
@@ -387,6 +394,21 @@ impl RaftCluster {
         let leader_id = request.leader_id;
         let term = request.term;
         let leader_commit = request.leader_commit;
+        // Record what the LEADER says its commit index is, on every request -- including the ones
+        // this node is about to reject. That is the whole point: a rejecting follower keeps
+        // hearing from the leader, so this stays fresh while the node's own log does not move,
+        // and the two together say "behind, and not catching up".
+        {
+            let logical_now = inner.logical_time_ms;
+            if let Some(node) = inner.nodes.get_mut(&target_id) {
+                node.pipeline_state.leader_reported_commit_index = leader_commit;
+                if node.pipeline_state.last_accepted_append_ms == 0 {
+                    // Never accepted anything yet: start the clock here rather than at zero, so a
+                    // node that just joined does not report the age of the process as a stall.
+                    node.pipeline_state.last_accepted_append_ms = logical_now;
+                }
+            }
+        }
         // Contact from the leader proves it is alive, whatever we go on to decide about its
         // entries. A follower marks its leader down when its election timer expires, and until
         // now only an ACCEPTED append marked it back up -- so a follower that is merely behind,
@@ -654,6 +676,11 @@ impl RaftCluster {
         }
         let config = inner.config.clone();
         let local_node_id_for_refresh = inner.local_node_id;
+        // This append was accepted, so progress happened: stamp it before anything can fail.
+        let accepted_at = inner.logical_time_ms;
+        if let Some(node) = inner.nodes.get_mut(&target_id) {
+            node.pipeline_state.last_accepted_append_ms = accepted_at;
+        }
         refresh_all_pipeline_states(&mut inner.nodes, leader_id, local_node_id_for_refresh, &config);
         inner.renew_leader_lease();
         inner.persist_configured_wal()?;

@@ -1071,19 +1071,42 @@ pub struct RaftMembershipRuntimeEvidence {
     pub pending_joint_consensus_restore_count: u64,
 }
 
+impl RaftReplicaRole {
+    /// Whether this is the value an absent field decodes to, so the encoder can leave it out.
+    fn is_default(&self) -> bool {
+        *self == RaftReplicaRole::default()
+    }
+}
+
+impl RaftApplySnapshotFence {
+    /// Whether this is the value an absent field decodes to, so the encoder can leave it out.
+    fn is_default(&self) -> bool {
+        *self == RaftApplySnapshotFence::default()
+    }
+}
+
+impl RaftMembershipRuntimeEvidence {
+    /// Whether this is the value an absent field decodes to, so the encoder can leave it out.
+    /// This block is a dozen counters that are zero on almost every record, and spelling them
+    /// out cost more than the entry the record exists to carry.
+    fn is_default(&self) -> bool {
+        *self == RaftMembershipRuntimeEvidence::default()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RaftWalRecord {
     pub hard_state: RaftHardState,
     pub membership: RaftMembership,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "RaftReplicaRole::is_default")]
     pub replica_role: RaftReplicaRole,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub joint_membership: Option<JointConsensusMembership>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_external_snapshot_ref: Option<RaftExternalSnapshotRef>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installed_snapshot: Option<RaftSnapshot>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "RaftApplySnapshotFence::is_default")]
     pub apply_snapshot_fence: RaftApplySnapshotFence,
     #[serde(default)]
     pub storage_apply_fence: RaftStorageApplyFence,
@@ -1094,7 +1117,7 @@ pub struct RaftWalRecord {
     pub pipeline_state: RaftPeerPipelineRuntimeState,
     #[serde(default, skip_serializing_if = "RaftReadSafetyRuntimeState::is_default")]
     pub read_safety_state: RaftReadSafetyRuntimeState,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "RaftMembershipRuntimeEvidence::is_default")]
     pub membership_evidence: RaftMembershipRuntimeEvidence,
     pub entries: Vec<RaftLogEntry>,
 }
@@ -1121,6 +1144,16 @@ pub struct RaftPeerPipelineRuntimeState {
     pub inflight_entries: u64,
     pub inflight_bytes: u64,
     pub append_queue_depth: u64,
+    /// Cluster clock reading when this node last ACCEPTED an append. Not when one last
+    /// arrived: a follower stuck rejecting every entry still receives them, and counting
+    /// arrivals is how a stalled follower comes to look healthy.
+    #[serde(default)]
+    pub last_accepted_append_ms: u64,
+    /// The commit index the leader last reported here. It comes from the leader itself rather
+    /// than from this process's shadow of it, which is what makes it trustworthy: a shadow does
+    /// not move when a peer rejects, so it cannot tell "caught up" from "stuck".
+    #[serde(default)]
+    pub leader_reported_commit_index: u64,
     #[serde(default)]
     pub apply_inflight_tasks: u64,
     #[serde(default)]
@@ -1401,6 +1434,10 @@ fn raft_wal_delta_entries_enabled() -> bool {
 pub struct LocalRaftWal {
     root: PathBuf,
     cursors: Arc<Mutex<BTreeMap<(ShardId, RaftNodeId), NodeWalCursor>>>,
+    /// One barrier gate per node log, so writers that arrive while an fsync is in flight ride it
+    /// instead of queueing to take an identical one. Shared by `clone`, like the cursors: two
+    /// handles to the same file must share a gate or each would take its own barrier again.
+    flush_gates: Arc<crate::flush_gate::FlushRegistry>,
 }
 
 
@@ -4095,6 +4132,33 @@ impl RaftCluster {
         })
     }
 
+    /// Take the barriers a set of staged appends owes, holding NO cluster lock.
+    ///
+    /// The lock is needed to decide WHAT to write and to keep those writes ordered, not to make
+    /// them durable: an fsync covers every byte already in the file whoever wrote it. Holding a
+    /// lock here would block the next proposer for the length of an fsync and serialise exactly
+    /// the writers this is meant to let share a barrier.
+    fn finish_staged_unlocked(
+        &self,
+        staged: Vec<local_wal::StagedWalAppend>,
+    ) -> Result<(), RaftError> {
+        if staged.is_empty() {
+            return Ok(());
+        }
+        let wal = {
+            let inner = self.inner.read().expect("raft cluster lock poisoned");
+            inner.wal.clone()
+        };
+        let Some(wal) = wal else {
+            return Ok(());
+        };
+        for append in staged {
+            wal.finish_staged(append)
+                .map_err(|err| RaftError::Wal(err.to_string()))?;
+        }
+        Ok(())
+    }
+
     pub fn propose(&self, command: Command) -> Result<CommandResponse, RaftError> {
         let limit = self
             .inner
@@ -4110,11 +4174,60 @@ impl RaftCluster {
             }
             Err(err) => return Err(err),
         };
-        let mut last_response = CommandResponse::Empty;
+        // Defer the writes, then flush them with no lock held. `propose_one` takes the cluster
+        // write lock for its whole body, barrier included, so proposers could never reach the
+        // barrier together and each paid for one of its own -- measured flat at 1.0 barriers per
+        // write from 1 to 16 concurrent writers. Deferring does not reduce how many writes there
+        // are; it moves the barrier out from under the lock so writers can share one. A command
+        // split across chunks takes one barrier for the whole command: no chunk is acknowledged
+        // until every chunk is written and flushed.
+        //
+        // The deferral is a per-thread claim recorded in SHARED state, so the span from opening
+        // it to staging it must not interleave with another proposer's. Unserialised, two
+        // proposers race: A marks the state dirty, B opens its own deferral and clears that flag,
+        // and A then stages nothing and returns success for a write no barrier ever covered. The
+        // replicated path already holds this same lock for this same span. It costs no throughput
+        // here -- `propose_one` serialises on the cluster write lock anyway -- and it is released
+        // before the barrier, so the flushes still coalesce.
+        let local_propose_gate = {
+            let inner = self.inner.read().expect("raft cluster lock poisoned");
+            inner.propose_serialize.clone()
+        };
+        let local_propose_guard = local_propose_gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.inner
+            .write()
+            .expect("raft cluster lock poisoned")
+            .begin_deferred_persist();
+        let mut outcome = Ok(CommandResponse::Empty);
         for chunk in chunks {
-            last_response = self.propose_one(chunk)?;
+            match self.propose_one(chunk) {
+                Ok(response) => outcome = Ok(response),
+                Err(err) => {
+                    outcome = Err(err);
+                    break;
+                }
+            }
         }
-        Ok(last_response)
+        let staged = self
+            .inner
+            .write()
+            .expect("raft cluster lock poisoned")
+            .stage_deferred_persist();
+        // The writes are done and ordered; the barrier needs no ordering, so release before it.
+        drop(local_propose_guard);
+        // Flush on the failure path too: a propose that failed part-way still owes a barrier for
+        // whatever it already wrote, and nothing is returned to the caller before it is taken.
+        let flushed = match staged {
+            Ok(staged) => self.finish_staged_unlocked(staged),
+            Err(err) => Err(err),
+        };
+        match (outcome, flushed) {
+            (Ok(response), Ok(())) => Ok(response),
+            (Ok(_), Err(err)) => Err(err),
+            (Err(err), _) => Err(err),
+        }
     }
 
     fn propose_one(&self, command: Command) -> Result<CommandResponse, RaftError> {
@@ -4319,11 +4432,25 @@ impl RaftCluster {
         if !deferring {
             return outcome;
         }
-        let flushed = self
+        // Write what the deferral owes while the propose lock still orders it. Records carry the
+        // log, so an older record landing after a newer one would regress the log on recovery --
+        // the write must stay ordered.
+        let staged = self
             .inner
             .write()
             .expect("raft cluster lock poisoned")
-            .flush_deferred_persist();
+            .stage_deferred_persist();
+        // The barrier needs no such ordering: an fsync makes every byte already in the file
+        // durable whoever wrote it. Releasing the lock here is what finally gives group commit a
+        // queue to coalesce -- while the barrier was taken under this lock only one writer ever
+        // reached it, and barriers per write stayed flat however many writers there were.
+        // Nothing is acknowledged before its barrier: the flush still happens below, on the
+        // failure path as well as the success path.
+        drop(_propose_guard);
+        let flushed = match staged {
+            Ok(staged) => self.finish_staged_unlocked(staged),
+            Err(err) => Err(err),
+        };
         // Never ack a write whose barrier failed: a flush error wins over a successful propose.
         match (outcome, flushed) {
             (Ok(response), Ok(())) => Ok(response),

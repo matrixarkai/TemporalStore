@@ -11,6 +11,8 @@ pub mod context_workflow;
 pub mod control;
 pub mod data_node;
 pub mod e2e;
+pub mod durability_metrics;
+pub mod flush_gate;
 pub mod engine;
 pub mod http;
 pub mod index_log;

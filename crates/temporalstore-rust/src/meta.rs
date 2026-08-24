@@ -892,6 +892,7 @@ impl LocalMetaMutationLog {
             .open(&self.path)?;
         serde_json::to_writer(&mut file, mutation).map_err(io::Error::other)?;
         file.write_all(b"\n")?;
+        crate::durability_metrics::record_barrier("meta_log_append");
         file.sync_data()?;
         Ok(())
     }
