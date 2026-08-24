@@ -619,6 +619,7 @@ mod tests {
         use crate::meta::*;
         let meta = SingleNodeMeta::with_mutation_log(log_path).unwrap();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -626,6 +627,7 @@ mod tests {
             binary_version: "v1".to_string(),
         });
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "proxy-a".to_string(),
             namespace: String::new(),
             location: "rack-1".to_string(),
@@ -929,6 +931,7 @@ mod tests {
         // stay in the meta state -- and in every exported snapshot -- forever.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -982,6 +985,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         let register = || {
             meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
                 node_id: 1,
@@ -1280,6 +1284,7 @@ mod tests {
     fn purging_removes_the_resources_from_meta_state_and_from_snapshots() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -1287,6 +1292,7 @@ mod tests {
             binary_version: "v1".to_string(),
         });
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "proxy-a".to_string(),
             namespace: "ns".to_string(),
             location: "rack-1".to_string(),
@@ -1342,6 +1348,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         let register = || {
             meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
                 node_id: 1,
@@ -1382,6 +1389,7 @@ mod tests {
         // inherits rather than restarting every one of their clocks.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
             node_id: 1,

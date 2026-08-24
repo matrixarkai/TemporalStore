@@ -535,6 +535,7 @@ impl SingleNodeMeta {
         state.shards.insert(
             request.shard_id,
             ShardLocation {
+                registered_at_ms: 0,
                 state: MetaEntityState::Normal,
                 shard_id: request.shard_id,
                 server_addr: server_addr.clone(),

@@ -7161,6 +7161,7 @@ fn apply_meta_committed(node: &mut MetaRaftNode) -> Option<Status> {
                         .insert(location.shard_id, location.clone());
                     last_status = Some(node.meta.apply_mutation(MetaMutation::RegisterShard(
                         RegisterShardRequest {
+                            registered_at_ms: 0,
                             shard_id: location.shard_id,
                             server_addr: location.server_addr.clone(),
                         },
@@ -7177,6 +7178,7 @@ fn apply_meta_committed(node: &mut MetaRaftNode) -> Option<Status> {
                             node.state.shards.insert(
                                 request.shard_id,
                                 ShardLocation {
+                                    registered_at_ms: 0,
                                     state: crate::meta::MetaEntityState::Normal,
                                     shard_id: request.shard_id,
                                     server_addr: request.server_addr.clone(),
@@ -7188,6 +7190,7 @@ fn apply_meta_committed(node: &mut MetaRaftNode) -> Option<Status> {
                             node.state.shards.insert(
                                 request.shard_id,
                                 ShardLocation {
+                                    registered_at_ms: 0,
                                     state: crate::meta::MetaEntityState::Normal,
                                     shard_id: request.shard_id,
                                     server_addr: request.server_addr.clone(),

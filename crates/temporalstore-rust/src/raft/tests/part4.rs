@@ -377,6 +377,7 @@ fn raft_election_does_not_depend_on_snapshot_availability() {
 fn metaserver_raft_replicates_shard_location_metadata() {
     let meta = MetaRaftCluster::new([10, 11, 12]);
     let location = ShardLocation {
+        registered_at_ms: 0,
         state: crate::meta::MetaEntityState::Normal,
         shard_id: 1,
         server_addr: "127.0.0.1:17002".to_string(),
@@ -485,6 +486,7 @@ fn metaserver_raft_replicates_full_metadata_mutation_api() {
 
     assert!(
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "server-a".to_string(),
             node_id: 1,
@@ -516,6 +518,7 @@ fn metaserver_raft_replicates_full_metadata_mutation_api() {
     );
     assert!(
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 100,
             server_addr: "server-a".to_string(),
         })
@@ -603,6 +606,7 @@ fn metaserver_raft_replicates_full_metadata_mutation_api() {
 fn metaserver_raft_freeze_stale_server_is_replicated_mutation() {
     let meta = MetaRaftCluster::new([10, 11, 12]);
     meta.register_server(RegisterServerRequest {
+        registered_at_ms: 0,
         numa_nodes: Vec::new(),
         server_addr: "server-stale".to_string(),
         node_id: 1,
@@ -655,6 +659,7 @@ fn production_meta_raft_runtime_ticks_failover_and_failure_detection() {
         runtime
             .cluster()
             .register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "server-stale".to_string(),
                 node_id: 1,
@@ -1017,6 +1022,7 @@ fn metaserver_raft_mutation_api_rejects_without_majority() {
 fn metaserver_raft_can_read_from_any_live_committed_replica() {
     let meta = MetaRaftCluster::new([10, 11, 12]);
     meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+        registered_at_ms: 0,
         state: crate::meta::MetaEntityState::Normal,
         shard_id: 7,
         server_addr: "server-a".to_string(),
@@ -1029,6 +1035,7 @@ fn metaserver_raft_can_read_from_any_live_committed_replica() {
     assert_eq!(
         meta.get_shard_location_from_any_live(7).unwrap(),
         Some(ShardLocation {
+            registered_at_ms: 0,
             state: crate::meta::MetaEntityState::Normal,
             shard_id: 7,
             server_addr: "server-a".to_string(),
@@ -1042,6 +1049,7 @@ fn metaserver_raft_supports_promotion_and_membership_changes() {
     let meta = MetaRaftCluster::new([10, 11, 12]);
     meta.set_alive(10, false).unwrap();
     meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+        registered_at_ms: 0,
         state: crate::meta::MetaEntityState::Normal,
         shard_id: 2,
         server_addr: "server-b".to_string(),
@@ -1052,6 +1060,7 @@ fn metaserver_raft_supports_promotion_and_membership_changes() {
     assert_eq!(
         meta.get_shard_location(13, 2).unwrap(),
         Some(ShardLocation {
+            registered_at_ms: 0,
             state: crate::meta::MetaEntityState::Normal,
             shard_id: 2,
             server_addr: "server-b".to_string(),
@@ -1069,6 +1078,7 @@ fn metaserver_raft_health_catchup_safe_scale_and_failover_work() {
     let meta = MetaRaftCluster::new([10, 11, 12]);
     meta.set_alive(12, false).unwrap();
     meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+        registered_at_ms: 0,
         state: crate::meta::MetaEntityState::Normal,
         shard_id: 42,
         server_addr: "server-before-meta-lag".to_string(),
@@ -1112,6 +1122,7 @@ fn metaserver_raft_health_catchup_safe_scale_and_failover_work() {
     assert_eq!(failover.old_leader_id, 10);
     assert_ne!(failover.new_leader_id, 10);
     meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+        registered_at_ms: 0,
         state: crate::meta::MetaEntityState::Normal,
         shard_id: 43,
         server_addr: "server-after-meta-failover".to_string(),
@@ -1121,6 +1132,7 @@ fn metaserver_raft_health_catchup_safe_scale_and_failover_work() {
     assert_eq!(
         meta.get_shard_location(failover.new_leader_id, 43).unwrap(),
         Some(ShardLocation {
+            registered_at_ms: 0,
             state: crate::meta::MetaEntityState::Normal,
             shard_id: 43,
             server_addr: "server-after-meta-failover".to_string(),
@@ -1133,6 +1145,7 @@ fn metaserver_raft_health_catchup_safe_scale_and_failover_work() {
 fn metaserver_raft_apply_health_reports_commit_to_apply_lag() {
     let meta = MetaRaftCluster::new([10, 11, 12]);
     meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+        registered_at_ms: 0,
         state: crate::meta::MetaEntityState::Normal,
         shard_id: 144,
         server_addr: "server-meta-apply-health".to_string(),
@@ -1171,6 +1184,7 @@ fn metaserver_raft_apply_health_reports_commit_to_apply_lag() {
 fn metaserver_raft_membership_plan_and_apply_match_data_raft_shape() {
     let meta = MetaRaftCluster::new([10, 11, 12]);
     meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+        registered_at_ms: 0,
         state: crate::meta::MetaEntityState::Normal,
         shard_id: 44,
         server_addr: "server-before-meta-membership".to_string(),
@@ -1194,6 +1208,7 @@ fn metaserver_raft_membership_plan_and_apply_match_data_raft_shape() {
     assert_eq!(
         meta.get_shard_location(13, 44).unwrap(),
         Some(ShardLocation {
+            registered_at_ms: 0,
             state: crate::meta::MetaEntityState::Normal,
             shard_id: 44,
             server_addr: "server-before-meta-membership".to_string(),
@@ -1227,6 +1242,7 @@ fn metaserver_raft_membership_apply_rejects_noop_and_quorum_loss() {
 fn metaserver_raft_status_read_index_and_transfer_leader_work() {
     let meta = MetaRaftCluster::new([10, 11, 12]);
     meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+        registered_at_ms: 0,
         state: crate::meta::MetaEntityState::Normal,
         shard_id: 7,
         server_addr: "127.0.0.1:17002".to_string(),
@@ -1257,6 +1273,7 @@ fn metaserver_raft_status_read_index_and_transfer_leader_work() {
 fn metaserver_raft_promotes_follower_after_leader_failure_and_keeps_metadata_available() {
     let meta = MetaRaftCluster::new([10, 11, 12]);
     meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+        registered_at_ms: 0,
         state: crate::meta::MetaEntityState::Normal,
         shard_id: 7,
         server_addr: "server-before-failover".to_string(),
@@ -1266,6 +1283,7 @@ fn metaserver_raft_promotes_follower_after_leader_failure_and_keeps_metadata_ava
 
     meta.set_alive(10, false).unwrap();
     meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+        registered_at_ms: 0,
         state: crate::meta::MetaEntityState::Normal,
         shard_id: 8,
         server_addr: "server-after-failover".to_string(),
@@ -1279,6 +1297,7 @@ fn metaserver_raft_promotes_follower_after_leader_failure_and_keeps_metadata_ava
     assert_eq!(
         meta.get_shard_location(status.leader_id, 7).unwrap(),
         Some(ShardLocation {
+            registered_at_ms: 0,
             state: crate::meta::MetaEntityState::Normal,
             shard_id: 7,
             server_addr: "server-before-failover".to_string(),
@@ -1288,6 +1307,7 @@ fn metaserver_raft_promotes_follower_after_leader_failure_and_keeps_metadata_ava
     assert_eq!(
         meta.get_shard_location(status.leader_id, 8).unwrap(),
         Some(ShardLocation {
+            registered_at_ms: 0,
             state: crate::meta::MetaEntityState::Normal,
             shard_id: 8,
             server_addr: "server-after-failover".to_string(),
@@ -1300,6 +1320,7 @@ fn metaserver_raft_promotes_follower_after_leader_failure_and_keeps_metadata_ava
 fn metaserver_raft_rejects_reads_and_writes_without_majority() {
     let meta = MetaRaftCluster::new([10, 11, 12]);
     meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+        registered_at_ms: 0,
         state: crate::meta::MetaEntityState::Normal,
         shard_id: 7,
         server_addr: "server-before-quorum-loss".to_string(),
@@ -1316,6 +1337,7 @@ fn metaserver_raft_rejects_reads_and_writes_without_majority() {
     assert_eq!(meta.read_index(10), Err(RaftError::LeaderUnavailable));
     assert_eq!(
         meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+            registered_at_ms: 0,
             state: crate::meta::MetaEntityState::Normal,
             shard_id: 8,
             server_addr: "server-without-quorum".to_string(),
@@ -1333,6 +1355,7 @@ fn metaserver_snapshot_bootstraps_lagging_meta_replica() {
     let meta = MetaRaftCluster::new([10, 11, 12]);
     meta.set_alive(12, false).unwrap();
     meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+        registered_at_ms: 0,
         state: crate::meta::MetaEntityState::Normal,
         shard_id: 9,
         server_addr: "server-snapshot".to_string(),
@@ -1346,6 +1369,7 @@ fn metaserver_snapshot_bootstraps_lagging_meta_replica() {
     assert_eq!(
         meta.get_shard_location(12, 9).unwrap(),
         Some(ShardLocation {
+            registered_at_ms: 0,
             state: crate::meta::MetaEntityState::Normal,
             shard_id: 9,
             server_addr: "server-snapshot".to_string(),
@@ -1398,6 +1422,7 @@ fn meta_raft_timer_loop_compacts_the_applied_log() {
     // no loop ever called it, so the log grew for the life of the process.
     let runtime = meta_runtime_for_snapshot_wiring(2, 17111);
     runtime.cluster().register(RegisterShardRequest {
+        registered_at_ms: 0,
         shard_id: 41,
         server_addr: "server-timer-compaction".to_string(),
     });
@@ -1423,6 +1448,7 @@ fn a_zero_snapshot_check_interval_leaves_the_log_alone() {
     // that have nothing to do with the timer loop.
     let runtime = meta_runtime_for_snapshot_wiring(0, 17121);
     runtime.cluster().register(RegisterShardRequest {
+        registered_at_ms: 0,
         shard_id: 42,
         server_addr: "server-timer-disabled".to_string(),
     });
@@ -1450,6 +1476,7 @@ fn metaserver_raft_snapshot_trigger_compacts_applied_log_bytes() {
     )
     .unwrap();
     meta.register(RegisterShardRequest {
+        registered_at_ms: 0,
         shard_id: 33,
         server_addr: "server-meta-trigger".to_string(),
     });
@@ -1478,6 +1505,7 @@ fn metaserver_snapshot_floor_survives_failover_and_add_node() {
     )
     .unwrap();
     meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+        registered_at_ms: 0,
         state: crate::meta::MetaEntityState::Normal,
         shard_id: 88,
         server_addr: "meta-snapshot-floor".to_string(),
@@ -1497,6 +1525,7 @@ fn metaserver_snapshot_floor_survives_failover_and_add_node() {
     assert_eq!(
         meta.get_shard_location(failover.new_leader_id, 88).unwrap(),
         Some(ShardLocation {
+            registered_at_ms: 0,
             state: crate::meta::MetaEntityState::Normal,
             shard_id: 88,
             server_addr: "meta-snapshot-floor".to_string(),
@@ -1509,6 +1538,7 @@ fn metaserver_snapshot_floor_survives_failover_and_add_node() {
     assert_eq!(
         meta.get_shard_location(13, 88).unwrap(),
         Some(ShardLocation {
+            registered_at_ms: 0,
             state: crate::meta::MetaEntityState::Normal,
             shard_id: 88,
             server_addr: "meta-snapshot-floor".to_string(),
@@ -1521,6 +1551,7 @@ fn metaserver_snapshot_floor_survives_failover_and_add_node() {
 fn metaserver_snapshot_cannot_overwrite_newer_meta_state() {
     let meta = MetaRaftCluster::new([10, 11, 12]);
     meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+        registered_at_ms: 0,
         state: crate::meta::MetaEntityState::Normal,
         shard_id: 1,
         server_addr: "server-a".to_string(),
@@ -1529,6 +1560,7 @@ fn metaserver_snapshot_cannot_overwrite_newer_meta_state() {
     .unwrap();
     let snapshot = meta.create_snapshot().unwrap();
     meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+        registered_at_ms: 0,
         state: crate::meta::MetaEntityState::Normal,
         shard_id: 2,
         server_addr: "server-b".to_string(),

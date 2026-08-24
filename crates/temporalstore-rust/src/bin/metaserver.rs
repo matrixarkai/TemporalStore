@@ -2304,6 +2304,7 @@ mod tests {
     fn metaserver_metrics_expose_inventory_state_and_scheduler() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "metrics-server-a".to_string(),
             node_id: 1,
@@ -2311,6 +2312,7 @@ mod tests {
             binary_version: "v1".to_string(),
         });
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "metrics-proxy-a".to_string(),
             namespace: "metrics-ns".to_string(),
             location: "zone-a".to_string(),
@@ -2381,6 +2383,7 @@ mod tests {
         let snapshot_path = dir.path().join("meta-route-snapshot.json");
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "server-route-a".to_string(),
             node_id: 1,
@@ -2388,6 +2391,7 @@ mod tests {
             binary_version: "v1".to_string(),
         });
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 91,
             server_addr: "server-route-a".to_string(),
         });
@@ -2402,6 +2406,7 @@ mod tests {
             },
         });
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "proxy-route-a".to_string(),
             namespace: "ns".to_string(),
             location: "zone-a".to_string(),
@@ -2515,6 +2520,7 @@ mod tests {
     fn metaserver_safe_mode_route_reports_frozen_cooldown_resources() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "safe-server".to_string(),
             node_id: 1,
@@ -2522,6 +2528,7 @@ mod tests {
             binary_version: "v1".to_string(),
         });
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "safe-proxy".to_string(),
             namespace: "ns".to_string(),
             location: "zone-a".to_string(),
@@ -2609,6 +2616,7 @@ mod tests {
                 method: "POST".to_string(),
                 path: "/servers/register".to_string(),
                 body: serde_json::to_vec(&RegisterServerRequest {
+                    registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: "raft-server-a".to_string(),
                     node_id: 11,
@@ -3056,6 +3064,7 @@ mod tests {
                 method: "POST".to_string(),
                 path: "/servers/register".to_string(),
                 body: serde_json::to_vec(&RegisterServerRequest {
+                    registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: node_addr.clone(),
                     node_id: 9,

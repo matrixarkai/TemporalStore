@@ -527,6 +527,7 @@ mod tests {
 
     fn proxy(addr: &str, location: &str, attached: &str) -> ProxyMetaInfo {
         ProxyMetaInfo {
+            registered_at_ms: 0,
             proxy_addr: addr.to_string(),
             namespace: String::new(),
             group: attached.to_string(),
@@ -732,6 +733,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         assert!(meta
             .register_proxy(RegisterProxyRequest {
+                registered_at_ms: 0,
                 proxy_addr: "p1".to_string(),
                 namespace: String::new(),
                 location: "us-east/dc1/az1".to_string(),
@@ -791,6 +793,7 @@ mod tests {
     fn dropping_a_group_releases_its_proxy_back_to_idle() {
         let meta = SingleNodeMeta::default();
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "p1".to_string(),
             namespace: String::new(),
             location: "rack-1".to_string(),

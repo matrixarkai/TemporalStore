@@ -96,6 +96,7 @@ mod tests {
 
     fn server(addr: &str, node_id: u64, state: MetaEntityState) -> ServerMetaInfo {
         ServerMetaInfo {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             load_key_count: 0,
             load_memory_bytes: 0,
