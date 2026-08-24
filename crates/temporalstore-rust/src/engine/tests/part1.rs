@@ -131,12 +131,18 @@ fn context_models_match_keys_timeline_pages_and_filters() {
         summary_dirty: true,
         l1_ref: "l1://summary".to_string(),
         raw_metadata_ref: "raw://node".to_string(),
+        vector: Vec::new(),
+        embedding_model_hash: 0,
+        embedding_updated_at_ms: 0,
     };
     let native_node = ContextNode {
         status: 0,
         summary_dirty: false,
         l1_ref: String::new(),
         raw_metadata_ref: String::new(),
+        vector: Vec::new(),
+        embedding_model_hash: 0,
+        embedding_updated_at_ms: 0,
         ..node.clone()
     };
     let upsert = engine.execute(ExecuteRequest {
@@ -701,6 +707,9 @@ fn context_tree_embedding_summary_and_compression_match_round_trip() {
             summary_dirty: false,
             l1_ref: String::new(),
             raw_metadata_ref: String::new(),
+            vector: Vec::new(),
+            embedding_model_hash: 0,
+            embedding_updated_at_ms: 0,
         },
         ContextNode {
             node_hash: GPU,
@@ -713,6 +722,9 @@ fn context_tree_embedding_summary_and_compression_match_round_trip() {
             summary_dirty: false,
             l1_ref: String::new(),
             raw_metadata_ref: String::new(),
+            vector: Vec::new(),
+            embedding_model_hash: 0,
+            embedding_updated_at_ms: 0,
         },
     ] {
         let response = engine.execute(ExecuteRequest {

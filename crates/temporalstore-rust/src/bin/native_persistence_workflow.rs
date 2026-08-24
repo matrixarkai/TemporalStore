@@ -305,6 +305,9 @@ fn write_context_records(engine: &TemporalEngine) -> usize {
         summary_dirty: false,
         l1_ref: String::new(),
         raw_metadata_ref: String::new(),
+        vector: Vec::new(),
+        embedding_model_hash: 0,
+        embedding_updated_at_ms: 0,
     };
     assert_ok(engine.execute(ExecuteRequest {
         shard_id: SHARD_ID,

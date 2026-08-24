@@ -247,6 +247,26 @@ pub struct ContextNode {
     // Deprecated hot-schema field: use resource/provenance sidecars instead.
     #[serde(default, skip_serializing)]
     pub raw_metadata_ref: String,
+    // Inline embedding vector for this node's L0 text, folded in the same way as the
+    // vectors already carried by ContextEvent, ContextEntity and ContextSummary.
+    //
+    // A node's L0 embedding has exactly one owner -- this node -- so storing it apart
+    // costs a key, a BlockAddress and a block to hold a value nothing else can reach.
+    // Worse, the separate record is addressed by a hash of (tenant, owner, level), which
+    // is one-way: given a node there is no way back to its vector except by recomputing
+    // that hash, and given the record no way back to the node at all.
+    //
+    // A node's L1 vector is NOT here -- it belongs to that node's level-1 ContextSummary,
+    // which carries its own vector field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vector: Vec<f32>,
+    // Model that produced `vector`, and when. Both were carried by the separate record;
+    // without them a reader cannot tell a vector from the current model apart from one
+    // left by a model that has since been replaced.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub embedding_model_hash: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub embedding_updated_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -655,6 +675,17 @@ impl ContextWire for ContextNode {
         // deprecated field still being written to the canonical wire payload,
         // so encoding it round-trips a value the trimmed schema must drop. Stop
         // emitting field 10; decode still accepts it for legacy on-disk pages.
+        encode_vector_field(&mut out, &self.vector);
+        if self.embedding_model_hash != 0 {
+            encode_varint_field(&mut out, CONTEXT_EMBEDDING_MODEL_FIELD, self.embedding_model_hash);
+        }
+        if self.embedding_updated_at_ms != 0 {
+            encode_varint_field(
+                &mut out,
+                CONTEXT_EMBEDDING_UPDATED_FIELD,
+                self.embedding_updated_at_ms,
+            );
+        }
         out
     }
 
@@ -671,6 +702,9 @@ impl ContextWire for ContextNode {
             summary_dirty: false,
             l1_ref: String::new(),
             raw_metadata_ref: String::new(),
+            vector: Vec::new(),
+            embedding_model_hash: 0,
+            embedding_updated_at_ms: 0,
         };
         while cursor < bytes.len() {
             let tag = decode_varint(bytes, &mut cursor)?;
@@ -686,6 +720,15 @@ impl ContextWire for ContextNode {
                 (8, 0) => value.summary_dirty = decode_varint(bytes, &mut cursor)? != 0,
                 (9, 2) => value.l1_ref = decode_string(bytes, &mut cursor)?,
                 (10, 2) => value.raw_metadata_ref = decode_string(bytes, &mut cursor)?,
+                (CONTEXT_VECTOR_FIELD, 2) => {
+                    value.vector = unpack_f32_vector(&decode_bytes(bytes, &mut cursor)?)
+                }
+                (CONTEXT_EMBEDDING_MODEL_FIELD, 0) => {
+                    value.embedding_model_hash = decode_varint(bytes, &mut cursor)?
+                }
+                (CONTEXT_EMBEDDING_UPDATED_FIELD, 0) => {
+                    value.embedding_updated_at_ms = decode_varint(bytes, &mut cursor)?
+                }
                 (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
             }
         }
@@ -1671,6 +1714,16 @@ pub enum Command {
 /// is gone by the time it reaches a page, with no error anywhere. 20 is clear of every field
 /// number the three messages already use.
 const CONTEXT_VECTOR_FIELD: u64 = 20;
+// Which model produced the inline vector, and when. Both travelled with the separate
+// embedding record; an owner carrying a vector without them cannot say whether the vector
+// is still from the model in use. Numbered above the per-record fields so they stay clear
+// of the low tags each record type assigns for itself.
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
+const CONTEXT_EMBEDDING_MODEL_FIELD: u64 = 21;
+const CONTEXT_EMBEDDING_UPDATED_FIELD: u64 = 22;
 
 /// f32 vector -> packed little-endian bytes. Explicit LE, not native, so a page written on one
 /// architecture decodes on another.
@@ -2042,6 +2095,97 @@ mod tests {
     use super::*;
 
     #[test]
+    fn node_carries_its_embedding_through_the_wire_codec() {
+        // The codec is hand-written, so a field added to the struct is invisible to it until
+        // someone adds the encode and decode arms by hand. A serde-only field looks correct in
+        // every test that builds a value in memory and is silently dropped the moment the value
+        // is written to a block -- which is how the first fold lost a vector.
+        let node = ContextNode {
+            node_hash: 90210,
+            parent_hash: 4,
+            kind: 2,
+            canonical_name: "session/alpha".to_string(),
+            l0: "the node summary text".to_string(),
+            last_event_time_ms: 1_780_000_000_000,
+            vector: vec![0.5, -0.25, 0.125, 1.0],
+            embedding_model_hash: 0xDEAD_BEEF,
+            embedding_updated_at_ms: 1_780_000_000_777,
+            status: 0,
+            summary_dirty: false,
+            l1_ref: String::new(),
+            raw_metadata_ref: String::new(),
+        };
+        let decoded = ContextNode::decode_context_proto_value(&node.encode_context_proto_value())
+            .expect("a node this codec just encoded must decode");
+        assert_eq!(node.vector, decoded.vector, "vector did not survive the codec");
+        assert_eq!(node.embedding_model_hash, decoded.embedding_model_hash);
+        assert_eq!(node.embedding_updated_at_ms, decoded.embedding_updated_at_ms);
+        assert_eq!(node.node_hash, decoded.node_hash);
+        assert_eq!(node.l0, decoded.l0);
+    }
+
+    #[test]
+    fn node_without_an_embedding_costs_nothing_on_the_wire() {
+        // Most nodes have no vector. Encoding empty/zero values anyway would grow every node
+        // block for a field the vast majority never populate.
+        let bare = ContextNode {
+            node_hash: 7,
+            parent_hash: 0,
+            kind: 0,
+            canonical_name: String::new(),
+            l0: "x".to_string(),
+            last_event_time_ms: 0,
+            vector: Vec::new(),
+            embedding_model_hash: 0,
+            embedding_updated_at_ms: 0,
+            status: 0,
+            summary_dirty: false,
+            l1_ref: String::new(),
+            raw_metadata_ref: String::new(),
+        };
+        let with_vector = ContextNode {
+            vector: vec![1.0],
+            ..bare.clone()
+        };
+        assert!(
+            bare.encode_context_proto_value().len()
+                < with_vector.encode_context_proto_value().len(),
+            "an absent embedding must not be written"
+        );
+        let decoded = ContextNode::decode_context_proto_value(&bare.encode_context_proto_value())
+            .expect("bare node must decode");
+        assert!(decoded.vector.is_empty());
+        assert_eq!(0, decoded.embedding_model_hash);
+    }
+
+    #[test]
+    fn a_node_block_written_before_the_fold_still_decodes() {
+        // Blocks on disk predate the new tags. Decoding must ignore their absence rather than
+        // fail, and must not invent a vector.
+        let legacy = ContextNode {
+            node_hash: 11,
+            parent_hash: 1,
+            kind: 0,
+            canonical_name: "legacy".to_string(),
+            l0: "written before nodes carried vectors".to_string(),
+            last_event_time_ms: 99,
+            vector: Vec::new(),
+            embedding_model_hash: 0,
+            embedding_updated_at_ms: 0,
+            status: 0,
+            summary_dirty: false,
+            l1_ref: String::new(),
+            raw_metadata_ref: String::new(),
+        };
+        let bytes = legacy.encode_context_proto_value();
+        let decoded =
+            ContextNode::decode_context_proto_value(&bytes).expect("legacy node must decode");
+        assert!(decoded.vector.is_empty(), "no vector may be invented");
+        assert_eq!(legacy.l0, decoded.l0);
+        assert_eq!(legacy.canonical_name, decoded.canonical_name);
+    }
+
+    #[test]
     fn control_state_family_serde_is_pinned_to_legacy_tags() {
         // The families were renamed H/Cpc/Fol -> Counter/Distinct/Selection, but the
         // serialized (wire/disk) form is pinned to the historical tags so existing
@@ -2225,12 +2369,18 @@ mod tests {
             summary_dirty: true,
             l1_ref: "l1".to_string(),
             raw_metadata_ref: "raw".to_string(),
+            vector: Vec::new(),
+            embedding_model_hash: 0,
+            embedding_updated_at_ms: 0,
         };
         let native_node = ContextNode {
             status: 0,
             summary_dirty: false,
             l1_ref: String::new(),
             raw_metadata_ref: String::new(),
+            vector: Vec::new(),
+            embedding_model_hash: 0,
+            embedding_updated_at_ms: 0,
             ..node.clone()
         };
         assert_eq!(

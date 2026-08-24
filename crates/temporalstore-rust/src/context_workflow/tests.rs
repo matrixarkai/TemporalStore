@@ -39,6 +39,9 @@ fn context_get_nodes_batches_summary_lookup_for_retrieval() {
                     summary_dirty: false,
                     l1_ref: format!("l1 summary for node {node_hash}"),
                     raw_metadata_ref: format!("source://node/{node_hash}"),
+                    vector: Vec::new(),
+                    embedding_model_hash: 0,
+                    embedding_updated_at_ms: 0,
                 },
             },
         });
@@ -1808,6 +1811,9 @@ fn upsert_raw_context_node(
                     summary_dirty: true,
                     l1_ref: String::new(),
                     raw_metadata_ref: format!("src://{node_hash}"),
+                    vector: Vec::new(),
+                    embedding_model_hash: 0,
+                    embedding_updated_at_ms: 0,
                 },
             },
         })
