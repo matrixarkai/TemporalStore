@@ -40,7 +40,7 @@
 //! would need none of that, was measured and made no difference: the cost is persisting the size,
 //! not allocating the blocks.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
@@ -534,6 +534,12 @@ struct WriteAheadLogInner {
     // compares the on-disk length against THIS (not the record end) to detect another writer,
     // because under preallocation those two are allowed to differ.
     prealloc_physical_by_shard: HashMap<ShardId, u64>,
+    // Shards whose piece being written was created without its directory entry being made durable.
+    // A roll creates a new file under the same name, so the entry has to reach disk again before
+    // any record in that piece is acked -- otherwise the file can vanish and take an acked record
+    // with it. The roll does not pay for that barrier itself: it records the debt here and the next
+    // durable barrier, which was going to run anyway, settles it.
+    dir_sync_owed_by_shard: HashSet<ShardId>,
 }
 
 impl LocalWriteAheadLogStore {
@@ -549,6 +555,7 @@ impl LocalWriteAheadLogStore {
                 block_retention_floor_by_shard: HashMap::new(),
                 base_by_shard: HashMap::new(),
                 prealloc_physical_by_shard: HashMap::new(),
+                dir_sync_owed_by_shard: HashSet::new(),
             })),
             sync_coord: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -835,11 +842,21 @@ impl LocalWriteAheadLogStore {
         let file = OpenOptions::new().read(true).write(true).open(&path)?;
         crate::durability_metrics::record_barrier("engine_wal_group_commit");
         file.sync_data()?;
-        if !entry.dir_synced {
-            // First durable append for this shard this process lifetime: make the
-            // directory entry durable once. Subsequent appends never touch it.
+        let owed = {
+            let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+            inner.dir_sync_owed_by_shard.contains(&shard_id)
+        };
+        if !entry.dir_synced || owed {
+            // The first durable append for this shard this process lifetime makes the directory
+            // entry durable once, and afterwards nothing touches it -- until a roll creates a new
+            // file under the same name, which is what `owed` reports.
             sync_parent_dir(&path)?;
             entry.dir_synced = true;
+            self.inner
+                .lock()
+                .expect("write-ahead log lock poisoned")
+                .dir_sync_owed_by_shard
+                .remove(&shard_id);
         }
         entry.durable_seq = entry.durable_seq.max(snapshot);
         {
@@ -1515,7 +1532,15 @@ fn ensure_active_wal_segment(
     shard_id: ShardId,
 ) -> Result<(), WriteAheadLogError> {
     let path = write_ahead_log_path(&inner.root, shard_id);
-    if path.exists() {
+    // A piece of zero length is one that was created and never got its header, which a crash
+    // between the two leaves behind. It has to be treated as absent: `read_wal_base` reads an
+    // empty file as starting at log id ZERO, and if there are sealed pieces then zero is an
+    // address they already own, so leaving it alone hands the same address out twice.
+    let empty = path
+        .metadata()
+        .map(|metadata| metadata.len() == 0)
+        .unwrap_or(false);
+    if path.exists() && !empty {
         return Ok(());
     }
     let start = log_id_after_sealed(&inner.root, shard_id)?;
@@ -1580,8 +1605,12 @@ fn roll_wal_segment_if_due(
     let mut file = File::create(&path)?;
     file.write_all(&crate::log_framing::encode_base_header(next_base))?;
     file.flush()?;
-    file.sync_all()?;
-    sync_parent_dir(&path)?;
+    // No barrier for the header, and none for the directory entry. The header rides the barrier
+    // that makes the first record in this piece durable -- same file, and fsync covers the inode
+    // rather than the handle -- and if no record ever lands here the header was worth nothing. The
+    // directory entry is owed until the next durable barrier, which is before any record in this
+    // piece can be acked.
+    inner.dir_sync_owed_by_shard.insert(shard_id);
 
     let new_header_len = crate::log_framing::encode_base_header(next_base).len() as u64;
     inner
@@ -1969,8 +1998,13 @@ fn append_record_locked(
         // the file is first created; appends grow the file (inode) without changing the
         // directory. Under relaxed-sync (single-barrier default / TS_GROUP_COMMIT) skip the
         // redundant per-append dir fsync once the file already has content (offset > 0).
-        if offset == 0 || !wal_relaxed_dir_sync() {
+        // `offset == 0` is the file's first write, which is the usual reason the directory entry
+        // is not yet durable. After a roll it is not zero -- the header is already there -- so the
+        // debt the roll recorded is what says the entry still has to reach disk.
+        let owed = inner.dir_sync_owed_by_shard.contains(&record.shard_id);
+        if offset == 0 || owed || !wal_relaxed_dir_sync() {
             sync_parent_dir(&path)?;
+            inner.dir_sync_owed_by_shard.remove(&record.shard_id);
         }
         inner.stats.flushes += 1;
         inner.stats.syncs += 1;
@@ -4663,5 +4697,146 @@ mod tests {
             "prealloc={gate:?} {count} synced appends: {:.1} us/append",
             elapsed.as_micros() as f64 / count as f64
         );
+    }
+
+    /// A crash before the new piece's header reaches disk does not reuse addresses.
+    ///
+    /// The roll no longer barriers the header -- it rides the barrier that makes the first record
+    /// durable. That leaves a window where the piece exists and the header does not, and an empty
+    /// piece reads as starting at log id zero, which the sealed pieces already own. An empty piece
+    /// therefore has to be treated as one that was never started.
+    #[test]
+    fn a_crash_before_the_header_reaches_disk_does_not_reuse_addresses() {
+        set_wal_segment_bytes_for_test(Some(2 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+
+        // Stop the moment a roll has happened, so the piece being written holds NO records yet.
+        // That is the window this is about: the piece was created and its header had not reached
+        // disk. Truncating a piece that already holds records is a different event -- it destroys
+        // those records, and reusing their addresses afterwards is correct, because nothing can
+        // still be pointing at them.
+        let mut written = Vec::new();
+        let mut index = 0u64;
+        loop {
+            let (record, log_id) = store
+                .append_with_sync_reporting(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 64],
+                    },
+                    false,
+                )
+                .unwrap();
+            written.push((record.sequence, log_id));
+            index += 1;
+            let active = write_ahead_log_path(dir.path(), 1);
+            let (_, header_len) = read_wal_base(&active).unwrap();
+            if active.metadata().map(|m| m.len()).unwrap_or(0) == header_len && index >= 50 {
+                break;
+            }
+            assert!(index < 5_000, "never caught the log just after a roll");
+        }
+        assert!(
+            wal_segment_paths(dir.path(), 1).len() > 1,
+            "the log should be in more than one piece"
+        );
+        drop(store);
+
+        // The crash: the piece exists, its header never reached disk. No record is lost with it,
+        // because the piece held none.
+        let active = write_ahead_log_path(dir.path(), 1);
+        OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&active)
+            .unwrap();
+        assert_eq!(active.metadata().unwrap().len(), 0, "the piece should be empty");
+
+        let reopened = LocalWriteAheadLogStore::new(dir.path());
+        let (_, log_id) = reopened
+            .append_with_sync_reporting(
+                1,
+                Command::StringSet {
+                    key: "after".to_string(),
+                    value: b"v".to_vec(),
+                },
+                false,
+            )
+            .unwrap();
+        assert!(
+            written.iter().all(|(_, earlier)| *earlier < log_id),
+            "a record written after the crash took an address an earlier one already owns"
+        );
+        // And every earlier address still resolves to the record it was handed out for.
+        for (sequence, earlier) in &written {
+            if let Some(bytes) = reopened.read_at_log_id(1, *earlier, 4096).unwrap() {
+                let end = bytes
+                    .iter()
+                    .position(|byte| *byte == b'\n')
+                    .map_or(bytes.len(), |at| at + 1);
+                assert_eq!(
+                    decode_wal_line(&bytes[..end]).unwrap().sequence,
+                    *sequence,
+                    "log id {earlier} resolved to the wrong record"
+                );
+            }
+        }
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// What a roll costs the append that triggers it.
+    #[test]
+    fn what_a_roll_costs_the_append_that_triggers_it() {
+        set_wal_segment_bytes_for_test(Some(64 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+
+        let mut plain = Vec::new();
+        let mut rolled = Vec::new();
+        let mut pieces_before = 1usize;
+        for index in 0..4_000u64 {
+            let started = std::time::Instant::now();
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 128],
+                    },
+                    false,
+                )
+                .unwrap();
+            let micros = started.elapsed().as_secs_f64() * 1e6;
+            let pieces = wal_segment_paths(dir.path(), 1).len();
+            if pieces > pieces_before {
+                pieces_before = pieces;
+                rolled.push(micros);
+            } else {
+                plain.push(micros);
+            }
+        }
+        let at = |values: &mut Vec<f64>, q: f64| -> f64 {
+            values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            values[((values.len() as f64 - 1.0) * q) as usize]
+        };
+        let mut p = plain.clone();
+        let mut r = rolled.clone();
+        println!(
+            "  {} ordinary appends: p50 {:.0} us  p99 {:.0} us",
+            plain.len(),
+            at(&mut p, 0.50),
+            at(&mut p, 0.99),
+        );
+        println!(
+            "  {} appends that rolled: p50 {:.0} us  p99 {:.0} us  max {:.0} us",
+            rolled.len(),
+            at(&mut r, 0.50),
+            at(&mut r, 0.99),
+            at(&mut r, 1.0),
+        );
+        assert!(!rolled.is_empty(), "nothing rolled, so this measured nothing");
+        set_wal_segment_bytes_for_test(None);
     }
 }
