@@ -179,6 +179,13 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
             node_hash,
             ..
         } => vec![context_node_key(*tenant_hash, *node_hash)],
+        Command::ContextQueryNodeEmbeddings {
+            tenant_hash,
+            node_hashes,
+        } => node_hashes
+            .iter()
+            .map(|node_hash| context_node_key(*tenant_hash, *node_hash))
+            .collect(),
         Command::ContextUpsertSummary {
             tenant_hash,
             summary,

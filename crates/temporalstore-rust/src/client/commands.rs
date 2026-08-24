@@ -93,6 +93,7 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::ContextUpsertEmbedding { .. }
         | Command::ContextSetNodeEmbedding { .. }
         | Command::ContextQueryEmbeddings { .. }
+        | Command::ContextQueryNodeEmbeddings { .. }
         | Command::ContextTraverseTree { .. }
         | Command::ContextUpsertSummary { .. }
         | Command::ContextQuerySummaries { .. }

@@ -1502,6 +1502,35 @@ pub(crate) fn execute_on_shard(
             }
             CommandResponse::HashEntries { entries }
         }
+        Command::ContextQueryNodeEmbeddings {
+            tenant_hash,
+            node_hashes,
+        } => {
+            // One node read per hash, and the vector comes back with it -- where the separate
+            // record meant a second lookup per node on top of the node read retrieval does
+            // anyway.
+            let embeddings = dedupe_nonzero_u64_preserve_order(node_hashes)
+                .into_iter()
+                .take(context_limit(None))
+                .filter_map(|node_hash| {
+                    let object_key = context_node_key(tenant_hash, node_hash);
+                    let node = shard
+                        .hashes
+                        .get(&object_key)
+                        .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
+                        .or_else(|| shard.context_nodes.get(&object_key))
+                        .and_then(|address| {
+                            read_page_bytes(cache, page_store, shard_id, address)
+                                .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
+                        })?;
+                    if node.vector.is_empty() {
+                        return None;
+                    }
+                    Some((node_hash, node.vector))
+                })
+                .collect();
+            CommandResponse::ContextNodeEmbeddings { embeddings }
+        }
         Command::ContextSetNodeEmbedding {
             tenant_hash,
             node_hash,

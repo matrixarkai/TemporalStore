@@ -2753,3 +2753,184 @@ fn an_embedding_for_a_node_that_does_not_exist_is_refused_not_invented() {
     };
     assert!(node.is_none(), "a node must not be conjured by embedding it");
 }
+
+// shared-corpus: context_node_inline_embedding_query
+#[test]
+fn node_vectors_can_be_asked_for_by_owner() {
+    // The read that the separate record could never offer. ContextQueryEmbeddings is keyed by a
+    // hash of (tenant, owner, level), so a caller must already hold every owner just to build
+    // the keys, and the reply cannot say which owner each vector came from -- the caller has to
+    // rebuild that mapping itself. Asking by node returns the pairing directly.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    const TENANT: u64 = 5150;
+
+    for (node_hash, vector) in [(1_u64, vec![1.0_f32, 0.0]), (2, vec![0.0, 1.0]), (3, vec![])] {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode {
+                tenant_hash: TENANT,
+                node: ContextNode {
+                    node_hash,
+                    parent_hash: 0,
+                    kind: 1,
+                    canonical_name: format!("n{node_hash}"),
+                    l0: format!("text {node_hash}"),
+                    status: 0,
+                    last_event_time_ms: 0,
+                    summary_dirty: false,
+                    l1_ref: String::new(),
+                    raw_metadata_ref: String::new(),
+                    vector: Vec::new(),
+                    embedding_model_hash: 0,
+                    embedding_updated_at_ms: 0,
+                },
+            },
+        });
+        if !vector.is_empty() {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextSetNodeEmbedding {
+                    tenant_hash: TENANT,
+                    node_hash,
+                    model_hash: 5,
+                    vector,
+                    updated_at_ms: 1_781_000_000_000,
+                },
+            });
+        }
+    }
+
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextQueryNodeEmbeddings {
+            tenant_hash: TENANT,
+            node_hashes: vec![1, 2, 3, 4],
+        },
+    });
+    let CommandResponse::ContextNodeEmbeddings { embeddings } = response.response else {
+        panic!("expected ContextNodeEmbeddings");
+    };
+
+    // Node 3 exists but was never embedded, and node 4 does not exist at all. Both are omitted
+    // rather than returned as an empty vector, so "not embedded yet" stays distinguishable from
+    // "embedded to zeros" -- a caller that cannot tell them apart scores an un-embedded node as
+    // maximally dissimilar instead of falling back to lexical matching.
+    assert_eq!(2, embeddings.len(), "only embedded nodes may come back");
+    let by_node: std::collections::BTreeMap<u64, Vec<f32>> = embeddings.into_iter().collect();
+    assert_eq!(Some(&vec![1.0, 0.0]), by_node.get(&1));
+    assert_eq!(Some(&vec![0.0, 1.0]), by_node.get(&2));
+    assert!(!by_node.contains_key(&3), "an un-embedded node must not appear");
+    assert!(!by_node.contains_key(&4), "a missing node must not appear");
+}
+
+// shared-corpus: context_node_inline_embedding_query_agrees
+#[test]
+fn asking_by_owner_and_by_ref_hash_give_the_same_vector() {
+    // While both paths exist, they must not disagree -- otherwise switching readers over would
+    // silently change what gets scored.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    const TENANT: u64 = 5151;
+    const NODE: u64 = 9;
+    let vector = vec![0.5_f32, 0.25, -0.125];
+
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextUpsertNode {
+            tenant_hash: TENANT,
+            node: ContextNode {
+                node_hash: NODE,
+                parent_hash: 0,
+                kind: 1,
+                canonical_name: "n".to_string(),
+                l0: "text".to_string(),
+                status: 0,
+                last_event_time_ms: 0,
+                summary_dirty: false,
+                l1_ref: String::new(),
+                raw_metadata_ref: String::new(),
+                vector: Vec::new(),
+                embedding_model_hash: 0,
+                embedding_updated_at_ms: 0,
+            },
+        },
+    });
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextUpsertEmbedding {
+            tenant_hash: TENANT,
+            embedding: ContextEmbedding {
+                ref_hash: crate::context_workflow::context_embedding_ref_hash(
+                    TENANT, NODE, "node_l0",
+                ),
+                level: 1,
+                model_hash: 5,
+                vector: vector.clone(),
+                updated_at_ms: 1_781_000_000_000,
+            },
+        },
+    });
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextSetNodeEmbedding {
+            tenant_hash: TENANT,
+            node_hash: NODE,
+            model_hash: 5,
+            vector: vector.clone(),
+            updated_at_ms: 1_781_000_000_000,
+        },
+    });
+
+    let by_owner = match engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQueryNodeEmbeddings {
+                tenant_hash: TENANT,
+                node_hashes: vec![NODE],
+            },
+        })
+        .response
+    {
+        CommandResponse::ContextNodeEmbeddings { embeddings } => embeddings
+            .into_iter()
+            .next()
+            .map(|(_, vector)| vector)
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    let by_ref_hash = match engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQueryEmbeddings {
+                tenant_hash: TENANT,
+                ref_hashes: vec![crate::context_workflow::context_embedding_ref_hash(
+                    TENANT, NODE, "node_l0",
+                )],
+                limit: Some(1),
+            },
+        })
+        .response
+    {
+        CommandResponse::ContextEmbeddings { embeddings } => embeddings
+            .into_iter()
+            .next()
+            .map(|embedding| embedding.vector)
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    assert_eq!(vector, by_owner);
+    assert_eq!(by_ref_hash, by_owner, "the two read paths disagree");
+}
