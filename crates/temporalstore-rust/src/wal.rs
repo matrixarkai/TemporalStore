@@ -1133,10 +1133,6 @@ impl LocalWriteAheadLogStore {
     ) -> Result<WriteAheadLogGcReport, WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         fs::create_dir_all(&inner.root)?;
-        // Whole pieces below the floor go without being read or copied. What is left is the piece
-        // being written, which the copy path below handles as it always has.
-        let (dropped_segments, dropped_bytes) =
-            drop_covered_wal_segments(&inner.root, shard_id, retain_from_sequence)?;
         let path = write_ahead_log_path(&inner.root, shard_id);
         if !path.exists() {
             return Ok(WriteAheadLogGcReport {
@@ -1169,6 +1165,13 @@ impl LocalWriteAheadLogStore {
             .unwrap_or(u64::MAX);
         let clamped_by_block_retention = effective_retain > floor;
         let effective_retain = effective_retain.min(floor);
+        // Whole pieces below the retain point go without being read or copied. This uses the
+        // NARROWED point, not the one the caller asked for: the two clamps above exist to keep the
+        // highest-sequence record and anything a block still depends on, and a piece unlinked here
+        // is gone in a way the copy path below could never undo. What remains is the piece being
+        // written, which that path handles as it always has.
+        let (dropped_segments, dropped_bytes) =
+            drop_covered_wal_segments(&inner.root, shard_id, effective_retain)?;
         // Records are appended in strictly ascending sequence -- the live path increments under
         // the append lock, and the replay path refuses anything at or below the last sequence --
         // so the records to keep are a contiguous SUFFIX and the ones to drop are a prefix.
@@ -4232,6 +4235,130 @@ mod tests {
             );
             assert!(windowed.len() >= 100, "the tail must be there to replay");
         }
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// Unlinking pieces honours the block-retention floor.
+    ///
+    /// A record at or above that floor may hold the only copy of a block's bytes -- a block in the
+    /// log has no copy in a band until it is dumped -- so reclaim narrows the caller's retain point
+    /// to it. Dropping whole pieces has to respect the narrowed point too, or reclaim removes
+    /// exactly what the floor exists to keep, and the loss surfaces later as a read that fails.
+    #[test]
+    fn unlinking_pieces_honours_the_block_retention_floor() {
+        set_wal_segment_bytes_for_test(Some(4 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+
+        let mut ids = Vec::new();
+        for index in 0..300u64 {
+            let (record, log_id) = store
+                .append_with_sync_reporting(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 64],
+                    },
+                    false,
+                )
+                .unwrap();
+            ids.push((record.sequence, log_id));
+        }
+
+        // A block still depends on everything from sequence 50 on.
+        store.set_block_retention_floor(1, 50);
+        // The caller asks to keep only the last fifty records, which is well past the floor.
+        let report = store.gc_before_sequence(1, 251).unwrap();
+        assert!(
+            report.effective_retain_from_sequence <= 50,
+            "the retain point should have been narrowed to the floor, got {}",
+            report.effective_retain_from_sequence
+        );
+
+        // Everything the floor protects must still be readable.
+        for (sequence, log_id) in ids.iter().filter(|(sequence, _)| *sequence >= 50) {
+            let bytes = store
+                .read_at_log_id(1, *log_id, 4096)
+                .unwrap()
+                .unwrap_or_else(|| {
+                    panic!("sequence {sequence} is at or above the block-retention floor and was removed")
+                });
+            let end = bytes
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(bytes.len(), |at| at + 1);
+            assert_eq!(decode_wal_line(&bytes[..end]).unwrap().sequence, *sequence);
+        }
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// Unlinking pieces never removes the highest-sequence record.
+    ///
+    /// The next append seeds its sequence from the log's tail, so emptying the log entirely makes
+    /// the next record reuse sequence 1 -- at or below the persisted anchor, where replay's
+    /// `sequence > watermark` filter silently drops it. Reclaim clamps the retain point to keep the
+    /// tail; dropping whole pieces has to obey that clamp as well.
+    #[test]
+    fn unlinking_pieces_never_removes_the_last_record() {
+        set_wal_segment_bytes_for_test(Some(2 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        // Stop right after a roll, so the piece being written is EMPTY and the highest-sequence
+        // record lives in a SEALED piece -- the only arrangement where dropping pieces can take
+        // it. Stopping at a round number instead would usually leave that record in the piece
+        // being written, which is never unlinked, and the test would pass without proving
+        // anything.
+        let mut written = 0u64;
+        loop {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{written:06}"),
+                        value: vec![118u8; 64],
+                    },
+                    false,
+                )
+                .unwrap();
+            written += 1;
+            let active = write_ahead_log_path(dir.path(), 1);
+            let (_, header_len) = read_wal_base(&active).unwrap();
+            let active_len = active.metadata().map(|meta| meta.len()).unwrap_or(0);
+            if active_len == header_len && written >= 100 {
+                break;
+            }
+            assert!(written < 5_000, "never caught the log just after a roll");
+        }
+        assert!(
+            wal_segment_paths(dir.path(), 1).len() > 1,
+            "the log should be in more than one piece"
+        );
+
+        // Ask for everything to go.
+        store.gc_before_sequence(1, u64::MAX).unwrap();
+
+        assert_eq!(
+            last_wal_sequence_at(dir.path(), 1).unwrap(),
+            written,
+            "the highest-sequence record must survive a full reclaim"
+        );
+        // And a reopened log continues rather than reusing a sequence.
+        let reopened = LocalWriteAheadLogStore::new(dir.path());
+        let next = reopened
+            .append_with_sync(
+                1,
+                Command::StringSet {
+                    key: "after".to_string(),
+                    value: b"v".to_vec(),
+                },
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            next.sequence,
+            written + 1,
+            "a reclaimed log reused a sequence, which silently drops the record on replay"
+        );
         set_wal_segment_bytes_for_test(None);
     }
 }
