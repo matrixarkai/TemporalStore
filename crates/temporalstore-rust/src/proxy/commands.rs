@@ -39,7 +39,6 @@ pub(super) fn proxy_command_is_write(command: &Command) -> bool {
             | Command::ContextMarkEmbeddingDirty { .. }
             | Command::ContextUpsertEntity { .. }
             | Command::ContextUpsertChildRef { .. }
-            | Command::ContextUpsertEmbedding { .. }
             | Command::ContextSetNodeEmbedding { .. }
             | Command::ContextUpsertSummary { .. }
             | Command::ContextWriteCompressionEvent { .. }
@@ -115,13 +114,12 @@ fn proxy_command_key(command: &Command) -> Option<&str> {
         | Command::ContextQueryEntities { .. }
         | Command::ContextUpsertChildRef { .. }
         | Command::ContextQueryChildren { .. }
-        | Command::ContextUpsertEmbedding { .. }
         | Command::ContextSetNodeEmbedding { .. }
-        | Command::ContextQueryEmbeddings { .. }
         | Command::ContextQueryNodeEmbeddings { .. }
         | Command::ContextTraverseTree { .. }
         | Command::ContextUpsertSummary { .. }
         | Command::ContextQuerySummaries { .. }
+        | Command::ContextQuerySummaryVectors { .. }
         | Command::ContextWriteCompressionEvent { .. }
         | Command::ContextQueryCompressionEvents { .. }
         | Command::ContextCompressEvents { .. }
@@ -146,6 +144,14 @@ pub(super) fn proxy_command_routing_key(command: &Command) -> Option<String> {
             } => node_hashes
                 .first()
                 .map(|node_hash| format!("ctx:node:{tenant_hash}:{node_hash}")),
+            Command::ContextQuerySummaryVectors {
+                tenant_hash,
+                node_hashes,
+                level,
+                ..
+            } => node_hashes
+                .first()
+                .map(|node_hash| format!("ctx:summary:{tenant_hash}:{node_hash}:{level}")),
             Command::ContextWriteEvent {
                 tenant_hash,
                 node_hash,
@@ -243,20 +249,6 @@ pub(super) fn proxy_command_routing_key(command: &Command) -> Option<String> {
                 parent_hash,
                 ..
             } => Some(format!("ctx:child:{tenant_hash}:{parent_hash}")),
-            Command::ContextUpsertEmbedding {
-                tenant_hash,
-                embedding,
-            } => Some(format!(
-                "ctx:embedding:{tenant_hash}:{}",
-                embedding.ref_hash
-            )),
-            Command::ContextQueryEmbeddings {
-                tenant_hash,
-                ref_hashes,
-                ..
-            } => ref_hashes
-                .first()
-                .map(|ref_hash| format!("ctx:embedding:{tenant_hash}:{ref_hash}")),
             Command::ContextTraverseTree {
                 tenant_hash,
                 start_node_hash,

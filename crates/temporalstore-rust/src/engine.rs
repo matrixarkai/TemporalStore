@@ -83,8 +83,8 @@ use crate::index_log::LocalIndexLogStore;
 use crate::block_store::{LocalBlockStore, BlockAddress, BlockStoreError, BlockStoreGcPolicy, BlockStoreOptions};
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextCompressionEvent,
-    ContextEmbedding,
     ContextEntity, ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit,
+    ContextSummaryVector,
     ContextDirtyNode, EventReplicationMode, EventReplicationSelectionReport,
     ExecuteRequest, ExecuteResponse, FeaturePoint, FeatureWritePolicy, InternalContextIndex,
     ReplicatedBatchExecuteRequest, ReplicatedBatchExecuteResponse,
@@ -1503,7 +1503,6 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
                 "context_summaries": shard.context_summaries.get(key),
                 "context_compressions": shard.context_compressions.get(key),
                 "context_entities": shard.context_entities.get(key),
-                "context_embeddings": shard.context_embeddings.get(key),
             })
         })
         .collect()
@@ -1547,11 +1546,6 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
             blob.get("context_compressions"),
         );
         apply_key_state_field(&mut shard.context_entities, key, blob.get("context_entities"));
-        apply_key_state_field(
-            &mut shard.context_embeddings,
-            key,
-            blob.get("context_embeddings"),
-        );
     }
 }
 
@@ -2237,7 +2231,6 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.context_audits.remove(key).is_some();
     removed |= shard.context_entities.remove(key).is_some();
     removed |= shard.context_children.remove(key).is_some();
-    removed |= shard.context_embeddings.remove(key).is_some();
     removed |= shard.context_summaries.remove(key).is_some();
     removed |= shard.context_compressions.remove(key).is_some();
     removed
@@ -2407,9 +2400,6 @@ fn collect_live_page_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
     for series in shard.context_children.values() {
         ids.extend(series.values().map(|address| address.page_slab_id));
     }
-    for series in shard.context_embeddings.values() {
-        ids.extend(series.values().map(|address| address.page_slab_id));
-    }
     for series in shard.context_summaries.values() {
         ids.extend(series.values().map(|address| address.page_slab_id));
     }
@@ -2575,7 +2565,6 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.context_audits.contains_key(key)
         || shard.context_entities.contains_key(key)
         || shard.context_children.contains_key(key)
-        || shard.context_embeddings.contains_key(key)
         || shard.context_summaries.contains_key(key)
         || shard.context_compressions.contains_key(key)
 }
@@ -2755,7 +2744,6 @@ fn object_manager_stats(
             + shard.context_audits.len()
             + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
             + shard.context_children.len()
-            + shard.context_embeddings.values().map(BTreeMap::len).sum::<usize>()
             + shard.context_summaries.len()
             + shard.context_compressions.len();
         let object_count = bucket_object_count.max(secondary_object_count);
@@ -2786,7 +2774,6 @@ fn object_manager_stats(
                 .values()
                 .map(BTreeMap::len)
                 .sum::<usize>()
-            + shard.context_embeddings.values().map(BTreeMap::len).sum::<usize>()
             + shard
                 .context_summaries
                 .values()
@@ -2841,7 +2828,6 @@ fn object_manager_stats(
         + shard.context_audits.len()
         + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
         + shard.context_children.len()
-        + shard.context_embeddings.values().map(BTreeMap::len).sum::<usize>()
         + shard.context_summaries.len()
         + shard.context_compressions.len();
     let page_ref_count = shard.strings.len()
@@ -2870,7 +2856,6 @@ fn object_manager_stats(
             .values()
             .map(BTreeMap::len)
             .sum::<usize>()
-        + shard.context_embeddings.values().map(BTreeMap::len).sum::<usize>()
         + shard
             .context_summaries
             .values()

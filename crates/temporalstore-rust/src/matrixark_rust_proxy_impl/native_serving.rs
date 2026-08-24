@@ -90,14 +90,12 @@ fn native_retrieval_memory_inventory(records: &[Value], query_scope: Option<&Val
             "context_events": 0,
             "context_segments": 0,
             "context_entities": 0,
-            "context_embeddings": 0,
             "context_indexes": 0,
             "context_summaries": 0,
             "summary_dirty_markers": 0
         },
         "profile": {
             "context_entities": 0,
-            "context_embeddings": 0,
             "context_indexes": 0,
             "context_summaries": 0,
             "summary_dirty_markers": 0
@@ -108,7 +106,6 @@ fn native_retrieval_memory_inventory(records: &[Value], query_scope: Option<&Val
             "skill_sections": 0,
             "skill_manifests": 0,
             "context_entities": 0,
-            "context_embeddings": 0,
             "context_indexes": 0
         },
         "available_layers": [],
@@ -177,7 +174,6 @@ fn native_retrieval_memory_inventory(records: &[Value], query_scope: Option<&Val
                     increment_inventory_count(&mut inventory, "shared", "skill_manifests")
                 }
                 "context_entity" => increment_inventory_count(&mut inventory, "shared", "context_entities"),
-                "context_embedding" => increment_inventory_count(&mut inventory, "shared", "context_embeddings"),
                 "context_index" => increment_inventory_count(&mut inventory, "shared", "context_indexes"),
                 _ => {}
             }
@@ -187,7 +183,6 @@ fn native_retrieval_memory_inventory(records: &[Value], query_scope: Option<&Val
         if is_profile {
             match record_type {
                 "context_entity" => increment_inventory_count(&mut inventory, "profile", "context_entities"),
-                "context_embedding" => increment_inventory_count(&mut inventory, "profile", "context_embeddings"),
                 "context_index" => increment_inventory_count(&mut inventory, "profile", "context_indexes"),
                 "context_summary" => increment_inventory_count(&mut inventory, "profile", "context_summaries"),
                 "context_summary_dirty" => {
@@ -203,7 +198,6 @@ fn native_retrieval_memory_inventory(records: &[Value], query_scope: Option<&Val
                 "context_event" => increment_inventory_count(&mut inventory, "session", "context_events"),
                 "context_segment" => increment_inventory_count(&mut inventory, "session", "context_segments"),
                 "context_entity" => increment_inventory_count(&mut inventory, "session", "context_entities"),
-                "context_embedding" => increment_inventory_count(&mut inventory, "session", "context_embeddings"),
                 "context_index" => increment_inventory_count(&mut inventory, "session", "context_indexes"),
                 "context_summary" => increment_inventory_count(&mut inventory, "session", "context_summaries"),
                 "context_summary_dirty" => {

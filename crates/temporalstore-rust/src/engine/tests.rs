@@ -7,7 +7,7 @@ use crate::engine::golden::{
     native_api_golden_corpus_report, native_feature_sequence_golden_corpus_report,
 };
 use crate::types::{
-    ContextAuditRef, ContextChildRef, ContextCompressionEvent, ContextEmbedding,
+    ContextAuditRef, ContextChildRef, ContextCompressionEvent,
     ContextExtractedEventIndexes, ContextSummary, ContextWire, FeatureFilter, FeatureFilterOp,
     ReplicatedCommand,
 };

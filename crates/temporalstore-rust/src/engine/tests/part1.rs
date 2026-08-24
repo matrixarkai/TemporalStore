@@ -786,26 +786,16 @@ fn context_tree_embedding_summary_and_compression_match_round_trip() {
             if refs.len() == 2 && refs[0].child_hash == GPU
     ));
 
-    // Store these the way PRODUCTION writers do -- under
-    // context_embedding_ref_hash(tenant, node, level), not under the raw node hash. Writing
-    // them under the node hash is what let the traversal reader's addressing bug pass here for
-    // as long as it did: the test built the data to match the reader instead of the writer, so
-    // reader and writer could disagree indefinitely without any test noticing.
+    // Store these the way PRODUCTION writers do: on the node itself, addressed by the node.
     for (node_hash, first, second) in [(GPU, 1.0, 0.0), (COST, 0.0, 1.0)] {
-        let ref_hash = crate::context_workflow::context_embedding_ref_hash(
-            TENANT, node_hash, "node_l0",
-        );
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
-            command: Command::ContextUpsertEmbedding {
+            command: Command::ContextSetNodeEmbedding {
                 tenant_hash: TENANT,
-                embedding: ContextEmbedding {
-                    ref_hash,
-                    level: 1,
-                    model_hash: 0,
-                    vector: vec![first, second],
-                    updated_at_ms: EVENT_TIME,
-                },
+                node_hash,
+                model_hash: 1,
+                vector: vec![first, second],
+                updated_at_ms: EVENT_TIME,
             },
         });
         assert!(response.status.ok);
@@ -1411,16 +1401,6 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
             first_write_only: false,
             cold_storage: false,
         },
-        Command::ContextUpsertEmbedding {
-            tenant_hash: 7,
-            embedding: ContextEmbedding {
-                ref_hash: 90,
-                level: 1,
-                model_hash: 700,
-                vector: vec![0.25, 0.75],
-                updated_at_ms: 51,
-            },
-        },
         Command::ContextUpsertSummary {
             tenant_hash: 7,
             summary: ContextSummary {
@@ -1475,10 +1455,10 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
         report.reclaimable_stale_page_slab_count,
         report.stale_page_slab_ids.len()
     );
-    assert!(report.model_policy_family_count >= 7);
+    assert!(report.model_policy_family_count >= 6);
     assert!(report.tombstone_policy_model_count >= 1);
     assert!(report.stale_density_policy_model_count >= 1);
-    assert!(report.layout_aware_policy_model_count >= 6);
+    assert!(report.layout_aware_policy_model_count >= 5);
     assert!(report.before.stale_page_estimate >= 1);
     assert_eq!(report.after.stale_page_estimate, 0);
     assert!(
@@ -1506,7 +1486,6 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
     assert_eq!(layout("feature").unique_page_refs, 2);
     assert_eq!(layout("feature").packed_timestamped_pages, 2);
     assert_eq!(layout("context_event").index_refs, 1);
-    assert_eq!(layout("context_embedding").unique_page_refs, 1);
     assert_eq!(layout("context_summary").index_refs, 1);
 
     let policy = |model_id: &str| {
@@ -1527,7 +1506,6 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
     assert!(policy("feature").layout_aware_rewrite_required);
     assert!(policy("control_state").layout_aware_rewrite_required);
     assert!(policy("context_event").layout_aware_rewrite_required);
-    assert!(policy("context_embedding").layout_aware_rewrite_required);
     assert!(policy("context_summary").layout_aware_rewrite_required);
     assert!(policy("hash").object_page_packing_enabled);
     assert!(policy("feature").cold_page_rewrite_eligible_refs >= 1);
@@ -1550,7 +1528,6 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
         "feature",
         "control_state",
         "context_event",
-        "context_embedding",
         "context_summary",
     ] {
         assert!(
@@ -2941,110 +2918,6 @@ fn node_vectors_can_be_asked_for_by_owner() {
     assert!(!by_node.contains_key(&4), "a missing node must not appear");
 }
 
-// shared-corpus: context_node_inline_embedding_query_agrees
-#[test]
-fn asking_by_owner_and_by_ref_hash_give_the_same_vector() {
-    // While both paths exist, they must not disagree -- otherwise switching readers over would
-    // silently change what gets scored.
-    let dir = tempfile::tempdir().unwrap();
-    let engine = TemporalEngine::with_local_dirs(
-        16 * 1024,
-        dir.path().join("cache"),
-        dir.path().join("pages"),
-        dir.path().join("indexes"),
-    );
-    engine.load_shard(1);
-    const TENANT: u64 = 5151;
-    const NODE: u64 = 9;
-    let vector = vec![0.5_f32, 0.25, -0.125];
-
-    engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::ContextUpsertNode {
-            tenant_hash: TENANT,
-            node: ContextNode {
-                node_hash: NODE,
-                parent_hash: 0,
-                kind: 1,
-                canonical_name: "n".to_string(),
-                l0: "text".to_string(),
-                status: 0,
-                last_event_time_ms: 0,
-                l1_ref: String::new(),
-                raw_metadata_ref: String::new(),
-                vector: Vec::new(),
-                embedding_model_hash: 0,
-                embedding_updated_at_ms: 0,
-            },
-        },
-    });
-    engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::ContextUpsertEmbedding {
-            tenant_hash: TENANT,
-            embedding: ContextEmbedding {
-                ref_hash: crate::context_workflow::context_embedding_ref_hash(
-                    TENANT, NODE, "node_l0",
-                ),
-                level: 1,
-                model_hash: 5,
-                vector: vector.clone(),
-                updated_at_ms: 1_781_000_000_000,
-            },
-        },
-    });
-    engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::ContextSetNodeEmbedding {
-            tenant_hash: TENANT,
-            node_hash: NODE,
-            model_hash: 5,
-            vector: vector.clone(),
-            updated_at_ms: 1_781_000_000_000,
-        },
-    });
-
-    let by_owner = match engine
-        .execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::ContextQueryNodeEmbeddings {
-                tenant_hash: TENANT,
-                node_hashes: vec![NODE],
-            },
-        })
-        .response
-    {
-        CommandResponse::ContextNodeEmbeddings { embeddings } => embeddings
-            .into_iter()
-            .next()
-            .map(|(_, vector)| vector)
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    };
-    let by_ref_hash = match engine
-        .execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::ContextQueryEmbeddings {
-                tenant_hash: TENANT,
-                ref_hashes: vec![crate::context_workflow::context_embedding_ref_hash(
-                    TENANT, NODE, "node_l0",
-                )],
-                limit: Some(1),
-            },
-        })
-        .response
-    {
-        CommandResponse::ContextEmbeddings { embeddings } => embeddings
-            .into_iter()
-            .next()
-            .map(|embedding| embedding.vector)
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    };
-    assert_eq!(vector, by_owner);
-    assert_eq!(by_ref_hash, by_owner, "the two read paths disagree");
-}
-
 // shared-corpus: context_traversal_scores_from_inline_vector
 #[test]
 fn traversal_scores_a_child_whose_only_vector_is_on_the_node() {
@@ -3140,11 +3013,12 @@ fn traversal_scores_a_child_whose_only_vector_is_on_the_node() {
     );
 }
 
-// shared-corpus: context_traversal_inline_vector_wins_over_record
+// shared-corpus: context_extracted_event_time_query
 #[test]
-fn traversal_prefers_the_node_vector_over_a_stale_separate_record() {
-    // When both exist, the node's own vector must win: the node-addressed write is the one
-    // re-embedding goes through, so a disagreement means the separate record is the stale copy.
+fn an_extracted_event_is_visible_to_time_ranged_queries() {
+    // The event rekey moved the primary map to EVENT ID keys with a separate time index; this
+    // arm was missed, kept inserting timeline keys into the id-keyed map and never fed the time
+    // index -- so every extracted event wrote successfully and was invisible to time queries.
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024,
@@ -3153,90 +3027,26 @@ fn traversal_prefers_the_node_vector_over_a_stale_separate_record() {
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
-    const TENANT: u64 = 5002;
-    const ROOT: u64 = 1;
-    const CHILD: u64 = 2;
-    const EVENT_TIME: u64 = 1_781_600_000_000;
-
-    for node_hash in [ROOT, CHILD] {
-        engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::ContextUpsertNode {
-                tenant_hash: TENANT,
-                node: ContextNode {
-                    node_hash,
-                    parent_hash: if node_hash == ROOT { 0 } else { ROOT },
-                    kind: 1,
-                    canonical_name: format!("n{node_hash}"),
-                    l0: "text".to_string(),
-                    status: 0,
-                    last_event_time_ms: EVENT_TIME,
-                    l1_ref: String::new(),
-                    raw_metadata_ref: String::new(),
-                    vector: Vec::new(),
-                    embedding_model_hash: 0,
-                    embedding_updated_at_ms: 0,
-                },
-            },
-        });
-    }
-    engine.execute(ExecuteRequest {
+    let write = engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::ContextUpsertChildRef {
-            tenant_hash: TENANT,
-            child_ref: ContextChildRef {
-                parent_hash: ROOT,
-                child_hash: CHILD,
-                updated_at_ms: EVENT_TIME,
-            },
-        },
+        command: serde_json::from_str(r#"{"kind":"context_write_extracted_event","tenant_hash":99,"node_hash":700,"event":{"event_id_hash":701,"event_time_ms":510,"ingestion_time_ms":515,"type":4,"confidence":0.9,"importance":0.8,"text":"probe event"},"indexes":{"entity_hashes":[9001],"status_hash":77,"source_hash":88,"event_time_bucket_ms":500}}"#).unwrap(),
     });
-    // The separate record points AWAY from the query; the node's own vector points at it.
-    let ref_hash =
-        crate::context_workflow::context_embedding_ref_hash(TENANT, CHILD, "node_l0");
-    engine.execute(ExecuteRequest {
+    assert!(write.status.ok);
+    assert!(matches!(
+        write.response,
+        CommandResponse::ContextExtractedEventWrite { ref event_object_key, .. }
+            if event_object_key == "ctx:event:99:700"
+    ));
+    let q = engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::ContextUpsertEmbedding {
-            tenant_hash: TENANT,
-            embedding: ContextEmbedding {
-                ref_hash,
-                level: 1,
-                model_hash: 1,
-                vector: vec![0.0, 1.0],
-                updated_at_ms: EVENT_TIME,
-            },
-        },
-    });
-    engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::ContextSetNodeEmbedding {
-            tenant_hash: TENANT,
-            node_hash: CHILD,
-            model_hash: 2,
-            vector: vec![1.0, 0.0],
-            updated_at_ms: EVENT_TIME + 1,
-        },
-    });
-
-    let traversal = engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::ContextTraverseTree {
-            tenant_hash: TENANT,
-            start_node_hash: ROOT,
-            query_vector: vec![1.0, 0.0],
-            max_depth: Some(1),
-            top_k_per_depth: Some(1),
-            max_children_scored_per_parent: Some(10),
-            max_candidate_nodes: Some(4),
-            leaf_only: false,
-        },
+        command: serde_json::from_str(r#"{"kind":"context_query_events","tenant_hash":99,"node_hash":700,"start_time_ms":500,"end_time_ms":520,"limit":null}"#).unwrap(),
     });
     assert!(
         matches!(
-            traversal.response,
-            CommandResponse::ContextTraversedNodes { ref nodes }
-                if nodes.len() == 1 && nodes[0].node_hash == CHILD && nodes[0].score > 0.99
+            q.response,
+            CommandResponse::ContextEvents { ref events, .. }
+                if events.len() == 1 && events[0].event_id_hash == 701
         ),
-        "the node's own vector must outrank the stale separate record"
+        "a successfully written extracted event must be visible to a time-ranged query"
     );
 }

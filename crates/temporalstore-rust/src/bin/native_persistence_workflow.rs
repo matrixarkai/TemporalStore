@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use temporalstore_rust::{
-    Command, CommandResponse, ContextEmbedding, ContextEvent, ContextNode, ContextSummary,
+    Command, CommandResponse, ContextEvent, ContextNode, ContextSummary,
     ContextDirtyNode, ExecuteRequest, StorageCacheWarmupReport, TemporalEngine,
 };
 
@@ -372,15 +372,12 @@ fn write_context_records(engine: &TemporalEngine) -> usize {
     }));
     assert_ok(engine.execute(ExecuteRequest {
         shard_id: SHARD_ID,
-        command: Command::ContextUpsertEmbedding {
+        command: Command::ContextSetNodeEmbedding {
             tenant_hash: TENANT,
-            embedding: ContextEmbedding {
-                ref_hash: NODE,
-                level: 1,
-                model_hash: MODEL,
-                vector: vec![0.1, 0.2, 0.3, 0.4],
-                updated_at_ms: 2_020,
-            },
+            node_hash: NODE,
+            model_hash: MODEL,
+            vector: vec![0.1, 0.2, 0.3, 0.4],
+            updated_at_ms: 2_020,
         },
     }));
     10
@@ -458,17 +455,36 @@ fn append_context_records_after_restart(engine: &TemporalEngine) -> usize {
             },
         },
     }));
+    // The vector lives on a node, so the append fixture needs one to carry it -- an
+    // embedding for a node that does not exist is refused, not conjured.
     assert_ok(engine.execute(ExecuteRequest {
         shard_id: SHARD_ID,
-        command: Command::ContextUpsertEmbedding {
+        command: Command::ContextUpsertNode {
             tenant_hash: TENANT,
-            embedding: ContextEmbedding {
-                ref_hash: APPEND_EMBEDDING_REF,
-                level: 1,
-                model_hash: MODEL,
-                vector: vec![0.5, 0.6, 0.7, 0.8],
-                updated_at_ms: 3_300,
+            node: ContextNode {
+                node_hash: APPEND_EMBEDDING_REF,
+                parent_hash: NODE,
+                kind: 1,
+                canonical_name: "native-persistence-append-node".to_string(),
+                l0: "appended after restart".to_string(),
+                status: 0,
+                last_event_time_ms: 3_300,
+                l1_ref: String::new(),
+                raw_metadata_ref: String::new(),
+                vector: Vec::new(),
+                embedding_model_hash: 0,
+                embedding_updated_at_ms: 0,
             },
+        },
+    }));
+    assert_ok(engine.execute(ExecuteRequest {
+        shard_id: SHARD_ID,
+        command: Command::ContextSetNodeEmbedding {
+            tenant_hash: TENANT,
+            node_hash: APPEND_EMBEDDING_REF,
+            model_hash: MODEL,
+            vector: vec![0.5, 0.6, 0.7, 0.8],
+            updated_at_ms: 3_300,
         },
     }));
     6
@@ -547,18 +563,21 @@ fn count_context_data(
         CommandResponse::ContextSummaries { summaries, .. } => summaries.len(),
         _ => 0,
     };
+    // Embeddings are counted on their owners: a node whose record carries a vector.
     let embedding_count = match engine
         .execute(ExecuteRequest {
             shard_id: SHARD_ID,
-            command: Command::ContextQueryEmbeddings {
+            command: Command::ContextGetNodes {
                 tenant_hash: TENANT,
-                ref_hashes: embedding_refs.to_vec(),
-                limit: Some(100),
+                node_hashes: embedding_refs.to_vec(),
             },
         })
         .response
     {
-        CommandResponse::ContextEmbeddings { embeddings } => embeddings.len(),
+        CommandResponse::ContextNodes { nodes } => nodes
+            .iter()
+            .filter(|node| !node.vector.is_empty())
+            .count(),
         _ => 0,
     };
     ContextDataCount {
@@ -667,10 +686,9 @@ fn read_context_probe(name: &str, engine: &TemporalEngine) -> ReadProbe {
     });
     let embeddings = engine.execute(ExecuteRequest {
         shard_id: SHARD_ID,
-        command: Command::ContextQueryEmbeddings {
+        command: Command::ContextGetNodes {
             tenant_hash: TENANT,
-            ref_hashes: vec![NODE],
-            limit: Some(20),
+            node_hashes: vec![NODE],
         },
     });
     let latency_us = start.elapsed().as_micros();
@@ -683,7 +701,10 @@ fn read_context_probe(name: &str, engine: &TemporalEngine) -> ReadProbe {
         _ => 0,
     };
     let returned_embeddings = match &embeddings.response {
-        CommandResponse::ContextEmbeddings { embeddings } => embeddings.len(),
+        CommandResponse::ContextNodes { nodes } => nodes
+            .iter()
+            .filter(|node| !node.vector.is_empty())
+            .count(),
         _ => 0,
     };
     let residency = residency_probe(name, engine);
