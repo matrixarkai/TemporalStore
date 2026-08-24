@@ -80,5 +80,6 @@ mod raft_apply_coalesce;
 mod phase1_flat;
 mod part1;
 mod part2;
+mod quota;
 mod part3;
 mod part4;
