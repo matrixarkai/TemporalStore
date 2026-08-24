@@ -4828,22 +4828,30 @@ mod tests {
     /// durable. That leaves a window where the piece exists and the header does not, and an empty
     /// piece reads as starting at log id zero, which the sealed pieces already own. An empty piece
     /// therefore has to be treated as one that was never started.
+    ///
+    /// Entered by stopping in it, so the state on disk is what a crash at that line leaves rather
+    /// than what this test guessed it would leave.
     #[test]
     fn a_crash_before_the_header_reaches_disk_does_not_reuse_addresses() {
         set_wal_segment_bytes_for_test(Some(2 * 1024));
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
 
-        // Stop the moment a roll has happened, so the piece being written holds NO records yet.
-        // That is the window this is about: the piece was created and its header had not reached
-        // disk. Truncating a piece that already holds records is a different event -- it destroys
-        // those records, and reusing their addresses afterwards is correct, because nothing can
-        // still be pointing at them.
+        // Stop inside the roll, between creating the piece and writing its header. Reproducing
+        // this window by hand instead -- appending until the piece happens to hold no records, then
+        // truncating it -- would encode two unchecked assumptions: that such a piece is where the
+        // roll left off, and that truncating to zero is what a crash before the header leaves.
+        // Stopping AT the line needs neither: what is on disk afterwards is what that line leaves.
         let mut written = Vec::new();
         let mut index = 0u64;
-        loop {
-            let (record, log_id) = store
-                .append_with_sync_reporting(
+        let mut stopped = false;
+        while index < 5_000 {
+            let armed = crate::fault::arm(
+                "wal/roll/after_create",
+                crate::fault::FaultAction::Stop,
+            );
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                store.append_with_sync_reporting(
                     1,
                     Command::StringSet {
                         key: format!("k{index:06}"),
@@ -4851,31 +4859,32 @@ mod tests {
                     },
                     false,
                 )
-                .unwrap();
-            written.push((record.sequence, log_id));
-            index += 1;
-            let active = write_ahead_log_path(dir.path(), 1);
-            let (_, header_len) = read_wal_base(&active).unwrap();
-            if active.metadata().map(|m| m.len()).unwrap_or(0) == header_len && index >= 50 {
-                break;
+            }));
+            drop(armed);
+            match outcome {
+                Ok(Ok((record, log_id))) => written.push((record.sequence, log_id)),
+                Ok(Err(err)) => panic!("append failed: {err}"),
+                Err(_) => {
+                    stopped = true;
+                    break;
+                }
             }
-            assert!(index < 5_000, "never caught the log just after a roll");
+            index += 1;
         }
+        assert!(stopped, "never reached a roll, so this tested nothing");
         assert!(
             wal_segment_paths(dir.path(), 1).len() > 1,
             "the log should be in more than one piece"
         );
         drop(store);
 
-        // The crash: the piece exists, its header never reached disk. No record is lost with it,
-        // because the piece held none.
+        // And this is what that line left: the piece exists and has nothing in it.
         let active = write_ahead_log_path(dir.path(), 1);
-        OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(&active)
-            .unwrap();
-        assert_eq!(active.metadata().unwrap().len(), 0, "the piece should be empty");
+        assert_eq!(
+            active.metadata().unwrap().len(),
+            0,
+            "the piece should exist and be empty -- that is the window"
+        );
 
         let reopened = LocalWriteAheadLogStore::new(dir.path());
         let (_, log_id) = reopened
