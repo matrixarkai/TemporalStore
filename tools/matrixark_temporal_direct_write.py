@@ -313,7 +313,13 @@ class _TemporalDirectWriteMixin:
                 located_bundles.append((bundle, record_key, record_id))
                 sequence += 1
             native_index_entries = self._native_side_index_entries_for_bundles(located_bundles)
-            append_records = getattr(self._client, "matrixark_batch_append_records", None)
+            # Route the append through the type router, so a summary/audit-only bundle can ride the
+            # dedicated summary client instead of the foreground write lane. This is the ONLY
+            # append call site, and it ignored the router -- which made the router, the dedicated
+            # client, and its gate dead code, and put every background summary append in front of
+            # foreground ingests. Gate off (the default) the router returns self._client unchanged.
+            append_client = self._append_client_for_records(records_to_append)
+            append_records = getattr(append_client, "matrixark_batch_append_records", None)
             if callable(append_records):
                 self._write_with_backoff(
                     lambda: self._matrixark_batch_append_records_with_options(

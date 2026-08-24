@@ -572,16 +572,38 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         """
         self._ensure_idempotency_index()
         import json as _json
+        import time as _time
 
-        try:
-            raw = self._client.hget(self._idempotency_index_key(), self._idempotency_index_field(key_hash))
-        except Exception:  # noqa: BLE001 - scan rather than wrongly report "never seen".
-            return self.find_idempotency_record_in_log(key_hash)
+        # A failed point-read must NOT fall back to the scanning lookup. The scan is a full-store
+        # read, this lookup runs first on EVERY tool call, and the point-read only fails when the
+        # lanes are already starved -- so the fallback launched store-wide reads at the exact
+        # moment the system could least afford them, starving the lanes further and making the
+        # next point-read fail too. Caught live: two of three request threads inside that scan
+        # while metrics timed out at 120s. Retry the cheap read, then let the failure propagate as
+        # the retryable error it is; answering "never seen" here instead would double-apply the
+        # request, and the scan would not have answered under these conditions either.
+        raw = None
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                raw = self._client.hget(
+                    self._idempotency_index_key(), self._idempotency_index_field(key_hash)
+                )
+                last_error = None
+                break
+            except Exception as exc:  # noqa: BLE001 - retried, then propagated below.
+                last_error = exc
+                if attempt < 2:
+                    _time.sleep(0.2 * (attempt + 1))
+        if last_error is not None:
+            raise last_error
         if not raw:
             return None
         try:
             record = _json.loads(raw)
         except (TypeError, ValueError):
+            # The index held bytes the log never produced: corruption, not load. The log is the
+            # source of truth, and this path is rare and not load-correlated, so the scan is safe.
             return self.find_idempotency_record_in_log(key_hash)
         return record if isinstance(record, dict) else None
 
