@@ -31,7 +31,7 @@ impl SingleNodeMeta {
             };
         }
         let mut state = self.inner.write().expect("meta lock poisoned");
-        state.counters.table_create_total += 1;
+        self.counters.table_create_total.fetch_add(1, Ordering::Relaxed);
         state
             .namespaces
             .entry(request.namespace.clone())

@@ -4,6 +4,7 @@
 //! Topology / placement / stats helpers, extracted from meta.rs.
 
 use super::*;
+use std::sync::atomic::Ordering;
 use std::collections::BTreeSet;
 use crate::types::{ShardId, Status};
 
@@ -132,18 +133,18 @@ pub(super) fn ensure_server(state: &mut MetaState, server_addr: &str) {
         });
 }
 
-pub(super) fn stats_from_state(state: &MetaState) -> MetaStats {
+pub(super) fn stats_from_state(state: &MetaState, counters: &MetaCounters) -> MetaStats {
     MetaStats {
-        register_shard_total: state.counters.register_shard_total,
-        get_shard_total: state.counters.get_shard_total,
-        server_register_total: state.counters.server_register_total,
-        server_heartbeat_total: state.counters.server_heartbeat_total,
-        proxy_register_total: state.counters.proxy_register_total,
-        proxy_heartbeat_total: state.counters.proxy_heartbeat_total,
-        namespace_create_total: state.counters.namespace_create_total,
-        table_create_total: state.counters.table_create_total,
-        topology_query_total: state.counters.topology_query_total,
-        load_finish_total: state.counters.load_finish_total,
+        register_shard_total: counters.register_shard_total.load(Ordering::Relaxed),
+        get_shard_total: counters.get_shard_total.load(Ordering::Relaxed),
+        server_register_total: counters.server_register_total.load(Ordering::Relaxed),
+        server_heartbeat_total: counters.server_heartbeat_total.load(Ordering::Relaxed),
+        proxy_register_total: counters.proxy_register_total.load(Ordering::Relaxed),
+        proxy_heartbeat_total: counters.proxy_heartbeat_total.load(Ordering::Relaxed),
+        namespace_create_total: counters.namespace_create_total.load(Ordering::Relaxed),
+        table_create_total: counters.table_create_total.load(Ordering::Relaxed),
+        topology_query_total: counters.topology_query_total.load(Ordering::Relaxed),
+        load_finish_total: counters.load_finish_total.load(Ordering::Relaxed),
         topology_version: state.topology_version,
         server_count: state.servers.len(),
         proxy_count: state.proxies.len(),
@@ -256,20 +257,6 @@ pub(super) fn record_topology_event(
     state.topology_version
 }
 
-pub(super) fn counters_from_stats(stats: &MetaStats) -> MetaCounters {
-    MetaCounters {
-        register_shard_total: stats.register_shard_total,
-        get_shard_total: stats.get_shard_total,
-        server_register_total: stats.server_register_total,
-        server_heartbeat_total: stats.server_heartbeat_total,
-        proxy_register_total: stats.proxy_register_total,
-        proxy_heartbeat_total: stats.proxy_heartbeat_total,
-        namespace_create_total: stats.namespace_create_total,
-        table_create_total: stats.table_create_total,
-        topology_query_total: stats.topology_query_total,
-        load_finish_total: stats.load_finish_total,
-    }
-}
 
 /// Key under which a resource's drop timestamp is recorded in
 /// [`MetaState::dropped_since_ms`].

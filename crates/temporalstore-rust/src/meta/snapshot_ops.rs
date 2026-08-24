@@ -20,7 +20,7 @@ impl SingleNodeMeta {
 
     pub fn export_snapshot(&self) -> MetaSnapshot {
         let state = self.inner.read().expect("meta lock poisoned");
-        MetaSnapshot::from_state(&state)
+        MetaSnapshot::from_state(&state, &self.counters)
     }
 
     pub(crate) fn state_from_snapshot(snapshot: MetaSnapshot) -> Result<MetaState, Status> {
@@ -55,7 +55,6 @@ impl SingleNodeMeta {
             proxy_groups: snapshot.proxy_groups,
             namespaces: snapshot.namespaces,
             tables,
-            counters: counters_from_stats(&snapshot.stats),
             next_table_id,
             topology_version: snapshot.topology_version,
             topology_events: VecDeque::new(),
@@ -71,11 +70,16 @@ impl SingleNodeMeta {
     }
 
     pub fn install_snapshot(&self, snapshot: MetaSnapshot) -> AckResponse {
+        // Taken before the state is consumed: the counters no longer travel
+        // inside MetaState, so without this a peer that installs a snapshot
+        // reports every total starting again from zero.
+        let stats = snapshot.stats.clone();
         let state = match Self::state_from_snapshot(snapshot) {
             Ok(state) => state,
             Err(status) => return AckResponse { status },
         };
         *self.inner.write().expect("meta lock poisoned") = state;
+        self.counters.install_from(&stats);
         AckResponse {
             status: Status::ok(),
         }
@@ -83,7 +87,7 @@ impl SingleNodeMeta {
 }
 
 impl MetaSnapshot {
-    pub(crate) fn from_state(state: &MetaState) -> Self {
+    pub(crate) fn from_state(state: &MetaState, counters: &MetaCounters) -> Self {
         MetaSnapshot {
             format_version: 1,
             created_at_ms: now_ms(),
@@ -97,7 +101,7 @@ impl MetaSnapshot {
                 .values()
                 .map(|table| table.info.clone())
                 .collect(),
-            stats: stats_from_state(&state),
+            stats: stats_from_state(state, counters),
             next_table_id: state.next_table_id,
             topology_version: state.topology_version,
             scheduler_finish_generations: state.scheduler_finish_generations.clone(),
