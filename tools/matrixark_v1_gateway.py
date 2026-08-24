@@ -178,6 +178,9 @@ _DATA_ROUTES: dict[str, Tuple[str, str]] = {
 # Backend exception class names we translate to specific edge status codes (matched by name to avoid
 # a hard import dependency on the backend package).
 _BACKPRESSURE_ERRORS = {"MatrixArkBackpressureError"}
+# The addressed thing does not exist -- the caller's own state to fix, not a server fault. Matched
+# by class name, like the sets above, so a message that merely contains "not found" is unaffected.
+_NOT_FOUND_ERRORS = {"MatrixArkNotFoundError"}
 _STORAGE_QUOTA_ERRORS = {
     "MatrixArkStorageQuotaError",
     "StorageQuotaExceeded",
@@ -1048,6 +1051,8 @@ def _classify_backend_error(exc: Exception) -> int:
         return 507
     if name in _BACKPRESSURE_ERRORS:
         return 429
+    if name in _NOT_FOUND_ERRORS:
+        return 404
     return 500
 
 
