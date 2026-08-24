@@ -128,6 +128,16 @@ impl TemporalStoreClient {
             ..TableOptions::default()
         };
         let table_key = table_combine_name(&namespace, &table_name);
+        // Shards the topology names but cannot route, because it gives them no primary. This
+        // happens while a primary is being elected. Their previous routes are deliberately
+        // NOT discarded below: a snapshot taken mid-election should not destroy a route that
+        // still works, and the old one either still serves or fails and gets refreshed.
+        let unroutable: Vec<ShardId> = topology
+            .shards
+            .iter()
+            .filter(|partition| partition.primary.is_none())
+            .map(|partition| partition.shard_id)
+            .collect();
         let routes = topology
             .shards
             .iter()
@@ -177,6 +187,10 @@ impl TemporalStoreClient {
             .first_shard_id
             .saturating_add(table.shard_count.saturating_sub(1));
         route_cache.retain(|shard_id, route| {
+            // Keep what the new topology cannot replace.
+            if unroutable.contains(shard_id) {
+                return true;
+            }
             if route.table_key == table_key {
                 return false;
             }
@@ -185,7 +199,12 @@ impl TemporalStoreClient {
         for (shard_id, route) in routes {
             route_cache.insert(shard_id, route);
         }
-        self.record_meta_sync_success(&namespace, &table_name, route_topology_version);
+        self.record_meta_sync_success(
+            &namespace,
+            &table_name,
+            route_topology_version,
+            unroutable.len() as u64,
+        );
         Ok(options)
     }
 
@@ -460,6 +479,7 @@ impl TemporalStoreClient {
                 next_sync_after_unix_ms: state.next_sync_after_unix_ms,
                 last_topology_version: state.last_topology_version,
                 consecutive_errors: state.consecutive_errors,
+                shards_without_primary: state.shards_without_primary,
                 last_error: state.last_error.clone(),
             })
             .collect::<Vec<_>>();
@@ -812,10 +832,17 @@ impl TemporalStoreClient {
                 last_topology_version: 0,
                 consecutive_errors: 0,
                 last_error: String::new(),
+                shards_without_primary: 0,
             });
     }
 
-    pub(super) fn record_meta_sync_success(&self, namespace: &str, table_name: &str, topology_version: u64) {
+    pub(super) fn record_meta_sync_success(
+        &self,
+        namespace: &str,
+        table_name: &str,
+        topology_version: u64,
+        shards_without_primary: u64,
+    ) {
         let key = table_combine_name(namespace, table_name);
         let now = now_unix_ms();
         let mut states = self
@@ -835,6 +862,7 @@ impl TemporalStoreClient {
                 last_topology_version: 0,
                 consecutive_errors: 0,
                 last_error: String::new(),
+                shards_without_primary: 0,
             });
         state.sync_generation = state.sync_generation.saturating_add(1);
         state.last_success_unix_ms = now;
@@ -846,6 +874,7 @@ impl TemporalStoreClient {
         ));
         state.last_topology_version = topology_version;
         state.consecutive_errors = 0;
+        state.shards_without_primary = shards_without_primary;
         state.last_error.clear();
     }
 
@@ -869,6 +898,7 @@ impl TemporalStoreClient {
                 last_topology_version: 0,
                 consecutive_errors: 0,
                 last_error: String::new(),
+                shards_without_primary: 0,
             });
         state.sync_generation = state.sync_generation.saturating_add(1);
         state.last_error_unix_ms = now;

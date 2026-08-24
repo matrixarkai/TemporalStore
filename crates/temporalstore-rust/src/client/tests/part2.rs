@@ -264,6 +264,101 @@ fn client_metasync_backoff_deadline_and_topology_refresh_survive_outage_churn() 
 }
 
 #[test]
+fn a_topology_missing_a_primary_keeps_the_route_it_cannot_replace() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // A topology snapshot taken while a primary is being elected names the shard but gives it
+    // no primary. That entry used to be dropped, AND the purge that precedes the insert
+    // removed the shard's previous route -- so a working route was destroyed on the strength
+    // of an incomplete snapshot, and the sync reported success. The route is now kept, and
+    // the sync says how many shards it could not route.
+    let round = std::sync::Arc::new(AtomicUsize::new(0));
+    let meta_addr = free_local_addr();
+    let meta_addr_for_listener = meta_addr.clone();
+    let r = round.clone();
+    std::thread::spawn(move || {
+        serve(&meta_addr_for_listener, move |request| {
+            match (request.method.as_str(), request.path.as_str()) {
+                ("POST", "/tables/topology") => {
+                    // First sync: a healthy topology. Second: the same shard, no primary.
+                    let healthy = r.fetch_add(1, Ordering::SeqCst) == 0;
+                    json_response(
+                        200,
+                        &TableTopologyResponse {
+                            status: Status::ok(),
+                            table: Some(crate::meta::TableMetaInfo {
+                                table_id: 1,
+                                namespace: "ns".to_string(),
+                                table_name: "tbl".to_string(),
+                                state: crate::meta::MetaEntityState::Normal,
+                                topology_version: if healthy { 7 } else { 8 },
+                                first_shard_id: 1,
+                                shard_count: 1,
+                                replica_count: 1,
+                                partition_version: 0,
+                                serving_options: crate::meta::TableServingOptions::default(),
+                            }),
+                            shards: vec![TableShard {
+                                shard_id: 1,
+                                start_bucket: 0,
+                                end_bucket: u64::MAX,
+                                primary: if healthy {
+                                    Some("127.0.0.1:29001".to_string())
+                                } else {
+                                    None
+                                },
+                                replicas: Vec::new(),
+                                primary_endpoint: None,
+                                replica_endpoints: Vec::new(),
+                            }],
+                            unchanged: false,
+                        },
+                    )
+                }
+                _ => json_response(404, &Status::error("not_found", "no route")),
+            }
+        })
+        .unwrap();
+    });
+    wait_for_http(&meta_addr);
+
+    let client = TemporalStoreClient::with_options(ClientOptions {
+        proxy_addr: meta_addr.clone(),
+        meta_addr: Some(meta_addr.clone()),
+        ..ClientOptions::default()
+    });
+
+    client
+        .sync_table_topology("ns".to_string(), "tbl".to_string())
+        .expect("first sync succeeds");
+    assert_eq!(
+        client.topology_cache_report().route_count,
+        1,
+        "the healthy topology should install a route"
+    );
+
+    client
+        .sync_table_topology("ns".to_string(), "tbl".to_string())
+        .expect("second sync still succeeds");
+    assert_eq!(
+        client.topology_cache_report().route_count,
+        1,
+        "a topology with no primary must not delete the route it cannot replace"
+    );
+
+    let synced = client.meta_sync_report();
+    let table = synced
+        .tables
+        .iter()
+        .find(|table| table.table_name == "tbl")
+        .expect("the table is reported");
+    assert_eq!(
+        table.shards_without_primary, 1,
+        "an incomplete sync must say so rather than reporting a clean success"
+    );
+}
+
+#[test]
 fn client_applies_metaserver_table_serving_options() {
     let meta_addr = free_local_addr();
     let meta_addr_for_listener = meta_addr.clone();
