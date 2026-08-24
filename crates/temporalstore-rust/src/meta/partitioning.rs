@@ -148,15 +148,19 @@ pub(super) fn build_shards(
             if replicas.len() >= table.replica_count as usize {
                 break;
             }
-            for candidate in &normal_servers {
+            for (index, candidate) in normal_servers.iter().enumerate() {
                 if replicas.len() >= table.replica_count as usize {
                     break;
                 }
                 if seen_replicas.contains(&candidate.server_addr) {
                     continue;
                 }
-                let candidate_location = Location::parse(&candidate.location);
-                if !separated_from(&placed_locations, &candidate_location, separation) {
+                // Parsed once, above, into candidate_locations. This scan runs
+                // per shard and per rung of the separation ladder, so re-parsing
+                // here cost one parse and allocation per server per shard per
+                // rung on a call every client and proxy makes.
+                let candidate_location = &candidate_locations[index];
+                if !separated_from(&placed_locations, candidate_location, separation) {
                     continue;
                 }
                 let host = server_host(&candidate.server_addr);
@@ -164,7 +168,7 @@ pub(super) fn build_shards(
                     continue;
                 }
                 if !candidate_location.is_empty() {
-                    placed_locations.push(candidate_location);
+                    placed_locations.push(candidate_location.clone());
                 }
                 push_replica(
                     state,
@@ -209,17 +213,33 @@ pub(super) fn build_shards(
         // load. Only the order changes: the same servers are returned, and the
         // primary -- which is where the shard is actually owned -- is untouched.
         if !caller.is_empty() {
-            // Stable, so servers equally close to the caller keep the
-            // load-ordered sequence the scan above produced.
-            replicas.sort_by_key(|server_addr| {
-                std::cmp::Reverse(
-                    state
+            // Each replica's distance is worked out once. `sort_by_key` calls
+            // its key function O(n log n) times, and this one parsed a location
+            // on every call, so the distance is computed up front and the sort
+            // then only compares integers.
+            //
+            // Still stable: ties fall back to the position the scan above
+            // produced, so servers equally close to the caller keep their
+            // load-ordered sequence.
+            let mut ranked = replicas
+                .iter()
+                .enumerate()
+                .map(|(position, server_addr)| {
+                    let distance = state
                         .servers
                         .get(server_addr)
                         .map(|server| caller.shared_prefix_len(&Location::parse(&server.location)))
-                        .unwrap_or(0),
-                )
+                        .unwrap_or(0);
+                    (distance, position, server_addr.clone())
+                })
+                .collect::<Vec<_>>();
+            ranked.sort_by(|left, right| {
+                right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1))
             });
+            replicas = ranked
+                .into_iter()
+                .map(|(_, _, server_addr)| server_addr)
+                .collect();
         }
         let primary_endpoint = primary
             .as_ref()
