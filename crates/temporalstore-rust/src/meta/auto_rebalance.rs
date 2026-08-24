@@ -277,6 +277,7 @@ impl SingleNodeMeta {
         state.shards.insert(
             shard_id,
             ShardLocation {
+                preferred_location: String::new(),
                 state: MetaEntityState::Normal,
                 shard_id,
                 server_addr: to_server.to_string(),
