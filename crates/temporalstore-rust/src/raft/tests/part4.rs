@@ -537,10 +537,13 @@ fn metaserver_raft_replicates_full_metadata_mutation_api() {
     assert_eq!(topology.shards.len(), 2);
     assert_eq!(topology.shards[0].primary.as_deref(), Some("server-a"));
 
+    // A replica-count change, because shard_count is pinned once a shard is
+    // registered against the table -- and this test is about UpdateTable
+    // reaching every peer, which either change demonstrates.
     let updated = meta.update_table(UpdateTableRequest {
         namespace: "feature".to_string(),
         table_name: "user_seq".to_string(),
-        shard_count: Some(3),
+        shard_count: None,
         replica_count: Some(2),
         first_shard_id: None,
         partition_version: None,
@@ -558,9 +561,9 @@ fn metaserver_raft_replicates_full_metadata_mutation_api() {
     });
     assert!(updated_topology.status.ok, "{updated_topology:?}");
     let updated_table = updated_topology.table.unwrap();
-    assert_eq!(updated_table.shard_count, 3);
+    assert_eq!(updated_table.shard_count, 2);
     assert_eq!(updated_table.replica_count, 2);
-    assert_eq!(updated_topology.shards.len(), 3);
+    assert_eq!(updated_topology.shards.len(), 2);
 
     let duplicate = meta.add_table(AddTableRequest {
         namespace: "feature".to_string(),
