@@ -900,6 +900,13 @@ struct ProxyInner {
     /// Shard count last read from the metaserver, 0 for "not asked yet". Only consulted when
     /// `context_shard_count` is 0.
     cluster_shard_count: std::sync::atomic::AtomicU64,
+    /// Whether the metaserver has been asked for the shard list yet. Distinguishes "we have
+    /// not looked" from "we looked and the ids cannot be addressed as a range" -- reporting
+    /// the second when the first is true would be a claim we have not earned.
+    cluster_shards_checked: std::sync::atomic::AtomicBool,
+    /// Whether the shard ids the metaserver listed form a contiguous run from
+    /// `context_first_shard_id`. Only meaningful once `cluster_shards_checked` is true.
+    cluster_shards_contiguous: std::sync::atomic::AtomicBool,
 }
 
 impl ProxyService {
@@ -916,6 +923,8 @@ impl ProxyService {
                 last_topology_check_ms: std::sync::atomic::AtomicU64::new(0),
                 last_auto_register_ms: std::sync::atomic::AtomicU64::new(0),
                 cluster_shard_count: std::sync::atomic::AtomicU64::new(0),
+                cluster_shards_checked: std::sync::atomic::AtomicBool::new(false),
+                cluster_shards_contiguous: std::sync::atomic::AtomicBool::new(false),
             }),
         }
     }
@@ -1491,31 +1500,70 @@ impl ProxyService {
             != 0
         {
             "cluster"
-        } else {
+        } else if !self
+            .inner
+            .cluster_shards_checked
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
             "fallback_until_cluster_known"
+        } else {
+            "fallback_cluster_shards_not_contiguous"
         }
     }
 
-    /// Read the cluster's shard count from the metaserver and remember it.
+    /// Learn how many shards the context routes may span, from the metaserver.
     ///
     /// Called from the heartbeat, which already talks to the metaserver on a fixed cadence, so
     /// this adds no new schedule and nothing to the request path.
+    ///
+    /// It asks for the shard LIST rather than a count, because a count is not enough to be
+    /// safe. A tenant's shard is `context_first_shard_id + hash % count`, which addresses a
+    /// CONTIGUOUS run of ids. A cluster whose shards are 1-4 and 100-103 has a count of eight
+    /// and no shards 5-8, so adopting the count alone would send those tenants to ids that do
+    /// not exist -- worse than the single-shard default it replaces, because the default at
+    /// least addressed a shard that was there.
+    ///
+    /// So the count is adopted only when the ids actually form a contiguous run starting at
+    /// `context_first_shard_id`. Otherwise the range stays unknown, the fallback of 1 applies,
+    /// and the reason is reported rather than left to be inferred from failures.
     pub(super) fn refresh_cluster_shard_count(&self) {
-        if self.options().context_shard_count != 0 {
+        let options = self.options();
+        if options.context_shard_count != 0 {
             return;
         }
-        let options = self.options();
-        if let Ok(stats) = get_json_with_options::<crate::meta::MetaStats>(
+        let Ok(listed) = get_json_with_options::<crate::meta::ListShardsResponse>(
             &options.meta_addr,
-            "/meta/stats",
+            "/shards",
             options.control_http_options(),
-        ) {
-            if stats.shard_count > 0 {
-                self.inner
-                    .cluster_shard_count
-                    .store(stats.shard_count as u64, std::sync::atomic::Ordering::Relaxed);
-            }
+        ) else {
+            return;
+        };
+        if !listed.status.ok || listed.shards.is_empty() {
+            return;
         }
+        let mut ids: Vec<crate::types::ShardId> =
+            listed.shards.iter().map(|shard| shard.shard_id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let contiguous_from_first = ids
+            .iter()
+            .enumerate()
+            .all(|(offset, id)| *id == options.context_first_shard_id + offset as u64);
+        // A short page means there are more shards than were listed; a partial view could look
+        // contiguous when the whole set is not, so do not conclude anything from it.
+        let complete = listed.next_after_shard_id.is_none();
+        let usable = complete && contiguous_from_first;
+        self.inner.cluster_shard_count.store(
+            if usable { ids.len() as u64 } else { 0 },
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        self.inner.cluster_shards_contiguous.store(
+            usable,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        self.inner
+            .cluster_shards_checked
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Whether enough time has passed to try registering with the metaserver again.
@@ -3422,11 +3470,24 @@ mod tests {
         let addr_for_thread = addr.clone();
         std::thread::spawn(move || {
             serve(&addr_for_thread, move |request| match request.path.as_str() {
-                "/meta/stats" => {
+                "/shards" => {
                     calls.fetch_add(1, Ordering::SeqCst);
-                    let mut stats = crate::meta::MetaStats::default();
-                    stats.shard_count = 8;
-                    crate::http::json_response(200, &stats)
+                    crate::http::json_response(
+                        200,
+                        &crate::meta::ListShardsResponse {
+                            status: Status::ok(),
+                            shards: (1..=8)
+                                .map(|shard_id| crate::meta::ShardListEntry {
+                                    shard_id,
+                                    server_addr: "127.0.0.1:1".to_string(),
+                                    namespace: "ns".to_string(),
+                                    table_name: "tbl".to_string(),
+                                    latest_snapshot: None,
+                                })
+                                .collect(),
+                            next_after_shard_id: None,
+                        },
+                    )
                 }
                 "/proxies/heartbeat" => crate::http::json_response(
                     200,
@@ -3484,6 +3545,65 @@ mod tests {
         assert!(
             landed.len() > 1,
             "64 tenants over 8 shards should not all land on one, saw {landed:?}"
+        );
+
+        // A cluster whose shard ids are NOT a contiguous run from the first id cannot be
+        // addressed by "first + hash % count" -- the arithmetic would name ids that do not
+        // exist. Adopting the count there would be worse than the single-shard default it
+        // replaces, so it is refused and the reason is reported.
+        let gapped = test_addr(18_406);
+        let gapped_for_thread = gapped.clone();
+        std::thread::spawn(move || {
+            serve(&gapped_for_thread, move |request| match request.path.as_str() {
+                "/shards" => crate::http::json_response(
+                    200,
+                    &crate::meta::ListShardsResponse {
+                        status: Status::ok(),
+                        // 1-4 and 100-103: eight shards, not eight consecutive ids.
+                        shards: (1..=4)
+                            .chain(100..=103)
+                            .map(|shard_id| crate::meta::ShardListEntry {
+                                shard_id,
+                                server_addr: "127.0.0.1:1".to_string(),
+                                namespace: "ns".to_string(),
+                                table_name: "tbl".to_string(),
+                                latest_snapshot: None,
+                            })
+                            .collect(),
+                        next_after_shard_id: None,
+                    },
+                ),
+                "/proxies/heartbeat" => crate::http::json_response(
+                    200,
+                    &ProxyHeartbeatResponse {
+                        status: Status::ok(),
+                        config_changed: false,
+                        namespace: String::new(),
+                        config_version: 0,
+                        serving_mode: "serving".to_string(),
+                        drop_percent: 0,
+                    },
+                ),
+                _ => crate::http::json_response(404, &Status::error("not_found", "no route")),
+            })
+            .unwrap();
+        });
+        wait_for_http(&gapped);
+
+        let scattered = ProxyService::new(ProxyOptions {
+            meta_addr: gapped,
+            ..ProxyOptions::default()
+        });
+        let _ = scattered.heartbeat_to_meta();
+        assert_eq!(
+            scattered.effective_context_shard_count(),
+            1,
+            "a count that would address shards 5-8, which do not exist, must not be adopted"
+        );
+        assert_eq!(
+            scattered.context_shard_count_source(),
+            "fallback_cluster_shards_not_contiguous",
+            "and the reason has to be visible, not inferred from failures"
         );
 
         // A configured value still wins, and needs no cluster lookup at all.
