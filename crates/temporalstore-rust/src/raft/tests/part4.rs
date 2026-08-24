@@ -1110,6 +1110,28 @@ fn a_snapshot_install_does_not_rewind_the_commit_index() {
 }
 
 #[test]
+fn an_ordinary_change_still_reports_success() {
+    // The guard on "committed but applied nothing" must not catch the normal
+    // path: every real change still has to come back ok, before and after a
+    // snapshot install.
+    let meta = MetaRaftCluster::new([10, 11, 12]);
+    assert!(meta
+        .add_namespace(AddNamespaceRequest {
+            namespace: "before".to_string()
+        })
+        .status
+        .ok);
+    let snapshot = meta.export_meta_snapshot().expect("a snapshot");
+    meta.install_meta_snapshot_on_live_nodes(snapshot)
+        .expect("the snapshot installs");
+    let after = meta.add_namespace(AddNamespaceRequest {
+        namespace: "after".to_string(),
+    });
+    assert!(after.status.ok, "{:?}", after.status);
+    assert_ne!(after.status.code, "mutation_not_applied");
+}
+
+#[test]
 fn metaserver_raft_can_read_from_any_live_committed_replica() {
     let meta = MetaRaftCluster::new([10, 11, 12]);
     meta.propose(MetaCommand::PutShardLocation(ShardLocation {

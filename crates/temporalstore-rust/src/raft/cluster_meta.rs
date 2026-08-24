@@ -44,7 +44,22 @@ impl MetaRaftCluster {
     pub fn propose_mutation(&self, mutation: MetaMutation) -> Result<Status, RaftError> {
         Ok(self
             .propose_inner(MetaCommand::ApplyMutation(mutation))?
-            .unwrap_or_else(Status::ok))
+            .unwrap_or_else(|| {
+                // `apply_meta_committed` answers `None` only when it applied
+                // nothing, which for a change just appended and committed means
+                // the entry was skipped as already applied. Reporting that as
+                // success is what let a numbering defect discard every metadata
+                // change after a snapshot install while every caller was told
+                // the change had been made.
+                //
+                // Not reachable today, and that is the point: this is the
+                // difference between the next defect of that shape being loud
+                // and being silent.
+                Status::error(
+                    "mutation_not_applied",
+                    "the metaserver committed this change and applied nothing",
+                )
+            }))
     }
 
     pub fn register(&self, request: RegisterShardRequest) -> RegisterShardResponse {
