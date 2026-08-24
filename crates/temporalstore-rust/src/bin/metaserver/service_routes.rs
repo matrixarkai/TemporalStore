@@ -73,6 +73,7 @@ fn handle_manage_service_route(
                     meta,
                     register_server,
                     RegisterServerRequest {
+                        numa_nodes: Vec::new(),
                         server_addr: heartbeat_server_addr(&req),
                         node_id: 0,
                         location: req.location,
@@ -469,6 +470,7 @@ fn handle_master_service_route(
                     meta,
                     register_server,
                     RegisterServerRequest {
+                        numa_nodes: Vec::new(),
                         server_addr,
                         node_id: req.node_id,
                         location: req.location,

@@ -467,6 +467,7 @@ mod tests {
     /// A healthy, reporting server that boots long before any test clock.
     fn server(addr: &str, serving: &[(ShardId, &str)]) -> ServerMetaInfo {
         ServerMetaInfo {
+            numa_nodes: Vec::new(),
             freeze_reason: FreezeReason::Unspecified,
             server_addr: addr.to_string(),
             node_id: 1,

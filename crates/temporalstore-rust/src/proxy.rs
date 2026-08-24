@@ -1966,6 +1966,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: test_addr(18_328),
             node_id: 1,
             location: "zone-a".to_string(),
@@ -2003,6 +2004,7 @@ mod tests {
         assert_eq!(proxy.info().route_cache_size, 1);
 
         meta.register_server(crate::meta::RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: test_addr(18_329),
             node_id: 2,
             location: "zone-b".to_string(),
@@ -2078,6 +2080,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: test_addr(18_340),
             node_id: 1,
             location: "zone-a".to_string(),
@@ -2127,6 +2130,7 @@ mod tests {
         }
 
         meta.register_server(crate::meta::RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: test_addr(18_341),
             node_id: 2,
             location: "zone-b".to_string(),
@@ -4729,6 +4733,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: test_addr(18_384),
             node_id: 1,
             location: "zone-a".to_string(),
@@ -4834,6 +4839,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: test_addr(18_380),
             node_id: 1,
             location: "zone-a".to_string(),
@@ -5096,6 +5102,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: test_addr(18_374),
             node_id: 1,
             location: "zone-a".to_string(),
@@ -5138,6 +5145,7 @@ mod tests {
 
         // The shard moves to the second datanode.
         meta.register_server(crate::meta::RegisterServerRequest {
+            numa_nodes: Vec::new(),
             server_addr: test_addr(18_375),
             node_id: 2,
             location: "zone-b".to_string(),

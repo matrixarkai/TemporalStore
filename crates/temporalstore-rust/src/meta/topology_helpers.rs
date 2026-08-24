@@ -113,6 +113,7 @@ pub(super) fn ensure_server(state: &mut MetaState, server_addr: &str) {
         .servers
         .entry(server_addr.to_string())
         .or_insert_with(|| ServerMetaInfo {
+            numa_nodes: Vec::new(),
             freeze_reason: FreezeReason::Unspecified,
             server_addr: server_addr.to_string(),
             node_id: 0,
