@@ -8,7 +8,7 @@
     "url": "https://temporalstore.ai"
   },
   "homepage": "https://temporalstore.ai/benchmarks.html",
-  "repository": "https://github.com/bjmeetsfo/TemporalStore",
+  "repository": "https://github.com/matrixarkai/TemporalStore",
   "license": "Apache-2.0",
   "keywords": ["memory", "context", "temporalstore", "matrixark"],
   "defaultEnabled": false,
