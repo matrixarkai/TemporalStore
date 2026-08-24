@@ -4900,6 +4900,7 @@ mod tests {
                 node_id: index as u64 + 1,
                 location: location.to_string(),
                 binary_version: "v1".to_string(),
+                numa_nodes: Vec::new(),
             });
         }
         meta.add_namespace(AddNamespaceRequest {
