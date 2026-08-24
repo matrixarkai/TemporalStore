@@ -1201,6 +1201,14 @@ impl Default for SingleNodeMeta {
 }
 
 impl SingleNodeMeta {
+    /// Set the conviction lock on a meta that already exists.
+    ///
+    /// The builder cannot reach a raft node's meta: those are constructed inside
+    /// the cluster, long after the process read its configuration.
+    pub fn set_conviction_lock(&mut self, forbid: bool) {
+        self.forbid_self_clearing_conviction = forbid;
+    }
+
     /// Refuse to let a resource the metaserver convicted register its way back
     /// into service; only an explicit unfreeze returns it. Off by default.
     pub fn with_conviction_lock(mut self, forbid: bool) -> Self {

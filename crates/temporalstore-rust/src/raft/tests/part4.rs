@@ -626,6 +626,7 @@ fn metaserver_raft_freeze_stale_server_is_replicated_mutation() {
 #[test]
 fn production_meta_raft_runtime_ticks_failover_and_failure_detection() {
     let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+        forbid_self_clearing_conviction: false,
         snapshot_check_interval_ms: 0,
         engine: ProductionRaftEngineKind::TemporalRaft,
         local_node_id: 10,
@@ -689,6 +690,7 @@ fn production_meta_raft_runtime_ticks_failover_and_failure_detection() {
 #[test]
 fn production_meta_raft_runtime_matches_multinode_control_and_fault_contract() {
     let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+        forbid_self_clearing_conviction: false,
         snapshot_check_interval_ms: 0,
         engine: ProductionRaftEngineKind::TemporalRaft,
         local_node_id: 10,
@@ -765,6 +767,7 @@ fn production_meta_raft_runtime_matches_multinode_control_and_fault_contract() {
 #[test]
 fn metaserver_owns_data_raft_membership_workflow() {
     let meta = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+        forbid_self_clearing_conviction: false,
         snapshot_check_interval_ms: 0,
         engine: ProductionRaftEngineKind::TemporalRaft,
         local_node_id: 10,
@@ -958,6 +961,7 @@ fn meta_owned_membership_report_covers_networked_scheduler_contract() {
 #[test]
 fn metaserver_membership_workflow_requires_meta_majority() {
     let meta = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+        forbid_self_clearing_conviction: false,
         snapshot_check_interval_ms: 0,
         engine: ProductionRaftEngineKind::TemporalRaft,
         local_node_id: 10,
@@ -1107,6 +1111,127 @@ fn a_snapshot_install_does_not_rewind_the_commit_index() {
         before,
         meta.status().commit_index
     );
+}
+
+fn convicted_proxy_cluster(forbid: bool) -> MetaRaftCluster {
+    let meta = MetaRaftCluster::new([10, 11, 12]);
+    meta.set_conviction_lock(forbid);
+    assert!(meta
+        .register_proxy(RegisterProxyRequest {
+            proxy_addr: "proxy-a".to_string(),
+            namespace: "ns".to_string(),
+            location: "rack-1".to_string(),
+            config_version: 1,
+            binary_version: "v1".to_string(),
+        })
+        .status
+        .ok);
+    // Frozen for a reason that counts as conviction, which is what the lock is
+    // about: a resource the metaserver took out, not one an operator did.
+    assert!(meta
+        .freeze_proxy(StateChangeRequest {
+            endpoint: "proxy-a".to_string(),
+            reason: crate::meta::FreezeReason::Unresponsive,
+            freeze_cooldown_ms: 0,
+        })
+        .status
+        .ok);
+    meta
+}
+
+fn rejoin(meta: &MetaRaftCluster) -> Status {
+    meta.register_proxy(RegisterProxyRequest {
+        proxy_addr: "proxy-a".to_string(),
+        namespace: "ns".to_string(),
+        location: "rack-1".to_string(),
+        config_version: 1,
+        binary_version: "v1".to_string(),
+    })
+    .status
+}
+
+#[test]
+fn the_conviction_lock_holds_on_a_raft_backed_metaserver() {
+    // The setting is read after `from_env` has already returned the raft
+    // backend, so it reached the single-node metaserver and nothing else. The
+    // check that consults it runs on these nodes -- against a flag that was
+    // always false, which let a convicted resource register its way back in.
+    let meta = convicted_proxy_cluster(true);
+    let refused = rejoin(&meta);
+    assert!(!refused.ok, "a convicted proxy registered its way back in");
+    assert_eq!(refused.code, "conviction_requires_unfreeze");
+
+    // An explicit unfreeze is the way back, or the lock would be a dead end.
+    assert!(meta
+        .unfreeze_proxy(StateChangeRequest {
+            endpoint: "proxy-a".to_string(),
+            reason: crate::meta::FreezeReason::Unspecified,
+            freeze_cooldown_ms: 0,
+        })
+        .status
+        .ok);
+    assert!(rejoin(&meta).ok, "an unfrozen proxy could not rejoin");
+}
+
+#[test]
+fn the_runtime_carries_the_conviction_lock_to_its_nodes() {
+    // The setter alone proves nothing about production: what was broken is that
+    // the option never reached the nodes, because the flag is read on a path the
+    // raft backend returns before.
+    let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+        forbid_self_clearing_conviction: true,
+        snapshot_check_interval_ms: 0,
+        engine: ProductionRaftEngineKind::TemporalRaft,
+        local_node_id: 1,
+        nodes: vec![ProductionRaftNode {
+            node_id: 1,
+            addr: "127.0.0.1:18147".to_string(),
+        }],
+        config: RaftConfig::default(),
+        heartbeat_interval_ms: 100,
+        election_tick_ms: 50,
+        failure_detector_interval_ms: 1_000,
+        stale_server_after_ms: 30_000,
+    })
+    .unwrap();
+    assert_eq!(
+        runtime
+            .cluster()
+            .read_meta()
+            .expect("a readable replica")
+            .conviction_lock_enabled(),
+        true,
+        "the runtime did not carry the setting to its nodes"
+    );
+}
+
+#[test]
+fn the_conviction_lock_stays_off_when_it_is_not_asked_for() {
+    // Off by default on purpose: the automatic recovery it removes is
+    // load-bearing wherever the freeze cooldown is left at zero.
+    let meta = convicted_proxy_cluster(false);
+    assert!(
+        rejoin(&meta).ok,
+        "a setting nobody asked for locked a proxy out"
+    );
+}
+
+#[test]
+fn installing_a_snapshot_does_not_clear_the_conviction_lock() {
+    // Each node's metadata used to be rebuilt from `Default` on install, which
+    // discarded everything configured on it -- the lock along with the event
+    // bus, the metrics recorder and the counters.
+    let meta = convicted_proxy_cluster(true);
+    let snapshot = meta.export_meta_snapshot().expect("a snapshot");
+    meta.install_meta_snapshot_on_live_nodes(snapshot)
+        .expect("the snapshot installs");
+
+    let refused = rejoin(&meta);
+    assert!(
+        !refused.ok,
+        "a snapshot install turned the conviction lock off"
+    );
+    assert_eq!(refused.code, "conviction_requires_unfreeze");
 }
 
 #[test]
@@ -1458,6 +1583,7 @@ fn meta_runtime_for_snapshot_wiring(
     base_port: u16,
 ) -> ProductionMetaRaftRuntime {
     ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+        forbid_self_clearing_conviction: false,
         snapshot_check_interval_ms,
         engine: ProductionRaftEngineKind::TemporalRaft,
         local_node_id: 10,

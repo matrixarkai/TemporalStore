@@ -667,6 +667,12 @@ pub struct ProductionMetaRaftRuntimeOptions {
     /// config already said to compact at a threshold, but no loop ever called
     /// it -- so the log grew for the life of the process.
     pub snapshot_check_interval_ms: u64,
+    /// Refuse to let a resource the metaserver convicted register its way back
+    /// into service; only an explicit unfreeze returns it.
+    ///
+    /// Carried here because a raft node's metadata is built inside the cluster,
+    /// so the process cannot configure it through the usual builder.
+    pub forbid_self_clearing_conviction: bool,
 }
 
 impl ProductionMetaRaftRuntimeOptions {
@@ -715,6 +721,7 @@ impl ProductionMetaRaftRuntime {
         options.validate()?;
         let cluster =
             MetaRaftCluster::new_with_config(options.voter_ids(), options.config.clone())?;
+        cluster.set_conviction_lock(options.forbid_self_clearing_conviction);
         Ok(Self { options, cluster })
     }
 
