@@ -1740,11 +1740,18 @@ pub(crate) fn execute_on_shard(
             // raw context events so index refs, filters, and event pages share the
             // wire-compatible timestamp key discipline.
             let event_timeline_key = context_timeline_key(primary_time_ms, event.event_id_hash);
+            let event_id_hash = event.event_id_hash;
             let event_series = shard
                 .context_events
                 .entry(event_object_key.clone())
                 .or_default();
-            if !(first_write_only && event_series.contains_key(&event_timeline_key)) {
+            // Same key discipline as ContextWriteEvent since the event rekey: the primary map
+            // is keyed by EVENT ID (idempotence tests the id), the page stays timestamp-keyed,
+            // and the time index maps the stored timeline key back to the id. This arm was
+            // missed by the rekey -- it kept inserting timeline keys into the id-keyed map and
+            // never fed the time index, so every extracted event was invisible to time-ranged
+            // queries while its write reported success.
+            if !(first_write_only && event_series.contains_key(&event_id_hash)) {
                 let value = context_bytes(&event);
                 let routing_bucket = page_routing_bucket(
                     &event_object_key,
@@ -1764,8 +1771,13 @@ pub(crate) fn execute_on_shard(
                     routing_bucket,
                     async_storage && !cold_storage,
                 ) {
-                    for (timestamp_ms, address) in addresses {
-                        event_series.insert(timestamp_ms, address);
+                    for (stored_timeline_key, address) in addresses {
+                        event_series.insert(event_id_hash, address);
+                        shard
+                            .context_event_timeline
+                            .entry(event_object_key.clone())
+                            .or_default()
+                            .insert(stored_timeline_key, event_id_hash);
                         mutated = true;
                     }
                 }

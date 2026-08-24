@@ -3013,3 +3013,40 @@ fn traversal_scores_a_child_whose_only_vector_is_on_the_node() {
     );
 }
 
+// shared-corpus: context_extracted_event_time_query
+#[test]
+fn an_extracted_event_is_visible_to_time_ranged_queries() {
+    // The event rekey moved the primary map to EVENT ID keys with a separate time index; this
+    // arm was missed, kept inserting timeline keys into the id-keyed map and never fed the time
+    // index -- so every extracted event wrote successfully and was invisible to time queries.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let write = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: serde_json::from_str(r#"{"kind":"context_write_extracted_event","tenant_hash":99,"node_hash":700,"event":{"event_id_hash":701,"event_time_ms":510,"ingestion_time_ms":515,"type":4,"confidence":0.9,"importance":0.8,"text":"probe event"},"indexes":{"entity_hashes":[9001],"status_hash":77,"source_hash":88,"event_time_bucket_ms":500}}"#).unwrap(),
+    });
+    assert!(write.status.ok);
+    assert!(matches!(
+        write.response,
+        CommandResponse::ContextExtractedEventWrite { ref event_object_key, .. }
+            if event_object_key == "ctx:event:99:700"
+    ));
+    let q = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: serde_json::from_str(r#"{"kind":"context_query_events","tenant_hash":99,"node_hash":700,"start_time_ms":500,"end_time_ms":520,"limit":null}"#).unwrap(),
+    });
+    assert!(
+        matches!(
+            q.response,
+            CommandResponse::ContextEvents { ref events, .. }
+                if events.len() == 1 && events[0].event_id_hash == 701
+        ),
+        "a successfully written extracted event must be visible to a time-ranged query"
+    );
+}
