@@ -573,16 +573,27 @@ impl MetaRaftCluster {
                 return SingleNodeMeta::muted_status();
             }
         }
+        // The same guards the public methods apply. `apply_mutation` dispatches
+        // straight to the `apply_*` functions, so without this the propose path
+        // goes around every one of them.
+        if let Some(Some(status)) =
+            self.with_readable_meta(|meta| meta.admission_refusal(&mutation))
+        {
+            return status;
+        }
         self.propose_mutation(mutation)
             .unwrap_or_else(|err| Status::error("raft_error", err.to_string()))
     }
 
-    /// Whether the readable replica reports metadata change as muted.
+    /// Ask the readable replica a question without copying it.
     ///
     /// Deliberately not `read_meta()`: that clones the entire metadata state,
-    /// and this runs on every mutation. `None` means no replica could answer,
-    /// which is not the same as "not muted".
-    pub(super) fn peek_meta_change_muted(&self) -> Option<bool> {
+    /// and everything here runs on every mutation. `None` means no replica could
+    /// answer, which is not the same as an answer of "no".
+    pub(super) fn with_readable_meta<T>(
+        &self,
+        ask: impl FnOnce(&SingleNodeMeta) -> T,
+    ) -> Option<T> {
         let inner = self.inner.read().expect("meta raft lock poisoned");
         let leader_commit_index = inner.nodes.get(&inner.leader_id)?.commit_index;
         inner
@@ -590,7 +601,11 @@ impl MetaRaftCluster {
             .values()
             .filter(|node| node.alive && node.commit_index >= leader_commit_index)
             .min_by_key(|node| node.id)
-            .map(|node| node.meta.is_meta_change_muted())
+            .map(|node| ask(&node.meta))
+    }
+
+    pub(super) fn peek_meta_change_muted(&self) -> Option<bool> {
+        self.with_readable_meta(SingleNodeMeta::is_meta_change_muted)
     }
 
     pub(super) fn read_meta(&self) -> Result<SingleNodeMeta, Status> {

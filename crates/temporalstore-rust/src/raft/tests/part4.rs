@@ -1044,6 +1044,91 @@ fn muting_metadata_change_refuses_changes_on_the_raft_path_too() {
     );
 }
 
+fn table_in(meta: &MetaRaftCluster, namespace: &str, table_name: &str) -> Status {
+    meta.add_table(AddTableRequest {
+        namespace: namespace.to_string(),
+        table_name: table_name.to_string(),
+        first_shard_id: 500,
+        shard_count: 1,
+        replica_count: 1,
+        partition_version: 0,
+        serving_options: crate::meta::TableServingOptions::default(),
+    })
+    .status
+}
+
+#[test]
+fn a_reserved_name_cannot_be_taken_on_the_raft_path() {
+    // Reserved names exist to hold a name back from creation. The check lived
+    // in the public method, and the raft path proposes past it, so on a
+    // raft-backed metaserver the reservation held nothing back at all.
+    let meta = MetaRaftCluster::new([10, 11, 12]);
+    let mut reserved = crate::meta::ReservedNames::default();
+    reserved.namespaces.insert("system".to_string());
+    reserved.tables.insert("internal".to_string());
+    assert!(meta.set_reserved_names(reserved).status.ok);
+
+    let taken = meta.add_namespace(AddNamespaceRequest {
+        namespace: "system".to_string(),
+    });
+    assert!(!taken.status.ok, "a reserved namespace was created anyway");
+    assert_eq!(taken.status.code, "name_reserved");
+
+    assert!(meta
+        .add_namespace(AddNamespaceRequest {
+            namespace: "tenant".to_string()
+        })
+        .status
+        .ok);
+    let table = table_in(&meta, "tenant", "internal");
+    assert!(!table.ok, "a reserved table name was created anyway");
+    assert_eq!(table.code, "name_reserved");
+
+    // And an unreserved name is still allowed, so the guard is not a blanket no.
+    assert!(table_in(&meta, "tenant", "orders").ok);
+}
+
+#[test]
+fn dropping_a_namespace_cannot_strand_a_live_table_on_the_raft_path() {
+    // The single-node path refuses this precisely so a drop cannot leave tables
+    // behind in a namespace that no longer exists. The raft path did not.
+    let meta = MetaRaftCluster::new([10, 11, 12]);
+    assert!(meta
+        .add_namespace(AddNamespaceRequest {
+            namespace: "tenant".to_string()
+        })
+        .status
+        .ok);
+    assert!(table_in(&meta, "tenant", "orders").ok);
+
+    let stranding = meta.drop_namespace(AddNamespaceRequest {
+        namespace: "tenant".to_string(),
+    });
+    assert!(
+        !stranding.status.ok,
+        "a namespace was dropped out from under a live table"
+    );
+    assert_eq!(stranding.status.code, "namespace_not_empty");
+
+    // Once the table is gone the namespace can be dropped, or the guard would
+    // make a namespace undroppable rather than merely safe to drop.
+    assert!(meta
+        .delete_table(DeleteTableRequest {
+            namespace: "tenant".to_string(),
+            table_name: "orders".to_string(),
+        })
+        .status
+        .ok);
+    assert!(
+        meta.drop_namespace(AddNamespaceRequest {
+            namespace: "tenant".to_string()
+        })
+        .status
+        .ok,
+        "an empty namespace could not be dropped"
+    );
+}
+
 #[test]
 fn metaserver_raft_can_read_from_any_live_committed_replica() {
     let meta = MetaRaftCluster::new([10, 11, 12]);

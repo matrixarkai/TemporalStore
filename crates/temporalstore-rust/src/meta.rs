@@ -1460,6 +1460,50 @@ impl SingleNodeMeta {
     /// mute: the mutation log then holds only creations that were accepted, so
     /// replay does not have to re-decide against a reserved set that has since
     /// changed.
+    /// Why this change must not be admitted, judged against current state.
+    ///
+    /// These guards lived only in the public methods. `apply_mutation` dispatches
+    /// straight to the `apply_*` functions, so the raft propose path went around
+    /// every one of them: a reserved namespace could be created, and a namespace
+    /// could be dropped out from under a table that was still live, stranding it.
+    ///
+    /// Judged before proposing and never while applying. Replay has to reapply
+    /// what was already accepted -- a name reserved today must not invalidate a
+    /// namespace legitimately created before it.
+    pub(crate) fn admission_refusal(&self, mutation: &MetaMutation) -> Option<Status> {
+        match mutation {
+            MetaMutation::AddNamespace(request) => {
+                self.reserved_name_refusal(&request.namespace, None)
+            }
+            MetaMutation::AddTable(request) => {
+                self.reserved_name_refusal(&request.namespace, Some(&request.table_name))
+            }
+            MetaMutation::SetNamespaceState(request, MetaEntityState::Dropped) => {
+                self.namespace_not_empty_refusal(&request.namespace)
+            }
+            _ => None,
+        }
+    }
+
+    /// Refuses dropping a namespace that still holds a table which is not itself
+    /// dropped, so dropping a namespace cannot strand one.
+    fn namespace_not_empty_refusal(&self, namespace: &str) -> Option<Status> {
+        let state = self.inner.read().expect("meta lock poisoned");
+        state
+            .tables
+            .values()
+            .any(|table| {
+                table.info.namespace == namespace
+                    && table.info.state != MetaEntityState::Dropped
+            })
+            .then(|| {
+                Status::error(
+                    "namespace_not_empty",
+                    "namespace still holds a table that is not dropped",
+                )
+            })
+    }
+
     fn reserved_name_refusal(&self, namespace: &str, table: Option<&str>) -> Option<Status> {
         let state = self.inner.read().expect("meta lock poisoned");
         if state.reserved_names.namespaces.contains(namespace) {
