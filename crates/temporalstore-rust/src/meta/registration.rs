@@ -50,6 +50,8 @@ impl SingleNodeMeta {
         state.servers.insert(
             server_addr.clone(),
             ServerMetaInfo {
+                reported_record_count: 0,
+                reported_storage_bytes: 0,
                 load_key_count: 0,
                 load_memory_bytes: 0,
                 worst_shard_state_penalty: 0,
@@ -228,6 +230,16 @@ impl SingleNodeMeta {
             .shard_loads
             .iter()
             .map(|load| load.memory_bytes)
+            .sum();
+        server.reported_record_count = server
+            .shard_states
+            .iter()
+            .map(|reported| reported.total_records as u64)
+            .sum();
+        server.reported_storage_bytes = server
+            .shard_states
+            .iter()
+            .map(|reported| reported.storage_bytes as u64)
             .sum();
         server.worst_shard_state_penalty = server
             .shard_states
