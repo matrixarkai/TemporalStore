@@ -12,8 +12,15 @@ impl SingleNodeMeta {
             mutation_log: Some(log.clone()),
             ..Self::default()
         };
-        for mutation in log.load()? {
-            meta.apply_mutation(mutation);
+        for record in log.load()? {
+            // A line written before the time was recorded gets the current
+            // clock, which is exactly what it has always been given.
+            let at_ms = if record.at_ms == 0 {
+                now_ms()
+            } else {
+                record.at_ms
+            };
+            meta.apply_mutation_at(record.mutation, at_ms);
         }
         Ok(meta)
     }

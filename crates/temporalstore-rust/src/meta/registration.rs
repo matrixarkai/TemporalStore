@@ -484,14 +484,16 @@ impl SingleNodeMeta {
                 }
             }
         }
-        self.record_mutation(MetaMutation::SetNamespaceState(request.clone(), next));
-        self.apply_set_namespace_state(request, next)
+        let at_ms =
+            self.record_mutation(MetaMutation::SetNamespaceState(request.clone(), next));
+        self.apply_set_namespace_state(request, next, at_ms)
     }
 
     pub(crate) fn apply_set_namespace_state(
         &self,
         request: AddNamespaceRequest,
         next: MetaEntityState,
+        at_ms: u64,
     ) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
         let Some(current) = state.namespaces.get_mut(&request.namespace) else {
@@ -504,7 +506,7 @@ impl SingleNodeMeta {
             &mut state,
             &dropped_key("namespace", &request.namespace),
             next,
-            now_ms(),
+            at_ms,
         );
         // Topology is derived on read, so the version bump is what makes clients
         // notice that a namespace stopped, or resumed, serving.
