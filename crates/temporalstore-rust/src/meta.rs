@@ -2904,6 +2904,7 @@ mod tests {
                 node_id: index as u64 + 1,
                 location: "rack-1".to_string(),
                 binary_version: "v1".to_string(),
+                numa_nodes: Vec::new(),
             });
         }
         meta.add_namespace(AddNamespaceRequest {
@@ -3120,6 +3121,7 @@ mod tests {
                 node_id: index + 1,
                 location: format!("region-{}/zone-{}", index % 3, index),
                 binary_version: "v1".to_string(),
+                numa_nodes: Vec::new(),
             });
         }
         meta.add_namespace(AddNamespaceRequest {
@@ -3173,6 +3175,7 @@ mod tests {
                 node_id: index as u64 + 1,
                 location: location.to_string(),
                 binary_version: "v1".to_string(),
+                numa_nodes: Vec::new(),
             });
         }
         meta.add_namespace(AddNamespaceRequest {
@@ -3224,6 +3227,7 @@ mod tests {
             node_id: 1,
             location: "rack-1".to_string(),
             binary_version: "v1".to_string(),
+            numa_nodes: Vec::new(),
         });
         // Setting the fixture up is itself a metadata change. Pump it through
         // before anyone subscribes, so these tests observe what they cause
@@ -3530,6 +3534,7 @@ mod tests {
             node_id: 1,
             location: "rack-1".to_string(),
             binary_version: "v1".to_string(),
+            numa_nodes: Vec::new(),
         });
         meta.add_namespace(AddNamespaceRequest {
             namespace: "ns".to_string(),
