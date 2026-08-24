@@ -55,7 +55,7 @@ impl TemporalStoreClient {
                             .expect("client stats lock poisoned")
                             .record_write_of_unknown_outcome();
                         let _ = self.resolve_route(request.shard_id, true, None);
-                        return Err(err.into());
+                        return Err(ClientError::WriteOutcomeUnknown(err.to_string()));
                     }
                     let refreshed = self.resolve_route(request.shard_id, true, None)?;
                     Ok(post_json_with_options(
@@ -184,7 +184,7 @@ impl TemporalStoreClient {
                             policy,
                             preferred_location,
                         );
-                        return Err(err.into());
+                        return Err(ClientError::WriteOutcomeUnknown(err.to_string()));
                     }
                     let refreshed = self.resolve_route_with_policy(
                         request.shard_id,
@@ -246,7 +246,7 @@ impl TemporalStoreClient {
                             .record_write_of_unknown_outcome();
                         let _ =
                             self.resolve_route(request.shard_id, true, continuous_failed_time_ms);
-                        return Err(err.into());
+                        return Err(ClientError::WriteOutcomeUnknown(err.to_string()));
                     }
                     let refreshed =
                         self.resolve_route(request.shard_id, true, continuous_failed_time_ms)?;

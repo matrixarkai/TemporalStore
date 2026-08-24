@@ -621,6 +621,10 @@ fn client_error_code(err: &ClientError) -> &'static str {
         ClientError::Status(_) => "status_error",
         ClientError::InvalidRequest(_) => "invalid_request",
         ClientError::UnexpectedResponse { .. } => "unexpected_response",
+        // Distinct on purpose: the caller has to be able to tell a write that provably did not
+        // apply from one that may have. Retrying the first is free; retrying the second is how
+        // a write gets applied twice.
+        ClientError::WriteOutcomeUnknown(_) => "write_outcome_unknown",
     }
 }
 
