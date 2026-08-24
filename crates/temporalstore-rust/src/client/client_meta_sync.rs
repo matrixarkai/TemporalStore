@@ -31,7 +31,7 @@ impl TemporalStoreClient {
                 client_location: String::new(),
                 namespace: namespace.clone(),
                 table_name: table_name.clone(),
-                old_topology_version: 0,
+                old_topology_version: self.last_synced_topology_version(&namespace, &table_name),
             },
             self.inner.options.meta_sync_http_options(),
         ) {
@@ -178,6 +178,25 @@ impl TemporalStoreClient {
             .lock()
             .expect("client table cache lock poisoned")
             .insert(table_key.clone(), options.clone());
+
+        // "unchanged" means the metaserver did not rebuild the shard list because we already
+        // have this version -- so the response carries NO shards, and running the route
+        // surgery below against an empty list would delete every route this table has. The
+        // serving options still came back and are applied above; the routes are already right.
+        //
+        // This has to be handled before the version is sent, not after: while the request was
+        // hardcoded to version 0 the metaserver could never answer unchanged, which is the
+        // only reason the wipe never happened.
+        if topology.unchanged {
+            self.record_meta_sync_success(
+                &namespace,
+                &table_name,
+                route_topology_version,
+                0,
+            );
+            return Ok(options);
+        }
+
         let mut route_cache = self
             .inner
             .routes
@@ -834,6 +853,22 @@ impl TemporalStoreClient {
                 last_error: String::new(),
                 shards_without_primary: 0,
             });
+    }
+
+    /// The topology version this client last synced for a table, or 0 if it has none.
+    ///
+    /// Sent with the next fetch so the metaserver can answer "unchanged" instead of rebuilding
+    /// and shipping the whole shard list. Both halves of that negotiation already existed --
+    /// the request field and the metaserver's reply -- with nothing connecting them.
+    fn last_synced_topology_version(&self, namespace: &str, table_name: &str) -> u64 {
+        let key = table_combine_name(namespace, table_name);
+        self.inner
+            .meta_sync_tables
+            .lock()
+            .expect("client meta sync table lock poisoned")
+            .get(&key)
+            .map(|state| state.last_topology_version)
+            .unwrap_or(0)
     }
 
     pub(super) fn record_meta_sync_success(
