@@ -369,6 +369,9 @@ mod tests {
                         summary_dirty: true,
                         l1_ref: String::new(),
                         raw_metadata_ref: format!("src://{node_hash}"),
+                        vector: Vec::new(),
+                        embedding_model_hash: 0,
+                        embedding_updated_at_ms: 0,
                     },
                 },
             })
@@ -614,6 +617,9 @@ mod tests {
                         summary_dirty: false,
                         l1_ref: String::new(),
                         raw_metadata_ref: String::new(),
+                        vector: Vec::new(),
+                        embedding_model_hash: 0,
+                        embedding_updated_at_ms: 0,
                     },
                 },
             });

@@ -1553,6 +1553,9 @@ pub(crate) fn extract_context_gated(
         summary_dirty: true,
         l1_ref: l1.clone(),
         raw_metadata_ref: request.source_id.clone(),
+        vector: Vec::new(),
+        embedding_model_hash: 0,
+        embedding_updated_at_ms: 0,
     };
     let mut event = context_event_with_storage_keys(
         node_hash,
@@ -2623,6 +2626,9 @@ fn empty_node() -> ContextNode {
         summary_dirty: false,
         l1_ref: String::new(),
         raw_metadata_ref: String::new(),
+        vector: Vec::new(),
+        embedding_model_hash: 0,
+        embedding_updated_at_ms: 0,
     }
 }
 

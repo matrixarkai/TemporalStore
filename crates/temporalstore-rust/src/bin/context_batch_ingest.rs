@@ -391,6 +391,9 @@ fn write_raw_sources(
             summary_dirty: true,
             l1_ref: String::new(),
             raw_metadata_ref: source.source_id.clone(),
+            vector: Vec::new(),
+            embedding_model_hash: 0,
+            embedding_updated_at_ms: 0,
         };
         let event = ContextEvent {
             event_id_hash,

@@ -432,6 +432,9 @@ fn sdk_context_node_to_types(node: v1::ContextNode) -> types::ContextNode {
         summary_dirty: false,
         l1_ref: String::new(),
         raw_metadata_ref: String::from_utf8_lossy(&node.payload).into_owned(),
+        vector: Vec::new(),
+        embedding_model_hash: 0,
+        embedding_updated_at_ms: 0,
     }
 }
 
