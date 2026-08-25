@@ -726,7 +726,7 @@ impl RaftClusterInner {
     }
 
     /// Write what this node must persist, WITHOUT taking the barrier for it.
-    fn stage_configured_wal(&mut self) -> Result<Vec<local_wal::StagedWalAppend>, RaftError> {
+    pub(super) fn stage_configured_wal(&mut self) -> Result<Vec<local_wal::StagedWalAppend>, RaftError> {
         // P4: this thread owes a barrier rather than skipping one -- `flush_deferred_persist`
         // takes it before the propose acks. Only the thread that opened the deferral defers, so
         // a vote grant or heartbeat racing this propose still fsyncs before it answers.

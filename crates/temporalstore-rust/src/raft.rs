@@ -4511,6 +4511,17 @@ impl RaftCluster {
     where
         T: RaftTransport + Clone + Send + 'static,
     {
+        // With the senders on, proposers skip the serialize gate entirely: order to any one
+        // follower is that follower's single sender thread, and entry order is the write
+        // lock's index assignment. Serializing proposers here starved the senders of batches --
+        // every entry paid the whole doorbell -> sender -> ack -> commit-signal chain alone,
+        // which is exactly the concurrency collapse measured on small machines. =0 falls back
+        // to one propose at a time through the same senders.
+        if follower_pipeline::follower_pipeline_enabled()
+            && raft_env_flag_default_on("TS_RAFT_PIPELINE_CONCURRENT_PROPOSE")
+        {
+            return self.propose_pipelined_concurrent(command, transport);
+        }
         // P2: serialize proposes into the log in order. Concurrent proposers otherwise append
         // under the write lock (sequential indices) but release it before the async network phase,
         // so their AppendEntries race and can reach a follower out of order -> `prev_log` mismatch
@@ -4602,6 +4613,147 @@ impl RaftCluster {
             }
         }
         // Never ack a write whose barrier failed: a flush error wins over a successful propose.
+        match (outcome, flushed) {
+            (Ok(response), Ok(())) => Ok(response),
+            (Ok(_), Err(err)) => Err(err),
+            (Err(err), _) => Err(err),
+        }
+    }
+
+    /// Propose through the per-follower senders WITHOUT the propose-serialize gate.
+    ///
+    /// The gate exists for the fan-out, where concurrent proposers each send their own
+    /// AppendEntries and the network can reorder them. The senders make it not just
+    /// unnecessary but harmful: with one sender thread per follower carrying every append in
+    /// log order, serializing proposers guarantees the senders never see more than one new
+    /// entry at a time, so each propose pays the whole doorbell -> sender -> ack ->
+    /// commit-signal chain by itself. Appending concurrently under the write lock keeps index
+    /// order, the senders batch whatever has accumulated, and one wake chain carries every
+    /// waiting proposer.
+    ///
+    /// Durability: the entry's record bytes are staged under the write lock (which orders
+    /// them) and the barrier is taken on a side thread while the senders replicate, then
+    /// joined before the ack -- nothing is acknowledged before its bytes are durable, and
+    /// concurrent proposers share barriers through the WAL flush gate. The commit index stays
+    /// recoverable and is never waited on. No deferral bookkeeping: that machinery assumes one
+    /// owning proposer, which is the constraint this path removes.
+    fn propose_pipelined_concurrent<T>(
+        &self,
+        command: Command,
+        transport: &T,
+    ) -> Result<CommandResponse, RaftError>
+    where
+        T: RaftTransport + Clone + Send + 'static,
+    {
+        self.ensure_follower_pipeline(transport);
+        let (entry_index, staged) = {
+            let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+            inner.ensure_live_leader()?;
+            let entry_bytes = command_size_bytes(&command);
+            if entry_bytes > inner.config.max_memory_replicate_log_bytes {
+                let leader_id = inner.leader_id;
+                if let Some(leader) = inner.nodes.get_mut(&leader_id) {
+                    leader.pipeline_state.oversized_log_rejections = leader
+                        .pipeline_state
+                        .oversized_log_rejections
+                        .saturating_add(1);
+                    leader.pipeline_state.memory_backpressure_rejections = leader
+                        .pipeline_state
+                        .memory_backpressure_rejections
+                        .saturating_add(1);
+                }
+                inner.persist_configured_wal()?;
+                return Err(RaftError::LogEntryTooLarge {
+                    bytes: entry_bytes,
+                    limit: inner.config.max_memory_replicate_log_bytes,
+                });
+            }
+            if let Some((live, required)) = inner.joint_majority_failure() {
+                return Err(RaftError::NoMajority { live, required });
+            }
+            let required = inner.required_majority();
+            let live = inner.live_quorum_participants();
+            if live < required {
+                return Err(RaftError::NoMajority { live, required });
+            }
+            if !inner.leader_lease_valid() {
+                return Err(RaftError::LeaderUnavailable);
+            }
+            let leader_id = inner.leader_id;
+            let shard_id = inner.shard_id;
+            let leader = inner
+                .nodes
+                .get(&leader_id)
+                .filter(|node| node.alive && node.role == RaftRole::Leader)
+                .ok_or(RaftError::LeaderUnavailable)?;
+            let entry = RaftLogEntry {
+                term: leader.current_term,
+                index: node_next_log_index(leader),
+                shard_id,
+                command,
+            };
+            let index = entry.index;
+            let leader = inner
+                .nodes
+                .get_mut(&leader_id)
+                .ok_or(RaftError::LeaderUnavailable)?;
+            append_entry(leader, entry);
+            inner.response_waiters.insert(index);
+            // Write the record's bytes while the lock orders them; the barrier happens below,
+            // off the lock, shared with every concurrent proposer through the flush gate.
+            let staged = inner.stage_configured_wal()?;
+            (index, staged)
+        };
+
+        // The leader's disk wait runs alongside the followers' replication, exactly like the
+        // fan-out's overlapped barrier -- joined before the ack, never skipped.
+        let entry_barrier = if staged.is_empty() {
+            None
+        } else {
+            let cluster = self.clone();
+            Some(thread::spawn(move || cluster.finish_staged_unlocked(staged)))
+        };
+
+        self.ring_replication();
+
+        let deadline_ms = {
+            let inner = self.inner.read().expect("raft cluster lock poisoned");
+            let configured = inner.config.replication_deadline_ms;
+            if configured == 0 {
+                default_replication_deadline_ms()
+            } else {
+                configured
+            }
+        };
+        let committed =
+            self.wait_for_quorum_commit(entry_index, Duration::from_millis(deadline_ms));
+
+        let outcome = {
+            let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+            inner.response_waiters.remove(&entry_index);
+            if !committed {
+                inner.pending_responses.remove(&entry_index);
+                let required = inner.required_majority();
+                let live = inner.live_quorum_participants();
+                // The entry stays in the log and may commit later; the caller only learns that
+                // it did not commit within the deadline, which is all a replication deadline
+                // ever meant.
+                Err(RaftError::NoMajority { live, required })
+            } else {
+                Ok(inner
+                    .pending_responses
+                    .remove(&entry_index)
+                    .unwrap_or(CommandResponse::Empty))
+            }
+        };
+
+        // Never ack a write whose barrier failed, and never report a flush error as success.
+        let flushed = match entry_barrier {
+            Some(handle) => handle
+                .join()
+                .unwrap_or_else(|_| Err(RaftError::Wal("barrier thread panicked".to_string()))),
+            None => Ok(()),
+        };
         match (outcome, flushed) {
             (Ok(response), Ok(())) => Ok(response),
             (Ok(_), Err(err)) => Err(err),
