@@ -389,6 +389,10 @@ _SUBJECT_RESCOPE_DROP = frozenset({
 
 
 class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirectBackendMixin, _TemporalDirectWriteMixin, _TemporalDirectReadMixin, _TemporalDirectRetrieveMixin):
+    # The base class precedes the mixins in the MRO, so without this the buffered audit
+    # implementation the __init__ prepares for (MATRIXARK_DIRECT_AUDIT_MODE, buffer, flusher)
+    # is shadowed by the base's durable-append-per-record version.
+    append_audit = _TemporalDirectWriteMixin.append_audit
     """MatrixArk adapter backed by TemporalStore proxy or direct SDK.
 
     Python stays as API/auth/model orchestration. Production retrieval should
