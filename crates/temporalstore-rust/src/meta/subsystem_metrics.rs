@@ -61,6 +61,8 @@ struct SubsystemMetricsState {
     divergence_rate_limited: u64,
     retention_blocked_servers: u64,
     retention_capped: u64,
+    freeze_aging_capped: u64,
+    divergence_skipped: BTreeMap<String, u64>,
 }
 
 /// Shared recorder for background-subsystem outcomes.
@@ -115,6 +117,18 @@ impl SubsystemMetrics {
             state.diverged_now = report.diverged.len() as u64;
             state.settling_now = report.settling.len() as u64;
             state.divergence_rate_limited = report.rate_limited as u64;
+            // Servers the check declined to look at. Without these, a reported
+            // zero means either "nothing diverged" or "the servers that mattered
+            // were never examined", and an operator cannot tell which. A server
+            // that has never reported shard states is skipped outright.
+            for (reason, servers) in [
+                ("reboot_grace", &report.skipped_in_reboot_grace),
+                ("no_shard_reports", &report.skipped_without_shard_reports),
+            ] {
+                state
+                    .divergence_skipped
+                    .insert(reason.to_string(), servers.len() as u64);
+            }
         });
     }
 
@@ -152,6 +166,10 @@ impl SubsystemMetrics {
             ] {
                 *state.aged_total.entry(kind.to_string()).or_default() += count as u64;
             }
+            // Retention reports the work its per-round cap held back; freeze
+            // aging has the same field and was not reporting it, so a round
+            // doing less than it wanted looked like a round with less to do.
+            state.freeze_aging_capped = plan.capped as u64;
         });
     }
 
@@ -369,6 +387,24 @@ fn render(state: &SubsystemMetricsState) -> String {
         state.retention_blocked_servers,
     );
 
+    out.push_str("# HELP temporalstore_meta_freeze_aging_capped Freeze-aging work the per-round cap held back last round.\n");
+    out.push_str("# TYPE temporalstore_meta_freeze_aging_capped gauge\n");
+    push(
+        &mut out,
+        "temporalstore_meta_freeze_aging_capped",
+        &[],
+        state.freeze_aging_capped,
+    );
+    out.push_str("# HELP temporalstore_meta_divergence_skipped Servers the divergence check did not examine last round.\n");
+    out.push_str("# TYPE temporalstore_meta_divergence_skipped gauge\n");
+    for (reason, value) in &state.divergence_skipped {
+        push(
+            &mut out,
+            "temporalstore_meta_divergence_skipped",
+            &[("reason", reason)],
+            *value,
+        );
+    }
     out.push_str("# HELP temporalstore_meta_retention_capped Purges the per-round cap held back last round.\n");
     out.push_str("# TYPE temporalstore_meta_retention_capped gauge\n");
     push(
