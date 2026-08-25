@@ -1464,7 +1464,14 @@ fn drop_covered_wal_segments(
     let active = write_ahead_log_path(root, shard_id);
     let mut dropped = 0usize;
     let mut freed = 0u64;
+    // Stop after this many, so the lock every append needs is not held for the whole backlog.
+    // Whatever is left is dropped by the next pass: pieces go from the front in order, so stopping
+    // early leaves the rest exactly where the next pass would have looked anyway.
+    let limit = wal_reclaim_max_segments_per_pass();
     for path in wal_segment_paths(root, shard_id) {
+        if limit > 0 && dropped >= limit {
+            break;
+        }
         if path == active || !path.exists() {
             continue;
         }
@@ -1944,6 +1951,22 @@ fn wal_env_flag_default_on(name: &str) -> bool {
 /// forced on; the env var remains the escape hatch (=0 restores growing appends, and a log
 /// written either way reads back under the other, since the tail scan treats a zeros run as
 /// room and a plain file simply ends at its records).
+/// TS_WAL_RECLAIM_MAX_SEGMENTS_PER_PASS: how many sealed pieces one reclaim pass may unlink.
+///
+/// The unlinking happens while the log's lock is held, and every append takes that lock, so an
+/// unbounded pass stops every writer for as long as it takes -- about 45 microseconds per piece,
+/// measured. Zero means unbounded, which is what this did before.
+///
+/// A bound does not reduce total work; it increases it, because every extra pass pays the
+/// directory barrier again. It bounds how long the lock is held in one pass, which is the thing
+/// writers actually feel.
+fn wal_reclaim_max_segments_per_pass() -> usize {
+    std::env::var("TS_WAL_RECLAIM_MAX_SEGMENTS_PER_PASS")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(64)
+}
+
 fn wal_preallocate_enabled() -> bool {
     wal_env_flag_default_on("TS_WAL_PREALLOCATE")
 }
@@ -5058,6 +5081,106 @@ mod tests {
                 );
             }
         }
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// One reclaim pass unlinks at most its bound, and later passes take the rest.
+    ///
+    /// The unlinking runs while the log's lock is held and every append needs that lock, so an
+    /// unbounded pass over a large backlog stops every writer for as long as it takes. Bounding it
+    /// does not make the total cheaper -- each pass pays the directory barrier again -- it bounds
+    /// how long any one pass holds the lock.
+    #[test]
+    fn one_reclaim_pass_unlinks_at_most_its_bound() {
+        set_wal_segment_bytes_for_test(Some(2 * 1024));
+        std::env::set_var("TS_WAL_RECLAIM_MAX_SEGMENTS_PER_PASS", "4");
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+
+        let mut last = 0u64;
+        for index in 0..400u64 {
+            last = store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 64],
+                    },
+                    false,
+                )
+                .unwrap()
+                .sequence;
+        }
+        let sealed_before = wal_segment_paths(dir.path(), 1).len();
+        assert!(sealed_before > 8, "need a backlog worth bounding, saw {sealed_before}");
+
+        // One pass drops no more than the bound.
+        let first = store.gc_before_sequence(1, last).unwrap();
+        assert!(
+            first.dropped_segments <= 4,
+            "one pass dropped {} pieces, past its bound",
+            first.dropped_segments
+        );
+        assert!(first.dropped_segments > 0, "the pass should have dropped something");
+
+        // Later passes take the rest, without recomputing anything.
+        let mut passes = 1;
+        loop {
+            let report = store.gc_before_sequence(1, last).unwrap();
+            if report.dropped_segments == 0 {
+                break;
+            }
+            assert!(
+                report.dropped_segments <= 4,
+                "a later pass dropped {} pieces, past its bound",
+                report.dropped_segments
+            );
+            passes += 1;
+            assert!(passes < 500, "reclaim never drained");
+        }
+        assert!(passes > 1, "the backlog should have taken more than one pass");
+
+        // And the records that had to survive still do.
+        let survivors = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        assert!(!survivors.is_empty(), "the retained tail should still be there");
+        for (_, line) in &survivors {
+            decode_wal_line(line).expect("every surviving record should decode");
+        }
+        std::env::remove_var("TS_WAL_RECLAIM_MAX_SEGMENTS_PER_PASS");
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// Not an assertion, a measurement -- how long one reclaim pass holds the log's lock.
+    ///   cargo test --lib -- --ignored --exact wal::tests::measure_reclaim_pass --nocapture
+    #[test]
+    #[ignore]
+    fn measure_reclaim_pass() {
+        set_wal_segment_bytes_for_test(Some(2 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let mut last = 0u64;
+        for index in 0..3_000u64 {
+            last = store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 64],
+                    },
+                    false,
+                )
+                .unwrap()
+                .sequence;
+        }
+        let pieces = wal_segment_paths(dir.path(), 1).len();
+        let started = std::time::Instant::now();
+        let report = store.gc_before_sequence(1, last).unwrap();
+        let micros = started.elapsed().as_secs_f64() * 1e6;
+        println!(
+            "bound={:?} backlog {pieces} pieces: one pass {micros:.0} us, dropped {}",
+            std::env::var("TS_WAL_RECLAIM_MAX_SEGMENTS_PER_PASS").unwrap_or_default(),
+            report.dropped_segments
+        );
         set_wal_segment_bytes_for_test(None);
     }
 }
