@@ -1313,6 +1313,112 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             return full
         return live_subset
 
+    def records_for_session_buffer(self, scope: Json) -> list[Json]:
+        """The session-buffer cache-miss view from a pinned typed scan, not a full read.
+
+        The miss consumer filters by buffer key (tenant, user, session) and record type, so a
+        scope-pinned superset of the live view is sufficient. Engages only when the scope
+        resolves to non-zero tenant AND user hashes; anything broader serves the full read. The
+        subset runs the SAME serving chain as the full read (latest-state fold, tombstone sweep,
+        expiry filter), so committed/tombstoned/expired records drop out identically.
+        """
+        import os as _os
+
+        try:
+            tenant_hash, user_hash = self._resolve_subject_hashes(scope or {})
+        except Exception:  # noqa: BLE001
+            return self.read_all()
+        if not tenant_hash or not user_hash:
+            return self.read_all()
+        try:
+            from tools.matrixark_mcp_local_adapter import (
+                MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+                MEMORY_TOMBSTONE_RECORD_TYPE,
+                compact_and_apply_tombstones,
+                filter_live_memory_records,
+            )
+            from tools.matrixark_mcp_serving_records import compact_latest_context_state_records
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_local_adapter import (
+                MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+                MEMORY_TOMBSTONE_RECORD_TYPE,
+                compact_and_apply_tombstones,
+                filter_live_memory_records,
+            )
+            from matrixark_mcp_serving_records import compact_latest_context_state_records
+
+        shadow = _os.environ.get("MATRIXARK_SESSBUF_SHADOW_COMPARE", "").strip()
+        shadow_on = shadow not in {"", "0", "false", "no", "off"}
+        engine_scope: Json = {
+            "tenant_hash": tenant_hash,
+            "user_hash": user_hash,
+            "_explicit_scope_keys": ["tenant_id", "user_id"],
+        }
+        if isinstance(scope, dict) and scope.get("user_id"):
+            engine_scope["user_id"] = str(scope.get("user_id"))
+        subset = self._scan_records_of_types(
+            [
+                "context_event",
+                "session_buffer_event",
+                "context_batch_commit",
+                MEMORY_TOMBSTONE_RECORD_TYPE,
+                MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+            ],
+            scope=engine_scope,
+        )
+        if subset is None:
+            return self.read_all()
+        try:
+            latest_state = self._load_latest_context_state_records()
+        except Exception:  # noqa: BLE001 - the full read is the fallback, not a guess.
+            return self.read_all()
+        folded = compact_latest_context_state_records(list(subset) + list(latest_state))
+        live_subset = filter_live_memory_records(compact_and_apply_tombstones(folded))
+
+        if shadow_on:
+            full = self.read_all()
+            log_path = _os.environ.get("MATRIXARK_SESSBUF_SHADOW_LOG",
+                                       "/tmp/matrixark_sessbuf_shadow.log")
+
+            def project(records: list[Json]) -> tuple:
+                events, buffers, commits = [], [], []
+                for record in records:
+                    rtype = str(record.get("record_type") or "")
+                    if rtype == "context_event":
+                        events.append(str(record.get("event_id_hash")))
+                    elif rtype == "session_buffer_event":
+                        buffers.append(str(record.get("event_id_hash")))
+                    elif rtype == "context_batch_commit":
+                        commits.append(str(record.get("batch_id_hash") or record.get("commit_hash") or ""))
+                return (sorted(events), sorted(buffers), sorted(commits))
+
+            def scoped(records: list[Json]) -> list[Json]:
+                try:
+                    from tools.matrixark_mcp_local_adapter import _record_scope_hashes
+                except ModuleNotFoundError:
+                    from matrixark_mcp_local_adapter import _record_scope_hashes
+                keep = []
+                for record in records:
+                    rec_tenant, rec_user = _record_scope_hashes(record)
+                    if (not rec_tenant or rec_tenant == tenant_hash) and (not rec_user or rec_user == user_hash):
+                        keep.append(record)
+                return keep
+
+            expected, got = project(scoped(full)), project(scoped(live_subset))
+            try:
+                with open(log_path, "a", encoding="utf-8") as log:
+                    if expected != got:
+                        log.write("MISMATCH %r vs %r\n" % (
+                            tuple(len(part) for part in expected),
+                            tuple(len(part) for part in got)))
+                    else:
+                        log.write("CLEAN events=%d buffers=%d commits=%d\n"
+                                  % tuple(len(part) for part in expected))
+            except OSError:
+                pass
+            return full
+        return live_subset
+
     def records_for_summary_refresh(self) -> list[Json]:
         """The refresh pass's view from a typed scan, through the SAME serving chain as read_all.
 
