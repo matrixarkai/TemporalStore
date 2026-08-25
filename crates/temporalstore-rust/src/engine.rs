@@ -33,6 +33,7 @@ mod recovery_sweep_compact;
 mod persistence;
 mod bucket_dump_io;
 mod command_validation;
+pub mod resource_blobs;
 pub mod quota;
 pub(crate) mod eviction_sampler;
 // Single source of truth for write-command classification (shared with the data_node layer,
@@ -304,6 +305,11 @@ impl TemporalEngine {
                     response: CommandResponse::Empty,
                 };
             }
+        }
+        // Blob commands run before the shard lock: blobs live beside the engine, not inside
+        // any shard's record state, and a large upload must never hold the shard write lock.
+        if let Some(response) = self.execute_resource_blob_command(&request) {
+            return response;
         }
         if async_storage_override.is_some() {
             if let Some(response) = self.execute_read_only_fast_path(&request) {

@@ -123,6 +123,12 @@ fn proxy_command_key(command: &Command) -> Option<&str> {
         | Command::ContextWriteCompressionEvent { .. }
         | Command::ContextQueryCompressionEvents { .. }
         | Command::ContextCompressEvents { .. }
+        | Command::ContextResourceBlobBegin { .. }
+        | Command::ContextResourceBlobAppend { .. }
+        | Command::ContextResourceBlobCommit { .. }
+        | Command::ContextResourceBlobPut { .. }
+        | Command::ContextResourceBlobFetch { .. }
+        | Command::ContextResourceBlobSweep { .. }
         | Command::ContextQueryNodeContext { .. } => None,
     }
 }
