@@ -1481,8 +1481,24 @@ impl SingleNodeMeta {
             MetaMutation::SetNamespaceState(request, MetaEntityState::Dropped) => {
                 self.namespace_not_empty_refusal(&request.namespace)
             }
+            MetaMutation::PutProxyGroup(request) => Self::proxy_group_name_refusal(request),
             _ => None,
         }
+    }
+
+    /// Refuses a proxy group that names neither itself nor a namespace.
+    ///
+    /// The group name is the key it is stored under, and an empty one is also
+    /// the value an unattached proxy carries -- so a nameless group is indexed
+    /// by "no group at all" and reads as though every idle proxy belongs to it.
+    /// The public method has always refused this; the propose path dispatched
+    /// straight to `apply_put_proxy_group`, which does not check, and committed
+    /// it into replicated metadata.
+    ///
+    /// Takes no lock: it judges the request alone, not the state around it.
+    fn proxy_group_name_refusal(request: &PutProxyGroupRequest) -> Option<Status> {
+        (request.group.is_empty() || request.namespace.is_empty())
+            .then(|| Status::error("bad_request", "group and namespace are required"))
     }
 
     /// Refuses dropping a namespace that still holds a table which is not itself

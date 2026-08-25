@@ -7,6 +7,51 @@ use super::*;
 use super::helpers::*;
 
 #[test]
+fn a_proxy_group_needs_a_name_on_the_raft_path_too() {
+    use crate::meta::{PutProxyGroupRequest, SingleNodeMeta};
+
+    // put_proxy_group validates in the public method, and the propose path
+    // dispatches straight to apply_put_proxy_group, which does not. So a raft
+    // metaserver committed a group with no name and no namespace into
+    // replicated metadata, where the single-node one answered bad_request.
+    //
+    // Judged before proposing, never while applying: replay has to reapply what
+    // was already accepted.
+    let empty = || PutProxyGroupRequest {
+        group: String::new(),
+        namespace: String::new(),
+        location: "rack-1".to_string(),
+        instance_num: 1,
+    };
+
+    let single = SingleNodeMeta::default();
+    let single_ack = single.put_proxy_group(empty());
+    assert_eq!(single_ack.status.code, "bad_request");
+    assert!(single.list_proxy_groups().groups.is_empty());
+
+    let meta = MetaRaftCluster::new([10, 11, 12]);
+    let raft_ack = meta.put_proxy_group(empty());
+    assert_eq!(
+        raft_ack.status.code, "bad_request",
+        "the raft path accepted a proxy group with no name"
+    );
+    assert!(
+        meta.list_proxy_groups().groups.is_empty(),
+        "a nameless proxy group reached replicated metadata"
+    );
+
+    // A named group still goes through, so the guard is not simply refusing.
+    let good = meta.put_proxy_group(PutProxyGroupRequest {
+        group: "orders".to_string(),
+        namespace: "ns".to_string(),
+        location: "rack-1".to_string(),
+        instance_num: 1,
+    });
+    assert!(good.status.ok, "a valid group was refused: {good:?}");
+    assert_eq!(meta.list_proxy_groups().groups.len(), 1);
+}
+
+#[test]
 fn add_node_after_leader_snapshot_installs_snapshot_and_tail() {
     let cluster = RaftCluster::new_single_shard_with_config(
         1,
