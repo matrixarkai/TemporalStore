@@ -81,5 +81,6 @@ mod phase1_flat;
 mod part1;
 mod part2;
 mod quota;
+mod upsert_deltas;
 mod part3;
 mod part4;
