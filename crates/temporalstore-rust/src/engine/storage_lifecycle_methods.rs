@@ -1206,7 +1206,7 @@ impl TemporalEngine {
                     }
                     if let Ok(index_bytes) = Ok::<_, serde_json::Error>(super::serialize_index_stamped(shard)) {
                         let _ = self.persist_index_bytes(shard_id, &index_bytes);
-                        let _ = self.index_log_store.append_json(shard_id, &index_bytes);
+                        let _ = self.index_log_store.append_index_bytes(shard_id, &index_bytes);
                     }
                 }
             }

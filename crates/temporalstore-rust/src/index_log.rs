@@ -414,6 +414,14 @@ impl LocalIndexLogStore {
         }
     }
 
+    /// Append an index record, PARSING the bytes into a value first.
+    ///
+    /// Prefer [`append_index_bytes`](Self::append_index_bytes), which splices the already
+    /// serialized bytes into the record instead. This one parses the whole index into a
+    /// `serde_json::Value` and then re-encodes it, so a multi-megabyte index is walked twice
+    /// more per append -- measured at 2.31 MB for a 2,000-key shard. It remains for callers
+    /// that genuinely need the parsed record back; every engine caller writes an index it has
+    /// just serialized and discards the result, so they all take the splicing path.
     pub fn append_json(
         &self,
         shard_id: ShardId,
@@ -984,6 +992,31 @@ fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// The splicing appender and the parsing one must produce the SAME record bytes.
+    ///
+    /// The engine's index-log appends were routed to the splicing path to stop re-parsing and
+    /// re-encoding a multi-megabyte index on every append. That is only safe while the two
+    /// produce identical bytes, which holds because `IndexLogRecord` declares its fields in
+    /// exactly the order the splice writes them. This test fails if either side drifts.
+    #[test]
+    fn both_appenders_write_the_same_record_bytes() {
+        let spliced_dir = tempfile::tempdir().unwrap();
+        let parsed_dir = tempfile::tempdir().unwrap();
+        let spliced = LocalIndexLogStore::new(spliced_dir.path());
+        let parsed = LocalIndexLogStore::new(parsed_dir.path());
+        let index = br#"{"index_format_version":3,"strings":{"a":{"page_slab_id":1}}}"#;
+
+        spliced.append_index_bytes(11, index).unwrap();
+        parsed.append_json(11, index).unwrap();
+
+        let spliced_bytes = std::fs::read(index_log_path(spliced_dir.path(), 11)).unwrap();
+        let parsed_bytes = std::fs::read(index_log_path(parsed_dir.path(), 11)).unwrap();
+        assert_eq!(
+            spliced_bytes, parsed_bytes,
+            "the splicing appender must write exactly what the parsing one writes"
+        );
+    }
+
     use super::*;
 
     #[test]
