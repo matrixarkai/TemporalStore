@@ -1709,3 +1709,68 @@ fn walkdir_images(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     out.sort();
     out
 }
+
+/// A DEPLOYED follower's in-memory log must be bounded as the corpus grows.
+///
+/// The log is trimmed only when a snapshot is installed, and the compaction check refuses to
+/// run on anything but the leader. In-process that is harmless -- one process owns every node,
+/// so the leader's compaction trims the peers' state too. A deployed follower is a separate
+/// process that learns only by RPC, and a follower that stays CAUGHT UP never falls behind the
+/// leader's retained range, so it is never sent a snapshot and nothing ever trims it. Its
+/// residency then grows with the corpus instead of with the state.
+#[test]
+fn a_deployed_followers_in_memory_log_is_bounded_as_the_corpus_grows() {
+    let dir = tempfile::tempdir().unwrap();
+    let follower = RaftCluster::new_single_shard_with_wal(
+        dir.path(),
+        1,
+        [1, 2, 3],
+        RaftConfig {
+            max_applied_log_bytes: 4096,
+            max_retained_log_bytes: 0,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
+    // This process owns node 2, and node 2 is a follower: the deployed shape.
+    follower.set_local_node_id(2);
+
+    let total = 400u64;
+    for index in 1..=total {
+        let entry = RaftLogEntry {
+            term: 1,
+            index,
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("mem-{index:04}"),
+                value: vec![(index % 251) as u8; 128],
+            },
+        };
+        let response = follower
+            .receive_append_entries(AppendEntriesRequest {
+                rpc: None,
+                shard_id: 1,
+                term: 1,
+                leader_id: 1,
+                target_id: 2,
+                prev_log_index: index - 1,
+                prev_log_term: if index == 1 { 0 } else { 1 },
+                entries: vec![entry],
+                // The leader commits as it goes, so everything here is applied.
+                leader_commit: index,
+            })
+            .unwrap();
+        assert!(response.success, "append {index} should be accepted");
+        // The periodic check the timer loop runs on every node, follower included.
+        if index % 50 == 0 {
+            let _ = follower.maybe_trigger_snapshot();
+        }
+    }
+
+    let held = follower.in_memory_log_entries(2);
+    assert!(
+        held < (total / 2) as usize,
+        "a caught-up deployed follower held {held} of {total} entries in memory -- its log is \
+         growing with the corpus, not with the state"
+    );
+}

@@ -1588,7 +1588,22 @@ pub(super) fn stamp_index_format_version(shard: &ShardState) -> serde_json::Valu
     value
 }
 
+/// Serialize a shard whose stamp is already current, straight to bytes.
+///
+/// The stamping path builds an entire intermediate `serde_json::Value` tree of the whole index
+/// before encoding it -- serializing a multi-megabyte structure twice, once into a tree of
+/// allocations and once into bytes, on every snapshot. A shard whose version field is already
+/// correct needs none of that; one whose field is stale still takes the stamping path, so the
+/// bytes are identical either way.
+pub(super) fn serialize_index_stamped(shard: &mut ShardState) -> Vec<u8> {
+    shard.index_format_version = SHARD_INDEX_FORMAT_VERSION;
+    serde_json::to_vec(shard).expect("shard index should serialize")
+}
+
 fn serialize_index(shard: &ShardState) -> Vec<u8> {
+    if shard.index_format_version == SHARD_INDEX_FORMAT_VERSION {
+        return serde_json::to_vec(shard).expect("shard index should serialize");
+    }
     serde_json::to_vec(&stamp_index_format_version(shard)).expect("shard index should serialize")
 }
 
