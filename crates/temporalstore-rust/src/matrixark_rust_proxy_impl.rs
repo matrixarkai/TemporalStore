@@ -5097,6 +5097,11 @@ mod tests {
             .expect("get targeted hash field"),
             r#"{"record_type":"context_event","text":"target published"}"#
         );
+        // Every acked write lands a WAL record even under async storage -- async only
+        // defers the fsync barrier, it does not skip the log -- so a clean reopen
+        // replays the log and restores writes the publish did not target. Targeted
+        // publish governs which keys get their index snapshot persisted (asserted
+        // above via the publish diagnostics), not which writes survive replay.
         assert_eq!(
             read_bytes(
                 &reopened,
@@ -5106,7 +5111,7 @@ mod tests {
                 },
             )
             .expect("get untargeted hash field"),
-            ""
+            r#"{"record_type":"context_event","text":"target not published"}"#
         );
 
         clear_engine_cache();

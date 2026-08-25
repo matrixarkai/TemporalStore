@@ -110,3 +110,11 @@ jobs:
         timeout-minutes: 45
         continue-on-error: true
         run: cargo test --release -p temporalstore-rust --lib --tests -- --test-threads=1
+
+      # Bin unit tests are not covered by --lib/--tests, so a failing test in a
+      # service binary can sit on main unnoticed. Run the proxy bin's suite as a
+      # hard gate. Deliberately NOT --bins: some bin test harnesses run servers
+      # that never exit, which would hang the job.
+      - name: cargo test (matrixark_rust_proxy bin, single-threaded, release)
+        timeout-minutes: 20
+        run: cargo test --release -p temporalstore-rust --bin matrixark_rust_proxy -- --test-threads=1
