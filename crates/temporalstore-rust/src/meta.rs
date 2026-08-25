@@ -14,6 +14,29 @@ use serde::{Deserialize, Serialize};
 
 use crate::control::{ShardStatInfo, ShardCanonicalStorageStats};
 use crate::types::{ShardId, Status};
+
+/// TS_META_ADMIN_TOKEN: shared secret for the metaserver's HTTP surface.
+///
+/// When the metaserver starts with this set, every route except the liveness
+/// probes (`/health`, `/readiness`, `/metrics` and its alias) requires
+/// `Authorization: Bearer <token>`; when unset, the surface stays open, which
+/// is the previous behavior. The same variable is what the metaserver's
+/// clients (proxy, datanode, SDK topology sync) read to attach the credential,
+/// so one value configures a whole deployment.
+pub fn admin_auth_token() -> Option<String> {
+    std::env::var("TS_META_ADMIN_TOKEN")
+        .ok()
+        .filter(|token| !token.is_empty())
+}
+
+/// The ready-to-append header line for metaserver-bound requests, from
+/// TS_META_ADMIN_TOKEN. Empty when unset, so callers can attach it
+/// unconditionally.
+pub fn admin_auth_header() -> String {
+    admin_auth_token()
+        .map(|token| format!("Authorization: Bearer {token}\r\n"))
+        .unwrap_or_default()
+}
 mod partitioning;
 mod lifecycle;
 mod snapshot_ops;

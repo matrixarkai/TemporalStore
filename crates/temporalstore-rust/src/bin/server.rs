@@ -19,8 +19,9 @@ use temporalstore_rust::data_node::{DataNodeLifecycleSnapshot, DataNodeTopologyV
 use temporalstore_rust::engine::reports::{StorageManagerCycleReport, StorageManagerCycleRequest};
 use temporalstore_rust::engine::TemporalEngine;
 use temporalstore_rust::http::{
-    get_bytes_with_headers, json_response, parse_json, post_json, serve_with_stream_handler,
-    HttpRequest, HttpRequestOptions, StreamAction, StreamTransfer,
+    get_bytes_with_headers, json_response, parse_json, post_json,
+    post_json_with_options_and_headers, serve_with_stream_handler, HttpRequest,
+    HttpRequestOptions, StreamAction, StreamTransfer,
 };
 use std::io::Read as _;
 use temporalstore_rust::ingestion::{FlinkCheckpointStatus, IngestionBatchRequest};
@@ -328,7 +329,13 @@ fn main() {
             location,
             binary_version: binary_version.clone(),
         };
-        match post_json::<_, AckResponse>(&meta_addr, "/servers/register", &server_registration) {
+        match post_json_with_options_and_headers::<_, AckResponse>(
+            &meta_addr,
+            "/servers/register",
+            &server_registration,
+            &temporalstore_rust::meta::admin_auth_header(),
+            HttpRequestOptions::default(),
+        ) {
             Ok(response) if response.status.ok => {
                 info!(server = %advertised_addr, meta = %meta_addr, "registered server with metaserver");
             }
@@ -349,8 +356,13 @@ fn main() {
                 shard_id,
                 server_addr: advertised_addr.clone(),
             };
-            match post_json::<_, RegisterShardResponse>(&meta_addr, "/register_shard", &registration)
-            {
+            match post_json_with_options_and_headers::<_, RegisterShardResponse>(
+                &meta_addr,
+                "/register_shard",
+                &registration,
+                &temporalstore_rust::meta::admin_auth_header(),
+                HttpRequestOptions::default(),
+            ) {
                 Ok(response) if response.status.ok => {
                     info!(shard_id, meta = %meta_addr, "registered shard with metaserver");
                 }
@@ -2413,7 +2425,7 @@ fn validate_node_topology_from_meta(
     let mut fetched_tables = Vec::new();
     let mut fetch_errors = Vec::new();
     for table_name in &table_names {
-        let topology = post_json::<_, TableTopologyResponse>(
+        let topology = post_json_with_options_and_headers::<_, TableTopologyResponse>(
             meta_addr,
             "/tables/topology",
             &GetTableTopologyRequest {
@@ -2422,6 +2434,8 @@ fn validate_node_topology_from_meta(
                 table_name: table_name.clone(),
                 old_topology_version: 0,
             },
+            &temporalstore_rust::meta::admin_auth_header(),
+            HttpRequestOptions::default(),
         );
         match topology {
             Ok(topology) if topology.status.ok => {
@@ -2487,7 +2501,13 @@ fn send_heartbeat(
         shard_states: runtime.shard_serving_states(),
     };
     let response =
-        post_json::<_, ServerHeartbeatResponse>(meta_addr, "/servers/heartbeat", &request)
+        post_json_with_options_and_headers::<_, ServerHeartbeatResponse>(
+            meta_addr,
+            "/servers/heartbeat",
+            &request,
+            &temporalstore_rust::meta::admin_auth_header(),
+            HttpRequestOptions::default(),
+        )
             .unwrap_or_else(|err| ServerHeartbeatResponse {
                 status: Status::error("heartbeat_failed", err.to_string()),
                 forbid_auto_register: false,

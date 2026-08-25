@@ -24,7 +24,7 @@ impl TemporalStoreClient {
             .meta_addr
             .as_ref()
             .ok_or_else(|| ClientError::Status("meta_addr is required".to_string()))?;
-        let topology: TableTopologyResponse = match post_json_with_options(
+        let topology: TableTopologyResponse = match post_json_with_options_and_headers(
             meta_addr,
             "/tables/topology",
             &GetTableTopologyRequest {
@@ -33,6 +33,7 @@ impl TemporalStoreClient {
                 table_name: table_name.clone(),
                 old_topology_version: self.last_synced_topology_version(&namespace, &table_name),
             },
+            &crate::meta::admin_auth_header(),
             self.inner.options.meta_sync_http_options(),
         ) {
             Ok(topology) => topology,
@@ -241,12 +242,13 @@ impl TemporalStoreClient {
 
     pub(super) fn current_meta_topology_version(&self) -> Option<u64> {
         let meta_addr = self.inner.options.meta_addr.as_ref()?;
-        let topology = post_json_with_options::<_, TopologyVersionReport>(
+        let topology = post_json_with_options_and_headers::<_, TopologyVersionReport>(
             meta_addr,
             "/meta/topology_version",
             &TopologyVersionRequest {
                 old_topology_version: 0,
             },
+            &crate::meta::admin_auth_header(),
             self.inner.options.meta_sync_http_options(),
         )
         .ok()?;
@@ -266,12 +268,13 @@ impl TemporalStoreClient {
             .meta_addr
             .as_ref()
             .ok_or_else(|| ClientError::Status("meta_addr is required".to_string()))?;
-        let topology: TopologyVersionReport = post_json_with_options(
+        let topology: TopologyVersionReport = post_json_with_options_and_headers(
             meta_addr,
             "/meta/topology_version",
             &TopologyVersionRequest {
                 old_topology_version,
             },
+            &crate::meta::admin_auth_header(),
             self.inner.options.meta_sync_http_options(),
         )?;
         if !topology.status.ok {
@@ -368,12 +371,13 @@ impl TemporalStoreClient {
             .meta_addr
             .as_ref()
             .ok_or_else(|| ClientError::Status("meta_addr is required".to_string()))?;
-        let topology: TopologyVersionReport = post_json_with_options(
+        let topology: TopologyVersionReport = post_json_with_options_and_headers(
             meta_addr,
             "/meta/topology_version",
             &TopologyVersionRequest {
                 old_topology_version,
             },
+            &crate::meta::admin_auth_header(),
             self.inner.options.meta_sync_http_options(),
         )?;
         if !topology.status.ok {
