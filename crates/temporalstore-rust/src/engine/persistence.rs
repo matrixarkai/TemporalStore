@@ -559,6 +559,8 @@ impl TemporalEngine {
             let set_records = state.sets.len();
             let list_records = state.lists.len();
             let _ = list_records;
+            let zset_records = state.zsets.len();
+            let _ = zset_records;
             let feature_records = state.features.len();
             let sequence_records = state.sequences.len();
             let control_state_records =

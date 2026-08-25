@@ -561,6 +561,82 @@ mod tests {
         assert_eq!(run(&mut state, vec!["LPOP", "l"]), RespValue::Bulk(Some(b"z".to_vec())));
     }
 
+    /// Sorted sets behave like the native ones: ZADD answers only NEW members, a re-score
+    /// moves ordering without growing the set, ranges walk (score, member) order with
+    /// negative indices and WITHSCORES, score windows honor -inf/+inf and the exclusive
+    /// paren, and TYPE says zset.
+    #[test]
+    fn sorted_set_commands_match_native() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut state = RedisCommandState::default();
+        let mut run = |state: &mut RedisCommandState, args: Vec<&str>| {
+            execute_redis_command_with_state(
+                args.into_iter().map(|arg| arg.as_bytes().to_vec()).collect(),
+                1,
+                state,
+                &mut |command| {
+                    let response = engine.execute(crate::ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    });
+                    if response.status.ok {
+                        Ok(response.response)
+                    } else {
+                        Err(response.status.message)
+                    }
+                },
+            )
+        };
+        let bulk = |text: &str| RespValue::Bulk(Some(text.as_bytes().to_vec()));
+
+        assert_eq!(run(&mut state, vec!["ZADD", "z", "2", "b", "1", "a"]), RespValue::Integer(2));
+        assert_eq!(run(&mut state, vec!["ZADD", "z", "3", "c", "5", "a"]), RespValue::Integer(1),
+            "re-scoring a is not an add");
+        assert_eq!(run(&mut state, vec!["ZCARD", "z"]), RespValue::Integer(3));
+        assert_eq!(run(&mut state, vec!["ZSCORE", "z", "a"]), bulk("5"));
+        assert_eq!(run(&mut state, vec!["ZSCORE", "z", "missing"]), RespValue::Bulk(None));
+        assert_eq!(run(&mut state, vec!["TYPE", "z"]), RespValue::SimpleString("zset".to_string()));
+
+        assert_eq!(
+            run(&mut state, vec!["ZRANGE", "z", "0", "-1"]),
+            RespValue::Array(vec![bulk("b"), bulk("c"), bulk("a")]),
+            "order follows the moved score"
+        );
+        assert_eq!(
+            run(&mut state, vec!["ZRANGE", "z", "0", "1", "WITHSCORES"]),
+            RespValue::Array(vec![bulk("b"), bulk("2"), bulk("c"), bulk("3")]),
+        );
+        assert_eq!(
+            run(&mut state, vec!["ZREVRANGE", "z", "0", "0"]),
+            RespValue::Array(vec![bulk("a")]),
+        );
+        assert_eq!(
+            run(&mut state, vec!["ZRANGEBYSCORE", "z", "-inf", "+inf"]),
+            RespValue::Array(vec![bulk("b"), bulk("c"), bulk("a")]),
+        );
+        assert_eq!(
+            run(&mut state, vec!["ZRANGEBYSCORE", "z", "(2", "5"]),
+            RespValue::Array(vec![bulk("c"), bulk("a")]),
+            "the paren excludes the bound"
+        );
+        assert_eq!(
+            run(&mut state, vec!["ZREVRANGEBYSCORE", "z", "+inf", "3", "WITHSCORES"]),
+            RespValue::Array(vec![bulk("a"), bulk("5"), bulk("c"), bulk("3")]),
+            "rev-by-score takes (max, min) and answers descending"
+        );
+
+        assert_eq!(run(&mut state, vec!["ZREM", "z", "b", "missing"]), RespValue::Integer(1));
+        assert_eq!(run(&mut state, vec!["ZCARD", "z"]), RespValue::Integer(2));
+
+        // Negative scores order below positives (the sign-flip bias at work).
+        assert_eq!(run(&mut state, vec!["ZADD", "z", "-1.5", "n"]), RespValue::Integer(1));
+        assert_eq!(
+            run(&mut state, vec!["ZRANGE", "z", "0", "0", "WITHSCORES"]),
+            RespValue::Array(vec![bulk("n"), bulk("-1.5")]),
+        );
+    }
+
     #[test]
     fn set_zero_expiry_match_native() {
         let engine = TemporalEngine::default();
@@ -998,6 +1074,14 @@ mod tests {
             "TTL" => vec!["TTL", "advertised:missing"],
             "TOUCH" => vec!["TOUCH", "advertised:missing"],
             "TYPE" => vec!["TYPE", "advertised:missing"],
+            "ZADD" => vec!["ZADD", "advertised:zset", "1", "m"],
+            "ZCARD" => vec!["ZCARD", "advertised:zset"],
+            "ZRANGE" => vec!["ZRANGE", "advertised:zset", "0", "-1"],
+            "ZRANGEBYSCORE" => vec!["ZRANGEBYSCORE", "advertised:zset", "-inf", "+inf"],
+            "ZREM" => vec!["ZREM", "advertised:zset", "m"],
+            "ZREVRANGE" => vec!["ZREVRANGE", "advertised:zset", "0", "-1"],
+            "ZREVRANGEBYSCORE" => vec!["ZREVRANGEBYSCORE", "advertised:zset", "+inf", "-inf"],
+            "ZSCORE" => vec!["ZSCORE", "advertised:zset", "m"],
             "UNLINK" => vec!["UNLINK", "advertised:missing"],
             other => panic!("missing sample command for {other}"),
         }

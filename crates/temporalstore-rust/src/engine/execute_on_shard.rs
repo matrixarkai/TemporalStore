@@ -491,6 +491,173 @@ pub(crate) fn execute_on_shard(
             let _ = cache.invalidate_record(shard_id, "set", &key);
             CommandResponse::Empty
         }
+        Command::ZSetAdd { key, member, score } => {
+            remove_if_expired(shard, &key);
+            let biased = zset_score_bits(score);
+            let existed = shard
+                .zsets
+                .get(&key)
+                .and_then(|members| members.get(&member))
+                .map(|(old_biased, _)| *old_biased);
+            if existed == Some(biased) {
+                // Same score: nothing to rewrite, and the answer is still "not new".
+                return ExecuteOutcome {
+                    response: CommandResponse::Integer { value: 0 },
+                    mutated,
+                };
+            }
+            if let Some(old_biased) = existed {
+                let old_component = zset_component(old_biased, &member);
+                mark_bucket_index_page_deleted(shard, "zset", &key, Some(&old_component));
+            }
+            let component = zset_component(biased, &member);
+            let object_id = stable_page_object_id(shard_id, "zset", &key, Some(&component));
+            let routing_bucket =
+                page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            if let Ok(address) = append_value(
+                cache,
+                page_store,
+                shard_id,
+                &member,
+                Some(object_id),
+                Some(routing_bucket),
+                async_storage,
+            ) {
+                upsert_bucket_index_page(
+                    shard,
+                    shard_id,
+                    "zset",
+                    &key,
+                    Some(component.clone()),
+                    address.clone(),
+                    true,
+                );
+                shard
+                    .zsets
+                    .entry(key.clone())
+                    .or_default()
+                    .insert(member.clone(), (biased, address));
+                mutated = true;
+            }
+            let _ = cache.invalidate_record(shard_id, "zset", &key);
+            CommandResponse::Integer {
+                value: i64::from(existed.is_none()),
+            }
+        }
+        Command::ZSetScore { key, member } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate_record(shard_id, "zset", &key);
+                return ExecuteOutcome {
+                    response: CommandResponse::Bytes { value: None },
+                    mutated,
+                };
+            }
+            CommandResponse::Bytes {
+                value: shard
+                    .zsets
+                    .get(&key)
+                    .and_then(|members| members.get(&member))
+                    .map(|(biased, _)| zset_score_string(*biased).into_bytes()),
+            }
+        }
+        Command::ZSetRemove { key, member } => {
+            let removed = shard
+                .zsets
+                .get_mut(&key)
+                .and_then(|members| members.remove(&member));
+            match removed {
+                None => CommandResponse::Integer { value: 0 },
+                Some((biased, _)) => {
+                    mutated = true;
+                    let component = zset_component(biased, &member);
+                    mark_bucket_index_page_deleted(shard, "zset", &key, Some(&component));
+                    if shard.zsets.get(&key).is_some_and(BTreeMap::is_empty) {
+                        shard.zsets.remove(&key);
+                    }
+                    let _ = cache.invalidate_record(shard_id, "zset", &key);
+                    CommandResponse::Integer { value: 1 }
+                }
+            }
+        }
+        Command::ZSetCard { key } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate_record(shard_id, "zset", &key);
+                return ExecuteOutcome {
+                    response: CommandResponse::Integer { value: 0 },
+                    mutated,
+                };
+            }
+            CommandResponse::Integer {
+                value: shard.zsets.get(&key).map_or(0, BTreeMap::len) as i64,
+            }
+        }
+        Command::ZSetRange {
+            key,
+            start,
+            stop,
+            rev,
+        } => {
+            remove_if_expired(shard, &key);
+            let mut ordered = zset_ordered_members(shard, &key);
+            if rev {
+                ordered.reverse();
+            }
+            let length = ordered.len() as i64;
+            let resolve = |index: i64| if index < 0 { length + index } else { index };
+            let from = resolve(start).max(0);
+            let to = resolve(stop).min(length - 1);
+            let members = if from > to || length == 0 {
+                Vec::new()
+            } else {
+                ordered[from as usize..=to as usize]
+                    .iter()
+                    .flat_map(|(member, biased)| {
+                        [member.clone(), zset_score_string(*biased).into_bytes()]
+                    })
+                    .collect()
+            };
+            CommandResponse::Members { members }
+        }
+        Command::ZSetRangeByScore {
+            key,
+            min,
+            max,
+            min_exclusive,
+            max_exclusive,
+            rev,
+        } => {
+            remove_if_expired(shard, &key);
+            let min_bits = zset_score_bits(min);
+            let max_bits = zset_score_bits(max);
+            let mut ordered: Vec<(Vec<u8>, u64)> = zset_ordered_members(shard, &key)
+                .into_iter()
+                .filter(|(_, biased)| {
+                    let above = if min_exclusive {
+                        *biased > min_bits
+                    } else {
+                        *biased >= min_bits
+                    };
+                    let below = if max_exclusive {
+                        *biased < max_bits
+                    } else {
+                        *biased <= max_bits
+                    };
+                    above && below
+                })
+                .collect();
+            if rev {
+                ordered.reverse();
+            }
+            let members = ordered
+                .into_iter()
+                .flat_map(|(member, biased)| {
+                    [member, zset_score_string(biased).into_bytes()]
+                })
+                .collect();
+            CommandResponse::Members { members }
+        }
         Command::ListPush { key, member, left } => {
             remove_if_expired(shard, &key);
             let seq = {
@@ -2923,4 +3090,52 @@ pub(crate) fn execute_on_shard(
         }
     };
     ExecuteOutcome { response, mutated }
+}
+
+/// IEEE-754 total-order bias: flip everything for negatives, set the sign for positives, so
+/// unsigned comparison of the bits is numeric comparison of the floats.
+pub(super) fn zset_score_bits(score: f64) -> u64 {
+    let bits = score.to_bits();
+    if bits & (1 << 63) != 0 {
+        !bits
+    } else {
+        bits | (1 << 63)
+    }
+}
+
+pub(super) fn zset_score_from_bits(biased: u64) -> f64 {
+    if biased & (1 << 63) != 0 {
+        f64::from_bits(biased & !(1 << 63))
+    } else {
+        f64::from_bits(!biased)
+    }
+}
+
+pub(super) fn zset_score_string(biased: u64) -> String {
+    let score = zset_score_from_bits(biased);
+    if score == score.trunc() && score.abs() < 1e17 {
+        format!("{}", score as i64)
+    } else {
+        format!("{score}")
+    }
+}
+
+/// The persisted component: score bits then member, so lexical order is (score, member) order.
+pub(super) fn zset_component(biased: u64, member: &[u8]) -> String {
+    format!("{biased:016x}{}", hex::encode(member))
+}
+
+fn zset_ordered_members(shard: &ShardState, key: &str) -> Vec<(Vec<u8>, u64)> {
+    let mut ordered: Vec<(Vec<u8>, u64)> = shard
+        .zsets
+        .get(key)
+        .map(|members| {
+            members
+                .iter()
+                .map(|(member, (biased, _))| (member.clone(), *biased))
+                .collect()
+        })
+        .unwrap_or_default();
+    ordered.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    ordered
 }

@@ -1204,6 +1204,45 @@ pub enum Command {
         #[serde(with = "crate::bytes_serde")]
         member: Vec<u8>,
     },
+    /// Upsert one member with a score. Answers 1 for a new member, 0 for a re-score.
+    ZSetAdd {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+        score: f64,
+    },
+    /// The member's score as its shortest string form, or nil when absent.
+    ZSetScore {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+    },
+    ZSetRemove {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+    },
+    ZSetCard {
+        key: String,
+    },
+    /// Index range in (score, member) order, Redis semantics (negatives from the tail).
+    /// Answers interleaved member/score-string pairs.
+    ZSetRange {
+        key: String,
+        start: i64,
+        stop: i64,
+        rev: bool,
+    },
+    /// Score-window range; exclusive flags implement the leading-paren syntax. Answers
+    /// interleaved member/score-string pairs.
+    ZSetRangeByScore {
+        key: String,
+        min: f64,
+        max: f64,
+        min_exclusive: bool,
+        max_exclusive: bool,
+        rev: bool,
+    },
     /// Push one element onto a list end (left = head). Answers the new length.
     ListPush {
         key: String,

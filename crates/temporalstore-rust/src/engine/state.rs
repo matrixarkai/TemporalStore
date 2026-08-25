@@ -56,6 +56,12 @@ pub(super) struct ShardState {
     pub(super) hashes: HashMap<String, HashMap<String, BlockAddress>>,
     #[serde(default, with = "super::set_index_serde")]
     pub(super) sets: HashMap<String, BTreeMap<Vec<u8>, BlockAddress>>,
+    /// Sorted sets: member -> (total-order score bits, element page). The score-ordered view
+    /// is derived per query -- V1 accepts the per-range sort; the upgrade path is a second
+    /// in-memory map rebuilt at load, never a second persisted structure (the index component
+    /// already encodes score-then-member, so recovery has the order for free).
+    #[serde(default, with = "super::zset_index_serde")]
+    pub(super) zsets: HashMap<String, BTreeMap<Vec<u8>, (u64, BlockAddress)>>,
     /// Redis-style lists: element pages keyed by a signed sequence -- left pushes walk the
     /// low end down, right pushes walk the high end up, so both ends are O(log n) and the
     /// BTree's order IS the list's order.
