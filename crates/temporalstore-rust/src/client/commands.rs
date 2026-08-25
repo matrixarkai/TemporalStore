@@ -62,6 +62,8 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::ZSetIncrBy { key, .. }
         | Command::ZSetPop { key, .. }
         | Command::ZSetRank { key, .. }
+        | Command::BucketTake { key, .. }
+        | Command::BucketPeek { key, .. }
         | Command::FeatureAppend { key, .. }
         | Command::FeatureAppendWithPolicy { key, .. }
         | Command::FeatureQuery { key, .. }

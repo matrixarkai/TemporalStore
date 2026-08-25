@@ -1414,6 +1414,50 @@ pub fn execute_redis_command_with_state(
                 Err(err) => RespValue::Error(format!("ERR {err}")),
             }
         }
+        "BUCKETTAKE" | "BUCKETPEEK" if args.len() == 5 => {
+            let parse = |raw: &[u8], name: &str| -> Result<f64, String> {
+                String::from_utf8_lossy(raw)
+                    .parse::<f64>()
+                    .map_err(|_| format!("ERR {name} is not a float"))
+            };
+            match (
+                parse(&args[2], "tokens"),
+                parse(&args[3], "capacity"),
+                parse(&args[4], "refill_per_sec"),
+            ) {
+                (Ok(tokens), Ok(capacity), Ok(refill_per_sec)) => {
+                    let key = string_arg(&args[1]);
+                    let command_value = if command == "BUCKETTAKE" {
+                        Command::BucketTake {
+                            key,
+                            tokens,
+                            capacity,
+                            refill_per_sec,
+                        }
+                    } else {
+                        Command::BucketPeek {
+                            key,
+                            tokens,
+                            capacity,
+                            refill_per_sec,
+                        }
+                    };
+                    match execute(command_value) {
+                        Ok(CommandResponse::Members { members }) => RespValue::Array(
+                            members
+                                .into_iter()
+                                .map(|value| RespValue::Bulk(Some(value)))
+                                .collect(),
+                        ),
+                        Ok(_) => RespValue::Error("ERR invalid bucket response".to_string()),
+                        Err(err) => RespValue::Error(format!("ERR {err}")),
+                    }
+                }
+                (Err(err), _, _) | (_, Err(err), _) | (_, _, Err(err)) => {
+                    RespValue::Error(err)
+                }
+            }
+        }
         "CONTROLSTATEINCR" if args.len() == 4 => {
             let timestamp_ms = match parse_u64(&args[2], "timestamp_ms") {
                 Ok(value) => value,
