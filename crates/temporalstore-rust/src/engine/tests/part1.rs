@@ -3050,3 +3050,18 @@ fn an_extracted_event_is_visible_to_time_ranged_queries() {
         "a successfully written extracted event must be visible to a time-ranged query"
     );
 }
+
+#[test]
+fn scratch_engine_index_dir_dies_with_the_last_engine_clone() {
+    let engine = TemporalEngine::default();
+    let index_dir = engine.index_dir.clone();
+    assert!(index_dir.exists(), "a scratch engine must create its index dir");
+    let clone = engine.clone();
+    drop(engine);
+    assert!(index_dir.exists(), "a live engine clone must keep the scratch dir");
+    drop(clone);
+    assert!(
+        !index_dir.exists(),
+        "the last engine clone must remove the scratch index dir on drop"
+    );
+}

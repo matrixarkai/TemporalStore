@@ -264,6 +264,9 @@ struct IndexLogInner {
     /// on process restart, so the first post-restart cycle may dump once -- harmless (a dump only
     /// materializes durable state that is already recoverable).
     last_dumped_len_by_shard: HashMap<ShardId, u64>,
+    // Set only by Default: the store owns its minted scratch directory, and the last
+    // clone's drop removes it. Never set for a caller-supplied root.
+    scratch: Option<std::sync::Arc<crate::scratch::ScratchDirGuard>>,
 }
 
 fn indexlog_enabled() -> bool {
@@ -392,6 +395,7 @@ impl LocalIndexLogStore {
                 stats: IndexLogStats::default(),
                 last_sequence_by_shard: HashMap::new(),
                 last_dumped_len_by_shard: HashMap::new(),
+                scratch: None,
             })),
             flush_gates: Arc::new(crate::flush_gate::FlushRegistry::default()),
         }
@@ -800,7 +804,14 @@ impl LocalIndexLogStore {
 
 impl Default for LocalIndexLogStore {
     fn default() -> Self {
-        Self::new(unique_temp_path("index-logs"))
+        let scratch = crate::scratch::owned_scratch_dir("index-logs");
+        let store = Self::new(scratch.path());
+        store
+            .inner
+            .lock()
+            .expect("index log lock poisoned")
+            .scratch = Some(scratch);
+        store
     }
 }
 
@@ -865,22 +876,21 @@ fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn unique_temp_path(kind: &str) -> PathBuf {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    std::env::temp_dir().join(format!(
-        "temporalstore-rust-{kind}-{}-{nanos}-{counter}",
-        std::process::id()
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_store_scratch_dir_dies_with_the_last_clone() {
+        let store = LocalIndexLogStore::default();
+        let root = store.inner.lock().unwrap().root.clone();
+        assert!(root.exists(), "Default must create its scratch dir");
+        let clone = store.clone();
+        drop(store);
+        assert!(root.exists(), "a live clone must keep the scratch dir");
+        drop(clone);
+        assert!(!root.exists(), "the last clone's drop must remove the scratch dir");
+    }
 
     #[test]
     fn gc_before_sequence_rewrites_index_log_with_retained_tail() {

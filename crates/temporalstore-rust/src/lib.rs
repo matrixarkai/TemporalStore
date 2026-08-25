@@ -27,6 +27,7 @@ pub mod raft;
 pub mod readiness;
 pub mod rebalance;
 pub mod redis;
+mod scratch;
 pub mod sdk;
 pub mod shared_store;
 pub mod storage_backend;

@@ -24,7 +24,7 @@ mod record;
 use paths::{
     delayed_destroy_dir, delayed_destroy_path, band_manifest_path, file_created_unix_ms,
     file_modified_unix_ms, legacy_zone_manifest_path, now_unix_ms, slab_path, sync_dir,
-    sync_parent_dir, system_time_unix_ms, unique_temp_path,
+    sync_parent_dir, system_time_unix_ms,
 };
 use record::{
     decode_page_record, default_page_record_compression_enabled,
@@ -636,6 +636,9 @@ struct BlockStoreInner {
     // attach_shared_slab_source() after a metadata-only restore. When present, a
     // read that misses a slab locally fetches it from here, caches it, then serves.
     shared_slab_source: Option<Arc<dyn SharedSlabSource>>,
+    // Set only by Default: the store owns its minted scratch directory, and the last
+    // clone's drop removes it. Never set for a caller-supplied root.
+    scratch: Option<Arc<crate::scratch::ScratchDirGuard>>,
 }
 
 /// Slab installs allowed to go by before the band manifest is written out.
@@ -726,6 +729,7 @@ impl LocalBlockStore {
                 band_manifest_reconciled_on_open,
                 stats: BlockStoreStats::default(),
                 shared_slab_source: None,
+                scratch: None,
             })),
         }
     }
@@ -1312,13 +1316,40 @@ fn band_zone_usage(
 
 impl Default for LocalBlockStore {
     fn default() -> Self {
-        Self::new(unique_temp_path("pages"))
+        let scratch = crate::scratch::owned_scratch_dir("pages");
+        let store = Self::new(scratch.path());
+        store
+            .inner
+            .lock()
+            .expect("block store lock poisoned")
+            .scratch = Some(scratch);
+        store
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_store_scratch_dir_dies_with_the_last_clone() {
+        let store = LocalBlockStore::default();
+        let root = store.inner.lock().unwrap().root.clone();
+        assert!(root.exists(), "Default must create its scratch dir");
+        let clone = store.clone();
+        drop(store);
+        assert!(root.exists(), "a live clone must keep the scratch dir");
+        drop(clone);
+        assert!(!root.exists(), "the last clone's drop must remove the scratch dir");
+    }
+
+    #[test]
+    fn explicit_root_survives_the_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        drop(store);
+        assert!(dir.path().exists(), "a caller-supplied root must never be deleted");
+    }
 
     #[test]
     fn active_slab_torn_tail_is_fenced_on_reopen() {
