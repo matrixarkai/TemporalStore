@@ -3,7 +3,7 @@
 # Copyright 2026 MatrixArkAI
 """Run an ExternalBaseline direct-retrieval LoCoMo diagnostic baseline.
 
-This intentionally bypasses the VikingBot tool loop and memory-extraction
+This intentionally bypasses the external agent tool loop and memory-extraction
 pipeline. It reads ExternalBaseline's committed session archive, ranks archived
 messages for each LoCoMo question, calls the same OpenAI-compatible OSS reader
 used by MatrixArk benchmarks, and writes a fail-closed JSON report.
@@ -41,7 +41,7 @@ def main() -> int:
     parser.add_argument(
         "--archive",
         default=(
-            "/tmp/external_baseline_matrixark_oss/qwen_memory_data/viking/default/user/conv-26/"
+            "/tmp/external_baseline_matrixark_oss/qwen_memory_data/EXTERNAL_BASELINE_WORKSPACE_SUBDIR/default/user/conv-26/"
             "sessions/20260726-011613-9112f803c45e4f13/history/archive_001/messages.jsonl"
         ),
     )
