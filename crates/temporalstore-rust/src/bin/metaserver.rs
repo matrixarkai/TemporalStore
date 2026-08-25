@@ -132,7 +132,10 @@ fn main() {
                 ))
             }
             MetaBackend::Raft(_) => {
-                warn!("TS_META_AUTO_REBALANCE ignored: raft backend manages placement itself");
+                warn!(
+                    "TS_META_AUTO_REBALANCE ignored: shard rebalancing is not available on the \
+                     raft backend, and nothing else performs it there"
+                );
                 None
             }
         }
@@ -177,7 +180,10 @@ fn main() {
                 Some(start_shard_divergence_loop(meta.clone(), options, interval_ms))
             }
             MetaBackend::Raft(_) => {
-                warn!("TS_META_SHARD_DIVERGENCE_CHECK ignored: raft backend manages placement itself");
+                warn!(
+                    "TS_META_SHARD_DIVERGENCE_CHECK ignored: divergence checking is not available \
+                     on the raft backend, and nothing else performs it there"
+                );
                 None
             }
         }
@@ -217,7 +223,10 @@ fn main() {
                 Some(meta.start_freeze_aging_loop(options, interval_ms))
             }
             MetaBackend::Raft(_) => {
-                warn!("TS_META_FREEZE_AGING ignored: raft backend owns its own meta state");
+                warn!(
+                    "TS_META_FREEZE_AGING ignored: the raft backend owns its own meta state and \
+                     does not age frozen resources, so they stay frozen until an operator acts"
+                );
                 None
             }
         }
@@ -253,7 +262,10 @@ fn main() {
                 Some(meta.start_meta_retention_loop(options, interval_ms))
             }
             MetaBackend::Raft(_) => {
-                warn!("TS_META_RETENTION_GC ignored: raft backend owns its own meta state");
+                warn!(
+                    "TS_META_RETENTION_GC ignored: the raft backend owns its own meta state and \
+                     does not collect tombstones, so dropped resources accumulate"
+                );
                 None
             }
         }
@@ -284,7 +296,10 @@ fn main() {
                 Some(meta.start_proxy_calibration_loop(options, interval_ms))
             }
             MetaBackend::Raft(_) => {
-                warn!("TS_META_PROXY_CALIBRATION ignored: raft backend owns its own meta state");
+                warn!(
+                    "TS_META_PROXY_CALIBRATION ignored: the raft backend owns its own meta state \
+                     and does not calibrate proxy groups, so they keep whatever size they have"
+                );
                 None
             }
         }
@@ -310,7 +325,9 @@ fn main() {
                 Some(start_raft_failover_loop(meta.clone(), interval_ms))
             }
             MetaBackend::Raft(_) => {
-                warn!("TS_RAFT_AUTO_FAILOVER ignored: raft backend fails over itself");
+                warn!(
+                    "TS_RAFT_AUTO_FAILOVER ignored: this setting drives failover for datanode                      raft shard groups, which the raft backend does not do -- a frozen datanode                      leaves its groups without a trigger and writes to them stall"
+                );
                 None
             }
         }
@@ -2407,6 +2424,43 @@ mod tests {
             .contains("temporalstore_meta_resource_state{resource=\"proxy\",state=\"frozen\"} 1"));
         assert!(metrics.contains("temporalstore_meta_scheduler_queue_depth 1"));
         assert!(metrics.contains("temporalstore_meta_topology_version"));
+    }
+
+    #[test]
+    fn the_raft_backend_reports_no_background_subsystem_activity() {
+        // The startup warnings tell an operator that rebalancing, divergence
+        // checking, freeze aging, retention and proxy calibration do not happen
+        // on this backend. Two of them used to claim raft "manages placement
+        // itself"; nothing in the raft module plans a rebalance or checks
+        // divergence, and both loops are started only from Single arms.
+        //
+        // This pins the fact those messages now assert, so a future change that
+        // gives raft one of these capabilities has to update the text as well.
+        let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+            snapshot_check_interval_ms: 0,
+            engine: ProductionRaftEngineKind::TemporalRaft,
+            local_node_id: 1,
+            nodes: vec![ProductionRaftNode {
+                node_id: 1,
+                addr: "127.0.0.1:18211".to_string(),
+            }],
+            config: RaftConfig::default(),
+            heartbeat_interval_ms: 100,
+            election_tick_ms: 50,
+            failure_detector_interval_ms: 1_000,
+            stale_server_after_ms: 30_000,
+        })
+        .unwrap();
+        let backend = MetaBackend::Raft(runtime);
+        assert!(
+            backend.subsystem_prometheus().is_empty(),
+            "the raft backend reported subsystem activity it does not perform"
+        );
+
+        // The single-node backend does drive them, so an empty report there
+        // would mean the check above proves nothing.
+        let single = MetaBackend::Single(SingleNodeMeta::default());
+        let _ = single.subsystem_prometheus();
     }
 
     #[test]
