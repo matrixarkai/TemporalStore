@@ -44,6 +44,37 @@ impl MetaBackend {
         }
     }
 
+    /// This metaserver's answer to a readiness probe, and the HTTP status that goes
+    /// with it.
+    ///
+    /// `/readiness` used to return `production_readiness_report()` with a hardcoded 200.
+    /// That report takes no arguments and reads no live state -- it describes what the
+    /// codebase supports, not what this process can do, and its own test asserts that it
+    /// is never `production_ready`. So the probe answered 200 from the first instant of
+    /// startup and could not answer anything else, which defeats the one thing a
+    /// readiness probe is for: a metaserver that cannot serve still had traffic sent to
+    /// it.
+    ///
+    /// The signal was already here. A raft-backed metaserver that has lost quorum cannot
+    /// serve metadata, and `validate_ready` already says so -- it was just never wired to
+    /// the probe. A single-node backend has no quorum to lose, so it is ready once it is
+    /// up.
+    ///
+    /// Deliberately NOT used here: `MetaPreflightReport.degraded_reasons`. Those describe
+    /// the CLUSTER (frozen servers, frozen proxies), so one frozen datanode would fail
+    /// this probe on every metaserver at once and pull the whole control plane out of
+    /// service exactly when it is needed.
+    fn readiness(&self) -> (u16, MetaReadinessResponse) {
+        let (backend, ready) = match self {
+            Self::Single(_) => ("single", Ok(())),
+            Self::Raft(runtime) => (
+                "raft",
+                runtime.validate_ready().map_err(|err| err.to_string()),
+            ),
+        };
+        meta_readiness_response(backend, ready)
+    }
+
     fn raft_ready(&self) -> Status {
         match self {
             Self::Single(_) => Status::error("raft_disabled", "meta raft is disabled"),
@@ -262,5 +293,48 @@ impl MetaBackend {
                 },
             },
         }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+struct MetaReadinessResponse {
+    status: Status,
+    /// Whether this metaserver can serve metadata right now.
+    ready: bool,
+    /// Which backend answered: "single" or "raft".
+    backend: String,
+    /// Why it is not ready, empty when it is. Reported rather than left to be
+    /// inferred from a bare 503.
+    reason: String,
+}
+
+/// Map a backend's own verdict to a readiness answer.
+///
+/// Split out from `MetaBackend::readiness` so both outcomes are testable without
+/// standing up a raft cluster: the interesting half is that a not-ready metaserver
+/// answers 503 rather than 200.
+fn meta_readiness_response(
+    backend: &str,
+    ready: Result<(), String>,
+) -> (u16, MetaReadinessResponse) {
+    match ready {
+        Ok(()) => (
+            200,
+            MetaReadinessResponse {
+                status: Status::ok(),
+                ready: true,
+                backend: backend.to_string(),
+                reason: String::new(),
+            },
+        ),
+        Err(reason) => (
+            503,
+            MetaReadinessResponse {
+                status: Status::error("meta_not_ready", reason.clone()),
+                ready: false,
+                backend: backend.to_string(),
+                reason,
+            },
+        ),
     }
 }
