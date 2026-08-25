@@ -280,6 +280,21 @@ fn main() {
 
     let location = std::env::var("TS_SERVER_LOCATION").unwrap_or_default();
     let binary_version = env!("CARGO_PKG_VERSION").to_string();
+    // Milliseconds since the epoch when this process started, reported on every
+    // heartbeat so the metaserver can see an in-place restart.
+    //
+    // This used to send a literal 0. The metaserver anchors on the first value a server
+    // reports and then treats a DIFFERENT, non-zero one as a restart -- so a constant 0
+    // anchored at 0 and matched forever, and no datanode restart was ever detected. It
+    // failed quietly: a restarted datanode has dropped every shard the metaserver still
+    // believes it serves, so routing keeps going there and returns misses that read like
+    // lost data rather than a restart. Everything downstream of the verdict -- reboot
+    // conviction in the failure detector, the reboot grace in the shard check -- never ran
+    // either, while their tests passed because they set the flag on a fixture by hand.
+    let boot_time_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since_epoch| since_epoch.as_millis() as u64)
+        .unwrap_or_default();
     let heartbeat_interval_ms = std::env::var("TS_SERVER_HEARTBEAT_INTERVAL_MS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -386,6 +401,7 @@ fn main() {
             advertised_addr.clone(),
             binary_version.clone(),
             heartbeat_interval_ms,
+            boot_time_ms,
         );
     }
     // Streamed large-file / attachment tier: POST /blob/<key> writes the request
@@ -670,6 +686,7 @@ fn main() {
                     &meta_addr,
                     &advertised_addr,
                     &binary_version,
+                    boot_time_ms,
                 ),
             ),
             ("GET", path) if path.starts_with("/jobs/") => {
@@ -2469,6 +2486,7 @@ fn send_heartbeat(
     meta_addr: &str,
     server_addr: &str,
     binary_version: &str,
+    boot_time_ms: u64,
 ) -> ServerHeartbeatResponse {
     let stats = engine.loaded_shard_stats();
     let shard_loads = stats
@@ -2493,7 +2511,7 @@ fn send_heartbeat(
         .collect();
     let request = ServerHeartbeatRequest {
         server_addr: server_addr.to_string(),
-        boot_time_ms: 0,
+        boot_time_ms,
         binary_version: binary_version.to_string(),
         shard_loads,
         shard_stat_loads,
@@ -2705,6 +2723,81 @@ mod tests {
         for key in keys {
             std::env::remove_var(key);
         }
+    }
+
+    #[test]
+    fn the_datanode_heartbeat_reports_when_this_process_started() {
+        // The metaserver spots an in-place restart by watching this value change: it
+        // anchors on the first one a server reports, then treats a different, non-zero one
+        // as a restart. A constant can therefore never be a restart -- and this heartbeat
+        // sent a literal 0, so the anchor was 0, it matched every time, and no datanode
+        // restart was ever detected. Nothing failed; the detector simply never fired, and
+        // everything downstream of its verdict (reboot conviction in the failure detector,
+        // the reboot grace in the shard check) never ran either, while their own tests
+        // passed because they set the flag on a fixture by hand instead of driving a
+        // heartbeat. No test called this function at all.
+        let engine = TemporalEngine::default();
+        let runtime = DataNodeRuntime::new(
+            engine.clone(),
+            DataNodeRuntimeOptions {
+                worker_threads: 1,
+                max_queue_depth: 8,
+                max_background_queue_depth: 8,
+            },
+        );
+
+        let seen: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+        let meta_addr = free_local_addr();
+        let bind_addr = meta_addr.clone();
+        let seen_for_server = Arc::clone(&seen);
+        thread::spawn(move || {
+            serve(&bind_addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    // wait_for_http below probes /health, so the stub must answer it or
+                    // the test times out on its own scaffolding rather than on anything
+                    // it set out to check.
+                    ("GET", "/health") => json_response(200, &Status::ok()),
+                    ("POST", "/servers/heartbeat") => {
+                        let beat = parse_json::<ServerHeartbeatRequest>(&request.body).unwrap();
+                        seen_for_server.lock().unwrap().push(beat.boot_time_ms);
+                        json_response(
+                            200,
+                            &ServerHeartbeatResponse {
+                                status: Status::ok(),
+                                forbid_auto_register: false,
+                                topology_version: 0,
+                                server_state: String::new(),
+                            },
+                        )
+                    }
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+        wait_for_http(&meta_addr);
+
+        let boot_time_ms = 1_723_456_789_000u64;
+        let _ = send_heartbeat(
+            &engine,
+            &runtime,
+            &meta_addr,
+            "127.0.0.1:19",
+            "test",
+            boot_time_ms,
+        );
+
+        let reported = seen.lock().unwrap().clone();
+        assert_eq!(
+            reported,
+            vec![boot_time_ms],
+            "the heartbeat must carry the process start time it was given"
+        );
+        assert_ne!(
+            reported[0], 0,
+            "a zero start time reads as 'this build does not report it', which is what \
+             disabled restart detection for every datanode"
+        );
     }
 
     #[test]
