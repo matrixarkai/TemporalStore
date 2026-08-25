@@ -677,6 +677,7 @@ impl TemporalEngine {
                                     request.shard_id,
                                     &record.staged_pages,
                                     log_id,
+                                    record.sequence,
                                     &self.wal_store,
                                 );
                             }
