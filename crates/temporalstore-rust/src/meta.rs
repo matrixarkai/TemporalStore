@@ -2545,6 +2545,89 @@ mod tests {
         );
     }
 
+    fn one_rack_cluster(meta: &SingleNodeMeta, servers: &[&str], replica_count: u64) -> Vec<String> {
+        for (index, addr) in servers.iter().enumerate() {
+            assert!(meta
+                .register_server(RegisterServerRequest {
+                    numa_nodes: Vec::new(),
+                    server_addr: addr.to_string(),
+                    node_id: index as u64 + 1,
+                    // One rack: the ladder can separate nothing, so every
+                    // replica after the first comes from the fallback fill.
+                    location: "us-east/dc1/az1/rack1".to_string(),
+                    binary_version: "v1".to_string(),
+                })
+                .status
+                .ok);
+        }
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok);
+        assert!(meta
+            .add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "t".to_string(),
+                first_shard_id: 700,
+                shard_count: 1,
+                replica_count,
+                partition_version: 0,
+                serving_options: TableServingOptions::default(),
+            })
+            .status
+            .ok);
+        meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "t".to_string(),
+            old_topology_version: 0,
+            client_location: String::new(),
+        })
+        .shards
+        .into_iter()
+        .next()
+        .expect("one shard")
+        .replicas
+    }
+
+    #[test]
+    fn a_shard_does_not_stack_its_replicas_on_one_host() {
+        // Four datanodes, two per physical host, all in one rack -- an ordinary
+        // small deployment. Both replicas landed on host-a while host-b sat
+        // idle: the shard reported two replicas and lost both to one host.
+        let meta = SingleNodeMeta::default();
+        let replicas = one_rack_cluster(
+            &meta,
+            &["host-a:1001", "host-a:1002", "host-b:1001", "host-b:1002"],
+            2,
+        );
+        let hosts: BTreeSet<String> = replicas
+            .iter()
+            .map(|addr| super::topology_helpers::server_host(addr))
+            .collect();
+        assert_eq!(replicas.len(), 2, "{replicas:?}");
+        assert_eq!(
+            hosts.len(),
+            2,
+            "both replicas share a host while another was free: {replicas:?}"
+        );
+    }
+
+    #[test]
+    fn a_host_is_reused_only_when_there_is_no_other() {
+        // The point is to spread, not to refuse. With one host there is nothing
+        // to spread across, and the shard must still reach its replica count
+        // rather than come back short.
+        let meta = SingleNodeMeta::default();
+        let replicas = one_rack_cluster(&meta, &["host-a:1001", "host-a:1002"], 2);
+        assert_eq!(
+            replicas.len(),
+            2,
+            "spreading turned a fill into a shortfall: {replicas:?}"
+        );
+    }
+
     #[test]
     fn replicas_spread_across_availability_units_not_just_racks() {
         // Four servers, two availability units, two racks each. Comparing whole
