@@ -35,7 +35,7 @@ use temporalstore_rust::rebalance::{
     TaskSchedulerSnapshot,
 };
 use temporalstore_rust::{
-    production_readiness_report, types::Status, DataNodeLifecycleReport,
+    types::Status, DataNodeLifecycleReport,
     DataNodeShardLifecycleState, LoadShardRequest, LoadShardResponse, SchedulerLifecycleToken,
     UnloadShardRequest, UnloadShardResponse,
 };
@@ -1460,7 +1460,8 @@ fn handle(
             metaserver_prometheus_metrics(meta, scheduler).into_bytes(),
         ),
         ("GET", "/readiness") => {
-            json_response(200, &production_readiness_report())
+            let (code, body) = meta.readiness();
+            json_response(code, &body)
         }
         ("GET", "/meta/info") => json_response(200, &backend_call!(meta, info)),
         ("GET", "/meta/stats") => json_response(200, &backend_call!(meta, stats)),
@@ -2330,6 +2331,53 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_metaserver_that_cannot_serve_fails_its_readiness_probe() {
+        // The probe answered 200 unconditionally, because it returned
+        // production_readiness_report() -- a static description of what the codebase
+        // supports, which takes no arguments and reads no live state. A metaserver that
+        // had lost quorum, or had only just started, said "ready" exactly as loudly as
+        // one serving normally, so a load balancer kept sending it traffic it could not
+        // answer. The verdict it needed already existed in validate_ready; nothing was
+        // asking for it.
+        let (code, body) = meta_readiness_response("raft", Err("no majority: 1/2".to_string()));
+        assert_eq!(
+            code, 503,
+            "a metaserver that cannot serve must fail the probe, not report 200"
+        );
+        assert!(!body.ready);
+        assert_eq!(body.backend, "raft");
+        assert!(
+            body.reason.contains("no majority"),
+            "the reason must be reported rather than left to be inferred from a bare 503: {:?}",
+            body.reason
+        );
+        assert!(!body.status.ok);
+        assert_eq!(body.status.code, "meta_not_ready");
+    }
+
+    #[test]
+    fn a_serving_metaserver_passes_its_readiness_probe() {
+        // The other half: this must not become a probe that always fails.
+        let (code, body) = meta_readiness_response("single", Ok(()));
+        assert_eq!(code, 200);
+        assert!(body.ready);
+        assert_eq!(body.backend, "single");
+        assert!(body.reason.is_empty());
+        assert!(body.status.ok);
+    }
+
+    #[test]
+    fn a_single_node_metaserver_is_ready_and_a_raft_one_answers_for_itself() {
+        // Wiring, not just the mapping: a single-node backend has no quorum to lose, so
+        // it is ready once it is up.
+        let backend = MetaBackend::Single(SingleNodeMeta::default());
+        let (code, body) = backend.readiness();
+        assert_eq!(code, 200);
+        assert!(body.ready);
+        assert_eq!(body.backend, "single");
+    }
     use tempfile::tempdir;
     use temporalstore_rust::data_node::DataNodeLifecycleSnapshot;
     use temporalstore_rust::http::HttpRequest;
