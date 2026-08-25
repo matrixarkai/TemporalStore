@@ -3140,25 +3140,36 @@ fn a_failed_send_releases_its_reservation() {
             .unwrap();
     }
 
-    // Reserve right up to the limit, the way repeated un-answered sends do.
+    // Reserve right up to the limit, the way repeated un-answered sends do. A charged window
+    // no longer refuses -- it degrades to single-entry probes -- but the reservations still
+    // accumulate and still bind the batch size.
     let limit = RaftConfig::default().max_inflights_replicate.max(1);
-    let mut refused = false;
+    let mut probed = false;
     for _ in 0..(limit * 4) {
-        if cluster.build_append_entries_request(3).is_err() {
-            refused = true;
+        let request = cluster
+            .build_append_entries_request(3)
+            .expect("a charged window degrades to a probe, never a refusal");
+        if request.entries.len() == 1 {
+            probed = true;
             break;
         }
     }
     assert!(
-        refused,
-        "un-answered builds should accumulate into backpressure -- that guard is deliberate"
+        probed,
+        "un-answered builds should accumulate until the window degrades to probes -- the bound is deliberate"
     );
 
-    // Reporting the send failure releases it, and the very next build succeeds.
+    // Reporting the send failure releases the reservations, and the next build is a full
+    // batch again -- bigger than any probe.
     cluster.record_append_entries_send_failure(3).unwrap();
-    cluster
+    let released = cluster
         .build_append_entries_request(3)
         .expect("a released reservation should let the next request through");
+    assert!(
+        released.entries.len() > 1,
+        "the released window must reopen past probe size (got {})",
+        released.entries.len()
+    );
 }
 
 /// A rejected AppendEntries must make the next attempt ask about an EARLIER entry.

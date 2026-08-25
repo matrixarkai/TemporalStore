@@ -1501,3 +1501,50 @@ fn idle_leader_lease_renews_on_quorum_contact() {
         )
         .expect("a renewed lease must admit the post-idle propose");
 }
+
+/// A follower whose lag exceeds the in-flight window must still be probed forward. The old
+/// refusal cut it off for good: no append, no acknowledgement, no drain -- and compaction then
+/// held the log for a follower that could never catch up, while writes froze once a second
+/// follower reached the same state.
+#[test]
+fn lagging_follower_beyond_the_window_still_catches_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = RaftConfig {
+        max_inflights_replicate: 2,
+        ..RaftConfig::default()
+    };
+    let cluster = RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], config).unwrap();
+    let transport = cluster.clone();
+    cluster.set_alive(3, false).unwrap();
+    for i in 0..10u8 {
+        cluster
+            .propose_distributed(
+                Command::StringSet {
+                    key: format!("lag-{i}"),
+                    value: vec![i; 64],
+                },
+                &transport,
+            )
+            .unwrap();
+    }
+    let leader_commit = cluster.commit_index(1).unwrap();
+    cluster.set_alive(3, true).unwrap();
+    // Drive catch-up rounds the way the timer does. Every round must yield a request --
+    // a refusal here is the deadlock this test exists to prevent.
+    let mut caught_up = false;
+    for _ in 0..64 {
+        let request = cluster
+            .build_append_entries_request(3)
+            .expect("catch-up must never be refused, however charged the window reads");
+        let response = cluster.receive_append_entries(request).unwrap();
+        let _ = cluster.record_append_entries_response(3, &response);
+        if cluster.commit_index(3).unwrap() >= leader_commit {
+            caught_up = true;
+            break;
+        }
+    }
+    assert!(
+        caught_up,
+        "the probed follower must converge to the leader commit ({leader_commit})"
+    );
+}
