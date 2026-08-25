@@ -208,6 +208,10 @@ impl TemporalEngine {
         // Accumulate the object keys every mutating command in the batch touched, for the
         // single O(delta) index-log append below (delta path). Empty when the flag is off.
         let mut delta_command_keys: Vec<String> = Vec::new();
+        // Some(components) while every mutating command in the batch is a pure page-upsert;
+        // one non-upsert write downgrades the whole record to snapshot semantics.
+        let mut batch_upsert_components: Option<Vec<(&'static str, String, Option<String>)>> =
+            Some(Vec::new());
         for command in request.commands {
             let write_command = is_write_command(&command);
             if readonly && write_command {
@@ -285,6 +289,13 @@ impl TemporalEngine {
                 mutated_any = true;
                 let object_keys = command_object_keys(&command_for_post_write);
                 delta_command_keys.extend(object_keys.iter().cloned());
+                match (
+                    &mut batch_upsert_components,
+                    command_upsert_components(&command_for_post_write),
+                ) {
+                    (Some(collected), Some(components)) => collected.extend(components),
+                    (state, _) => *state = None,
+                }
                 if object_keys.is_empty() {
                     rebuild_bucket_page_ownership(
                         request.shard_id,
@@ -374,12 +385,27 @@ impl TemporalEngine {
                 // Append the pages this batch changed (O(delta)) to the index-log (advances
                 // the sequence + populates the delta stream). The whole-index base rewrite is
                 // deferred to the next compaction point (see the single-command execute path).
-                let items = collect_command_index_items(
-                    shard,
-                    &delta_command_keys,
-                    start_routing_bucket,
-                    end_routing_bucket,
-                );
+                let (items, upsert_record) = match &batch_upsert_components {
+                    Some(components) => (
+                        collect_upsert_index_items(
+                            shard,
+                            request.shard_id,
+                            components,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                        true,
+                    ),
+                    None => (
+                        collect_command_index_items(
+                            shard,
+                            &delta_command_keys,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                        false,
+                    ),
+                };
                 let key_states = capture_key_states(shard, &delta_command_keys);
                 let _ = self.index_log_store.append_delta(
                     request.shard_id,
@@ -387,6 +413,7 @@ impl TemporalEngine {
                     key_states,
                     shard.applied_wal_sequence,
                     None,
+                    upsert_record,
                     // Non-blocking on the raft apply path (raft log is the durability source).
                     !raft_applying(),
                 );

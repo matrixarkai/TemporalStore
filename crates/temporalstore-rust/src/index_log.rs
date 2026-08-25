@@ -186,6 +186,15 @@ pub struct IndexDeltaRecord {
     /// pages the deltas already pin at their original addresses).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applied_wal_sequence: Option<u64>,
+    /// When true, this record's items are the exact pages the write produced: replay replaces
+    /// each item's (kind, object, component) predecessor and inserts, WITHOUT the covered-key
+    /// wipe -- mirroring the write path's upsert_bucket_index_page. When false (the default,
+    /// and every record written before this field existed), the record snapshots each covered
+    /// object's whole page set and replay wipes-then-restores. The snapshot shape is what made
+    /// every append O(store): a batch touching the grow-with-the-store index hashes logged
+    /// every page of each of them, every time.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub upsert: bool,
     /// Opaque per-touched-key state blobs (one JSON object per key) carrying the
     /// authoritative post-write value of the maps that are NOT reconstructable from a
     /// single page-index entry -- packed timestamped series (feature membership survives
@@ -522,6 +531,7 @@ impl LocalIndexLogStore {
         key_states: Vec<serde_json::Value>,
         applied_wal_sequence: Option<u64>,
         meta: Option<MetaItem>,
+        upsert: bool,
         durable: bool,
     ) -> Result<u64, IndexLogError> {
         if bulk_ingest_mode() || !indexlog_enabled() {
@@ -545,6 +555,7 @@ impl LocalIndexLogStore {
             meta,
             applied_wal_sequence,
             key_states,
+            upsert,
         };
         // Frame the delta record with a length + SHA-256 digest (crate::log_framing) so a
         // value-preserving bit-flip (e.g. a flipped `deleted` flag or page address) in this
@@ -974,11 +985,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
         let seq1 = store
-            .append_delta(7, vec![page_item(1, "a", false)], Vec::new(), None, None, true)
+            .append_delta(7, vec![page_item(1, "a", false)], Vec::new(), None, None, false, true)
             .unwrap();
         assert_eq!(seq1, 1);
         let seq2 = store
-            .append_delta(7, vec![page_item(1, "b", false)], Vec::new(), None, None, true)
+            .append_delta(7, vec![page_item(1, "b", false)], Vec::new(), None, None, false, true)
             .unwrap();
         assert_eq!(seq2, 2);
         // The two single-item deltas together are far smaller than a whole-index blob
@@ -1016,10 +1027,10 @@ mod tests {
         // A legacy whole-index record and a delta record share the log file.
         store.append_json(9, b"{\"value\":1}").unwrap();
         let anchor_seq = store
-            .append_delta(9, vec![page_item(1, "a", false)], Vec::new(), None, None, true)
+            .append_delta(9, vec![page_item(1, "a", false)], Vec::new(), None, None, false, true)
             .unwrap();
         store
-            .append_delta(9, vec![page_item(1, "b", false)], Vec::new(), None, None, true)
+            .append_delta(9, vec![page_item(1, "b", false)], Vec::new(), None, None, false, true)
             .unwrap();
         // Only delta records are returned; the whole-index line is ignored.
         let all = store.read_delta_records(9, 0).unwrap();
@@ -1035,7 +1046,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
         store
-            .append_delta(3, vec![page_item(1, "a", false)], Vec::new(), None, None, true)
+            .append_delta(3, vec![page_item(1, "a", false)], Vec::new(), None, None, false, true)
             .unwrap();
         let meta = MetaItem {
             version: 1,
@@ -1043,7 +1054,7 @@ mod tests {
             timestamp_ms: 100,
             ..MetaItem::default()
         };
-        store.append_delta(3, Vec::new(), Vec::new(), None, Some(meta), true).unwrap();
+        store.append_delta(3, Vec::new(), Vec::new(), None, Some(meta), false, true).unwrap();
         let records = store.read_delta_records(3, 0).unwrap();
         assert_eq!(records.len(), 2);
         assert_eq!(records[1].meta.as_ref().unwrap().start_wal_sequence, 42);
@@ -1087,7 +1098,7 @@ mod tests {
         let store = LocalIndexLogStore::new(dir.path());
         for key in ["a", "b", "c"] {
             store
-                .append_delta(5, vec![page_item(1, key, false)], Vec::new(), Some(1), None, true)
+                .append_delta(5, vec![page_item(1, key, false)], Vec::new(), Some(1), None, false, true)
                 .unwrap();
         }
         drop(store);
@@ -1129,6 +1140,7 @@ mod tests {
                     Vec::new(),
                     Some(index as u64 + 1),
                     None,
+                    false,
                     true,
                 )
                 .unwrap();
@@ -1218,7 +1230,7 @@ mod tests {
             ],
         };
         store
-            .append_delta(4, Vec::new(), Vec::new(), Some(5), Some(meta.clone()), true)
+            .append_delta(4, Vec::new(), Vec::new(), Some(5), Some(meta.clone()), false, true)
             .unwrap();
         // A reopen reads the folded catalog back exactly, and latest_zone_catalog finds it.
         let reopened = LocalIndexLogStore::new(dir.path());
@@ -1268,14 +1280,14 @@ mod tests {
             }],
         };
         store
-            .append_delta(6, Vec::new(), Vec::new(), Some(1), Some(older), true)
+            .append_delta(6, Vec::new(), Vec::new(), Some(1), Some(older), false, true)
             .unwrap();
         // An anchor with no zones between them must not shadow the folded catalog.
         store
-            .append_delta(6, Vec::new(), Vec::new(), Some(5), Some(MetaItem::default()), true)
+            .append_delta(6, Vec::new(), Vec::new(), Some(5), Some(MetaItem::default()), false, true)
             .unwrap();
         store
-            .append_delta(6, Vec::new(), Vec::new(), Some(9), Some(newer.clone()), true)
+            .append_delta(6, Vec::new(), Vec::new(), Some(9), Some(newer.clone()), false, true)
             .unwrap();
         assert_eq!(store.latest_zone_catalog(6).unwrap().unwrap(), newer);
     }
@@ -1384,6 +1396,7 @@ mod tests {
                                 Vec::new(),
                                 None,
                                 None,
+                                false,
                                 true,
                             )
                             .unwrap();
