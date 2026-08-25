@@ -4091,7 +4091,7 @@
         {
           "command": {
             "archive_contract": "archive directory contains manifest.json plus one report JSON and misses JSONL per executed dataset; skipped real artifacts are explicit status values, not passing scores.",
-            "native_runner_contract": "runner consumes the same dataset entries, emits matrixark_vikingmem_context_benchmark_report_v1 JSON, and archives reports under the same manifest shape.",
+            "native_runner_contract": "runner consumes the same dataset entries, emits matrixark_external_baseline_context_benchmark_report_v1 JSON, and archives reports under the same manifest shape.",
             "datasets": [
               {
                 "artifact_kind": "checked_in_or_generated_fixture",
@@ -4110,7 +4110,7 @@
             "kind": "existing_test",
             "mode": "shared_benchmark_contract",
             "report_contract": {
-              "format": "matrixark_vikingmem_context_benchmark_report_v1",
+              "format": "matrixark_external_baseline_context_benchmark_report_v1",
               "per_query_required_fields": [
                 "query_id",
                 "category",
@@ -4193,7 +4193,7 @@
         {
           "command": {
             "archive_contract": "archive directory contains manifest.json plus one report JSON and misses JSONL per executed dataset; skipped real artifacts are explicit status values, not passing scores.",
-            "native_runner_contract": "runner consumes the same dataset entries, emits matrixark_vikingmem_context_benchmark_report_v1 JSON, and archives reports under the same manifest shape.",
+            "native_runner_contract": "runner consumes the same dataset entries, emits matrixark_external_baseline_context_benchmark_report_v1 JSON, and archives reports under the same manifest shape.",
             "datasets": [
               {
                 "artifact_kind": "external_full_dataset",
@@ -4221,7 +4221,7 @@
             "kind": "existing_test",
             "mode": "shared_benchmark_contract",
             "report_contract": {
-              "format": "matrixark_vikingmem_context_benchmark_report_v1",
+              "format": "matrixark_external_baseline_context_benchmark_report_v1",
               "per_query_required_fields": [
                 "query_id",
                 "category",
@@ -5692,7 +5692,7 @@
         {
           "command": {
             "archive_contract": "Archive directory contains manifest.json, report JSON, and misses JSONL; skipped real artifacts are explicit status values, not passing scores.",
-            "native_runner_contract": "runner emits matrixark_vikingmem_context_benchmark_report_v1 with the same dataset, threshold, archive, and per-query fields.",
+            "native_runner_contract": "runner emits matrixark_external_baseline_context_benchmark_report_v1 with the same dataset, threshold, archive, and per-query fields.",
             "datasets": [
               {
                 "artifact_kind": "real_or_fixture_json",
@@ -5705,11 +5705,11 @@
                 "threshold_profile": "oss_reader_full"
               }
             ],
-            "description": "Shared benchmark contract for LOCOMO full Rust TemporalStore replay, deterministic and OSS-reader modes, report archive, and VikingMem-style fields.",
+            "description": "Shared benchmark contract for LOCOMO full Rust TemporalStore replay, deterministic and OSS-reader modes, report archive, and ExternalBaseline-style fields.",
             "kind": "existing_test",
             "mode": "shared_benchmark_contract",
             "report_contract": {
-              "format": "matrixark_vikingmem_context_benchmark_report_v1",
+              "format": "matrixark_external_baseline_context_benchmark_report_v1",
               "per_query_required_fields": [
                 "query_id",
                 "category",
@@ -5790,7 +5790,7 @@
         {
           "command": {
             "archive_contract": "Archive directory contains manifest.json, report JSON, and misses JSONL; skipped real artifacts are explicit status values, not passing scores.",
-            "native_runner_contract": "runner emits matrixark_vikingmem_context_benchmark_report_v1 with the same dataset, threshold, archive, and per-query fields.",
+            "native_runner_contract": "runner emits matrixark_external_baseline_context_benchmark_report_v1 with the same dataset, threshold, archive, and per-query fields.",
             "datasets": [
               {
                 "artifact_kind": "real_or_fixture_json",
@@ -5803,11 +5803,11 @@
                 "threshold_profile": "oss_reader_full"
               }
             ],
-            "description": "Shared benchmark contract for LongMemEval_s full Rust TemporalStore replay, deterministic and OSS-reader modes, report archive, and VikingMem-style fields.",
+            "description": "Shared benchmark contract for LongMemEval_s full Rust TemporalStore replay, deterministic and OSS-reader modes, report archive, and ExternalBaseline-style fields.",
             "kind": "existing_test",
             "mode": "shared_benchmark_contract",
             "report_contract": {
-              "format": "matrixark_vikingmem_context_benchmark_report_v1",
+              "format": "matrixark_external_baseline_context_benchmark_report_v1",
               "per_query_required_fields": [
                 "query_id",
                 "category",
@@ -5882,13 +5882,13 @@
       ]
     },
     {
-      "name": "benchmark_rust_vikingmem_report_comparator",
+      "name": "benchmark_rust_external_baseline_report_comparator",
       "shard_id": 70,
       "steps": [
         {
           "command": {
             "archive_contract": "Archive directory contains manifest.json, report JSON, and misses JSONL; skipped real artifacts are explicit status values, not passing scores.",
-            "native_runner_contract": "runner emits matrixark_vikingmem_context_benchmark_report_v1 with the same dataset, threshold, archive, and per-query fields.",
+            "native_runner_contract": "runner emits matrixark_external_baseline_context_benchmark_report_v1 with the same dataset, threshold, archive, and per-query fields.",
             "datasets": [
               {
                 "artifact_kind": "archived_report_pair",
@@ -5906,11 +5906,11 @@
                 "threshold_profile": "fixture"
               }
             ],
-            "description": "Shared benchmark contract for comparing and Rust matrixark_vikingmem_context_benchmark_report_v1 archives case-by-case.",
+            "description": "Shared benchmark contract for comparing and Rust matrixark_external_baseline_context_benchmark_report_v1 archives case-by-case.",
             "kind": "existing_test",
             "mode": "shared_benchmark_contract",
             "report_contract": {
-              "format": "matrixark_vikingmem_context_benchmark_report_v1",
+              "format": "matrixark_external_baseline_context_benchmark_report_v1",
               "per_query_required_fields": [
                 "query_id",
                 "category",
@@ -5981,7 +5981,7 @@
               "longmemeval_full"
             ]
           },
-          "name": "native_rust_vikingmem_report_comparator_shared"
+          "name": "native_rust_external_baseline_report_comparator_shared"
         }
       ]
     },
@@ -7994,7 +7994,7 @@
               ]
             },
             "archive_contract": "Reports include dataset hash, case count, model/provider, reader mode, thresholds, p50/p95, token reduction, category breakdown, and JSON path.",
-            "native_runner_contract": "benchmark adapter emits matrixark_vikingmem_context_benchmark_report_v1 for case-by-case comparator use.",
+            "native_runner_contract": "benchmark adapter emits matrixark_external_baseline_context_benchmark_report_v1 for case-by-case comparator use.",
             "datasets": [
               {
                 "artifact_kind": "real_or_fixture_json",
@@ -11537,7 +11537,7 @@
       {
         "comparison_command": "python3 tools/compare_unified_rust_case_reports.py --rust-report <rust-report.json> --native-report <native-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
         "family": "benchmarks",
-        "runner_command": "compat/native_context_benchmark_report_adapter.h emits matrixark_vikingmem_context_benchmark_report_v1; python3 tools/compare_context_benchmark_reports.py compares Rust and reports.",
+        "runner_command": "compat/native_context_benchmark_report_adapter.h emits matrixark_external_baseline_context_benchmark_report_v1; python3 tools/compare_context_benchmark_reports.py compares Rust and reports.",
         "status": "mixed_native_and_static_surface_gate",
         "suites": [
           "native_context_benchmark_parity"
@@ -11760,7 +11760,7 @@
       "ingestion_dead_letter_lag_report_contract",
       "benchmark_locomo_rust_full_replay_contract",
       "benchmark_longmemeval_rust_full_replay_contract",
-      "benchmark_rust_vikingmem_report_comparator",
+      "benchmark_rust_external_baseline_report_comparator",
       "ops_scale_readiness_slo_gate",
       "ops_production_readiness_service_summary",
       "ops_grafana_metrics_parity",
