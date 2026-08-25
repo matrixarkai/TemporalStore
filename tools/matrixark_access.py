@@ -82,6 +82,13 @@ class MatrixArkRecordLogMetadataStore(MatrixArkMetadataStore):
         self.adapter.append(record)
 
     def read_all(self) -> list[Json]:
+        # Buffered audits must be readable by the reader that asks: flush the adapter's audit
+        # buffer before reading. An empty buffer is a lock-and-return, so the API-key lookups
+        # that run on every call pay nothing; a non-empty one pays the append_many the flusher
+        # would have paid moments later.
+        flusher = getattr(self.adapter, "flush_audits", None)
+        if callable(flusher):
+            flusher()
         return [record for record in self.adapter.read_all() if str(record.get("record_type", "")).startswith("matrixark_")]
 
 
