@@ -1522,6 +1522,13 @@ fn scope_index_payloads(
         return Ok(None);
     }
     let mut source_buckets: Vec<String> = vec![bucket.to_string()];
+    // Tenant-scoped records (a scope_key with a tenant but no user) live in "partial". Consumers
+    // differ on them -- get_all wants exact tenant AND user equality and drops them, while prior
+    // context accepts a tenant-wide summary for a user in that tenant -- so the fetch includes
+    // them and the shared filter loop applies each consumer's real predicate. The index stays a
+    // pre-filter; widening it can cost a wasted read, never a wrong answer, and an unpinned scan
+    // was already returning these rows.
+    source_buckets.push("partial".to_string());
     if allowed_types.is_empty() {
         source_buckets.push("none".to_string());
     } else {

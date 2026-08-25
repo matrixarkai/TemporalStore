@@ -1288,8 +1288,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             if count_before is None or count_after is None or count_before != count_after:
                 try:
                     with open(log_path, "a", encoding="utf-8") as log:
-                        log.write("SKIPPED racy window count %r -> %r\n"
-                                  % (count_before, count_after))
+                        log.write("SKIPPED racy window count %r -> %r latest %r -> %r\n"
+                                  % (count_before, count_after, latest_before, latest_after))
                 except OSError:
                     pass
                 return full
@@ -1709,7 +1709,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             return super().raw_records_for_history(memory_id)
         return subset
 
-    def prior_context_records(self) -> list[Json]:
+    def prior_context_records(self, scope: Json | None = None) -> list[Json]:
         """The prior-context view from a five-type scan instead of a full-store read.
 
         `collect_prior_context` and the caller-supplied-fields carry-over consume three record
@@ -1738,13 +1738,32 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                 compact_and_apply_tombstones,
                 filter_live_memory_records,
             )
-        subset = self._scan_records_of_types([
-            "context_event",
-            "context_summary",
-            "context_pack_audit",
-            MEMORY_TOMBSTONE_RECORD_TYPE,
-            MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
-        ])
+        pinned_hashes: tuple[int, int] | None = None
+        engine_scope: Json = {}
+        if isinstance(scope, dict) and scope:
+            try:
+                tenant_hash, user_hash = self._resolve_subject_hashes(scope)
+            except Exception:  # noqa: BLE001
+                tenant_hash, user_hash = 0, 0
+            if tenant_hash and user_hash:
+                pinned_hashes = (tenant_hash, user_hash)
+                engine_scope = {
+                    "tenant_hash": tenant_hash,
+                    "user_hash": user_hash,
+                    "_explicit_scope_keys": ["tenant_id", "user_id"],
+                }
+                if scope.get("user_id"):
+                    engine_scope["user_id"] = str(scope.get("user_id"))
+        subset = self._scan_records_of_types(
+            [
+                "context_event",
+                "context_summary",
+                "context_pack_audit",
+                MEMORY_TOMBSTONE_RECORD_TYPE,
+                MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+            ],
+            scope=engine_scope if pinned_hashes else None,
+        )
         if subset is None:
             return self.read_all()
         # Summaries and other compact records can live in the latest-state HASH rather than the
@@ -1760,23 +1779,69 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             latest_state = self._load_latest_context_state_records()
         except Exception:  # noqa: BLE001 - the full read is the fallback, not a guess.
             return self.read_all()
-        subset = subset + [
+        try:
+            from tools.matrixark_mcp_serving_records import compact_latest_context_state_records
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_serving_records import compact_latest_context_state_records
+        # Fold latest-state the way the full read does rather than appending it after the log
+        # records: prior-context consumers are order-aware, and this is the assembly that already
+        # earned a clean shadow on get_all.
+        folded_prior = compact_latest_context_state_records(list(subset) + [
             record for record in latest_state
             if isinstance(record, dict) and str(record.get("record_type") or "") in kept_types
-        ]
-        live_subset = filter_live_memory_records(compact_and_apply_tombstones(subset))
+        ])
+        live_subset = filter_live_memory_records(compact_and_apply_tombstones(folded_prior))
 
         shadow = _os.environ.get("MATRIXARK_PRIOR_CONTEXT_SHADOW_COMPARE", "").strip()
         if shadow not in {"", "0", "false", "no", "off"}:
+            # prior-context shadow: skip a racy window. The two views are computed in sequence,
+            # so a write landing between them differs in length with every compared position
+            # equal -- a race, not a divergence. Read the count around the pair and skip when it
+            # moved; a skipped window is never counted as clean.
+            def _race_marks() -> tuple:
+                try:
+                    count = int(self._get_count())
+                except Exception:  # noqa: BLE001
+                    return (None, None)
+                try:
+                    latest = len(self._load_latest_context_state_records())
+                except Exception:  # noqa: BLE001
+                    return (count, None)
+                return (count, latest)
+
+            count_before, latest_before = _race_marks()
             full = self.read_all()
+            count_after, latest_after = _race_marks()
+            if (count_before is None or count_after is None
+                    or latest_before is None or latest_after is None
+                    or count_before != count_after or latest_before != latest_after):
+                try:
+                    path = _os.environ.get("MATRIXARK_PRIOR_CONTEXT_SHADOW_LOG",
+                                           "/tmp/matrixark_prior_context_shadow.log")
+                    with open(path, "a", encoding="utf-8") as log:
+                        log.write("SKIPPED racy window count %r -> %r\n"
+                                  % (count_before, count_after))
+                except OSError:
+                    pass
+                return full
 
             def project(records: list[Json]) -> list[tuple]:
                 keep = {"context_event", "context_summary", "context_pack_audit"}
+                try:
+                    from tools.matrixark_mcp_local_adapter import _record_scope_hashes
+                except ModuleNotFoundError:
+                    from matrixark_mcp_local_adapter import _record_scope_hashes
                 out = []
                 for record in records:
                     record_type = str(record.get("record_type") or "")
                     if record_type not in keep:
                         continue
+                    if pinned_hashes is not None:
+                        rec_tenant, rec_user = _record_scope_hashes(record)
+                        if (rec_tenant and rec_tenant != pinned_hashes[0]) or (
+                            rec_user and rec_user != pinned_hashes[1]
+                        ):
+                            continue
                     out.append((
                         record_type,
                         str(record.get("event_id_hash") or record.get("summary_hash")
@@ -1791,10 +1856,13 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                     path = _os.environ.get("MATRIXARK_PRIOR_CONTEXT_SHADOW_LOG",
                                            "/tmp/matrixark_prior_context_shadow.log")
                     with open(path, "a", encoding="utf-8") as log:
-                        log.write("MISMATCH full=%d subset=%d only_full=%r only_subset=%r\n" % (
-                            len(expected), len(got),
-                            [row for row in expected if row not in set(got)][:5],
-                            [row for row in got if row not in set(expected)][:5],
+                        first_div = next((i for i, (a, b) in enumerate(zip(expected, got)) if a != b), -1)
+                        log.write("MISMATCH n=%d div@%d full=%r subset=%r ctx_full=%r ctx_sub=%r\n" % (
+                            len(expected), first_div,
+                            expected[first_div] if 0 <= first_div < len(expected) else None,
+                            got[first_div] if 0 <= first_div < len(got) else None,
+                            expected[max(0, first_div - 1):first_div + 2],
+                            got[max(0, first_div - 1):first_div + 2],
                         ))
                 except OSError:
                     pass

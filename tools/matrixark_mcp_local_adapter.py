@@ -4845,7 +4845,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
     # (the purged log replays to the same logical state). DEFERRED (separate parallel workstream):
     # rust-datanode-native StringDelete/CommonDelete/FeatureDelete wiring, and true re-derivation
     # (re-extraction) of a demoted multi-source entity/summary -- we trim evidence, not re-summarize.
-    def prior_context_records(self) -> list[Json]:
+    def prior_context_records(self, scope: Json | None = None) -> list[Json]:
         """The live records prior-context collection reads. Base implementation: the whole store.
 
         `collect_prior_context` and the caller-supplied-fields carry-over consume only three
