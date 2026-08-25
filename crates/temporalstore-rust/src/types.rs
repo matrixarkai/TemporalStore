@@ -1131,6 +1131,11 @@ pub enum Command {
     CommonTtl {
         key: String,
     },
+    /// Remove a key's expiry without touching its value: Redis PERSIST. Answers 1 when a
+    /// timeout was actually removed, 0 when the key is missing or already had none.
+    CommonPersist {
+        key: String,
+    },
     CommonExists {
         key: String,
     },

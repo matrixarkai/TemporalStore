@@ -360,6 +360,13 @@ pub fn execute_redis_command_with_state(
         "PEXPIRE" if args.len() == 3 => expire_response(&args, 1, execute),
         "EXPIREAT" if args.len() == 3 => expire_at_response(&args, 1000, execute),
         "PEXPIREAT" if args.len() == 3 => expire_at_response(&args, 1, execute),
+        "PERSIST" if args.len() == 2 => match execute(Command::CommonPersist {
+            key: string_arg(&args[1]),
+        }) {
+            Ok(CommandResponse::Integer { value }) => RespValue::Integer(value),
+            Ok(_) => RespValue::Error("ERR invalid persist response".to_string()),
+            Err(err) => RespValue::Error(format!("ERR {err}")),
+        },
         "EXPIRETIME" if args.len() == 2 => expire_time_response(&args[1], 1000, &mut execute),
         "PEXPIRETIME" if args.len() == 2 => expire_time_response(&args[1], 1, &mut execute),
         "TTL" if args.len() == 2 => match execute(Command::CommonTtl {
