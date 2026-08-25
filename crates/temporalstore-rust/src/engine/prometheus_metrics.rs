@@ -27,6 +27,10 @@ impl TemporalEngine {
         out.push_str("# TYPE temporalstore_page_store_zone_oldest_age_ms gauge\n");
         out.push_str("# HELP temporalstore_shard_rate_limit_total Commands allowed and refused by a rate limit. Absent for a shard with no limit, which is not the same as a limit that has refused nothing.\n");
         out.push_str("# TYPE temporalstore_shard_rate_limit_total counter\n");
+        out.push_str("# HELP temporalstore_shard_index_lag_records Records appended to the log that the durable index has not yet accounted for, by shard. High values mean a longer restart and reclaim that cannot advance.\n");
+        out.push_str("# TYPE temporalstore_shard_index_lag_records gauge\n");
+        out.push_str("# HELP temporalstore_shard_expiring_keys Keys holding an expiry deadline that the sweep has not yet removed, by shard. Rising means expiry is falling behind; the sweep's own counts look healthy either way.\n");
+        out.push_str("# TYPE temporalstore_shard_expiring_keys gauge\n");
         out.push_str(
             "# HELP temporalstore_wal_records_total Write-ahead log append records by shard.\n",
         );
@@ -75,6 +79,13 @@ impl TemporalEngine {
         out.push_str("# TYPE temporalstore_ingestion_stream_committed_sequence gauge\n");
         out.push_str("# HELP temporalstore_ingestion_flink_checkpoint_state Flink checkpoint state as a one-hot gauge.\n");
         out.push_str("# TYPE temporalstore_ingestion_flink_checkpoint_state gauge\n");
+        // Gathered for every shard before the loop below, which holds a read lock on the shard
+        // table: asking per shard inside it takes a second read on that lock, and a writer
+        // queued between the two deadlocks.
+        let index_lags: std::collections::HashMap<ShardId, u64> =
+            self.shard_index_lags().into_iter().collect();
+        let expiry_backlogs: std::collections::HashMap<ShardId, u64> =
+            self.shard_expiry_backlogs().into_iter().collect();
         for stats in self.loaded_shard_stats() {
             push_metric(
                 &mut out,
@@ -133,6 +144,22 @@ impl TemporalEngine {
             // Only for a shard that carries a limit. A shard with none has nothing to count, and
             // emitting zeros would say "this limit refused nothing" about a shard that has no
             // limit at all -- which is the one distinction an operator needs from this.
+            if let Some(waiting) = expiry_backlogs.get(&stats.shard_id) {
+                push_metric(
+                    &mut out,
+                    "temporalstore_shard_expiring_keys",
+                    &[("shard_id", stats.shard_id.to_string())],
+                    *waiting,
+                );
+            }
+            if let Some(lag) = index_lags.get(&stats.shard_id) {
+                push_metric(
+                    &mut out,
+                    "temporalstore_shard_index_lag_records",
+                    &[("shard_id", stats.shard_id.to_string())],
+                    *lag,
+                );
+            }
             if let Some(counters) = self.shard_quota_counters(stats.shard_id) {
                 for (kind, value) in [
                     ("read_allowed", counters.read_allowed),

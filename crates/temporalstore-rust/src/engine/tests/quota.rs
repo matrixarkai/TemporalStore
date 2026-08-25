@@ -245,3 +245,86 @@ fn the_rate_limit_is_visible_in_the_metrics() {
     assert!(rendered.contains("kind=\"write_allowed\""));
     assert_eq!(engine.rate_limited_shards(), vec![1]);
 }
+
+/// How far the durable index trails the log is visible, and is zero when it has caught up.
+#[test]
+fn how_far_the_index_trails_the_log_is_visible() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path());
+    for index in 0..25 {
+        write(&engine, &format!("k{index}"));
+    }
+    let lags = engine.shard_index_lags();
+    let (shard_id, lag) = lags
+        .iter()
+        .find(|(shard_id, _)| *shard_id == 1)
+        .copied()
+        .expect("the loaded shard should report a distance");
+    assert_eq!(shard_id, 1);
+    assert_eq!(lag, 0, "a shard with nothing outstanding should report zero");
+    let rendered = engine.prometheus_metrics();
+    assert!(rendered.contains("# TYPE temporalstore_shard_index_lag_records gauge"));
+    assert!(
+        rendered.contains("temporalstore_shard_index_lag_records{shard_id=\"1\"}"),
+        "a loaded shard should report it: {rendered}"
+    );
+}
+
+/// Reporting it does not deadlock against the lock the metrics loop already holds.
+#[test]
+fn reporting_the_distance_does_not_deadlock_the_metrics_loop() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path());
+    for index in 0..10 {
+        write(&engine, &format!("k{index}"));
+    }
+    let writer = {
+        let engine = engine.clone();
+        std::thread::spawn(move || {
+            for index in 0..200 {
+                write(&engine, &format!("w{index}"));
+            }
+        })
+    };
+    for _ in 0..50 {
+        let _ = engine.prometheus_metrics();
+    }
+    writer.join().unwrap();
+}
+
+/// How many keys are waiting to expire is visible, and tracks what was actually set.
+#[test]
+fn how_many_keys_are_waiting_to_expire_is_visible() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path());
+    let backlog_of = |engine: &TemporalEngine| -> u64 {
+        engine
+            .shard_expiry_backlogs()
+            .into_iter()
+            .find(|(shard_id, _)| *shard_id == 1)
+            .map(|(_, waiting)| waiting)
+            .expect("a loaded shard should report a backlog")
+    };
+    for index in 0..10 {
+        write(&engine, &format!("plain{index}"));
+    }
+    assert_eq!(backlog_of(&engine), 0, "keys without a deadline are not waiting");
+    for index in 0..7 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSetEx {
+                key: format!("ttl{index}"),
+                value: b"v".to_vec(),
+                ttl_ms: 600_000,
+            },
+        });
+        assert!(response.status.ok, "{}", response.status.message);
+    }
+    assert_eq!(backlog_of(&engine), 7, "every key given a deadline should be counted");
+    let rendered = engine.prometheus_metrics();
+    assert!(rendered.contains("# TYPE temporalstore_shard_expiring_keys gauge"));
+    assert!(
+        rendered.contains("temporalstore_shard_expiring_keys{shard_id=\"1\"} 7"),
+        "the gauge should carry the count: {rendered}"
+    );
+}
