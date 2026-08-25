@@ -1287,6 +1287,16 @@ pub struct MetaSnapshot {
     /// installs it keeps ageing them instead of restarting their clocks.
     #[serde(default)]
     pub frozen_since_ms: BTreeMap<String, u64>,
+    /// The recorded change history, oldest first.
+    ///
+    /// The topology version travelled while the history it belongs to did not,
+    /// so a peer installing a snapshot inherited a version with nothing behind
+    /// it -- and then reported its own control plane as blocked on evidence it
+    /// had a moment earlier. Bounded to the same ring the metaserver keeps, so
+    /// this adds a fixed, small amount to a snapshot rather than growing with
+    /// the cluster.
+    #[serde(default)]
+    pub topology_events: VecDeque<TopologyChangeEvent>,
     /// Names held back from creation. Carried so a peer that installs this
     /// snapshot keeps refusing them rather than quietly allowing what the
     /// operator reserved.
@@ -3150,6 +3160,97 @@ mod tests {
         // The registration recorded before the mute still replayed: the guard
         // applies to live calls, not to replaying a log of accepted changes.
         assert_eq!(recovered.list_servers().servers.len(), 1);
+    }
+
+    fn meta_with_history() -> SingleNodeMeta {
+        let meta = SingleNodeMeta::default();
+        register(&meta, "server-a");
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok);
+        assert!(
+            !meta
+                .inner
+                .read()
+                .expect("meta lock poisoned")
+                .topology_events
+                .is_empty(),
+            "the fixture recorded no history to lose"
+        );
+        meta
+    }
+
+    #[test]
+    fn the_change_history_survives_a_snapshot_install() {
+        // The topology version travelled and the history it belongs to did not,
+        // so a peer inherited a version with nothing behind it.
+        let meta = meta_with_history();
+        let expected = meta
+            .inner
+            .read()
+            .expect("meta lock poisoned")
+            .topology_events
+            .clone();
+
+        let peer = SingleNodeMeta::default();
+        assert!(peer.install_snapshot(meta.export_snapshot()).status.ok);
+
+        let carried = peer
+            .inner
+            .read()
+            .expect("meta lock poisoned")
+            .topology_events
+            .clone();
+        assert_eq!(carried, expected, "the change history was dropped on install");
+    }
+
+    #[test]
+    fn a_peer_that_installs_a_snapshot_is_not_reported_as_missing_its_history() {
+        // The readiness report treats the history as evidence, so dropping it on
+        // install made a healthy peer report its own control plane as blocked on
+        // evidence it had a moment earlier.
+        let meta = meta_with_history();
+        assert!(meta.control_plane_parity_report().topology_history_ready);
+
+        let peer = SingleNodeMeta::default();
+        assert!(peer.install_snapshot(meta.export_snapshot()).status.ok);
+
+        let report = peer.control_plane_parity_report();
+        assert!(
+            report.topology_history_ready,
+            "a peer reported its history missing right after inheriting it"
+        );
+        assert!(
+            !report
+                .blockers
+                .iter()
+                .any(|blocker| blocker.contains("topology history")),
+            "{:?}",
+            report.blockers
+        );
+    }
+
+    #[test]
+    fn a_snapshot_written_before_this_field_still_installs() {
+        // The field is defaulted, so an older snapshot on disk -- or from a peer
+        // that has not been upgraded -- must still load rather than be rejected
+        // as malformed.
+        let meta = meta_with_history();
+        let mut encoded: serde_json::Value =
+            serde_json::to_value(meta.export_snapshot()).expect("snapshot encodes");
+        encoded
+            .as_object_mut()
+            .expect("snapshot is an object")
+            .remove("topology_events")
+            .expect("the field was there to remove");
+
+        let older: MetaSnapshot = serde_json::from_value(encoded).expect("an older snapshot loads");
+        assert!(older.topology_events.is_empty());
+        let peer = SingleNodeMeta::default();
+        assert!(peer.install_snapshot(older).status.ok);
     }
 
     #[test]
