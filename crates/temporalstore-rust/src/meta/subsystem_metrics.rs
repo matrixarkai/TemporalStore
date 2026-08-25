@@ -61,6 +61,13 @@ struct SubsystemMetricsState {
     divergence_rate_limited: u64,
     retention_blocked_servers: u64,
     retention_capped: u64,
+    /// Proxies attached to, or released from, a group by calibration.
+    ///
+    /// Kept apart from `reassigned_total`, which is rendered as
+    /// `shards_reassigned_total` and documented as shard ownership changes: a
+    /// proxy joining a group is not a shard moving, and counting it there
+    /// inflates the number an operator watches for rebalance churn.
+    proxy_attachments_total: BTreeMap<String, u64>,
     calibration_shortfall_groups: u64,
     calibration_shortfall_proxies: u64,
     calibration_capped: u64,
@@ -130,20 +137,32 @@ impl SubsystemMetrics {
     /// the returned plan, which the loop dropped. `ProxyGroupShortfall` says of
     /// itself that no available proxies "is an operator problem rather than a
     /// metaserver one", and nothing was telling the operator.
-    pub fn record_calibration(&self, plan: &ProxyCalibrationPlan) {
+    /// Record one calibration round: `plan` is what it set out to do,
+    /// `applied` is what it actually changed.
+    ///
+    /// They match only when the round ran to the end. Calibration returns on
+    /// the first `set_proxy_group` that is refused, leaving the rest of the
+    /// plan untouched, and counting the plan there reports attachments that
+    /// were never made. The shortfall and the cap still come from the plan:
+    /// what a round wanted, and what it held back, are facts about planning it.
+    pub fn record_calibration(
+        &self,
+        plan: &ProxyCalibrationPlan,
+        applied: &ProxyCalibrationPlan,
+    ) {
         self.with(|state| {
             *state
                 .rounds_total
                 .entry("proxy_calibration".to_string())
                 .or_default() += 1;
             *state
-                .reassigned_total
-                .entry("proxy_attach".to_string())
-                .or_default() += plan.attach.len() as u64;
+                .proxy_attachments_total
+                .entry("attach".to_string())
+                .or_default() += applied.attach.len() as u64;
             *state
-                .reassigned_total
-                .entry("proxy_detach".to_string())
-                .or_default() += plan.detach.len() as u64;
+                .proxy_attachments_total
+                .entry("detach".to_string())
+                .or_default() += applied.detach.len() as u64;
             state.calibration_shortfall_groups = plan.shortfalls.len() as u64;
             // What each group is still short once this round's attaches land.
             // `attached` is the count before the round and `available` is what
@@ -412,6 +431,19 @@ fn render(state: &SubsystemMetricsState) -> String {
         &[],
         state.retention_blocked_servers,
     );
+
+    out.push_str(
+        "# HELP temporalstore_meta_proxy_attachments_total Proxies attached to or released from a group by calibration.\n",
+    );
+    out.push_str("# TYPE temporalstore_meta_proxy_attachments_total counter\n");
+    for (kind, value) in &state.proxy_attachments_total {
+        push(
+            &mut out,
+            "temporalstore_meta_proxy_attachments_total",
+            &[("kind", kind)],
+            *value,
+        );
+    }
 
     out.push_str("# HELP temporalstore_meta_calibration_shortfall_groups Proxy groups left short of their target last round.\n");
     out.push_str("# TYPE temporalstore_meta_calibration_shortfall_groups gauge\n");
