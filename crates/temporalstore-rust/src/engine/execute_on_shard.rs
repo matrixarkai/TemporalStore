@@ -658,6 +658,36 @@ pub(crate) fn execute_on_shard(
                 .collect();
             CommandResponse::Members { members }
         }
+        Command::BucketTake {
+            key,
+            tokens,
+            capacity,
+            refill_per_sec,
+        } => {
+            let now = resolve_now_ms();
+            let current = shard.buckets.get(&key).copied();
+            let (allowed, remaining, retry_after_ms, next) =
+                bucket_take(current, now, tokens, capacity, refill_per_sec);
+            shard.buckets.insert(key, next);
+            mutated = true;
+            CommandResponse::Members {
+                members: bucket_answer(allowed, remaining, retry_after_ms),
+            }
+        }
+        Command::BucketPeek {
+            key,
+            tokens,
+            capacity,
+            refill_per_sec,
+        } => {
+            let now = resolve_now_ms();
+            let current = shard.buckets.get(&key).copied();
+            let (allowed, remaining, retry_after_ms, _) =
+                bucket_take(current, now, tokens, capacity, refill_per_sec);
+            CommandResponse::Members {
+                members: bucket_answer(allowed, remaining, retry_after_ms),
+            }
+        }
         Command::ZSetIncrBy {
             key,
             member,
@@ -3255,4 +3285,49 @@ fn zset_ordered_members(shard: &ShardState, key: &str) -> Vec<(Vec<u8>, u64)> {
         .unwrap_or_default();
     ordered.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
     ordered
+}
+
+/// The whole token-bucket model in one pure function, so its arithmetic is testable with
+/// explicit clocks: refill by elapsed time at `refill_per_sec` (capped at capacity, and a
+/// clock that moved backwards refills nothing), then take if it fits. Answers
+/// (allowed, remaining AFTER the outcome, retry-after ms, state to store). An absent bucket
+/// starts full.
+pub(super) fn bucket_take(
+    current: Option<(f64, u64)>,
+    now_ms: u64,
+    tokens: f64,
+    capacity: f64,
+    refill_per_sec: f64,
+) -> (bool, f64, u64, (f64, u64)) {
+    let tokens = tokens.max(0.0);
+    let capacity = capacity.max(0.0);
+    let refill_per_sec = refill_per_sec.max(0.0);
+    let filled = match current {
+        None => capacity,
+        Some((had, last_ms)) => {
+            let elapsed_ms = now_ms.saturating_sub(last_ms);
+            (had + refill_per_sec * (elapsed_ms as f64 / 1000.0)).min(capacity)
+        }
+    };
+    if tokens <= filled {
+        let remaining = filled - tokens;
+        (true, remaining, 0, (remaining, now_ms))
+    } else {
+        let shortfall = tokens - filled;
+        let retry_after_ms = if refill_per_sec > 0.0 && tokens <= capacity {
+            (shortfall / refill_per_sec * 1000.0).ceil() as u64
+        } else {
+            // A take larger than capacity can never succeed; answer the sentinel.
+            u64::MAX
+        };
+        (false, filled, retry_after_ms, (filled, now_ms))
+    }
+}
+
+fn bucket_answer(allowed: bool, remaining: f64, retry_after_ms: u64) -> Vec<Vec<u8>> {
+    vec![
+        if allowed { b"1".to_vec() } else { b"0".to_vec() },
+        format!("{remaining:.3}").into_bytes(),
+        retry_after_ms.to_string().into_bytes(),
+    ]
 }

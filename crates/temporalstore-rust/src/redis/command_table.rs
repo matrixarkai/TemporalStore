@@ -36,6 +36,16 @@ pub(crate) fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: ADMIN,
         },
         RedisCommandDescriptor {
+            name: "BUCKETPEEK",
+            arity: 5,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "BUCKETTAKE",
+            arity: 5,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
             name: "COPY",
             arity: -3,
             flags: WRITE,

@@ -692,6 +692,59 @@ mod tests {
         assert_eq!(run(&mut state, vec!["ZPOPMIN", "z"]), RespValue::Array(Vec::new()));
     }
 
+    /// The token-bucket verbs over RESP: TAKE admits until the bucket runs dry and then
+    /// answers denied with a retry-after, PEEK answers the same shape without consuming.
+    #[test]
+    fn bucket_verbs_admit_then_deny_with_retry_after() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut state = RedisCommandState::default();
+        let mut run = |state: &mut RedisCommandState, args: Vec<&str>| {
+            execute_redis_command_with_state(
+                args.into_iter().map(|arg| arg.as_bytes().to_vec()).collect(),
+                1,
+                state,
+                &mut |command| {
+                    let response = engine.execute(crate::ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    });
+                    if response.status.ok {
+                        Ok(response.response)
+                    } else {
+                        Err(response.status.message)
+                    }
+                },
+            )
+        };
+        let fields = |value: RespValue| -> Vec<String> {
+            match value {
+                RespValue::Array(items) => items
+                    .into_iter()
+                    .map(|item| match item {
+                        RespValue::Bulk(Some(bytes)) => String::from_utf8(bytes).expect("utf8"),
+                        other => panic!("unexpected item: {other:?}"),
+                    })
+                    .collect(),
+                other => panic!("unexpected response: {other:?}"),
+            }
+        };
+
+        // Capacity 2, no refill within the test: two takes admit, the third denies.
+        let first = fields(run(&mut state, vec!["BUCKETTAKE", "q", "1", "2", "0.001"]));
+        assert_eq!("1", first[0]);
+        let second = fields(run(&mut state, vec!["BUCKETTAKE", "q", "1", "2", "0.001"]));
+        assert_eq!("1", second[0]);
+        let third = fields(run(&mut state, vec!["BUCKETTAKE", "q", "1", "2", "0.001"]));
+        assert_eq!("0", third[0], "the drained bucket must deny");
+        assert!(third[2].parse::<u64>().expect("retry ms") > 0, "denied answers a retry-after");
+
+        // PEEK reports without consuming: two identical peeks.
+        let peek_one = fields(run(&mut state, vec!["BUCKETPEEK", "q", "1", "2", "0.001"]));
+        let peek_two = fields(run(&mut state, vec!["BUCKETPEEK", "q", "1", "2", "0.001"]));
+        assert_eq!(peek_one, peek_two, "peek must not consume");
+    }
+
     #[test]
     fn set_zero_expiry_match_native() {
         let engine = TemporalEngine::default();
@@ -1052,6 +1105,8 @@ mod tests {
             "BGSAVE" => vec!["BGSAVE"],
             "COMMAND" => vec!["COMMAND", "COUNT"],
             "CONFIG" => vec!["CONFIG", "GET", "maxmemory"],
+            "BUCKETPEEK" => vec!["BUCKETPEEK", "advertised:bucket", "1", "10", "1"],
+            "BUCKETTAKE" => vec!["BUCKETTAKE", "advertised:bucket", "1", "10", "1"],
             "COPY" => vec!["COPY", "advertised:missing", "advertised:copy"],
             "DBSIZE" => vec!["DBSIZE"],
             "DEL" => vec!["DEL", "advertised:missing"],

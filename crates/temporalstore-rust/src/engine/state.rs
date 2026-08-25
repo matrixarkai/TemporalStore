@@ -56,6 +56,14 @@ pub(super) struct ShardState {
     pub(super) hashes: HashMap<String, HashMap<String, BlockAddress>>,
     #[serde(default, with = "super::set_index_serde")]
     pub(super) sets: HashMap<String, BTreeMap<Vec<u8>, BlockAddress>>,
+    /// Token buckets: key -> (tokens remaining, last refill ms). Config rides each command,
+    /// never the store -- the caller owns policy, which is exactly what a quota layer wants.
+    /// No pages back this state: it persists only with the shard index snapshot, so a crash
+    /// refills every bucket to capacity. That direction is deliberate and documented -- a
+    /// limiter that briefly over-admits after a crash beats one that starves recovered
+    /// tenants on stale counts.
+    #[serde(default)]
+    pub(super) buckets: HashMap<String, (f64, u64)>,
     /// Sorted sets: member -> (total-order score bits, element page). The score-ordered view
     /// is derived per query -- V1 accepts the per-range sort; the upgrade path is a second
     /// in-memory map rebuilt at load, never a second persisted structure (the index component

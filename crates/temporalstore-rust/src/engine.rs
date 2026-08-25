@@ -2510,6 +2510,7 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.sets.remove(key).is_some();
     removed |= shard.lists.remove(key).is_some();
     removed |= shard.zsets.remove(key).is_some();
+    removed |= shard.buckets.remove(key).is_some();
     if shard.features.remove(key).is_some() {
         removed = true;
         control_rollup::feature_forget(shard, key);
