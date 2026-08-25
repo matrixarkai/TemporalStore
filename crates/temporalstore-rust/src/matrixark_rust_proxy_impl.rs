@@ -1594,13 +1594,28 @@ fn record_id_linked(record: &Value, ids: &HashSet<String>) -> bool {
     {
         return true;
     }
-    for field in ["target_memory_id", "superseded_by"] {
+    for field in ["target_memory_id", "superseded_by", "source_event_hash"] {
         match record.get(field) {
             Some(Value::String(text)) if ids.contains(text.as_str()) => return true,
             Some(Value::Number(number)) if ids.contains(number.to_string().as_str()) => {
                 return true
             }
             _ => {}
+        }
+    }
+    // Provenance arrays: a derivative points at its sources through these, without carrying
+    // them as addressable ids -- exactly the records a get-by-id must return alongside the event.
+    for field in ["source_event_ids", "source_refs"] {
+        if let Some(Value::Array(items)) = record.get(field) {
+            for item in items {
+                match item {
+                    Value::String(text) if ids.contains(text.as_str()) => return true,
+                    Value::Number(number) if ids.contains(number.to_string().as_str()) => {
+                        return true
+                    }
+                    _ => {}
+                }
+            }
         }
     }
     false
@@ -1626,6 +1641,18 @@ fn id_scoped_payloads(
         return Ok(None);
     };
     let locator_key = format!("{prefix}:context_ref_locator");
+    // A store whose locator was fed pointed ids (provenance + targets) from its FIRST append
+    // marks itself; on such stores the locator alone answers "records about these ids", and the
+    // type-index compose below -- which would fetch every record of each requested type -- is
+    // skipped. Unmarked (pre-existing) stores keep the composed behavior unchanged.
+    let locator_covers_pointed_ids = hgetall_map(engine, format!("{locator_key}_meta"))
+        .ok()
+        .map(|meta| {
+            meta.get("provenance_from_start")
+                .map(|value| value.trim() == "1")
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
     let mut positions: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for id in requested_ids {
         let raw = read_bytes(
@@ -1668,12 +1695,14 @@ fn id_scoped_payloads(
             return Ok(None);
         }
     }
-    for record_type in allowed_types {
-        if record_type == "context_event" {
-            continue;
-        }
-        for (location, _) in hgetall_map(engine, type_index_key(record_hash_key, record_type))? {
-            positions.insert(location);
+    if !locator_covers_pointed_ids {
+        for record_type in allowed_types {
+            if record_type == "context_event" {
+                continue;
+            }
+            for (location, _) in hgetall_map(engine, type_index_key(record_hash_key, record_type))? {
+                positions.insert(location);
+            }
         }
     }
     let (values, shards_touched) =

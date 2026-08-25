@@ -5526,6 +5526,15 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         purge = self.purge_tombstones(force=True)
         return {"reset": True, "tenant_hash": tenant_hash, "removed_count": removed, "purge": purge}
 
+    def records_for_get_memory(self, memory_id: str) -> list[Json]:
+        """The live records get_memory filters for one id. Base implementation: the whole store.
+
+        get_memory's own matching (id equality and the provenance check) runs over whatever this
+        returns, so an override only has to produce a SUPERSET of the id's live records -- being
+        slow is recoverable, answering {found: false} for a live memory is not.
+        """
+        return self.read_all()
+
     def get_memory(self, args: Json) -> Json:
         """Fetch a single memory by id (mem0 ``get``). Returns the live ``context_event`` for
         ``memory_id`` projected to ``{id, memory, text, metadata, ...}`` plus the derived records
@@ -5537,7 +5546,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         memory_id_int = _safe_int(memory_id)
         event: Json | None = None
         derived: list[Json] = []
-        for record in self.read_all():
+        for record in self.records_for_get_memory(memory_id):
             record_type = str(record.get("record_type") or "")
             if record_type == "context_event" and str(record.get("event_id_hash")) == memory_id:
                 event = record
