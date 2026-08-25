@@ -432,6 +432,36 @@ pub(crate) fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: WRITE,
         },
         RedisCommandDescriptor {
+            name: "ZCOUNT",
+            arity: 4,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "ZINCRBY",
+            arity: 4,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "ZPOPMAX",
+            arity: -2,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "ZPOPMIN",
+            arity: -2,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "ZRANK",
+            arity: 3,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "ZREVRANK",
+            arity: 3,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
             name: "ZCARD",
             arity: 2,
             flags: READ,

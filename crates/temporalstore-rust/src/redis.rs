@@ -637,6 +637,61 @@ mod tests {
         );
     }
 
+    /// The rest of the sorted-set surface: ZINCRBY creates-then-moves atomically, ZCOUNT
+    /// honors the window syntax, ZPOPMIN/ZPOPMAX drain in order with scores attached, and
+    /// ZRANK/ZREVRANK answer positions or nil.
+    #[test]
+    fn sorted_set_completion_commands_match_native() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut state = RedisCommandState::default();
+        let mut run = |state: &mut RedisCommandState, args: Vec<&str>| {
+            execute_redis_command_with_state(
+                args.into_iter().map(|arg| arg.as_bytes().to_vec()).collect(),
+                1,
+                state,
+                &mut |command| {
+                    let response = engine.execute(crate::ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    });
+                    if response.status.ok {
+                        Ok(response.response)
+                    } else {
+                        Err(response.status.message)
+                    }
+                },
+            )
+        };
+        let bulk = |text: &str| RespValue::Bulk(Some(text.as_bytes().to_vec()));
+
+        // ZINCRBY on a missing member starts from 0; on a present one it moves the score.
+        assert_eq!(run(&mut state, vec!["ZINCRBY", "z", "3", "a"]), bulk("3"));
+        assert_eq!(run(&mut state, vec!["ZINCRBY", "z", "-1.5", "a"]), bulk("1.5"));
+        assert_eq!(run(&mut state, vec!["ZCARD", "z"]), RespValue::Integer(1));
+
+        assert_eq!(run(&mut state, vec!["ZADD", "z", "5", "b", "7", "c"]), RespValue::Integer(2));
+        assert_eq!(run(&mut state, vec!["ZCOUNT", "z", "-inf", "+inf"]), RespValue::Integer(3));
+        assert_eq!(run(&mut state, vec!["ZCOUNT", "z", "(1.5", "5"]), RespValue::Integer(1),
+            "the paren excludes a's exact score");
+
+        assert_eq!(run(&mut state, vec!["ZRANK", "z", "a"]), RespValue::Integer(0));
+        assert_eq!(run(&mut state, vec!["ZREVRANK", "z", "a"]), RespValue::Integer(2));
+        assert_eq!(run(&mut state, vec!["ZRANK", "z", "missing"]), RespValue::Bulk(None));
+
+        assert_eq!(
+            run(&mut state, vec!["ZPOPMIN", "z"]),
+            RespValue::Array(vec![bulk("a"), bulk("1.5")]),
+        );
+        assert_eq!(
+            run(&mut state, vec!["ZPOPMAX", "z", "5"]),
+            RespValue::Array(vec![bulk("c"), bulk("7"), bulk("b"), bulk("5")]),
+            "a COUNT larger than the set drains it high-to-low"
+        );
+        assert_eq!(run(&mut state, vec!["ZCARD", "z"]), RespValue::Integer(0));
+        assert_eq!(run(&mut state, vec!["ZPOPMIN", "z"]), RespValue::Array(Vec::new()));
+    }
+
     #[test]
     fn set_zero_expiry_match_native() {
         let engine = TemporalEngine::default();
@@ -1076,6 +1131,12 @@ mod tests {
             "TYPE" => vec!["TYPE", "advertised:missing"],
             "ZADD" => vec!["ZADD", "advertised:zset", "1", "m"],
             "ZCARD" => vec!["ZCARD", "advertised:zset"],
+            "ZCOUNT" => vec!["ZCOUNT", "advertised:zset", "-inf", "+inf"],
+            "ZINCRBY" => vec!["ZINCRBY", "advertised:zset", "1", "m"],
+            "ZPOPMAX" => vec!["ZPOPMAX", "advertised:zset"],
+            "ZPOPMIN" => vec!["ZPOPMIN", "advertised:zset"],
+            "ZRANK" => vec!["ZRANK", "advertised:zset", "m"],
+            "ZREVRANK" => vec!["ZREVRANK", "advertised:zset", "m"],
             "ZRANGE" => vec!["ZRANGE", "advertised:zset", "0", "-1"],
             "ZRANGEBYSCORE" => vec!["ZRANGEBYSCORE", "advertised:zset", "-inf", "+inf"],
             "ZREM" => vec!["ZREM", "advertised:zset", "m"],

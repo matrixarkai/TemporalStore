@@ -816,6 +816,83 @@ pub fn execute_redis_command_with_state(
                 (Err(err), _) | (_, Err(err)) => RespValue::Error(err),
             }
         }
+        "ZINCRBY" if args.len() == 4 => match parse_score_arg(&args[2]) {
+            Ok((increment, false, _)) => match execute(Command::ZSetIncrBy {
+                key: string_arg(&args[1]),
+                member: args[3].clone(),
+                increment,
+            }) {
+                Ok(CommandResponse::Bytes { value }) => RespValue::Bulk(value),
+                Ok(_) => RespValue::Error("ERR invalid zincrby response".to_string()),
+                Err(err) => RespValue::Error(format!("ERR {err}")),
+            },
+            Ok(_) => RespValue::Error("ERR increment cannot be exclusive".to_string()),
+            Err(err) => RespValue::Error(err),
+        },
+        "ZCOUNT" if args.len() == 4 => {
+            match (parse_score_arg(&args[2]), parse_score_arg(&args[3])) {
+                (Ok((min, min_exclusive, _)), Ok((max, max_exclusive, _))) => {
+                    match execute(Command::ZSetRangeByScore {
+                        key: string_arg(&args[1]),
+                        min,
+                        max,
+                        min_exclusive,
+                        max_exclusive,
+                        rev: false,
+                    }) {
+                        Ok(CommandResponse::Members { members }) => {
+                            RespValue::Integer((members.len() / 2) as i64)
+                        }
+                        Ok(_) => RespValue::Error("ERR invalid zcount response".to_string()),
+                        Err(err) => RespValue::Error(format!("ERR {err}")),
+                    }
+                }
+                (Err(err), _) | (_, Err(err)) => RespValue::Error(err),
+            }
+        }
+        "ZPOPMIN" | "ZPOPMAX" if args.len() == 2 || args.len() == 3 => {
+            let count = match args.get(2) {
+                None => 1,
+                Some(raw) => match parse_i64_arg(raw, "count") {
+                    Ok(count) if count >= 0 => count as u64,
+                    Ok(_) => {
+                        return RespValue::Error(
+                            "ERR value is out of range, must be positive".to_string(),
+                        )
+                    }
+                    Err(err) => return RespValue::Error(err),
+                },
+            };
+            match execute(Command::ZSetPop {
+                key: string_arg(&args[1]),
+                min: command == "ZPOPMIN",
+                count,
+            }) {
+                Ok(CommandResponse::Members { members }) => RespValue::Array(
+                    members
+                        .into_iter()
+                        .map(|value| RespValue::Bulk(Some(value)))
+                        .collect(),
+                ),
+                Ok(_) => RespValue::Error("ERR invalid zpop response".to_string()),
+                Err(err) => RespValue::Error(format!("ERR {err}")),
+            }
+        }
+        "ZRANK" | "ZREVRANK" if args.len() == 3 => match execute(Command::ZSetRank {
+            key: string_arg(&args[1]),
+            member: args[2].clone(),
+            rev: command == "ZREVRANK",
+        }) {
+            Ok(CommandResponse::Bytes { value: Some(rank) }) => {
+                match String::from_utf8_lossy(&rank).parse::<i64>() {
+                    Ok(rank) => RespValue::Integer(rank),
+                    Err(_) => RespValue::Error("ERR invalid zrank response".to_string()),
+                }
+            }
+            Ok(CommandResponse::Bytes { value: None }) => RespValue::Bulk(None),
+            Ok(_) => RespValue::Error("ERR invalid zrank response".to_string()),
+            Err(err) => RespValue::Error(format!("ERR {err}")),
+        },
         "LPUSH" | "RPUSH" if args.len() >= 3 => {
             let key = string_arg(&args[1]);
             let left = command == "LPUSH";
