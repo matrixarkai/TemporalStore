@@ -944,7 +944,6 @@ pub(super) fn shard_has_model_entries(shard: &ShardState) -> bool {
         || !shard.context_audits.is_empty()
         || !shard.context_entities.is_empty()
         || !shard.context_children.is_empty()
-        || !shard.context_embeddings.is_empty()
         || !shard.context_summaries.is_empty()
         || !shard.context_compressions.is_empty()
 }
@@ -1031,18 +1030,6 @@ pub(super) fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePag
                 .into_iter()
                 .map(|address| live_page_entry(key.clone(), "context_child", None, address)),
         );
-    }
-    // Persist one entry per embedding under the pre-fold key `ctx:embedding:{tenant}:{ref}`,
-    // rebuilt from the collection key plus the BTree key, so the on-disk shape is unchanged.
-    for (collection_key, series) in &shard.context_embeddings {
-        entries.extend(series.iter().map(|(ref_hash, address)| {
-            live_page_entry(
-                format!("{collection_key}:{ref_hash}"),
-                "context_embedding",
-                None,
-                address.clone(),
-            )
-        }));
     }
     for (key, series) in &shard.context_summaries {
         entries.extend(
@@ -1602,7 +1589,6 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut saw_context_audits = false;
     let mut saw_context_entities = false;
     let mut saw_context_children = false;
-    let mut saw_context_embeddings = false;
     let mut saw_context_summaries = false;
     let mut saw_context_compressions = false;
 
@@ -1618,7 +1604,6 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut context_audits = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut context_entities = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut context_children = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
-    let mut context_embeddings = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut context_summaries = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut context_compressions = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
 
@@ -1743,17 +1728,8 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                     entry.address,
                 );
             }
-            "context_embedding" => {
-                saw_context_embeddings = true;
-                if let Some((collection_key, ref_hash)) =
-                    split_context_embedding_key(&entry.object_key)
-                {
-                    context_embeddings
-                        .entry(collection_key)
-                        .or_insert_with(BTreeMap::new)
-                        .insert(ref_hash, entry.address);
-                }
-            }
+            // "context_embedding" entries from pre-retirement indexes fall through to the
+            // ignore arm below: the rows they addressed have no readers left.
             "context_summary" => {
                 saw_context_summaries = true;
                 insert_timestamped_secondary_view(
@@ -1843,9 +1819,6 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         let persisted = std::mem::take(&mut shard.context_children);
         shard.context_children =
             reconcile_timestamped_series_membership(&persisted, context_children);
-    }
-    if saw_context_embeddings {
-        shard.context_embeddings = context_embeddings;
     }
     if saw_context_summaries {
         let persisted = std::mem::take(&mut shard.context_summaries);

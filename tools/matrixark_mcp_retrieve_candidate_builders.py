@@ -26,6 +26,9 @@ def event_candidate(
     metadata: Json,
     text: str,
 ) -> Json:
+    meta = record.get("embedding_meta")
+    if isinstance(meta, dict) and meta:
+        record = {**meta, **record}
     return {
         "ref_type": "event",
         "ref_hash": record["event_id_hash"],
@@ -86,6 +89,9 @@ def entity_candidate(
     node_score: float,
     text: str,
 ) -> Json:
+    meta = record.get("embedding_meta")
+    if isinstance(meta, dict) and meta:
+        record = {**meta, **record}
     source_entity_hashes = record.get("source_entity_hashes", [])
     source_session_ids = record.get("source_session_ids", [])
     is_profile_entity_bridge = (
@@ -160,6 +166,9 @@ def segment_candidate(
     node_score: float,
     saliency_score: float,
 ) -> Json:
+    meta = record.get("embedding_meta")
+    if isinstance(meta, dict) and meta:
+        record = {**meta, **record}
     return {
         "ref_type": "segment",
         "ref_hash": record["segment_hash"],
@@ -204,6 +213,9 @@ def compression_candidate(
     node_score: float,
     text: str,
 ) -> Json:
+    meta = record.get("embedding_meta")
+    if isinstance(meta, dict) and meta:
+        record = {**meta, **record}
     return {
         "ref_type": "compression",
         "ref_hash": compression_hash,
@@ -253,6 +265,9 @@ def summary_candidate(
     node_score: float,
     text: str,
 ) -> Json:
+    meta = record.get("embedding_meta")
+    if isinstance(meta, dict) and meta:
+        record = {**meta, **record}
     return {
         "ref_type": "summary",
         "ref_hash": record.get("summary_hash") or record.get("node_hash"),
@@ -325,6 +340,9 @@ def resource_skill_candidate(
     node_score: float,
     text: str,
 ) -> Json:
+    meta = record.get("embedding_meta")
+    if isinstance(meta, dict) and meta:
+        record = {**meta, **record}
     return {
         "ref_type": ref_type,
         "ref_hash": ref_hash,

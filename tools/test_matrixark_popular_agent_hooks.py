@@ -816,7 +816,7 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
                     "Exit code: 0",
                     "Ran 89 tests in 4.51s",
                     "OK",
-                    "To https://github.com/bjmeetsfo/TemporalStore.git",
+                    "To https://github.com/matrixarkai/TemporalStore.git",
                     "ca8f8a96 HEAD -> main",
                     "More streaming output that should be ignored.",
                 ]

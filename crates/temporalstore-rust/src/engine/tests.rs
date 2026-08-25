@@ -7,7 +7,7 @@ use crate::engine::golden::{
     native_api_golden_corpus_report, native_feature_sequence_golden_corpus_report,
 };
 use crate::types::{
-    ContextAuditRef, ContextChildRef, ContextCompressionEvent, ContextEmbedding,
+    ContextAuditRef, ContextChildRef, ContextCompressionEvent,
     ContextExtractedEventIndexes, ContextSummary, ContextWire, FeatureFilter, FeatureFilterOp,
     ReplicatedCommand,
 };
@@ -80,5 +80,6 @@ mod raft_apply_coalesce;
 mod phase1_flat;
 mod part1;
 mod part2;
+mod quota;
 mod part3;
 mod part4;

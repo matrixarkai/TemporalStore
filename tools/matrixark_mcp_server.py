@@ -284,7 +284,10 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
         self._retrieve_shed_cooldown_ms = max(0, int(os.environ.get("MATRIXARK_RETRIEVE_SHED_COOLDOWN_MS", "0")))
         self._retrieve_shed_until_perf = 0.0
         self._retrieve_shed_lock = threading.Lock()
-        self._audit_mode_default = os.environ.get("MATRIXARK_AUDIT_MODE", "async").strip().lower() or "async"
+        # Audits default OFF: audit records live in the main record log, so with auditing on a
+        # read-heavy workload grows the store without bound. MATRIXARK_AUDIT_MODE=async restores
+        # the off-request-path auditing; full/sync restore per-call durability.
+        self._audit_mode_default = os.environ.get("MATRIXARK_AUDIT_MODE", "off").strip().lower() or "off"
         self._audit_executor = ThreadPoolExecutor(max_workers=max(1, int(os.environ.get("MATRIXARK_AUDIT_WORKERS", "2"))))
         self._operation_limiters = {
             group: threading.BoundedSemaphore(max(1, int(capacity)))

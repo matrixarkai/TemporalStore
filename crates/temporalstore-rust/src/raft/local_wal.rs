@@ -19,6 +19,9 @@ pub struct StagedWalAppend {
     node_id: RaftNodeId,
     min_keep_segments: usize,
     slow_fsync_threshold_ms: u64,
+    /// Whether this append wrote a base whose snapshot boundary ADVANCED -- the one kind of
+    /// record that supersedes on-disk history. Its barrier makes earlier segments prunable.
+    compacting_base: bool,
 }
 
 impl LocalRaftWal {
@@ -76,6 +79,124 @@ impl LocalRaftWal {
     ) -> io::Result<()> {
         self.append_node_record(shard_id, node_id, record)?;
         self.compact_node_records(shard_id, node_id, keep_last)
+    }
+
+    /// The file a snapshot's state image lives in, named by the snapshot's boundary index.
+    fn image_path(&self, shard_id: ShardId, node_id: RaftNodeId, index: u64) -> PathBuf {
+        self.node_segment_dir(shard_id, node_id)
+            .join(format!("image-{index:020}.bin"))
+    }
+
+    /// Move a record's in-memory image into its own durable file, returning a record that
+    /// references it. The file is fsynced BEFORE any record naming it can be written, so a
+    /// record that says "my image is in a file" is never durable ahead of the file itself.
+    /// Older image files are pruned: recovery folds records forward, so only the newest
+    /// snapshot's image is ever read back.
+    fn externalize_state_image(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+        record: &RaftWalRecord,
+    ) -> io::Result<Option<RaftWalRecord>> {
+        let Some(snapshot) = &record.installed_snapshot else {
+            return Ok(None);
+        };
+        let Some(image) = &snapshot.state_image else {
+            return Ok(None);
+        };
+        let index = snapshot.last_included_index;
+        let path = self.image_path(shard_id, node_id, index);
+        if !path.exists() {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let message = crate::sdk::v1::WalStateImage {
+                index: image.index_bytes.clone(),
+                next_page_id: image.next_page_id,
+                slabs: image
+                    .slabs
+                    .iter()
+                    .map(|slab| crate::sdk::v1::WalStateImageSlab {
+                        page_slab_id: slab.page_slab_id,
+                        slab: slab.bytes.clone(),
+                    })
+                    .collect(),
+            };
+            let bytes = prost::Message::encode_to_vec(&message);
+            let tmp = path.with_extension("tmp");
+            {
+                let mut file = OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(true)
+                    .open(&tmp)?;
+                file.write_all(&crate::log_framing::encode_line(&bytes))?;
+                file.sync_data()?;
+            }
+            fs::rename(&tmp, &path)?;
+            // Prune superseded images: recovery only ever reattaches the newest.
+            if let Ok(entries) = fs::read_dir(self.node_segment_dir(shard_id, node_id)) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    if let Some(stem) = name.strip_prefix("image-").and_then(|rest| {
+                        rest.strip_suffix(".bin")
+                    }) {
+                        if stem.parse::<u64>().map(|old| old < index).unwrap_or(false) {
+                            let _ = fs::remove_file(entry.path());
+                        }
+                    }
+                }
+            }
+        }
+        let mut externalized = record.clone();
+        if let Some(snapshot) = externalized.installed_snapshot.as_mut() {
+            snapshot.state_image = None;
+            snapshot.state_image_externalized = true;
+        }
+        Ok(Some(externalized))
+    }
+
+    /// Reattach an externalized image to a recovered record. A record that references a file
+    /// which does not exist is COMMITTED corruption -- the file is made durable before any
+    /// record naming it, so a torn tail cannot produce this.
+    fn reattach_state_image(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+        record: &mut RaftWalRecord,
+    ) -> io::Result<()> {
+        let Some(snapshot) = record.installed_snapshot.as_mut() else {
+            return Ok(());
+        };
+        if !snapshot.state_image_externalized || snapshot.state_image.is_some() {
+            return Ok(());
+        }
+        let path = self.image_path(shard_id, node_id, snapshot.last_included_index);
+        let raw = fs::read(&path).map_err(|err| {
+            io::Error::other(format!(
+                "snapshot image file missing for index {}: {err}",
+                snapshot.last_included_index
+            ))
+        })?;
+        let payload = crate::log_framing::decode_line(raw.strip_suffix(b"\n").unwrap_or(&raw))
+            .map_err(io::Error::other)?;
+        let message = <crate::sdk::v1::WalStateImage as prost::Message>::decode(payload)
+            .map_err(io::Error::other)?;
+        snapshot.state_image = Some(RaftSnapshotStateImage {
+            index_bytes: message.index,
+            next_page_id: message.next_page_id,
+            slabs: message
+                .slabs
+                .into_iter()
+                .map(|slab| RaftSnapshotStateImageSlab {
+                    page_slab_id: slab.page_slab_id,
+                    bytes: slab.slab,
+                })
+                .collect(),
+        });
+        snapshot.state_image_externalized = false;
+        Ok(())
     }
 
     pub fn persist_node_segmented(
@@ -151,6 +272,15 @@ impl LocalRaftWal {
         min_keep_segments: usize,
         slow_fsync_threshold_ms: u64,
     ) -> io::Result<StagedWalAppend> {
+        // A state image is written once, to its own file, before any record that references it;
+        // the record then carries the reference. Embedding it re-serialized the whole image into
+        // every subsequent record.
+        let externalized = self.externalize_state_image(shard_id, node_id, record)?;
+        let record = externalized.as_ref().unwrap_or(record);
+        let marker_index = record
+            .installed_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.last_included_index);
         let max_segment_bytes = max_segment_bytes.max(1);
         let min_keep_segments = min_keep_segments.max(1);
         let segment_dir = self.node_segment_dir(shard_id, node_id);
@@ -222,7 +352,18 @@ impl LocalRaftWal {
                     replica_role: record.replica_role,
                     joint_membership: record.joint_membership.clone(),
                     latest_external_snapshot_ref: record.latest_external_snapshot_ref.clone(),
-                    installed_snapshot: record.installed_snapshot.clone(),
+                    // An unchanged marker folds forward from the base, exactly as entries do.
+                    installed_snapshot: if record
+                        .installed_snapshot
+                        .as_ref()
+                        .map(|snapshot| snapshot.last_included_index)
+                        == cursor.persisted_marker_index
+                        && cursor.persisted_marker_index.is_some()
+                    {
+                        None
+                    } else {
+                        record.installed_snapshot.clone()
+                    },
                     apply_snapshot_fence: record.apply_snapshot_fence.clone(),
                     storage_apply_fence: record.storage_apply_fence.clone(),
                     // Telemetry counters are not durability-relevant (the fingerprint zeroes
@@ -276,7 +417,15 @@ impl LocalRaftWal {
         } else {
             max_segment_bytes
         };
-        let rotate = active_len > 0 && active_len + encoded.len() as u64 > rotate_threshold;
+        // Size-based rotation as before -- plus: a COMPACTING base opens a segment. When the
+        // snapshot boundary advanced, the base supersedes the history in the current segment,
+        // and only at a segment boundary can pruning reclaim it. Ordinary re-bases (an empty
+        // log, a conflict) stay in-segment: rotating on every one turned each read-index
+        // persist into file churn and erased the record trail the legacy contract promises.
+        let marker_advanced =
+            marker_index.is_some() && marker_index != cursor.persisted_marker_index;
+        let rotate = (active_len > 0 && active_len + encoded.len() as u64 > rotate_threshold)
+            || (wrote_base && marker_advanced && active_len > 0);
         if rotate {
             active_segment_id += 1;
             if !wrote_base {
@@ -341,6 +490,11 @@ impl LocalRaftWal {
         }
         cursor.persisted_last_index = log_last_index;
         cursor.persisted_last_term = log_last_term;
+        cursor.persisted_marker_index = record
+            .installed_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.last_included_index)
+            .or(cursor.persisted_marker_index);
 
         // Everything the cursor must record about this append is in place, so the lock can go
         // before the expensive part. Writers blocked behind it now proceed and register against
@@ -354,6 +508,7 @@ impl LocalRaftWal {
             node_id,
             min_keep_segments,
             slow_fsync_threshold_ms,
+            compacting_base: wrote_base && marker_advanced,
         })
     }
 
@@ -370,6 +525,7 @@ impl LocalRaftWal {
             node_id,
             min_keep_segments,
             slow_fsync_threshold_ms,
+            compacting_base,
         } = staged;
         let last_fsync_elapsed_ms = gate.await_durable(ticket, || {
             crate::durability_metrics::record_barrier("raft_wal_append");
@@ -391,8 +547,16 @@ impl LocalRaftWal {
         // where the sequence was `recover().valid_records + 1` over the surviving
         // segments only.
         let mut released_segment_count = 0u64;
-        if cursor.segments.len() > min_keep_segments {
-            let remove = cursor.segments.len() - min_keep_segments;
+        // A durable COMPACTING base supersedes every earlier segment; one predecessor is kept
+        // so a torn tail on the active segment still has somewhere to recover from. Ordinary
+        // appends keep the configured count.
+        let effective_keep = if compacting_base {
+            min_keep_segments.min(2)
+        } else {
+            min_keep_segments
+        };
+        if cursor.segments.len() > effective_keep {
+            let remove = cursor.segments.len() - effective_keep;
             let pruned: Vec<RaftWalSegmentInfo> = cursor.segments.drain(0..remove).collect();
             for segment in &pruned {
                 fs::remove_file(&segment.path)?;
@@ -425,9 +589,15 @@ impl LocalRaftWal {
         node_id: RaftNodeId,
     ) -> io::Result<NodeWalCursor> {
         let recovery = self.recover_node_segmented_scan(shard_id, node_id)?;
+        let recovered_marker = recovery
+            .record
+            .as_ref()
+            .and_then(|record| record.installed_snapshot.as_ref())
+            .map(|snapshot| snapshot.last_included_index);
         let segments = self.node_segments(shard_id, node_id)?;
         let runtime_state = self.read_segment_runtime_state(shard_id, node_id);
         Ok(NodeWalCursor {
+            persisted_marker_index: recovered_marker,
             next_sequence: recovery.valid_records as u64 + 1,
             segments,
             released_segment_count: runtime_state.released_segment_count,
@@ -491,7 +661,11 @@ impl LocalRaftWal {
         if let Ok(mut cursors) = self.cursors.lock() {
             cursors.remove(&(shard_id, node_id));
         }
-        self.recover_node_segmented_scan(shard_id, node_id)
+        let mut recovery = self.recover_node_segmented_scan(shard_id, node_id)?;
+        if let Some(record) = recovery.record.as_mut() {
+            self.reattach_state_image(shard_id, node_id, record)?;
+        }
+        Ok(recovery)
     }
 
     fn recover_node_segmented_scan(
@@ -535,6 +709,14 @@ impl LocalRaftWal {
                         // `from_index` were superseded (conflict overwrite), and anything
                         // below `log_first_index` was compacted away.
                         let mut merged = envelope.record;
+                        // A marker the record omitted is unchanged: inherit the base's, the
+                        // same way unchanged entries fold forward.
+                        if merged.installed_snapshot.is_none() {
+                            if let Some(previous) = last_record.as_ref() {
+                                merged.installed_snapshot =
+                                    previous.installed_snapshot.clone();
+                            }
+                        }
                         let appended = std::mem::take(&mut merged.entries);
                         let base = last_record;
                         // An incremental record omits the volatile telemetry blocks; carry

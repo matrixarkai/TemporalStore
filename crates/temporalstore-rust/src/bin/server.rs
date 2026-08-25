@@ -2121,6 +2121,10 @@ fn env_bool(name: &str, default: bool) -> bool {
 fn raft_config_from_env() -> RaftConfig {
     let defaults = RaftConfig::default();
     RaftConfig {
+        // 8 MB of applied log per shard before the periodic check compacts it into a
+        // state-image snapshot. Left unbounded, every segment rotation rewrites an
+        // ever-growing base record, and restart replays all of it.
+        max_applied_log_bytes: env_u64("TS_RAFT_MAX_APPLIED_LOG_BYTES", 8 * 1024 * 1024),
         replication_deadline_ms: env_u64(
             "TS_RAFT_REPLICATION_DEADLINE_MS",
             defaults.replication_deadline_ms,
