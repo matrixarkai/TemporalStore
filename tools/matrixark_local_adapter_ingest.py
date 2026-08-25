@@ -492,7 +492,7 @@ class _LocalAdapterIngestMixin:
                 "auto_batch_extract_result": auto_batch_result,
                 "quality_warnings": ["async_processing_pending:extraction,summary,compression,embedding"],
             }
-        prior_records = [] if args.get("skip_prior_context") else self.prior_context_records()
+        prior_records = [] if args.get("skip_prior_context") else self.prior_context_records(envelope["scope"])
         prior_context = (
             {"level": "", "refs": [], "messages": [], "summaries": [], "char_count": 0, "limit": MAX_PRIOR_MESSAGES}
             if args.get("skip_prior_context")
@@ -1849,7 +1849,7 @@ class _LocalAdapterIngestMixin:
                 "reason": "logical batch below extraction threshold",
             }
 
-        prior_records = [] if args.get("skip_prior_context") else self.prior_context_records()
+        prior_records = [] if args.get("skip_prior_context") else self.prior_context_records(envelope["scope"])
         prior_context = (
             {"level": "", "refs": [], "messages": [], "summaries": [], "char_count": 0, "limit": MAX_PRIOR_MESSAGES}
             if args.get("skip_prior_context")
