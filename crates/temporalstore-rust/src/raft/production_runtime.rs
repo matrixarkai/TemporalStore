@@ -470,6 +470,10 @@ impl ProductionRaftRuntime {
                                 }
                             } else {
                                 quorum_misses = 0;
+                                // Quorum contact within the window is exactly what the lease
+                                // certifies; without this an idle leader's lease decays and
+                                // the next propose stalls on it (see the method's comment).
+                                cluster.renew_leader_lease_after_quorum_contact();
                             }
                             last_heartbeat = InstantCompat::now();
                             let _ = cluster.tick_election();

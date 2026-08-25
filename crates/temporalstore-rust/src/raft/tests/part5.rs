@@ -1464,3 +1464,40 @@ fn serialized_pipeline_fallback_holds_the_invariant() {
     );
     assert_eq!(accepted, 16, "every propose should commit through the serialized fallback");
 }
+
+/// An idle leader's lease decays between proposes; the timer's quorum-contact renewal is
+/// what keeps the NEXT propose from bouncing off `leader_lease_valid`. Without the renewal
+/// this test fails with NoMajority/LeaderUnavailable on the post-idle propose.
+#[test]
+fn idle_leader_lease_renews_on_quorum_contact() {
+    let _pipeline = super::part4::EnvFlagGuard::set("TS_RAFT_FOLLOWER_PIPELINE");
+    let dir = tempfile::tempdir().unwrap();
+    let config = RaftConfig {
+        lease_duration_ms: 50,
+        ..RaftConfig::default()
+    };
+    let cluster = RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], config).unwrap();
+    let transport = cluster.clone();
+    cluster
+        .propose_distributed(
+            Command::StringSet {
+                key: "warm".to_string(),
+                value: b"v".to_vec(),
+            },
+            &transport,
+        )
+        .unwrap();
+    // Idle past the lease: the propose gate would now reject on leader_lease_valid.
+    cluster.advance_time_ms(200);
+    // The timer loop's quorum-contact renewal (senders answered within the window).
+    cluster.renew_leader_lease_after_quorum_contact();
+    cluster
+        .propose_distributed(
+            Command::StringSet {
+                key: "after-idle".to_string(),
+                value: b"v2".to_vec(),
+            },
+            &transport,
+        )
+        .expect("a renewed lease must admit the post-idle propose");
+}
