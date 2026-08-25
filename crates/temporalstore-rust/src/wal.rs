@@ -699,6 +699,10 @@ impl LocalWriteAheadLogStore {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let _append_lock = WalAppendLock::acquire(&inner.root, shard_id)?;
+        // Start a piece if a crash left none, exactly as the single-record path does. Without it
+        // the record creates the file with no base header, so it reads as starting at log id zero
+        // -- an address the sealed pieces already own.
+        ensure_active_wal_segment(&mut inner, shard_id)?;
         let (last_sequence, _on_disk_len) = resolve_last_sequence_for_append(&mut inner, shard_id)?;
         inner.last_sequence_by_shard.insert(shard_id, last_sequence);
         let seq = last_sequence.saturating_add(1);
@@ -714,10 +718,19 @@ impl LocalWriteAheadLogStore {
         // record is not yet durable); the coalesced barrier advances it once it reaches disk.
         let report = append_record_locked(&mut inner, &rec, false, None)?;
         inner.stats.last_sequence = report.current_sequence;
+        // Roll after the record lands, as the single-record path does. This is only safe because
+        // sealing a piece now fsyncs its contents: the barrier this record is waiting for opens
+        // the piece being WRITTEN, which after a roll is the new one, so without that fsync the
+        // record would be sealed away with no barrier covering it.
+        let rolled = roll_wal_segment_if_due(&mut inner, shard_id, Some(report.persistent_bytes))?;
         inner.last_sequence_by_shard.insert(shard_id, seq);
-        inner
-            .verified_len_by_shard
-            .insert(shard_id, report.persistent_bytes);
+        if !rolled {
+            // After a roll the piece being written is new and its length was recorded by the roll;
+            // the length this record left behind belongs to the piece just sealed.
+            inner
+                .verified_len_by_shard
+                .insert(shard_id, report.persistent_bytes);
+        }
         // `inner` + `_append_lock` drop here so a concurrent writer can append while this
         // writer's (later, lock-released) group-commit fsync is in flight.
         Ok(rec)
@@ -894,6 +907,13 @@ impl LocalWriteAheadLogStore {
     ) -> Result<WriteAheadLogAppendReport, WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         fs::create_dir_all(&inner.root)?;
+        // Start a piece if a crash left none, before anything reads where the log ends. Replay
+        // writes a record whose sequence is already decided, so creating the file without a base
+        // header here would give it an address the sealed pieces already own -- and a replayed
+        // record is exactly the one nobody would think to re-check. No roll: replay is
+        // reconstructing a log that already exists, and choosing new piece boundaries part-way
+        // through that is a separate decision.
+        ensure_active_wal_segment(&mut inner, record.shard_id)?;
         let last_sequence = match inner.last_sequence_by_shard.get(&record.shard_id).copied() {
             Some(sequence) => sequence,
             None => {
@@ -1658,9 +1678,25 @@ fn roll_wal_segment_if_due(
 
     // Trim the reservation before sealing, so a sealed piece's length IS its contents and every
     // reader that derives a sealed piece's end from its file length keeps being right.
-    if record_end < length {
+    //
+    // The fsync here is what makes the piece's CONTENTS durable, and it has to happen whether or
+    // not there was anything to trim. A record appended with sync=false sits in the page cache
+    // until a barrier, and the barrier that follows -- `group_commit_sync` -- opens the piece
+    // being written, which after this rename is the NEW one. Sealing an unsynced piece would
+    // therefore leave those bytes with no barrier that ever covers them, while the commit returns
+    // success: acked and not durable.
+    //
+    // Until now that only held by accident. The trim runs when a preallocated file is longer than
+    // its records, which is the default, so the fsync usually happened -- for an unrelated reason.
+    // With preallocation off it did not happen at all. The block store's own roll has always done
+    // this deliberately ("the outgoing slab may hold relaxed (un-fsynced) bulk appends; make them
+    // durable before we seal"); this one now does too.
+    {
         let file = OpenOptions::new().write(true).open(&path)?;
-        file.set_len(record_end)?;
+        if record_end < length {
+            file.set_len(record_end)?;
+        }
+        crate::durability_metrics::record_barrier("wal_seal_outgoing_piece");
         file.sync_all()?;
     }
     inner.prealloc_physical_by_shard.remove(&shard_id);
@@ -5328,6 +5364,85 @@ mod tests {
                 written.iter().all(|(_, earlier)| *earlier < log_id),
                 "a batch record took an address an earlier record already owns"
             );
+        }
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// Sealing a piece makes its contents durable, whether or not there was a reservation to trim.
+    ///
+    /// A record appended with sync=false sits in the page cache until a barrier, and the barrier
+    /// that follows opens the piece being WRITTEN, which after a roll is the new one. So the bytes
+    /// in the piece just sealed have no barrier that ever covers them unless the roll provides one.
+    ///
+    /// This counts the barrier. A test cannot show the loss itself without a real crash: the page
+    /// cache serves the bytes back to this process whether or not they reached the device.
+    #[test]
+    fn sealing_a_piece_makes_its_contents_durable() {
+        set_wal_segment_bytes_for_test(Some(2 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let seal_barriers = || -> u64 {
+            crate::durability_metrics::snapshot()
+                .get("wal_seal_outgoing_piece")
+                .copied()
+                .unwrap_or(0)
+        };
+        let before = seal_barriers();
+        let mut rolled = false;
+        let mut index = 0u64;
+        while index < 5_000 && !rolled {
+            let pieces_before = wal_segment_paths(dir.path(), 1).len();
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 64],
+                    },
+                    false,
+                )
+                .unwrap();
+            rolled = wal_segment_paths(dir.path(), 1).len() > pieces_before;
+            index += 1;
+        }
+        assert!(rolled, "never rolled, so this tested nothing");
+        assert!(
+            seal_barriers() > before,
+            "sealing took no barrier, so the records in the sealed piece have none"
+        );
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// The group-commit reserve path rolls, and its records survive the roll.
+    #[test]
+    fn the_group_commit_path_rolls_and_keeps_its_records() {
+        set_wal_segment_bytes_for_test(Some(4 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let mut last = 0u64;
+        for index in 0..300u64 {
+            last = store
+                .append_for_group_commit(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 64],
+                    },
+                )
+                .unwrap()
+                .sequence;
+        }
+        store.commit_barrier(1, last).unwrap();
+        assert!(
+            wal_segment_paths(dir.path(), 1).len() > 1,
+            "the group-commit path should have rolled the log, not grown one piece"
+        );
+        let scanned = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        assert_eq!(scanned.len(), 300, "every reserved record should still be there");
+        let mut expected = 1u64;
+        for (_, line) in &scanned {
+            assert_eq!(decode_wal_line(line).unwrap().sequence, expected);
+            expected += 1;
         }
         set_wal_segment_bytes_for_test(None);
     }
