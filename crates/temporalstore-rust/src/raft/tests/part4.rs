@@ -1058,6 +1058,124 @@ fn metaserver_raft_mutation_api_rejects_without_majority() {
     assert!(response.status.message.contains("majority"));
 }
 
+fn cluster_with_an_installed_snapshot() -> MetaRaftCluster {
+    let meta = MetaRaftCluster::new([10, 11, 12]);
+    assert!(meta
+        .add_namespace(AddNamespaceRequest {
+            namespace: "before".to_string()
+        })
+        .status
+        .ok);
+    let snapshot = meta.export_meta_snapshot().expect("a snapshot");
+    meta.install_meta_snapshot_on_live_nodes(snapshot)
+        .expect("the snapshot installs");
+    meta
+}
+
+#[test]
+fn a_change_after_a_snapshot_install_actually_takes_effect() {
+    // Installing a meta snapshot truncates the log and marks everything up to
+    // the snapshot applied. The next index came from the log alone, so
+    // numbering restarted at 1 -- indices the node had already applied. Every
+    // proposal after an install was skipped as a duplicate and reported ok, so
+    // the cluster accepted metadata changes and silently discarded them.
+    let meta = cluster_with_an_installed_snapshot();
+
+    let added = meta.add_namespace(AddNamespaceRequest {
+        namespace: "after".to_string(),
+    });
+    assert!(added.status.ok, "{:?}", added.status);
+
+    let namespaces = meta
+        .read_meta()
+        .expect("a readable replica")
+        .list_namespaces()
+        .namespaces;
+    assert!(
+        namespaces.iter().any(|namespace| namespace.namespace == "after"),
+        "a change reported as accepted never took effect: {namespaces:?}"
+    );
+    // What the snapshot carried is still there too.
+    assert!(namespaces.iter().any(|namespace| namespace.namespace == "before"));
+}
+
+#[test]
+fn changes_keep_taking_effect_after_a_snapshot_install() {
+    // One change could succeed by luck if the numbering only collided once.
+    let meta = cluster_with_an_installed_snapshot();
+    for round in 0..5u64 {
+        let name = format!("ns-{round}");
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: name.clone()
+            })
+            .status
+            .ok);
+        let namespaces = meta
+            .read_meta()
+            .expect("a readable replica")
+            .list_namespaces()
+            .namespaces;
+        assert!(
+            namespaces.iter().any(|namespace| namespace.namespace == name),
+            "change {round} was accepted and discarded: {namespaces:?}"
+        );
+    }
+}
+
+#[test]
+fn a_snapshot_install_does_not_rewind_the_commit_index() {
+    // The reused index was also written straight into commit_index, walking it
+    // backwards past entries the cluster had already committed.
+    let meta = MetaRaftCluster::new([10, 11, 12]);
+    for round in 0..3u64 {
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: format!("ns-{round}")
+            })
+            .status
+            .ok);
+    }
+    let before = meta.status().commit_index;
+    let snapshot = meta.export_meta_snapshot().expect("a snapshot");
+    meta.install_meta_snapshot_on_live_nodes(snapshot)
+        .expect("the snapshot installs");
+    assert!(meta
+        .add_namespace(AddNamespaceRequest {
+            namespace: "after".to_string()
+        })
+        .status
+        .ok);
+    assert!(
+        meta.status().commit_index >= before,
+        "commit index went backwards: {} then {}",
+        before,
+        meta.status().commit_index
+    );
+}
+
+#[test]
+fn an_ordinary_change_still_reports_success() {
+    // The guard on "committed but applied nothing" must not catch the normal
+    // path: every real change still has to come back ok, before and after a
+    // snapshot install.
+    let meta = MetaRaftCluster::new([10, 11, 12]);
+    assert!(meta
+        .add_namespace(AddNamespaceRequest {
+            namespace: "before".to_string()
+        })
+        .status
+        .ok);
+    let snapshot = meta.export_meta_snapshot().expect("a snapshot");
+    meta.install_meta_snapshot_on_live_nodes(snapshot)
+        .expect("the snapshot installs");
+    let after = meta.add_namespace(AddNamespaceRequest {
+        namespace: "after".to_string(),
+    });
+    assert!(after.status.ok, "{:?}", after.status);
+    assert_ne!(after.status.code, "mutation_not_applied");
+}
+
 #[test]
 fn muting_metadata_change_refuses_changes_on_the_raft_path_too() {
     // The mute is the incident lever: while it is set the metaserver is meant

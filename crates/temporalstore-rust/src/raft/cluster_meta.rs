@@ -44,7 +44,22 @@ impl MetaRaftCluster {
     pub fn propose_mutation(&self, mutation: MetaMutation) -> Result<Status, RaftError> {
         Ok(self
             .propose_inner(MetaCommand::ApplyMutation(mutation))?
-            .unwrap_or_else(Status::ok))
+            .unwrap_or_else(|| {
+                // `apply_meta_committed` answers `None` only when it applied
+                // nothing, which for a change just appended and committed means
+                // the entry was skipped as already applied. Reporting that as
+                // success is what let a numbering defect discard every metadata
+                // change after a snapshot install while every caller was told
+                // the change had been made.
+                //
+                // Not reachable today, and that is the point: this is the
+                // difference between the next defect of that shape being loud
+                // and being silent.
+                Status::error(
+                    "mutation_not_applied",
+                    "the metaserver committed this change and applied nothing",
+                )
+            }))
     }
 
     pub fn register(&self, request: RegisterShardRequest) -> RegisterShardResponse {
@@ -648,7 +663,15 @@ impl MetaRaftCluster {
             .ok_or(RaftError::LeaderUnavailable)?;
         let entry = MetaLogEntry {
             term: leader.current_term,
-            index: leader.log.last().map(|entry| entry.index + 1).unwrap_or(1),
+            // Numbered from the log *or the installed snapshot*, whichever is
+            // further along. Installing a meta snapshot truncates the log and
+            // marks everything up to the snapshot applied, so taking the next
+            // index from the log alone restarted numbering at 1 -- indices the
+            // node had already applied. Every proposal after an install was
+            // skipped as a duplicate, and `propose_mutation` turns "not applied"
+            // into `Status::ok`, so the change was discarded and reported
+            // successful.
+            index: meta_node_last_log_or_snapshot_index(leader) + 1,
             command,
         };
         let mut replicated = 0;
