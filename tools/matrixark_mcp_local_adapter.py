@@ -4259,7 +4259,49 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
     def _apply_serving_dedup(self, records: list[Json]) -> list[Json]:
         return self._coalesce_summary_dirty(self._filter_duplicate_model_registry(records))
 
+    @property
+    def _append_coalesce_tls(self) -> threading.local:
+        tls = getattr(self, "_append_coalesce_tls_obj", None)
+        if tls is None:
+            tls = threading.local()
+            self._append_coalesce_tls_obj = tls
+        return tls
+
+    def _begin_append_coalescing(self) -> None:
+        """Buffer this THREAD's subsequent append() calls until flush.
+
+        For a run of consecutive appends with no interleaved read, one append_many is
+        semantically identical (same records, same order, same batch pipeline) and costs one
+        durable engine batch instead of one per record. Thread-local on purpose: the adapter is
+        shared across request threads, and one request's buffer must never receive another's
+        records. The caller owns the flush point (before its first read) and the abort on
+        failure (so a reused pool thread cannot inherit an active buffer).
+        """
+        tls = self._append_coalesce_tls
+        tls.buffer = []
+        tls.active = True
+
+    def _flush_append_coalescing(self) -> None:
+        tls = self._append_coalesce_tls
+        if not getattr(tls, "active", False):
+            return
+        tls.active = False
+        buffered = tls.buffer
+        tls.buffer = []
+        if buffered:
+            self.append_many(buffered)
+
+    def _abort_append_coalescing(self) -> None:
+        """Drop this thread's buffered records without writing (failed-request cleanup)."""
+        tls = self._append_coalesce_tls
+        tls.active = False
+        tls.buffer = []
+
     def append(self, record: Json) -> None:
+        tls = getattr(self, "_append_coalesce_tls_obj", None)
+        if tls is not None and getattr(tls, "active", False):
+            tls.buffer.append(record)
+            return
         records = self._apply_serving_dedup(
             self._stamp_ingest_fields(materialize_serving_record_batch([record]))
         )
