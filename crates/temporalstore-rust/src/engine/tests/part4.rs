@@ -1441,6 +1441,70 @@ fn dump_clears_dumped_buckets_so_they_are_not_redumped() {
     );
 }
 
+/// A follower behind EVERY dump must be reported, not passed over in silence.
+///
+/// A cursor pins the newest dump at or below it. One that sits below all of them matched nothing
+/// and fell straight through, so the case where NO retained dump can serve a follower -- the one
+/// that most needs saying -- produced no signal at all, and pruning went ahead and threw away the
+/// only dump that could ever have helped. The oldest is kept instead, and reported with a reason
+/// that separates "pins an older dump" from "is behind everything we kept".
+#[test]
+fn a_follower_behind_every_dump_is_reported_and_keeps_the_oldest() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for value in ["v1", "v2", "v3"] {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "behind".to_string(),
+                value: value.as_bytes().to_vec(),
+            },
+        });
+        engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
+    }
+    let plan_before = engine.bucket_dump_manifest_prune_plan(1);
+    let oldest = plan_before
+        .prunable_manifest_ids
+        .first()
+        .cloned()
+        .expect("older dumps are prunable when nothing pins them");
+
+    // A follower older than every dump: sequence zero precedes them all.
+    let plan = engine.bucket_dump_manifest_prune_plan_with_follower_cursors(
+        1,
+        vec![BucketDumpFollowerReplayCursor {
+            follower_id: "follower-behind-everything".to_string(),
+            shard_id: 1,
+            wal_sequence: 0,
+            index_log_sequence: 0,
+        }],
+    );
+
+    assert_eq!(
+        plan.follower_blocks.len(),
+        1,
+        "a follower no retained dump can serve must be reported, not skipped: {plan:?}"
+    );
+    assert_eq!(
+        plan.follower_blocks[0].reason,
+        "follower_cursor_precedes_every_manifest"
+    );
+    assert!(
+        plan.retained_manifest_ids.contains(&plan.follower_blocks[0].manifest_id),
+        "the dump reported as blocking must actually be kept"
+    );
+    assert!(
+        !plan.prunable_manifest_ids.contains(&oldest),
+        "the oldest dump is this follower's only chance and must not be pruned"
+    );
+}
+
 #[test]
 fn bucket_dump_manifest_prune_is_blocked_by_lagging_follower_cursor() {
     let dir = tempfile::tempdir().unwrap();
@@ -3837,4 +3901,44 @@ fn an_unlimited_expiry_window_returns_every_match() {
         crate::engine::expiry_window(&deadlines, Some("key-0019"), 0, 0, |_| true);
     assert_eq!(after.len(), 20, "the cursor is exclusive");
     assert_eq!(after.first().map(|(key, _)| key.as_str()), Some("key-0020"));
+}
+
+
+/// A cycle request that does not mention the ordering guard must still get it.
+///
+/// Index-log records may only be discarded once the buckets they describe have been dumped;
+/// truncating first throws away the record of state that is not durable anywhere else. The guard
+/// that enforces that is a field on the request, and the request is parsed from an HTTP body --
+/// so what an OMITTED field decodes to is the behaviour every caller gets who does not name it.
+/// `#[serde(default)]` on a bool decodes to `false`, which is the unsafe order, even though the
+/// type's own `Default` says true.
+#[test]
+fn omitting_the_commit_before_truncate_guard_still_commits_before_truncating() {
+    // Take a well-formed body and remove ONLY the guard, so this tests what silence means rather
+    // than whether every other field happens to be optional.
+    let mut body: serde_json::Value =
+        serde_json::to_value(StorageManagerCycleRequest::default()).unwrap();
+    let removed = body
+        .as_object_mut()
+        .unwrap()
+        .remove("index_gc_commit_dirty_slots_before_truncation");
+    assert!(removed.is_some(), "the guard should be present in a serialised request");
+
+    let silent: StorageManagerCycleRequest = serde_json::from_value(body).unwrap();
+    assert!(
+        silent.index_gc_commit_dirty_buckets_before_truncation,
+        "a request that does not mention the guard decoded to the unsafe order: index-log records \
+         would be discarded before the buckets they describe had been dumped"
+    );
+
+    // Naming it false is still allowed -- this is about what silence means, not about removing
+    // the choice.
+    let mut off: serde_json::Value =
+        serde_json::to_value(StorageManagerCycleRequest::default()).unwrap();
+    off.as_object_mut().unwrap().insert(
+        "index_gc_commit_dirty_slots_before_truncation".to_string(),
+        serde_json::Value::Bool(false),
+    );
+    let explicit: StorageManagerCycleRequest = serde_json::from_value(off).unwrap();
+    assert!(!explicit.index_gc_commit_dirty_buckets_before_truncation);
 }

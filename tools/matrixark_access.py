@@ -1085,8 +1085,27 @@ class MatrixArkAccessManager(_AccessPortalMixin, _AccessSsoMixin, _AccessApiKeyM
         """Constant-time PBKDF2 check for email/password login."""
         return verify_matrixark_password(password, credential)
 
+    def _append_audit_record(self, record: Json) -> None:
+        """Route one audit record to storage -- or drop it when auditing is off (the default).
+
+        Audit records live in the main record log, so with auditing on every audited call grows
+        the store forever; MATRIXARK_AUDIT_MODE (default off) is the one knob, shared with the
+        server's audit policy. When on and the metadata backend is the record log, the write goes
+        through the adapter's buffered audit path (MATRIXARK_DIRECT_AUDIT_MODE governs it;
+        "buffered" coalesces into one durable append_many per flush interval). Any other metadata
+        backend (SQL) keeps its own append -- audits live in its tables, not the record log.
+        """
+        mode = os.environ.get("MATRIXARK_AUDIT_MODE", "off").strip().lower() or "off"
+        if mode in {"off", "none", "disabled"}:
+            return
+        appender = getattr(self.adapter, "append_audit", None)
+        if callable(appender) and getattr(self.metadata, "backend_name", "") == "record_log":
+            appender(record)
+            return
+        self.metadata.append(record)
+
     def append_audit(self, action: str, identity: Json, *, status: str, details: Json | None = None) -> None:
-        self.metadata.append(
+        self._append_audit_record(
             {
                 "record_type": "matrixark_audit_log",
                 "audit_id_hash": stable_hash(f"{action}:{identity.get('api_key_id')}:{now_ms()}"),
@@ -1113,7 +1132,7 @@ class MatrixArkAccessManager(_AccessPortalMixin, _AccessSsoMixin, _AccessApiKeyM
         account_id = canonical_account_id(str(scope.get("account_id") or args.get("account_id") or "")) if (scope.get("account_id") or args.get("account_id")) else ""
         tenant_id = canonical_tenant_id(str(scope.get("tenant_id") or args.get("tenant_id") or "")) if (scope.get("tenant_id") or args.get("tenant_id")) else ""
         hashes = identity_hashes(account_id, tenant_id, str(scope.get("user_id") or ""), str(scope.get("session_id") or "")) if account_id and tenant_id else {}
-        self.metadata.append(
+        self._append_audit_record(
             {
                 "record_type": "matrixark_audit_log",
                 "audit_id_hash": stable_hash(f"denied:{action}:{secret_hash(api_key) if api_key else 'no_key'}:{now_ms()}"),

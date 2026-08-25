@@ -171,7 +171,7 @@ impl ProxyService {
         shard_id_for_key(
             &tenant_hash.to_string(),
             options.context_first_shard_id,
-            options.context_shard_count,
+            self.effective_context_shard_count(),
             options.context_first_shard_id,
         )
     }

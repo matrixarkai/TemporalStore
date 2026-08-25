@@ -2871,6 +2871,11 @@ pub struct StorageLifecycleRequest {
     pub warm_cache: bool,
 }
 
+/// Index-log truncation waits for dirty buckets by default; see the field this serves.
+fn commit_dirty_buckets_before_truncation_default() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageManagerCycleRequest {
     pub shard_id: ShardId,
@@ -2938,7 +2943,14 @@ pub struct StorageManagerCycleRequest {
     pub index_gc_usage_ratio_trigger_basis_points: u64,
     #[serde(default)]
     pub index_gc_max_entries_per_round: usize,
-    #[serde(default)]
+    /// Whether index-log truncation waits for the buckets it describes to be dumped.
+    ///
+    /// Defaulted explicitly rather than with a bare `#[serde(default)]`: on a bool that decodes an
+    /// ABSENT field to `false`, which is the unsafe order, regardless of what this type's own
+    /// `Default` says. The request is parsed from a request body, so an absent field is what every
+    /// caller who does not name it gets -- and discarding index-log records before the buckets
+    /// they describe are durable loses exactly the record needed to rebuild them.
+    #[serde(default = "commit_dirty_buckets_before_truncation_default")]
     #[serde(rename = "index_gc_commit_dirty_slots_before_truncation")]
     pub index_gc_commit_dirty_buckets_before_truncation: bool,
     /// Reclaim only bands whose garbage ratio is at least this many basis points
