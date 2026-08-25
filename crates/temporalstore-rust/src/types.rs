@@ -1243,6 +1243,22 @@ pub enum Command {
         max_exclusive: bool,
         rev: bool,
     },
+    /// Atomic take-with-refill on a token bucket: refill by elapsed time (capped at
+    /// capacity), then take `tokens` if they fit. Answers three strings -- allowed ("1"/"0"),
+    /// tokens remaining, and retry-after ms (0 when allowed).
+    BucketTake {
+        key: String,
+        tokens: f64,
+        capacity: f64,
+        refill_per_sec: f64,
+    },
+    /// The same arithmetic without taking: what a take of `tokens` WOULD answer.
+    BucketPeek {
+        key: String,
+        tokens: f64,
+        capacity: f64,
+        refill_per_sec: f64,
+    },
     /// Add to a member's score (0 when absent), atomically under the shard lock.
     /// Answers the new score as its shortest string form.
     ZSetIncrBy {
