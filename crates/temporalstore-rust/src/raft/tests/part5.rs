@@ -1410,3 +1410,57 @@ fn off_lock_image_build_yields_consistent_images_under_writes() {
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     writer.join().unwrap();
 }
+
+/// The =0 fallback -- one propose at a time through the same senders -- must stay correct too.
+#[test]
+fn serialized_pipeline_fallback_holds_the_invariant() {
+    let _pipeline = super::part4::EnvFlagGuard::set("TS_RAFT_FOLLOWER_PIPELINE");
+    let _serial = super::part4::EnvFlagGuard::off("TS_RAFT_PIPELINE_CONCURRENT_PROPOSE");
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = RaftCluster::new_single_shard_with_wal(
+        dir.path(),
+        1,
+        [1, 2, 3],
+        RaftConfig::default(),
+    )
+    .unwrap();
+    let transport = OneInFlightTransport {
+        cluster: cluster.clone(),
+        in_flight: Default::default(),
+        max_seen: Default::default(),
+    };
+    let cluster = std::sync::Arc::new(cluster);
+    let handles: Vec<_> = (0..4)
+        .map(|writer| {
+            let cluster = std::sync::Arc::clone(&cluster);
+            let transport = transport.clone();
+            std::thread::spawn(move || {
+                let mut accepted = 0usize;
+                for index in 0..4 {
+                    if cluster
+                        .propose_distributed(
+                            Command::StringSet {
+                                key: format!("serial-{writer:02}-{index:02}"),
+                                value: format!("v{writer}-{index}").into_bytes(),
+                            },
+                            &transport,
+                        )
+                        .is_ok()
+                    {
+                        accepted += 1;
+                    }
+                }
+                accepted
+            })
+        })
+        .collect();
+    let accepted: usize = handles.into_iter().map(|handle| handle.join().unwrap()).sum();
+    let max_in_flight = transport
+        .max_seen
+        .load(std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        max_in_flight <= 1,
+        "{max_in_flight} appends were in flight to one follower at once"
+    );
+    assert_eq!(accepted, 16, "every propose should commit through the serialized fallback");
+}
