@@ -869,6 +869,16 @@ fn at_most_one_append_in_flight_per_follower() {
         max_in_flight <= 1,
         "{max_in_flight} appends were in flight to one follower at once"
     );
+    assert!(
+        max_in_flight == 1,
+        "no append ever reached a follower; nothing was replicated"
+    );
+    // Both follower senders must have answered, or the invariant above held vacuously with the
+    // fan-out doing the sending.
+    assert!(
+        cluster.pipeline_reached_within(60_000) >= 2,
+        "the per-follower senders never carried an append"
+    );
     assert_eq!(
         accepted,
         writers * each,
