@@ -938,6 +938,33 @@ class _TemporalDirectBackendMixin:
             return ""
         return str(value or "")
 
+    @staticmethod
+    def record_pointed_ref_ids(record: Json) -> list[int]:
+        """The ids a record points AT without carrying: provenance sources and tombstone/feedback
+        targets. Filed into the locator so one id lookup finds the records ABOUT an id, not just
+        the records carrying it."""
+        values: list = []
+        source_ids = record.get("source_event_ids")
+        if isinstance(source_ids, list):
+            values.extend(source_ids)
+        source_refs = record.get("source_refs")
+        if isinstance(source_refs, list):
+            values.extend(source_refs)
+        for field in ("source_event_hash", "target_memory_id", "superseded_by"):
+            if record.get(field) is not None:
+                values.append(record.get(field))
+        out: list[int] = []
+        seen: set[int] = set()
+        for value in values:
+            try:
+                ref = int(value)
+            except (TypeError, ValueError):
+                continue
+            if ref and ref not in seen:
+                seen.add(ref)
+                out.append(ref)
+        return out
+
     def _native_side_index_entries_for_bundles(self, bundles: list[tuple[list[Json], str, str]]) -> list[Json]:
         """Build sidecar lookup rows so retrieval can avoid broad record scans.
 
@@ -973,6 +1000,10 @@ class _TemporalDirectBackendMixin:
                         if route:
                             route_by_hash_field.setdefault(placement_key, route)
                 for ref_hash in context_index_ref_hashes(record):
+                    locator_updates.setdefault(ref_hash, []).append(location)
+                    if route:
+                        route_by_hash_field.setdefault((self._context_ref_locator_key(), str(ref_hash)), route)
+                for ref_hash in self.record_pointed_ref_ids(record):
                     locator_updates.setdefault(ref_hash, []).append(location)
                     if route:
                         route_by_hash_field.setdefault((self._context_ref_locator_key(), str(ref_hash)), route)
@@ -1047,6 +1078,27 @@ class _TemporalDirectBackendMixin:
                 }
             )
         locator_key = self._context_ref_locator_key()
+        # Store birth: the batch placing the very first record (shard 000000, field 000000) also
+        # stamps the coverage marker, so readers can trust that pointed-id indexing was active
+        # for every record this store has ever held. Idempotent; existing stores never gain it.
+        def _is_birth_location(record_key: str, record_id: str) -> bool:
+            # Shard 0, field 0 -- the store's very first append. Field ids are zero-padded to a
+            # width that differs from the shard width, so compare numerically, not by literal.
+            if not record_key.endswith(":000000"):
+                return False
+            try:
+                return int(record_id) == 0
+            except (TypeError, ValueError):
+                return False
+
+        if any(_is_birth_location(record_key, record_id)
+               for _, record_key, record_id in bundles):
+            entries.append({
+                "key": locator_key + "_meta",
+                "field": "provenance_from_start",
+                "value": "1",
+                "storage_route": {},
+            })
         for ref_hash, new_locations in locator_updates.items():
             field = str(ref_hash)
             merged_locations = self._merge_ref_locations(existing_for(locator_key, field), new_locations)
