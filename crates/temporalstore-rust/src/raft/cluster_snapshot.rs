@@ -538,62 +538,26 @@ impl RaftCluster {
     }
 
     pub fn create_snapshot(&self) -> Result<RaftSnapshot, RaftError> {
+        // S2 (default ON): snapshot the engine's STATE IMAGE at the leader's applied index
+        // instead of the committed entry history, so a far-behind follower installs in
+        // O(state). The build reads the whole served index and every slab, which takes long
+        // enough on a real store to matter -- and it used to run holding the cluster read
+        // lock, which every apply needs the write half of. On the live cluster that surfaced
+        // as proposes stalling for the length of each image build. The build now runs off the
+        // lock and proves consistency by watermark instead; any failure there falls through
+        // to the classic entry-carrying snapshot below, so the image path can never make
+        // snapshotting worse.
+        if raft_snapshot_state_image_on() {
+            if let Some(snapshot) = self.create_state_image_snapshot()? {
+                return Ok(snapshot);
+            }
+        }
         let inner = self.inner.read().expect("raft cluster lock poisoned");
         let leader = inner
             .nodes
             .get(&inner.leader_id)
             .filter(|node| node.alive && node.role == RaftRole::Leader)
             .ok_or(RaftError::LeaderUnavailable)?;
-        // S2: capture an opaque engine STATE IMAGE at the leader's applied index instead of the
-        // full committed entry log, so a far-behind follower installs in O(state). Gated OFF by
-        // default. Any failure to build the image falls through to the classic entry-carrying
-        // snapshot below, so the gate can never make snapshotting worse.
-        if raft_snapshot_state_image_on() && leader.applied_index > 0 {
-            let shard_id = inner.shard_id;
-            let watermark = leader.applied_index;
-            let image = (|| -> Option<RaftSnapshotStateImage> {
-                let index_bytes = leader.engine.export_index_bytes(shard_id).ok()?;
-                let block_store = leader.engine.block_store();
-                let mut slabs = Vec::new();
-                for page_slab_id in block_store.slab_ids().ok()? {
-                    let bytes = block_store.read_slab(page_slab_id).ok()?;
-                    slabs.push(RaftSnapshotStateImageSlab {
-                        page_slab_id,
-                        bytes,
-                    });
-                }
-                Some(RaftSnapshotStateImage {
-                    index_bytes,
-                    next_page_id: block_store.next_page_id(),
-                    slabs,
-                })
-            })();
-            if let Some(image) = image {
-                // Term AT the applied watermark, derived from the log/installed snapshot (entries
-                // are dropped, so it cannot come from entries.last()).
-                let last_included_term = leader
-                    .log
-                    .iter()
-                    .find(|entry| entry.index == watermark)
-                    .map(|entry| entry.term)
-                    .or_else(|| {
-                        leader.installed_snapshot.as_ref().and_then(|snap| {
-                            (snap.last_included_index == watermark)
-                                .then_some(snap.last_included_term)
-                        })
-                    })
-                    .unwrap_or(leader.current_term);
-                return Ok(RaftSnapshot {
-                    shard_id,
-                    last_included_term,
-                    last_included_index: watermark,
-                    external_snapshot_ref: None,
-                    entries: Vec::new(),
-                    state_image: Some(image),
-                    state_image_externalized: false,
-                });
-            }
-        }
         let mut entries_by_index = BTreeMap::new();
         if let Some(snapshot) = &leader.installed_snapshot {
             for entry in snapshot
@@ -625,6 +589,66 @@ impl RaftCluster {
             state_image: None,
             state_image_externalized: false,
         })
+    }
+
+    /// Build the S2 state-image snapshot WITHOUT holding the cluster lock across the image
+    /// build. Applies advance `applied_index` only under the cluster write lock, so an applied
+    /// index that reads the same before and after the build proves the engine was quiescent in
+    /// between -- the image is exact at that watermark. A cluster that keeps applying gets
+    /// three such attempts; the final attempt builds under the read lock, which is consistent
+    /// by construction and no less available than the always-locked build this replaces.
+    ///
+    /// `Ok(None)` means "no image snapshot here" -- nothing applied yet, or the engine could
+    /// not serve some part of the image -- and the caller falls through to the entry-carrying
+    /// form.
+    fn create_state_image_snapshot(&self) -> Result<Option<RaftSnapshot>, RaftError> {
+        for _ in 0..3 {
+            let (shard_id, watermark, engine) = {
+                let inner = self.inner.read().expect("raft cluster lock poisoned");
+                let leader = inner
+                    .nodes
+                    .get(&inner.leader_id)
+                    .filter(|node| node.alive && node.role == RaftRole::Leader)
+                    .ok_or(RaftError::LeaderUnavailable)?;
+                if leader.applied_index == 0 {
+                    return Ok(None);
+                }
+                (inner.shard_id, leader.applied_index, leader.engine.clone())
+            };
+            let Some(image) = build_state_image(&engine, shard_id) else {
+                return Ok(None);
+            };
+            let inner = self.inner.read().expect("raft cluster lock poisoned");
+            let leader = inner
+                .nodes
+                .get(&inner.leader_id)
+                .filter(|node| node.alive && node.role == RaftRole::Leader)
+                .ok_or(RaftError::LeaderUnavailable)?;
+            if leader.applied_index == watermark {
+                return Ok(Some(state_image_snapshot_at(
+                    inner.shard_id,
+                    leader,
+                    watermark,
+                    image,
+                )));
+            }
+            // Something applied while the build ran, so the image may straddle two states.
+            // Drop it and capture again from the newer watermark.
+        }
+        // The cluster would not go quiescent for three builds; take the last one under the
+        // read lock, exactly as the original path always did.
+        let inner = self.inner.read().expect("raft cluster lock poisoned");
+        let leader = inner
+            .nodes
+            .get(&inner.leader_id)
+            .filter(|node| node.alive && node.role == RaftRole::Leader)
+            .ok_or(RaftError::LeaderUnavailable)?;
+        if leader.applied_index == 0 {
+            return Ok(None);
+        }
+        Ok(build_state_image(&leader.engine, inner.shard_id).map(|image| {
+            state_image_snapshot_at(inner.shard_id, leader, leader.applied_index, image)
+        }))
     }
 
     pub fn maybe_trigger_snapshot(&self) -> Result<RaftSnapshotTriggerReport, RaftError> {
@@ -1023,5 +1047,55 @@ impl RaftCluster {
             }
         }
         report
+    }
+}
+
+/// Read the served index and every slab out of the engine. `None` when the engine cannot
+/// serve some part of it, which sends the caller to the entry-carrying snapshot instead.
+fn build_state_image(engine: &TemporalEngine, shard_id: ShardId) -> Option<RaftSnapshotStateImage> {
+    let index_bytes = engine.export_index_bytes(shard_id).ok()?;
+    let block_store = engine.block_store();
+    let mut slabs = Vec::new();
+    for page_slab_id in block_store.slab_ids().ok()? {
+        let bytes = block_store.read_slab(page_slab_id).ok()?;
+        slabs.push(RaftSnapshotStateImageSlab {
+            page_slab_id,
+            bytes,
+        });
+    }
+    Some(RaftSnapshotStateImage {
+        index_bytes,
+        next_page_id: block_store.next_page_id(),
+        slabs,
+    })
+}
+
+fn state_image_snapshot_at(
+    shard_id: ShardId,
+    leader: &RaftNode,
+    watermark: u64,
+    image: RaftSnapshotStateImage,
+) -> RaftSnapshot {
+    // Term AT the applied watermark, derived from the log/installed snapshot (entries are
+    // dropped, so it cannot come from entries.last()).
+    let last_included_term = leader
+        .log
+        .iter()
+        .find(|entry| entry.index == watermark)
+        .map(|entry| entry.term)
+        .or_else(|| {
+            leader.installed_snapshot.as_ref().and_then(|snap| {
+                (snap.last_included_index == watermark).then_some(snap.last_included_term)
+            })
+        })
+        .unwrap_or(leader.current_term);
+    RaftSnapshot {
+        shard_id,
+        last_included_term,
+        last_included_index: watermark,
+        external_snapshot_ref: None,
+        entries: Vec::new(),
+        state_image: Some(image),
+        state_image_externalized: false,
     }
 }

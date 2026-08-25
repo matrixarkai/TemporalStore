@@ -1319,3 +1319,94 @@ fn a_torn_binary_record_is_truncated_and_the_records_before_it_survive() {
         );
     }
 }
+
+/// The image build no longer holds the cluster lock while it reads the engine, so it races
+/// applies; consistency comes from the applied-index re-check. Hammer overwrites while
+/// snapshotting and prove every image is one clean cut: keys are written in a fixed order,
+/// generation by generation, so a consistent image read back in that order can only step down
+/// by at most one generation across the keys and never rise.
+#[test]
+fn off_lock_image_build_yields_consistent_images_under_writes() {
+    let _image = super::part4::EnvFlagGuard::set("TS_RAFT_SNAPSHOT_STATE_IMAGE");
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = std::sync::Arc::new(
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap(),
+    );
+    let keys = 6u64;
+    // Seed a full first generation before anything races: an image snapshot only exists once
+    // something has applied, so the first create_snapshot must not beat the first write.
+    for key in 0..keys {
+        cluster
+            .propose(Command::StringSet {
+                key: format!("gen-{key}"),
+                value: 1u64.to_string().into_bytes(),
+            })
+            .unwrap();
+    }
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writer = {
+        let cluster = std::sync::Arc::clone(&cluster);
+        let stop = std::sync::Arc::clone(&stop);
+        std::thread::spawn(move || {
+            let mut generation = 2u64;
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                for key in 0..keys {
+                    cluster
+                        .propose(Command::StringSet {
+                            key: format!("gen-{key}"),
+                            value: generation.to_string().into_bytes(),
+                        })
+                        .unwrap();
+                }
+                generation += 1;
+            }
+        })
+    };
+    for _ in 0..5 {
+        let snapshot = cluster.create_snapshot().unwrap();
+        assert!(
+            snapshot.state_image.is_some(),
+            "the image path should be taken while the gate is on"
+        );
+        let watermark = snapshot.last_included_index;
+        let restore_dir = tempfile::tempdir().unwrap();
+        let restored = RaftCluster::new_single_shard_with_wal(
+            restore_dir.path(),
+            1,
+            [7],
+            RaftConfig::default(),
+        )
+        .unwrap();
+        restored.install_snapshot(7, snapshot).unwrap();
+        let mut generations = Vec::new();
+        for key in 0..keys {
+            let value = match restored
+                .propose(Command::StringGet {
+                    key: format!("gen-{key}"),
+                })
+                .unwrap()
+            {
+                CommandResponse::Bytes { value } => value,
+                other => panic!("unexpected response {other:?}"),
+            };
+            generations.push(
+                value
+                    .map(|bytes| String::from_utf8(bytes).unwrap().parse::<u64>().unwrap())
+                    .unwrap_or(0),
+            );
+        }
+        for pair in generations.windows(2) {
+            assert!(
+                pair[0] >= pair[1],
+                "image at index {watermark} is torn: generations ran {generations:?}"
+            );
+        }
+        assert!(
+            generations[0] - generations[keys as usize - 1] <= 1,
+            "image at index {watermark} mixes distant generations: {generations:?}"
+        );
+    }
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    writer.join().unwrap();
+}
