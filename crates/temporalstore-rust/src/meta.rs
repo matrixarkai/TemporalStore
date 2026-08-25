@@ -1068,6 +1068,12 @@ pub enum MetaMutation {
     /// were accepted live, and a mute entry flips the flag at exactly the point
     /// the original sequence did.
     SetMetaChangeMuted(bool),
+    /// A snapshot installed over the whole state.
+    ///
+    /// Carries the snapshot because replay has to reach the same state the
+    /// install did. Every record before it is superseded by it, which is what
+    /// makes the restore hold across a restart.
+    InstallSnapshot(Box<MetaSnapshot>),
 }
 
 #[derive(Debug, Clone)]
@@ -1671,6 +1677,9 @@ impl SingleNodeMeta {
             MetaMutation::PurgeMeta(plan) => {
                 self.apply_meta_purge(&plan);
                 Status::ok()
+            }
+            MetaMutation::InstallSnapshot(snapshot) => {
+                self.apply_install_snapshot(*snapshot).status
             }
         }
     }
@@ -5085,6 +5094,95 @@ mod tests {
                 shard.replicas
             );
         }
+    }
+
+    #[test]
+    fn a_restored_snapshot_is_still_there_after_a_restart() {
+        // Restoring a snapshot answered ok and rolled the state back, and the
+        // next start put everything back. Replay reapplies every mutation in
+        // the log, and the install left no record in it -- so the changes the
+        // operator rolled back were all still in there. The rollback looked
+        // like it took, right up until the process restarted.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("meta.log");
+
+        let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "keep".to_string()
+            })
+            .status
+            .ok);
+        let snapshot = meta.export_snapshot();
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "unwanted".to_string()
+            })
+            .status
+            .ok);
+        assert!(meta.install_snapshot(snapshot).status.ok);
+
+        let names = |meta: &SingleNodeMeta| -> Vec<String> {
+            let mut out: Vec<String> = meta
+                .list_namespaces()
+                .namespaces
+                .into_iter()
+                .map(|entry| entry.namespace)
+                .collect();
+            out.sort();
+            out
+        };
+        assert_eq!(names(&meta), vec!["keep".to_string()]);
+
+        drop(meta);
+        let reopened = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert_eq!(
+            names(&reopened),
+            vec!["keep".to_string()],
+            "the restart brought back what the restore rolled away"
+        );
+
+        // And the restored state is still a working metaserver, not a frozen
+        // copy: a change after the restore survives its own restart too.
+        assert!(reopened
+            .add_namespace(AddNamespaceRequest {
+                namespace: "after".to_string()
+            })
+            .status
+            .ok);
+        drop(reopened);
+        let again = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert_eq!(
+            names(&again),
+            vec!["after".to_string(), "keep".to_string()],
+            "a change made after the restore did not survive"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_the_log_could_not_replay_is_refused_before_it_is_recorded() {
+        // The install is recorded before it is applied, so a snapshot that
+        // cannot become state must be refused before it reaches the log --
+        // otherwise replay would hit the same failure on every start.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("meta.log");
+        let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "keep".to_string()
+            })
+            .status
+            .ok);
+
+        let mut bad = meta.export_snapshot();
+        bad.format_version = 99;
+        let refused = meta.install_snapshot(bad);
+        assert_eq!(refused.status.code, "bad_snapshot");
+
+        // The log still replays, and still says what it said before.
+        drop(meta);
+        let reopened = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert_eq!(reopened.list_namespaces().namespaces.len(), 1);
     }
 
     #[test]

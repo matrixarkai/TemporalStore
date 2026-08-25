@@ -71,6 +71,24 @@ impl SingleNodeMeta {
     }
 
     pub fn install_snapshot(&self, snapshot: MetaSnapshot) -> AckResponse {
+        // Rejected before it is recorded, so a snapshot the log could not
+        // replay never reaches the log.
+        if let Err(status) = Self::state_from_snapshot(snapshot.clone()) {
+            return AckResponse { status };
+        }
+        // Recorded before it is applied, so a restart does not undo it. Replay
+        // reapplies every mutation in the log; without a record of the install,
+        // everything the restore rolled back is still in there and comes
+        // straight back -- the operator sees the rollback take, and the next
+        // start silently reverses it. Retention records its purges for exactly
+        // this reason.
+        self.record_mutation(MetaMutation::InstallSnapshot(Box::new(snapshot.clone())));
+        self.apply_install_snapshot(snapshot)
+    }
+
+    /// Install without recording, for replay -- which must reapply what was
+    /// already accepted rather than record it a second time.
+    pub(crate) fn apply_install_snapshot(&self, snapshot: MetaSnapshot) -> AckResponse {
         // Taken before the state is consumed: the counters no longer travel
         // inside MetaState, so without this a peer that installs a snapshot
         // reports every total starting again from zero.
