@@ -534,6 +534,116 @@ fn a_topology_missing_a_primary_keeps_the_route_it_cannot_replace() {
 }
 
 #[test]
+fn a_table_that_asks_for_a_default_value_still_decides_it() {
+    // A table set to shed nothing and to retry no writes, opened by a client that
+    // sheds half its traffic and retries writes twice.
+    //
+    // Both of the table's values equal the field's default. That used to be read as
+    // "the table said nothing", so the client's settings won: the table was shed at
+    // 50% and its writes were retried, which is the reverse of what it asked for.
+    // `drop_percent: 0` is the only way to say "never shed this table" and
+    // `max_write_retries: 0` the only way to say "never retry a write here", so the
+    // two settings whose whole purpose is to hold something back were the two that
+    // could not be expressed.
+    //
+    // max_read_retries is left unset here as the control: it must still come from
+    // the client, or the fix would just be "the table always wins".
+    let meta_addr = free_local_addr();
+    let meta_addr_for_listener = meta_addr.clone();
+    std::thread::spawn(move || {
+        serve(&meta_addr_for_listener, move |request| {
+            match (request.method.as_str(), request.path.as_str()) {
+                ("POST", "/tables/topology") => json_response(
+                    200,
+                    &TableTopologyResponse {
+                        status: Status::ok(),
+                        table: Some(crate::meta::TableMetaInfo {
+                            table_id: 1,
+                            namespace: "ns".to_string(),
+                            table_name: "tbl".to_string(),
+                            state: crate::meta::MetaEntityState::Normal,
+                            topology_version: 7,
+                            first_shard_id: 10,
+                            shard_count: 4,
+                            replica_count: 2,
+                            partition_version: 0,
+                            serving_options: crate::meta::TableServingOptions {
+                                drop_percent: 0,
+                                max_write_retries: 0,
+                                set_fields: ["drop_percent", "max_write_retries"]
+                                    .into_iter()
+                                    .map(str::to_string)
+                                    .collect(),
+                                ..crate::meta::TableServingOptions::default()
+                            },
+                        }),
+                        shards: Vec::new(),
+                        unchanged: false,
+                    },
+                ),
+                _ => json_response(404, &Status::error("not_found", "not found")),
+            }
+        })
+        .unwrap();
+    });
+    wait_for_http(&meta_addr);
+
+    let client = TemporalStoreClient::with_options(ClientOptions {
+        meta_addr: Some(meta_addr.clone()),
+        drop_percent: 50,
+        max_write_retries: 2,
+        max_read_retries: 9,
+        ..ClientOptions::default()
+    });
+    let table = client.open_table_from_meta("ns", "tbl").unwrap();
+    let options = table.options();
+    assert_eq!(
+        options.drop_percent, 0,
+        "the table asked to shed nothing; the client's 50% must not override it"
+    );
+    assert_eq!(
+        options.max_write_retries, 0,
+        "the table asked for no write retries; the client's 2 must not override it"
+    );
+    assert_eq!(
+        options.max_read_retries, 9,
+        "a field the table never set must still come from the client"
+    );
+}
+
+#[test]
+fn a_table_record_written_before_set_fields_still_inherits_from_the_client() {
+    // The compatibility half. Records persisted before tables recorded which fields
+    // they set carry an empty set, and nothing can recover what was meant from the
+    // values alone. Those must keep behaving exactly as they did: a value equal to
+    // the default is read as unset and the client's own option is used.
+    let options = crate::meta::TableServingOptions::default();
+    assert!(options.set_fields.is_empty());
+    for field in [
+        crate::meta::TableServingField::DropPercent,
+        crate::meta::TableServingField::MaxWriteRetries,
+        crate::meta::TableServingField::MaxReadRetries,
+        crate::meta::TableServingField::IoTimeoutMs,
+        crate::meta::TableServingField::ConnectTimeoutMs,
+        crate::meta::TableServingField::RetryBackoffMs,
+        crate::meta::TableServingField::ContinuousFailedTimeMs,
+    ] {
+        assert!(
+            !options.table_decides(field),
+            "{} carries no record of being set, so the client must still decide it",
+            field.name()
+        );
+    }
+    // And a differing value is still read as set, which is all an older record ever
+    // had to go on.
+    let changed = crate::meta::TableServingOptions {
+        drop_percent: 23,
+        ..crate::meta::TableServingOptions::default()
+    };
+    assert!(changed.table_decides(crate::meta::TableServingField::DropPercent));
+}
+
+#[test]
 fn client_applies_metaserver_table_serving_options() {
     let meta_addr = free_local_addr();
     let meta_addr_for_listener = meta_addr.clone();
@@ -565,6 +675,7 @@ fn client_applies_metaserver_table_serving_options() {
                                 continuous_failed_time_ms: 19,
                                 io_timeout_ms: 321,
                                 connect_timeout_ms: 123,
+                                set_fields: Default::default(),
                             },
                         }),
                         shards: Vec::new(),
@@ -958,6 +1069,7 @@ fn client_deployment_placement_routes_reads_to_local_secondary_and_writes_to_pri
                                     continuous_failed_time_ms: 100,
                                     io_timeout_ms: 1_000,
                                     connect_timeout_ms: 1_000,
+                                    set_fields: Default::default(),
                                 },
                             }),
                             shards: vec![TableShard {

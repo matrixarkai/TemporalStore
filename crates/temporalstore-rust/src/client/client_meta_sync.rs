@@ -3,6 +3,7 @@
 
 //! TemporalStoreClient meta topology sync + route refresh/invalidation + reports, split from client.rs.
 use super::*;
+use crate::meta::TableServingField;
 
 impl TemporalStoreClient {
     pub fn sync_table_topology(
@@ -77,28 +78,29 @@ impl TemporalStoreClient {
                 .max(table.topology_version)
         };
         let serving_options = table.serving_options.clone();
-        let default_serving_options = crate::meta::TableServingOptions::default();
+        // Whether the table speaks for a field, or leaves it to this client's own
+        // option. Asking the table settles it; the alternative -- inferring it from
+        // "the value differs from the default" -- silently overrode any table that
+        // chose a default value on purpose, which is exactly what `drop_percent: 0`
+        // ("never shed this table") and `max_write_retries: 0` ("never retry a write
+        // here") are.
+        let table_decides = |field: TableServingField| serving_options.table_decides(field);
         let options = TableOptions {
             table_id: table.table_id,
-            io_timeout_ms: if serving_options.io_timeout_ms == default_serving_options.io_timeout_ms
-            {
-                self.inner.options.io_timeout_ms
-            } else {
+            io_timeout_ms: if table_decides(TableServingField::IoTimeoutMs) {
                 serving_options.io_timeout_ms
-            },
-            connect_timeout_ms: if serving_options.connect_timeout_ms
-                == default_serving_options.connect_timeout_ms
-            {
-                self.inner.options.connect_timeout_ms
             } else {
+                self.inner.options.io_timeout_ms
+            },
+            connect_timeout_ms: if table_decides(TableServingField::ConnectTimeoutMs) {
                 serving_options.connect_timeout_ms
-            },
-            continuous_failed_time_ms: if serving_options.continuous_failed_time_ms
-                == default_serving_options.continuous_failed_time_ms
-            {
-                TableOptions::default().continuous_failed_time_ms
             } else {
+                self.inner.options.connect_timeout_ms
+            },
+            continuous_failed_time_ms: if table_decides(TableServingField::ContinuousFailedTimeMs) {
                 serving_options.continuous_failed_time_ms
+            } else {
+                TableOptions::default().continuous_failed_time_ms
             },
             first_shard_id: table.first_shard_id,
             shard_count: table.shard_count,
@@ -107,36 +109,32 @@ impl TemporalStoreClient {
             replica_read_policy: replica_read_policy_from_meta(
                 &serving_options.replica_read_policy,
             ),
-            preferred_location: if serving_options.preferred_location.is_empty() {
-                self.inner.options.local_location.clone()
-            } else {
+            preferred_location: if table_decides(TableServingField::PreferredLocation)
+                && !serving_options.preferred_location.is_empty()
+            {
                 serving_options.preferred_location.clone()
-            },
-            drop_percent: if serving_options.drop_percent == default_serving_options.drop_percent {
-                self.inner.options.drop_percent.min(100)
             } else {
+                self.inner.options.local_location.clone()
+            },
+            drop_percent: if table_decides(TableServingField::DropPercent) {
                 serving_options.drop_percent.min(100)
-            },
-            max_read_retries: if serving_options.max_read_retries
-                == default_serving_options.max_read_retries
-            {
-                self.inner.options.max_read_retries
             } else {
+                self.inner.options.drop_percent.min(100)
+            },
+            max_read_retries: if table_decides(TableServingField::MaxReadRetries) {
                 serving_options.max_read_retries as usize
-            },
-            max_write_retries: if serving_options.max_write_retries
-                == default_serving_options.max_write_retries
-            {
-                self.inner.options.max_write_retries
             } else {
+                self.inner.options.max_read_retries
+            },
+            max_write_retries: if table_decides(TableServingField::MaxWriteRetries) {
                 serving_options.max_write_retries as usize
-            },
-            retry_backoff_ms: if serving_options.retry_backoff_ms
-                == default_serving_options.retry_backoff_ms
-            {
-                self.inner.options.retry_backoff_ms
             } else {
+                self.inner.options.max_write_retries
+            },
+            retry_backoff_ms: if table_decides(TableServingField::RetryBackoffMs) {
                 serving_options.retry_backoff_ms
+            } else {
+                self.inner.options.retry_backoff_ms
             },
             ..TableOptions::default()
         };
