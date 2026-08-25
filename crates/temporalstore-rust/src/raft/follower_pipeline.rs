@@ -246,6 +246,26 @@ impl RaftCluster {
         }
     }
 
+    /// Renew the leader lease after the timer loop confirmed quorum contact through the
+    /// senders. The fan-out's own heartbeat round renews the lease as acks come back, but
+    /// sender heartbeats fold their acks into the commit advance, which renews only when a
+    /// commit actually moves -- so an IDLE leader's lease decayed, and the first propose
+    /// after any gap longer than the lease bounced off `leader_lease_valid` until something
+    /// committed. On hardware that surfaced as ~400 ms per propose on every cadence slower
+    /// than the lease window, while busy cells never saw it.
+    pub(crate) fn renew_leader_lease_after_quorum_contact(&self) {
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        let leader_id = inner.leader_id;
+        let is_leader = inner
+            .nodes
+            .get(&leader_id)
+            .map(|node| node.alive && node.role == RaftRole::Leader)
+            .unwrap_or(false);
+        if is_leader {
+            inner.renew_leader_lease();
+        }
+    }
+
     /// Peers that answered within `window_ms`, for check-quorum. The leader counts itself.
     pub(crate) fn pipeline_reached_within(&self, window_ms: u64) -> usize {
         self.follower_pipeline
