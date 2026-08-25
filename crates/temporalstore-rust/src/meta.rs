@@ -5873,6 +5873,132 @@ mod tests {
         }
     }
 
+    /// A proxy attached to a group serving one namespace.
+    fn shedding_meta(drop_percent: u8) -> SingleNodeMeta {
+        let meta = SingleNodeMeta::default();
+        meta.register_proxy(RegisterProxyRequest {
+            proxy_addr: "proxy-a".to_string(),
+            namespace: "tenant".to_string(),
+            location: "rack-1".to_string(),
+            config_version: 0,
+            binary_version: "v1".to_string(),
+        });
+        assert!(
+            meta.put_proxy_group(PutProxyGroupRequest {
+                group: "front".to_string(),
+                namespace: "tenant".to_string(),
+                location: String::new(),
+                instance_num: 1,
+                drop_percent,
+            })
+            .status
+            .ok
+        );
+        assert!(
+            meta.set_proxy_group(ProxyAttachment {
+                proxy_addr: "proxy-a".to_string(),
+                group: "front".to_string(),
+            })
+            .status
+            .ok
+        );
+        meta
+    }
+
+    fn beat_proxy(meta: &SingleNodeMeta, config_version: u64) -> ProxyHeartbeatResponse {
+        meta.proxy_heartbeat(ProxyHeartbeatRequest {
+            proxy_addr: "proxy-a".to_string(),
+            namespace: "tenant".to_string(),
+            config_version,
+            boot_time_ms: 1,
+            binary_version: "v1".to_string(),
+        })
+    }
+
+    #[test]
+    fn the_metaserver_can_tell_a_proxy_to_shed_load() {
+        // The proxy has always implemented this -- it reads the figure from its
+        // heartbeat, applies it, and exports it as a metric -- but every
+        // response carried a hard-coded zero, so the only way to pull the lever
+        // was to restart each proxy with different configuration.
+        let meta = shedding_meta(25);
+        assert_eq!(beat_proxy(&meta, 0).drop_percent, 25);
+    }
+
+    #[test]
+    fn a_group_that_asks_for_nothing_sheds_nothing() {
+        let meta = shedding_meta(0);
+        assert_eq!(beat_proxy(&meta, 0).drop_percent, 0);
+    }
+
+    #[test]
+    fn changing_the_share_tells_the_proxy_to_re_read() {
+        // The proxy only re-reads when the config version moves, so a change
+        // nobody is told about is a change that does not happen.
+        let meta = shedding_meta(0);
+        let settled = beat_proxy(&meta, 0).config_version;
+
+        assert!(
+            meta.put_proxy_group(PutProxyGroupRequest {
+                group: "front".to_string(),
+                namespace: "tenant".to_string(),
+                location: String::new(),
+                instance_num: 1,
+                drop_percent: 40,
+            })
+            .status
+            .ok
+        );
+        let after = beat_proxy(&meta, settled);
+        assert!(
+            after.config_version > settled,
+            "the version did not move, so an attached proxy would never re-read"
+        );
+        assert!(after.config_changed);
+        assert_eq!(after.drop_percent, 40);
+    }
+
+    #[test]
+    fn an_unattached_proxy_is_not_told_to_shed_anything() {
+        // It is not serving a namespace, so a share of its traffic is a share
+        // of nothing.
+        let meta = shedding_meta(60);
+        assert!(
+            meta.set_proxy_group(ProxyAttachment {
+                proxy_addr: "proxy-a".to_string(),
+                group: String::new(),
+            })
+            .status
+            .ok
+        );
+        assert_eq!(beat_proxy(&meta, 0).drop_percent, 0);
+    }
+
+    #[test]
+    fn the_share_survives_snapshot_and_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("shed-mutations.jsonl");
+        {
+            let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+            assert!(
+                meta.put_proxy_group(PutProxyGroupRequest {
+                    group: "front".to_string(),
+                    namespace: "tenant".to_string(),
+                    location: String::new(),
+                    instance_num: 1,
+                    drop_percent: 35,
+                })
+                .status
+                .ok
+            );
+            let peer = SingleNodeMeta::default();
+            assert!(peer.install_snapshot(meta.export_snapshot()).status.ok);
+            assert_eq!(peer.list_proxy_groups().groups[0].drop_percent, 35);
+        }
+        let recovered = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert_eq!(recovered.list_proxy_groups().groups[0].drop_percent, 35);
+    }
+
     #[test]
     fn a_restored_snapshot_is_still_there_after_a_restart() {
         // Restoring a snapshot answered ok and rolled the state back, and the

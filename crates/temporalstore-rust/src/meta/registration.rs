@@ -388,12 +388,14 @@ impl SingleNodeMeta {
         // The attached group is the authority on what this proxy serves, so the
         // heartbeat is where a reassignment -- or a release back to idle --
         // reaches the proxy.
-        let (group_changed, namespace, config_version) = Self::proxy_group_config(
+        let served = Self::proxy_group_config(
             &state,
             &proxy_addr,
             &request.namespace,
             request.config_version,
         );
+        let (group_changed, namespace, config_version) =
+            (served.changed, served.namespace, served.config_version);
         let attached = state
             .proxies
             .get(&proxy_addr)
@@ -419,7 +421,9 @@ impl SingleNodeMeta {
             namespace,
             config_version,
             serving_mode,
-            drop_percent: 0,
+            // What the group asks its proxies to shed. Zero unless an operator
+            // has said otherwise, which is what every group means by default.
+            drop_percent: if attached { served.drop_percent } else { 0 },
         }
     }
 
