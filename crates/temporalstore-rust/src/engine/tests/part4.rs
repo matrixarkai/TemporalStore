@@ -3942,3 +3942,60 @@ fn omitting_the_commit_before_truncate_guard_still_commits_before_truncating() {
     let explicit: StorageManagerCycleRequest = serde_json::from_value(off).unwrap();
     assert!(!explicit.index_gc_commit_dirty_buckets_before_truncation);
 }
+
+/// Every stage records how long it took, instead of every stage reporting zero.
+///
+/// `duration_ms` is published as `temporalstore_storage_manager_phase_duration_ms`, and nothing
+/// ever set it -- so the metric read zero for every phase of every shard, always. A missing series
+/// is obviously missing; a series that reads zero says the cycle is instantaneous, which is a claim
+/// and a false one.
+///
+/// Asserted as a property rather than a threshold, because a fast stage legitimately rounds to
+/// zero milliseconds and a threshold would be flaky: the stages must TILE the cycle -- their total
+/// cannot exceed the wall time of the call that produced them.
+#[test]
+fn the_storage_cycle_records_how_long_its_stages_take() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    // Enough to make the cycle do real work, and no more: an earlier version used 4000 records
+    // and took ten minutes on a shared machine, which is not a cost a suite should carry.
+    for index in 0..400 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("k{index:06}"),
+                value: vec![118u8; 128],
+            },
+        });
+    }
+
+    let started = std::time::Instant::now();
+    let cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        ..Default::default()
+    });
+    let wall_ms = started.elapsed().as_millis() as u64;
+
+    assert!(!cycle.stages.is_empty(), "the cycle should have run stages");
+    let total: u64 = cycle.stages.iter().map(|stage| stage.duration_ms).sum();
+    assert!(
+        total <= wall_ms + 50,
+        "stage durations total {total} ms but the whole call took {wall_ms} ms -- they should tile          the cycle, not overlap it"
+    );
+    assert!(
+        cycle.duration_ms >= total,
+        "the round total {} ms should cover the stages that tile it ({total} ms)",
+        cycle.duration_ms
+    );
+    // The tiling assertion above is the one that matters, and it is what caught the first
+    // implementation: a closure capturing the clock by value restarted a COPY, so every stage
+    // reported the time since the cycle began and the total came to eight times the wall clock.
+    // Deliberately NOT asserting some stage exceeds zero -- a quick cycle rounds every stage to
+    // zero milliseconds, and that assertion would fail on a fast machine for no reason.
+}

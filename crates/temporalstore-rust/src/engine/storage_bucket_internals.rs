@@ -112,9 +112,14 @@ pub(super) fn annotate_storage_manager_admin_stage_fields(
     errors: &[String],
     retention_blockers: usize,
 ) {
+    // `duration_ms` is deliberately NOT set here. It used to be, to the whole round's duration, for
+    // every stage -- so all eight phases reported the same number and the published
+    // `..._phase_duration_ms` series could not say which phase was slow, which is the only question
+    // a per-phase duration exists to answer. Each stage now times itself as it is recorded, and the
+    // round total lives on the cycle report instead of being copied across the stages.
+    let _ = duration_ms;
     for stage in stages {
         stage.last_run_unix_ms = last_run_unix_ms;
-        stage.duration_ms = duration_ms;
         if stage.skipped && stage.skipped_reason.is_empty() {
             stage.skipped_reason = stage.reason.clone();
         }
@@ -166,7 +171,7 @@ impl StorageManagerPhaseExecutor {
         stages: &mut [StorageManagerStageReport],
         errors: &[String],
         retention_blockers: usize,
-    ) {
+    ) -> u64 {
         let round_duration_ms = now_ms().saturating_sub(self.round_started_unix_ms);
         annotate_storage_manager_admin_stage_fields(
             stages,
@@ -175,6 +180,7 @@ impl StorageManagerPhaseExecutor {
             errors,
             retention_blockers,
         );
+        round_duration_ms
     }
 }
 

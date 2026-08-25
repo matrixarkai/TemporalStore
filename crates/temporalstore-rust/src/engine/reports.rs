@@ -3144,6 +3144,10 @@ pub type StorageManagerPressureSnapshot = StorageManagerPressureSignals;
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageManagerCycleReport {
     pub shard_id: ShardId,
+    /// How long the whole round took. The per-stage `duration_ms` values are each stage's own
+    /// time and tile this; they used to all be a copy of this number.
+    #[serde(default)]
+    pub duration_ms: u64,
     pub dry_run: bool,
     pub native_stage_order: Vec<String>,
     pub completed: bool,
