@@ -1774,3 +1774,47 @@ fn a_deployed_followers_in_memory_log_is_bounded_as_the_corpus_grows() {
          growing with the corpus, not with the state"
     );
 }
+
+/// The WAL status report must be identical whether it is served from the live cursor or
+/// rebuilt from disk.
+///
+/// Rebuilding it reads and parses EVERY segment end to end, and it is reachable over a plain
+/// HTTP GET (`/raft/control/matrixraft_runtime_admin`), so anything polling that endpoint made
+/// the node re-read its whole log each time. The cursor already carries the same per-segment
+/// info, so the live path serves it -- and this test fails if the two ever disagree.
+#[test]
+fn the_segment_report_matches_whether_it_is_cached_or_scanned() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+    cluster.set_local_node_id(1);
+    let transport = cluster.clone();
+    for i in 0..30u32 {
+        cluster
+            .propose_distributed(
+                Command::StringSet {
+                    key: format!("seg-{i:03}"),
+                    value: vec![(i % 251) as u8; 128],
+                },
+                &transport,
+            )
+            .unwrap();
+    }
+
+    let wal = LocalRaftWal::new(dir.path());
+    // A freshly built handle has no cursor, so this is the disk-scanning path.
+    let scanned = wal.segment_report(1, 1).unwrap();
+    // Seeding a cursor makes the next call take the cached path.
+    let _ = wal.recover_node_segmented(1, 1);
+    let cached = wal.segment_report(1, 1).unwrap();
+
+    assert_eq!(
+        cached.segments, scanned.segments,
+        "the cached report must describe exactly the segments the scan finds"
+    );
+    assert_eq!(cached.active_segment_id, scanned.active_segment_id);
+    assert_eq!(cached.first_retained_log_index, scanned.first_retained_log_index);
+    assert_eq!(cached.last_retained_log_index, scanned.last_retained_log_index);
+    assert!(!cached.segments.is_empty(), "the node should have segments");
+}

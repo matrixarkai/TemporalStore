@@ -1138,11 +1138,33 @@ impl LocalRaftWal {
         Ok(())
     }
 
+    /// Bytes and index bounds this node's segments hold.
+    ///
+    /// Served from the in-memory cursor when one is live. Deriving it from disk means READING
+    /// AND PARSING EVERY SEGMENT IN FULL -- `node_segments` calls `inspect_segment_sequences`,
+    /// which reads each file end to end to find its sequence bounds. That is fine as a cold
+    /// rebuild, and it is not fine on the admin status endpoint, which is a plain HTTP GET:
+    /// anything polling it made the node re-read its whole log every time, and one cheap
+    /// request forced megabytes of disk read and record parsing.
+    ///
+    /// The cursor already carries the per-segment info this report returns, kept current by
+    /// every append, so the live path costs a lock and a clone. The disk scan stays as the
+    /// fallback for a node whose cursor has not been seeded yet.
     pub fn segment_report(
         &self,
         shard_id: ShardId,
         node_id: RaftNodeId,
     ) -> io::Result<RaftWalSegmentReport> {
+        {
+            let cursors = self.cursors.lock().expect("raft wal cursor lock poisoned");
+            if let Some(cursor) = cursors.get(&(shard_id, node_id)) {
+                let mut report = Self::segment_report_from_segments(&cursor.segments);
+                report.released_segment_count = cursor.released_segment_count;
+                report.last_fsync_elapsed_ms = cursor.last_fsync_elapsed_ms;
+                report.slow_fsync_backpressure_observed = cursor.slow_fsync_backpressure_observed;
+                return Ok(report);
+            }
+        }
         let segments = self.node_segments(shard_id, node_id)?;
         let runtime_state = self.read_segment_runtime_state(shard_id, node_id);
         let first_retained_log_index = segments
