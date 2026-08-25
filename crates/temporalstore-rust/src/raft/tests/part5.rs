@@ -1605,3 +1605,107 @@ fn compaction_threshold_is_judged_on_the_logs_disk_footprint() {
         fired.reason, fired.applied_log_bytes
     );
 }
+
+/// The state image is dominated by the served index, which is JSON -- on a scaled corpus 37%
+/// of the image's bytes were digits, commas and structural characters, and it opened with
+/// dozens of empty index families. The image FILE is therefore compressed. This pins both
+/// halves: the file must be materially smaller than the state it carries, and a restore from
+/// it must still serve every value.
+#[test]
+fn the_state_image_file_is_compressed_and_still_restores() {
+    let _image = super::part4::EnvFlagGuard::set("TS_RAFT_SNAPSHOT_STATE_IMAGE");
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = RaftCluster::new_single_shard_with_wal(
+        dir.path(),
+        1,
+        [1, 2, 3],
+        RaftConfig {
+            max_applied_log_bytes: 1,
+            max_retained_log_bytes: 0,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
+    cluster.set_local_node_id(1);
+    let transport = cluster.clone();
+    for i in 0..60u32 {
+        cluster
+            .propose_distributed(
+                Command::StringSet {
+                    key: format!("zstd-{i:04}"),
+                    value: vec![(i % 7) as u8; 256],
+                },
+                &transport,
+            )
+            .unwrap();
+    }
+    let report = cluster.maybe_trigger_snapshot().unwrap();
+    assert!(report.triggered, "compaction should fire: {}", report.reason);
+
+    // Find the image the compaction externalized.
+    let mut image_path = None;
+    for entry in walkdir_images(dir.path()) {
+        image_path = Some(entry);
+    }
+    let image_path = image_path.expect("compaction must externalize an image file");
+    let image_bytes = std::fs::metadata(&image_path).unwrap().len();
+    let raw = std::fs::read(&image_path).unwrap();
+    assert!(
+        raw.windows(4).any(|window| window == b"TSZ1"),
+        "the image file must carry the compression marker"
+    );
+    // The served index alone repeats every key name and family label; a compressed image is
+    // far below the state it describes.
+    assert!(
+        image_bytes < 60 * 256,
+        "a compressed image ({image_bytes} bytes) should be well under the raw value bytes"
+    );
+
+    // And it still restores: reattach through recovery and read every value back.
+    let restored = RaftCluster::restore_single_shard_from_wal(
+        dir.path(),
+        1,
+        [1, 2, 3],
+        RaftConfig::default(),
+    )
+    .unwrap();
+    for i in 0..60u32 {
+        let response = restored
+            .propose(Command::StringGet {
+                key: format!("zstd-{i:04}"),
+            })
+            .unwrap();
+        assert_eq!(
+            response,
+            CommandResponse::Bytes {
+                value: Some(vec![(i % 7) as u8; 256])
+            },
+            "value {i} must survive a restore from the compressed image"
+        );
+    }
+}
+
+fn walkdir_images(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.starts_with("image-") && name.ends_with(".bin"))
+                .unwrap_or(false)
+            {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
+}
