@@ -187,12 +187,30 @@ pub struct ProxyOptions {
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// What a proxy will accept.
+///
+/// Five names, three behaviours. Two pairs mean exactly the same thing to admission, and
+/// nothing said so until now -- an operator picking between them was picking between synonyms
+/// while believing the choice mattered.
 pub enum ProxyServingMode {
+    /// Reads and writes both accepted.
     #[default]
     Serving,
+    /// Writes refused with `proxy_write_disabled`; reads accepted.
+    ///
+    /// Identical to `WriteDisabled` in effect. The two exist because both spellings arrive
+    /// over the wire from the metaserver, not because they differ.
     Readonly,
+    /// Writes refused with `proxy_write_disabled`; reads accepted. Identical to `Readonly`.
     WriteDisabled,
+    /// **Reads and writes both accepted -- identical to `Serving` for admission.**
+    ///
+    /// This is a label, not a control. It changes what the status surfaces and the serving-mode
+    /// gauge report, so a fleet can be marked unhealthy without changing what it serves; it
+    /// does not shed, restrict, or refuse anything. Setting it expecting protection gets none,
+    /// which is the reason it is spelled out here.
     Degraded,
+    /// Everything refused with `proxy_not_serving`. This is the drain state.
     NotServing,
 }
 
@@ -3621,6 +3639,70 @@ mod tests {
             before,
             "an explicitly configured count must not ask the cluster anything"
         );
+    }
+
+    #[test]
+    fn every_serving_mode_states_what_it_actually_refuses() {
+        // Five modes, three behaviours. The pairs that mean the same thing are not obvious from
+        // their names -- Degraded in particular reads like a restriction and is not one, it
+        // accepts exactly what Serving accepts. This pins the real matrix so the documentation
+        // beside the enum cannot drift away from it, and so that anyone narrowing one mode has
+        // to decide what happens to the mode it is currently a synonym for.
+        let cases = [
+            (ProxyServingMode::Serving, true, true),
+            (ProxyServingMode::Degraded, true, true),
+            (ProxyServingMode::Readonly, true, false),
+            (ProxyServingMode::WriteDisabled, true, false),
+            (ProxyServingMode::NotServing, false, false),
+        ];
+
+        for (mode, reads_allowed, writes_allowed) in cases {
+            let proxy = scoped_proxy(ProxyOptions {
+                serving_mode: mode,
+                ..ProxyOptions::default()
+            });
+
+            let read = proxy.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: "k".to_string(),
+                },
+            });
+            let read_refused = read.status.code == "proxy_not_serving"
+                || read.status.code == "proxy_write_disabled";
+            assert_eq!(
+                !read_refused, reads_allowed,
+                "{mode:?}: reads_allowed should be {reads_allowed}, got status {:?}",
+                read.status.code
+            );
+
+            let write = proxy.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "k".to_string(),
+                    value: b"v".to_vec(),
+                },
+            });
+            let write_refused = write.status.code == "proxy_not_serving"
+                || write.status.code == "proxy_write_disabled";
+            assert_eq!(
+                !write_refused, writes_allowed,
+                "{mode:?}: writes_allowed should be {writes_allowed}, got status {:?}",
+                write.status.code
+            );
+
+            // The report has to agree with what admission actually did, or an operator reading
+            // the status surface is told one thing while traffic experiences another.
+            let policy = proxy.policy_report();
+            assert_eq!(
+                policy.serving_writes, writes_allowed,
+                "{mode:?}: the policy report disagrees with admission about writes"
+            );
+            assert_eq!(
+                policy.serving_reads, reads_allowed,
+                "{mode:?}: the policy report disagrees with admission about reads"
+            );
+        }
     }
 
     #[test]
