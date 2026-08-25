@@ -660,7 +660,9 @@ class _LocalAdapterIngestMixin:
             resource_text = "\n\n".join(str(message["content"]) for message in envelope["messages"])
             try:
                 storage_resolution = resolve_raw_resource_for_ingest(
-                    args,
+                    # The engine blob tier rides the adapter's rust proxy client when there is
+                    # one; the pure-local adapter has none and the key stays absent.
+                    {**args, "_engine_blob_client": getattr(self, "_client", None)},
                     envelope,
                     requested_raw_uri,
                     resource_type,

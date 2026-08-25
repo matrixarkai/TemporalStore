@@ -1089,7 +1089,7 @@ class _CodexHookOutputPart2:
                 "Exit code: 0",
                 "Ran 32 tests in 0.508s",
                 "OK",
-                "To https://github.com/bjmeetsfo/TemporalStore.git",
+                "To https://github.com/matrixarkai/TemporalStore.git",
                 "002fbd45034c69ce4487a64ab40d90135a55ae1a refs/heads/main",
                 "another verbose blob " * 200,
             ]
@@ -1114,7 +1114,7 @@ class _CodexHookOutputPart2:
         raw = "\n".join(
             [
                 "Enumerating objects: 7, done.",
-                "To https://github.com/bjmeetsfo/TemporalStore.git",
+                "To https://github.com/matrixarkai/TemporalStore.git",
                 "   b223ca8c..4eafaf9c  HEAD -> main",
             ]
         )

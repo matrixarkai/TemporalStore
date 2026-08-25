@@ -34,7 +34,7 @@ build, because the whole toolchain lives inside the image's build stage. (Don't
 have Docker yet? See [Step 0](#step-0-install-docker-if-you-dont-have-it).)
 
 ```bash
-git clone https://github.com/bjmeetsfo/TemporalStore.git
+git clone https://github.com/matrixarkai/TemporalStore.git
 cd TemporalStore
 docker compose -f docker-compose.single-node.yml up --build -d   # -d runs it in the background
 ```
@@ -162,7 +162,7 @@ the image build stage.
 You also need a local clone of this repository:
 
 ```bash
-git clone https://github.com/bjmeetsfo/TemporalStore.git
+git clone https://github.com/matrixarkai/TemporalStore.git
 cd TemporalStore
 ```
 
@@ -180,10 +180,11 @@ from public GitHub, so `cargo build` fetches them automatically on the first
 build — you never clone them by hand:
 
 ```text
-matrixraft            https://github.com/bjmeetsfo/MatrixRaft.git         Raft consensus
-matrixcache           https://github.com/bjmeetsfo/MatrixCache.git        tiered cache + RocksDB SSD store
-matrixobjectstore-rs  https://github.com/bjmeetsfo/MatrixObjectStore.git  optional (--features matrixobject)
+matrixraft            https://github.com/matrixarkai/MatrixRaft.git         Raft consensus
+matrixcache           https://github.com/matrixarkai/MatrixCache.git        tiered cache + RocksDB SSD store
 ```
+
+An optional object-store backend sits behind `--features matrixobject`. It is not part of this build: the feature ships as an empty stub, so nothing is fetched for it and nothing needs to be.
 
 Each is pinned to an exact revision, so builds are reproducible. Because
 `matrixcache` enables the `rocksdb-ssd` feature, the first build compiles RocksDB
@@ -204,7 +205,7 @@ offline/air-gapped builds, run `cargo vendor` on a connected host, or add
 Use Ubuntu 22.04 LTS or Ubuntu 26.04 when possible.
 
 ```bash
-git clone https://github.com/bjmeetsfo/TemporalStore.git
+git clone https://github.com/matrixarkai/TemporalStore.git
 cd TemporalStore
 ./tools/install_linux_temporalstore.sh --check-prereqs
 ./tools/install_linux_temporalstore.sh --build
@@ -272,7 +273,7 @@ source "$HOME/.cargo/env"
 Then build and run:
 
 ```bash
-git clone https://github.com/bjmeetsfo/TemporalStore.git
+git clone https://github.com/matrixarkai/TemporalStore.git
 cd TemporalStore
 ./tools/install_macos_temporalstore.sh --check-prereqs
 ./tools/install_macos_temporalstore.sh --build
@@ -326,7 +327,7 @@ Install Docker Desktop and use Linux containers. Then open PowerShell in the
 repository root:
 
 ```powershell
-git clone https://github.com/bjmeetsfo/TemporalStore.git
+git clone https://github.com/matrixarkai/TemporalStore.git
 cd TemporalStore
 powershell -ExecutionPolicy Bypass `
   -File .\tools\install_windows_docker_temporalstore.ps1 `

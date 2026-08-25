@@ -364,6 +364,25 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
     def hget(self, key: str, field: str) -> str:
         return self._call("hget", key=key, field=field)
 
+    def resource_blob_put(self, tenant_hash: int, payload_base64: str) -> Json:
+        return self._call_json(
+            "matrixark_resource_blob_put", key=str(int(tenant_hash)), value=payload_base64
+        )
+
+    def resource_blob_fetch(self, uri: str, *, offset: int = 0, length: int = 0) -> Json:
+        return self._call_json(
+            "matrixark_resource_blob_fetch", key=str(uri), blob_offset=int(offset), blob_length=int(length)
+        )
+
+    def resource_blob_sweep(self, tenant_hash: int, referenced_hashes: list[str], min_age_ms: int) -> Json:
+        return self._call_json(
+            "matrixark_resource_blob_sweep",
+            key=str(int(tenant_hash)),
+            blob_referenced_hashes=[str(item) for item in referenced_hashes],
+            blob_min_age_ms=int(min_age_ms),
+        )
+
+
     @staticmethod
     def _entries_for_single_key(compact_entries: list[list[str]]) -> tuple[str, list[list[str]]] | None:
         if not compact_entries:
@@ -660,7 +679,14 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
         record_types: list[str],
         secondary_index_groups: list[list[str]],
         selected_node_hashes: list[int],
+        record_ids: list[str] | None = None,
+        return_index_records: bool = False,
     ) -> Json:
+        extra: Json = {}
+        if record_ids:
+            extra["record_ids"] = [str(item) for item in record_ids]
+        if return_index_records:
+            extra["return_index_records"] = True
         return self._call_json(
             "matrixark_scan_candidates",
             count_key=count_key,
@@ -670,6 +696,7 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
             record_types=record_types,
             secondary_index_groups=secondary_index_groups,
             selected_node_hashes=selected_node_hashes,
+            **extra,
         )
 
     def metrics_prometheus(self) -> str:

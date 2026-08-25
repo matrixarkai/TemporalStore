@@ -222,7 +222,7 @@ pub struct ClientRoutingReadinessReport {
     pub rust_native_http_json_ready: bool,
     pub rust_native_resp_ready: bool,
     pub rust_native_tonic_ready: bool,
-    pub legacy_cplusplus_wire_out_of_scope: bool,
+    pub legacy_wire_out_of_scope: bool,
     pub compatibility_result_ready: bool,
     pub native_wire_migration_ready: bool,
     pub local_client_ready: bool,
@@ -246,7 +246,7 @@ pub struct ProxyServingReadinessReport {
     pub proxy_command_aliases_ready: bool,
     pub route_invalidation_ready: bool,
     pub route_quarantine_ready: bool,
-    pub legacy_cplusplus_wire_out_of_scope: bool,
+    pub legacy_wire_out_of_scope: bool,
     pub compatibility_result_ready: bool,
     pub native_wire_proxy_transport_ready: bool,
     pub local_proxy_ready: bool,
@@ -456,14 +456,14 @@ pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
     let rust_native_http_json_ready = replacement_contract.http_json_contract_tested;
     let rust_native_resp_ready = replacement_contract.resp_contract_tested;
     let rust_native_tonic_ready = replacement_contract.tonic_contract_tested;
-    let legacy_cplusplus_wire_out_of_scope = true;
+    let legacy_wire_out_of_scope = true;
     let native_wire_migration_ready = false;
     let compatibility_result_ready = wire_compatibility_decision_tracked
         && rust_native_migration_contract_ready
         && rust_native_http_json_ready
         && rust_native_resp_ready
         && rust_native_tonic_ready
-        && legacy_cplusplus_wire_out_of_scope
+        && legacy_wire_out_of_scope
         && !native_wire_migration_ready;
     let local_client_ready = typed_table_client_ready
         && route_refresh_ready
@@ -496,7 +496,7 @@ pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
         rust_native_http_json_ready,
         rust_native_resp_ready,
         rust_native_tonic_ready,
-        legacy_cplusplus_wire_out_of_scope,
+        legacy_wire_out_of_scope,
         compatibility_result_ready,
         native_wire_migration_ready,
         local_client_ready,
@@ -522,7 +522,7 @@ pub fn proxy_serving_readiness_report() -> ProxyServingReadinessReport {
     let proxy_command_aliases_ready = migration_contract.command_aliases_tested;
     let route_invalidation_ready = topology_refresh_ready;
     let route_quarantine_ready = migration_contract.backend_quarantine_preserved;
-    let legacy_cplusplus_wire_out_of_scope = true;
+    let legacy_wire_out_of_scope = true;
     let native_wire_proxy_transport_ready = false;
     let compatibility_result_ready = wire_compatibility_decision_tracked
         && rust_native_proxy_migration_contract_ready
@@ -535,7 +535,7 @@ pub fn proxy_serving_readiness_report() -> ProxyServingReadinessReport {
         && route_quarantine_ready
         && migration_contract.admission_policy_tested
         && migration_contract.typed_client_delegation_tested
-        && legacy_cplusplus_wire_out_of_scope
+        && legacy_wire_out_of_scope
         && !native_wire_proxy_transport_ready;
     let local_proxy_ready = http_execute_routes_ready
         && heartbeat_config_ready
@@ -568,7 +568,7 @@ pub fn proxy_serving_readiness_report() -> ProxyServingReadinessReport {
         proxy_command_aliases_ready,
         route_invalidation_ready,
         route_quarantine_ready,
-        legacy_cplusplus_wire_out_of_scope,
+        legacy_wire_out_of_scope,
         compatibility_result_ready,
         native_wire_proxy_transport_ready,
         local_proxy_ready,
@@ -870,7 +870,7 @@ mod tests {
         assert!(client.rust_native_http_json_ready);
         assert!(client.rust_native_resp_ready);
         assert!(client.rust_native_tonic_ready);
-        assert!(client.legacy_cplusplus_wire_out_of_scope);
+        assert!(client.legacy_wire_out_of_scope);
         assert!(client.compatibility_result_ready);
         assert!(!client.native_wire_migration_ready);
         assert!(client.production_ready);
@@ -902,7 +902,7 @@ mod tests {
         assert!(proxy.proxy_command_aliases_ready);
         assert!(proxy.route_invalidation_ready);
         assert!(proxy.route_quarantine_ready);
-        assert!(proxy.legacy_cplusplus_wire_out_of_scope);
+        assert!(proxy.legacy_wire_out_of_scope);
         assert!(proxy.compatibility_result_ready);
         assert!(!proxy.native_wire_proxy_transport_ready);
         assert!(proxy.production_ready);

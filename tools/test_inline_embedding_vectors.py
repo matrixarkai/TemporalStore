@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Owner records must persist the embedding vector, not just be handed one in memory.
+"""Owner records persist the embedding vector; the separate records are RETIRED.
 
-Step 1 of folding embeddings into their owners is a DUAL-WRITE: the vector is copied onto the
-context_event / context_entity / context_summary record while the separate context_embedding
-record keeps being written and every reader keeps joining through (ref_type, ref_hash).
+The fold-and-drop happens at the adapter's append: an embedding record whose owner is in the
+same batch folds its vector onto the owner and vanishes; one whose owner was appended earlier
+re-appends an updated owner instead; one with no findable owner (or an unmapped ref type) is
+kept, because a vector must never be dropped on the floor. Old logs still carry separate
+records and every reader still accepts them -- new logs simply stop growing them.
 
-Nothing reads the inline field yet, so without reading records back OUT of the adapter this
-could copy nothing and the whole suite would stay green. That is not hypothetical -- the Rust
-half of this fold did exactly that: the struct had the field, the population code ran, and a
-hand-written protobuf codec dropped the value on persist with no error anywhere.
+These assertions read records back OUT of the adapter on purpose: the Rust half of this fold
+once had the field, ran the population code, and a hand-written codec dropped the value on
+persist with no error anywhere.
 """
 from __future__ import annotations
 
@@ -54,34 +55,63 @@ class InlineEmbeddingVectorTest(unittest.TestCase):
         self.assertTrue([e for e in entities if e.get("vector")],
                         "no context_entity persisted an inline vector")
 
-    def test_inline_vector_equals_the_separate_record(self):
-        """Dual-write means identical, not merely present -- a wrong vector is worse than none."""
+    def test_mapped_embedding_records_are_not_persisted(self):
+        """The retirement itself: an embedding whose owner exists folds and vanishes."""
         rows = ingest()
-        by_ref = {(str(r.get("ref_type") or ""), r.get("ref_hash")): r.get("vector")
-                  for r in of_type(rows, "context_embedding") if r.get("vector")}
-        checked = 0
-        for record_type, ref_type, field in (
-            ("context_event", "event", "event_id_hash"),
-            ("context_entity", "entity", "entity_hash"),
-            ("context_summary", "summary", "summary_hash"),
-        ):
-            for record in of_type(rows, record_type):
-                inline = record.get("vector")
-                if not inline:
-                    continue
-                separate = by_ref.get((ref_type, record.get(field)))
-                self.assertIsNotNone(
-                    separate, "%s has an inline vector with no matching embedding record" % record_type)
-                self.assertEqual(separate, inline,
-                                 "%s inline vector differs from its embedding record" % record_type)
-                checked += 1
-        self.assertTrue(checked, "no owner record was cross-checked against its embedding record")
+        mapped = {"event", "entity", "summary", "node", "segment", "compression",
+                  "resource_chunk", "skill_section"}
+        leftovers = [r for r in of_type(rows, "context_embedding")
+                     if str(r.get("ref_type") or "") in mapped]
+        self.assertEqual(
+            [], leftovers,
+            "embedding records with a mapped owner must fold onto it, not persist: %r"
+            % [(r.get("ref_type"), r.get("ref_hash")) for r in leftovers][:5])
 
-    def test_separate_embedding_records_are_still_written(self):
-        """Step 1 must not drop them: every reader still joins through (ref_type, ref_hash)."""
-        rows = ingest()
-        self.assertTrue(of_type(rows, "context_embedding"),
-                        "dual-write must keep the separate embedding records until readers migrate")
+    def test_a_late_embedding_updates_its_earlier_owner(self):
+        """Cross-batch: the owner was appended earlier; the embedding folds onto a re-appended
+        copy of it instead of persisting separately."""
+        import matrixark_mcp_local_adapter as A
+        import tempfile as tf
+        adapter = mcp.MatrixArkLocalAdapter(Path(tf.mkdtemp()) / "late.jsonl")
+        adapter.append({
+            "record_type": "context_event",
+            "event_id_hash": 4242,
+            "text": "an event embedded later",
+            "updated_at_ms": 1780000000000,
+        })
+        adapter.append({
+            "record_type": "context_embedding",
+            "embedding_type": "event_text",
+            "ref_type": "event",
+            "ref_hash": 4242,
+            "vector": [0.5, 0.25],
+            "model": "late-model",
+            "updated_at_ms": 1780000000500,
+        })
+        rows = adapter.read_all()
+        self.assertEqual([], of_type(rows, "context_embedding"),
+                         "the late embedding must fold, not persist")
+        events = [r for r in of_type(rows, "context_event") if r.get("event_id_hash") == 4242]
+        self.assertTrue(events and events[-1].get("vector") == [0.5, 0.25],
+                        "the earlier owner must carry the late vector")
+
+    def test_an_orphan_embedding_is_kept_not_lost(self):
+        """No findable owner: the record persists exactly as before -- a vector is never
+        dropped on the floor."""
+        import tempfile as tf
+        adapter = mcp.MatrixArkLocalAdapter(Path(tf.mkdtemp()) / "orphan.jsonl")
+        adapter.append({
+            "record_type": "context_embedding",
+            "embedding_type": "event_text",
+            "ref_type": "event",
+            "ref_hash": 999999,
+            "vector": [1.0],
+            "updated_at_ms": 1780000000000,
+        })
+        rows = adapter.read_all()
+        kept = of_type(rows, "context_embedding")
+        self.assertEqual(1, len(kept), "an orphan embedding must be kept")
+        self.assertEqual([1.0], kept[0].get("vector"))
 
 
 if __name__ == "__main__":

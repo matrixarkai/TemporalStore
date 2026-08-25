@@ -92,16 +92,21 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::ContextQueryEntities { .. }
         | Command::ContextUpsertChildRef { .. }
         | Command::ContextQueryChildren { .. }
-        | Command::ContextUpsertEmbedding { .. }
         | Command::ContextSetNodeEmbedding { .. }
-        | Command::ContextQueryEmbeddings { .. }
         | Command::ContextQueryNodeEmbeddings { .. }
         | Command::ContextTraverseTree { .. }
         | Command::ContextUpsertSummary { .. }
         | Command::ContextQuerySummaries { .. }
+        | Command::ContextQuerySummaryVectors { .. }
         | Command::ContextWriteCompressionEvent { .. }
         | Command::ContextQueryCompressionEvents { .. }
         | Command::ContextCompressEvents { .. }
+        | Command::ContextResourceBlobBegin { .. }
+        | Command::ContextResourceBlobAppend { .. }
+        | Command::ContextResourceBlobCommit { .. }
+        | Command::ContextResourceBlobPut { .. }
+        | Command::ContextResourceBlobFetch { .. }
+        | Command::ContextResourceBlobSweep { .. }
         | Command::ContextQueryNodeContext { .. } => None,
     }
 }
@@ -127,6 +132,14 @@ pub(super) fn context_command_key(command: &Command) -> Option<String> {
         } => node_hashes
             .first()
             .map(|node_hash| context_node_key(*tenant_hash, *node_hash)),
+        Command::ContextQuerySummaryVectors {
+            tenant_hash,
+            node_hashes,
+            level,
+            ..
+        } => node_hashes
+            .first()
+            .map(|node_hash| context_summary_key(*tenant_hash, *node_hash, *level)),
         Command::ContextWriteEvent {
             tenant_hash,
             node_hash,
@@ -228,23 +241,12 @@ pub(super) fn context_command_key(command: &Command) -> Option<String> {
             parent_hash,
             ..
         } => Some(context_child_key(*tenant_hash, *parent_hash)),
-        Command::ContextUpsertEmbedding {
-            tenant_hash,
-            embedding,
-        } => Some(context_embedding_key(*tenant_hash, embedding.ref_hash)),
-        // Keyed by the NODE, not by an embedding key -- the vector now lives on the node record.
+        // Keyed by the NODE: the vector lives on the node record.
         Command::ContextSetNodeEmbedding {
             tenant_hash,
             node_hash,
             ..
         } => Some(context_node_key(*tenant_hash, *node_hash)),
-        Command::ContextQueryEmbeddings {
-            tenant_hash,
-            ref_hashes,
-            ..
-        } => ref_hashes
-            .first()
-            .map(|ref_hash| context_embedding_key(*tenant_hash, *ref_hash)),
         Command::ContextTraverseTree {
             tenant_hash,
             start_node_hash,

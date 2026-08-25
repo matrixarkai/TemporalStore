@@ -502,17 +502,6 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 &mut rewrite_stats,
             )?;
         }
-        compact_page_addresses(
-            &self.page_store,
-            &self.cache,
-            shard_id,
-            "context_embedding",
-            shard
-                .context_embeddings
-                .values_mut()
-                .flat_map(|series| series.values_mut()),
-            &mut rewrite_stats,
-        )?;
         for series in shard.context_summaries.values_mut() {
             compact_feature_page_addresses(
                 &self.page_store,

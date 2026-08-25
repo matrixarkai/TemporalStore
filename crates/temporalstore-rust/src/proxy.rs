@@ -116,6 +116,18 @@ pub struct ProxyOptions {
     pub context_first_shard_id: ShardId,
     /// Number of shards the context corpus is spread across. `1` keeps every
     /// tenant on `context_first_shard_id` (single-shard deploys).
+    /// How many shards the context routes spread tenants over. **0 means follow the cluster**,
+    /// which is the default.
+    ///
+    /// This used to default to 1, so a proxy in front of an eight-shard cluster put every
+    /// tenant's context on shard one and said nothing about it -- one shard doing all the work
+    /// while seven sat idle, and no error to notice.
+    ///
+    /// A tenant's shard comes from hashing its id across this range, so CHANGING the count
+    /// moves tenants. Context already written under a different count stays where it was
+    /// written and is not found under the new one. That is why the effective value and where
+    /// it came from are both reported: a deployment that has been running on the old default
+    /// with more than one shard is doing a data move, not a config change.
     #[serde(default = "default_context_shard_count")]
     pub context_shard_count: u64,
     /// I/O timeout (ms) for control-plane calls to the metaserver: heartbeat,
@@ -175,12 +187,30 @@ pub struct ProxyOptions {
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// What a proxy will accept.
+///
+/// Five names, three behaviours. Two pairs mean exactly the same thing to admission, and
+/// nothing said so until now -- an operator picking between them was picking between synonyms
+/// while believing the choice mattered.
 pub enum ProxyServingMode {
+    /// Reads and writes both accepted.
     #[default]
     Serving,
+    /// Writes refused with `proxy_write_disabled`; reads accepted.
+    ///
+    /// Identical to `WriteDisabled` in effect. The two exist because both spellings arrive
+    /// over the wire from the metaserver, not because they differ.
     Readonly,
+    /// Writes refused with `proxy_write_disabled`; reads accepted. Identical to `Readonly`.
     WriteDisabled,
+    /// **Reads and writes both accepted -- identical to `Serving` for admission.**
+    ///
+    /// This is a label, not a control. It changes what the status surfaces and the serving-mode
+    /// gauge report, so a fleet can be marked unhealthy without changing what it serves; it
+    /// does not shed, restrict, or refuse anything. Setting it expecting protection gets none,
+    /// which is the reason it is spelled out here.
     Degraded,
+    /// Everything refused with `proxy_not_serving`. This is the drain state.
     NotServing,
 }
 
@@ -437,6 +467,25 @@ pub struct ProxyPreflightReport {
     pub degraded_reasons: Vec<String>,
 }
 
+/// What `GET /readiness` answers for a proxy.
+///
+/// The build-wide capability report is still here, flattened, so anything already reading
+/// those fields keeps working. What is new is the state of THIS proxy, because the endpoint
+/// was answering a question nobody asked: the capability report is a description of what the
+/// code supports and is identical on every process, so a drained proxy reported ready and an
+/// orchestrator kept sending it traffic it refuses.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyReadinessResponse {
+    /// Whether this proxy will accept anything at all. False only while drained.
+    pub serving: bool,
+    pub serving_mode: ProxyServingMode,
+    /// Reads and writes separately, since refusing writes is not the same as refusing traffic.
+    pub serving_reads: bool,
+    pub serving_writes: bool,
+    #[serde(flatten)]
+    pub production: crate::ProductionReadinessReport,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyPolicyReport {
     pub serving_mode: ProxyServingMode,
@@ -463,6 +512,13 @@ pub struct ProxyPolicyReport {
     pub inflight_write_requests: u64,
     #[serde(default)]
     pub pin_primary_reads: bool,
+    /// Shards the context routes actually spread tenants over, and where that number came
+    /// from -- "configured", "cluster", or "fallback_until_cluster_known". Reported because
+    /// this used to be a silent 1: nothing said every tenant was landing on one shard.
+    #[serde(default)]
+    pub context_shard_count: u64,
+    #[serde(default)]
+    pub context_shard_count_source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -518,7 +574,7 @@ impl Default for ProxyTonicStreamingContract {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyMigrationContract {
     pub compatibility_decision: String,
-    pub legacy_cplusplus_wire_in_scope: bool,
+    pub legacy_wire_in_scope: bool,
     pub native_wire_proxy_transport_ready: bool,
     pub production_protocols: Vec<String>,
     pub http_json_aliases_ready: bool,
@@ -548,7 +604,7 @@ impl Default for ProxyMigrationContract {
             compatibility_decision:
                 "legacy command transport is out of scope; use Rust-native HTTP/JSON, RESP, and tonic"
                     .to_string(),
-            legacy_cplusplus_wire_in_scope: false,
+            legacy_wire_in_scope: false,
             native_wire_proxy_transport_ready: false,
             production_protocols: vec![
                 "HTTP/JSON".to_string(),
@@ -878,6 +934,16 @@ struct ProxyInner {
     last_topology_check_ms: std::sync::atomic::AtomicU64,
     /// Wall-clock ms of the last auto-registration attempt, 0 for "never".
     last_auto_register_ms: std::sync::atomic::AtomicU64,
+    /// Shard count last read from the metaserver, 0 for "not asked yet". Only consulted when
+    /// `context_shard_count` is 0.
+    cluster_shard_count: std::sync::atomic::AtomicU64,
+    /// Whether the metaserver has been asked for the shard list yet. Distinguishes "we have
+    /// not looked" from "we looked and the ids cannot be addressed as a range" -- reporting
+    /// the second when the first is true would be a claim we have not earned.
+    cluster_shards_checked: std::sync::atomic::AtomicBool,
+    /// Whether the shard ids the metaserver listed form a contiguous run from
+    /// `context_first_shard_id`. Only meaningful once `cluster_shards_checked` is true.
+    cluster_shards_contiguous: std::sync::atomic::AtomicBool,
 }
 
 impl ProxyService {
@@ -893,6 +959,9 @@ impl ProxyService {
                 boot_time_ms: now_ms(),
                 last_topology_check_ms: std::sync::atomic::AtomicU64::new(0),
                 last_auto_register_ms: std::sync::atomic::AtomicU64::new(0),
+                cluster_shard_count: std::sync::atomic::AtomicU64::new(0),
+                cluster_shards_checked: std::sync::atomic::AtomicBool::new(false),
+                cluster_shards_contiguous: std::sync::atomic::AtomicBool::new(false),
             }),
         }
     }
@@ -1433,6 +1502,134 @@ impl ProxyService {
         self.sync_client_stats();
     }
 
+    /// How many shards the context routes actually spread tenants over.
+    ///
+    /// A configured non-zero value wins. Otherwise the cluster's shard count is used, which is
+    /// read from the metaserver on the heartbeat rather than per request -- a lookup on the
+    /// request path is what the route cache and the topology interval exist to avoid.
+    ///
+    /// Falls back to 1 only while the count is still unknown (before the first heartbeat, or
+    /// if the metaserver cannot be reached). That is the old behaviour, so a proxy that cannot
+    /// ask degrades to what it did before rather than to nothing.
+    pub(super) fn effective_context_shard_count(&self) -> u64 {
+        let configured = self.options().context_shard_count;
+        if configured != 0 {
+            return configured;
+        }
+        match self
+            .inner
+            .cluster_shard_count
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            0 => 1,
+            known => known,
+        }
+    }
+
+    /// Where `effective_context_shard_count` got its answer, for the status surfaces.
+    pub(super) fn context_shard_count_source(&self) -> &'static str {
+        if self.options().context_shard_count != 0 {
+            "configured"
+        } else if self
+            .inner
+            .cluster_shard_count
+            .load(std::sync::atomic::Ordering::Relaxed)
+            != 0
+        {
+            "cluster"
+        } else if !self
+            .inner
+            .cluster_shards_checked
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            "fallback_until_cluster_known"
+        } else {
+            "fallback_cluster_shards_not_contiguous"
+        }
+    }
+
+    /// Learn how many shards the context routes may span, from the metaserver.
+    ///
+    /// Called from the heartbeat, which already talks to the metaserver on a fixed cadence, so
+    /// this adds no new schedule and nothing to the request path.
+    ///
+    /// It asks for the shard LIST rather than a count, because a count is not enough to be
+    /// safe. A tenant's shard is `context_first_shard_id + hash % count`, which addresses a
+    /// CONTIGUOUS run of ids. A cluster whose shards are 1-4 and 100-103 has a count of eight
+    /// and no shards 5-8, so adopting the count alone would send those tenants to ids that do
+    /// not exist -- worse than the single-shard default it replaces, because the default at
+    /// least addressed a shard that was there.
+    ///
+    /// So the count is adopted only when the ids actually form a contiguous run starting at
+    /// `context_first_shard_id`. Otherwise the range stays unknown, the fallback of 1 applies,
+    /// and the reason is reported rather than left to be inferred from failures.
+    pub(super) fn refresh_cluster_shard_count(&self) {
+        let options = self.options();
+        if options.context_shard_count != 0 {
+            return;
+        }
+        let Ok(listed) = get_json_with_options::<crate::meta::ListShardsResponse>(
+            &options.meta_addr,
+            "/shards",
+            options.control_http_options(),
+        ) else {
+            return;
+        };
+        if !listed.status.ok || listed.shards.is_empty() {
+            return;
+        }
+        let mut ids: Vec<crate::types::ShardId> =
+            listed.shards.iter().map(|shard| shard.shard_id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let contiguous_from_first = ids
+            .iter()
+            .enumerate()
+            .all(|(offset, id)| *id == options.context_first_shard_id + offset as u64);
+        // A short page means there are more shards than were listed; a partial view could look
+        // contiguous when the whole set is not, so do not conclude anything from it.
+        let complete = listed.next_after_shard_id.is_none();
+        let usable = complete && contiguous_from_first;
+        self.inner.cluster_shard_count.store(
+            if usable { ids.len() as u64 } else { 0 },
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        self.inner.cluster_shards_contiguous.store(
+            usable,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        self.inner
+            .cluster_shards_checked
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// This proxy's answer to a readiness probe, and the HTTP status that goes with it.
+    ///
+    /// A drained proxy answers 503. That is the whole point of a readiness probe: drain exists
+    /// to stop traffic arriving, and answering 200 while refusing every request with
+    /// `proxy_not_serving` defeats the control it is supposed to serve.
+    ///
+    /// Read-only and write-disabled still answer 200 -- they serve reads, and a probe that
+    /// failed for them would take a proxy out of rotation that is doing useful work. The two
+    /// flags say which is which for anyone who needs the distinction.
+    pub fn readiness_response(&self) -> (u16, ProxyReadinessResponse) {
+        let options = self.options();
+        let serving_reads = !matches!(options.serving_mode, ProxyServingMode::NotServing);
+        let serving_writes = matches!(
+            options.serving_mode,
+            ProxyServingMode::Serving | ProxyServingMode::Degraded
+        );
+        let response = ProxyReadinessResponse {
+            serving: serving_reads,
+            serving_mode: options.serving_mode,
+            serving_reads,
+            serving_writes,
+            production: crate::production_readiness_report(),
+        };
+        let status = if serving_reads { 200 } else { 503 };
+        (status, response)
+    }
+
     /// Whether enough time has passed to try registering with the metaserver again.
     ///
     /// Claims the slot as it answers, so two heartbeats cannot both decide they are due.
@@ -1718,7 +1915,7 @@ mod tests {
             migration.compatibility_decision,
             "legacy command transport is out of scope; use Rust-native HTTP/JSON, RESP, and tonic"
         );
-        assert!(!migration.legacy_cplusplus_wire_in_scope);
+        assert!(!migration.legacy_wire_in_scope);
         assert!(!migration.native_wire_proxy_transport_ready);
         assert!(migration.http_json_aliases_ready);
         assert!(migration.resp_migration_ready);
@@ -3324,6 +3521,296 @@ mod tests {
         });
         assert_eq!(located.client_options_snapshot().local_location, "zone-b");
     }
+    #[test]
+    fn context_shards_follow_the_cluster_unless_told_otherwise() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // The count used to default to 1, so a proxy in front of a multi-shard cluster put
+        // every tenant's context on one shard -- silently, with six or seven shards idle and
+        // no error to notice. It now follows the cluster unless a value is configured.
+        let stats_calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let addr = test_addr(18_404);
+        let calls = stats_calls.clone();
+        let addr_for_thread = addr.clone();
+        std::thread::spawn(move || {
+            serve(&addr_for_thread, move |request| match request.path.as_str() {
+                "/shards" => {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    crate::http::json_response(
+                        200,
+                        &crate::meta::ListShardsResponse {
+                            status: Status::ok(),
+                            shards: (1..=8)
+                                .map(|shard_id| crate::meta::ShardListEntry {
+                                    shard_id,
+                                    server_addr: "127.0.0.1:1".to_string(),
+                                    namespace: "ns".to_string(),
+                                    table_name: "tbl".to_string(),
+                                    latest_snapshot: None,
+                                })
+                                .collect(),
+                            next_after_shard_id: None,
+                        },
+                    )
+                }
+                "/proxies/heartbeat" => crate::http::json_response(
+                    200,
+                    &ProxyHeartbeatResponse {
+                        status: Status::ok(),
+                        config_changed: false,
+                        namespace: String::new(),
+                        config_version: 0,
+                        serving_mode: "serving".to_string(),
+                        drop_percent: 0,
+                    },
+                ),
+                _ => crate::http::json_response(404, &Status::error("not_found", "no route")),
+            })
+            .unwrap();
+        });
+        wait_for_http(&addr);
+
+        // Before the first heartbeat the cluster count is unknown, so it behaves as it always
+        // did rather than guessing. Degrading to the old answer beats degrading to none.
+        let following = ProxyService::new(ProxyOptions {
+            meta_addr: addr.clone(),
+            ..ProxyOptions::default()
+        });
+        assert_eq!(following.effective_context_shard_count(), 1);
+        assert_eq!(
+            following.context_shard_count_source(),
+            "fallback_until_cluster_known"
+        );
+
+        // One heartbeat is enough to learn it.
+        let _ = following.heartbeat_to_meta();
+        assert_eq!(
+            following.effective_context_shard_count(),
+            8,
+            "a proxy in front of an eight-shard cluster should spread context over eight"
+        );
+        assert_eq!(following.context_shard_count_source(), "cluster");
+        assert_eq!(
+            following.policy_report().context_shard_count,
+            8,
+            "the effective value has to be visible, since it used to be a silent 1"
+        );
+
+        // Tenants actually land on more than one shard now.
+        let mut landed = std::collections::BTreeSet::new();
+        for i in 0..64 {
+            let scope = context::ProxyContextScope {
+                tenant_id: format!("tenant-{i}"),
+                account_id: "acct".to_string(),
+                ..Default::default()
+            };
+            landed.insert(following.context_shard_id(context::context_tenant_hash(&scope)));
+        }
+        assert!(
+            landed.len() > 1,
+            "64 tenants over 8 shards should not all land on one, saw {landed:?}"
+        );
+
+        // A cluster whose shard ids are NOT a contiguous run from the first id cannot be
+        // addressed by "first + hash % count" -- the arithmetic would name ids that do not
+        // exist. Adopting the count there would be worse than the single-shard default it
+        // replaces, so it is refused and the reason is reported.
+        let gapped = test_addr(18_406);
+        let gapped_for_thread = gapped.clone();
+        std::thread::spawn(move || {
+            serve(&gapped_for_thread, move |request| match request.path.as_str() {
+                "/shards" => crate::http::json_response(
+                    200,
+                    &crate::meta::ListShardsResponse {
+                        status: Status::ok(),
+                        // 1-4 and 100-103: eight shards, not eight consecutive ids.
+                        shards: (1..=4)
+                            .chain(100..=103)
+                            .map(|shard_id| crate::meta::ShardListEntry {
+                                shard_id,
+                                server_addr: "127.0.0.1:1".to_string(),
+                                namespace: "ns".to_string(),
+                                table_name: "tbl".to_string(),
+                                latest_snapshot: None,
+                            })
+                            .collect(),
+                        next_after_shard_id: None,
+                    },
+                ),
+                "/proxies/heartbeat" => crate::http::json_response(
+                    200,
+                    &ProxyHeartbeatResponse {
+                        status: Status::ok(),
+                        config_changed: false,
+                        namespace: String::new(),
+                        config_version: 0,
+                        serving_mode: "serving".to_string(),
+                        drop_percent: 0,
+                    },
+                ),
+                _ => crate::http::json_response(404, &Status::error("not_found", "no route")),
+            })
+            .unwrap();
+        });
+        wait_for_http(&gapped);
+
+        let scattered = ProxyService::new(ProxyOptions {
+            meta_addr: gapped,
+            ..ProxyOptions::default()
+        });
+        let _ = scattered.heartbeat_to_meta();
+        assert_eq!(
+            scattered.effective_context_shard_count(),
+            1,
+            "a count that would address shards 5-8, which do not exist, must not be adopted"
+        );
+        assert_eq!(
+            scattered.context_shard_count_source(),
+            "fallback_cluster_shards_not_contiguous",
+            "and the reason has to be visible, not inferred from failures"
+        );
+
+        // A configured value still wins, and needs no cluster lookup at all.
+        let before = stats_calls.load(Ordering::SeqCst);
+        let configured = ProxyService::new(ProxyOptions {
+            meta_addr: addr.clone(),
+            context_shard_count: 4,
+            ..ProxyOptions::default()
+        });
+        let _ = configured.heartbeat_to_meta();
+        assert_eq!(configured.effective_context_shard_count(), 4);
+        assert_eq!(configured.context_shard_count_source(), "configured");
+        assert_eq!(
+            stats_calls.load(Ordering::SeqCst),
+            before,
+            "an explicitly configured count must not ask the cluster anything"
+        );
+    }
+
+    #[test]
+    fn a_drained_proxy_fails_its_readiness_probe() {
+        // The runbook points operators at GET /readiness for exactly this, and it used to
+        // answer with a build-wide capability report: the same bytes on every process, with a
+        // hardcoded 200. So a proxy that had been drained -- refusing every request with
+        // proxy_not_serving -- reported itself ready, and anything using the probe to decide
+        // where to send traffic kept sending it. The drain control was defeated by the probe
+        // meant to honour it.
+        let drained = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::NotServing,
+            ..ProxyOptions::default()
+        });
+        let (status, body) = drained.handle(HttpRequest {
+            method: "GET".to_string(),
+            path: "/readiness".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(
+            status, 503,
+            "a drained proxy must fail its probe, or draining it does not take it out of              rotation"
+        );
+        let parsed = parse_json::<ProxyReadinessResponse>(&body).expect("readiness body parses");
+        assert!(!parsed.serving);
+        assert_eq!(parsed.serving_mode, ProxyServingMode::NotServing);
+
+        // Serving answers 200, and so does read-only: it still serves reads, and failing its
+        // probe would pull a proxy doing useful work out of rotation. The flags carry the
+        // distinction for anyone who needs it.
+        for (mode, expect_writes) in [
+            (ProxyServingMode::Serving, true),
+            (ProxyServingMode::Degraded, true),
+            (ProxyServingMode::Readonly, false),
+            (ProxyServingMode::WriteDisabled, false),
+        ] {
+            let proxy = scoped_proxy(ProxyOptions {
+                serving_mode: mode,
+                ..ProxyOptions::default()
+            });
+            let (status, body) = proxy.handle(HttpRequest {
+                method: "GET".to_string(),
+                path: "/readiness".to_string(),
+                body: Vec::new(),
+            });
+            assert_eq!(status, 200, "{mode:?} serves reads and must pass its probe");
+            let parsed =
+                parse_json::<ProxyReadinessResponse>(&body).expect("readiness body parses");
+            assert!(parsed.serving, "{mode:?} should report serving");
+            assert_eq!(
+                parsed.serving_writes, expect_writes,
+                "{mode:?} should report serving_writes as {expect_writes}"
+            );
+            // The capability report is still carried, so anything already reading those fields
+            // keeps working rather than being broken by this.
+            assert!(
+                !parsed.production.areas.is_empty(),
+                "the capability report must still be included"
+            );
+        }
+    }
+
+    #[test]
+    fn every_serving_mode_states_what_it_actually_refuses() {
+        // Five modes, three behaviours. The pairs that mean the same thing are not obvious from
+        // their names -- Degraded in particular reads like a restriction and is not one, it
+        // accepts exactly what Serving accepts. This pins the real matrix so the documentation
+        // beside the enum cannot drift away from it, and so that anyone narrowing one mode has
+        // to decide what happens to the mode it is currently a synonym for.
+        let cases = [
+            (ProxyServingMode::Serving, true, true),
+            (ProxyServingMode::Degraded, true, true),
+            (ProxyServingMode::Readonly, true, false),
+            (ProxyServingMode::WriteDisabled, true, false),
+            (ProxyServingMode::NotServing, false, false),
+        ];
+
+        for (mode, reads_allowed, writes_allowed) in cases {
+            let proxy = scoped_proxy(ProxyOptions {
+                serving_mode: mode,
+                ..ProxyOptions::default()
+            });
+
+            let read = proxy.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: "k".to_string(),
+                },
+            });
+            let read_refused = read.status.code == "proxy_not_serving"
+                || read.status.code == "proxy_write_disabled";
+            assert_eq!(
+                !read_refused, reads_allowed,
+                "{mode:?}: reads_allowed should be {reads_allowed}, got status {:?}",
+                read.status.code
+            );
+
+            let write = proxy.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "k".to_string(),
+                    value: b"v".to_vec(),
+                },
+            });
+            let write_refused = write.status.code == "proxy_not_serving"
+                || write.status.code == "proxy_write_disabled";
+            assert_eq!(
+                !write_refused, writes_allowed,
+                "{mode:?}: writes_allowed should be {writes_allowed}, got status {:?}",
+                write.status.code
+            );
+
+            // The report has to agree with what admission actually did, or an operator reading
+            // the status surface is told one thing while traffic experiences another.
+            let policy = proxy.policy_report();
+            assert_eq!(
+                policy.serving_writes, writes_allowed,
+                "{mode:?}: the policy report disagrees with admission about writes"
+            );
+            assert_eq!(
+                policy.serving_reads, reads_allowed,
+                "{mode:?}: the policy report disagrees with admission about reads"
+            );
+        }
+    }
+
     #[test]
     fn drop_percent_refuses_the_same_keys_every_time_including_writes() {
         // drop_percent reads like a load-shedding knob and is not one. The decision comes from
