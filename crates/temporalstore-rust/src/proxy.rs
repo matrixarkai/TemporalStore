@@ -1778,7 +1778,7 @@ pub(super) fn proxy_metric_families_from(rendered: &str) -> Vec<String> {
 fn proxy_metrics_parity_mappings() -> Vec<ProxyMetricFamilyMapping> {
     vec![
         proxy_metric_mapping(
-            "common::metrics::CounterHolder proxy command/admission counters",
+            "proxy command/admission counters",
             "temporalstore_proxy_requests_total",
             vec!["kind"],
             "Proxy Requests And Admission",
