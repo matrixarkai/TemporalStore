@@ -25,6 +25,8 @@ impl TemporalEngine {
         out.push_str("# TYPE temporalstore_page_store_zone_oldest_unix_ms gauge\n");
         out.push_str("# HELP temporalstore_page_store_zone_oldest_age_ms Oldest page-store zone age by shard and lifecycle scope.\n");
         out.push_str("# TYPE temporalstore_page_store_zone_oldest_age_ms gauge\n");
+        out.push_str("# HELP temporalstore_shard_rate_limit_total Commands allowed and refused by a rate limit. Absent for a shard with no limit, which is not the same as a limit that has refused nothing.\n");
+        out.push_str("# TYPE temporalstore_shard_rate_limit_total counter\n");
         out.push_str(
             "# HELP temporalstore_wal_records_total Write-ahead log append records by shard.\n",
         );
@@ -128,6 +130,27 @@ impl TemporalEngine {
                 ],
                 stats.control_state_records as u64,
             );
+            // Only for a shard that carries a limit. A shard with none has nothing to count, and
+            // emitting zeros would say "this limit refused nothing" about a shard that has no
+            // limit at all -- which is the one distinction an operator needs from this.
+            if let Some(counters) = self.shard_quota_counters(stats.shard_id) {
+                for (kind, value) in [
+                    ("read_allowed", counters.read_allowed),
+                    ("read_refused", counters.read_refused),
+                    ("write_allowed", counters.write_allowed),
+                    ("write_refused", counters.write_refused),
+                ] {
+                    push_metric(
+                        &mut out,
+                        "temporalstore_shard_rate_limit_total",
+                        &[
+                            ("shard_id", stats.shard_id.to_string()),
+                            ("kind", kind.into()),
+                        ],
+                        value,
+                    );
+                }
+            }
             for (kind, value) in [
                 ("memory_hits", stats.cache.memory_hits),
                 ("disk_hits", stats.cache.disk_hits),
