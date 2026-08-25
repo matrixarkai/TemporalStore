@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::http::{
-    get_json, get_json_with_options, post_json, post_json_with_options, HttpError,
+    get_json, get_json_with_options, post_json, post_json_with_options,
+    post_json_with_options_and_headers, HttpError,
     HttpRequestOptions,
 };
 use crate::meta::GetShardResponse;

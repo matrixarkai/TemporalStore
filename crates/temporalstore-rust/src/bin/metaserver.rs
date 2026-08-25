@@ -7,8 +7,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use temporalstore_rust::http::{
-    get_json_with_options, json_response, parse_json, post_json_with_options, serve, HttpRequest,
-    HttpRequestOptions,
+    get_json_with_options, json_response, parse_json, post_json_with_options, serve,
+    serve_with_stream_handler, HttpRequest, HttpRequestOptions, RequestHead, StreamAction,
+    StreamTransfer,
 };
 use temporalstore_rust::meta::{
     AckResponse, AddNamespaceRequest, AddTableRequest, AutoRebalanceOptions, ConvictionPolicy,
@@ -316,11 +317,69 @@ fn main() {
     } else {
         None
     };
+    // Admin-surface authentication: read once at startup, like every other
+    // security-relevant setting. Changing the variable on a running process
+    // deliberately does nothing.
+    let admin_token = temporalstore_rust::meta::admin_auth_token();
+    if admin_token.is_some() {
+        info!("metaserver admin token required (TS_META_ADMIN_TOKEN is set)");
+    }
     info!(%addr, "temporalstore metaserver listening");
-    if let Err(err) = serve(&addr, move |request| handle(&backend, &scheduler, request)) {
+    if let Err(err) = serve_with_stream_handler(
+        &addr,
+        move |head: &RequestHead, transfer: &mut StreamTransfer| {
+            admin_auth_gate(admin_token.as_deref(), head, transfer)
+        },
+        move |request| handle(&backend, &scheduler, request),
+    ) {
         error!(%err, "metaserver serve loop exited");
         std::process::exit(1);
     }
+}
+
+/// Routes served without a credential even when an admin token is required:
+/// the liveness/readiness probes and the metrics scrape. Load balancers and
+/// Prometheus cannot reasonably attach a bearer token, and none of these
+/// mutate or reveal tenant data.
+fn admin_auth_exempt(path: &str) -> bool {
+    matches!(
+        path,
+        "/health" | "/readiness" | "/metrics" | "/MasterService/Metrics"
+    )
+}
+
+/// Whether a request may proceed, given the required admin token (None = the
+/// surface is open, the previous behavior).
+fn admin_request_allowed(required: Option<&str>, head: &RequestHead) -> bool {
+    let Some(required) = required else { return true };
+    if admin_auth_exempt(&head.path) {
+        return true;
+    }
+    head.bearer_token.as_deref() == Some(required)
+}
+
+/// The head-stage gate in front of every route: a request that fails the token
+/// check is answered 401 before its body is read into memory, and the
+/// connection stays framed for keep-alive. Allowed requests fall through to
+/// the buffered handler untouched.
+fn admin_auth_gate(
+    required: Option<&str>,
+    head: &RequestHead,
+    transfer: &mut StreamTransfer,
+) -> StreamAction {
+    if admin_request_allowed(required, head) {
+        return StreamAction::Declined;
+    }
+    let body = serde_json::to_vec(&Status::error(
+        "unauthorized",
+        "missing or invalid admin token (TS_META_ADMIN_TOKEN)",
+    ))
+    .unwrap_or_default();
+    let _ = transfer.drain_body();
+    let _ = transfer.send_head(401, "application/json", body.len());
+    let _ = transfer.write_chunk(&body);
+    let _ = transfer.flush();
+    StreamAction::Handled
 }
 
 /// Which node an operation is about.
@@ -4786,5 +4845,89 @@ mod tests {
         let addr = listener.local_addr().unwrap().to_string();
         drop(listener);
         addr
+    }
+
+    fn head_with(path: &str, bearer_token: Option<&str>) -> RequestHead {
+        RequestHead {
+            method: "POST".to_string(),
+            path: path.to_string(),
+            content_length: 0,
+            keep_alive: false,
+            blob_peer_fetch_loop_guard: false,
+            bearer_token: bearer_token.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn without_a_configured_token_every_route_stays_open() {
+        assert!(admin_request_allowed(None, &head_with("/meta/mute", None)));
+        assert!(admin_request_allowed(None, &head_with("/servers/register", None)));
+        assert!(admin_request_allowed(None, &head_with("/health", None)));
+    }
+
+    #[test]
+    fn a_configured_token_gates_every_route_except_the_probes() {
+        let required = Some("s3cret");
+        // Probes stay open: a load balancer cannot attach a bearer token.
+        for probe in ["/health", "/readiness", "/metrics", "/MasterService/Metrics"] {
+            assert!(
+                admin_request_allowed(required, &head_with(probe, None)),
+                "{probe} must stay open"
+            );
+        }
+        // Everything else needs the exact token.
+        for route in ["/meta/mute", "/meta/raft/remove_node", "/meta/snapshot/restore", "/shards"] {
+            assert!(
+                !admin_request_allowed(required, &head_with(route, None)),
+                "{route} must be denied without a token"
+            );
+            assert!(
+                !admin_request_allowed(required, &head_with(route, Some("wrong"))),
+                "{route} must be denied with the wrong token"
+            );
+            assert!(
+                admin_request_allowed(required, &head_with(route, Some("s3cret"))),
+                "{route} must be allowed with the right token"
+            );
+        }
+    }
+
+    #[test]
+    fn the_serve_gate_answers_401_before_the_handler_and_still_serves_health() {
+        let addr = reserve_unused_loopback_addr();
+        let server_addr = addr.clone();
+        std::thread::spawn(move || {
+            let _ = serve_with_stream_handler(
+                &server_addr,
+                |head: &RequestHead, transfer: &mut StreamTransfer| {
+                    admin_auth_gate(Some("s3cret"), head, transfer)
+                },
+                |_request| json_response(200, &Status::ok()),
+            );
+        });
+        let options = HttpRequestOptions {
+            connect_timeout_ms: 1000,
+            io_timeout_ms: 1000,
+            max_retries: 10,
+        };
+        // The probe is served without a credential.
+        let health: Status =
+            get_json_with_options(&addr, "/health", options.clone()).expect("health while gated");
+        assert!(health.ok);
+        // A gated route without the token is refused at the head stage.
+        let denied = get_json_with_options::<Status>(&addr, "/meta/info", options.clone());
+        match denied {
+            Ok(status) => assert!(!status.ok, "an unauthenticated request must not reach the handler"),
+            Err(_) => {} // non-200 surfaces as an HttpError; either shape is a refusal
+        }
+        // The same route with the token reaches the handler.
+        let allowed: Status = temporalstore_rust::http::get_json_with_options_and_headers(
+            &addr,
+            "/meta/info",
+            "Authorization: Bearer s3cret\r\n",
+            options,
+        )
+        .expect("authorized request should reach the handler");
+        assert!(allowed.ok);
     }
 }
