@@ -236,6 +236,12 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::ContextQuerySummaries { .. }
         | Command::ContextQuerySummaryVectors { .. }
         | Command::ContextQueryCompressionEvents { .. }
+        | Command::ContextResourceBlobBegin { .. }
+        | Command::ContextResourceBlobAppend { .. }
+        | Command::ContextResourceBlobCommit { .. }
+        | Command::ContextResourceBlobPut { .. }
+        | Command::ContextResourceBlobFetch { .. }
+        | Command::ContextResourceBlobSweep { .. }
         | Command::ContextQueryNodeContext { .. } => Vec::new(),
     }
 }
@@ -289,6 +295,11 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::ControlStateSetAndGet { .. }
             | Command::ControlStateSetAndGetWithOptions { .. }
             | Command::ControlStateSelectionSet { .. }
+            | Command::ContextResourceBlobBegin { .. }
+            | Command::ContextResourceBlobAppend { .. }
+            | Command::ContextResourceBlobCommit { .. }
+            | Command::ContextResourceBlobPut { .. }
+            | Command::ContextResourceBlobSweep { .. }
             | Command::ContextUpsertNode { .. }
             | Command::ContextWriteEvent { .. }
             | Command::ContextWriteExtractedEvent { .. }

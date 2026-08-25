@@ -412,6 +412,10 @@ fn response_kind(response: &CommandResponse) -> &'static str {
         CommandResponse::ContextSummaries { .. } => "context_summaries",
         CommandResponse::ContextSummaryVectors { .. } => "context_summary_vectors",
         CommandResponse::ContextCompressionEvents { .. } => "context_compression_events",
+        CommandResponse::ContextResourceBlobUpload { .. } => "context_resource_blob_upload",
+        CommandResponse::ContextResourceBlobCommitted { .. } => "context_resource_blob_committed",
+        CommandResponse::ContextResourceBlobChunk { .. } => "context_resource_blob_chunk",
+        CommandResponse::ContextResourceBlobSwept { .. } => "context_resource_blob_swept",
         CommandResponse::ContextNodeContext { .. } => "context_node_context",
         CommandResponse::ContextNodes { .. } => "context_nodes",
     }

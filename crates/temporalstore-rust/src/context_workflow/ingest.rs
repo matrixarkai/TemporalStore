@@ -147,7 +147,26 @@ pub fn ingest_resource_skill_context(
     let mut timestamp_ms = request.start_time_ms.max(1);
 
     for resource_request in request.resources {
-        let resource = parse_context_resource(resource_request);
+        // An oversized payload gets stored WHOLE in the engine-owned blob store before
+        // parsing, so the synthesized external URI on the report is real and fetchable --
+        // chunks stay searchable in records while the original attachment lives beside the
+        // engine, one TemporalStore holding everything.
+        let oversized_payload = if resource_request.text.as_bytes().len()
+            > default_context_resource_max_inline_bytes()
+        {
+            Some(resource_request.text.clone())
+        } else {
+            None
+        };
+        let mut resource = parse_context_resource(resource_request);
+        if let Some(payload) = oversized_payload {
+            match engine.resource_blob_put(request.tenant_hash, payload.as_bytes()) {
+                Ok((uri, _size, _hash)) => resource.external_object_uri = uri,
+                Err(err) => resource
+                    .parser_warnings
+                    .push(format!("resource blob store put failed: {err}")),
+            }
+        }
         for chunk in &resource.chunks {
             resource_ref_by_source.insert(chunk.source_ref.clone(), resource.raw_uri.clone());
             sources.push(ContextExtractRequest {

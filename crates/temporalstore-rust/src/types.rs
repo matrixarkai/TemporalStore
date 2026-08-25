@@ -1404,6 +1404,44 @@ pub enum Command {
         tenant_hash: u64,
         node_hashes: Vec<u64>,
     },
+    /// Attachment blob store: start a multi-part upload into the engine-owned blob directory.
+    /// The full original payload of an oversized resource lives here so one TemporalStore holds
+    /// everything -- chunks stay searchable in records while the attachment itself is fetchable
+    /// again by its `temporalstore://resources/{tenant}/{content-hash}` URI.
+    ContextResourceBlobBegin {
+        tenant_hash: u64,
+    },
+    /// Append one part to a staged upload. Parts are sequential against one node.
+    ContextResourceBlobAppend {
+        tenant_hash: u64,
+        upload_token: String,
+        payload_base64: String,
+    },
+    /// Publish a staged upload: content-hash, fsync, rename into place. The resource record
+    /// that carries the returned URI is the commit point; a blob with no record is garbage the
+    /// sweep collects.
+    ContextResourceBlobCommit {
+        tenant_hash: u64,
+        upload_token: String,
+    },
+    /// Single-shot begin+append+commit for payloads that fit one request.
+    ContextResourceBlobPut {
+        tenant_hash: u64,
+        payload_base64: String,
+    },
+    /// Range-read a published blob. `length == 0` means to the end.
+    ContextResourceBlobFetch {
+        uri: String,
+        offset: u64,
+        length: u64,
+    },
+    /// Delete unreferenced blobs older than  for one tenant, plus stale staging
+    /// files. The caller supplies the referenced set from the resource records it holds.
+    ContextResourceBlobSweep {
+        tenant_hash: u64,
+        referenced_content_hashes: Vec<u64>,
+        min_age_ms: u64,
+    },
     ContextSetNodeEmbedding {
         tenant_hash: u64,
         node_hash: u64,
@@ -1889,6 +1927,24 @@ pub enum CommandResponse {
         source_event_count: Option<u32>,
         #[serde(default)]
         truncated_source_events: Option<bool>,
+    },
+    ContextResourceBlobUpload {
+        upload_token: String,
+        bytes_total: u64,
+    },
+    ContextResourceBlobCommitted {
+        uri: String,
+        size_bytes: u64,
+        content_hash: u64,
+    },
+    ContextResourceBlobChunk {
+        payload_base64: String,
+        total_size: u64,
+        eof: bool,
+    },
+    ContextResourceBlobSwept {
+        scanned: u64,
+        deleted: u64,
     },
     ContextNodeContext {
         node_exists: bool,

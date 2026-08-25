@@ -27,6 +27,14 @@ pub(crate) fn execute_on_shard(
         // Applied as nothing: `mutated` stays false, so it neither dirties a shard nor
         // invalidates a cache entry.
         Command::LeaderEstablish => CommandResponse::Empty,
+        // Blob commands are dispatched before the shard lock (they live beside the engine,
+        // not in shard record state); reaching this arm means the early dispatch was skipped.
+        Command::ContextResourceBlobBegin { .. }
+        | Command::ContextResourceBlobAppend { .. }
+        | Command::ContextResourceBlobCommit { .. }
+        | Command::ContextResourceBlobPut { .. }
+        | Command::ContextResourceBlobFetch { .. }
+        | Command::ContextResourceBlobSweep { .. } => CommandResponse::Empty,
         Command::CommonDelete { key } => {
             mutated = delete_record(shard, &key);
             invalidate_record_all(cache, shard_id, &key);
