@@ -199,3 +199,49 @@ fn a_replicated_apply_is_never_refused_by_the_limit() {
     });
     assert!(found.status.ok || found.status.code == "quota_exhausted");
 }
+
+/// A limited shard reports what it allowed and refused; an unlimited one reports nothing.
+///
+/// The absence matters as much as the numbers: zeros for an unlimited shard would read as "this
+/// limit refused nothing", which is a different statement from "this shard has no limit".
+#[test]
+fn the_rate_limit_is_visible_in_the_metrics() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path());
+
+    // With no limit, the shard reports no counters at all.
+    for index in 0..20 {
+        write(&engine, &format!("free{index}"));
+    }
+    assert!(engine.shard_quota_counters(1).is_none());
+    assert!(!engine
+        .prometheus_metrics()
+        .contains("temporalstore_shard_rate_limit_total{shard_id=\"1\""));
+
+    engine.set_shard_quota(
+        1,
+        ShardQuotaConfig {
+            write_qps: 5,
+            write_burst: 2,
+            ..Default::default()
+        },
+    );
+    for index in 0..40 {
+        write(&engine, &format!("k{index}"));
+    }
+
+    let counters = engine.shard_quota_counters(1).expect("the shard is limited");
+    assert!(counters.write_refused > 0, "the limit should have refused some");
+    assert!(counters.write_allowed > 0, "and allowed some");
+    assert_eq!(
+        counters.write_allowed + counters.write_refused,
+        40,
+        "every command should be counted on one side or the other"
+    );
+
+    let rendered = engine.prometheus_metrics();
+    assert!(rendered.contains("# TYPE temporalstore_shard_rate_limit_total counter"));
+    assert!(rendered.contains("kind=\"write_refused\""), "{rendered}");
+    assert!(rendered.contains("kind=\"write_allowed\""));
+    assert_eq!(engine.rate_limited_shards(), vec![1]);
+}

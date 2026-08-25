@@ -143,6 +143,25 @@ impl TemporalEngine {
             .config_of(shard_id)
     }
 
+    /// What a shard's rate limit has allowed and refused, if it has one.
+    ///
+    /// Absent means the shard is not limited, which is different from a limit that has refused
+    /// nothing -- and the difference is the one an operator actually wants.
+    pub fn shard_quota_counters(&self, shard_id: ShardId) -> Option<quota::QuotaCounters> {
+        self.quotas
+            .read()
+            .expect("quota lock poisoned")
+            .counters_of(shard_id)
+    }
+
+    /// Every shard carrying a rate limit, for reporting.
+    pub fn rate_limited_shards(&self) -> Vec<ShardId> {
+        self.quotas
+            .read()
+            .expect("quota lock poisoned")
+            .limited_shards()
+    }
+
     /// Take one token for `kind`. True when the command may proceed.
     ///
     /// The overwhelmingly common case is a shard with no limit, and that case must not pay for
