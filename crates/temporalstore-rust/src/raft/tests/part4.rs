@@ -7,6 +7,51 @@ use super::*;
 use super::helpers::*;
 
 #[test]
+fn a_proxy_group_needs_a_name_on_the_raft_path_too() {
+    use crate::meta::{PutProxyGroupRequest, SingleNodeMeta};
+
+    // put_proxy_group validates in the public method, and the propose path
+    // dispatches straight to apply_put_proxy_group, which does not. So a raft
+    // metaserver committed a group with no name and no namespace into
+    // replicated metadata, where the single-node one answered bad_request.
+    //
+    // Judged before proposing, never while applying: replay has to reapply what
+    // was already accepted.
+    let empty = || PutProxyGroupRequest {
+        group: String::new(),
+        namespace: String::new(),
+        location: "rack-1".to_string(),
+        instance_num: 1,
+    };
+
+    let single = SingleNodeMeta::default();
+    let single_ack = single.put_proxy_group(empty());
+    assert_eq!(single_ack.status.code, "bad_request");
+    assert!(single.list_proxy_groups().groups.is_empty());
+
+    let meta = MetaRaftCluster::new([10, 11, 12]);
+    let raft_ack = meta.put_proxy_group(empty());
+    assert_eq!(
+        raft_ack.status.code, "bad_request",
+        "the raft path accepted a proxy group with no name"
+    );
+    assert!(
+        meta.list_proxy_groups().groups.is_empty(),
+        "a nameless proxy group reached replicated metadata"
+    );
+
+    // A named group still goes through, so the guard is not simply refusing.
+    let good = meta.put_proxy_group(PutProxyGroupRequest {
+        group: "orders".to_string(),
+        namespace: "ns".to_string(),
+        location: "rack-1".to_string(),
+        instance_num: 1,
+    });
+    assert!(good.status.ok, "a valid group was refused: {good:?}");
+    assert_eq!(meta.list_proxy_groups().groups.len(), 1);
+}
+
+#[test]
 fn add_node_after_leader_snapshot_installs_snapshot_and_tail() {
     let cluster = RaftCluster::new_single_shard_with_config(
         1,
@@ -1011,6 +1056,122 @@ fn metaserver_raft_mutation_api_rejects_without_majority() {
     assert!(!response.status.ok);
     assert_eq!(response.status.code, "raft_error");
     assert!(response.status.message.contains("majority"));
+}
+
+#[test]
+fn muting_metadata_change_refuses_changes_on_the_raft_path_too() {
+    // The mute is the incident lever: while it is set the metaserver is meant
+    // to refuse every recorded metadata mutation. That check lived only in
+    // SingleNodeMeta's public methods, and the raft backend proposes straight
+    // past them -- so on a raft-backed metaserver, which is what a real
+    // deployment runs, setting the mute changed nothing.
+    let meta = MetaRaftCluster::new([10, 11, 12]);
+    assert!(meta.set_meta_change_muted(true).status.ok);
+
+    let muted = meta.add_namespace(AddNamespaceRequest {
+        namespace: "during-an-incident".to_string(),
+    });
+    assert!(
+        !muted.status.ok,
+        "the cluster was muted and the change went through anyway"
+    );
+    assert_eq!(muted.status.code, "meta_change_muted");
+
+    // And the lever has to be releasable, or muting would be a one-way door.
+    assert!(meta.set_meta_change_muted(false).status.ok);
+    assert!(
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "after-the-incident".to_string(),
+        })
+        .status
+        .ok,
+        "unmuting did not restore metadata change"
+    );
+}
+
+fn table_in(meta: &MetaRaftCluster, namespace: &str, table_name: &str) -> Status {
+    meta.add_table(AddTableRequest {
+        namespace: namespace.to_string(),
+        table_name: table_name.to_string(),
+        first_shard_id: 500,
+        shard_count: 1,
+        replica_count: 1,
+        partition_version: 0,
+        serving_options: crate::meta::TableServingOptions::default(),
+    })
+    .status
+}
+
+#[test]
+fn a_reserved_name_cannot_be_taken_on_the_raft_path() {
+    // Reserved names exist to hold a name back from creation. The check lived
+    // in the public method, and the raft path proposes past it, so on a
+    // raft-backed metaserver the reservation held nothing back at all.
+    let meta = MetaRaftCluster::new([10, 11, 12]);
+    let mut reserved = crate::meta::ReservedNames::default();
+    reserved.namespaces.insert("system".to_string());
+    reserved.tables.insert("internal".to_string());
+    assert!(meta.set_reserved_names(reserved).status.ok);
+
+    let taken = meta.add_namespace(AddNamespaceRequest {
+        namespace: "system".to_string(),
+    });
+    assert!(!taken.status.ok, "a reserved namespace was created anyway");
+    assert_eq!(taken.status.code, "name_reserved");
+
+    assert!(meta
+        .add_namespace(AddNamespaceRequest {
+            namespace: "tenant".to_string()
+        })
+        .status
+        .ok);
+    let table = table_in(&meta, "tenant", "internal");
+    assert!(!table.ok, "a reserved table name was created anyway");
+    assert_eq!(table.code, "name_reserved");
+
+    // And an unreserved name is still allowed, so the guard is not a blanket no.
+    assert!(table_in(&meta, "tenant", "orders").ok);
+}
+
+#[test]
+fn dropping_a_namespace_cannot_strand_a_live_table_on_the_raft_path() {
+    // The single-node path refuses this precisely so a drop cannot leave tables
+    // behind in a namespace that no longer exists. The raft path did not.
+    let meta = MetaRaftCluster::new([10, 11, 12]);
+    assert!(meta
+        .add_namespace(AddNamespaceRequest {
+            namespace: "tenant".to_string()
+        })
+        .status
+        .ok);
+    assert!(table_in(&meta, "tenant", "orders").ok);
+
+    let stranding = meta.drop_namespace(AddNamespaceRequest {
+        namespace: "tenant".to_string(),
+    });
+    assert!(
+        !stranding.status.ok,
+        "a namespace was dropped out from under a live table"
+    );
+    assert_eq!(stranding.status.code, "namespace_not_empty");
+
+    // Once the table is gone the namespace can be dropped, or the guard would
+    // make a namespace undroppable rather than merely safe to drop.
+    assert!(meta
+        .delete_table(DeleteTableRequest {
+            namespace: "tenant".to_string(),
+            table_name: "orders".to_string(),
+        })
+        .status
+        .ok);
+    assert!(
+        meta.drop_namespace(AddNamespaceRequest {
+            namespace: "tenant".to_string()
+        })
+        .status
+        .ok,
+        "an empty namespace could not be dropped"
+    );
 }
 
 #[test]

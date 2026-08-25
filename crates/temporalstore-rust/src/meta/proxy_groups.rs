@@ -286,10 +286,12 @@ impl SingleNodeMeta {
         if let Some(status) = self.meta_change_refusal() {
             return AckResponse { status };
         }
-        if request.group.is_empty() || request.namespace.is_empty() {
-            return AckResponse {
-                status: Status::error("bad_request", "group and namespace are required"),
-            };
+        // Through the same judgement the propose path uses, so the two
+        // cannot drift apart again.
+        if let Some(status) =
+            self.admission_refusal(&MetaMutation::PutProxyGroup(request.clone()))
+        {
+            return AckResponse { status };
         }
         self.record_mutation(MetaMutation::PutProxyGroup(request.clone()));
         self.apply_put_proxy_group(request)

@@ -469,20 +469,11 @@ impl SingleNodeMeta {
                     status: Status::error("not_modified", "namespace state is unchanged"),
                 };
             }
-            if next == MetaEntityState::Dropped {
-                let live = state.tables.values().any(|table| {
-                    table.info.namespace == request.namespace
-                        && table.info.state != MetaEntityState::Dropped
-                });
-                if live {
-                    return AckResponse {
-                        status: Status::error(
-                            "namespace_not_empty",
-                            "namespace still holds a table that is not dropped",
-                        ),
-                    };
-                }
-            }
+        }
+        if let Some(status) =
+            self.admission_refusal(&MetaMutation::SetNamespaceState(request.clone(), next))
+        {
+            return AckResponse { status };
         }
         self.record_mutation(MetaMutation::SetNamespaceState(request.clone(), next));
         self.apply_set_namespace_state(request, next)
