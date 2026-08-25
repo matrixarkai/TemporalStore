@@ -1163,6 +1163,39 @@ fn raft_metaserver_membership_readiness_reports_real_scheduler_execution() {
 }
 
 #[test]
+fn the_report_says_which_transport_this_node_is_running() {
+    use crate::raft::{
+        production_raft_security_from_lookup, raft_transport_security_readiness_for,
+        ProductionRaftSecurityMode,
+    };
+
+    // The `*_present` flags describe the build, so they answer the same on
+    // every deployment -- including one running plaintext. Served at an
+    // unauthenticated /readiness on both the metaserver and the datanode, that
+    // left no way to tell "we can do mTLS" from "this node is doing mTLS".
+    let plaintext = raft_transport_security_readiness_for(
+        ProductionRaftSecurityMode::PlaintextForLocalChaos,
+    );
+    assert_eq!(plaintext.configured_transport_mode, "plaintext_for_local_chaos");
+    // The build-capability flags are unchanged by this: they still describe the
+    // build, and anything reading them keeps the answer it had.
+    assert!(plaintext.mtls_cert_key_ca_validation_present);
+
+    let mtls = raft_transport_security_readiness_for(ProductionRaftSecurityMode::Mtls);
+    assert_eq!(mtls.configured_transport_mode, "mtls");
+
+    // And the default deployment really is the plaintext one, so the two above
+    // are not hypothetical. Read through the lookup rather than the process
+    // environment so a test setting these cannot change the answer.
+    let configured = production_raft_security_from_lookup("token", true, |_| None);
+    assert_eq!(
+        configured.security.mode,
+        ProductionRaftSecurityMode::PlaintextForLocalChaos,
+        "the default transport stopped being plaintext; this test's premise needs revisiting"
+    );
+}
+
+#[test]
 fn raft_transport_security_readiness_covers_service_mtls() {
     let readiness = raft_transport_security_readiness();
     assert!(readiness.auth_token_validation_present);
