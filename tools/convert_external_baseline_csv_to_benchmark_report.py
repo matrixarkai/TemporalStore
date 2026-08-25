@@ -18,6 +18,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any
+import os
 
 
 WORD_RE = re.compile(r"[a-z0-9]+")
@@ -298,7 +299,8 @@ def retrieved_uri_count(row: dict[str, str]) -> int:
 
 def count_uris(value: Any) -> int:
     if isinstance(value, str):
-        return 1 if value.startswith("viking://") else 0
+        scheme = os.environ.get("EXTERNAL_BASELINE_URI_SCHEME", "")
+        return 1 if scheme and value.startswith(scheme + "://") else 0
     if isinstance(value, list):
         return sum(count_uris(item) for item in value)
     if isinstance(value, dict):
