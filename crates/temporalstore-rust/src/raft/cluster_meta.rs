@@ -299,6 +299,21 @@ impl MetaRaftCluster {
         }
     }
 
+    pub fn topology_events(
+        &self,
+        request: crate::meta::TopologyEventsRequest,
+    ) -> crate::meta::TopologyEventsResponse {
+        self.read_meta().map_or_else(
+            |status| crate::meta::TopologyEventsResponse {
+                status,
+                events: Vec::new(),
+                oldest_retained_version: 0,
+                missed_events: false,
+            },
+            |meta| meta.topology_events(request),
+        )
+    }
+
     pub fn freeze_server(&self, request: StateChangeRequest) -> AckResponse {
         AckResponse {
             status: self.mutation_status(MetaMutation::FreezeServer(request)),
