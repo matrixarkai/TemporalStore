@@ -467,6 +467,25 @@ pub struct ProxyPreflightReport {
     pub degraded_reasons: Vec<String>,
 }
 
+/// What `GET /readiness` answers for a proxy.
+///
+/// The build-wide capability report is still here, flattened, so anything already reading
+/// those fields keeps working. What is new is the state of THIS proxy, because the endpoint
+/// was answering a question nobody asked: the capability report is a description of what the
+/// code supports and is identical on every process, so a drained proxy reported ready and an
+/// orchestrator kept sending it traffic it refuses.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyReadinessResponse {
+    /// Whether this proxy will accept anything at all. False only while drained.
+    pub serving: bool,
+    pub serving_mode: ProxyServingMode,
+    /// Reads and writes separately, since refusing writes is not the same as refusing traffic.
+    pub serving_reads: bool,
+    pub serving_writes: bool,
+    #[serde(flatten)]
+    pub production: crate::ProductionReadinessReport,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyPolicyReport {
     pub serving_mode: ProxyServingMode,
@@ -1582,6 +1601,33 @@ impl ProxyService {
         self.inner
             .cluster_shards_checked
             .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// This proxy's answer to a readiness probe, and the HTTP status that goes with it.
+    ///
+    /// A drained proxy answers 503. That is the whole point of a readiness probe: drain exists
+    /// to stop traffic arriving, and answering 200 while refusing every request with
+    /// `proxy_not_serving` defeats the control it is supposed to serve.
+    ///
+    /// Read-only and write-disabled still answer 200 -- they serve reads, and a probe that
+    /// failed for them would take a proxy out of rotation that is doing useful work. The two
+    /// flags say which is which for anyone who needs the distinction.
+    pub fn readiness_response(&self) -> (u16, ProxyReadinessResponse) {
+        let options = self.options();
+        let serving_reads = !matches!(options.serving_mode, ProxyServingMode::NotServing);
+        let serving_writes = matches!(
+            options.serving_mode,
+            ProxyServingMode::Serving | ProxyServingMode::Degraded
+        );
+        let response = ProxyReadinessResponse {
+            serving: serving_reads,
+            serving_mode: options.serving_mode,
+            serving_reads,
+            serving_writes,
+            production: crate::production_readiness_report(),
+        };
+        let status = if serving_reads { 200 } else { 503 };
+        (status, response)
     }
 
     /// Whether enough time has passed to try registering with the metaserver again.
@@ -3639,6 +3685,66 @@ mod tests {
             before,
             "an explicitly configured count must not ask the cluster anything"
         );
+    }
+
+    #[test]
+    fn a_drained_proxy_fails_its_readiness_probe() {
+        // The runbook points operators at GET /readiness for exactly this, and it used to
+        // answer with a build-wide capability report: the same bytes on every process, with a
+        // hardcoded 200. So a proxy that had been drained -- refusing every request with
+        // proxy_not_serving -- reported itself ready, and anything using the probe to decide
+        // where to send traffic kept sending it. The drain control was defeated by the probe
+        // meant to honour it.
+        let drained = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::NotServing,
+            ..ProxyOptions::default()
+        });
+        let (status, body) = drained.handle(HttpRequest {
+            method: "GET".to_string(),
+            path: "/readiness".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(
+            status, 503,
+            "a drained proxy must fail its probe, or draining it does not take it out of              rotation"
+        );
+        let parsed = parse_json::<ProxyReadinessResponse>(&body).expect("readiness body parses");
+        assert!(!parsed.serving);
+        assert_eq!(parsed.serving_mode, ProxyServingMode::NotServing);
+
+        // Serving answers 200, and so does read-only: it still serves reads, and failing its
+        // probe would pull a proxy doing useful work out of rotation. The flags carry the
+        // distinction for anyone who needs it.
+        for (mode, expect_writes) in [
+            (ProxyServingMode::Serving, true),
+            (ProxyServingMode::Degraded, true),
+            (ProxyServingMode::Readonly, false),
+            (ProxyServingMode::WriteDisabled, false),
+        ] {
+            let proxy = scoped_proxy(ProxyOptions {
+                serving_mode: mode,
+                ..ProxyOptions::default()
+            });
+            let (status, body) = proxy.handle(HttpRequest {
+                method: "GET".to_string(),
+                path: "/readiness".to_string(),
+                body: Vec::new(),
+            });
+            assert_eq!(status, 200, "{mode:?} serves reads and must pass its probe");
+            let parsed =
+                parse_json::<ProxyReadinessResponse>(&body).expect("readiness body parses");
+            assert!(parsed.serving, "{mode:?} should report serving");
+            assert_eq!(
+                parsed.serving_writes, expect_writes,
+                "{mode:?} should report serving_writes as {expect_writes}"
+            );
+            // The capability report is still carried, so anything already reading those fields
+            // keeps working rather than being broken by this.
+            assert!(
+                !parsed.production.areas.is_empty(),
+                "the capability report must still be included"
+            );
+        }
     }
 
     #[test]
