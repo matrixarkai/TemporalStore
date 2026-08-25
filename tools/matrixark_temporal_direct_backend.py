@@ -402,9 +402,16 @@ class _TemporalDirectBackendMixin:
                     time.sleep(max(0.05, BACKEND_READINESS_BACKOFF_MS / 1000.0))
 
     def _get_index(self) -> list[str]:
+        # A backend that cannot answer right now (shard loading / not loaded, timeout,
+        # connection refused) must stay a question: swallowing it into [] served a populated
+        # store as vacuously empty for as long as the load took -- and let a write path
+        # compute its append position from a lie. An absent index key on a reachable backend
+        # is the real "no index yet" and still answers [].
         try:
             raw = self._client.get_string(self._index_key)
-        except Exception:
+        except Exception as exc:
+            if is_retryable_temporalstore_error(exc):
+                raise
             return []
         if not raw:
             return []
@@ -417,9 +424,14 @@ class _TemporalDirectBackendMixin:
         return [str(item) for item in value]
 
     def _get_count(self) -> int:
+        # Same contract as _get_index: only an ABSENT count key on a reachable backend is
+        # count 0. A retryable failure raises so readers surface a retryable error instead
+        # of an empty-but-successful view, and writers never derive positions from 0.
         try:
             raw = self._client.get_string(self._count_key)
-        except Exception:
+        except Exception as exc:
+            if is_retryable_temporalstore_error(exc):
+                raise
             return 0
         if not raw:
             return 0

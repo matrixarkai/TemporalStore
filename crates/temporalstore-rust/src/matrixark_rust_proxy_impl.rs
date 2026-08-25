@@ -3212,7 +3212,31 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
     if defaulted_nonblocking_warm {
         env::set_var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD", "0");
     }
-    engine.load_shard(DEFAULT_SHARD_ID);
+    // A shard load can be REFUSED (corrupt delta stream, WAL hole, replay failure) or can
+    // genuinely fail partway. `load_shard` discards that answer, and the engine below is
+    // cached -- so a refused load used to become a healthy-looking server whose every op
+    // returns shard_not_loaded, which upstream layers can mistake for an empty store. That
+    // is precisely how a damaged-at-scale store served vacuous empties on every reload.
+    // Refuse to open instead: the error names the cause, nothing is cached, and the next
+    // request retries the load rather than inheriting a permanently-empty engine.
+    let load = engine.load_shard_with(temporalstore_rust::LoadShardRequest {
+        shard_id: DEFAULT_SHARD_ID,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: 0,
+        end_routing_bucket: u32::MAX,
+        readonly: false,
+        table_name: String::new(),
+    });
+    if !load.status.ok && load.status.code != "already_exists" {
+        return Err(format!(
+            "shard load refused for record-log root {}: {}: {}",
+            root.display(),
+            load.status.code,
+            load.status.message
+        ));
+    }
     let async_cache_warm = !matches!(
         env::var("MATRIXARK_RUST_PROXY_ASYNC_CACHE_WARM_ON_LOAD")
             .unwrap_or_else(|_| "1".to_string())
@@ -4510,6 +4534,58 @@ mod tests {
         format!(
             r#"{{"record_type":"context_event","event_id_hash":{event_id},"text":"{text}","scope_key":"t={tenant}|u={user}|s=1|","access_scope":{{"tenant_hash":{tenant},"user_hash":{user},"scope_key":"t={tenant}|u={user}|s=1|"}}}}"#
         )
+    }
+
+    /// A store whose shard load is REFUSED (here: a corrupt WAL record with no base to hide
+    /// behind) must refuse to open -- not hand back a cached engine whose every op answers
+    /// shard_not_loaded. Upstream layers read that steady error stream as an empty store, which
+    /// is exactly how a damaged-at-scale store served vacuous empties on every reload while its
+    /// records sat durably on disk. The refusal must also not be cached: each open retries the
+    /// load, so repairing the artifacts heals the next request.
+    #[test]
+    fn a_refused_shard_load_refuses_open_instead_of_serving_empty() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        clear_engine_cache();
+        clear_matrixark_scan_cache();
+
+        let probe = request("get_string");
+        let root = record_log_root(&probe);
+        {
+            let engine = open_engine(&probe).expect("fresh store opens");
+            let mut put = request("put_string");
+            put.key = "k1".to_string();
+            put.value = "v1".to_string();
+            execute_record_log_request(&engine, put, root.clone()).expect("write lands");
+        }
+        // Crash-and-damage: the process is gone (drop the cache's engine), the durable base is
+        // absent (none was materialized), and a WAL record is corrupt -- so the reload must
+        // replay the WAL and must refuse when it cannot.
+        clear_engine_cache();
+        let wal_path = root.join("indexes").join("wals").join("shard-1.wal.jsonl");
+        let contents = std::fs::read(&wal_path).expect("wal exists");
+        let mut damaged = b"GARBAGE-NOT-A-FRAMED-RECORD".to_vec();
+        damaged.push(b'\n');
+        damaged.extend_from_slice(&contents);
+        std::fs::write(&wal_path, damaged).expect("corrupt wal");
+        let base_path = root.join("indexes").join("shard-1.index.json");
+        let _ = std::fs::remove_file(&base_path);
+
+        let refused = open_engine(&probe);
+        let error = refused.expect_err("a refused load must refuse the open");
+        assert!(
+            error.contains("shard load refused"),
+            "the refusal must name the cause, got: {error}"
+        );
+        assert!(
+            !engine_cache()
+                .lock()
+                .expect("engine cache lock")
+                .contains_key(&root),
+            "a refused load must not cache an engine; the next open must retry the load"
+        );
+        env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
     }
 
     /// The blob ops are the python surface's road to the embedded engine's attachment tier:
