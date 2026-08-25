@@ -2694,6 +2694,28 @@ pub struct StorageIndexGcReport {
     pub skipped_reason: String,
 }
 
+/// What one threshold catalog dump reclaimed from the shard's logs (embedded path).
+///
+/// After [`dump_index_catalog`](crate::TemporalEngine::dump_index_catalog) durably
+/// materializes the base index at `wal_anchor` and folds the catalog anchor, everything the
+/// base reflects is redundant: index-log records whose own WAL anchor is at or below
+/// `wal_anchor`, and WAL records at or below it (clamped by the block-retention floor, which
+/// pins any record still holding the only copy of a served page).
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CatalogDumpReclaimReport {
+    pub shard_id: ShardId,
+    pub wal_anchor: u64,
+    pub index_log_records_removed: usize,
+    pub index_log_bytes_before: u64,
+    pub index_log_bytes_after: u64,
+    pub wal_records_removed: usize,
+    pub wal_bytes_before: u64,
+    pub wal_bytes_after: u64,
+    /// The block-retention floor in force during the WAL sweep (`None` = unconstrained): the
+    /// lowest WAL sequence a live block-in-WAL registration still depends on.
+    pub wal_retention_floor: Option<u64>,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageEvictionVictim {
     #[serde(rename = "routing_slot")]

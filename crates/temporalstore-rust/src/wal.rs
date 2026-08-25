@@ -1122,6 +1122,14 @@ impl LocalWriteAheadLogStore {
     /// Set this to the dump watermark and advance it as blocks are dumped into bands. Until a
     /// shard registers a floor its GC is unconstrained, so this is inert for callers that do not
     /// put blocks in the WAL.
+    /// Whether two handles address the SAME underlying log (clones of one store). Registrations
+    /// keyed only by (shard, object) conflate engines -- every embedded engine in a process
+    /// serves shard 1 -- so consumers that aggregate across a registry must filter by the log
+    /// identity the registration actually points at.
+    pub fn same_log(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     pub fn set_block_retention_floor(&self, shard_id: ShardId, sequence: u64) {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         inner.block_retention_floor_by_shard.insert(shard_id, sequence);

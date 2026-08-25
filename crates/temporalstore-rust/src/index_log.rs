@@ -312,21 +312,25 @@ fn indexlog_wal_only_sync() -> bool {
     )
 }
 
-/// MANIFEST-CONFORMANCE FOLD gate (default OFF, byte-identical when off). When on, the band/zone
+/// MANIFEST-CONFORMANCE FOLD gate (default ON, opt-out). When on, the band/zone
 /// catalog is folded into the index-log anchor at a threshold dump
 /// and the per-write band-manifest file stops being the
 /// catalog's source of truth (it is reconstructed on load from the durable pages + the folded
 /// anchor). Off, none of that fold code runs: no `zones` are ever captured (so anchor records
-/// serialize identically), and recovery/persistence take the existing paths unchanged. Ships
-/// dark; flips on after the crash-recovery suite is green.
+/// serialize identically), and recovery/persistence take the existing paths unchanged.
+///
+/// Shipped dark originally (the flip once broke proxy tests); the full lib + proxy suites are
+/// green with it on since the upsert-delta and single-barrier work landed, and the threshold
+/// dump is what lets the embedded (proxy) engine reclaim its index-log and WAL at all -- so it
+/// now defaults on. Set `TS_INDEX_CATALOG_FOLD=0` to restore the previous behaviour.
 pub fn index_catalog_fold_enabled() -> bool {
-    matches!(
+    !matches!(
         std::env::var("TS_INDEX_CATALOG_FOLD")
             .unwrap_or_default()
             .trim()
             .to_ascii_lowercase()
             .as_str(),
-        "1" | "true" | "yes" | "on"
+        "0" | "false" | "no" | "off"
     )
 }
 
@@ -804,6 +808,97 @@ impl LocalIndexLogStore {
         })
     }
 
+    /// Remove every record a completed catalog dump has made redundant, deciding retention per
+    /// record on CONTENT rather than on log position alone.
+    ///
+    /// A dump durably materializes the base served index at WAL anchor `wal_anchor` and then
+    /// appends its folded catalog anchor, which lands at index-log sequence `meta_sequence`.
+    /// Everything the base reflects -- records whose own WAL anchor is at or below `wal_anchor`
+    /// -- is redundant on load (the fold skips them), so it goes. Two kinds of record sit below
+    /// `meta_sequence` yet must SURVIVE:
+    ///
+    /// - a delta a concurrent writer appended between the dump's serialization and its anchor
+    ///   append: its WAL anchor is above `wal_anchor`, so the base does not reflect it, and
+    ///   removing it would lose an eviction/removal that lives only in the delta stream;
+    /// - nothing else -- a legacy whole-index line carries no anchor and is read by no load
+    ///   path, so it is treated as reflected and removed.
+    ///
+    /// The folded catalog anchor itself is at `meta_sequence`, above the removal window, so the
+    /// load-time catalog seed always survives. Position (`sequence < meta_sequence`) still
+    /// bounds the sweep so a record appended AFTER the dump with a stale-looking anchor is never
+    /// touched.
+    pub fn gc_reflected_before_anchor(
+        &self,
+        shard_id: ShardId,
+        wal_anchor: u64,
+        meta_sequence: u64,
+    ) -> Result<IndexLogGcReport, IndexLogError> {
+        #[derive(serde::Deserialize)]
+        struct AnchorProbe {
+            sequence: u64,
+            #[serde(default)]
+            applied_wal_sequence: Option<u64>,
+        }
+        let inner = self.inner.lock().expect("index log lock poisoned");
+        fs::create_dir_all(&inner.root)?;
+        let path = index_log_path(&inner.root, shard_id);
+        if !path.exists() {
+            return Ok(IndexLogGcReport {
+                shard_id,
+                retain_from_sequence: meta_sequence,
+                ..IndexLogGcReport::default()
+            });
+        }
+
+        let bytes_before = path.metadata()?.len();
+        let _ = last_sequence_at(&inner.root, shard_id)?;
+        let file = File::open(&path)?;
+        let reader = BufReader::new(file);
+        let mut records_before = 0usize;
+        let mut retained = Vec::new();
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            records_before += 1;
+            // Decode verifies the integrity envelope; the retained raw payload is re-framed on
+            // write-out below, so a retained delta record keeps its exact on-disk bytes.
+            let payload = crate::log_framing::decode_line(line.as_bytes())?;
+            let probe: AnchorProbe = serde_json::from_slice(payload)?;
+            let reflected = probe.applied_wal_sequence.unwrap_or(0) <= wal_anchor;
+            if probe.sequence >= meta_sequence || !reflected {
+                retained.push(payload.to_vec());
+            }
+        }
+
+        let temp_path = path.with_extension("jsonl.tmp");
+        {
+            let mut temp = File::create(&temp_path)?;
+            for payload in &retained {
+                temp.write_all(&crate::log_framing::encode_line(payload))?;
+            }
+            temp.flush()?;
+            crate::durability_metrics::record_barrier("engine_index_log_gc");
+            temp.sync_all()?;
+        }
+        fs::rename(&temp_path, &path)?;
+        sync_parent_dir(&path)?;
+        let bytes_after = path.metadata()?.len();
+        Ok(IndexLogGcReport {
+            shard_id,
+            retain_from_sequence: meta_sequence,
+            max_entries_per_round: 0,
+            records_before,
+            records_after: retained.len(),
+            records_removed: records_before.saturating_sub(retained.len()),
+            removable_records_before_budget: records_before.saturating_sub(retained.len()),
+            budget_exhausted: false,
+            bytes_before,
+            bytes_after,
+        })
+    }
+
     pub fn stats(&self, shard_id: ShardId) -> IndexLogStats {
         let inner = self.inner.lock().expect("index log lock poisoned");
         IndexLogStats {
@@ -1058,6 +1153,57 @@ mod tests {
         let records = store.read_delta_records(3, 0).unwrap();
         assert_eq!(records.len(), 2);
         assert_eq!(records[1].meta.as_ref().unwrap().start_wal_sequence, 42);
+    }
+
+    #[test]
+    fn gc_reflected_before_anchor_keeps_unreflected_deltas_and_the_catalog_anchor() {
+        // Content-based post-dump sweep: records whose WAL anchor the durable base already
+        // reflects go; a delta a concurrent writer landed with a HIGHER anchor survives even
+        // though it sits below the catalog anchor in the log, and the anchor record itself
+        // (the load-time catalog seed) survives its own sweep.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        // seq 1: legacy whole-index line (no anchor; read by no load path -> reflected).
+        store.append_json(7, b"{\"value\":1}").unwrap();
+        // seq 2: delta reflected by the dump (WAL anchor 2 <= dump anchor 2).
+        store
+            .append_delta(7, vec![page_item(1, "covered", false)], Vec::new(), Some(2), None, false, true)
+            .unwrap();
+        // seq 3: concurrent delta landed after the dump serialized (WAL anchor 5 > 2).
+        store
+            .append_delta(7, vec![page_item(1, "racing", false)], Vec::new(), Some(5), None, false, true)
+            .unwrap();
+        // seq 4: the dump's folded catalog anchor.
+        let meta = MetaItem {
+            version: 1,
+            start_wal_sequence: 2,
+            timestamp_ms: 100,
+            ..MetaItem::default()
+        };
+        let meta_sequence = store
+            .append_delta(7, Vec::new(), Vec::new(), Some(2), Some(meta), false, true)
+            .unwrap();
+
+        let report = store.gc_reflected_before_anchor(7, 2, meta_sequence).unwrap();
+        assert_eq!(report.records_before, 4);
+        assert_eq!(report.records_removed, 2, "the whole-index line and the covered delta go");
+        assert!(report.bytes_after < report.bytes_before);
+
+        let survivors = store.read_delta_records(7, 0).unwrap();
+        assert_eq!(survivors.len(), 2);
+        assert_eq!(
+            survivors[0].items[0].page_ref_key, "racing",
+            "the unreflected concurrent delta must survive the sweep"
+        );
+        assert!(
+            survivors[1].meta.is_some(),
+            "the folded catalog anchor must survive the sweep"
+        );
+        // Sequence continuity: the next append lands above the anchor record.
+        let next = store
+            .append_delta(7, vec![page_item(1, "later", false)], Vec::new(), Some(6), None, false, true)
+            .unwrap();
+        assert_eq!(next, meta_sequence + 1);
     }
 
     #[test]

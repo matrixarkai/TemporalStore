@@ -94,19 +94,25 @@ pub(super) fn take_staged() -> Vec<StagedPage> {
     STAGED.with(|staged| std::mem::take(&mut *staged.borrow_mut()))
 }
 
-/// (shard, object id) -> the log holding that page, and where in it.
+/// (shard, object id) -> the log holding that page, where in it, and the WAL sequence of the
+/// record carrying it.
 ///
 /// The log handle is stored per entry rather than once per process: two engines in one process
 /// have separate logs, and a single shared handle would resolve one engine's addresses against
 /// the other's log -- reading the wrong bytes, silently.
-type Registration = (LocalWriteAheadLogStore, u64);
+///
+/// The sequence is what lets WAL reclaim coexist with these registrations: a registered page's
+/// only durable copy is its record, so reclaim must never truncate below the lowest registered
+/// sequence (see [`min_registered_sequence`]).
+type Registration = (LocalWriteAheadLogStore, u64, u64);
 
 fn registry() -> &'static Mutex<HashMap<(ShardId, u64), Registration>> {
     static REGISTRY: OnceLock<Mutex<HashMap<(ShardId, u64), Registration>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Note that the pages in `record` live in the record at `log_id`.
+/// Note that the pages in `record` live in the record at `log_id`, carried by the WAL record
+/// at `sequence`.
 ///
 /// A later write of the same object replaces its entry, so a registration always names the
 /// record holding the current page rather than a superseded one.
@@ -114,6 +120,7 @@ pub(super) fn register_record(
     shard_id: ShardId,
     staged_pages: &[StagedPage],
     log_id: u64,
+    sequence: u64,
     store: &LocalWriteAheadLogStore,
 ) {
     if staged_pages.is_empty() {
@@ -121,9 +128,28 @@ pub(super) fn register_record(
     }
     if let Ok(mut map) = registry().lock() {
         for page in staged_pages {
-            map.insert((shard_id, page.object_id), (store.clone(), log_id));
+            map.insert((shard_id, page.object_id), (store.clone(), log_id, sequence));
         }
     }
+}
+
+/// The lowest WAL sequence any of this shard's registrations IN THIS LOG still depends on, or
+/// `None` when nothing is registered. WAL reclaim uses this as the block-retention floor: a
+/// record at or above it may hold the only copy of a page the served index still points at, so
+/// truncating it would turn an acked write into a MISSING read.
+///
+/// Filtered by log identity, not just shard id: the registry is process-wide and every
+/// embedded engine serves shard 1, so without the filter one engine's registrations would pin
+/// every other engine's reclaim floor forever.
+pub(super) fn min_registered_sequence(
+    shard_id: ShardId,
+    store: &LocalWriteAheadLogStore,
+) -> Option<u64> {
+    let map = registry().lock().ok()?;
+    map.iter()
+        .filter(|((shard, _), (reg_store, _, _))| *shard == shard_id && reg_store.same_log(store))
+        .map(|(_, (_, _, sequence))| *sequence)
+        .min()
 }
 
 /// Forget a shard's registrations. Called when the shard unloads; a reload replays the WAL and
@@ -140,14 +166,57 @@ pub(super) fn clear_shard(shard_id: ShardId) {
 /// does not carry that page -- in every case the caller falls through to the behaviour it had
 /// before, so this can only turn a miss into a hit.
 pub(super) fn read_page(shard_id: ShardId, object_id: u64) -> Option<Vec<u8>> {
-    let (store, log_id) = registry().lock().ok()?.get(&(shard_id, object_id))?.clone();
-    // Ask for an upper bound; the read clamps to what the file holds.
-    let bytes = store.read_at_log_id(shard_id, log_id, 1 << 20).ok()??;
-    let line = bytes.split(|byte| *byte == 10u8).next()?;
-    let record = decode_wal_line(line).ok()?;
-    record
-        .staged_pages
+    let (store, log_id, _) = registry().lock().ok()?.get(&(shard_id, object_id))?.clone();
+    // One batch record carries many pages, and an ingest reads several of the fields its own
+    // batch just wrote -- so the same record used to be pread and re-parsed once per page. WAL
+    // records are immutable once written (append-only), so a small decoded-record LRU cannot go
+    // stale: a superseding write registers a NEWER log_id and old entries simply age out.
+    if let Ok(cache) = record_lru().lock() {
+        // Keyed by (log identity, shard, log id) -- a log id is a byte offset within ONE log,
+        // so the same number names unrelated records in different engines' logs.
+        if let Some((_, _, _, pages)) = cache
+            .iter()
+            .find(|(s, shard, l, _)| *shard == shard_id && *l == log_id && s.same_log(&store))
+        {
+            if let Some(page) = pages.iter().find(|page| page.object_id == object_id) {
+                return Some(page.bytes.clone());
+            }
+        }
+    }
+    // Adaptive pread: most records terminate well inside 128KB, so try that first and escalate
+    // only when the line does not end in the chunk -- a fixed 1MB upper bound makes every
+    // point read cost a megabyte of I/O.
+    let mut record = None;
+    for size in [128u64 << 10, 1 << 20, u64::MAX] {
+        let bytes = store.read_at_log_id(shard_id, log_id, size).ok()??;
+        let complete = bytes.contains(&10u8) || (bytes.len() as u64) < size;
+        if !complete {
+            continue;
+        }
+        let line = bytes.split(|byte| *byte == 10u8).next()?;
+        record = decode_wal_line(line).ok();
+        break;
+    }
+    let record = record?;
+    let pages = record.staged_pages;
+    if let Ok(mut cache) = record_lru().lock() {
+        if cache.len() >= 8 {
+            cache.remove(0);
+        }
+        cache.push((store.clone(), shard_id, log_id, pages.clone()));
+    }
+    pages
         .into_iter()
         .find(|page| page.object_id == object_id)
         .map(|page| page.bytes)
+}
+
+/// Decoded staged pages of recently read records, keyed by (log identity, shard, log id).
+/// Tiny on purpose: the working set is "the record(s) the current request's batch just wrote".
+/// Entries cannot go stale: WAL records are immutable, a superseding write registers a newer
+/// log id, and the post-dump WAL sweep never truncates a registered record (its floor).
+fn record_lru() -> &'static Mutex<Vec<(LocalWriteAheadLogStore, ShardId, u64, Vec<StagedPage>)>> {
+    static LRU: OnceLock<Mutex<Vec<(LocalWriteAheadLogStore, ShardId, u64, Vec<StagedPage>)>>> =
+        OnceLock::new();
+    LRU.get_or_init(|| Mutex::new(Vec::new()))
 }

@@ -3225,6 +3225,40 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
             ..Config::default()
         },
     });
+    // Embedded log maintenance: the proxy engine runs no storage-manager cycle (only the
+    // server/data-node do), so without this its WAL and index-log grow without bound -- a
+    // 100K-record ingest left a multi-GB index log that nothing ever truncated. Poll the
+    // threshold-dump cadence in the background: when the undumped index-log gap crosses
+    // `TS_INDEX_DUMP_WAL_GAP_BYTES`, dump the catalog and reclaim the log prefixes the dump
+    // made redundant. The poll itself is one file-length stat per interval; the dump/reclaim
+    // runs off the request path so no client write pays for the base-index materialization.
+    // No-op (thread not spawned) with the fold gate off or the interval set to 0.
+    let reclaim_interval_ms = env::var("MATRIXARK_RUST_PROXY_LOG_RECLAIM_INTERVAL_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(1000);
+    if temporalstore_rust::index_log::index_catalog_fold_enabled() && reclaim_interval_ms > 0 {
+        let reclaim_engine = engine.clone();
+        let reclaim_root = root.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(reclaim_interval_ms));
+            if let Some(report) = reclaim_engine.maybe_dump_and_reclaim_index_logs(DEFAULT_SHARD_ID)
+            {
+                eprintln!(
+                    "matrixark_rust_proxy_log_reclaim root={} wal_anchor={} index_log_bytes={}->{} ({} records removed) wal_bytes={}->{} ({} records removed) floor={:?}",
+                    reclaim_root.display(),
+                    report.wal_anchor,
+                    report.index_log_bytes_before,
+                    report.index_log_bytes_after,
+                    report.index_log_records_removed,
+                    report.wal_bytes_before,
+                    report.wal_bytes_after,
+                    report.wal_records_removed,
+                    report.wal_retention_floor,
+                );
+            }
+        });
+    }
     let mut cache = engine_cache()
         .lock()
         .map_err(|_| "record-log engine cache lock poisoned".to_string())?;
