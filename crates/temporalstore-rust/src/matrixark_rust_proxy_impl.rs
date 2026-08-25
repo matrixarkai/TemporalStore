@@ -1126,6 +1126,42 @@ fn update_hgetall_snapshot_fields(key: &str, entries: &[(String, Vec<u8>)]) {
     }
 }
 
+/// Fetch the payload values at `locations` ("{shard:06}:{field}") through the shard hash
+/// snapshots, in append order (lexical location order = shard, then zero-padded field).
+///
+/// Reads whole shard hashes via hgetall_map on purpose: HashMultiGet re-reads each field's page
+/// uncached on every call (measured ~0.5 ms/field, never warming), while the snapshot is read
+/// once and then kept current by the write runtimes -- the same coherence the shard walk has
+/// always relied on. A location whose field is missing or empty is a stale index entry: the
+/// record was physically removed after its entry was written, and skipping it is the contract.
+fn fetch_indexed_payload_values(
+    engine: &TemporalEngine,
+    record_hash_key: &str,
+    locations: &std::collections::BTreeSet<String>,
+) -> Result<(Vec<String>, u64), String> {
+    let mut fields_by_shard: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for location in locations {
+        if let Some((shard, field)) = location.split_once(':') {
+            fields_by_shard
+                .entry(shard.to_string())
+                .or_default()
+                .push(field.to_string());
+        }
+    }
+    let shards_touched = fields_by_shard.len() as u64;
+    let mut values = Vec::with_capacity(locations.len());
+    for (shard, fields) in fields_by_shard {
+        let snapshot = hgetall_map(engine, format!("{record_hash_key}:{shard}"))?;
+        for field in fields {
+            match snapshot.get(&field) {
+                Some(value) if !value.is_empty() => values.push(value.clone()),
+                _ => {}
+            }
+        }
+    }
+    Ok((values, shards_touched))
+}
+
 fn hgetall_map(engine: &TemporalEngine, key: String) -> Result<BTreeMap<String, String>, String> {
     if let Ok(cache) = hgetall_snapshot_cache().lock() {
         if let Some(cached) = cache.get(&key) {
@@ -1150,8 +1186,14 @@ fn hgetall_map(engine: &TemporalEngine, key: String) -> Result<BTreeMap<String, 
                     .map_err(|error| format!("stored hash value is not UTF-8: {error}"))?;
                 decoded.insert(field, value);
             }
-            if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
-                cache.insert(key, decoded.clone());
+            // An empty read must stay a question, not become an answer: caching it would pin
+            // "no data" for a key no write may ever touch again (observed once as a pinned
+            // get_all stuck at 0 rows after a cold start until restart). An actually-empty hash
+            // re-reads at map-miss cost, no page reads.
+            if !decoded.is_empty() {
+                if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
+                    cache.insert(key, decoded.clone());
+                }
             }
             Ok(decoded)
         }
@@ -1393,55 +1435,8 @@ fn type_index_payloads(
         }
     }
     // BTreeSet order is lexical: shard6 then the zero-padded record field = append order.
-    let mut fields_by_shard: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for location in &locations {
-        if let Some((shard, field)) = location.split_once(':') {
-            fields_by_shard
-                .entry(shard.to_string())
-                .or_default()
-                .push(field.to_string());
-        }
-    }
-    let shards_touched = fields_by_shard.len() as u64;
-    let mut values = Vec::with_capacity(locations.len());
-    for (shard, fields) in fields_by_shard {
-        let key = format!("{record_hash_key}:{shard}");
-        let response = engine.execute_durable(ExecuteRequest {
-            shard_id: DEFAULT_SHARD_ID,
-            command: Command::HashMultiGet {
-                key,
-                fields: fields.clone(),
-            },
-        });
-        if !response.status.ok {
-            return Err(format!(
-                "{}: {}",
-                response.status.code, response.status.message
-            ));
-        }
-        match response.response {
-            CommandResponse::Values {
-                values: shard_values,
-            } => {
-                for value in shard_values {
-                    // A missing or empty field is a stale index entry: the record was physically
-                    // removed after its index entry was written. Skipping it is the contract.
-                    let Some(bytes) = value else { continue };
-                    if bytes.is_empty() {
-                        continue;
-                    }
-                    values.push(String::from_utf8(bytes).map_err(|error| {
-                        format!("stored hash value is not UTF-8: {error}")
-                    })?);
-                }
-            }
-            other => {
-                return Err(format!(
-                    "unexpected response for type-index fetch: {other:?}"
-                ))
-            }
-        }
-    }
+    let (values, shards_touched) =
+        fetch_indexed_payload_values(engine, record_hash_key, &locations)?;
     Ok(Some((values, shards_touched)))
 }
 
@@ -1547,50 +1542,8 @@ fn scope_index_payloads(
                 .collect();
         }
     }
-    let mut fields_by_shard: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for location in &positions {
-        if let Some((shard, field)) = location.split_once(':') {
-            fields_by_shard
-                .entry(shard.to_string())
-                .or_default()
-                .push(field.to_string());
-        }
-    }
-    let shards_touched = fields_by_shard.len() as u64;
-    let mut values = Vec::with_capacity(positions.len());
-    for (shard, fields) in fields_by_shard {
-        let key = format!("{record_hash_key}:{shard}");
-        let response = engine.execute_durable(ExecuteRequest {
-            shard_id: DEFAULT_SHARD_ID,
-            command: Command::HashMultiGet { key, fields },
-        });
-        if !response.status.ok {
-            return Err(format!(
-                "{}: {}",
-                response.status.code, response.status.message
-            ));
-        }
-        match response.response {
-            CommandResponse::Values {
-                values: shard_values,
-            } => {
-                for value in shard_values {
-                    let Some(bytes) = value else { continue };
-                    if bytes.is_empty() {
-                        continue;
-                    }
-                    values.push(String::from_utf8(bytes).map_err(|error| {
-                        format!("stored hash value is not UTF-8: {error}")
-                    })?);
-                }
-            }
-            other => {
-                return Err(format!(
-                    "unexpected response for scope-index fetch: {other:?}"
-                ))
-            }
-        }
-    }
+    let (values, shards_touched) =
+        fetch_indexed_payload_values(engine, record_hash_key, &positions)?;
     Ok(Some((values, shards_touched)))
 }
 
@@ -1710,50 +1663,8 @@ fn id_scoped_payloads(
             positions.insert(location);
         }
     }
-    let mut fields_by_shard: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for location in &positions {
-        if let Some((shard, field)) = location.split_once(':') {
-            fields_by_shard
-                .entry(shard.to_string())
-                .or_default()
-                .push(field.to_string());
-        }
-    }
-    let shards_touched = fields_by_shard.len() as u64;
-    let mut values = Vec::with_capacity(positions.len());
-    for (shard, fields) in fields_by_shard {
-        let key = format!("{record_hash_key}:{shard}");
-        let response = engine.execute_durable(ExecuteRequest {
-            shard_id: DEFAULT_SHARD_ID,
-            command: Command::HashMultiGet { key, fields },
-        });
-        if !response.status.ok {
-            return Err(format!(
-                "{}: {}",
-                response.status.code, response.status.message
-            ));
-        }
-        match response.response {
-            CommandResponse::Values {
-                values: shard_values,
-            } => {
-                for value in shard_values {
-                    let Some(bytes) = value else { continue };
-                    if bytes.is_empty() {
-                        continue;
-                    }
-                    values.push(String::from_utf8(bytes).map_err(|error| {
-                        format!("stored hash value is not UTF-8: {error}")
-                    })?);
-                }
-            }
-            other => {
-                return Err(format!(
-                    "unexpected response for id-scoped fetch: {other:?}"
-                ))
-            }
-        }
-    }
+    let (values, shards_touched) =
+        fetch_indexed_payload_values(engine, record_hash_key, &positions)?;
     Ok(Some((values, shards_touched)))
 }
 
@@ -3081,35 +2992,25 @@ fn hash_entries_output(
     key: String,
     root: PathBuf,
 ) -> Result<RecordLogOutput, String> {
-    let response = engine.execute_durable(ExecuteRequest {
-        shard_id: DEFAULT_SHARD_ID,
-        command: Command::HashGetAll { key: key.clone() },
-    });
-    if !response.status.ok {
-        return Err(format!(
-            "{}: {}",
-            response.status.code, response.status.message
-        ));
-    }
-    match response.response {
-        CommandResponse::HashEntries { entries } => {
-            let mut decoded = BTreeMap::new();
+    // Read through the hash snapshot: a raw HashGetAll re-reads every field's page uncached on
+    // each call (measured 14.6 ms warm for a 27-field hash), while the snapshot is read once and
+    // kept current by the write runtimes -- the same coherence every internal hgetall relies on.
+    {
+        let decoded = hgetall_map(engine, key.clone())?;
+        {
             let mut records = Vec::new();
-            for (field, value) in entries {
-                let value = String::from_utf8(value)
-                    .map_err(|error| format!("stored hash value is not UTF-8: {error}"))?;
+            for (field, value) in &decoded {
                 records.push(HashReadRecord {
                     key: key.clone(),
                     field: field.clone(),
                     value: value.clone(),
                 });
-                decoded.insert(field, value);
             }
             let mut extra = BTreeMap::new();
             extra.insert("native_prefix_scan".to_string(), json!(true));
             extra.insert(
                 "prefix_scan_path".to_string(),
-                json!("rust_proxy_scan_hash"),
+                json!("rust_proxy_scan_hash_snapshot"),
             );
             Ok(RecordLogOutput {
                 value: serde_json::to_string(&decoded)
@@ -3127,7 +3028,6 @@ fn hash_entries_output(
                 extra,
             })
         }
-        other => Err(format!("unexpected response for hgetall: {other:?}")),
     }
 }
 

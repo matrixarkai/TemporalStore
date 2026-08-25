@@ -1085,8 +1085,22 @@ class MatrixArkAccessManager(_AccessPortalMixin, _AccessSsoMixin, _AccessApiKeyM
         """Constant-time PBKDF2 check for email/password login."""
         return verify_matrixark_password(password, credential)
 
+    def _append_audit_record(self, record: Json) -> None:
+        """Route one audit record to storage.
+
+        Record-log metadata: through the adapter's buffered audit path (MATRIXARK_DIRECT_AUDIT_MODE
+        governs it; "buffered" coalesces into one durable append_many per flush interval instead of
+        a WAL+fsync append per audited request). Any other metadata backend (SQL) keeps its own
+        append -- audits live in its tables, not the record log.
+        """
+        appender = getattr(self.adapter, "append_audit", None)
+        if callable(appender) and getattr(self.metadata, "backend_name", "") == "record_log":
+            appender(record)
+            return
+        self.metadata.append(record)
+
     def append_audit(self, action: str, identity: Json, *, status: str, details: Json | None = None) -> None:
-        self.metadata.append(
+        self._append_audit_record(
             {
                 "record_type": "matrixark_audit_log",
                 "audit_id_hash": stable_hash(f"{action}:{identity.get('api_key_id')}:{now_ms()}"),
