@@ -3,8 +3,8 @@
 # Copyright 2026 MatrixArkAI
 """Run a LongMemEval direct-source retrieval diagnostic baseline.
 
-This is a fallback baseline for OpenViking/VikingMem comparisons when local
-OpenViking memory extraction returns no recallable memories. It ranks raw
+This is a fallback baseline for ExternalBaseline/ExternalBaseline comparisons when local
+ExternalBaseline memory extraction returns no recallable memories. It ranks raw
 LongMemEval haystack sessions, calls the same OpenAI-compatible OSS reader used
 by MatrixArk diagnostics, and writes an explicit non-paper-comparable report.
 """
@@ -48,7 +48,7 @@ def main() -> int:
     parser.add_argument("--reader-base-url", default="http://127.0.0.1:18087/v1")
     parser.add_argument("--reader-model", default="Qwen/Qwen2.5-0.5B-Instruct")
     parser.add_argument("--embedding-model", default="matrixark-local-hash-embedding")
-    parser.add_argument("--provider-name", default="openviking-style-direct-source")
+    parser.add_argument("--provider-name", default="external_baseline-style-direct-source")
     parser.add_argument("--reader-timeout-seconds", type=float, default=180.0)
     parser.add_argument("--reader-max-tokens", type=int, default=96)
     parser.add_argument("--top-k", type=int, default=16)
@@ -81,7 +81,7 @@ def main() -> int:
         action="store_false",
         help="Diagnostic-only escape hatch for intentionally unfair local model or budget experiments.",
     )
-    parser.add_argument("--report", default="/tmp/openviking_direct_source_longmem_tiny_20260726.json")
+    parser.add_argument("--report", default="/tmp/external_baseline_direct_source_longmem_tiny_20260726.json")
     parser.add_argument("--matrixark-report", default="/tmp/matrixark_qwen_longmem_tiny_pythononly_20260726.json")
     args = parser.parse_args()
     try:
@@ -92,7 +92,7 @@ def main() -> int:
     except RuntimeError as exc:
         report = {
             "benchmark_family": "longmemeval_s",
-            "baseline": "openviking_style_direct_source_retrieval",
+            "baseline": "external_baseline_style_direct_source_retrieval",
             "ready": False,
             "blockers": [str(exc)],
         }
@@ -101,7 +101,7 @@ def main() -> int:
     started = time.time()
     report: dict[str, Any] = {
         "benchmark_family": "longmemeval_s",
-        "baseline": "openviking_style_direct_source_retrieval",
+        "baseline": "external_baseline_style_direct_source_retrieval",
         "claim_status": "diagnostic_not_paper_comparable",
         "diagnostic_only": True,
         "reader_base_url": args.reader_base_url,
@@ -129,8 +129,8 @@ def main() -> int:
         "reader_max_tokens": args.reader_max_tokens,
         "blockers": [],
         "warnings": [
-            "OpenViking LongMemEval import completed only after setting a user API key, but official eval retrieved zero memories locally.",
-            "This diagnostic ranks raw LongMemEval source sessions directly; it is a fallback retrieval baseline, not OpenViking memory recall evidence.",
+            "ExternalBaseline LongMemEval import completed only after setting a user API key, but official eval retrieved zero memories locally.",
+            "This diagnostic ranks raw LongMemEval source sessions directly; it is a fallback retrieval baseline, not ExternalBaseline memory recall evidence.",
             "Token counts are regex token estimates because local OSS endpoints do not return reliable usage counters.",
         ],
     }
@@ -520,7 +520,7 @@ def write_progress(
 ) -> None:
     n = max(1, completed)
     progress = {
-        "schema": "openviking_longmem_reader_progress_v1",
+        "schema": "external_baseline_longmem_reader_progress_v1",
         "phase": phase,
         "completed_queries": completed,
         "total_queries": total,
@@ -661,7 +661,7 @@ def benchmark_model_contract(args: argparse.Namespace, matrixark_reference: dict
             and retrieval_budget_match
         ),
         "comparison_rule": (
-            "MatrixArk and OpenViking/VikingMem rows must use the same OSS reader model, "
+            "MatrixArk and ExternalBaseline/ExternalBaseline rows must use the same OSS reader model, "
             "embedding/encoding model, retrieval block budget, retrieval budget split, reader context budget, "
             "reader output-token budget, and reader fallback policy."
         ),

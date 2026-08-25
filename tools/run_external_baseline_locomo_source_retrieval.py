@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Run a LoCoMo direct-source OpenViking/VikingMem diagnostic baseline.
+"""Run a LoCoMo direct-source ExternalBaseline/ExternalBaseline diagnostic baseline.
 
 This baseline uses the same LoCoMo source records as the MatrixArk runner, ranks
 raw conversation turns directly, and calls the same OpenAI-compatible OSS reader
-configuration. It is diagnostic, not a paper-comparable OpenViking memory
+configuration. It is diagnostic, not a paper-comparable ExternalBaseline memory
 pipeline claim, but it is useful for apples-to-apples reader/model/budget
 comparisons.
 """
@@ -57,12 +57,12 @@ from run_locomo_ingest_once import (  # noqa: E402
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", default="/root/matrixark_benchmarks/data/locomo10.json")
-    parser.add_argument("--report", default="/tmp/openviking_locomo_source_retrieval_report.json")
+    parser.add_argument("--report", default="/tmp/external_baseline_locomo_source_retrieval_report.json")
     parser.add_argument("--matrixark-report", default="/tmp/matrixark_locomo_report.json")
     parser.add_argument("--reader-base-url", default="http://127.0.0.1:11434/v1")
     parser.add_argument("--reader-model", default="qwen2.5:1.5b")
     parser.add_argument("--embedding-model", default="matrixark-hash-embedding-32")
-    parser.add_argument("--provider-name", default="openviking-direct-source-qwen25-1.5b")
+    parser.add_argument("--provider-name", default="external_baseline-direct-source-qwen25-1.5b")
     parser.add_argument("--reader-timeout-seconds", type=float, default=60.0)
     parser.add_argument("--reader-max-context-chars", type=int, default=12000)
     parser.add_argument("--reader-max-tokens", type=int, default=96)
@@ -107,7 +107,7 @@ def main() -> int:
     except RuntimeError as exc:
         report = {
             "benchmark_family": "locomo",
-            "baseline": "openviking_style_direct_source_retrieval",
+            "baseline": "external_baseline_style_direct_source_retrieval",
             "ready": False,
             "blockers": [str(exc)],
         }
@@ -116,7 +116,7 @@ def main() -> int:
     started = time.time()
     report: dict[str, Any] = {
         "benchmark_family": "locomo",
-        "baseline": "openviking_style_direct_source_retrieval",
+        "baseline": "external_baseline_style_direct_source_retrieval",
         "claim_status": "diagnostic_not_paper_comparable",
         "diagnostic_only": True,
         "input": args.input,
@@ -139,7 +139,7 @@ def main() -> int:
         "question_offset": args.question_offset,
         "question_slice_diagnostic": bool(args.question_limit or args.question_offset),
         "warnings": [
-            "This diagnostic ranks raw LoCoMo source turns directly; it is not an OpenViking memory-extraction pipeline claim.",
+            "This diagnostic ranks raw LoCoMo source turns directly; it is not an ExternalBaseline memory-extraction pipeline claim.",
             "Fair comparison requires the shared OSS contract validator to pass across MatrixArk and this baseline.",
         ],
         "blockers": [],
@@ -549,7 +549,7 @@ def benchmark_model_contract(args: argparse.Namespace, matrixark_reference: dict
             and retrieval_budget_match
         ),
         "comparison_rule": (
-            "MatrixArk and OpenViking/VikingMem rows must use the same OSS reader model, "
+            "MatrixArk and ExternalBaseline/ExternalBaseline rows must use the same OSS reader model, "
             "embedding/encoding model, retrieval block budget, adaptive retrieval policy, retrieval budget split, "
             "reader context budget, reader output-token budget, and reader fallback policy."
         ),

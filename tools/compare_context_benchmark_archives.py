@@ -142,7 +142,7 @@ def main() -> int:
         truth_blockers.append("not all requested datasets executed")
 
     report = {
-        "format": "matrixark_vikingmem_context_benchmark_archive_compare_v1",
+        "format": "matrixark_external_baseline_context_benchmark_archive_compare_v1",
         "ready": not failures,
         "benchmark_truth_ready": benchmark_truth_ready,
         "truth_mode": args.truth_mode,
