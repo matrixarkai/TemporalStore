@@ -543,6 +543,7 @@ class _LocalAdapterIngestMixin:
         resource_import_task_hash = 0
         resource_import_task_status = "not_applicable"
         resource_import_wait = True
+        held_import_completion: list[Json] = []
         resource_import_metrics: Json = {}
         resource_fact_event_hashes: list[int] = []
         resource_fact_entity_hashes: list[int] = []
@@ -1334,7 +1335,15 @@ class _LocalAdapterIngestMixin:
                 "summary_dirty_count": len(resource_dirty_hashes),
             }
             resource_import_task_status = "completed"
-            self.append(
+            # On the background worker this call still has writes ahead of it -- the hot path
+            # event batch and its index postings land after this point. Appending "completed"
+            # here publishes the one signal a caller polls for while a fifth of the task's
+            # records are still missing, and lets the caller tear the log down underneath the
+            # worker. Hold the marker and append it once the call has finished writing.
+            append_import_completion = (
+                held_import_completion.append if resource_import_background else self.append
+            )
+            append_import_completion(
                 {
                     "record_type": "resource_import_task",
                     "task_hash": resource_import_task_hash,
@@ -1699,6 +1708,8 @@ class _LocalAdapterIngestMixin:
                     threshold_messages=session_buffer_threshold,
                 )
             )
+        for held_record in held_import_completion:
+            self.append(held_record)
         return {
             "status": "accepted",
             "event_id_hash": event_id_hash,
