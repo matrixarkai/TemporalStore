@@ -85,6 +85,7 @@ fn main() {
     std::fs::create_dir_all(&options.root).expect("failed to create harness root");
     let started = Instant::now();
     let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+        forbid_self_clearing_conviction: false,
         snapshot_check_interval_ms: 0,
         engine: ProductionRaftEngineKind::TemporalRaft,
         local_node_id: 10,

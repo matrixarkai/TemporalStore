@@ -37,6 +37,19 @@ impl MetaRaftCluster {
         })
     }
 
+    /// Apply the conviction lock to every node's metadata.
+    ///
+    /// `TS_META_FORBID_SELF_CLEARING_CONVICTION` was read after `from_env` had
+    /// already returned the raft backend, so it reached the single-node
+    /// metaserver and nothing else. The checks that consult it run on these
+    /// nodes, against a flag that was always false.
+    pub fn set_conviction_lock(&self, forbid: bool) {
+        let mut inner = self.inner.write().expect("meta raft lock poisoned");
+        for node in inner.nodes.values_mut() {
+            node.meta.set_conviction_lock(forbid);
+        }
+    }
+
     pub fn propose(&self, command: MetaCommand) -> Result<(), RaftError> {
         self.propose_inner(command).map(|_| ())
     }
@@ -1024,12 +1037,17 @@ impl MetaRaftCluster {
         };
         for node in inner.nodes.values_mut().filter(|node| node.alive) {
             install_meta_snapshot_state(node, raft_snapshot.clone());
-            let meta = SingleNodeMeta::default();
-            let status = meta.install_snapshot(snapshot.clone()).status;
+            // Installed into the node's own metadata rather than into a fresh
+            // default that replaces it. A snapshot carries metadata, not the
+            // configuration of the process holding it, and replacing the whole
+            // meta discarded the conviction lock along with the event bus, the
+            // metrics recorder and the counters -- the last three documented as
+            // shared by clone, so every handle taken before the install was
+            // quietly left writing to an orphan.
+            let status = node.meta.install_snapshot(snapshot.clone()).status;
             if !status.ok {
                 return Err(RaftError::InvalidConfig(status.message));
             }
-            node.meta = meta;
         }
         Ok(())
     }

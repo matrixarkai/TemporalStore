@@ -2117,6 +2117,13 @@ fn runtime_options_from_env() -> ProductionMetaRaftRuntimeOptions {
         election_tick_ms: env_u64("TS_META_RAFT_ELECTION_TICK_MS", 50),
         failure_detector_interval_ms: env_u64("TS_META_FAILURE_DETECTOR_INTERVAL_MS", 10_000),
         stale_server_after_ms: env_u64("TS_META_STALE_AFTER_MS", 30_000),
+        // Read here as well as on the single-node path: `from_env` returns the
+        // raft backend before it reaches that one, so this setting used to do
+        // nothing at all on a raft-backed metaserver.
+        forbid_self_clearing_conviction: env_bool(
+            "TS_META_FORBID_SELF_CLEARING_CONVICTION",
+            false,
+        ),
     }
 }
 
@@ -2663,6 +2670,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let snapshot_path = dir.path().join("meta-raft-route-snapshot.json");
         let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+            forbid_self_clearing_conviction: false,
             snapshot_check_interval_ms: 0,
             engine: ProductionRaftEngineKind::TemporalRaft,
             local_node_id: 1,
@@ -2790,6 +2798,7 @@ mod tests {
         assert_eq!(servers.servers[0].state, MetaEntityState::Normal);
 
         let restored_runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+            forbid_self_clearing_conviction: false,
             snapshot_check_interval_ms: 0,
             engine: ProductionRaftEngineKind::TemporalRaft,
             local_node_id: 1,
@@ -3920,6 +3929,7 @@ mod tests {
     #[test]
     fn raft_backed_metaserver_scheduler_drives_lifecycle_workflow() {
         let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+            forbid_self_clearing_conviction: false,
             snapshot_check_interval_ms: 0,
             engine: ProductionRaftEngineKind::TemporalRaft,
             local_node_id: 1,
