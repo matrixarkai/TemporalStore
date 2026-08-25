@@ -625,6 +625,94 @@ pub struct TableServingOptions {
     pub io_timeout_ms: u64,
     #[serde(default = "default_table_connect_timeout_ms")]
     pub connect_timeout_ms: u64,
+    /// The fields this table set for itself, by name.
+    ///
+    /// Which fields a table has spoken for is not recoverable from the values: the
+    /// patch that carries them knows, and flattening it into this struct used to
+    /// throw that away. Records written before this field carry none, and are read
+    /// exactly as they were before -- see `table_decides`.
+    #[serde(default)]
+    pub set_fields: BTreeSet<String>,
+}
+
+/// A field of `TableServingOptions`, for naming one without spelling it.
+///
+/// The names go on the wire as plain strings, so a reader that meets a field it does
+/// not know simply carries it; but every name a caller can ask for comes from here,
+/// so a misspelling is a compile error rather than a silent "the table did not set
+/// this".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TableServingField {
+    PinPrimary,
+    ReplicaReadPolicy,
+    PreferredLocation,
+    DropPercent,
+    MaxReadRetries,
+    MaxWriteRetries,
+    RetryBackoffMs,
+    ContinuousFailedTimeMs,
+    IoTimeoutMs,
+    ConnectTimeoutMs,
+}
+
+impl TableServingField {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::PinPrimary => "pin_primary",
+            Self::ReplicaReadPolicy => "replica_read_policy",
+            Self::PreferredLocation => "preferred_location",
+            Self::DropPercent => "drop_percent",
+            Self::MaxReadRetries => "max_read_retries",
+            Self::MaxWriteRetries => "max_write_retries",
+            Self::RetryBackoffMs => "retry_backoff_ms",
+            Self::ContinuousFailedTimeMs => "continuous_failed_time_ms",
+            Self::IoTimeoutMs => "io_timeout_ms",
+            Self::ConnectTimeoutMs => "connect_timeout_ms",
+        }
+    }
+}
+
+impl TableServingOptions {
+    /// Whether this table means to decide `field` itself, rather than leaving it to
+    /// whatever the calling client was configured with.
+    ///
+    /// A table that set the field decides it. Records written before `set_fields`
+    /// existed say nothing about what was set, so for those the only signal left is
+    /// that the value differs from the default -- which is what every caller used to
+    /// rely on, and which cannot express a table deliberately choosing a default
+    /// value. `drop_percent: 0` means "never shed this table" and
+    /// `max_write_retries: 0` means "never retry a write here"; both equal the
+    /// default, so both were quietly replaced by the client's own setting. The two
+    /// options whose whole purpose is to hold something back were the two that could
+    /// not be said.
+    pub fn table_decides(&self, field: TableServingField) -> bool {
+        if self.set_fields.contains(field.name()) {
+            return true;
+        }
+        let defaults = Self::default();
+        match field {
+            TableServingField::PinPrimary => self.pin_primary != defaults.pin_primary,
+            TableServingField::ReplicaReadPolicy => {
+                self.replica_read_policy != defaults.replica_read_policy
+            }
+            TableServingField::PreferredLocation => {
+                self.preferred_location != defaults.preferred_location
+            }
+            TableServingField::DropPercent => self.drop_percent != defaults.drop_percent,
+            TableServingField::MaxReadRetries => self.max_read_retries != defaults.max_read_retries,
+            TableServingField::MaxWriteRetries => {
+                self.max_write_retries != defaults.max_write_retries
+            }
+            TableServingField::RetryBackoffMs => self.retry_backoff_ms != defaults.retry_backoff_ms,
+            TableServingField::ContinuousFailedTimeMs => {
+                self.continuous_failed_time_ms != defaults.continuous_failed_time_ms
+            }
+            TableServingField::IoTimeoutMs => self.io_timeout_ms != defaults.io_timeout_ms,
+            TableServingField::ConnectTimeoutMs => {
+                self.connect_timeout_ms != defaults.connect_timeout_ms
+            }
+        }
+    }
 }
 
 impl Default for TableServingOptions {
@@ -640,6 +728,7 @@ impl Default for TableServingOptions {
             continuous_failed_time_ms: default_continuous_failed_time_ms(),
             io_timeout_ms: default_table_io_timeout_ms(),
             connect_timeout_ms: default_table_connect_timeout_ms(),
+            set_fields: BTreeSet::new(),
         }
     }
 }
@@ -1653,41 +1742,69 @@ fn proxy_serving_mode_for_state(state: MetaEntityState) -> &'static str {
     }
 }
 
-fn apply_serving_options_patch(
-    mut options: TableServingOptions,
-    patch: &TableServingOptionsPatch,
-) -> TableServingOptions {
+impl TableServingOptionsPatch {
+    /// Apply this patch onto `base`, recording which fields it set.
+    ///
+    /// This is the only place the merge is written. It used to exist twice -- once
+    /// here and once in the metaserver's create handler, which rebuilt the same
+    /// field-by-field merge by hand and, having no reason to, did not carry over
+    /// which fields the caller had actually sent. That is how a table created with
+    /// an explicit setting arrived carrying no record of it.
+    pub fn onto(&self, base: TableServingOptions) -> TableServingOptions {
+        let patch = self;
+        let mut options = base;
+    let set = |field: TableServingField, options: &mut TableServingOptions| {
+        options.set_fields.insert(field.name().to_string());
+    };
     if let Some(pin_primary) = patch.pin_primary {
         options.pin_primary = pin_primary;
+        set(TableServingField::PinPrimary, &mut options);
     }
     if let Some(replica_read_policy) = &patch.replica_read_policy {
         options.replica_read_policy = replica_read_policy.clone();
+        set(TableServingField::ReplicaReadPolicy, &mut options);
     }
     if let Some(preferred_location) = &patch.preferred_location {
         options.preferred_location = preferred_location.clone();
+        set(TableServingField::PreferredLocation, &mut options);
     }
     if let Some(drop_percent) = patch.drop_percent {
         options.drop_percent = drop_percent;
+        set(TableServingField::DropPercent, &mut options);
     }
     if let Some(max_read_retries) = patch.max_read_retries {
         options.max_read_retries = max_read_retries;
+        set(TableServingField::MaxReadRetries, &mut options);
     }
     if let Some(max_write_retries) = patch.max_write_retries {
         options.max_write_retries = max_write_retries;
+        set(TableServingField::MaxWriteRetries, &mut options);
     }
     if let Some(retry_backoff_ms) = patch.retry_backoff_ms {
         options.retry_backoff_ms = retry_backoff_ms;
+        set(TableServingField::RetryBackoffMs, &mut options);
     }
     if let Some(continuous_failed_time_ms) = patch.continuous_failed_time_ms {
         options.continuous_failed_time_ms = continuous_failed_time_ms;
+        set(TableServingField::ContinuousFailedTimeMs, &mut options);
     }
     if let Some(io_timeout_ms) = patch.io_timeout_ms {
         options.io_timeout_ms = io_timeout_ms;
+        set(TableServingField::IoTimeoutMs, &mut options);
     }
     if let Some(connect_timeout_ms) = patch.connect_timeout_ms {
         options.connect_timeout_ms = connect_timeout_ms;
+        set(TableServingField::ConnectTimeoutMs, &mut options);
     }
     options
+    }
+}
+
+fn apply_serving_options_patch(
+    options: TableServingOptions,
+    patch: &TableServingOptionsPatch,
+) -> TableServingOptions {
+    patch.onto(options)
 }
 
 fn now_ms() -> u64 {
@@ -5313,6 +5430,81 @@ mod tests {
     }
 
     #[test]
+    fn setting_a_serving_option_to_its_default_value_is_a_real_change() {
+        // "Never shed this table" is spelled drop_percent: 0, and 0 is also the
+        // default. An update carrying it used to compare equal to what the table
+        // already had, so the metaserver answered not_modified and did nothing --
+        // the operator was told plainly that nothing had changed, while the table
+        // went on inheriting whatever shedding its clients were configured with.
+        //
+        // The table now records that it set the field, so this is a change: it says
+        // something the table was not saying before.
+        let meta = SingleNodeMeta::default();
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            first_shard_id: 100,
+            shard_count: 2,
+            replica_count: 1,
+            partition_version: 0,
+            serving_options: crate::meta::TableServingOptions::default(),
+        });
+        let created = meta.list_tables().tables[0].clone();
+        assert_eq!(created.serving_options.drop_percent, 0);
+        assert!(
+            !created
+                .serving_options
+                .table_decides(TableServingField::DropPercent),
+            "a table that never spoke for drop_percent must leave it to the client"
+        );
+
+        let updated = meta.update_table(UpdateTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            shard_count: None,
+            replica_count: None,
+            first_shard_id: None,
+            partition_version: None,
+            serving_options: Some(TableServingOptionsPatch {
+                drop_percent: Some(0),
+                ..TableServingOptionsPatch::default()
+            }),
+        });
+        assert!(
+            updated.status.ok,
+            "asking to shed nothing must be accepted, not answered not_modified: {updated:?}"
+        );
+
+        let table = meta.list_tables().tables[0].clone();
+        assert_eq!(table.serving_options.drop_percent, 0);
+        assert!(
+            table
+                .serving_options
+                .table_decides(TableServingField::DropPercent),
+            "the table has now spoken for drop_percent and must decide it"
+        );
+        assert!(
+            table.topology_version > created.topology_version,
+            "clients only pick this up if the topology version moves"
+        );
+
+        // Saying the same thing twice really is unchanged.
+        let again = meta.update_table(UpdateTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            shard_count: None,
+            replica_count: None,
+            first_shard_id: None,
+            partition_version: None,
+            serving_options: Some(TableServingOptionsPatch {
+                drop_percent: Some(0),
+                ..TableServingOptionsPatch::default()
+            }),
+        });
+        assert_eq!(again.status.code, "not_modified");
+    }
+
+    #[test]
     fn metaserver_update_table_expands_topology_and_guards_unsafe_changes() {
         let meta = SingleNodeMeta::default();
         meta.add_table(AddTableRequest {
@@ -5426,6 +5618,7 @@ mod tests {
                     continuous_failed_time_ms: 22,
                     io_timeout_ms: 333,
                     connect_timeout_ms: 444,
+                    set_fields: Default::default(),
                 },
             })
             .status

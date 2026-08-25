@@ -1893,38 +1893,13 @@ struct MasterTableOptionsRequest {
 
 impl MasterTableOptionsRequest {
     fn serving_options(&self) -> temporalstore_rust::meta::TableServingOptions {
-        let mut options = temporalstore_rust::meta::TableServingOptions::default();
-        if let Some(pin_primary) = self.pin_primary {
-            options.pin_primary = pin_primary;
-        }
-        if let Some(replica_read_policy) = &self.replica_read_policy {
-            options.replica_read_policy = replica_read_policy.clone();
-        }
-        if let Some(preferred_location) = &self.preferred_location {
-            options.preferred_location = preferred_location.clone();
-        }
-        if let Some(drop_percent) = self.drop_percent {
-            options.drop_percent = drop_percent;
-        }
-        if let Some(max_read_retries) = self.max_read_retries {
-            options.max_read_retries = max_read_retries;
-        }
-        if let Some(max_write_retries) = self.max_write_retries {
-            options.max_write_retries = max_write_retries;
-        }
-        if let Some(retry_backoff_ms) = self.retry_backoff_ms {
-            options.retry_backoff_ms = retry_backoff_ms;
-        }
-        if let Some(continuous_failed_time_ms) = self.continuous_failed_time_ms {
-            options.continuous_failed_time_ms = continuous_failed_time_ms;
-        }
-        if let Some(io_timeout_ms) = self.io_timeout_ms {
-            options.io_timeout_ms = io_timeout_ms;
-        }
-        if let Some(connect_timeout_ms) = self.connect_timeout_ms {
-            options.connect_timeout_ms = connect_timeout_ms;
-        }
-        options
+        // Built through the patch rather than field by field, so a table created with
+        // an explicit setting is recorded as having set it. Rebuilding the merge here
+        // by hand meant the create path silently dropped that, and a table created
+        // asking for a default value -- `drop_percent: 0`, "never shed this table" --
+        // could not be told apart from one that had asked for nothing.
+        self.serving_options_patch()
+            .onto(temporalstore_rust::meta::TableServingOptions::default())
     }
 
     fn serving_options_patch(&self) -> temporalstore_rust::meta::TableServingOptionsPatch {
