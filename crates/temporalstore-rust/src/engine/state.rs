@@ -34,7 +34,7 @@ pub(super) struct ContextDirtyEntry {
     pub(super) mark_count: u64,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub(super) struct ShardState {
     /// On-disk shape of this index. 0 means "written before the stamp existed".
     ///
