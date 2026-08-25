@@ -385,7 +385,10 @@ impl TemporalEngine {
                 // Append the pages this batch changed (O(delta)) to the index-log (advances
                 // the sequence + populates the delta stream). The whole-index base rewrite is
                 // deferred to the next compaction point (see the single-command execute path).
-                let (items, upsert_record) = match &batch_upsert_components {
+                let (items, upsert_record) = match batch_upsert_components
+                    .as_ref()
+                    .filter(|_| upsert_deltas_enabled())
+                {
                     Some(components) => (
                         collect_upsert_index_items(
                             shard,

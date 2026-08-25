@@ -744,7 +744,10 @@ impl TemporalEngine {
                 // stream. The whole base index is NOT rewritten per write (that O(store) path
                 // is gone); the base is materialized at compaction/unload, the funnel serves
                 // the live in-memory shard between them, and cold reload folds base + deltas.
-                let (items, upsert_record) = match &upsert_components {
+                let (items, upsert_record) = match upsert_components
+                    .as_ref()
+                    .filter(|_| upsert_deltas_enabled())
+                {
                     Some(components) => (
                         collect_upsert_index_items(
                             shard,
@@ -1597,6 +1600,20 @@ fn serialize_index(shard: &ShardState) -> Vec<u8> {
 /// one of them lands through the page-upsert path (one new page per component, predecessor
 /// replaced). `None` = the command's write shape is not a pure upsert (deletes, features,
 /// rewrites), and the caller must fall back to the whole-object snapshot record.
+/// Emission gate for upsert delta records. OFF by default. A multi-restart scale store
+/// reconstructed EMPTY through base-only fold recovery (config-log present -> no WAL replay)
+/// while full WAL replay of the same store served everything -- the fold of a large log holding
+/// these records is the suspect, and small-store SIGKILL proofs do not cover it. Until a
+/// scale reload-equality test pins the fold, new writes emit snapshot records.
+fn upsert_deltas_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("TS_INDEXLOG_UPSERT_DELTAS")
+            .map(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false)
+    })
+}
+
 fn command_upsert_components(
     command: &Command,
 ) -> Option<Vec<(&'static str, String, Option<String>)>> {
