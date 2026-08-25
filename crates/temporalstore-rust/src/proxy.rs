@@ -3711,7 +3711,8 @@ mod tests {
         });
         assert_eq!(
             status, 503,
-            "a drained proxy must fail its probe, or draining it does not take it out of              rotation"
+            "a drained proxy must fail its probe, or draining it does not take it \
+             out of rotation"
         );
         let parsed = parse_json::<ProxyReadinessResponse>(&body).expect("readiness body parses");
         assert!(!parsed.serving);
@@ -3861,7 +3862,8 @@ mod tests {
             });
             assert_eq!(
                 response.status.code, "proxy_traffic_dropped",
-                "attempt {attempt} on a refused key must be refused again -- the decision is                  per key, not per request"
+                "attempt {attempt} on a refused key must be refused again -- the decision \
+                 is per key, not per request"
             );
             assert!(
                 response.status.message.contains("will not succeed"),
@@ -5285,7 +5287,8 @@ mod tests {
         assert_eq!(
             hits.load(Ordering::SeqCst),
             1,
-            "a write that timed out must not be sent again -- the timeout says the datanode              stopped answering, not that it never received the write"
+            "a write that timed out must not be sent again -- the timeout says the datanode \
+             stopped answering, not that it never received the write"
         );
 
         // A read is a different matter: repeating it cannot change anything, so the

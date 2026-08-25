@@ -434,7 +434,9 @@ fn a_second_sync_asks_only_for_what_changed_and_keeps_its_routes() {
     assert_eq!(
         seen_version_calls.load(Ordering::SeqCst),
         version_calls_after_first,
-        "a sync that changed nothing should cost one round-trip, not two -- the cluster          topology version is only needed to stamp routes, and an unchanged reply installs none"
+        "a sync that changed nothing should cost one round-trip, not two -- the \
+         cluster topology version is only needed to stamp routes, and an \
+         unchanged reply installs none"
     );
 }
 

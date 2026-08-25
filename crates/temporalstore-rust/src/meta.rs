@@ -4527,8 +4527,17 @@ mod tests {
     #[test]
     fn growing_a_table_that_already_owns_shards_is_refused() {
         let meta = live_two_shard_table();
-        assert_eq!(grow_to(&meta, 4).code, "shards_registered");
+        let refused = grow_to(&meta, 4);
+        assert_eq!(refused.code, "shards_registered");
         assert_eq!(meta.list_tables().tables[0].shard_count, 2);
+        // An operator reads this one. A literal wrapped across source lines
+        // keeps the indentation of the continuation unless it is escaped, and
+        // this refusal was arriving with a run of spaces in the middle of it.
+        assert!(
+            !refused.message.contains("  "),
+            "the refusal reads with a run of spaces in it: {:?}",
+            refused.message
+        );
     }
 
     #[test]
