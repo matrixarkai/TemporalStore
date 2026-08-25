@@ -964,6 +964,9 @@ impl LocalWriteAheadLogStore {
             // start plus its length says where it ends, so skipping it costs a stat rather than a
             // read of every line in it. This is what makes a windowed scan cost the window: without
             // it the loop below still reads the whole log and merely declines to return most of it.
+            // Also what skips a piece reclaimed since the listing above: an absent piece reads
+            // as base zero with no length, so this says it ends before any window and the loop
+            // moves on rather than opening a file that is gone. See `read_wal_base`.
             let piece_len = path.metadata().map(|meta| meta.len()).unwrap_or(0);
             if base.saturating_add(piece_len.saturating_sub(header_len)) <= start_offset {
                 continue;
@@ -2187,6 +2190,15 @@ fn reclaim_min_freed_percent() -> u32 {
 }
 
 fn read_wal_base(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
+    // An absent piece answers (0, 0) rather than failing, and `scan` DEPENDS on that. A piece can
+    // be reclaimed between being listed and being read -- reclaim removes whole pieces from the
+    // front -- and answering zero here makes the length check in `scan` treat it as ending before
+    // any window, so the loop skips it instead of opening a file that is gone.
+    //
+    // Turning this into an error would surface as shards refusing to load: recovery treats ANY
+    // scan failure as data loss, so a piece legitimately reclaimed mid-scan would stop a shard
+    // coming up. If this ever has to report absence distinctly, `scan` needs to skip on it
+    // explicitly at the same time.
     if !path.exists() {
         return Ok((0, 0));
     }
