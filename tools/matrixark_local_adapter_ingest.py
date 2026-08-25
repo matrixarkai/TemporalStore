@@ -293,6 +293,7 @@ class _LocalAdapterIngestMixin:
                 pending_memory_layer = candidate_memory_layer_name(pending_event_record)
                 if pending_memory_layer:
                     pending_event_record["memory_layer"] = pending_memory_layer
+                self._begin_append_coalescing()
                 self.append(pending_event_record)
                 pending_embedding_record = compact_context_embedding_record(
                     {
@@ -361,6 +362,7 @@ class _LocalAdapterIngestMixin:
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
+            self._flush_append_coalescing()
             pending_events = self.pending_session_events(envelope["scope"])
             pending_event_count = len(pending_events)
             pending_message_count = session_event_message_count(pending_events)
