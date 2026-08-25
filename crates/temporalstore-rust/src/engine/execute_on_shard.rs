@@ -658,6 +658,123 @@ pub(crate) fn execute_on_shard(
                 .collect();
             CommandResponse::Members { members }
         }
+        Command::ZSetIncrBy {
+            key,
+            member,
+            increment,
+        } => {
+            remove_if_expired(shard, &key);
+            let old = shard
+                .zsets
+                .get(&key)
+                .and_then(|members| members.get(&member))
+                .map(|(biased, _)| *biased);
+            let score = old.map_or(0.0, zset_score_from_bits) + increment;
+            let biased = zset_score_bits(score);
+            if let Some(old_biased) = old {
+                let old_component = zset_component(old_biased, &member);
+                mark_bucket_index_page_deleted(shard, "zset", &key, Some(&old_component));
+            }
+            let component = zset_component(biased, &member);
+            let object_id = stable_page_object_id(shard_id, "zset", &key, Some(&component));
+            let routing_bucket =
+                page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            if let Ok(address) = append_value(
+                cache,
+                page_store,
+                shard_id,
+                &member,
+                Some(object_id),
+                Some(routing_bucket),
+                async_storage,
+            ) {
+                shard
+                    .zsets
+                    .entry(key.clone())
+                    .or_default()
+                    .insert(member.clone(), (biased, address.clone()));
+                upsert_bucket_index_page(
+                    shard,
+                    shard_id,
+                    "zset",
+                    &key,
+                    Some(component),
+                    address,
+                    true,
+                );
+                mutated = true;
+            }
+            let _ = cache.invalidate_record(shard_id, "zset", &key);
+            CommandResponse::Bytes {
+                value: Some(zset_score_string(biased).into_bytes()),
+            }
+        }
+        Command::ZSetPop { key, min, count } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate_record(shard_id, "zset", &key);
+                return ExecuteOutcome {
+                    response: CommandResponse::Members {
+                        members: Vec::new(),
+                    },
+                    mutated,
+                };
+            }
+            let mut ordered = zset_ordered_members(shard, &key);
+            if !min {
+                ordered.reverse();
+            }
+            ordered.truncate(count as usize);
+            let mut members = Vec::new();
+            for (member, biased) in ordered {
+                let component = zset_component(biased, &member);
+                mark_bucket_index_page_deleted(shard, "zset", &key, Some(&component));
+                if let Some(entries) = shard.zsets.get_mut(&key) {
+                    entries.remove(&member);
+                }
+                mutated = true;
+                members.push(member);
+                members.push(zset_score_string(biased).into_bytes());
+            }
+            if shard.zsets.get(&key).is_some_and(BTreeMap::is_empty) {
+                shard.zsets.remove(&key);
+            }
+            if mutated {
+                let _ = cache.invalidate_record(shard_id, "zset", &key);
+            }
+            CommandResponse::Members { members }
+        }
+        Command::ZSetRank { key, member, rev } => {
+            remove_if_expired(shard, &key);
+            let target = shard
+                .zsets
+                .get(&key)
+                .and_then(|members| members.get(&member))
+                .map(|(biased, _)| (*biased, member.clone()));
+            CommandResponse::Bytes {
+                value: target.map(|(biased, member)| {
+                    let before = shard
+                        .zsets
+                        .get(&key)
+                        .map(|members| {
+                            members
+                                .iter()
+                                .filter(|(other, (other_biased, _))| {
+                                    let other_key = (*other_biased, (*other).clone());
+                                    let target_key = (biased, member.clone());
+                                    if rev {
+                                        other_key > target_key
+                                    } else {
+                                        other_key < target_key
+                                    }
+                                })
+                                .count()
+                        })
+                        .unwrap_or(0);
+                    before.to_string().into_bytes()
+                }),
+            }
+        }
         Command::ListPush { key, member, left } => {
             remove_if_expired(shard, &key);
             let seq = {

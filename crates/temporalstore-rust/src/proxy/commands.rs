@@ -81,6 +81,9 @@ fn proxy_command_key(command: &Command) -> Option<&str> {
         | Command::ZSetCard { key }
         | Command::ZSetRange { key, .. }
         | Command::ZSetRangeByScore { key, .. }
+        | Command::ZSetIncrBy { key, .. }
+        | Command::ZSetPop { key, .. }
+        | Command::ZSetRank { key, .. }
         | Command::FeatureAppend { key, .. }
         | Command::FeatureAppendWithPolicy { key, .. }
         | Command::FeatureQuery { key, .. }

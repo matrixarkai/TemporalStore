@@ -1243,6 +1243,29 @@ pub enum Command {
         max_exclusive: bool,
         rev: bool,
     },
+    /// Add to a member's score (0 when absent), atomically under the shard lock.
+    /// Answers the new score as its shortest string form.
+    ZSetIncrBy {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+        increment: f64,
+    },
+    /// Pop up to `count` members off the low (min) or high end, in order.
+    /// Answers interleaved member/score-string pairs.
+    ZSetPop {
+        key: String,
+        min: bool,
+        count: u64,
+    },
+    /// The member's 0-based position in (score, member) order, tail-based when rev.
+    /// Answers the rank as a decimal string, or nil for a missing member.
+    ZSetRank {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+        rev: bool,
+    },
     /// Push one element onto a list end (left = head). Answers the new length.
     ListPush {
         key: String,
