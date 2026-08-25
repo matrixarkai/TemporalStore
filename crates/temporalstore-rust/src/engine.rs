@@ -505,6 +505,7 @@ impl TemporalEngine {
             // Capture this write's touched keys for the O(delta) index-log append below
             // (the command is moved into the WAL append before we reach that point).
             let delta_command_keys = object_keys.clone();
+            let upsert_components = command_upsert_components(&command);
             if object_keys.is_empty() {
                 rebuild_bucket_page_ownership(
                     request.shard_id,
@@ -681,12 +682,27 @@ impl TemporalEngine {
                 // stream. The whole base index is NOT rewritten per write (that O(store) path
                 // is gone); the base is materialized at compaction/unload, the funnel serves
                 // the live in-memory shard between them, and cold reload folds base + deltas.
-                let items = collect_command_index_items(
-                    shard,
-                    &delta_command_keys,
-                    start_routing_bucket,
-                    end_routing_bucket,
-                );
+                let (items, upsert_record) = match &upsert_components {
+                    Some(components) => (
+                        collect_upsert_index_items(
+                            shard,
+                            request.shard_id,
+                            components,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                        true,
+                    ),
+                    None => (
+                        collect_command_index_items(
+                            shard,
+                            &delta_command_keys,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                        false,
+                    ),
+                };
                 let key_states = capture_key_states(shard, &delta_command_keys);
                 // `durable` fsyncs the delta record before returning. Deferred on the raft
                 // apply path (raft log is the durability source) and, under the single-barrier
@@ -703,6 +719,7 @@ impl TemporalEngine {
                     key_states,
                     shard.applied_wal_sequence,
                     None,
+                    upsert_record,
                     index_log_durable,
                 );
             }
@@ -1514,6 +1531,91 @@ fn serialize_index(shard: &ShardState) -> Vec<u8> {
 /// touched key. Deleted pages ride as `deleted` tombstones so a fold applies the removal.
 /// Empty when the command has no object keys (e.g. a context rebuild command); the caller
 /// still appends the record so the index-log sequence advances per write.
+/// The (kind, object_key, component) writes a command performs when -- and only when -- every
+/// one of them lands through the page-upsert path (one new page per component, predecessor
+/// replaced). `None` = the command's write shape is not a pure upsert (deletes, features,
+/// rewrites), and the caller must fall back to the whole-object snapshot record.
+fn command_upsert_components(
+    command: &Command,
+) -> Option<Vec<(&'static str, String, Option<String>)>> {
+    match command {
+        Command::HashSet { key, field, .. } => {
+            Some(vec![("hash", key.clone(), Some(field.clone()))])
+        }
+        Command::HashMultiSet { key, entries } => Some(
+            entries
+                .iter()
+                .map(|(field, _)| ("hash", key.clone(), Some(field.clone())))
+                .collect(),
+        ),
+        Command::HashIncrBy { key, field, .. } => {
+            Some(vec![("hash", key.clone(), Some(field.clone()))])
+        }
+        Command::StringSet { key, .. } => Some(vec![("string", key.clone(), None)]),
+        _ => None,
+    }
+}
+
+/// Build the exact index items for an upsert record from post-apply shard state: each written
+/// component's address is read back from the map the write just updated, so the logged page is
+/// precisely the one a reload must serve. A component absent from the map (its append failed)
+/// is skipped -- it produced no page to pin.
+fn collect_upsert_index_items(
+    shard: &ShardState,
+    shard_id: ShardId,
+    components: &[(&'static str, String, Option<String>)],
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+) -> Vec<crate::index_log::IndexItem> {
+    let mut items = Vec::with_capacity(components.len());
+    for (kind, object_key, component) in components {
+        let address = match (*kind, component) {
+            ("hash", Some(field)) => shard
+                .hashes
+                .get(object_key)
+                .and_then(|fields| fields.get(field))
+                .cloned(),
+            ("string", None) => shard.strings.get(object_key).cloned(),
+            _ => None,
+        };
+        let Some(address) = address else { continue };
+        let routing_bucket = address
+            .routing_bucket
+            .unwrap_or_else(|| {
+                page_routing_bucket(object_key, start_routing_bucket, end_routing_bucket)
+            });
+        let object_id = address.object_id.unwrap_or_else(|| {
+            stable_page_object_id(shard_id, kind, object_key, component.as_deref())
+        });
+        let page_ref_key = format!(
+            "{}:{}:{}:{}:{}:{}:{}:{}",
+            kind,
+            object_key,
+            component.as_deref().unwrap_or(""),
+            address.page_slab_id,
+            address.offset,
+            address.length,
+            address.page_id.unwrap_or_default(),
+            address.generation.unwrap_or_default()
+        );
+        items.push(crate::index_log::IndexItem {
+            kind: crate::index_log::IndexItemKind::Page,
+            routing_bucket,
+            page_ref_key,
+            object_key: object_key.clone(),
+            model_id: (*kind).to_string(),
+            component: component.clone(),
+            object_id,
+            page_id: address.page_id.unwrap_or(0),
+            size: address.length,
+            in_log: address.page_id.is_none(),
+            deleted: false,
+            address: Some(address),
+        });
+    }
+    items
+}
+
 fn collect_command_index_items(
     shard: &ShardState,
     command_keys: &[String],
@@ -1689,8 +1791,24 @@ fn fold_delta_page_items(
     bucket_index: &mut CoreIndex,
     covered_keys: &BTreeSet<String>,
     items: &[crate::index_log::IndexItem],
+    upsert: bool,
 ) {
-    if !covered_keys.is_empty() {
+    if upsert {
+        // Upsert record: each item replaces exactly its (kind, object, component) predecessor,
+        // the same replacement the write path performed in memory. The predecessor lives in the
+        // same routing bucket (the bucket derives from the object key), so the removal scans one
+        // bucket per item and the covered-key wipe below stays untouched for snapshot records.
+        for item in items {
+            let Some(bucket) = bucket_index.bucket_map.get_mut(&item.routing_bucket) else {
+                continue;
+            };
+            bucket.page_index.retain(|_, page| {
+                !(page.model_id == item.model_id
+                    && page.object_key == item.object_key
+                    && page.component == item.component)
+            });
+        }
+    } else if !covered_keys.is_empty() {
         for bucket in bucket_index.bucket_map.values_mut() {
             bucket
                 .page_index

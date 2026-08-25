@@ -297,7 +297,7 @@ impl TemporalEngine {
                 continue;
             }
             let covered = delta_record_covered_keys(record);
-            fold_delta_page_items(&mut shard.bucket_index, &covered, &record.items);
+            fold_delta_page_items(&mut shard.bucket_index, &covered, &record.items, record.upsert);
             apply_key_states(shard, &record.key_states);
             max_anchor = max_anchor.max(record_anchor);
             applied = true;
@@ -465,6 +465,7 @@ impl TemporalEngine {
                 Vec::new(),
                 Some(anchor),
                 Some(meta),
+                false,
                 true,
             )
             .is_err()
