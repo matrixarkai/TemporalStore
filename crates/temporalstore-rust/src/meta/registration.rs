@@ -321,6 +321,12 @@ impl SingleNodeMeta {
             MetaEntityState::Normal,
             now_ms(),
         );
+        record_topology_event(
+            &mut state,
+            "register_proxy",
+            format!("proxy:{proxy_addr}"),
+            "state=normal",
+        );
         AckResponse {
             status: Status::ok(),
         }
@@ -419,10 +425,20 @@ impl SingleNodeMeta {
     pub(super) fn apply_add_namespace(&self, request: AddNamespaceRequest) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
         self.counters.namespace_create_total.fetch_add(1, Ordering::Relaxed);
+        let namespace = request.namespace;
+        let created = !state.namespaces.contains_key(&namespace);
         state
             .namespaces
-            .entry(request.namespace)
+            .entry(namespace.clone())
             .or_insert(MetaEntityState::Normal);
+        if created {
+            record_topology_event(
+                &mut state,
+                "add_namespace",
+                format!("namespace:{namespace}"),
+                "state=normal",
+            );
+        }
         AckResponse {
             status: Status::ok(),
         }
