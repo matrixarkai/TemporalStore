@@ -28,6 +28,16 @@ impl TemporalEngine {
         request: StorageManagerCycleRequest,
     ) -> StorageManagerCycleReport {
         let cycle_started_unix_ms = now_ms();
+        // Each stage is timed from the end of the previous one, so the durations tile the cycle
+        // instead of overlapping it. Read and restart in the same expression, exactly once per
+        // stage, where that stage's report is built.
+        //
+        // Deliberately not a closure. A `move` closure capturing only an `Instant` captures a Copy
+        // type, which makes the closure itself Copy -- the restart then applies to a copy and every
+        // stage reports the time since the CYCLE began instead of since the previous stage. That
+        // was the first version here, and the totals gave it away: eight stages summing to eight
+        // times the wall clock of the call that produced them.
+        let mut stage_clock = std::time::Instant::now();
         // Short-circuit while the shard is RECOVERING (WAL replay in progress). The cycle
         // mutates shard state (eviction / page + WAL reclaim / compaction); a GC or compaction
         // round interleaved with an in-flight replay would observe a half-reconstructed bucket
@@ -231,6 +241,11 @@ impl TemporalEngine {
         let mut stages = Vec::new();
         let mut errors = Vec::new();
         stages.push(StorageManagerStageReport {
+            duration_ms: {
+                let elapsed = stage_clock.elapsed().as_millis() as u64;
+                stage_clock = std::time::Instant::now();
+                elapsed
+            },
             stage: "prepare".to_string(),
             enabled: request.enable_prepare,
             applied: request.enable_prepare && !request.dry_run,
@@ -414,6 +429,11 @@ impl TemporalEngine {
         ));
 
         stages.push(StorageManagerStageReport {
+            duration_ms: {
+                let elapsed = stage_clock.elapsed().as_millis() as u64;
+                stage_clock = std::time::Instant::now();
+                elapsed
+            },
             stage: "reclaim_wal".to_string(),
             enabled: request.enable_wal_reclaim,
             applied: wal_reclaim_report
@@ -508,6 +528,11 @@ impl TemporalEngine {
         });
 
         stages.push(StorageManagerStageReport {
+            duration_ms: {
+                let elapsed = stage_clock.elapsed().as_millis() as u64;
+                stage_clock = std::time::Instant::now();
+                elapsed
+            },
             stage: "expire".to_string(),
             enabled: request.enable_expire,
             applied: request.enable_expire && !request.dry_run,
@@ -547,6 +572,11 @@ impl TemporalEngine {
         });
 
         stages.push(StorageManagerStageReport {
+            duration_ms: {
+                let elapsed = stage_clock.elapsed().as_millis() as u64;
+                stage_clock = std::time::Instant::now();
+                elapsed
+            },
             stage: "evict".to_string(),
             enabled: request.enable_evict,
             applied: eviction_report
@@ -651,6 +681,11 @@ impl TemporalEngine {
         });
 
         stages.push(StorageManagerStageReport {
+            duration_ms: {
+                let elapsed = stage_clock.elapsed().as_millis() as u64;
+                stage_clock = std::time::Instant::now();
+                elapsed
+            },
             stage: "reclaim_page".to_string(),
             enabled: request.enable_page_reclaim,
             applied: request.enable_page_reclaim
@@ -707,6 +742,11 @@ impl TemporalEngine {
         });
 
         stages.push(StorageManagerStageReport {
+            duration_ms: {
+                let elapsed = stage_clock.elapsed().as_millis() as u64;
+                stage_clock = std::time::Instant::now();
+                elapsed
+            },
             stage: "index_gc".to_string(),
             enabled: request.enable_index_gc,
             applied: request.enable_index_gc
@@ -845,6 +885,11 @@ impl TemporalEngine {
             None
         };
         stages.push(StorageManagerStageReport {
+            duration_ms: {
+                let elapsed = stage_clock.elapsed().as_millis() as u64;
+                stage_clock = std::time::Instant::now();
+                elapsed
+            },
             stage: "compact".to_string(),
             enabled: request.enable_page_compaction,
             applied: compaction_report.is_some(),
@@ -913,6 +958,11 @@ impl TemporalEngine {
         merged_dump_load_policy.policy_ready = merged_dump_load_policy.blockers.is_empty();
 
         stages.push(StorageManagerStageReport {
+            duration_ms: {
+                let elapsed = stage_clock.elapsed().as_millis() as u64;
+                stage_clock = std::time::Instant::now();
+                elapsed
+            },
             stage: "reap_metrics".to_string(),
             enabled: true,
             applied: !request.dry_run,
@@ -940,7 +990,7 @@ impl TemporalEngine {
             ..StorageManagerStageReport::default()
         });
         let phase_executor = StorageManagerPhaseExecutor::new(cycle_started_unix_ms);
-        phase_executor.annotate_reports(
+        let round_duration_ms = phase_executor.annotate_reports(
             &mut stages,
             &errors,
             pressure_signals.follower_cursor_retention_blockers
@@ -965,6 +1015,7 @@ impl TemporalEngine {
             && merged_dump_load_policy.policy_ready;
         StorageManagerCycleReport {
             shard_id: request.shard_id,
+            duration_ms: round_duration_ms,
             dry_run: request.dry_run,
             native_stage_order,
             completed: errors.is_empty(),
