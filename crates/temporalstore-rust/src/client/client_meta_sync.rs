@@ -864,6 +864,7 @@ impl TemporalStoreClient {
                 consecutive_errors: 0,
                 last_error: String::new(),
                 shards_without_primary: 0,
+                last_forced_sync_unix_ms: 0,
             });
     }
 
@@ -881,6 +882,47 @@ impl TemporalStoreClient {
             .get(&key)
             .map(|state| state.last_topology_version)
             .unwrap_or(0)
+    }
+
+    /// Whether a failure-driven topology sync for this table is due, claiming the slot if so.
+    ///
+    /// Claimed as it answers, so concurrent failures cannot all decide they are due and fire
+    /// the same sync. Losing that race means skipping a sync another thread is already making,
+    /// which is the outcome wanted.
+    pub(super) fn forced_sync_is_due(&self, namespace: &str, table_name: &str) -> bool {
+        let interval = self.inner.options.topo_error_retry_interval_ms;
+        if interval == 0 {
+            return true;
+        }
+        let now = now_unix_ms();
+        let key = table_combine_name(namespace, table_name);
+        let mut states = self
+            .inner
+            .meta_sync_tables
+            .lock()
+            .expect("client meta sync table lock poisoned");
+        let state = states
+            .entry(key)
+            .or_insert_with(|| ClientMetaSyncTableState {
+                namespace: namespace.to_string(),
+                table_name: table_name.to_string(),
+                sync_generation: 0,
+                last_success_unix_ms: 0,
+                last_error_unix_ms: 0,
+                next_sync_after_unix_ms: 0,
+                last_topology_version: 0,
+                consecutive_errors: 0,
+                last_error: String::new(),
+                shards_without_primary: 0,
+                last_forced_sync_unix_ms: 0,
+            });
+        let last = state.last_forced_sync_unix_ms;
+        // A clock that went backwards should not lock the refresh out until it catches up.
+        if last != 0 && now >= last && now.saturating_sub(last) < interval {
+            return false;
+        }
+        state.last_forced_sync_unix_ms = now;
+        true
     }
 
     pub(super) fn record_meta_sync_success(
@@ -910,6 +952,7 @@ impl TemporalStoreClient {
                 consecutive_errors: 0,
                 last_error: String::new(),
                 shards_without_primary: 0,
+                last_forced_sync_unix_ms: 0,
             });
         state.sync_generation = state.sync_generation.saturating_add(1);
         state.last_success_unix_ms = now;
@@ -946,6 +989,7 @@ impl TemporalStoreClient {
                 consecutive_errors: 0,
                 last_error: String::new(),
                 shards_without_primary: 0,
+                last_forced_sync_unix_ms: 0,
             });
         state.sync_generation = state.sync_generation.saturating_add(1);
         state.last_error_unix_ms = now;

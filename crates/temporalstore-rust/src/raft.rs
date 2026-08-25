@@ -117,6 +117,11 @@ pub struct RaftSnapshot {
     /// gate-off path deserialize unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_image: Option<RaftSnapshotStateImage>,
+    /// True when the image lives in its own file beside the log rather than inside the record.
+    /// A record is written per persist and the image is large; embedding it re-serialized the
+    /// whole image into every record that followed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub state_image_externalized: bool,
 }
 
 /// S2: an opaque engine STATE IMAGE — the exported served index plus every referenced page slab —
@@ -244,7 +249,11 @@ fn raft_leader_ready_barrier_on() -> bool {
 /// replaying O(total history); install reconstructs state from the image. Default OFF -> the
 /// snapshot still carries entries and behavior is byte-identical.
 fn raft_snapshot_state_image_on() -> bool {
-    raft_env_flag_on("TS_RAFT_SNAPSHOT_STATE_IMAGE")
+    // Default ON since the restore path learned to install images and compaction proved to
+    // bound the log with them (a restart after compaction serves every value; the log stays a
+    // fraction of the history). TS_RAFT_SNAPSHOT_STATE_IMAGE=0 opts back to entry-carrying
+    // snapshots, which re-encode history rather than reduce it.
+    raft_env_flag_default_on("TS_RAFT_SNAPSHOT_STATE_IMAGE")
 }
 
 /// P1 (fsync coalescing): skip a node's WAL fdatasync when none of its DURABILITY-relevant state
@@ -1378,6 +1387,9 @@ pub struct RaftWalSegmentReport {
 
 #[derive(Debug, Clone, Default)]
 struct NodeWalCursor {
+    /// Snapshot boundary of the last marker this node persisted, so an incremental record can
+    /// omit an unchanged marker the way it omits already-persisted entries.
+    persisted_marker_index: Option<u64>,
     next_sequence: u64,
     segments: Vec<RaftWalSegmentInfo>,
     released_segment_count: u64,
@@ -5668,12 +5680,26 @@ fn apply_committed(node: &mut RaftNode) -> Option<CommandResponse> {
 
 fn install_snapshot_state(node: &mut RaftNode, snapshot: RaftSnapshot) {
     let engine = TemporalEngine::default();
-    engine.load_shard(snapshot.shard_id);
-    for entry in &snapshot.entries {
-        engine.execute_raft_apply(ExecuteRequest {
-            shard_id: entry.shard_id,
-            command: entry.command.clone(),
-        });
+    if let Some(image) = &snapshot.state_image {
+        // Reconstruct from the opaque state image in O(state): install the slabs and the served
+        // index, then load the shard so the index is read in. Every path a snapshot can land on
+        // must handle this -- an image snapshot fed to an entries-only installer replays nothing
+        // and quietly leaves an EMPTY engine, which is exactly what happened to a restart that
+        // restored an image-carrying record before this installer learned about images.
+        let block_store = engine.block_store();
+        for slab in &image.slabs {
+            let _ = block_store.install_slab(slab.page_slab_id, &slab.bytes);
+        }
+        let _ = engine.install_index_bytes(snapshot.shard_id, &image.index_bytes);
+        engine.load_shard(snapshot.shard_id);
+    } else {
+        engine.load_shard(snapshot.shard_id);
+        for entry in &snapshot.entries {
+            engine.execute_raft_apply(ExecuteRequest {
+                shard_id: entry.shard_id,
+                command: entry.command.clone(),
+            });
+        }
     }
     node.engine = engine;
     // votedFor is per-term (Raft Fig-2): clear a stale vote when a snapshot raises the term,

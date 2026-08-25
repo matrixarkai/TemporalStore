@@ -660,6 +660,9 @@ struct ClientMetaSyncTableState {
     consecutive_errors: u64,
     last_error: String,
     shards_without_primary: u64,
+    /// When a request failure last forced a topology sync for this table, out of band from
+    /// the scheduled one. Used to space those out; see `refresh_table_topology_after_status`.
+    last_forced_sync_unix_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -1482,8 +1485,20 @@ impl TemporalStoreTable {
         self.http_options()
     }
 
+    /// Re-sync this table's topology because a request failed in a way that suggests the
+    /// cached one is wrong.
+    ///
+    /// Spaced by `topo_error_retry_interval_ms`. The per-request guard above stops one command
+    /// doing this twice, but says nothing about the other requests in flight: a shard moving
+    /// makes MANY requests fail at once, and each one arriving here unthrottled is a separate
+    /// metaserver round-trip -- a sync storm aimed at the metaserver at the moment it is
+    /// working through a topology change. One request's failure is enough to learn what all of
+    /// them need.
     fn refresh_table_topology_after_status(&self) {
         if self.client.inner.options.meta_addr.is_none() {
+            return;
+        }
+        if !self.client.forced_sync_is_due(&self.namespace, &self.table_name) {
             return;
         }
         let _ = self

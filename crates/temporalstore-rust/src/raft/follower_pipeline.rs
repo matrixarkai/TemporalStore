@@ -287,6 +287,39 @@ impl RaftCluster {
 
     /// Fold successful replication into the quorum commit, waking every waiting proposer.
     pub(crate) fn advance_quorum_commit(&self) {
+        // Cheap pre-check under the read lock: every sender calls this after every response, and
+        // most calls have nothing to advance. Taking the write lock for those serializes the
+        // senders against the proposers appending under the same lock.
+        {
+            let inner = self.inner.read().expect("raft cluster lock poisoned");
+            let leader_id = inner.leader_id;
+            let Some(leader) = inner.nodes.get(&leader_id) else {
+                return;
+            };
+            if leader.role != RaftRole::Leader {
+                return;
+            }
+            let required = inner.required_majority();
+            let leader_last = node_next_log_index(leader).saturating_sub(1);
+            let mut matched: Vec<u64> = Vec::new();
+            for (id, node) in &inner.nodes {
+                if !node.replica_role.participates_in_quorum() {
+                    continue;
+                }
+                matched.push(if *id == leader_id {
+                    leader_last
+                } else {
+                    node.pipeline_state.match_index
+                });
+            }
+            if matched.len() < required {
+                return;
+            }
+            matched.sort_unstable_by(|left, right| right.cmp(left));
+            if matched[required - 1] <= leader.commit_index {
+                return;
+            }
+        }
         let advanced = {
             let mut inner = self.inner.write().expect("raft cluster lock poisoned");
             let advanced = inner.maybe_advance_quorum_commit();
