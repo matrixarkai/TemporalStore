@@ -97,16 +97,6 @@ pub(super) fn model_compaction_policy_reports(
             .unwrap_or(false)
         {
             "context_entity"
-        } else if split_context_embedding_key(key)
-            .map(|(collection_key, ref_hash)| {
-                shard
-                    .context_embeddings
-                    .get(&collection_key)
-                    .is_some_and(|series| series.contains_key(&ref_hash))
-            })
-            .unwrap_or(false)
-        {
-            "context_embedding"
         } else {
             "string"
         };
@@ -360,16 +350,6 @@ pub(super) fn compaction_model_layout_reports(
         "context_child",
         &shard.context_children,
         &slab_page_counts,
-    ));
-    reports.push(compaction_layout_from_addresses(
-        "context_embedding",
-        shard.context_embeddings.values().map(BTreeMap::len).sum(),
-        shard
-            .context_embeddings
-            .values()
-            .flat_map(|series| series.values().cloned()),
-        &slab_page_counts,
-        None,
     ));
     reports.push(compaction_timestamped_layout(
         "context_summary",

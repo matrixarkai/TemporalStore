@@ -2070,15 +2070,21 @@ class _CodexPipelinePart5:
             )
             self.assertIn("aaa111", profile_decision["state"])
             self.assertIn("bbb222", profile_decision["state"])
-            profile_decision_embedding = next(
+            # The embedding folded onto its owner: the entity record carries the vector, and
+            # the retired record's lineage rides along under embedding_meta.
+            profile_decision_owner = next(
                 record
                 for record in records
-                if record.get("record_type") == "context_embedding"
-                and record.get("ref_hash") == profile_decision["entity_hash"]
-                and record.get("memory_scope") == "user_profile"
-                and record.get("session_continuity") == "cross_session"
+                if record.get("record_type") == "context_entity"
+                and record.get("entity_hash") == profile_decision["entity_hash"]
+                and record.get("vector")
             )
-            self.assertNotIn("supersedes_session_entity_hashes", profile_decision_embedding)
+            embedding_meta = profile_decision_owner.get("embedding_meta") or {}
+            self.assertEqual("user_profile",
+                             embedding_meta.get("memory_scope") or profile_decision_owner.get("memory_scope"))
+            self.assertEqual("cross_session",
+                             embedding_meta.get("session_continuity") or profile_decision_owner.get("session_continuity"))
+            self.assertNotIn("supersedes_session_entity_hashes", embedding_meta)
             superseded_session_entity_hashes = list(profile_decision["supersedes_session_entity_hashes"])
 
             pack = adapter.retrieve(
@@ -3028,7 +3034,8 @@ class _CodexPipelinePart5:
                 self.fail("background resource import did not complete")
 
             self.assertTrue(any(record.get("record_type") == "resource_chunk" for record in records))
-            self.assertTrue(any(record.get("record_type") == "context_embedding" for record in records))
+            # Folded: the vectors live on the owners (chunks and summaries carry them).
+            self.assertTrue(any(record.get("vector") for record in records))
             self.assertTrue(any(record.get("record_type") == "context_summary" for record in records))
 
     def test_tenant_shared_resource_and_skill_live_outside_session_and_retrieve_with_quota(self) -> None:

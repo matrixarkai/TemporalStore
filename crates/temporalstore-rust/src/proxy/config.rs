@@ -26,7 +26,8 @@ pub(super) fn default_context_first_shard_id() -> crate::types::ShardId {
 }
 
 pub(super) fn default_context_shard_count() -> u64 {
-    1
+    // 0 = follow the cluster. See `ProxyOptions::context_shard_count`.
+    0
 }
 
 pub(super) fn default_heartbeat_timeout_ms() -> u64 {

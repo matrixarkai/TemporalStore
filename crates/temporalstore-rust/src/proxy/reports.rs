@@ -150,6 +150,8 @@ impl ProxyService {
             inflight_requests: inflight_total,
             inflight_write_requests: inflight_writes,
             pin_primary_reads: options.pin_primary_reads,
+            context_shard_count: self.effective_context_shard_count(),
+            context_shard_count_source: self.context_shard_count_source().to_string(),
         }
     }
 

@@ -27,6 +27,14 @@ pub(crate) fn execute_on_shard(
         // Applied as nothing: `mutated` stays false, so it neither dirties a shard nor
         // invalidates a cache entry.
         Command::LeaderEstablish => CommandResponse::Empty,
+        // Blob commands are dispatched before the shard lock (they live beside the engine,
+        // not in shard record state); reaching this arm means the early dispatch was skipped.
+        Command::ContextResourceBlobBegin { .. }
+        | Command::ContextResourceBlobAppend { .. }
+        | Command::ContextResourceBlobCommit { .. }
+        | Command::ContextResourceBlobPut { .. }
+        | Command::ContextResourceBlobFetch { .. }
+        | Command::ContextResourceBlobSweep { .. } => CommandResponse::Empty,
         Command::CommonDelete { key } => {
             mutated = delete_record(shard, &key);
             invalidate_record_all(cache, shard_id, &key);
@@ -1740,11 +1748,18 @@ pub(crate) fn execute_on_shard(
             // raw context events so index refs, filters, and event pages share the
             // wire-compatible timestamp key discipline.
             let event_timeline_key = context_timeline_key(primary_time_ms, event.event_id_hash);
+            let event_id_hash = event.event_id_hash;
             let event_series = shard
                 .context_events
                 .entry(event_object_key.clone())
                 .or_default();
-            if !(first_write_only && event_series.contains_key(&event_timeline_key)) {
+            // Same key discipline as ContextWriteEvent since the event rekey: the primary map
+            // is keyed by EVENT ID (idempotence tests the id), the page stays timestamp-keyed,
+            // and the time index maps the stored timeline key back to the id. This arm was
+            // missed by the rekey -- it kept inserting timeline keys into the id-keyed map and
+            // never fed the time index, so every extracted event was invisible to time-ranged
+            // queries while its write reported success.
+            if !(first_write_only && event_series.contains_key(&event_id_hash)) {
                 let value = context_bytes(&event);
                 let routing_bucket = page_routing_bucket(
                     &event_object_key,
@@ -1764,8 +1779,13 @@ pub(crate) fn execute_on_shard(
                     routing_bucket,
                     async_storage && !cold_storage,
                 ) {
-                    for (timestamp_ms, address) in addresses {
-                        event_series.insert(timestamp_ms, address);
+                    for (stored_timeline_key, address) in addresses {
+                        event_series.insert(event_id_hash, address);
+                        shard
+                            .context_event_timeline
+                            .entry(event_object_key.clone())
+                            .or_default()
+                            .insert(stored_timeline_key, event_id_hash);
                         mutated = true;
                     }
                 }
@@ -2425,66 +2445,6 @@ pub(crate) fn execute_on_shard(
                 created: None,
             }
         }
-        Command::ContextUpsertEmbedding {
-            tenant_hash,
-            embedding,
-        } => {
-            // Per-embedding key for the PAGE (two embeddings must not share a page) and for the
-            // persisted entry; collection key for the index slot and the reported object key.
-            let object_key = context_embedding_key(tenant_hash, embedding.ref_hash);
-            let collection_key = context_embedding_collection_key(tenant_hash);
-            let object_id = stable_page_object_id(shard_id, "context_embedding", &object_key, None);
-            let routing_bucket =
-                page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
-            if let Ok(address) = append_value(
-                cache,
-                page_store,
-                shard_id,
-                &context_bytes(&embedding),
-                Some(object_id),
-                Some(routing_bucket),
-                async_storage,
-            ) {
-                // insert() on the ref hash OVERWRITES: re-embedding a node replaces its vector
-                // rather than accumulating one entry per update.
-                shard
-                    .context_embeddings
-                    .entry(collection_key.clone())
-                    .or_default()
-                    .insert(embedding.ref_hash, address);
-                mutated = true;
-            }
-            invalidate_record_all(cache, shard_id, &object_key);
-            invalidate_record_all(cache, shard_id, &collection_key);
-            CommandResponse::ContextObjectKey {
-                object_key: collection_key,
-            }
-        }
-        Command::ContextQueryEmbeddings {
-            tenant_hash,
-            ref_hashes,
-            limit,
-        } => {
-            // One map lookup for the tenant's series, then a log-n hit per requested ref --
-            // instead of formatting and hashing a full per-embedding key string per ref.
-            let series = shard
-                .context_embeddings
-                .get(&context_embedding_collection_key(tenant_hash));
-            let embeddings = match series {
-                None => Vec::new(),
-                Some(series) => dedupe_nonzero_u64_preserve_order(ref_hashes)
-                    .into_iter()
-                    .take(context_limit(limit))
-                    .filter_map(|ref_hash| {
-                        series.get(&ref_hash).and_then(|address| {
-                            read_page_bytes(cache, page_store, shard_id, address)
-                                .and_then(|bytes| context_from_bytes::<ContextEmbedding>(&bytes))
-                        })
-                    })
-                    .collect(),
-            };
-            CommandResponse::ContextEmbeddings { embeddings }
-        }
         Command::ContextTraverseTree {
             tenant_hash,
             start_node_hash,
@@ -2567,6 +2527,40 @@ pub(crate) fn execute_on_shard(
                 object_key,
                 summaries,
             }
+        }
+        Command::ContextQuerySummaryVectors {
+            tenant_hash,
+            node_hashes,
+            level,
+            as_of_ms,
+        } => {
+            // One summary read per node -- the same per-node cost the separate embedding rows
+            // had, minus the second keyspace. Only the newest summary at or before `as_of_ms`
+            // is consulted; a summary carrying no vector contributes nothing, so the caller can
+            // tell "not embedded" apart from "not summarized" by the node's absence here.
+            let vectors = dedupe_nonzero_u64_preserve_order(node_hashes)
+                .into_iter()
+                .filter_map(|node_hash| {
+                    let object_key = context_summary_key(tenant_hash, node_hash, level);
+                    load_context_summaries(
+                        cache,
+                        page_store,
+                        shard_id,
+                        shard,
+                        &object_key,
+                        as_of_ms,
+                        Some(1),
+                    )
+                    .into_iter()
+                    .next()
+                    .filter(|summary| !summary.vector.is_empty())
+                    .map(|summary| ContextSummaryVector {
+                        node_hash,
+                        vector: summary.vector,
+                    })
+                })
+                .collect();
+            CommandResponse::ContextSummaryVectors { vectors }
         }
         Command::ContextWriteCompressionEvent { tenant_hash, event } => {
             let object_key = context_compression_key(tenant_hash, event.node_hash);

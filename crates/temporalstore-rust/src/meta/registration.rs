@@ -494,18 +494,21 @@ impl SingleNodeMeta {
         }
         // Recorded before the state moves, so a crash between the two replays
         // the change rather than losing it. `record_mutation` does not touch
-        // `self.inner`, so holding the lock here cannot deadlock.
-        self.record_mutation(MetaMutation::SetNamespaceState(request.clone(), next));
-        Self::apply_namespace_state_locked(&mut state, &request, next)
+        // `self.inner`, so holding the lock here cannot deadlock. It answers
+        // with the time it recorded, and the drop clock is stamped from that
+        // rather than from the clock here, so replay stamps the same instant.
+        let at_ms = self.record_mutation(MetaMutation::SetNamespaceState(request.clone(), next));
+        Self::apply_namespace_state_locked(&mut state, &request, next, at_ms)
     }
 
     pub(crate) fn apply_set_namespace_state(
         &self,
         request: AddNamespaceRequest,
         next: MetaEntityState,
+        at_ms: u64,
     ) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
-        Self::apply_namespace_state_locked(&mut state, &request, next)
+        Self::apply_namespace_state_locked(&mut state, &request, next, at_ms)
     }
 
     /// The state change itself, for a caller that already holds the write lock.
@@ -517,6 +520,7 @@ impl SingleNodeMeta {
         state: &mut MetaState,
         request: &AddNamespaceRequest,
         next: MetaEntityState,
+        at_ms: u64,
     ) -> AckResponse {
         let Some(current) = state.namespaces.get_mut(&request.namespace) else {
             return AckResponse {
@@ -528,7 +532,7 @@ impl SingleNodeMeta {
             state,
             &dropped_key("namespace", &request.namespace),
             next,
-            now_ms(),
+            at_ms,
         );
         // Topology is derived on read, so the version bump is what makes clients
         // notice that a namespace stopped, or resumed, serving.

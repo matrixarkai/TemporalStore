@@ -972,6 +972,22 @@ pub enum MetaMutation {
     SetMetaChangeMuted(bool),
 }
 
+/// One line of the mutation log: a change, and when the metaserver accepted it.
+///
+/// The time has to travel with the change. Everything that ages -- retention,
+/// freeze aging -- was stamped with `now_ms()` inside the apply path, which
+/// replay also runs, so every clock restarted whenever the metaserver did and
+/// nothing was ever old enough to act on.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetaMutationRecord {
+    /// Zero on a line written before this field existed. Replay falls back to
+    /// the current clock for those, which is what they have always been given.
+    #[serde(default)]
+    pub at_ms: u64,
+    #[serde(flatten)]
+    pub mutation: MetaMutation,
+}
+
 #[derive(Debug, Clone)]
 pub struct LocalMetaMutationLog {
     path: PathBuf,
@@ -990,7 +1006,7 @@ impl LocalMetaMutationLog {
         })
     }
 
-    pub fn append(&self, mutation: &MetaMutation) -> io::Result<()> {
+    pub fn append(&self, mutation: &MetaMutation, at_ms: u64) -> io::Result<()> {
         let _guard = self
             .write_lock
             .lock()
@@ -999,14 +1015,18 @@ impl LocalMetaMutationLog {
             .create(true)
             .append(true)
             .open(&self.path)?;
-        serde_json::to_writer(&mut file, mutation).map_err(io::Error::other)?;
+        let record = MetaMutationRecord {
+            at_ms,
+            mutation: mutation.clone(),
+        };
+        serde_json::to_writer(&mut file, &record).map_err(io::Error::other)?;
         file.write_all(b"\n")?;
         crate::durability_metrics::record_barrier("meta_log_append");
         file.sync_data()?;
         Ok(())
     }
 
-    pub fn load(&self) -> io::Result<Vec<MetaMutation>> {
+    pub fn load(&self) -> io::Result<Vec<MetaMutationRecord>> {
         if !self.path.exists() {
             return Ok(Vec::new());
         }
@@ -1017,8 +1037,9 @@ impl LocalMetaMutationLog {
             if line.trim().is_empty() {
                 continue;
             }
-            let mutation = serde_json::from_str::<MetaMutation>(&line).map_err(io::Error::other)?;
-            mutations.push(mutation);
+            let record =
+                serde_json::from_str::<MetaMutationRecord>(&line).map_err(io::Error::other)?;
+            mutations.push(record);
         }
         Ok(mutations)
     }
@@ -1560,14 +1581,23 @@ impl SingleNodeMeta {
         }
     }
 
-    fn record_mutation(&self, mutation: MetaMutation) {
+    /// Record a change and return the time it was accepted, which the apply
+            /// path must stamp with so replay reproduces it rather than the
+            /// clock of whenever the metaserver was last restarted.
+    fn record_mutation(&self, mutation: MetaMutation) -> u64 {
+        let at_ms = now_ms();
         if let Some(log) = &self.mutation_log {
-            log.append(&mutation)
+            log.append(&mutation, at_ms)
                 .expect("failed to append metaserver mutation log");
         }
+        at_ms
     }
 
     pub(crate) fn apply_mutation(&self, mutation: MetaMutation) -> Status {
+        self.apply_mutation_at(mutation, now_ms())
+    }
+
+    pub(crate) fn apply_mutation_at(&self, mutation: MetaMutation, at_ms: u64) -> Status {
         match mutation {
             MetaMutation::RegisterShard(request) => self.apply_register(request).status,
             MetaMutation::PublishShardSnapshot(request) => {
@@ -1577,28 +1607,28 @@ impl SingleNodeMeta {
             MetaMutation::RegisterProxy(request) => self.apply_register_proxy(request).status,
             MetaMutation::AddNamespace(request) => self.apply_add_namespace(request).status,
             MetaMutation::AddTable(request) => self.apply_add_table(request).status,
-            MetaMutation::DeleteTable(request) => self.apply_delete_table(request).status,
+            MetaMutation::DeleteTable(request) => self.apply_delete_table(request, at_ms).status,
             MetaMutation::UpdateTable(request) => self.apply_update_table(request).status,
             MetaMutation::FreezeTable(request) => {
-                self.apply_set_table_state(request, MetaEntityState::Frozen)
+                self.apply_set_table_state(request, MetaEntityState::Frozen, at_ms)
                     .status
             }
             MetaMutation::UnfreezeTable(request) => {
-                self.apply_set_table_state(request, MetaEntityState::Normal)
+                self.apply_set_table_state(request, MetaEntityState::Normal, at_ms)
                     .status
             }
             MetaMutation::FinishLoad(request) => self.apply_finish_load(request).status,
             MetaMutation::UnfreezeServer(request) => {
-                self.apply_set_server_state(request, MetaEntityState::Normal)
+                self.apply_set_server_state(request, MetaEntityState::Normal, at_ms)
                     .status
             }
             MetaMutation::UnfreezeProxy(request) => {
-                self.apply_set_proxy_state(request, MetaEntityState::Normal)
+                self.apply_set_proxy_state(request, MetaEntityState::Normal, at_ms)
                     .status
             }
             MetaMutation::UpdateServer(request) => self.apply_update_server(request).status,
             MetaMutation::SetNamespaceState(request, next) => {
-                self.apply_set_namespace_state(request, next).status
+                self.apply_set_namespace_state(request, next, at_ms).status
             }
             MetaMutation::SetReservedNames(reserved) => {
                 self.apply_set_reserved_names(reserved).status
@@ -1620,19 +1650,19 @@ impl SingleNodeMeta {
             }
             MetaMutation::DropShard(request) => self.apply_drop_shard(request).status,
             MetaMutation::FreezeServer(request) => {
-                self.apply_set_server_state(request, MetaEntityState::Frozen)
+                self.apply_set_server_state(request, MetaEntityState::Frozen, at_ms)
                     .status
             }
             MetaMutation::DropServer(request) => {
-                self.apply_set_server_state(request, MetaEntityState::Dropped)
+                self.apply_set_server_state(request, MetaEntityState::Dropped, at_ms)
                     .status
             }
             MetaMutation::FreezeProxy(request) => {
-                self.apply_set_proxy_state(request, MetaEntityState::Frozen)
+                self.apply_set_proxy_state(request, MetaEntityState::Frozen, at_ms)
                     .status
             }
             MetaMutation::DropProxy(request) => {
-                self.apply_set_proxy_state(request, MetaEntityState::Dropped)
+                self.apply_set_proxy_state(request, MetaEntityState::Dropped, at_ms)
                     .status
             }
             MetaMutation::PurgeMeta(plan) => {
@@ -4016,6 +4046,137 @@ mod tests {
         register_with(&meta, "node-a", domains(4));
         register_with(&meta, "node-a", domains(2));
         assert_eq!(listed_server(&meta, "node-a").numa_nodes.len(), 2);
+    }
+
+    /// A metaserver with a durable log holding one frozen table, one dropped
+    /// table and one dropped server. Returns the log path and the clocks as they
+    /// stood before the restart.
+    fn clocks_before_restart(
+        log_path: &std::path::Path,
+    ) -> (BTreeMap<String, u64>, BTreeMap<String, u64>) {
+        let meta = SingleNodeMeta::with_mutation_log(log_path).unwrap();
+        register(&meta, "server-a");
+        register(&meta, "server-b");
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok);
+        for (name, first_shard_id) in [("frozen", 900), ("dropped", 950)] {
+            assert!(meta
+                .add_table(AddTableRequest {
+                    namespace: "ns".to_string(),
+                    table_name: name.to_string(),
+                    first_shard_id,
+                    shard_count: 1,
+                    replica_count: 1,
+                    partition_version: 0,
+                    serving_options: TableServingOptions::default(),
+                })
+                .status
+                .ok);
+        }
+        assert!(meta
+            .freeze_table(DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "frozen".to_string()
+            })
+            .status
+            .ok);
+        assert!(meta
+            .delete_table(DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "dropped".to_string()
+            })
+            .status
+            .ok);
+        assert!(meta
+            .drop_server(StateChangeRequest {
+                endpoint: "server-b".to_string(),
+                reason: FreezeReason::Operator,
+                freeze_cooldown_ms: 0,
+            })
+            .status
+            .ok);
+        let snapshot = meta.export_snapshot();
+        assert!(!snapshot.frozen_since_ms.is_empty() && !snapshot.dropped_since_ms.is_empty());
+        (snapshot.frozen_since_ms, snapshot.dropped_since_ms)
+    }
+
+    #[test]
+    fn the_retention_clocks_survive_a_metaserver_restart() {
+        // Everything that ages was stamped with the wall clock inside the apply
+        // path, which replay also runs, so every clock restarted whenever the
+        // metaserver did. Retention purge and freeze aging could never fire on a
+        // cluster that restarts more often than their windows.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("meta.log");
+        let (frozen_before, dropped_before) = clocks_before_restart(&log_path);
+
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let restarted = SingleNodeMeta::with_mutation_log(&log_path)
+            .unwrap()
+            .export_snapshot();
+
+        assert_eq!(
+            restarted.frozen_since_ms, frozen_before,
+            "a freeze clock restarted with the metaserver"
+        );
+        assert_eq!(
+            restarted.dropped_since_ms, dropped_before,
+            "a retention clock restarted with the metaserver"
+        );
+    }
+
+    #[test]
+    fn a_log_written_before_the_time_was_recorded_still_replays() {
+        // Lines already on disk have no time in them. They must still load, and
+        // fall back to the current clock, which is what they have always been
+        // given -- not be rejected as malformed.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("meta.log");
+        clocks_before_restart(&log_path);
+
+        let older: String = std::fs::read_to_string(&log_path)
+            .unwrap()
+            .lines()
+            .map(|line| {
+                let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+                value
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("at_ms")
+                    .expect("the time was written");
+                format!("{}\n", serde_json::to_string(&value).unwrap())
+            })
+            .collect();
+        std::fs::write(&log_path, older).unwrap();
+
+        let restarted = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        let snapshot = restarted.export_snapshot();
+        assert!(
+            !snapshot.frozen_since_ms.is_empty(),
+            "an older log did not replay"
+        );
+        assert_eq!(snapshot.tables.len(), 2);
+    }
+
+    #[test]
+    fn a_line_carrying_the_time_is_still_readable_without_it() {
+        // The time is an added field on the log line, so a build that predates
+        // it must still be able to read what a newer one wrote.
+        let mutation = MetaMutation::AddNamespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        let line = serde_json::to_string(&MetaMutationRecord {
+            at_ms: 1234,
+            mutation: mutation.clone(),
+        })
+        .unwrap();
+        let without_the_field: MetaMutation = serde_json::from_str(&line)
+            .expect("a line carrying the time must still read as a bare change");
+        assert_eq!(without_the_field, mutation);
     }
 
     #[test]
