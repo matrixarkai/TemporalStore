@@ -342,6 +342,10 @@ class _TemporalDirectRetrieveMixin:
         return result
 
     def _load_records_by_count(self, count: int) -> list[Json]:
+        # Same contract as _get_count: a backend that cannot answer right now (shard still
+        # loading, timeout) must raise, never shrink the result. The count said the records
+        # exist; silently dropping the ones a loading shard could not serve returned an
+        # EMPTY-but-successful view of a populated store for the whole load window.
         records = []
         self._last_read_all_native_shard_scan = False
         scan_records = self._load_records_by_native_shard_scan(count)
@@ -356,7 +360,9 @@ class _TemporalDirectRetrieveMixin:
                 entries.append({"key": record_key, "field": record_id})
             try:
                 read_records = batch_hget(entries)
-            except Exception:
+            except Exception as exc:
+                if is_retryable_temporalstore_error(exc):
+                    raise
                 read_records = []
             for item in read_records:
                 if not isinstance(item, dict):
@@ -375,7 +381,9 @@ class _TemporalDirectRetrieveMixin:
             record_key, record_id = self._record_location(sequence)
             try:
                 payload = self._client.hget(record_key, record_id)
-            except Exception:
+            except Exception as exc:
+                if is_retryable_temporalstore_error(exc):
+                    raise
                 continue
             if not payload:
                 continue
@@ -396,7 +404,9 @@ class _TemporalDirectRetrieveMixin:
             key = f"{self._record_hash_key}:{shard:06d}"
             try:
                 response = scanner(key)
-            except Exception:
+            except Exception as exc:
+                if is_retryable_temporalstore_error(exc):
+                    raise
                 return None
             rows = response.get("records") if isinstance(response, dict) else None
             if not isinstance(rows, list):
@@ -431,11 +441,14 @@ class _TemporalDirectRetrieveMixin:
         return f"{self._record_hash_key}:{shard:06d}", f"{offset:020d}"
 
     def _load_records(self, index: list[str]) -> list[Json]:
+        # Legacy index-mode read: same must-not-lie contract as _load_records_by_count.
         records = []
         for record_id in index:
             try:
                 payload = self._client.hget(self._record_hash_key, record_id)
-            except Exception:
+            except Exception as exc:
+                if is_retryable_temporalstore_error(exc):
+                    raise
                 continue
             if not payload:
                 continue

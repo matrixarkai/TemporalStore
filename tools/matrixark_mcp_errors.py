@@ -27,5 +27,11 @@ def is_retryable_temporalstore_error(error: Any) -> bool:
         "connection reset",
         "temporarily unavailable",
         "server is busy",
+        # The engine's load-window statuses: a shard that has not loaded yet, or is mid
+        # WAL-replay ("shard_not_loaded: shard is recovering"), answers again once the load
+        # completes. Treating these as terminal made callers give up -- or worse, serve the
+        # store as empty -- during exactly the window a retry would have covered.
+        "not loaded",
+        "recovering",
     )
     return any(fragment in text for fragment in retryable_fragments)

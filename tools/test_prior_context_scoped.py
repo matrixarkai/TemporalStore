@@ -51,7 +51,7 @@ class _Adapter(adapters.MatrixArkTemporalStoreDirectAdapter):
         self.full = full or []
         self.full_reads = 0
 
-    def _scan_records_of_types(self, record_types):
+    def _scan_records_of_types(self, record_types, record_ids=None, scope=None):
         if self.scanned is None:
             return None
         wanted = set(record_types)
