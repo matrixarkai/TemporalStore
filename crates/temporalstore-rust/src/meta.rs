@@ -407,6 +407,19 @@ pub struct ServerMetaInfo {
     pub load_memory_bytes: u64,
     #[serde(default)]
     pub worst_shard_state_penalty: u8,
+    /// What this server's shards add up to, from the states it reports.
+    ///
+    /// Every heartbeat carries `total_records` and `storage_bytes` for each
+    /// shard the server holds, and nothing read either. The metaserver knew how
+    /// much data sat on every node and had no way to say so -- `/metrics`
+    /// counted shards and never their size.
+    ///
+    /// Summed here rather than at scrape time, like the placement figures
+    /// beside them: a scrape should not walk every shard of every server.
+    #[serde(default)]
+    pub reported_record_count: u64,
+    #[serde(default)]
+    pub reported_storage_bytes: u64,
     pub binary_version: String,
     pub shard_loads: Vec<ShardLoad>,
     #[serde(default)]
@@ -1026,6 +1039,14 @@ pub struct MetaStats {
     pub namespace_count: usize,
     pub table_count: usize,
     pub shard_count: usize,
+    /// How many of those shards are not serving.
+    ///
+    /// A shard can be taken out of service on its own, and nothing counted it:
+    /// an operator could freeze one and see no change on any dashboard. Counted
+    /// here rather than kept as a running total, because a tally maintained
+    /// beside the shards is a second thing to keep in step with them.
+    #[serde(default)]
+    pub frozen_shard_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
